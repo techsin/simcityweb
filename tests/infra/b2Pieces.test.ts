@@ -21,7 +21,7 @@ import { BuildingSnapshot } from '../../src/sim/infra/common';
 import { GraphBuildRun, GridGraph, RoadGraph } from '../../src/sim/infra/graph';
 import { INFRA_PIECE_COLD_MS, INFRA_PIECE_MS, INFRA_URGENT_BUDGET } from '../../src/sim/infra/params';
 import { baseSupply, baseSupplyRange, parkingFromBoxes, parkingFromBoxesRange, parkingSummaryOf } from '../../src/sim/infra/parking';
-import { InfraScheduler, pieceBudgetUs, pieceUnits, withPieceScale, type InfraTask } from '../../src/sim/infra/scheduler';
+import { InfraScheduler, pieceBudgetUs, pieceUnits, schedulerOf, withPieceScale, type InfraTask } from '../../src/sim/infra/scheduler';
 import {
   RoadSearchRun, Search, SearchK, Seeds, TransitSearchRun, accumulate, accumulateRange, roadSearch, transitSearch, type TransitNet,
 } from '../../src/sim/infra/search';
@@ -524,6 +524,31 @@ describe('B2 G1 traffic: a cycle in one go = in pieces', () => {
       return { ...stateDigest(s2), ...fieldsDigest(tr2, TRAFFIC_SCRATCH) };
     };
     expect(diffDigests(load(), load())).toEqual([]);
+  }, 300_000);
+
+  it('O4: the piece sequence and the results do not depend on the host mode (frames active or headless)', () => {
+    const run = (live: boolean) => {
+      const st = transitCity(48, 5);
+      const tr = new TrafficSystem();
+      const sim = new Simulation(st, [tr]);
+      const sch = schedulerOf(sim) as unknown as { lastFrameMs: number; framesActive: boolean };
+      sch.lastFrameMs = live ? 1e15 : -1e15;
+      expect(sch.framesActive).toBe(live);
+      const t = tr as unknown as { phase: number; lastCycleStart: number; stepName: string };
+      const names: string[] = [], out: Record<string, string>[] = [];
+      for (let c = 0; c < 3; c++) {
+        if (c > 0) edit(sim, c);
+        st.day += 2;
+        t.phase = 0; t.lastCycleStart = st.day;
+        while (t.phase >= 0) { names.push(t.stepName); tr.step(sim); }
+        out.push({ ...stateDigest(st), ...fieldsDigest(tr, TRAFFIC_SCRATCH) });
+      }
+      return { names, out };
+    };
+    const headless = run(false), live = run(true);
+    expect(live.names.length).toBeGreaterThan(100);
+    expect(live.names).toEqual(headless.names);
+    expectSameRuns(headless.out, live.out, 'frames active');
   }, 300_000);
 
   it('two cities stepped interleaved, piece by piece, equal their solo runs (no module scratch shared across cities)', () => {

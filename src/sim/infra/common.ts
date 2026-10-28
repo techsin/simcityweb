@@ -348,6 +348,14 @@ export class BuildingSnapshot {
   bounds: Int32Array<ArrayBuffer> = new Int32Array(2);
   chunks = 0;
   private fp: Float64Array<ArrayBuffer> = new Float64Array(2);
+  // planRun's cursor: costs, budget, next building, chunk count, open chunk's µs, footprint cells so far
+  private pA = 0;
+  private pB = 0;
+  private pBudget = 0;
+  private pI = 0;
+  private pK = 0;
+  private pAcc = 0;
+  private pCells = 0;
   /** take a copy of buildingList(st) (reuses the backing array) */
   take(st: CityState): void {
     const src = buildingList(st), L = this.list, n = src.length;
@@ -358,24 +366,43 @@ export class BuildingSnapshot {
   }
   /** cut the list into chunks of at most budgetUs of aUs per building + bUs per footprint cell; returns the chunk count */
   plan(aUs: number, bUs: number, budgetUs: number): number {
-    const L = this.list, n = this.n;
+    this.planBegin(aUs, bUs, budgetUs);
+    this.planRun(Infinity);
+    return this.chunks;
+  }
+  /** plan() in pieces (B2): planBegin, then planRun(maxBuildings) until it returns true; the same chunks for any cut */
+  planBegin(aUs: number, bUs: number, budgetUs: number): void {
+    const n = this.n;
     if (this.bounds.length < n + 2) this.bounds = new Int32Array(n + (n >> 3) + 16);
     if (this.fp.length < n + 2) this.fp = new Float64Array(n + (n >> 3) + 16);
-    const bounds = this.bounds, fp = this.fp;
-    let k = 0, acc = 0, cells = 0;
-    bounds[0] = 0;
-    fp[0] = 0;
-    for (let i = 0; i < n; i++) {
+    this.bounds[0] = 0;
+    this.fp[0] = 0;
+    this.pA = aUs; this.pB = bUs; this.pBudget = budgetUs;
+    this.pI = 0; this.pK = 0; this.pAcc = 0; this.pCells = 0;
+    this.chunks = 0;
+  }
+  /** plan the next (at most) maxBuildings buildings; true when the plan is complete (chunks set) */
+  planRun(maxBuildings: number): boolean {
+    const L = this.list, n = this.n, bounds = this.bounds, fp = this.fp, aUs = this.pA, bUs = this.pB, budgetUs = this.pBudget;
+    let k = this.pK, acc = this.pAcc, cells = this.pCells;
+    const i0 = this.pI, i1 = Math.min(n, i0 + maxBuildings);
+    for (let i = i0; i < i1; i++) {
       const b = L[i], f = b.w * b.d, c = aUs + bUs * f;
       if (acc > 0 && acc + c > budgetUs) { k++; bounds[k] = i; fp[k] = cells; acc = 0; }
       acc += c;
       cells += f;
     }
+    this.pI = i1; this.pK = k; this.pAcc = acc; this.pCells = cells;
+    if (i1 < n) return false;
     if (n > 0) k++;
     bounds[k] = n;
     fp[k] = cells;
     this.chunks = k;
-    return k;
+    return true;
+  }
+  /** buildings planned so far (planRun's cursor) */
+  get planned(): number {
+    return this.pI;
   }
   /** buildings / footprint cells of chunk k (0 past the end) */
   countOf(k: number): number {
