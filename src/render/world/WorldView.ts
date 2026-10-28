@@ -26,6 +26,7 @@ import { TreeRenderer } from './TreeRenderer';
 import { WaterRenderer } from './WaterRenderer';
 import { releaseSharedTextures } from './textures';
 import { releaseTreeGeometries } from './fallbackTrees';
+import { previewBounds, type PendingPreview } from '../../worker/PendingEdits';
 
 export { overlayLegend } from './overlays';
 export { QUALITY_PRESETS, detectQuality, type QualitySettings } from './quality';
@@ -177,6 +178,8 @@ export class WorldView implements WorldViewApi {
   private terrainMin = 0;
   private lastFrameMs = 0;
   private _disposed = false;
+  // W1.1b: committed geometry has its own layer, independent of the next hover preview.
+  private pendingPreviews = new Map<number, THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>>();
   // shadow cache state
   private shKey = new Float64Array(64);
   private shRecv = -1;
@@ -1034,6 +1037,50 @@ export class WorldView implements WorldViewApi {
   setBrush(center: { x: number; z: number } | null, radiusCells: number): void {
     this.terrain.setBrush(center, radiusCells);
   }
+  /** Keep the committed footprint visible until its acknowledgement has replayed. */
+  setPendingPreview(seq: number, preview: PendingPreview | null): void {
+    const old = this.pendingPreviews.get(seq);
+    if (old) {
+      old.removeFromParent(); old.geometry.dispose(); old.material.dispose();
+      this.pendingPreviews.delete(seq);
+    }
+    if (!preview || this._disposed) return;
+    const N = this.state.size, vertices: number[] = [];
+    const tile = (x: number, z: number, x1 = x + 1, z1 = z + 1) => {
+      if (x < 0 || z < 0 || x >= N || z >= N) return;
+      const corners = [[x, z], [x, z1], [x1, z1], [x, z], [x1, z1], [x1, z]];
+      for (const [cx, cz] of corners) {
+        const wx = cx * CELL_SIZE, wz = cz * CELL_SIZE;
+        vertices.push(wx, this.terrain.worldHeight(wx, wz) + 0.3, wz);
+      }
+    };
+    if (preview.kind === 'path') {
+      const seen = new Set<number>();
+      for (const c of preview.path) {
+        if (c.x < 0 || c.z < 0 || c.x >= N || c.z >= N) continue;
+        const i = c.z * N + c.x;
+        if (!seen.has(i)) { seen.add(i); tile(c.x, c.z); }
+      }
+    } else {
+      const r = previewBounds(preview);
+      const x0 = Math.max(0, r.x0), z0 = Math.max(0, r.z0), x1 = Math.min(N, r.x1), z1 = Math.min(N, r.z1);
+      // Large zoning drags need bounded geometry, as their hover previews do.
+      const step = Math.max(1, Math.ceil(Math.sqrt(Math.max(0, (x1 - x0) * (z1 - z0)) / 20000)));
+      for (let z = z0; z < z1; z += step) for (let x = x0; x < x1; x += step) {
+        if (preview.kind === 'brush' && Math.hypot(x + 0.5 - preview.x, z + 0.5 - preview.z) > preview.radius) continue;
+        tile(x, z, Math.min(x1, x + step), Math.min(z1, z + step));
+      }
+    }
+    if (!vertices.length) return;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    const material = new THREE.MeshBasicMaterial({ color: 0xa9bdcc, transparent: true, opacity: 0.3, depthWrite: false, depthTest: false, toneMapped: false });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = `pending:${seq}`;
+    mesh.renderOrder = 2;
+    this.pendingPreviews.set(seq, mesh);
+    this.scene.add(mesh);
+  }
   /** camera shake (earthquakes are handled automatically from the 'disaster' event) */
   shake(intensity = 1, seconds = 2.5): void {
     this.cameraController.shake(intensity, seconds);
@@ -1167,6 +1214,10 @@ export class WorldView implements WorldViewApi {
   dispose(): void {
     if (this._disposed) return;
     this._disposed = true;
+    for (const mesh of this.pendingPreviews?.values() ?? []) {
+      mesh.removeFromParent(); mesh.geometry.dispose(); mesh.material.dispose();
+    }
+    this.pendingPreviews?.clear();
     // (a load left before its first frame: its queued warm-ups go with it)
     if (loadWarm.open) {
       loadWarm.open = false;

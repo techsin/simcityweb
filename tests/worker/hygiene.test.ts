@@ -125,6 +125,9 @@ describe('worker migration hygiene gates', () => {
   it('W0.4: liveSlowdown writers live only in src/worker or src/sim', () => {
     expect(scanFiles(outsideCore(), 'liveSlowdown')).toEqual([]);
   });
+  it('NOTE-041: maxDaysPerFrame writers live only in src/worker or src/sim (the New Year hold is a host command)', () => {
+    expect(scanFiles(outsideCore(), 'maxDaysPerFrame')).toEqual([]);
+  });
   it('W0.3b: src/ui and src/game no longer call emergencyOf or getSystem', () => {
     expect(scanFiles(uiAndGame(), 'systems')).toEqual([]);
   });

@@ -9,7 +9,7 @@ import { getCityRecord, type CityRecord } from '../save/cities';
 import type { RecoveryMarker } from '../save/recoveryCodec';
 import { clearRecoveryAfterSave as clearRecoveryIdb, storeRecoveryIdb } from '../save/recoveryIdb';
 import { storeRecoveryLs } from '../save/recoveryLs';
-import { PacketSimHost, hostActions, type PacketHostOptions, type Settle } from './LoopbackSimHost';
+import { PacketSimHost, type PacketHostOptions, type Settle } from './LoopbackSimHost';
 import type { RecoveryMirror, SnapshotAck, SnapshotWhy } from './SimHost';
 import { PROTOCOL_VERSION, assertOwnedBuffers, errorText, type Ready, type Reply, type SimSettings, type W2M } from './protocol';
 import { ACK_WINDOW, WorkerLiveness, type SerializedSource, type WorkerInput, type WorkerOutput, type WorkerPort } from './workerProtocol';
@@ -115,8 +115,13 @@ export async function loadWorkerSimHost(regionId: string, tileKey: string, opts:
 /** Post init, follow hello and the boot phases (20 s of visible time at most between them), and build the host from the
  *  worker's Ready. Rejects with HostCrashed on a version mismatch, a fatal message, an error or a timeout. */
 export function bootWorkerSimHost(source: SerializedSource, opts: WorkerSimHostOptions = {}): Promise<WorkerSimHost> {
-  // the optimistic writes run CityActions on the replica; it loads lazily (FH-07a: the city screen's graph has none)
-  const actions = opts.optimistic ? Promise.resolve(opts.optimistic) : import('../sim/actions').then((m) => m.CityActions, () => undefined);
+  // T031's HostActions and the optimistic writes run CityActions on the replica: both load lazily while the worker boots,
+  // as the loopback loads them in start() (FH-07a: the city screen's static graph has no actions.ts)
+  const modules = Promise.all([
+    opts.optimistic ?? import('../sim/actions').then((m) => m.CityActions, () => undefined),
+    opts.actions ? undefined : import('./HostActions').then((m) => m.HostActions),
+  ]);
+  void modules.catch(() => {}); // a boot that fails first reports its own error
   const booted = new Promise<WorkerSimHost>((resolve, reject) => {
     let done = false;
     const finish = (error: unknown, crashed: boolean) => {
@@ -151,9 +156,14 @@ export function bootWorkerSimHost(source: SerializedSource, opts: WorkerSimHostO
       flags: { simwasm: opts.flags?.simwasm ?? null, dev: opts.dev ?? !!import.meta.env?.DEV },
       regionName: opts.regionName, deterministic: opts.deterministic });
   });
-  return Promise.all([booted, actions]).then(([host, Actions]) => {
-    if (Actions) host.useOptimisticActions(Actions);
-    return host;
+  return booted.then(async (host) => {
+    try {
+      const [Actions, Controller] = await modules;
+      if (Actions) host.useOptimisticActions(Actions);
+      // nothing is posted before the caller has the host, so no reservation predates the controller
+      if (Controller) host.installActions((h) => new Controller(h));
+      return host;
+    } catch (e) { await host.dispose(); throw e; }
   });
 }
 
@@ -173,7 +183,7 @@ export class WorkerSimHost extends PacketSimHost {
   /** Built by bootWorkerSimHost from the worker's real Ready. */
   constructor(ready: Ready, link: WorkerLink, source: SerializedSource, opts: WorkerSimHostOptions = {}) {
     const snapshots = new SnapshotMirror(source.savedAt);
-    super('worker', ready, { ...opts, actions: opts.actions ?? hostActions, recovery: opts.recovery ?? snapshots,
+    super('worker', ready, { ...opts, recovery: opts.recovery ?? snapshots,
       persistence: { regionId: source.regionId, tileKey: source.tileKey, regionName: opts.regionName } }, true);
     this.link = link; this.kv = opts.kv ?? null; this.snapshots = snapshots; this.onCrashed = opts.onCrash;
     if (this.closed) { void link.close(); return; }

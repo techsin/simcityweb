@@ -17,6 +17,7 @@ import { exactDigest, queryKey, type QueryArgs, type QueryName, type QueryResult
 import { cloneMessage, CommandOutcomeLost, copyOwned, EVENT_TYPES, type M2W, type Packet, type PolicyState,
   type RasterPatch, type Ready, type Reply, type ViewState, type W2M, type WatchValue } from './protocol';
 import { Replica } from './replica';
+import { NO_PENDING, type PendingView } from './PendingEdits';
 import { viewLayers } from './recorder';
 import type { LoopbackCore, LoopbackOptions } from './loopbackCore';
 
@@ -219,7 +220,7 @@ export class PacketSimHost implements SimHost {
   get newsSeq(): number { return this.replica.newsSeq; }
   get actions(): CityActionsApi { if (!this.controller) throw new Error('T031 HostActions is not installed'); return this.controller; }
   get preview(): CityActionsApi { if (!this.controller) throw new Error('T031 PreviewActions is not installed'); return this.controller.preview; }
-  get pending() { return this.controller?.pending ?? { count: 0, revision: 0, overlay: <T>(fn: () => T) => fn(), claims: (): null => null, subscribe: () => () => {}, ack: () => {}, rebase: () => {} }; }
+  get pending(): PendingView { return this.controller?.pending ?? NO_PENDING; }
   get degradedActions(): boolean { return !this.controller; }
   readonly utilities = { waterQualityAt: (_sim: Pick<Simulation, 'state'>, cell: number): number => {
     const r = this.replica.raster(Overlay.Water, 1);
@@ -524,10 +525,9 @@ export class PacketSimHost implements SimHost {
 export interface LoopbackSimHostOptions extends PacketHostOptions {
   loopback?: Omit<LoopbackOptions, 'receive' | 'replicaInstance' | 'signal' | 'persistence'>;
 }
-const ACTION_MODULES = import.meta.glob<{ HostActions: new (host: PacketSimHost) => PacketActions }>('./HostActions.ts', { eager: true });
-const ACTIONS = ACTION_MODULES['./HostActions.ts'];
-/** T031's HostActions when present; the loopback and worker hosts install it by default. */
-export const hostActions: ActionFactory | undefined = ACTIONS ? (host) => new ACTIONS.HostActions(host) : undefined;
+/** T031's HostActions loads with the core: its previews run the real CityActions, which the city screen's static
+ *  graph must not pull in (FH-07a; Vite bundles an eager glob as a static import). */
+const ACTION_MODULES = import.meta.glob<{ HostActions: new (host: PacketSimHost) => PacketActions }>('./HostActions.ts');
 
 export class LoopbackSimHost extends PacketSimHost {
   private loop: LoopbackCore | null = null;
@@ -536,8 +536,7 @@ export class LoopbackSimHost extends PacketSimHost {
   constructor(state: CityState, private opts: LoopbackSimHostOptions = {}) {
     const speed = opts.initialSpeed ?? 1;
     super('loopback', { t: 'ready', snapshot: serializeCity(state, { copy: true }), streams: {}, policy: { alerts: [], live: false },
-      clock: { day: state.day, frac: 0, speed, slow: 1, spd: SECONDS_PER_DAY[speed], live: true }, savedAt: 0, cmd: 0 },
-      { ...opts, actions: opts.actions ?? hostActions }, false);
+      clock: { day: state.day, frac: 0, speed, slow: 1, spd: SECONDS_PER_DAY[speed], live: true }, savedAt: 0, cmd: 0 }, opts, false);
     this.initial = this.closed ? null : state;
     if (this.closed) this.opts = {};
   }
@@ -545,8 +544,11 @@ export class LoopbackSimHost extends PacketSimHost {
     if (this.starting) return this.starting;
     this.starting = (async () => {
       try {
-        const [{ LoopbackCore }, { CityActions }] = await Promise.all([import('./loopbackCore'), import('../sim/actions')]);
+        const [{ LoopbackCore }, { CityActions }, actions] = await Promise.all([import('./loopbackCore'), import('../sim/actions'),
+          this.opts.actions ? undefined : ACTION_MODULES['./HostActions.ts']?.()]);
         this.useOptimisticActions(CityActions);
+        // before the core's Ready, so its adopt rebases the controller's reservations
+        if (actions && !this.closed) this.installActions((host) => new actions.HostActions(host));
         const flag = this.opts.flags?.simwasm;
         if (typeof window !== 'undefined' && flag != null && simWasmFlagSelects(flag, 'blur')) {
           try { await (await import('../wasm/browser')).initSimWasmBrowser({ flag }); }
