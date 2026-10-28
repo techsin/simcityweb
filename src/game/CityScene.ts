@@ -16,9 +16,10 @@ import { Overlay } from '../core/types';
 import type { CityObjectsViewApi, WorldViewApi } from '../render/contracts';
 import type { CityActionsApi } from '../sim/actions';
 import type { CityState } from '../sim/CityState';
-import type { Simulation, SimSystem } from '../sim/Simulation';
+import type { Simulation } from '../sim/Simulation';
 import type { RegionContext } from '../region/regionEffects';
-import { LocalSimHost } from '../worker/SimHost';
+import { LocalSimHost, type CityPersistence, type HostState, type SaveReason } from '../worker/SimHost';
+import type { ViewState } from '../worker/protocol';
 import { pageSimWasmFlag } from '../wasm/simWasm';
 import type { GameContext, QueryTarget, SoundOpts, UIEvents } from './context';
 import { FallbackObjectsView } from './fallback/FallbackObjectsView';
@@ -55,7 +56,6 @@ import { EmergencyBanner } from '../ui/EmergencyBanner';
 import { EmergenciesPanel } from '../ui/panels/EmergenciesPanel';
 import { Sirens, type SirenOut, type SirenSource } from '../audio/sirens';
 import type { EmergencyVehicles } from '../render/city/vehicles/EmergencyVehicles';
-import type { EmergencySystem } from '../sim/infra/emergency';
 import { DemographicsPanel } from '../ui/panels/DemographicsPanel';
 import { attachOverlays } from '../sim/infra/overlays';
 import { windVector } from '../sim/infra/wind';
@@ -66,8 +66,9 @@ export interface CitySceneOptions {
   container: HTMLElement;
   state: CityState;
   rctx?: RegionContext;
+  persistence?: CityPersistence;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
-  onSave: (state: CityState) => Promise<void>;
+  onSave: (state: HostState, reason?: SaveReason) => Promise<void>;
   /** initial settings (e.g. the app-level settings); keys given here win over the stored in-game prefs */
   settings?: Partial<GameSettings>;
   /** called whenever the player changes a setting in-game (the passed `settings` object is also updated in place) */
@@ -175,6 +176,8 @@ export class CityScene {
     this.host = new LocalSimHost(state, {
       rctx: opts.rctx, initialSpeed: opts.initialSpeed ?? (this.newCity ? 0 : undefined), errors: this.errors,
       flags: { simwasm: pageSimWasmFlag() },
+      signal: this.abort.signal,
+      persistence: opts.persistence,
     });
     this.degraded.actions = true;
 
@@ -294,7 +297,7 @@ export class CityScene {
     this.panels.register(new EmergenciesPanel(ctx));
     // WP5: demographics panel; derived data-view rasters follow the sim's layer updates
     this.panels.register(new DemographicsPanel(ctx));
-    this.offs.push(attachOverlays(this.sim));
+    this.offs.push(attachOverlays(this.host.sim));
     this.emgBanner = new EmergencyBanner(ctx, this.uiRoot);
     this.pause = new PauseMenu(ctx, this.uiRoot, { onSettings: () => this.panels.open('settings'), onHelp: () => this.panels.open('help') });
 
@@ -329,6 +332,10 @@ export class CityScene {
       this.sim.events.on('unlocked', () => this.topBar.setBadge('rewards', 1)),
       this.uiEvents.on('panel', ({ id, open }) => {
         if (id === 'rewards' && open) this.topBar.setBadge('rewards', 0);
+        this.view.panels = this.view.panels.filter((p) => p !== id);
+        if (open) this.view.panels.push(id);
+        if (id === 'info' && !open) this.view.focus = [];
+        this.host.setView(this.view);
       }),
     );
     if (typeof ResizeObserver !== 'undefined') {
@@ -449,10 +456,9 @@ export class CityScene {
     this.world = world;
     this.hookCameraSounds(world);
     // ---- objects
-    const traffic = () => this.sim.getSystem<SimSystem & { getSampleRoutes?: (max: number) => unknown }>('traffic');
     const getTrafficRoutes = (max: number) => {
       try {
-        return traffic()?.getSampleRoutes?.(max) ?? [];
+        return this.host.traffic.sampleRoutes(max);
       } catch {
         return [];
       }
@@ -461,8 +467,7 @@ export class CityScene {
     const hasScene = !(world as NullWorldView).isNull;
     if (hasScene && this.mods.CityObjectsView && force !== 'objects' && force !== 'all') {
       try {
-        const emergency = () => this.sim.getSystem<EmergencySystem>('emergency');
-        const getEmergency = { vehicles: () => emergency()?.vehicles() ?? [], incidents: () => emergency()?.incidents() ?? [], time: () => this.sim.simTime() };
+        const getEmergency = { vehicles: () => this.host.emergency.vehicles(), incidents: () => this.host.emergency.incidents(), time: () => this.host.simTime() };
         const octx = { scene: world.scene, camera: world.camera, renderer: world.renderer, canvas: this.canvas, getTrafficRoutes, getState: () => this.sim.state, quality: this.settings.quality, getEmergency };
         objects = new this.mods.CityObjectsView(state, events, octx);
       } catch (e) {
@@ -514,7 +519,7 @@ export class CityScene {
    * remember the view in the save (state.systemData.camera). A no-op until placeInitialCamera() ran on the real views:
    * the stand-in view's camera (map corner, 800 m) must not overwrite the saved / start view while the modules load.
    */
-  private storeCamera(): void {
+  storeCamera(): void {
     try {
       this.camMemory.store(this.host, this.world.controls, !!(this.world as NullWorldView).isNull);
     } catch {
@@ -850,17 +855,20 @@ export class CityScene {
     if (n > 0 && this.monthsSinceSave >= n) void this.save(true);
   }
 
-  async save(auto = false): Promise<void> {
+  async save(auto = false, reason: SaveReason = auto ? 'autosave' : 'manual'): Promise<void> {
+    if (this.disposed) return;
     if (this.saving) return this.saving;
     this.savePill.saving(auto);
     this.storeCamera();
     this.saving = (async () => {
       try {
-        await this.opts.onSave(this.sim.state);
+        await this.opts.onSave(this.host.state, reason);
+        if (this.disposed) return;
         this.monthsSinceSave = 0;
         this.savePill.done(true, auto ? 'Autosaved' : 'City saved');
         this.sound(auto ? 'autosave' : 'save', auto ? { volume: 0.8 } : undefined);
       } catch (e) {
+        if (this.disposed) return;
         this.savePill.done(false);
         this.sound('error');
         this.errors.report('Saving failed', e, { key: 'save' });
@@ -872,10 +880,12 @@ export class CityScene {
   }
 
   async exitToRegion(): Promise<void> {
+    if (this.disposed) return;
     this.host.setSpeed(0, 'exit');
     this.tools.select(null, { silent: true });
     this.panels.closeAll();
-    await this.save(false);
+    await this.save(false, 'exit');
+    if (this.disposed) return;
     let thumb: string | undefined;
     try {
       thumb = this.world.capture(512, 512, true) || undefined;
@@ -887,12 +897,16 @@ export class CityScene {
 
   /** the variant each data view was last shown with (-1 = its default) */
   private overlayVariants = new Map<Overlay, number>();
+  private view: ViewState = { overlay: Overlay.None, variant: -1, panels: [], focus: [] };
 
   private setOverlay(o: Overlay, variant?: number): void {
     if (variant !== undefined) this.overlayVariants.set(o, variant);
     const v = this.overlayVariants.get(o) ?? -1;
     this.ctx.overlay = o;
     this.ctx.overlayVariant = v;
+    this.view.overlay = o;
+    this.view.variant = v;
+    this.host.setView(this.view);
     try {
       this.world.setOverlay(o);
     } catch (e) {
@@ -943,6 +957,8 @@ export class CityScene {
     // silent: the inspect ping / camera jump that led here is the sound (the panel's 'open' swish doubled it)
     this.panels.open('info', opts);
     this.info.show(t);
+    this.view.focus = t.buildingId == null ? [] : [t.buildingId];
+    this.host.setView(this.view);
     try {
       this.objects.setSelected(t.buildingId ?? null);
     } catch {

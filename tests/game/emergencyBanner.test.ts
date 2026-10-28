@@ -22,8 +22,13 @@
  *  ignored instead of reaching the banner that moved there (SETTLE_MS from the move's first frame on screen); the
  *  tallest tab seen since the flyout opened bounds the stack (no re-dock with every tab switch).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Network } from '../../src/core/types';
+import { Emitter } from '../../src/core/events';
+import { pendingCount, sendDays } from '../../src/game/emergencyPolicy';
+import { LivePolicy } from '../../src/worker/SimCore';
+import { queryHost } from './queryHost';
+import type { Command } from '../../src/worker/SimHost';
 import type { CityState } from '../../src/sim/CityState';
 import { Simulation } from '../../src/sim/Simulation';
 import { emergencyOf } from '../../src/sim/infra/emergency';
@@ -34,7 +39,7 @@ import {
   supportText,
   type DockPlace,
 } from '../../src/ui/EmergencyBanner';
-import type { GameContext } from '../../src/game/context';
+import type { GameContext, UIEvents } from '../../src/game/context';
 import { newSim, newState, place, roadLine } from '../infra/cityGen';
 
 // ------------------------------------------------------------------------------------------------ minimal DOM
@@ -170,25 +175,37 @@ afterAll(() => {
 });
 
 // ------------------------------------------------------------------------------------------------ harness
-interface Harness { banner: EmergencyBanner; sim: Simulation; root: FakeEl; toasts: string[]; abort: AbortController; tick(): void }
+interface Harness { banner: EmergencyBanner; policy: LivePolicy; sim: Simulation; root: FakeEl; toasts: string[]; abort: AbortController; tick(): void }
+const lifetimes: AbortController[] = [];
+afterEach(() => { for (const ac of lifetimes.splice(0)) ac.abort('dispose'); });
 function harness(sim: Simulation): Harness {
   const root = new FakeEl('div');
   const toasts: string[] = [];
-  const handlers: (() => void)[] = [];
+  const ui = new Emitter<UIEvents>();
   const abort = new AbortController();
+  lifetimes.push(abort);
+  const policy = new LivePolicy(sim, abort.signal);
+  policy.attach();
   const ctx = {
     get state() { return sim.state; },
     sim,
     host: {
+      ...queryHost(sim),
       setSpeed: (speed: number) => { sim.speed = speed; },
-      act: (_op: 'dispatchBest', [id]: [number]) => {
-        const predicted = emergencyOf(sim)!.dispatchBest(sim, id);
+      policy: policy.view,
+      simTime: () => sim.simTime(),
+      act: (op: Command['op'], args: Command['args']) => {
+        const cmd = { op, args } as Command;
+        const predicted = cmd.op === 'dispatchBest' ? emergencyOf(sim)!.dispatchBest(sim, ...cmd.args) : undefined;
+        if (cmd.op === 'setSettings') policy.setSettings(cmd.args[0]);
+        if (cmd.op === 'dismissAlert') policy.dismiss(cmd.args[0]);
+        if (cmd.op === 'dispatchBest') policy.apply();
         return { seq: 1, exact: true, predicted, done: Promise.resolve(predicted) };
       },
     },
     root,
     settings: { emergencyUncovered: 'live', emergencyAlerts: 'major', emergencyLiveSlowmo: 3 },
-    ui: { on: (_k: string, f: () => void) => { handlers.push(f); return () => undefined; } },
+    ui,
     signal: abort.signal,
     panels: { open: () => undefined },
     sound: () => undefined,
@@ -197,7 +214,7 @@ function harness(sim: Simulation): Harness {
     showQuery: () => undefined,
   } as unknown as GameContext;
   const banner = new EmergencyBanner(ctx, root as unknown as HTMLElement);
-  return { banner, sim, root, toasts, abort, tick: () => { for (const f of handlers) f(); } };
+  return { banner, policy, sim, root, toasts, abort, tick: () => { policy.tick(); ui.emit('uiTick', undefined); } };
 }
 /** the banner elements of an incident (title, time, note, sub, buttons) */
 function parts(h: Harness, id: number): { el: FakeEl; title: string; time: string; note: string; sub: FakeEl; send: FakeEl; choose: FakeEl } {
@@ -221,6 +238,39 @@ function medTown(): { st: CityState; sim: Simulation } {
 }
 
 describe('EmergencyBanner on a live simulation', () => {
+  it('W0.4: renders host policy feedback once and forwards settings and dismissal commands until the city aborts', async () => {
+    const { st, sim } = medTown();
+    const h = harness(sim);
+    const ctx = (h.banner as unknown as { ctx: GameContext }).ctx;
+    const act = vi.spyOn(ctx.host, 'act'), speed = vi.spyOn(ctx.host, 'setSpeed');
+    const warning = vi.fn();
+    ctx.sound = warning;
+    sim.speed = 3;
+    const id = emergencyOf(sim)!.spawn(sim, 'medical', 50, 21, { buildingId: st.buildingAt(50, 21)!.id, major: true, severity: 4 });
+    await Promise.resolve(); // no UI tick: the owner's view publishes the settled burst
+    expect(h.banner.bannerIds).toContain(id);
+    expect(h.root.classList.contains('emg-live')).toBe(true);
+    for (let k = 0; k < 3; k++) h.tick();
+    expect(warning.mock.calls.filter(([name]) => name === 'warning')).toHaveLength(1);
+    ctx.settings.emergencyLiveSlowmo = 5;
+    ctx.ui.emit('settings', ctx.settings);
+    expect(act).toHaveBeenLastCalledWith('setSettings', [{ emergencyUncovered: 'live', emergencyAlerts: 'major', emergencyLiveSlowmo: 5 }], { tag: h.banner });
+    expect(sim.liveSlowdown).toBe(5);
+    parts(h, id).el.all().find((e) => e.classList.contains('emg-x'))!.click();
+    expect(act).toHaveBeenLastCalledWith('dismissAlert', [id], { tag: h.banner });
+    expect(h.banner.bannerIds).toEqual([]);
+    expect(h.root.classList.contains('emg-live')).toBe(false);
+    expect(h.toasts.filter((t) => t.startsWith('Emergency over'))).toHaveLength(1);
+    h.tick(); h.tick();
+    expect(h.toasts.filter((t) => t.startsWith('Emergency over'))).toHaveLength(1);
+    expect(speed).not.toHaveBeenCalled(); // speed and both slowdown writers now live in the core
+    const count = act.mock.calls.length;
+    h.abort.abort('dispose');
+    ctx.ui.emit('settings', ctx.settings);
+    expect(act).toHaveBeenCalledTimes(count);
+    act.mockRestore(); speed.mockRestore();
+  });
+
   it('F2: a second uncovered major call of the same kind 7 days later still gets a banner and LIVE mode', () => {
     const { st, sim } = medTown();
     const h = harness(sim);
@@ -406,7 +456,11 @@ describe('EmergencyBanner: final-fix round 2', () => {
     st.stats.population = 5000;
     return { st, sim, station };
   }
-  const pending = (h: Harness) => (h.banner as unknown as { pendingCount(p: string): number }).pendingCount('live');
+  const pending = (h: Harness) => {
+    const em = emergencyOf(h.sim)!;
+    return pendingCount('live', new Map(h.policy.view.alerts.map((a) => [a.id, a])), em.incidents(), new Set(), h.sim.simTime(),
+      (inc) => sendDays(inc, h.sim.simTime(), () => em.dispatchOptions(h.sim, inc.id))).count;
+  };
 
   it('EM-1: a burst whose later incident takes the free truck raises no banner, no LIVE mode, no ignored prompt', async () => {
     const { st, sim } = fireTown();
@@ -471,6 +525,7 @@ describe('EmergencyBanner: final-fix round 2', () => {
       } else {
         // (both trucks out behind the sim's back: the banner itself checks the live free counts)
         (em as unknown as { out: Map<number, number> }).out.set(station.id, 2);
+        (em as unknown as { stVer: number }).stVer++; // publish the fixture's synthetic fleet change
         h.tick();
         expect(sim.speed).toBe(3);
         expect(h.banner.liveActive).toBe(false);
@@ -749,7 +804,8 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     expect(s.shown.slice(0, idsB.length)).toEqual(idsB.slice(0, s.shown.length));
     // both of B's trucks out (behind the sim's back, as in the EM-1 test): street B's banners read "No free unit"
     (em as unknown as { out: Map<number, number> }).out.set(stationB.id, 2);
-    for (const b of (h.banner as unknown as { banners: Map<number, { optsDay: number }> }).banners.values()) b.optsDay = -1;
+    (em as unknown as { stVer: number }).stVer++;
+    for (const b of (h.banner as unknown as { banners: Map<number, { optsVersion: number }> }).banners.values()) b.optsVersion = -1;
     h.tick();
     h.tick();
     for (const id of idsB) expect(parts(h, id).send.textContent).toBe('No free unit');
@@ -1219,10 +1275,10 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     }
     expect(intersects(y, 34, panel.offsetTop, PANEL_HEAD_H)).toBe(false);
     expect(y + 34).toBeLessThanOrEqual(hud.offsetTop - TOOLBAR_GAP);
-    // No room above even for the pill: the same pill-only docking clears the title / tabs below them.
+    // No room above even for the pill: the same pill-only docking clears the whole panel below it.
     panel.offsetTop = 60;
     t.h.tick();
-    expect(parseFloat(String(s.top))).toBeGreaterThanOrEqual(panel.offsetTop + PANEL_HEAD_H);
+    expect(parseFloat(String(s.top))).toBeGreaterThanOrEqual(panel.offsetTop + panel.offsetHeight);
     expect(more.textContent).toBe('10 more emergencies need you — open Emergencies');
     // A dismissed prompt is still counted alongside the folded banners.
     parts(t.h, t.h.banner.bannerIds[0]).el.all().find((e) => e.classList.contains('emg-x'))!.click();

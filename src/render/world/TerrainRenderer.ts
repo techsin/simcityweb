@@ -16,7 +16,7 @@ import { sharedUniforms } from '../../assets/materials';
 import { getNoiseTexture, makeRampTexture } from './textures';
 import { seasonMix } from '../../assets/builders/nat_season';
 import { OVERLAYS, ZONE_COLORS, computeOverlayValues, overlayDef } from './overlays';
-import { overlayStale } from '../../sim/infra/overlays';
+import { markOverlayRendered, overlayReady, overlayStale } from '../../sim/infra/overlays';
 import { TERRAIN_FRAG_COLOR, TERRAIN_FRAG_PARS, TERRAIN_VERT_MAIN, TERRAIN_VERT_PARS } from './terrainShader';
 import { receiverSweepBox, type ShadowReceiver } from './Shadows';
 
@@ -616,7 +616,7 @@ export class TerrainRenderer {
     this.overlayVariant = variant;
     const u = this.uniforms;
     u.uZoneMode.value = o === Overlay.Zones ? 1 : 0;
-    u.uOverlayOn.value = o !== Overlay.None && o !== Overlay.Zones ? 1 : 0;
+    u.uOverlayOn.value = o !== Overlay.None && o !== Overlay.Zones && overlayReady(this.state, o, variant) ? 1 : 0;
     const def = OVERLAYS[o] ? overlayDef(o, variant) : OVERLAYS[Overlay.None];
     makeRampTexture(def.ramp, 128, this.rampTex);
     // per-building views draw whole cells; fields blend smoothly
@@ -709,12 +709,15 @@ export class TerrainRenderer {
       this.treeDirty = false;
       this.updateTrees(0, 0, this.N, this.N);
     }
-    // a derived raster that follows the buildings (Demographics) went stale: refresh (at most once a sim day)
-    if (!this.overlayDirty && this.uniforms.uOverlayOn.value > 0 && overlayStale(this.state, this.overlay, this.overlayVariant)) this.overlayDirty = true;
-    if (this.overlayDirty) {
+    // O9: no tint before subscribed data arrives; polling also catches first delivery while paused.
+    const on = this.overlay !== Overlay.None && this.overlay !== Overlay.Zones && overlayReady(this.state, this.overlay, this.overlayVariant);
+    if (on && (!this.uniforms.uOverlayOn.value || overlayStale(this.state, this.overlay, this.overlayVariant))) this.overlayDirty = true;
+    this.uniforms.uOverlayOn.value = on ? 1 : 0;
+    if (this.overlayDirty && on) {
       this.overlayDirty = false;
       computeOverlayValues(this.state, this.overlay, this.overlayData, this.overlayVariant);
       this.overlayTex.needsUpdate = true;
+      markOverlayRendered(this.state, this.overlay, this.overlayVariant);
     }
   }
 

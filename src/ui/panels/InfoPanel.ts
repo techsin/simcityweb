@@ -10,8 +10,7 @@
  *   Facility    the generic facilityReport: role, label / value rows, a bar when a ratio is set, status, hint, warnings
  *   Environment noise, air, water pollution, garbage (why it isn't collected), tap water, emergency response times
  *               ("Fire response: auto, 2.1 min to spare" / "manual only"), coverages per tier
- * The panel is rebuilt at most once per real second while its content signature changes (ultra speed changes it
- * several times a second).
+ * Reports refresh at most once per real second while their signature changes; the header follows the state at once.
  */
 import '../insight.css';
 import { DEV_TYPE_LABELS, DevType, Network, Zone, isRoad, zoneDensity, zoneFamily } from '../../core/types';
@@ -28,30 +27,18 @@ import { icon } from '../icons';
 import { money, num, pct, titleCase } from '../format';
 import { thumbs } from '../thumbs';
 import { DEV_NAMES } from '../TopBar';
-import { ACCESS_TEXT, emptyZoneStatus, frontCellOf, lotAccess, utilityReaches, zoneStatusLine, zoneStatusTone } from '../zoneStatus';
-import { demolishRisks } from '../../game/demolishRisk';
+import { ACCESS_TEXT, lotAccess, utilityReaches, zoneStatusLine, zoneStatusTone } from '../zoneStatus';
 import { confirmDialog } from '../Modals';
 import { loadPref, savePref } from '../../game/settings';
-import type { EconRuntime } from '../../sim/economy/runtime';
-import type { SimSystem } from '../../sim/Simulation';
-import { desirabilityBreakdown } from '../../sim/economy/desirability';
-import { landValueBreakdown } from '../../sim/economy/landValue';
-import { growthLimits } from '../../sim/economy/growth';
-import { conditionBreakdown } from '../../sim/economy/population';
-import { lotCell } from '../../sim/economy/factors';
-import { type NeedReport, cohortShares, needsExpectation, needsOf, tapWaterAt, waterRequired } from '../../sim/economy/demographics';
-import { facilityLoad } from '../../sim/infra/catchments';
 import { RUBBLE_CLEAR_DAYS, TAP_SAFE } from '../../sim/economy/tuning';
 import { getOrdinance, ordinanceAvailable } from '../../sim/economy/ordinances';
-import { facilityReport } from '../../sim/infra/facilities';
-import { roadCellReport } from '../../sim/infra/transportFacilities';
-import { EMG_FIRE, EMG_MEDICAL, EMG_POLICE, emergencyReachAt, emgNearSlack } from '../../sim/infra/overlays';
-import type { PollutionSystem } from '../../sim/infra/pollution';
-import type { CrimeSystem } from '../../sim/infra/crime';
+import { EMG_FIRE, EMG_MEDICAL, EMG_POLICE, emgNearSlack } from '../../sim/infra/overlays';
+import { watchFor, type WatchHandle } from '../../worker/SimHost';
+import type { InspectBuilding, InspectBuildingArgs, InspectCell, InspectCellArgs, InspectEnvironment } from '../../worker/inspect';
 import { NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
 import {
   type Bar, type Chip, type ModelRow, type RubbleCrews, RUIN_CHIP_FLAGS, RUINS_TEXT, conditionView, crimeBars, dedupeChips, desirabilityView, facilityView,
-  fireResponseHint, growthRows, headerIncome, headerMoney, mainProblem, landValueView, needRows, pyramid, responseText, rubbleProblem, signedPts, splitFacilityRows,
+  buildingReportView, fireResponseHint, growthRows, headerIncome, headerMoney, mainProblem, landValueView, responseText, rubbleProblem, signedPts, splitFacilityRows,
 } from '../inspectorModel';
 
 const FLAG_CHIPS: [number, string, Chip['cls'], Chip['topic']?][] = [
@@ -72,11 +59,6 @@ const FLAG_CHIPS: [number, string, Chip['cls'], Chip['topic']?][] = [
 ];
 
 const DIRS = ['east', 'south', 'west', 'north'];
-
-/** coverage tiers of the facilities that serve a resident need (the residents list names the nearest one) */
-const NEED_TIERS: Record<string, string[]> = {
-  elementary: ['elementary'], high: ['high'], college: ['college', 'library'], health: ['clinic', 'hospital'], play: ['play'], green: ['green'],
-};
 
 /**
  * The hero's thumbnail callback: it holds the icon box weakly and nothing of the panel. A request still queued after exit
@@ -109,17 +91,16 @@ function desirBar(v: number): HTMLElement {
 const SECTIONS = { why: false, residents: false, facility: true, environment: false } as const;
 type SectionId = keyof typeof SECTIONS;
 
-/** min real ms between two rebuilds of the same target */
-const REBUILD_MS = 1000;
-
 export class InfoPanel extends Panel {
   readonly id = 'info';
   readonly title = 'Inspector';
   override icon = 'query';
   override width = 380;
   private target: QueryTarget | null = null;
+  private actionRequest = 0;
   private sig = '';
-  private builtAt = 0;
+  private buildingWatch: WatchHandle<InspectBuilding | null, InspectBuildingArgs> | null = null;
+  private cellWatch: WatchHandle<InspectCell | null, InspectCellArgs> | null = null;
   /** the body's scroll offset, kept by its scroll events (final fixes A1: reading scrollTop before each rebuild forced a
    *  layout of everything the other panels had just changed in the same UI tick) */
   private scrollY = 0;
@@ -135,13 +116,17 @@ export class InfoPanel extends Panel {
   }
 
   show(t: QueryTarget): void {
+    this.actionRequest++;
     this.target = t;
     this.sig = '';
-    this.builtAt = 0;
     this.update();
   }
 
   override onClose(): void {
+    this.actionRequest++;
+    this.buildingWatch?.dispose();
+    this.cellWatch?.dispose();
+    this.buildingWatch = this.cellWatch = null;
     try {
       this.ctx.objects.setSelected(null);
     } catch {
@@ -155,26 +140,31 @@ export class InfoPanel extends Panel {
     const st = this.ctx.state;
     const b = t.buildingId != null ? st.buildings.get(t.buildingId) : undefined;
     const ci = st.idx(t.x, t.z);
-    // (empty lot: its growth status too — a neighbouring road can become powered while the game is paused)
-    let zsig = '';
-    if (!b) {
-      try {
-        const zs = emptyZoneStatus(st, t.x, t.z);
-        zsig = zs ? zs.blockers.map((x) => x.text).join('|') || 'ready' : '';
-      } catch {
-        zsig = '';
-      }
+    const sections = (Object.keys(this.open) as SectionId[]).filter((k) => this.open[k]);
+    let building: InspectBuilding | null | undefined, cell: InspectCell | null | undefined;
+    let version = 0;
+    if (b) {
+      this.cellWatch?.dispose(); this.cellWatch = null;
+      const args = { id: b.id, sections };
+      this.buildingWatch ??= watchFor(this.ctx.host, 'inspectBuilding', args, 'change', this.ctx.signal);
+      this.buildingWatch.setArgs(args);
+      building = this.buildingWatch.value;
+      version = this.buildingWatch.version;
+    } else {
+      this.buildingWatch?.dispose(); this.buildingWatch = null;
+      const args = { x: t.x, z: t.z, sections };
+      this.cellWatch ??= watchFor(this.ctx.host, 'inspectCell', args, 'change', this.ctx.signal);
+      this.cellWatch.setArgs(args);
+      cell = this.cellWatch.value;
+      version = this.cellWatch.version;
     }
     const openSig = (Object.keys(this.open) as SectionId[]).map((k) => (this.open[k] ? 1 : 0)).join('');
     // (the enacted ordinances too: rubble's line says whether the Demolition Crews are on it, UI-2)
-    const sig = b ? `b${b.id}:${b.pop}:${b.jobs}:${b.flags}:${Math.round(b.built * 20)}:${st.monthIndex}:${Math.floor(st.day / 5)}:${st.budget.ordinances.length}:${openSig}` : `c${t.x},${t.z}:${st.network[ci]}:${st.zone[ci]}:${st.building[ci]}:${st.powered[ci]}:${st.watered[ci]}:${Math.floor(st.day / 5)}:${zsig}:${openSig}`;
+    const sig = b ? `b${b.id}:${b.pop}:${b.jobs}:${b.flags}:${Math.round(b.built * 20)}:${st.budget.ordinances.length}:${openSig}:${version}` : `c${t.x},${t.z}:${st.network[ci]}:${st.zone[ci]}:${st.building[ci]}:${st.powered[ci]}:${st.watered[ci]}:${openSig}:${version}`;
     if (sig === this.sig) return;
-    // same target, new data: at most one rebuild per real second (breakdowns / needs / report are not free)
-    const now = performance.now();
+    // Reports are throttled by the host; the new target's header is always available immediately.
     const sameTarget = this.sig.split(':')[0] === sig.split(':')[0];
-    if (sameTarget && now - this.builtAt < REBUILD_MS) return;
     this.sig = sig;
-    this.builtAt = now;
     const scroll = this.scrollY;
     clear(this.body);
     if (t.buildingId != null && !b) {
@@ -183,8 +173,8 @@ export class InfoPanel extends Panel {
       return;
     }
     try {
-      if (b) this.renderBuilding(b);
-      else this.renderCell(t.x, t.z);
+      if (b) this.renderBuilding(b, building ?? undefined);
+      else this.renderCell(t.x, t.z, cell ?? undefined);
     } catch (e) {
       console.error('[ui] inspector failed', e);
       this.body.appendChild(h('div', { class: 'empty' }, 'Nothing to show here right now.'));
@@ -199,10 +189,6 @@ export class InfoPanel extends Panel {
   }
 
   // ------------------------------------------------------------------------------------------------ helpers
-  private rt(): EconRuntime | null {
-    return this.ctx.sim.getSystem<SimSystem & { rt?: EconRuntime }>('economy.population')?.rt ?? null;
-  }
-
   /** the ordinance that clears rubble, as the rubble line names it (null without one) */
   private rubbleCrews(): RubbleCrews | null {
     const o = getOrdinance('rubble_cleanup');
@@ -254,7 +240,6 @@ export class InfoPanel extends Panel {
       savePref('inspector.sec.' + id, this.open[id]);
       this.ctx.sound(this.open[id] ? 'toggleOn' : 'toggleOff');
       this.sig = '';
-      this.builtAt = 0;
       this.update();
     }, { signal: this.ctx.signal });
     const box = h('div', { class: 'ins-sec' + (open ? ' open' : '') }, head);
@@ -325,14 +310,10 @@ export class InfoPanel extends Panel {
   }
 
   // ------------------------------------------------------------------------------------------------ building
-  private renderBuilding(b: Building): void {
+  private renderBuilding(b: Building, report: InspectBuilding | undefined): void {
     const st = this.ctx.state;
-    const sim = this.ctx.sim;
     const def = getDef(b.def);
-    const N = st.size;
     const i = st.idx(b.x, b.z);
-    // (where the growth and occupancy rules evaluate the building: the middle of its road-side row, WP6a lotCell)
-    const ci = lotCell(b, N);
     const growable = !def || def.category === 'growable';
     const color = def ? CATEGORY_COLORS[def.category] ?? (zoneFamily(st.zone[i] as Zone) === 'R' ? '#3cc76a' : zoneFamily(st.zone[i] as Zone) === 'C' ? '#3d8bff' : '#f0b429') : '#9aa7b6';
     const dev = def?.devType;
@@ -344,7 +325,8 @@ export class InfoPanel extends Panel {
     this.body.appendChild(this.hero(def?.name ?? titleCase(b.def), `${wealth}<span>${escapeHtml(catLabel)}</span>${def?.stage ? `<span class="faint">· stage ${def.stage}</span>` : ''}`, def ? defIcon(def) : 'resHigh', color, def?.model, def?.footprint));
 
     // ---- facility report (plopped): its warnings lead the main problem and replace duplicate chips
-    const rep = !growable ? facilityView(safeCall(() => facilityReport(sim, b.id), null)) : null;
+    const model = report ? buildingReportView(report) : null;
+    const rep = model?.facility ?? null;
     const warnings = rep?.warnings ?? [];
     // a building in ruins (BF.Burnt: burnt down, or flattened by a disaster) shows nothing that reads as a live building
     // (final fixes r3: a ruined landmark read "Powered", "Jobs filled 0 / 40" and its catalog income in green)
@@ -359,14 +341,14 @@ export class InfoPanel extends Panel {
     const isPlant = !!def && (def.powerOut ?? 0) > 0;
     const usesPower = !ruin && (growable || (!!def && !isPlant && (def.category !== 'park' || (def.powerUse ?? 0) > 0)));
     if (usesPower) chips.push({ text: icon('power', 11) + (powered ? 'Powered' : 'No power'), cls: powered ? 'good' : 'bad', topic: 'power' });
-    const needW = !ruin && safeCall(() => waterRequired(st, b), false);
+    const needW = !ruin && !!report?.waterRequired;
     // (a facility that uses no water — a wind turbine, a plaza — shows no Water chip on a piped cell: routed 15)
     if (watered && !ruin && (growable || needW)) chips.push({ text: icon('water', 11) + 'Water', cls: 'good', topic: 'water' });
     else if (needW) chips.push({ text: icon('water', 11) + 'No water', cls: 'warn', topic: 'water', title: 'This building needs piped water' });
     if (!ruin && (b.built < 1 || b.flags & BF.Constructing)) chips.push({ text: `Under construction ${Math.round(b.built * 100)}%`, cls: 'info' });
     for (const [bit, label, cls, topic] of FLAG_CHIPS) if (b.flags & bit && (!ruin || bit & RUIN_CHIP_FLAGS)) chips.push({ text: label, cls, topic });
     if (b.flags & BF.NeedsUnmet && !ruin) {
-      const exp = safeCall(() => needsExpectation(st), 1);
+      const exp = report?.needsExpectation ?? 1;
       chips.push({ text: 'Needs unmet', cls: exp > 0.01 ? 'warn' : 'info', title: exp > 0.01 ? 'Some residents lack a school, clinic, playground… (see Residents)' : 'Residents of a small town do not mind yet — they will as the city grows' });
     }
     // (rubble: the main problem below leads with "In ruins" and its fix, the chip would only repeat it)
@@ -395,42 +377,44 @@ export class InfoPanel extends Panel {
 
     // ---- main problem (breakdowns are computed once and reused by the Why? section). A lot in rubble (final fixes UI-2):
     // its fix — growth never rebuilds on rubble — and no condition forecast (nobody lives in it)
-    const rt = this.rt();
-    const cond = growable && !rubble ? conditionView(safeCall(() => conditionBreakdown(st, b), null)) : null;
-    const des = growable && dev !== undefined ? desirabilityView(safeCall(() => desirabilityBreakdown(st, rt as EconRuntime, dev, ci), null)) : null;
+    if (!report || !model) {
+      this.body.appendChild(h('div', { class: 'ins-empty' }, 'Loading…'));
+      this.actions(b, growable);
+      return;
+    }
+    const cond = model.condition, des = model.desirability;
     // desirability is what limits the building's stage (the Why? section's growth rows say the same)
-    const gl = growable && dev !== undefined ? safeCall(() => growthLimits(st, ci, dev), null) : null;
+    const gl = report.growth;
     const stage = def?.stage ?? 1;
     const desLimited = !!gl && !gl.rejected && gl.desStage <= stage && gl.desStage < Math.min(gl.popStage, gl.zoneStage);
     this.body.appendChild(this.problem(rubble ? rubbleProblem(this.rubbleCrews()) : mainProblem({ warnings, condition: cond, desirability: des, abandoned: !!(b.flags & BF.Abandoned), desLimited })) ?? h('span'));
 
     // ---- key rows (at most 6)
     const kv = this.kv();
-    const traffic = (this.ctx.mods.infra?.getTraffic?.(sim) ?? sim.getSystem('traffic')) as any;
     if (growable) {
-      kv.add('Land value', 'landValue', pct(st.landValue[ci]));
-      if (dev !== undefined && st.desirability[dev]) {
-        const dv = st.desirability[dev][ci];
+      kv.add('Land value', 'landValue', pct(report.landValue));
+      if (dev !== undefined && report.desirabilityValue !== null) {
+        const dv = report.desirabilityValue;
         kv.add(`Desirability (${DEV_TYPE_LABELS[dev]})`, 'desire', h('span', { style: 'display:flex;align-items:center;gap:8px;justify-content:flex-end' }, desirBar(dv), h('span', null, signedPts(dv))));
       }
       // (rubble: no commute, job access or customers — nobody lives or works in it; the lot's land value and
       // desirability above say how well it would rebuild)
-      const commute = rubble ? null : this.commuteText(b, traffic, ci);
+      const commute = rubble ? null : this.commuteText(report);
       if (commute) kv.add('Commute', 'clock', commute);
       if (!rubble) try {
         if (fam === 'R') {
-          const a = traffic?.workerAccess?.(b.id) ?? -1;
+          const a = report.workerAccess;
           if (a >= 0) kv.add('Job access', 'briefcase', this.lvl(a));
         } else if (b.capacity > 0) {
-          const f = traffic?.jobFill?.(b.id) ?? -1;
+          const f = report.jobFill;
           if (f >= 0) kv.add('Worker supply', 'people', this.lvl(f));
         }
         if (fam === 'C') {
-          const c = traffic?.customers?.(b.id) ?? 0;
+          const c = report.customers;
           if (c > 0) kv.add('Customers', 'people', `${num(c)}/day`);
         }
         if (fam === 'I') {
-          const fr = traffic?.freightAccess?.(b.id) ?? -1;
+          const fr = report.freightAccess;
           if (fr >= 0) kv.add('Freight access', 'train', this.lvl(fr));
         }
       } catch {
@@ -438,7 +422,7 @@ export class InfoPanel extends Panel {
       }
       if (!rubble) {
         const tgt = cond ? ` → ${pct(Math.max(0, Math.min(1, cond.target)))}` : '';
-        kv.add('Condition', 'heart', `${pct(b.health ?? 1)}${tgt}`, cond ? 'Current condition → the level it is heading for' : undefined);
+        kv.add('Condition', 'heart', `${pct(report.building.health ?? 1)}${tgt}`, cond ? 'Current condition → the level it is heading for' : undefined);
       }
     } else if (def) {
       // the facility report's actual monthly upkeep (a school, clinic, station or park also pays running costs per person
@@ -450,7 +434,8 @@ export class InfoPanel extends Panel {
       const inc = headerIncome(def, split?.income, ruin);
       if (inc) kv.add(inc.label, 'budget', `<span class="${inc.tone}">${escapeHtml(inc.value)}</span>`, inc.hint, inc.hint);
     }
-    if (kv.count() < 6) kv.add('Age', 'calendar', b.age >= 360 ? `${Math.floor(b.age / 360)} yr ${Math.floor((b.age % 360) / 30)} mo` : `${Math.floor(b.age / 30)} months`);
+    const age = report.building.age;
+    if (kv.count() < 6) kv.add('Age', 'calendar', age >= 360 ? `${Math.floor(age / 360)} yr ${Math.floor((age % 360) / 30)} mo` : `${Math.floor(age / 30)} months`);
     this.body.appendChild(kv.el);
 
     // ---- sections
@@ -466,39 +451,37 @@ export class InfoPanel extends Panel {
     if (growable) {
       // (rubble has no condition: the summary names what the section shows)
       const whySum = [des ? 'desirability' : '', cond || !rubble ? 'condition' : '', 'growth'].filter(Boolean).join(' · ');
-      this.body.appendChild(this.section('why', 'Why?', 'help', whySum, () => this.whyBuilding(b, dev, ci, des, cond, rt)));
+      this.body.appendChild(this.section('why', 'Why?', 'help', whySum, () => this.whyBuilding(b, report, des, cond)));
     }
     if (isRes && b.pop > 0) {
-      const needs = safeCall(() => needsOf(st, b), []);
+      const needs = report.needs;
       const unmet = needs.filter((n) => !n.met).length;
-      this.body.appendChild(this.section('residents', 'Residents', 'people', needs.length ? (unmet ? `${unmet} need${unmet > 1 ? 's' : ''} unmet` : 'all needs met') : `${num(b.pop)} people`, () => this.residents(b, needs)));
+      this.body.appendChild(this.section('residents', 'Residents', 'people', needs.length ? (unmet ? `${unmet} need${unmet > 1 ? 's' : ''} unmet` : 'all needs met') : `${num(b.pop)} people`, () => this.residents(model)));
     }
-    this.body.appendChild(this.section('environment', 'Environment', 'leaf', '', () => this.environment(ci, b, fam)));
+    this.body.appendChild(this.section('environment', 'Environment', 'leaf', '', () => report.environment ? this.environment(report.environment, b, fam) : []));
 
     this.actions(b, growable);
   }
 
-  private commuteText(b: Building, traffic: any, ci: number): string | null {
-    const st = this.ctx.state;
+  private commuteText(report: InspectBuilding): string | null {
     let commute: string | null = null;
     try {
-      const r = traffic?.routeInfo?.(b.id);
+      const r = report.route;
       if (typeof r === 'number') commute = `${Math.round(r)} min`;
       else if (r && typeof r === 'object') {
-        const m = r.commuteMin ?? r.minutes ?? r.time ?? r.commute ?? r.avgMinutes;
-        const mode = r.mode ?? r.via;
-        const none = mode === 'none' || r.reachable === false || r.ok === false;
+        const m = r.commuteMin;
+        const mode = r.mode;
+        const none = mode === 'none';
         commute = none ? '<span class="neg">No route to work</span>' : [typeof m === 'number' && m > 0 ? `${Math.round(m)} min` : null, mode ? `by ${String(mode)}` : null].filter(Boolean).join(' · ');
       }
     } catch {
       commute = null;
     }
-    if (!commute && st.commute[ci] > 0) commute = `${Math.round(st.commute[ci])} min`;
+    if (!commute && report.commute > 0) commute = `${Math.round(report.commute)} min`;
     return commute || null;
   }
 
-  private whyBuilding(b: Building, dev: number | undefined, ci: number, des: ReturnType<typeof desirabilityView>, cond: ReturnType<typeof conditionView>, rt: EconRuntime | null): (HTMLElement | null)[] {
-    const st = this.ctx.state;
+  private whyBuilding(b: Building, report: InspectBuilding, des: ReturnType<typeof desirabilityView>, cond: ReturnType<typeof conditionView>): (HTMLElement | null)[] {
     const out: (HTMLElement | null)[] = [];
     if (des) out.push(this.bars(`Desirability ${signedPts(des.value)} — what drives it`, des.bars, 'pts', des.notes));
     if (cond) {
@@ -506,58 +489,21 @@ export class InfoPanel extends Panel {
       if (box && cond.abandon) box.appendChild(h('div', { class: 'ins-abandon', html: icon('alert', 13) + `<span>${escapeHtml(cond.abandon)} — fix the red factors above</span>` }));
       out.push(box);
     }
-    if (dev !== undefined) {
-      const gl = safeCall(() => growthLimits(st, ci, dev), null);
+    if (report.growth) {
+      const gl = report.growth;
       const def = getDef(b.def);
       out.push(this.rows(growthRows(gl, def?.stage)));
     }
-    const lv = landValueView(safeCall(() => landValueBreakdown(st, rt as EconRuntime, ci), []));
-    if (lv.bars.length) out.push(this.bars(`Land value ${pct(st.landValue[ci])} — factors`, lv.bars, 'pts', lv.note));
-    const cr = crimeBars(safeCall(() => this.ctx.sim.getSystem<CrimeSystem>('crime')?.termsOf?.(b.id) ?? null, null));
+    const lv = landValueView(report.landValueTerms);
+    if (lv.bars.length) out.push(this.bars(`Land value ${pct(report.landValue)} — factors`, lv.bars, 'pts', lv.note));
+    const cr = crimeBars(report.crime);
     if (cr && cr.total > 0.02) out.push(this.bars(`Crime ${pct(cr.total)} — causes (police removes ${pct(cr.police)})`, cr.bars, 'pts', cr.multiplier > 1.01 ? `×${cr.multiplier.toFixed(2)} from ordinances and the justice system` : undefined, true));
     return out;
   }
 
-  /**
-   * the facility serving a need: NeedReport.providerId when set, else the nearest standing facility of the need's tier
-   * whose reach covers the home ("Elementary School · 92% full")
-   */
-  private providerFor(b: Building): (n: NeedReport) => string | undefined {
-    const rt = this.rt();
-    const sim = this.ctx.sim;
-    const cache = new Map<string, string | undefined>();
-    const cx = b.x + b.w / 2, cz = b.z + b.d / 2;
-    const label = (f: Building) => {
-      const name = getDef(f.def)?.name ?? titleCase(f.def);
-      const L = safeCall(() => facilityLoad(sim, f.id), null);
-      return L && L.capacity > 0 && Number.isFinite(L.capacity) ? `${name} · ${pct(L.utilization)} full` : name;
-    };
-    return (n) => {
-      if (n.providerId !== undefined) {
-        const f = this.ctx.state.buildings.get(n.providerId);
-        return f ? label(f) : undefined;
-      }
-      const tiers = NEED_TIERS[n.kind];
-      if (!tiers || !rt) return undefined;
-      if (cache.has(n.kind)) return cache.get(n.kind);
-      rt.ensureLists();
-      let best: Building | null = null, bd = Infinity;
-      for (const f of rt.plopped) {
-        if (f.flags & BF.Burnt || f.built < 1) continue;
-        const cov = getDef(f.def)?.coverage;
-        if (!cov?.tier || !tiers.includes(cov.tier)) continue;
-        const d = Math.hypot(f.x + f.w / 2 - cx, f.z + f.d / 2 - cz);
-        if (d <= cov.radius && d < bd) { bd = d; best = f; }
-      }
-      const t = best ? label(best) : undefined;
-      cache.set(n.kind, t);
-      return t;
-    };
-  }
-
-  private residents(b: Building, needs: ReturnType<typeof needsOf>): (HTMLElement | null)[] {
+  private residents(model: ReturnType<typeof buildingReportView>): (HTMLElement | null)[] {
     const out: (HTMLElement | null)[] = [];
-    const rows = needRows(needs, this.providerFor(b));
+    const rows = model.needs;
     if (rows.length) {
       const list = h('div', { class: 'ins-needs' });
       for (const r of rows.slice(0, 10)) {
@@ -570,7 +516,7 @@ export class InfoPanel extends Panel {
       }
       out.push(list);
     } else out.push(h('div', { class: 'ins-empty' }, 'Needs are assessed once the city has services.'));
-    const pyr = pyramid(cohortShares(b, new Float32Array(5)), b.pop);
+    const pyr = model.pyramid;
     if (pyr.length) {
       const max = Math.max(0.01, ...pyr.map((p) => p.share));
       const box = h('div', { class: 'ins-pyr' }, h('div', { class: 'ins-sub' }, 'Age groups'));
@@ -584,35 +530,33 @@ export class InfoPanel extends Panel {
 
   /** noise, air, water, garbage, tap water, response times, coverages at a cell (building-aware when b is set; a back
    *  lot's coverages are read at the lot cell on its road front, covCell) */
-  private environment(ci: number, b: Building | null, fam: 'R' | 'C' | 'I' | null, covCell = ci): (HTMLElement | null)[] {
-    const st = this.ctx.state;
-    const sim = this.ctx.sim;
+  private environment(report: InspectEnvironment, b: Building | null, fam: 'R' | 'C' | 'I' | null): (HTMLElement | null)[] {
     const kv = this.kv();
-    const nz = st.noise[ci], air = st.airPollution[ci], wp = st.waterPollution[ci];
+    const nz = report.noise, air = report.air, wp = report.waterPollution;
     kv.add('Noise', 'noise', `<span class="${nz > NOISY_THRESHOLD ? 'neg' : nz > 0.3 ? 'warn' : ''}">${pct(nz)}</span>`, `Homes above ${pct(NOISY_THRESHOLD)} can't sleep`);
     kv.add('Air pollution', 'smog', `<span class="${air > POLLUTED_THRESHOLD ? 'neg' : air > 0.25 ? 'warn' : ''}">${pct(air)}</span>`);
     if (wp > 0.01) kv.add('Water pollution', 'water', pct(wp));
-    if (st.soil[ci] > 0.02) kv.add('Soil contamination', 'terrain', pct(st.soil[ci]));
+    if (report.soil > 0.02) kv.add('Soil contamination', 'terrain', pct(report.soil));
     // garbage: level + why it is not collected
-    const gi = b ? safeCall(() => sim.getSystem<PollutionSystem>('pollution')?.garbageInfo?.(b.id) ?? null, null) : null;
+    const gi = report.garbageInfo;
     if (gi) {
       const why = gi.collected ? '<span class="pos">collected</span>' : gi.reason === 'noRoad' ? '<span class="neg">no road for the trucks</span>' : gi.reason === 'range' ? '<span class="neg">out of truck range</span>' : gi.reason === 'capacity' ? '<span class="neg">dumps are full</span>' : '<span class="warn">not collected</span>';
       kv.add('Garbage', 'garbage', `${why}${gi.level > 0.02 ? ` · pile ${pct(gi.level)}` : ''}`);
-    } else if (st.garbage[ci] > 0.02) kv.add('Garbage', 'garbage', `pile ${pct(st.garbage[ci])}`);
+    } else if (report.garbage > 0.02) kv.add('Garbage', 'garbage', `pile ${pct(report.garbage)}`);
     // tap water (served cells)
-    if (st.watered[ci] || (b && b.flags & BF.Watered)) {
-      const q = safeCall(() => tapWaterAt(sim, st, ci), 1);
+    if (report.tapWater !== null) {
+      const q = report.tapWater;
       kv.add('Tap water', 'water', q >= TAP_SAFE ? `<span class="${q >= 0.85 ? 'pos' : 'warn'}">${pct(q)} · safe</span>` : `<span class="neg">${pct(q)} · unsafe tap water</span>`);
     }
     // emergency response (auto-dispatch reach): the Emergency data view's value — a building's best footprint cell and
     // road access, empty land the nearest road / lot's reach ("a lot here: …", "no road nearby")
     const resp: [string, number, string, string][] = [['Fire response', EMG_FIRE, 'fire', 'no fire station'], ['Police response', EMG_POLICE, 'police', 'no police station'], ['Ambulance', EMG_MEDICAL, 'health', 'no clinic or hospital']];
-    for (const [label, v, ic, none] of resp) {
-      const r = safeCall(() => emergencyReachAt(st, ci, v), null);
+    for (const [index, [label, v, ic, none]] of resp.entries()) {
+      const r = report.responses[index];
       // (fire, final fixes P2: beyond the amber band a fire burns down before a truck can arrive — the Emergency · Fire
       // view's hover says the same; UI-3: an industrial accident there is still saved by a truck sent in time, the row's
       // note. Its hint takes that clause from the hover's sentence too, number and unit included: fireResponseHint)
-      const fire = v === EMG_FIRE ? { near: safeCall(() => emgNearSlack(EMG_FIRE), -3) } : undefined;
+      const fire = v === EMG_FIRE ? { near: emgNearSlack(EMG_FIRE) } : undefined;
       const t = responseText(r ? { slackMin: r.slack, covered: r.slack >= 0, hasRoad: r.why !== 'noRoad', land: !b } : null, none, fire);
       const hint = fire ? fireResponseHint() : 'Auto-dispatch reach: covered incidents become statistics; beyond it major emergencies wait for your dispatch';
       if (t) kv.add(label, ic, `<span class="${t.tone}">${escapeHtml(t.text)}</span>`, hint, t.note);
@@ -620,28 +564,25 @@ export class InfoPanel extends Panel {
     const out: (HTMLElement | null)[] = [kv.el];
     // coverages
     const cov = this.kv();
-    const k = covCell;
+    const k = report.coverage;
     const c = (l: string, ic: string, v: number) => cov.add(l, ic, this.lvl(v));
-    c('Police patrols', 'police', st.policeCov[k]);
-    c('Fire prevention', 'fire', st.fireCov[k]);
-    c('Care access', 'health', st.healthCov[k]);
+    c('Police patrols', 'police', k.police);
+    c('Fire prevention', 'fire', k.fire);
+    c('Care access', 'health', k.health);
     if (fam === 'R' || fam === null) {
-      c('Elementary school', 'education', st.eduElemCov[k]);
-      c('High school', 'education', st.eduHighCov[k]);
-      c('University', 'education', st.eduCollegeCov[k]);
-      c('Play & sports', 'park', st.playCov[k]);
-      c('Parks & gardens', 'trees', st.greenCov[k]);
+      c('Elementary school', 'education', k.elementary);
+      c('High school', 'education', k.high);
+      c('University', 'education', k.college);
+      c('Play & sports', 'park', k.play);
+      c('Parks & gardens', 'trees', k.green);
     }
-    c('Transit', 'bus', st.transitCov[k]);
-    if (fam !== 'I') c('Shops in reach', 'com', st.shopAccess[k]);
-    if (fam === 'C' && st.parking[k] > 0.01) cov.add('Parking pressure', 'parking', `<span class="${st.parking[k] > 0.6 ? 'neg' : st.parking[k] > 0.3 ? 'warn' : ''}">${pct(st.parking[k])}</span>`);
-    out.push(h('div', { class: 'ins-sub' }, k !== ci ? 'Coverage (at its road front)' : 'Coverage'), cov.el);
+    c('Transit', 'bus', k.transit);
+    if (fam !== 'I') c('Shops in reach', 'com', k.shops);
+    if (fam === 'C' && k.parking > 0.01) cov.add('Parking pressure', 'parking', `<span class="${k.parking > 0.6 ? 'neg' : k.parking > 0.3 ? 'warn' : ''}">${pct(k.parking)}</span>`);
+    out.push(h('div', { class: 'ins-sub' }, k.front ? 'Coverage (at its road front)' : 'Coverage'), cov.el);
     // utility grids
     try {
-      const util = this.ctx.mods.infra?.getUtilities?.(sim);
-      const x = ci % st.size, z = Math.floor(ci / st.size);
-      const g = util?.gridInfo?.(sim, x, z);
-      const w = util?.waterInfo?.(sim, x, z);
+      const g = report.grid, w = report.water;
       if (g || w) {
         const u = this.kv();
         if (g) u.add('Power grid', 'power', `${num(g.demand)} / ${num(g.supply)} MW${g.shortage ? ' <span class="chip bad">Shortage</span>' : ''}`);
@@ -669,7 +610,6 @@ export class InfoPanel extends Panel {
         this.ctx.host.act('setHistoric', [b.id, !hist]);
         this.ctx.sound(hist ? 'toggleOff' : 'toggleOn');
         this.sig = '';
-        this.builtAt = 0;
         this.update();
       }, { signal: this.ctx.signal });
       acts.appendChild(hb);
@@ -681,7 +621,10 @@ export class InfoPanel extends Panel {
       cost = 0;
     }
     const demo = h('button', { class: 'btn sm danger', html: icon('bulldoze', 13) + `<span>${rubble ? 'Clear rubble' : 'Demolish'}${cost ? ` · ${cost < 0 ? '+' : ''}${money(Math.abs(cost))}` : ''}</span>` });
-    demo.addEventListener('click', () => {
+    demo.addEventListener('click', async () => {
+      const request = ++this.actionRequest;
+      const current = () => !this.ctx.signal.aborted && request === this.actionRequest && this.target?.buildingId === b.id;
+      (demo as HTMLButtonElement).disabled = true;
       const rect = { x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d };
       const doIt = () => {
         if (this.ctx.signal.aborted) return;
@@ -698,25 +641,24 @@ export class InfoPanel extends Panel {
         });
       };
       // last power plant / water source, landmark / reward, or > §20k: confirm first
-      let risk = null;
       try {
-        risk = demolishRisks(this.ctx.state, rect, cost, { sandbox: this.ctx.sandbox() });
+        const risk = await this.ctx.host.query('demolishRisks', { rect, cost, sandbox: this.ctx.sandbox() });
+        if (!current()) return;
+        const yes = !risk || await confirmDialog(this.ctx, { title: risk.title, message: 'This demolition has consequences:', items: risk.items, confirm: 'Demolish', danger: true });
+        if (yes && current() && this.ctx.state.buildings.has(b.id)) doIt();
       } catch {
-        risk = null;
+        if (current()) this.ctx.toast('Could not check demolition consequences', 'error');
+      } finally {
+        if (current()) (demo as HTMLButtonElement).disabled = false;
       }
-      if (!risk) return doIt();
-      void confirmDialog(this.ctx, { title: risk.title, message: 'This demolition has consequences:', items: risk.items, confirm: 'Demolish', danger: true }).then((yes) => {
-        if (yes && this.ctx.state.buildings.has(b.id)) doIt();
-      });
     }, { signal: this.ctx.signal });
     acts.appendChild(demo);
     this.body.appendChild(acts);
   }
 
   // ------------------------------------------------------------------------------------------------ cells
-  private renderCell(x: number, z: number): void {
+  private renderCell(x: number, z: number, report: InspectCell | undefined): void {
     const st = this.ctx.state;
-    const sim = this.ctx.sim;
     const i = st.idx(x, z);
     const n = st.network[i] as Network;
     const zone = st.zone[i] as Zone;
@@ -726,6 +668,7 @@ export class InfoPanel extends Panel {
       this.titleEl.textContent = label;
       const bridge = st.netFlags[i] & 1 ? ' · bridge' : st.netFlags[i] & 2 ? ' · tunnel' : '';
       this.body.appendChild(this.hero(label, `<span>Tile ${x}, ${z}${bridge}</span>`, n === Network.Rail ? 'rail' : n === Network.Highway ? 'highway' : n === Network.Avenue ? 'avenue' : 'road', '#9fb3c8'));
+      if (!report) { this.body.appendChild(h('div', { class: 'ins-empty' }, 'Loading…')); return; }
       if (isRoad(n)) {
         const cong = st.congestion[i];
         this.body.appendChild(h('div', { class: 'cap-bar' },
@@ -734,13 +677,13 @@ export class InfoPanel extends Panel {
         if (n === Network.OneWay) kv.add('Direction', 'oneway', `Heading ${DIRS[(st.netFlags[i] >> 2) & 3]}`);
       }
       // traffic, trucks, bus riders, interchange load (WP7b's road report, rendered generically)
-      const lines = safeCall(() => roadCellReport(sim, i), []);
+      const lines = report.road;
       this.body.appendChild(kv.el);
       if (lines.length) this.body.appendChild(this.rows(facilityView({ title: label, role: '', lines, warnings: [] })!.rows) ?? h('span'));
       else if (isRoad(n)) kv.add('Traffic volume', 'car', `${num(st.traffic[i])} trips/day`);
       const env = this.kv();
-      env.add('Noise', 'noise', pct(st.noise[i]));
-      env.add('Air pollution', 'smog', pct(st.airPollution[i]));
+      env.add('Noise', 'noise', pct(report.noise));
+      env.add('Air pollution', 'smog', pct(report.air));
       this.body.appendChild(env.el);
       return;
     }
@@ -766,8 +709,9 @@ export class InfoPanel extends Panel {
     if (st.powerLines[i]) flags.appendChild(h('span', { class: 'chip info', html: icon('pylon', 11) + 'Power line' }));
     if (st.trees[i]) flags.appendChild(h('span', { class: 'chip good', html: icon('trees', 11) + 'Trees' }));
     if (flags.children.length) this.body.appendChild(flags);
+    if (!report) { this.body.appendChild(h('div', { class: 'ins-empty' }, 'Loading…')); return; }
     // empty zoned lot: why it is (not) growing
-    const zs = emptyZoneStatus(st, x, z);
+    const zs = report.zoneStatus;
     if (zs) {
       const tone = zoneStatusTone(zs);
       const box = h('div', { class: 'zone-status ' + tone }, h('div', { class: 'zs-h', html: icon(zs.ready ? 'check' : 'alert', 13) + `<span>${escapeHtml(zoneStatusLine(zs))}</span>` }));
@@ -776,48 +720,34 @@ export class InfoPanel extends Panel {
     }
     const kv = this.kv();
     if (zone === Zone.Landfill) {
-      const lf = safeCall(() => sim.getSystem<PollutionSystem>('pollution')?.landfillInfo?.(x, z) ?? null, null);
+      const lf = report.landfill;
       if (lf) {
         kv.add('Landfill fill', 'landfill', `<span class="${lf.fill > 0.8 ? 'neg' : lf.fill > 0.5 ? 'warn' : 'pos'}">${pct(lf.fill)}</span> of ${num(lf.cells)} tiles`);
         kv.add('Takes', 'garbage', `${num(lf.usedT)} / ${num(lf.capacityT)} t a month`);
         if (!lf.road) kv.add('Trucks', 'road', '<span class="neg">no road on its edge — trucks can’t reach it</span>');
-      } else kv.add('Landfill fill', 'landfill', pct(st.landfillFill[i]));
+      } else kv.add('Landfill fill', 'landfill', pct(report.landfillFill));
     }
-    kv.add('Land value', 'landValue', pct(st.landValue[i]));
+    kv.add('Land value', 'landValue', pct(report.landValue));
     const devs = devsForZone(zone);
     for (const d of devs.slice(0, 5)) {
-      const dv = st.desirability[d]?.[i] ?? 0;
+      const dv = report.desirabilityValues.find((v) => v.dev === d)?.value ?? 0;
       kv.add(`Desirability ${DEV_TYPE_LABELS[d]}`, 'desire', h('span', { style: 'display:flex;align-items:center;gap:8px;justify-content:flex-end' }, desirBar(dv), h('span', null, signedPts(dv))));
     }
     this.body.appendChild(kv.el);
     if (devs.length) {
       // the DevType this lot suits best: its factors and growth limits
-      let best = devs[0];
-      for (const d of devs) if ((st.desirability[d]?.[i] ?? -2) > (st.desirability[best]?.[i] ?? -2)) best = d;
+      const best = report.best;
       this.body.appendChild(this.section('why', 'Why?', 'help', `best fit ${DEV_TYPE_LABELS[best]}`, () => {
-        const rt = this.rt();
-        const des = desirabilityView(safeCall(() => desirabilityBreakdown(st, rt as EconRuntime, best, i), null));
+        const des = desirabilityView(report.desirability);
         const out: (HTMLElement | null)[] = [];
         if (des) out.push(this.bars(`Desirability ${DEV_TYPE_LABELS[best]} — what drives it`, des.bars, 'pts', des.notes));
-        out.push(this.rows(growthRows(safeCall(() => growthLimits(st, i, best), null))));
-        const lv = landValueView(safeCall(() => landValueBreakdown(st, rt as EconRuntime, i), []));
+        out.push(this.rows(growthRows(report.growth)));
+        const lv = landValueView(report.landValueTerms);
         if (lv.bars.length) out.push(this.bars('Land value — factors', lv.bars, 'pts', lv.note));
         return out;
       }));
     }
     const zf = zone ? zoneFamily(zone) : null;
-    const covCell = zone && zone !== Zone.Landfill ? safeCall(() => frontCellOf(st, x, z), i) : i;
-    if (!st.water[i]) this.body.appendChild(this.section('environment', 'Environment', 'leaf', '', () => this.environment(i, null, zf === 'R' || zf === 'C' || zf === 'I' ? zf : null, covCell)));
+    if (!st.water[i]) this.body.appendChild(this.section('environment', 'Environment', 'leaf', '', () => report.environment ? this.environment(report.environment, null, zf === 'R' || zf === 'C' || zf === 'I' ? zf : null) : []));
   }
 }
-
-function safeCall<T>(f: () => T, fallback: T): T {
-  try {
-    const v = f();
-    return v === undefined ? fallback : v;
-  } catch (e) {
-    console.warn('[ui] inspector query failed', e);
-    return fallback;
-  }
-}
-

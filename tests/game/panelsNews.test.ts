@@ -5,12 +5,13 @@
  * the Advisors & news panel refresh on it. Also A1: the ticker measures its view width on rebuilds / resizes, not on
  * every frame.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { CityState } from '../../src/sim/CityState';
 import { defaultCityConfig } from '../../src/sim/config';
 import { newsMark, tickerItems } from '../../src/ui/newsLog';
 import { NewsTicker } from '../../src/ui/Notifications';
 import type { GameContext } from '../../src/game/context';
+import { LocalSimHost } from '../../src/worker/SimHost';
 
 // ------------------------------------------------------------------------------------------------ minimal DOM
 class FakeText {
@@ -89,8 +90,13 @@ function city(): CityState {
   return new CityState(defaultCityConfig({ size: 16, seed: 3, terrain: 'flat', disasters: false, treeDensity: 0, waterAmount: 0 }));
 }
 
+const hosts: LocalSimHost[] = [];
+afterEach(async () => { for (const host of hosts.splice(0)) await host.dispose(); });
+
 function ticker(st: CityState): { t: NewsTicker; track: FakeEl } {
-  const ctx = { state: st, focusCell: () => {}, panels: { open: () => {} } } as unknown as GameContext;
+  const host = new LocalSimHost(st);
+  hosts.push(host);
+  const ctx = { host, state: st, focusCell: () => {}, panels: { open: () => {} } } as unknown as GameContext;
   const parent = new FakeEl('DIV');
   const t = new NewsTicker(ctx, parent as unknown as HTMLElement);
   const view = (t.el as unknown as FakeEl).children[1] as FakeEl;

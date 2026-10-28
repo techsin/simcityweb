@@ -10,8 +10,7 @@ import '../insight.css';
 import type { GameContext } from '../../game/context';
 import type { HistorySeries, NeedStat, NeedTier } from '../../sim/CityState';
 import { getDef } from '../../sim/catalog';
-import { unservedClusters } from '../../sim/infra/catchments';
-import { attractivenessBreakdown, tourismSummary } from '../../sim/economy/tourism';
+import { watchFor, type WatchHandle, type QueryResult } from '../../worker/SimHost';
 import { Panel } from '../Panel';
 import { clear, h, toggleClass } from '../dom';
 import { icon } from '../icons';
@@ -76,6 +75,8 @@ export class DemographicsPanel extends Panel {
   private tab: Tab = 'people';
   private tabBtns: Record<string, HTMLButtonElement> = {};
   private content!: HTMLDivElement;
+  private tourismWatch: WatchHandle<QueryResult<'tourismSummary'>> | null = null;
+  private attractionWatch: WatchHandle<QueryResult<'attractivenessBreakdown'>> | null = null;
 
   override defaultPos(w: number, hh: number): { x: number; y: number } {
     return { x: Math.max(14, (w - this.width) / 2), y: Math.max(72, (hh - 560) / 2) };
@@ -89,6 +90,7 @@ export class DemographicsPanel extends Panel {
       const b = h('button', null, label) as HTMLButtonElement;
       b.addEventListener('click', () => {
         this.tab = id;
+        if (id !== 'tourism') this.closeWatches();
         this.resetGate();
         this.update();
       }, { signal: this.ctx.signal });
@@ -104,12 +106,24 @@ export class DemographicsPanel extends Panel {
     this.resetGate();
   }
 
+  override onClose(): void { this.closeWatches(); }
+
+  private closeWatches(): void {
+    this.tourismWatch?.dispose(); this.attractionWatch?.dispose();
+    this.tourismWatch = this.attractionWatch = null;
+  }
+
   override update(): void {
     const st = this.ctx.state;
     for (const [id, b] of Object.entries(this.tabBtns)) toggleClass(b, 'on', id === this.tab);
     // (final fixes A1: the population part changes on every UI tick at ultra speed — a data-only change rebuilds at
     // most once per real second; a tab switch at once)
-    const sig = `${st.monthIndex}:${Math.floor(st.day / 10)}:${Math.round(st.stats.population / 25)}`;
+    if (this.tab === 'tourism') {
+      this.tourismWatch ??= watchFor(this.ctx.host, 'tourismSummary', {}, 'daily', this.ctx.signal);
+      this.attractionWatch ??= watchFor(this.ctx.host, 'attractivenessBreakdown', {}, 'daily', this.ctx.signal);
+      void this.tourismWatch.value; void this.attractionWatch.value;
+    }
+    const sig = `${st.monthIndex}:${Math.floor(st.day / 10)}:${Math.round(st.stats.population / 25)}:${this.tourismWatch?.version}:${this.attractionWatch?.version}`;
     if (!this.gate(this.tab, sig)) return;
     clear(this.content);
     if (this.tab === 'people') this.people();
@@ -227,8 +241,10 @@ export class DemographicsPanel extends Panel {
     const show = unreached >= Math.max(10, 0.02 * need)
       ? h('button', { class: 'btn sm ghost dtier-go', title: 'Show the biggest unserved area on the map', html: icon('target', 13) + '<span>Show me</span>' })
       : null;
-    show?.addEventListener('click', () => {
-      const c = unservedClusters(this.ctx.sim, t.tier, 1)[0];
+    show?.addEventListener('click', async () => {
+      const rows = await this.ctx.host.query('unservedClusters', { tier: t.tier, max: 1 }).catch(() => []);
+      if (this.ctx.signal.aborted || !this.isOpen || this.tab !== 'services') return;
+      const c = rows[0];
       if (c) this.ctx.focusCell(Math.round(c.x), Math.round(c.z), 480);
       else this.ctx.toast('No unserved cluster found right now', 'info');
     }, { signal: this.ctx.signal });
@@ -249,13 +265,13 @@ export class DemographicsPanel extends Panel {
   private tourism(): void {
     const st = this.ctx.state;
     const s = st.stats;
-    const ts = tourismSummary(st);
+    const ts = this.tourismWatch?.value;
     this.content.append(h('div', { class: 'stat-cards demo-kpis' },
       this.card('Tourists', 'star', compact(s.tourists), ts ? `${compact(ts.gross)} would come` : 'per day'),
       this.card('Hotel rooms', 'home', compact(s.hotelRooms), ts && ts.hotelShortage > 0 ? `${compact(ts.hotelShortage)} short a night` : 'enough for now', ts && ts.hotelShortage > 50 ? 'warn' : ''),
       this.card('Attraction', 'smile', String(Math.round(s.attractiveness)), 'out of 100'),
     ));
-    const bars = termBars(attractivenessBreakdown(st), 8, 1);
+    const bars = termBars(this.attractionWatch?.value, 8, 1);
     if (bars.length) {
       this.content.appendChild(h('div', { class: 'sec-title' }, 'What makes the city attractive'));
       const max = Math.max(1, ...bars.map((b) => Math.abs(b.value)));

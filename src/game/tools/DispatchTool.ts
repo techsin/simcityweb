@@ -13,7 +13,8 @@
 import { CELL_SIZE } from '../../core/constants';
 import type { GameContext } from '../context';
 import type { ToolSpec } from '../toolCatalog';
-import { INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_UNIT, emergencyOf, type DispatchOption, type EmergencySystem, type Incident } from '../../sim/infra/emergency';
+import { INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_UNIT, type DispatchOption, type Incident } from '../../sim/infra/emergency';
+import { watchFor, type WatchHandle, type DispatchView } from '../../worker/SimHost';
 import type { Responder } from '../../sim/CityState';
 import { getDef } from '../../sim/catalog';
 import { escapeHtml } from '../../ui/dom';
@@ -70,11 +71,19 @@ export class DispatchTool extends Tool {
   private inc: number | null = null;
   private opts: DispatchOption[] = [];
   private optsKey = '';
+  private optionsWatch: WatchHandle<DispatchOption[], { incidentId: number }> | null = null;
+  private fitPending = false;
+  private routes = new Map<string, Promise<number[] | null>>();
+  private request = 0;
+  private offAbort: (() => void) | null = null;
   private hoverStation: number | null = null;
   private routeCells: { x: number; z: number; ok: boolean }[] = [];
   private offs: (() => void)[] = [];
 
   override activate(): void {
+    const abort = () => this.deactivate();
+    this.ctx.signal.addEventListener('abort', abort, { once: true });
+    this.offAbort = () => this.ctx.signal.removeEventListener('abort', abort);
     const id = pendingIncident ?? this.oldestWaiting();
     pendingIncident = null;
     this.target(id, true);
@@ -86,7 +95,7 @@ export class DispatchTool extends Tool {
         if (e.type === 'resolved' || e.type === 'failed') this.ended();
         else if (e.type === 'dispatched') {
           const inc = this.incident();
-          const em = emergencyOf(this.ctx.sim);
+          const em = this.ctx.host.emergency;
           if (inc && em && !missingUnits(em, inc)) this.ended();
         }
       }),
@@ -101,6 +110,10 @@ export class DispatchTool extends Tool {
   }
 
   override deactivate(): void {
+    this.request++;
+    this.optionsWatch?.dispose(); this.optionsWatch = null;
+    this.routes.clear();
+    this.offAbort?.(); this.offAbort = null;
     for (const f of this.offs) f();
     this.offs = [];
     this.ctx.world.setHighlight(null);
@@ -124,26 +137,30 @@ export class DispatchTool extends Tool {
 
   /** switch to an incident (null = the oldest one waiting for help); fit = frame the site + fastest free stations */
   target(id: number | null, fit = false): void {
+    this.request++;
+    this.routes.clear();
+    this.fitPending = fit;
     this.inc = id;
+    this.opts = [];
     this.optsKey = '';
     this.hoverStation = null;
     this.routeCells = [];
     const inc = this.incident();
     if (!inc) {
+      this.optionsWatch?.dispose(); this.optionsWatch = null;
       this.ctx.toast('No emergency is waiting for a dispatch', 'info');
       this.ctx.world.setHighlight(null);
       return;
     }
     this.refreshOptions(true);
     this.paint();
-    if (fit) this.fitCamera(inc);
   }
 
   /** frame the incident and the (up to 2) fastest stations with a free unit — of a responder it still misses (an
    *  industrial accident whose ambulance is out: fire stations) — so they can be clicked */
   private fitCamera(inc: Incident): void {
     const st = this.ctx.state;
-    const em = emergencyOf(this.ctx.sim);
+    const em = this.ctx.host.emergency;
     const miss = em ? missingResponders(em, inc) : [];
     const free = this.opts.filter((o) => o.free > 0 && Number.isFinite(o.etaMin));
     const needed = free.filter((o) => miss.includes(o.responder));
@@ -165,7 +182,7 @@ export class DispatchTool extends Tool {
   /** the incident that waits longest for a player dispatch (majors first, then those a unit can still reach in time);
    *  waitingOnly = null when none waits */
   private oldestWaiting(waitingOnly = false, except: number | null = null): number | null {
-    const em = emergencyOf(this.ctx.sim);
+    const em = this.ctx.host.emergency;
     if (!em) return null;
     let best: Incident | null = null;
     const rank = (i: Incident) => (i.major ? 0 : 2) + (i.manualPossible ? 0 : 1);
@@ -178,17 +195,21 @@ export class DispatchTool extends Tool {
   }
 
   private incident(): Incident | undefined {
-    return this.inc === null ? undefined : emergencyOf(this.ctx.sim)?.incident(this.inc);
+    return this.inc === null ? undefined : this.ctx.host.emergency?.incident(this.inc);
   }
 
   private refreshOptions(force = false): void {
-    const em = emergencyOf(this.ctx.sim);
     const inc = this.incident();
-    if (!em || !inc) { this.opts = []; return; }
-    const key = `${inc.id}:${this.ctx.state.day}:${inc.units.length}`;
+    if (!inc) { this.opts = []; this.optionsWatch?.dispose(); this.optionsWatch = null; return; }
+    const args = { incidentId: inc.id };
+    this.optionsWatch ??= watchFor(this.ctx.host, 'dispatchOptions', args, 'daily', this.ctx.signal);
+    this.optionsWatch.setArgs(args);
+    const options = this.optionsWatch.value;
+    const key = `${inc.id}:${this.optionsWatch.version}`;
     if (!force && key === this.optsKey) return;
     this.optsKey = key;
-    this.opts = em.dispatchOptions(this.ctx.sim, inc.id);
+    this.opts = options ?? [];
+    if (options && this.fitPending) { this.fitPending = false; this.fitCamera(inc); }
   }
 
   /** "Police Station #1 can't help with a fire — it needs fire trucks" when the building under the cursor is an
@@ -198,7 +219,7 @@ export class DispatchTool extends Tool {
     const st = this.ctx.state;
     if (!st.inBounds(p.hit.x, p.hit.z)) return null;
     const bid = st.building[st.idx(p.hit.x, p.hit.z)];
-    const em = emergencyOf(this.ctx.sim);
+    const em = this.ctx.host.emergency;
     if (bid < 0 || !em) return null;
     const f = em.stationFleet(bid);
     const need = INCIDENT_RESPONDERS[inc.kind];
@@ -243,11 +264,19 @@ export class DispatchTool extends Tool {
     if (id === this.hoverStation) return;
     this.hoverStation = id;
     this.routeCells = [];
-    const em = emergencyOf(this.ctx.sim);
     const inc = this.incident();
-    if (o && em && inc && Number.isFinite(o.etaMin)) {
-      const path = em.routePreview(this.ctx.sim, inc.id, o.stationId);
-      if (path) this.routeCells = expandPath(path, this.ctx.state.size, o.free > 0);
+    if (o && inc && Number.isFinite(o.etaMin)) {
+      const request = this.request, key = `${inc.id}:${o.stationId}`;
+      let route = this.routes.get(key);
+      if (!route) {
+        route = this.ctx.host.query('routePreview', { incidentId: inc.id, stationId: o.stationId });
+        this.routes.set(key, route);
+      }
+      void route.then((path) => {
+        if (this.ctx.signal.aborted || this.ctx.tools.active !== this || request !== this.request || this.inc !== inc.id || this.hoverStation !== id) return;
+        this.routeCells = path ? expandPath(path, this.ctx.state.size, o.free > 0) : [];
+        this.paint();
+      }).catch(() => { if (request === this.request) this.routes.delete(key); });
     }
     this.paint();
   }
@@ -285,7 +314,7 @@ export class DispatchTool extends Tool {
       return;
     }
     const needs = need.map((r) => `${inc.need[r] ?? 0} ${RESPONDER_UNIT[r][(inc.need[r] ?? 0) === 1 ? 0 : 1]}`).join(' + ');
-    const em = emergencyOf(this.ctx.sim);
+    const em = this.ctx.host.emergency;
     const miss = em ? missingResponders(em, inc) : [];
     const covered = !!em && miss.length === 0;
     // the fastest free unit of a kind it still misses (an industrial accident whose ambulance is out: a fire truck)
@@ -303,13 +332,15 @@ export class DispatchTool extends Tool {
   }
 
   override async down(p: ToolPointer): Promise<void> {
-    const em = emergencyOf(this.ctx.sim);
+    const em = this.ctx.host.emergency;
     if (!em || !p.hit) return;
     const o = this.optionAt(p);
     const inc = this.incident();
     if (!o) {
       // clicking another incident's site switches to it
-      const other = em.report(this.ctx.sim, p.hit.x, p.hit.z);
+      const request = ++this.request;
+      const other = await this.ctx.host.query('emergencyReport', { x: p.hit.x, z: p.hit.z }).catch(() => null);
+      if (this.ctx.signal.aborted || this.ctx.tools.active !== this || request !== this.request) return;
       if (other && other.id !== this.inc) {
         this.target(other.id);
         this.ctx.sound('select');
@@ -358,7 +389,7 @@ export class DispatchTool extends Tool {
 }
 
 /** the responders an incident still misses units of (need > units driving there / on scene), primary first */
-function missingResponders(em: EmergencySystem, inc: Incident): Responder[] {
+function missingResponders(em: DispatchView, inc: Incident): Responder[] {
   const out: Responder[] = [];
   for (const r of INCIDENT_RESPONDERS[inc.kind]) {
     let n = 0;
@@ -372,7 +403,7 @@ function missingResponders(em: EmergencySystem, inc: Incident): Responder[] {
 }
 
 /** the incident still misses units of some responder */
-function missingUnits(em: EmergencySystem, inc: Incident): boolean {
+function missingUnits(em: DispatchView, inc: Incident): boolean {
   return missingResponders(em, inc).length > 0;
 }
 

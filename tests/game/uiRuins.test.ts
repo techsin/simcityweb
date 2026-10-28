@@ -6,7 +6,7 @@
  *  (b) tornado, quake and meteor ruins read "Burnt down": BF.Burnt records no cause, so the inspector says "In ruins"
  *      (the chip, the rubble line — tests/game/uiRubble.test.ts — and the facility warning's topic);
  *  (c) the Rewards panel read "Built" for a reward whose only building is a ruin: "In ruins — bulldoze to rebuild",
- *      from the economy runtime's plopped list, with a button to the ruin instead of a Place that is refused;
+ *      from exact mirrored building flags, with a button to the ruin instead of a Place that is refused;
  *  (d) a ruin's header showed rows that look live: the Powered chip and "Jobs filled 0 / 40".
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -19,6 +19,7 @@ import { facilityReport } from '../../src/sim/infra/facilities';
 import { listRewards } from '../../src/sim/economy/rewards';
 import { normalizeReward } from '../../src/game/modules';
 import type { GameContext } from '../../src/game/context';
+import { queryHost } from './queryHost';
 import { InfoPanel } from '../../src/ui/panels/InfoPanel';
 import { REWARD_RUIN_TEXT, RewardsPanel, rewardRuin, ruinState } from '../../src/ui/panels/ListPanels';
 import { RUINS_TEXT, dedupeChips, facilityView, headerIncome, splitFacilityRows, warningTopic, type Chip } from '../../src/ui/inspectorModel';
@@ -40,6 +41,8 @@ function ctxOf(sim: Simulation): { ctx: GameContext; calls: Calls } {
   const ctx = {
     get state() { return sim.state; },
     sim,
+    host: queryHost(sim),
+    signal: new AbortController().signal,
     mods: { listRewards: (s: CityState) => listRewards(s).map(normalizeReward) },
     actions: { bulldoze: () => ({ ok: true, cost: 30 }) },
     objects: { setSelected: () => undefined },
@@ -231,6 +234,7 @@ describe('Rewards panel: a reward whose building is a ruin reads "In ruins — b
       now.mockReturnValue(1e9);
       panel.update();
       range.flags &= ~BF.Burnt;
+      sim.events.emit('buildingChanged', range);
       now.mockReturnValue(1e9 + 1500);
       panel.update();
     } finally {
@@ -275,6 +279,7 @@ describe('final fixes r4 U2: a ruined one-per-city building reads the way the ru
     expect(UNIQUE_BUILT_TEXT).toBe('Already built (one per city)');
     // flattened (a fire, a tornado, a quake or a meteor): counted until bulldozed, and the menu says what to do
     range.flags |= BF.Burnt;
+    sim.events.emit('buildingChanged', range);
     expect(spec().disabled).toBe(UNIQUE_RUINS_TEXT);
     expect(UNIQUE_RUINS_TEXT).toBe('In ruins — bulldoze its ruins first');
     expect(new CityActions(sim).plop('rw_missile_range', 40, 40, 0, true).reason).toBe('Only one Missile Test Range allowed — bulldoze its ruins first');
@@ -329,6 +334,7 @@ describe('final fixes r4 U2: a ruined one-per-city building reads the way the ru
     expect(rowIn(panel, 'Casino Resort').querySelectorAll('button').map(textOf)).toEqual(['Place']);
     // in ruins: the ruin chip, the way to the ruin, and the deal income neutral — none while it lies in ruins
     range.flags |= BF.Burnt;
+    sim.events.emit('buildingChanged', range);
     panel.onOpen();
     panel.update();
     const row = rowIn(panel, 'Missile Test Range');
