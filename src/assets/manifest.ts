@@ -56,6 +56,14 @@ export interface ManifestEntry {
   mirror?: boolean;
   /** number of distinct variants the builder implements (defaults to `variants`) */
   buildVariants?: number;
+  /**
+   * Item id (e.g. 'LG-02') that brings this model's catalog def. The art is final and in its real building group;
+   * only the def is still to land, so tests/sim/catalog.test.ts skips the entry in its "def for every building
+   * model" check. A guard test there fails once a flagged entry has a def (remove the flag then) and for a flag
+   * outside the groups that check covers. No game-side filter: the game only offers catalog defs, and the gallery
+   * shows the model as usual. Unfinished stand-ins stay in the 'placeholder' group instead.
+   */
+  pendingCatalog?: string;
 }
 
 const E = (
