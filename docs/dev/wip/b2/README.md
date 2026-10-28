@@ -17,3 +17,7 @@
 2. Rebuild the worktree as above.
 3. Add `build:G2-services-nimby` to `__R` in `docs/dev/workflows/b2-step-split.js`, so G2 continues from its commits.
 4. Resume with `resumeFromRunId: 'wf_13b4de49-6de'`.
+
+**Before you resume:** T034 (`local/W1.2-worker`, ceff394, not yet merged) makes `scheduler.run()` a generator, and B2's G1
+rewrites the scheduler's piece budgets and resumable kernels. Whichever merges second rebases onto the other. Rerun
+B2's step-split tests and the digest check after that rebase.
