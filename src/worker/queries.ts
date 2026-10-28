@@ -13,7 +13,7 @@ import type { EmergencySystem } from '../sim/infra/emergency';
 import type { ServicesSystem } from '../sim/infra/services';
 import type { TrafficSystem } from '../sim/infra/traffic';
 import { ferryPartnersFor, stopsNear } from '../sim/infra/transportFacilities';
-import { demolishRisks, sideDemolishRisks, type Removal } from '../game/demolishRisk';
+import { demolishRisks, sideDemolishRisks, type DemolishRefund, type Removal } from '../game/demolishRisk';
 import { upkeepHere } from '../game/tools/placement';
 import { countGarages } from '../ui/statsModel';
 import { inspectBuilding, inspectCell, inspectSignature, type InspectBuildingArgs, type InspectCellArgs } from './inspect';
@@ -45,8 +45,8 @@ export const QUERY_HANDLERS = {
     const inc = sim.getSystem<EmergencySystem>('emergency')?.report(sim, x, z);
     return inc ? structuredClone(inc) : null;
   },
-  demolishRisks: (sim: Simulation, { rect, cost, sandbox }: { rect: CellRect; cost: number; sandbox?: boolean }) => demolishRisks(sim.state, rect, cost, { sandbox }),
-  sideDemolishRisks: (sim: Simulation, { ids, fee, sandbox, add }: { ids: readonly number[]; fee: number; sandbox?: boolean; add?: Removal['add'] }) => sideDemolishRisks(sim.state, ids, fee, { sandbox, add }),
+  demolishRisks: (sim: Simulation, { rect, cost, ...opts }: DemolishRefund & { rect: CellRect; cost: number; sandbox?: boolean }) => demolishRisks(sim.state, rect, cost, opts),
+  sideDemolishRisks: (sim: Simulation, { ids, fee, ...opts }: DemolishRefund & { ids: readonly number[]; fee: number; sandbox?: boolean; add?: Removal['add'] }) => sideDemolishRisks(sim.state, ids, fee, opts),
   stopsNear: (sim: Simulation, { x, z, w, d }: PlacementArgs) => stopsNear(sim, x, z, w, d),
   ferryPartnersFor: (sim: Simulation, { x, z, w, d, rot }: PlacementArgs & { rot: number }) => ferryPartnersFor(sim, x, z, w, d, rot),
   openAdvice: (sim: Simulation, _args: Record<string, never>) => advice(openAdvice(sim)),

@@ -1,0 +1,245 @@
+From 0a949fc7352d2a94192781a37cf8cd1d18bb95b9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 22:30:17 +0000
+Subject: [PATCH 4/4] population: the periodic samples on odd days, never on a
+ month tick (B3 P3)
+
+The employment sample (every OCC_PERIOD = 4 days) and the demographics
+sample (every DEMO_AGG_DAYS = 32) ran on phase 0: the employment sample
+on every other month tick, the demographics sample (+0.5-2 ms at 1M,
+up to 6 in frames) on one tick in 16. They now run on
+day % 4 === OCC_PHASE (1) and day % 32 === DEMO_PHASE (17): odd days,
+and a day of the month has the parity of its day number, so neither
+lands on a tick (dom 0), on tourism's venue pass (26) or the advisors'
+zone scan (28); 17 = 1 mod 4 keeps every demographics day an employment
+day. The 'demographics' layer event moves from the tick to dom 1
+(DEMOGRAPHICS_EVENT_PHASE): the overlay's refresh leaves the month
+frame. No save state: the phases follow st.day after a load.
+
+EQHQ_DAY, OUTAGE_PRUNE_DAY (the prune day, named), the phases and
+DEMO_AGG_DAYS are exported for the calendar test.
+
+The frozen J10 reference (tests/sim/exact/j10Original.ts) takes the same
+phases and event day (its header says so). desirability.test.ts's saved
+demographics sample test follows the new sample days (49, 81).
+monthSpread.test.ts: the samples never on a tick and on their own days
+only, the event on dom 1; the calendar of the month work.
+
+Behaviour changes by design (the bot's output changes): the tick reads
+an employment sample 1-3 days old.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KT9tXthEhyzExdUuGEecAJ
+---
+ src/sim/economy/population.ts  | 29 +++++++++++++----
+ tests/sim/desirability.test.ts | 11 ++++---
+ tests/sim/exact/j10Original.ts | 10 +++---
+ tests/sim/monthSpread.test.ts  | 58 ++++++++++++++++++++++++++++++++++
+ 4 files changed, 92 insertions(+), 16 deletions(-)
+
+diff --git a/src/sim/economy/population.ts b/src/sim/economy/population.ts
+index 016adcc..57d4472 100644
+--- a/src/sim/economy/population.ts
++++ b/src/sim/economy/population.ts
+@@ -263,7 +263,7 @@ function blurCoarse(raw: Float32Array, out: Float32Array, cw: number): void {
+  *  phase within the period) */
+ const DEMO_UPDATE_DAYS = 16 * OCC_PERIOD;
+ /** the city-wide cohort / education / coarse-grid sample (aggregate) runs every DEMO_AGG_DAYS */
+-const DEMO_AGG_DAYS = 8 * OCC_PERIOD;
++export const DEMO_AGG_DAYS = 8 * OCC_PERIOD;
+ 
+ /**
+  * The last demographics sample (coarse grids desirability reads — residents by wealth, education, kids — and the cohort
+@@ -292,7 +292,20 @@ function storeGrids(st: CityState, rt: EconRuntime, coh: Float64Array): void {
+ }
+ 
+ /** day of the month of the EQ / HQ update (off the month tick; the commercial core runs on day 20, freight on 15) */
+-const EQHQ_DAY = 25;
++export const EQHQ_DAY = 25;
++/** day of the month on which the outage records of buildings that are gone are pruned (off the month tick) */
++export const OUTAGE_PRUNE_DAY = 7;
++/**
++ * Phases of the periodic samples (B3): the employment sample on day % OCC_PERIOD === OCC_PHASE, the demographics sample
++ * on day % DEMO_AGG_DAYS === DEMO_PHASE (≡ OCC_PHASE mod OCC_PERIOD: a demographics day is also an employment day, as
++ * before). Both odd: a day of the month has the parity of its day number (30 is even), so neither ever lands on a month
++ * tick (was phase 0: the employment sample on every other tick, the demographics sample on one tick in 16), on tourism's
++ * venue pass (TOURISM_DAY 26) or on the advisors' zone scan (28). The 'demographics' layer event on dom 1
++ * (DEMOGRAPHICS_EVENT_PHASE), out of the month frame.
++ */
++export const OCC_PHASE = 1;
++export const DEMO_PHASE = 17;
++export const DEMOGRAPHICS_EVENT_PHASE = 1;
+ 
+ /** EMPLOYED_EMA per day compounded over one OCC_PERIOD (the traffic ledger is sampled every OCC_PERIOD days) */
+ const EMPLOYED_EMA_PERIOD = 1 - Math.pow(1 - EMPLOYED_EMA, OCC_PERIOD);
+@@ -332,9 +345,10 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
+     const cc = cw * cw;
+     // employment sample (workforce x traffic access): every OCC_PERIOD days; cohort shares / coarse demographics
+     // grids / city mean education: every DEMO_AGG_DAYS (the fields change slowly) — the cohort stats follow the daily
+-    // population at the sampled shares. A loaded city takes the saved sample (systemData.popGrids, see PopGrids)
+-    const sample = first || st.day % OCC_PERIOD === 0;
+-    const demo = first || st.day % DEMO_AGG_DAYS === 0;
++    // population at the sampled shares. A loaded city takes the saved sample (systemData.popGrids, see PopGrids). On
++    // odd days (OCC_PHASE / DEMO_PHASE), never on a month tick
++    const sample = first || st.day % OCC_PERIOD === OCC_PHASE;
++    const demo = first || st.day % DEMO_AGG_DAYS === DEMO_PHASE;
+     const saved = first && st.day > 0 && rt.coarsePopW[0].length === cc ? savedGrids(st, cc) : null;
+     if (sample) cache.ensure(st.nextBuildingId);
+     const mWf = cache.wf;
+@@ -721,9 +735,10 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
+       rt.ensureLists();
+       aggregate(sim, false);
+       demographicsData(sim.state).cursor = cursor;
+-      if (sim.state.day % DEMOGRAPHICS_EVENT_DAYS === 0) sim.events.emit('layerUpdated', 'demographics');
++      // (the Demographics overlay's refresh: monthly, the day after the month tick)
++      if (sim.state.day % DEMOGRAPHICS_EVENT_DAYS === DEMOGRAPHICS_EVENT_PHASE) sim.events.emit('layerUpdated', 'demographics');
+       // (monthly, off the month tick) outage records of buildings that are gone
+-      if (sim.state.day % DAYS_PER_MONTH === 7) pruneOutages(sim.state);
++      if (sim.state.day % DAYS_PER_MONTH === OUTAGE_PRUNE_DAY) pruneOutages(sim.state);
+       // EQ / HQ from the residents' education stock and health access, once a month (with sim-infra services; approval
+       // keeps the legacy coverage lag in sim-core-only runs) — on day EQHQ_DAY of the month, not on the month tick,
+       // which already carries every system's monthly work; the homes are read in daily slices (a loop over all homes
+diff --git a/tests/sim/desirability.test.ts b/tests/sim/desirability.test.ts
+index 982d34b..6b4a012 100644
+--- a/tests/sim/desirability.test.ts
++++ b/tests/sim/desirability.test.ts
+@@ -12,7 +12,7 @@ import { BF, type Building, type CityState } from '../../src/sim/CityState';
+ import { Simulation } from '../../src/sim/Simulation';
+ import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
+ import { DEV_WEALTH, ZONE_DEVTYPES, getDef } from '../../src/sim/catalog';
+-import { conditionBreakdown, outageData } from '../../src/sim/economy/population';
++import { DEMO_AGG_DAYS, DEMO_PHASE, conditionBreakdown, outageData } from '../../src/sim/economy/population';
+ import { sumTerms } from '../../src/sim/explain';
+ import type { EconRuntime } from '../../src/sim/economy/runtime';
+ import { DESIR_TERM_IDS, NT, T_ELEM, desirWeight, desirabilityBreakdown } from '../../src/sim/economy/desirability';
+@@ -406,9 +406,10 @@ describe('desirability: save / load and early-game commute', () => {
+   });
+ 
+   it('a loaded city reads the saved demographics sample (customers by wealth, skills, kids, cohort shares), not a fresher one', { timeout: 300000 }, () => {
+-    // homes placed on day 40 enter the day-64 sample; two more on day 66 are only in the next one (day 96). Saved on
+-    // day 68: the game reads the day-64 sample, and so must the loaded copy — rebuilt at load, its shops / offices read
+-    // fresher customers than the game it continues (grownCity's save / load divergence doubled)
++    // homes placed on day 40 enter the day-49 sample; two more on day 66 are only in the next one (day 81: the samples
++    // fall on days ≡ DEMO_PHASE 17 mod 32). Saved on day 68: the game reads the day-49 sample, and so must the loaded copy
++    // — rebuilt at load, its shops / offices read fresher customers than the game it continues (grownCity's save / load
++    // divergence doubled)
+     const { st, sim, rt } = town(40);
+     const N = st.size;
+     const put = (homes: readonly (readonly [string, number, number])[]) => {
+@@ -431,7 +432,7 @@ describe('desirability: save / load and early-game commute', () => {
+     sim.runDays(26);
+     expect(put([['res_cottage.r2.1', 15, 33], ['res_villa.r3.1', 21, 33]])).toBeGreaterThanOrEqual(1);
+     sim.runDays(2);
+-    expect(st.day % 32).not.toBe(0);
++    expect(st.day % DEMO_AGG_DAYS).not.toBe(DEMO_PHASE);
+     const copy = deserializeCity(structuredClone(serializeCity(st, { copy: true })) as SerializedCity);
+     const rt2 = rtOf(new Simulation(copy, createSystems()));
+     const same = (a: Float32Array, b: Float32Array) => a.length === b.length && a.every((v, q) => v === b[q]);
+diff --git a/tests/sim/exact/j10Original.ts b/tests/sim/exact/j10Original.ts
+index 537bef6..e39b603 100644
+--- a/tests/sim/exact/j10Original.ts
++++ b/tests/sim/exact/j10Original.ts
+@@ -1,4 +1,6 @@
+-// Frozen population.ts, demographics.ts and utilities.ts from 614609f; only import paths and names differ.
++// Frozen population.ts, demographics.ts and utilities.ts from 614609f; only import paths and names differ — and B3's
++// phases (docs/dev/B3_DESIGN.md §3.3, the live population.ts's OCC_PHASE 1, DEMO_PHASE 17, DEMOGRAPHICS_EVENT_PHASE 1):
++// the employment and demographics samples on odd days, the 'demographics' layer event on dom 1.
+ /**
+  * Population system: construction progress, daily aggregation of residents / jobs / cohorts (→ CityStats),
+  * employment, the time-sliced occupancy pass (building health, fill / vacancy, hiring, demographics, abandonment,
+@@ -322,8 +324,8 @@ export function populationSystemOriginal(rt: EconRuntime): SimSystem & { rt: Eco
+     // employment sample (workforce x traffic access): every OCC_PERIOD days; cohort shares / coarse demographics
+     // grids / city mean education: every DEMO_AGG_DAYS (the fields change slowly) — the cohort stats follow the daily
+     // population at the sampled shares. A loaded city takes the saved sample (systemData.popGrids, see PopGrids)
+-    const sample = first || st.day % OCC_PERIOD === 0;
+-    const demo = first || st.day % DEMO_AGG_DAYS === 0;
++    const sample = first || st.day % OCC_PERIOD === 1;
++    const demo = first || st.day % DEMO_AGG_DAYS === 17;
+     const saved = first && st.day > 0 && rt.coarsePopW[0].length === cc ? savedGrids(st, cc) : null;
+     if (sample) cache.ensure(st.nextBuildingId);
+     const mWf = cache.wf;
+@@ -710,7 +712,7 @@ export function populationSystemOriginal(rt: EconRuntime): SimSystem & { rt: Eco
+       rt.ensureLists();
+       aggregate(sim, false);
+       demographicsDataOriginal(sim.state).cursor = cursor;
+-      if (sim.state.day % DEMOGRAPHICS_EVENT_DAYS === 0) sim.events.emit('layerUpdated', 'demographics');
++      if (sim.state.day % DEMOGRAPHICS_EVENT_DAYS === 1) sim.events.emit('layerUpdated', 'demographics');
+       // (monthly, off the month tick) outage records of buildings that are gone
+       if (sim.state.day % DAYS_PER_MONTH === 7) pruneOutages(sim.state);
+       // EQ / HQ from the residents' education stock and health access, once a month (with sim-infra services; approval
+diff --git a/tests/sim/monthSpread.test.ts b/tests/sim/monthSpread.test.ts
+index 50ff7c4..ce17d9d 100644
+--- a/tests/sim/monthSpread.test.ts
++++ b/tests/sim/monthSpread.test.ts
+@@ -15,6 +15,13 @@ import {
+   ATTRACTIONS, TOURISM_DAY, TOURISM_SLICES, attractivenessBreakdown, tourismSummary, tourismSystem, venueVisits,
+ } from '../../src/sim/economy/tourism';
+ import { budgetSystem, venueIncomeFactor } from '../../src/sim/economy/budget';
++import {
++  DEMO_AGG_DAYS, DEMO_PHASE, DEMOGRAPHICS_EVENT_PHASE, EQHQ_DAY, OCC_PHASE, OUTAGE_PRUNE_DAY,
++} from '../../src/sim/economy/population';
++import { demographicsData } from '../../src/sim/economy/demographics';
++import { MONTH_SCAN_DAYS } from '../../src/sim/economy/advisors';
++import { FACILITY_SCAN_DAY } from '../../src/sim/infra/facilities';
++import { DEMOGRAPHICS_EVENT_DAYS, FREIGHT_REFRESH_DAYS, OCC_PERIOD } from '../../src/sim/economy/tuning';
+ import { approvalSystem } from '../../src/sim/economy/approval';
+ import { CityActions, lPath } from '../../src/sim/actions';
+ import { DAYS_PER_MONTH } from '../../src/core/constants';
+@@ -454,3 +461,54 @@ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick'
+   });
+ });
+ 
++describe('B3: the population samples off the month tick (P3), and the month calendar', () => {
++  it('P3: no month tick is an employment or a demographics sample day; the samples recur every 4 and 32 days; the demographics event on dom 1', { timeout: 120000 }, () => {
++    for (let day = 1; day <= 960; day++) {
++      if (day % DAYS_PER_MONTH !== 0) continue;
++      expect(day % OCC_PERIOD, `tick ${day}`).not.toBe(OCC_PHASE);
++      expect(day % DEMO_AGG_DAYS, `tick ${day}`).not.toBe(DEMO_PHASE);
++    }
++    // every demographics day is an employment day (the demographics sample reads the employment sample's records)
++    expect(DEMO_PHASE % OCC_PERIOD).toBe(OCC_PHASE);
++    expect(DEMO_AGG_DAYS % OCC_PERIOD).toBe(0);
++    // in a running town (every economy system): the employment sample writes wfNow, the demographics sample the saved
++    // grids — only on their days
++    const t = town('economy');
++    const events: number[] = [];
++    t.sim.events.on('layerUpdated', (name) => { if (name === 'demographics') events.push(t.st.day); });
++    let wf = demographicsData(t.st).wfNow, grids = sha(t.st.systemData.popGrids);
++    const wfDays: number[] = [], gridDays: number[] = [];
++    for (let day = 1; day <= 200; day++) {
++      t.sim.advanceDay();
++      const w = demographicsData(t.st).wfNow, g = sha(t.st.systemData.popGrids);
++      if (!Object.is(w, wf)) wfDays.push(day);
++      if (g !== grids) gridDays.push(day);
++      wf = w;
++      grids = g;
++    }
++    expect(wfDays.length).toBeGreaterThan(10);
++    for (const d of wfDays) expect(d % OCC_PERIOD, `wfNow on day ${d}`).toBe(OCC_PHASE);
++    expect(gridDays.length).toBeGreaterThanOrEqual(3);
++    for (const d of gridDays) expect(d % DEMO_AGG_DAYS, `grids on day ${d}`).toBe(DEMO_PHASE);
++    expect(events).toEqual([1, 31, 61, 91, 121, 151, 181]);
++    expect(DEMOGRAPHICS_EVENT_DAYS).toBe(DAYS_PER_MONTH);
++  });
++
++  it('the calendar: the month work never falls on the tick (dom 0); the heavy steps on distinct days; the samples never on 0, 26 or 28', () => {
++    const CORE_DAY = 20; // growth.ts (the commercial core; not exported)
++    const offsets: Record<string, number> = {
++      EQHQ_DAY, TOURISM_DAY, zoneScan: MONTH_SCAN_DAYS[0], facScan: MONTH_SCAN_DAYS[1], CORE_DAY, FACILITY_SCAN_DAY,
++      freight: FREIGHT_REFRESH_DAYS >> 1, prune: OUTAGE_PRUNE_DAY, demographicsEvent: DEMOGRAPHICS_EVENT_PHASE,
++    };
++    for (const [k, d] of Object.entries(offsets)) expect(d > 0 && d < DAYS_PER_MONTH, `${k} = ${d}`).toBe(true);
++    const heavy = [EQHQ_DAY, TOURISM_DAY, MONTH_SCAN_DAYS[0], MONTH_SCAN_DAYS[1], CORE_DAY, FACILITY_SCAN_DAY];
++    expect(new Set(heavy).size).toBe(heavy.length);
++    // the samples (odd days) in 64 months: never on the tick, the venue pass or the zone scan
++    for (let day = 1; day <= 64 * DAYS_PER_MONTH; day++) {
++      const dom = day % DAYS_PER_MONTH;
++      if (dom !== 0 && dom !== TOURISM_DAY && dom !== MONTH_SCAN_DAYS[0]) continue;
++      expect(day % OCC_PERIOD === OCC_PHASE, `employment sample on day ${day}`).toBe(false);
++      expect(day % DEMO_AGG_DAYS === DEMO_PHASE, `demographics sample on day ${day}`).toBe(false);
++    }
++  });
++});
+-- 
+2.43.0
+
