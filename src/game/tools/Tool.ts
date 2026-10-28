@@ -5,6 +5,7 @@ import type { ActionResult } from '../../sim/actions';
 import type { GameContext } from '../context';
 import type { Command, CommandArgs, CommandOp, CommandResult, Gesture, Ticket } from '../../worker/SimHost';
 import { commandPreview, type PendingPreviewView } from '../../worker/PendingEdits';
+import { CommandOutcomeLost } from '../../worker/protocol';
 import { escapeHtml } from '../../ui/dom';
 import { money } from '../../ui/format';
 
@@ -121,9 +122,16 @@ export function commitAction<K extends ActionOp>(ctx: GameContext, owner: object
       else g.fail(() => fail(r));
     } else if (predicted.ok && !r.ok) g.fail(() => fail(r));
     feedback.ack?.(r);
-  }, () => {
+  }, (e: unknown) => {
     clearPreview();
     if (ctx.signal.aborted) return;
+    if (e instanceof CommandOutcomeLost) {
+      // a resync dropped the Ack of a command the worker applied: the edit happened, so no failure feedback; the
+      // stroke's totals take the prediction, or nothing
+      g.recordAck(true);
+      feedback.ack?.(predicted?.ok ? predicted : LOST);
+      return;
+    }
     g.fail(() => fail(FAIL));
     feedback.ack?.(FAIL);
   });
@@ -154,3 +162,5 @@ export function safe<T>(f: () => T, fallback: T): T {
 }
 
 export const FAIL: ActionResult = { ok: false, cost: 0, reason: 'Action unavailable' };
+/** an applied command whose outcome a resync lost, with no ok prediction to stand in for it */
+const LOST: ActionResult = { ok: true, cost: 0 };

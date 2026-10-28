@@ -47,6 +47,8 @@ export class SimCore {
   private disposed = false;
   private offRegion: (() => void) | null = null;
   private pausedFrom = 1;
+  /** NOTE-041: the day cap before holdCalendar(true), given back by holdCalendar(false); null while not held */
+  private heldMax: number | null = null;
   /** Cleared at dispose: a retained system must not reach the scene or its HUD (close-out c4). */
   private guard: { errors: SimErrors | null };
   // W0.4: the host's city lifetime also owns policy listeners and queued flushes.
@@ -181,6 +183,13 @@ export class SimCore {
       // W0.4: only the policy owner changes dismissals and simulation settings.
       case 'dismissAlert': this.livePolicy.dismiss(cmd.args[0]); return;
       case 'setSettings': this.livePolicy.setSettings(cmd.args[0]); return;
+      // NOTE-041: no sim day advances while held; the frame-rate systems and the player's speed are untouched
+      case 'holdCalendar': {
+        const [on] = cmd.args;
+        if (on && this.heldMax === null) { this.heldMax = sim.maxDaysPerFrame; sim.maxDaysPerFrame = 0; }
+        else if (!on && this.heldMax !== null) { sim.maxDaysPerFrame = this.heldMax > 0 ? this.heldMax : 4; this.heldMax = null; }
+        return;
+      }
     }
   }
 

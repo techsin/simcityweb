@@ -188,6 +188,11 @@ interface Commands {
   dismissAlert(incidentId: number): void;
   setSettings(settings: SimSettings): void;
 }
+/** NOTE-041: the New Year countdown holds the calendar at midnight. A main-thread write into `sim` never reaches a
+ *  worker's clock, so the hold is a command: idempotent, released on midnight, cancel and dispose. */
+interface Commands {
+  holdCalendar(on: boolean): void;
+}
 export type CommandOp = keyof Commands;
 export type CommandArgs<K extends CommandOp> = Parameters<Commands[K]>;
 export type CommandResult<K extends CommandOp> = ReturnType<Commands[K]>;

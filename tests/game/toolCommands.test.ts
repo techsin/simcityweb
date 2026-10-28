@@ -5,6 +5,7 @@ import { BrushTool } from '../../src/game/tools/BrushTool';
 import { commitAction, Tool, type ToolPointer } from '../../src/game/tools/Tool';
 import type { ActionResult } from '../../src/sim/actions';
 import { Gesture, type ActOptions } from '../../src/worker/SimHost';
+import { CommandOutcomeLost } from '../../src/worker/protocol';
 
 const OK: ActionResult = { ok: true, cost: 10 };
 const NO: ActionResult = { ok: false, cost: 0, reason: 'Not enough money' };
@@ -159,5 +160,22 @@ describe('Tool.commit and gestures', () => {
     await flush();
     expect(f.sound).toHaveBeenCalledExactlyOnceWith('error');
     expect(f.toast).toHaveBeenCalledOnce();
+  });
+
+  it('an applied command whose Ack a resync lost gives no failure feedback, and its prediction stands in', async () => {
+    for (const [exact, predicted, stands] of [[true, OK, OK], [false, OK, OK], [false, NO, { ok: true, cost: 0 }]] as const) {
+      const f = fixture(exact, predicted), ack = vi.fn();
+      commitAction(f.ctx, {}, 'plantTrees', [rect], { ok: vi.fn(), ack });
+      f.pending[0].reject(new CommandOutcomeLost(1));
+      await flush();
+      expect(f.sound).not.toHaveBeenCalled(); expect(f.toast).not.toHaveBeenCalled();
+      expect(ack).toHaveBeenCalledExactlyOnceWith(stands);
+    }
+    // any other rejection is still a failure
+    const f = fixture(false), ack = vi.fn();
+    commitAction(f.ctx, {}, 'plantTrees', [rect], { ok: vi.fn(), ack });
+    f.pending[0].reject(new Error('Simulation host is disposed'));
+    await flush();
+    expect(f.sound).toHaveBeenCalledExactlyOnceWith('error'); expect(ack).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ok: false }));
   });
 });
