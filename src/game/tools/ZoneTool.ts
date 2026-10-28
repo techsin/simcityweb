@@ -168,7 +168,7 @@ export class RectTool extends Tool {
     }
     const c = { x: p.hit.x, z: p.hit.z };
     const rect = this.start ? rectFrom(this.start, c) : this.hoverRect(c);
-    const key = `${rect.x0},${rect.z0},${rect.x1},${rect.z1},${!!this.start},${this.ctx.host.pending?.revision ?? 0}`;
+    const key = `${rect.x0},${rect.z0},${rect.x1},${rect.z1},${!!this.start},${this.ctx.host.pending?.revision ?? 0}${this.mode.kind === 'bulldoze' ? `,${this.ctx.state.day}` : ''}`;
     if (key !== this.lastKey) {
       this.lastKey = key;
       this.lastRect = rect;
@@ -262,14 +262,14 @@ export class RectTool extends Tool {
   private bulldozeRisk(rect: CellRect): Promise<DemolishRisk | null> | null {
     const pre = this.run(rect);
     if (!pre.ok) return null;
-    return this.ctx.host.query('demolishRisks', { rect, cost: pre.cost ?? 0, sandbox: this.ctx.sandbox() });
+    return this.ctx.host.query('demolishRisks', { rect, cost: pre.cost ?? 0, refund: pre.refund, refundNote: pre.refundNote, sandbox: this.ctx.sandbox() });
   }
 
   /** zoning over growables of another family demolishes them (ActionResult.demolished) */
   private rezoneRisk(rect: CellRect): Promise<DemolishRisk | null> | null {
     const pre = this.run(rect);
     if (!pre.ok || !pre.demolished?.length) return null;
-    return this.ctx.host.query('sideDemolishRisks', { ids: pre.demolished, fee: pre.demolishFee ?? 0, sandbox: this.ctx.sandbox() });
+    return this.ctx.host.query('sideDemolishRisks', { ids: pre.demolished, fee: pre.demolishFee ?? 0, refund: pre.refund, refundNote: pre.refundNote, sandbox: this.ctx.sandbox() });
   }
 
   private commitRect(rect: CellRect, gesture = this.gesture ?? undefined) {

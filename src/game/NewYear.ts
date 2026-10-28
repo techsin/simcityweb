@@ -109,7 +109,7 @@ const DAYS_PER_YEAR = DAYS_PER_MONTH * MONTHS_PER_YEAR;
 /** at most this much real time (s) advances the celebration in one frame (a hidden tab or a long stall skips nothing) */
 const REAL_STEP_MAX = 1;
 /** keys the camera controller acts on: pressing one hands the camera back to the player */
-const CAMERA_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'pageup', 'pagedown', 'home', '+', '=', '-', '_']);
+const CAMERA_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'NumpadEqual']);
 const DEG = 180 / Math.PI;
 
 const nf = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
@@ -704,7 +704,7 @@ export class NewYearCelebration {
     }
     if (typeof window !== 'undefined') {
       const kd = (e: KeyboardEvent) => {
-        if (CAMERA_KEYS.has(e.key.toLowerCase())) this.camUser = true;
+        if (CAMERA_KEYS.has(e.code)) this.camUser = true;
       };
       window.addEventListener('keydown', kd, { capture: true, signal: this.deps.signal });
       this.camOffs.push(() => window.removeEventListener('keydown', kd, true));
