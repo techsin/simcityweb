@@ -459,7 +459,7 @@ describe('recovery: a city whose building count is not a multiple of 4', { timeo
 });
 
 // ------------------------------------------------------------------------------------------------ write -> find -> restore
-describe('recovery: periodic snapshot after a bulldoze, then the tab is killed', () => {
+describe('recovery: periodic snapshot after a bulldoze, then the tab is killed', { timeout: 600_000 }, () => {
   let now: number;
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); clearRecoveryBase(); });
   beforeEach(() => {

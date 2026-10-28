@@ -51,7 +51,8 @@
 import './emergency.css';
 import type { GameContext } from '../game/context';
 import { MAX_BANNERS, sendDays } from '../game/emergencyPolicy';
-import { DispatchOptionsWatches, type EmergencyView, type PolicySnapshot } from '../worker/SimHost';
+import type { EmergencyView, PolicySnapshot } from '../worker/SimHost';
+import { DispatchOptionsWatches } from './dispatchOptions';
 import type { IncidentKind, Responder } from '../sim/CityState';
 import type { EmergencyEvent } from '../sim/Simulation';
 import {
@@ -650,7 +651,7 @@ export class EmergencyBanner {
     }], { tag: this });
   }
 
-  /** Layout and the count pill use the same current free-unit check as the policy. */
+  /** Layout and the count pill use the policy's send window with the latest delivered options. */
   private answerable(inc: Incident): boolean {
     return !Number.isNaN(sendDays(inc, this.ctx.host.simTime(), () => this.options.get(inc.id).value ?? []));
   }

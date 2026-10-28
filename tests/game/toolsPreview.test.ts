@@ -154,18 +154,21 @@ describe('zone preview: no road access (N3)', () => {
 });
 
 describe('plop tool tip (P3 / P8 / P14)', () => {
-  it('a school beside the homes: the upkeep here and at full use; away from every road: the red staffed line', () => {
+  it('a school beside the homes: the upkeep here and at full use; away from every road: the red staffed line', async () => {
     const { sim } = town();
     const f = fakeCtx(sim);
     const tool = new PlopTool(f.ctx, getDef('civ_elementary_school')!, 'school');
+    Object.assign(f.ctx.tools, { active: tool });
     tool.activate();
     // on the street's west side (4, 18), a walk from the homes
     tool.move(at(4, 18));
+    await Promise.resolve();
     let t = text(f.lastTip().html);
     expect(t).toMatch(/Upkeep here ≈§[\d,]+\/mo now · up to §[\d,]+ at full use/);
     expect(t).not.toContain(NO_ROAD_STAFFED);
     // open land with no road beside it
     tool.move(at(20, 25));
+    await Promise.resolve();
     const tip = f.lastTip();
     t = text(tip.html);
     expect(t).toContain(NO_ROAD_STAFFED);
@@ -179,7 +182,7 @@ describe('plop tool tip (P3 / P8 / P14)', () => {
     expect(text(f.lastTip().html)).not.toContain(NO_ROAD_STAFFED);
   });
 
-  it('final fixes UI-1: the tip quotes upkeepHere; past the full-use figure (a fire station in a big unserved district) no "up to" the same number', () => {
+  it('final fixes UI-1: the tip quotes upkeepHere; past the full-use figure (a fire station in a big unserved district) no "up to" the same number', async () => {
     // a dense town: streets every 5 tiles, full 2×2 towers (400) on both sides, no fire station anywhere
     const st = newState(64);
     st.funds = 1e7;
@@ -195,9 +198,11 @@ describe('plop tool tip (P3 / P8 / P14)', () => {
     const def = getDef('civ_fire_station')!;
     const f = fakeCtx(sim);
     const tool = new PlopTool(f.ctx, def, 'fire');
+    Object.assign(f.ctx.tools, { active: tool });
     tool.activate();
     // (the cursor at the lot's centre: origin (28, 30), beside the street x = 27)
     tool.move(at(28, 30, 29, 31));
+    await Promise.resolve();
     const t = text(f.lastTip().html);
     const here = runQuery(sim, 'upkeepContext', { defId: def.id, x: 28, z: 30, w: 2, d: 2 }).here!;
     const full = upkeepEstimate(st, def)!.full;

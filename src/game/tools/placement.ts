@@ -94,7 +94,7 @@ function upkeepFunding(st: CityState, service: ServiceKind | undefined): number 
   if (!service) return 1;
   const economy = st.systemData.economy as { v?: number; strikes?: Partial<Record<ServiceKind, number>> } | undefined;
   const strikes = economy?.v === 1 ? economy.strikes : {};
-  const pct = st.budget.funding[service];
+  const pct = st.budget?.funding?.[service];
   if (strikes) {
     if ((strikes[service] ?? 0) > 0) return 0;
     const v = Math.pow(Math.max(0, (pct ?? 100) / 100), 0.7);

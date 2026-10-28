@@ -24,8 +24,7 @@ import { money } from '../../ui/format';
 import { upkeepEstimate } from '../../ui/upkeepModel';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
 import { shoreFacesWater, shoreRotation, staffedService, type Rot } from './placement';
-import { watchFor, type WatchHandle } from '../../worker/SimHost';
-import type { QueryArgs, QueryResult } from '../../worker/queries';
+import type { QueryResult } from '../../worker/SimHost';
 
 /** actions.ts plop's shore rule failure (the tip adds how to fix it) */
 const SHORE_FAIL = 'Must be placed on the shore with its front facing water';
@@ -78,7 +77,7 @@ export class PlopTool extends Tool {
   private placementRequest = 0;
   /** the upkeep line of the current spot ("Upkeep here ≈§A/mo now · up to §B at full use"), made with res */
   private upkeep = '';
-  private upkeepRead: WatchHandle<QueryResult<'upkeepContext'>, QueryArgs<'upkeepContext'>> | null = null;
+  private upkeepRead: { key: string; commands: number; day: number; value?: QueryResult<'upkeepContext'> } | null = null;
   /** the current spot: a staffed service without a road (P8) / a shore building not facing water (P14) */
   private noRoad = false;
   private shoreHint = '';
@@ -198,22 +197,25 @@ export class PlopTool extends Tool {
   /** the pointer of the last refresh (origins of the other rotations for the shore hint) */
   private lastPointer: ToolPointer | null = null;
 
-  /** One argument-keyed watch; changes repaint only the active tool's current footprint. */
+  /** Only the current placement is memoized: revisiting a lot reads the latest services pass. */
   private upkeepAt(x: number, z: number, w: number, d: number): number | null {
-    const args = { defId: this.def.id, x, z, w, d };
-    if (!this.upkeepRead) {
-      this.upkeepRead = watchFor(this.ctx.host, 'upkeepContext', args, 'change', this.ctx.signal);
-      this.upkeepRead.subscribe(() => {
-        if (this.ctx.tools.active === this && this.lastPointer) this.refresh(this.lastPointer, true);
-      }, this.ctx.signal);
-    } else this.upkeepRead.setArgs(args);
-    return this.upkeepRead.value?.here ?? null;
+    const key = this.lastKey, commands = this.ctx.host.commandCount, day = this.ctx.state.day;
+    const cached = this.upkeepRead;
+    if (cached && cached.key === key && cached.commands === commands && cached.day === day) return cached.value?.here ?? null;
+    const read = this.upkeepRead = { key, commands, day, value: undefined as QueryResult<'upkeepContext'> | undefined };
+    const request = this.placementRequest;
+    void this.ctx.host.query('upkeepContext', { defId: this.def.id, x, z, w, d }).then((value) => {
+      if (this.ctx.signal.aborted || this.ctx.tools.active !== this || request !== this.placementRequest || key !== this.lastKey || read !== this.upkeepRead) return;
+      read.value = value;
+      if (this.lastPointer) this.refresh(this.lastPointer, true);
+    }).catch(() => { if (read === this.upkeepRead) this.upkeepRead = null; });
+    return null;
   }
 
   private refresh(p: ToolPointer | null, force = false): void {
     this.lastPointer = p && p.hit ? p : null;
     if (!p || !p.hit) {
-      this.upkeepRead?.dispose(); this.upkeepRead = null;
+      this.upkeepRead = null;
       this.ctx.objects.setGhost(null);
       this.ctx.world.setHighlight(null);
       this.ctx.tip.hide();
@@ -223,7 +225,7 @@ export class PlopTool extends Tool {
     }
     const pl = this.choose(p);
     const key = `${pl.x},${pl.z},${pl.rot},${this.ctx.host.pending?.revision ?? 0}`;
-    if (key !== this.lastKey || force) {
+    if (key !== this.lastKey || force || this.upkeepRead && (this.upkeepRead.commands !== this.ctx.host.commandCount || this.upkeepRead.day !== this.ctx.state.day)) {
       this.lastKey = key;
       this.place = pl;
       this.res = safe(() => this.ctx.actions.plop(this.def.id, pl.x, pl.z, pl.rot, true), FAIL);
@@ -293,7 +295,7 @@ export class PlopTool extends Tool {
   }
 
   override activate(): void {
-    this.upkeepRead?.dispose(); this.upkeepRead = null;
+    this.upkeepRead = null;
     this.placementRequest++;
     this.placementReads.clear();
     this.lastKey = '';
@@ -303,7 +305,7 @@ export class PlopTool extends Tool {
     if (this.autoOverlay !== null && this.autoVariant >= 0) this.ctx.preferOverlayVariant?.(this.autoOverlay, this.autoVariant);
   }
   override deactivate(): void {
-    this.upkeepRead?.dispose(); this.upkeepRead = null;
+    this.upkeepRead = null;
     this.placementRequest++;
     this.placementReads.clear();
     this.ctx.objects.setGhost(null);
