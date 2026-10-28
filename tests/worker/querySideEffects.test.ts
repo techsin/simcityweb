@@ -156,7 +156,8 @@ describe('query side effects', () => {
   for (const [name, grown, present] of [
     ['loopback generated 128²', false, true],
     ['loopback grown fixture', true, existsSync(grownFixture())],
-  ] as const) it.skipIf(!present)(`${name}: every query and watch including upkeepContext leaves 120 daily hashes and RNG states unchanged`, { timeout: 300000 }, async () => {
+  // the grown fixture runs 120 days twice: about 330 s on the cloud's 4-core container, far less on the desktop
+  ] as const) it.skipIf(!present)(`${name}: every query and watch including upkeepContext leaves 120 daily hashes and RNG states unchanged`, { timeout: grown ? 900000 : 300000 }, async () => {
     const without = await run(false, true, grown);
     const withReads = await run(true, true, grown);
     expect(withReads).toEqual(without);
