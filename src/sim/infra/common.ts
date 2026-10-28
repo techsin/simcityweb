@@ -331,6 +331,67 @@ export function buildingList(st: CityState): Building[] {
   return arr;
 }
 
+/**
+ * B2 (docs/dev/B2_DESIGN.md R4): the building list a split pass walks — one copy of buildingList(st) taken at the pass's
+ * first building stage, walked by every building stage of that pass with a cursor, released at the pass end. In an
+ * uninterrupted pass (flush, compute, init) no building is added or removed and the day does not change, so the copy is
+ * exactly the sequence buildingList returns at every one of the pre-B2 steps. Interrupted (by design): a building removed
+ * mid-pass still counts for that pass, one added mid-pass waits for the next.
+ * plan() cuts it into chunks of at most `budgetUs` estimated µs of aUs x buildings + bUs x footprint cells (w x d), so a
+ * stage's chunk boundaries are deterministic constants of the list; cost() reads a chunk's B / F in O(1).
+ */
+export class BuildingSnapshot {
+  /** the pass's buildings (do not mutate) */
+  readonly list: Building[] = [];
+  n = 0;
+  /** chunk k = list[bounds[k], bounds[k + 1]); its footprint cells fpOf(k) */
+  bounds: Int32Array<ArrayBuffer> = new Int32Array(2);
+  chunks = 0;
+  private fp: Float64Array<ArrayBuffer> = new Float64Array(2);
+  /** take a copy of buildingList(st) (reuses the backing array) */
+  take(st: CityState): void {
+    const src = buildingList(st), L = this.list, n = src.length;
+    L.length = n;
+    for (let i = 0; i < n; i++) L[i] = src[i];
+    this.n = n;
+    this.chunks = 0;
+  }
+  /** cut the list into chunks of at most budgetUs of aUs per building + bUs per footprint cell; returns the chunk count */
+  plan(aUs: number, bUs: number, budgetUs: number): number {
+    const L = this.list, n = this.n;
+    if (this.bounds.length < n + 2) this.bounds = new Int32Array(n + (n >> 3) + 16);
+    if (this.fp.length < n + 2) this.fp = new Float64Array(n + (n >> 3) + 16);
+    const bounds = this.bounds, fp = this.fp;
+    let k = 0, acc = 0, cells = 0;
+    bounds[0] = 0;
+    fp[0] = 0;
+    for (let i = 0; i < n; i++) {
+      const b = L[i], f = b.w * b.d, c = aUs + bUs * f;
+      if (acc > 0 && acc + c > budgetUs) { k++; bounds[k] = i; fp[k] = cells; acc = 0; }
+      acc += c;
+      cells += f;
+    }
+    if (n > 0) k++;
+    bounds[k] = n;
+    fp[k] = cells;
+    this.chunks = k;
+    return k;
+  }
+  /** buildings / footprint cells of chunk k (0 past the end) */
+  countOf(k: number): number {
+    return k >= 0 && k < this.chunks ? this.bounds[k + 1] - this.bounds[k] : 0;
+  }
+  cellsOf(k: number): number {
+    return k >= 0 && k < this.chunks ? this.fp[k + 1] - this.fp[k] : 0;
+  }
+  /** drop the references (pass end) */
+  release(): void {
+    this.list.length = 0;
+    this.n = 0;
+    this.chunks = 0;
+  }
+}
+
 // ------------------------------------------------------------------------------------------ occupancy
 /** building exists as a functioning structure (complete, not rubble). Abandoned buildings are inactive. */
 export function isFunctional(b: Building): boolean {

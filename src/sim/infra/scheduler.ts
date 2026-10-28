@@ -1,7 +1,8 @@
 /**
  * InfraScheduler — one shared, deterministic work scheduler for the heavy infrastructure work (traffic assignment
- * steps, utilities, pollution, services, crime). Each system registers a task that exposes small STEPS
- * (~0.5–3 ms each on a 256² city); the scheduler decides which steps run when:
+ * steps, utilities, pollution, services, crime). Each system registers a task that exposes small STEPS (B2: "pieces" of
+ * about INFRA_PIECE_MS / INFRA_PIECE_COLD_MS estimated warm ms; chunk sizes from pieceUnits()); the scheduler decides
+ * which steps run when:
  *
  *  - headless (no frame() calls in the last 750 ms, e.g. tests / balance bots): once per sim day, steps of due tasks
  *    until the day's cost budget (INFRA_DAY_BUDGET, in estimated ms) is used — at least one step per day.
@@ -11,13 +12,17 @@
  *  - fairness by cost: the due task with the least recently used (estimated) time runs next, so a task with many
  *    small steps (traffic) gets the same share as one with few large steps; an idle task banks at most
  *    CREDIT_FLOOR ms of priority for when it becomes due.
- *  - urgent tasks (player edits: roads, power lines, plopped buildings) run first.
+ *  - urgent tasks (player edits: roads, power lines, plopped buildings) run first: each step re-scans for the first
+ *    urgent and due task (registration order) under one shared cap per run — INFRA_URGENT_BUDGET estimated ms headless,
+ *    INFRA_URGENT_FRAME_MS of real time live (B2; pre-B2: 8 steps, no time check); the first urgent step always runs.
  *
  * Tasks keep their own "due" logic (periods in sim days, dirty flags, pass progress).
  */
 import type { Simulation } from '../Simulation';
 import { nowMs } from './common';
-import { INFRA_DAY_BUDGET, INFRA_DAY_CARRY, INFRA_FRAME_BUDGET_MS } from './params';
+import {
+  CREDIT_FLOOR, INFRA_DAY_BUDGET, INFRA_DAY_CARRY, INFRA_FRAME_BUDGET_MS, INFRA_PIECE_MS, INFRA_URGENT_BUDGET, INFRA_URGENT_FRAME_MS,
+} from './params';
 
 export interface InfraTask {
   /** unique name ('utilities', 'traffic', ...) */
@@ -26,14 +31,50 @@ export interface InfraTask {
   due(sim: Simulation): boolean;
   /** true when the task should run before everything else (player edit feedback) */
   urgent(sim: Simulation): boolean;
-  /** estimated cost (ms on a reference machine) of the next step */
+  /** estimated warm wall ms of the next step on the B2 calibration box (headless, in schedule); side-effect free */
   cost(sim: Simulation): number;
   /** run exactly one step */
   step(sim: Simulation): void;
 }
 
-/** max priority (estimated ms) an idle task can bank */
-const CREDIT_FLOOR = 4;
+/** steps per scheduler run at most (urgent loop and normal loop each; B2: 64 -> 256, the pieces are ~10 x finer) */
+export const STEP_GUARD = 256;
+
+/** test hook (setPieceScale): chunk sizes are multiplied by this; 1e9 = one piece per stage, 1e-9 = one unit per piece */
+let pieceScale = 1;
+/**
+ * B2: work units per piece for a loop costing `usPerUnit` estimated warm µs per unit: floor(budget x scale / cost), at
+ * least `min`. `budgetMs` = INFRA_PIECE_MS (default) or INFRA_PIECE_COLD_MS. A pure function of constants and the test
+ * scale (no clock), so chunk sizes and step boundaries are deterministic.
+ */
+export function pieceUnits(usPerUnit: number, min = 1, budgetMs = INFRA_PIECE_MS): number {
+  const u = Math.floor((budgetMs * 1000 * pieceScale) / usPerUnit);
+  return u >= min ? (u < 0x3fffffff ? u : 0x3fffffff) : min;
+}
+/** B2: a piece budget in estimated µs (budgetMs x 1000 x the test scale): weighted chunk plans (BuildingSnapshot.plan) */
+export function pieceBudgetUs(budgetMs = INFRA_PIECE_MS): number {
+  const u = budgetMs * 1000 * pieceScale;
+  return u < 1e15 ? u : 1e15;
+}
+/** test-only: scale every chunk size (returns the previous scale; module state — reset it, see withPieceScale) */
+export function setPieceScale(s: number): number {
+  const prev = pieceScale;
+  pieceScale = s > 0 && Number.isFinite(s) ? s : 1;
+  return prev;
+}
+/** test-only: run fn with chunk sizes scaled by s (the previous scale is restored even when fn throws) */
+export function withPieceScale<T>(s: number, fn: () => T): T {
+  const prev = setPieceScale(s);
+  try {
+    return fn();
+  } finally {
+    setPieceScale(prev);
+  }
+}
+/** the current test scale of the chunk sizes (1 in production) */
+export function currentPieceScale(): number {
+  return pieceScale;
+}
 
 export class InfraScheduler {
   readonly tasks: InfraTask[] = [];
@@ -90,13 +131,14 @@ export class InfraScheduler {
     this.run(sim, INFRA_FRAME_BUDGET_MS, true);
   }
 
-  /** run every pending step now (tests / load) */
-  flush(sim: Simulation, maxSteps = 10000): void {
+  /** run every pending step now (tests / load); returns false when maxSteps ran out before every task was idle */
+  flush(sim: Simulation, maxSteps = 10000): boolean {
     for (let k = 0; k < maxSteps; k++) {
       const t = this.tasks.find((x) => x.due(sim));
-      if (!t) return;
+      if (!t) return true;
       this.exec(sim, t);
     }
+    return !this.tasks.some((x) => x.due(sim));
   }
 
   private exec(sim: Simulation, t: InfraTask): void {
@@ -116,12 +158,18 @@ export class InfraScheduler {
     const t0 = nowMs();
     let spent = 0;
     let ran = 0;
-    // urgent first (player edits: finish their passes now), bounded
-    for (let rep = 0; rep < 8; rep++) {
+    // urgent first (player edits: finish their passes now): each step re-scans for the first urgent and due task, under
+    // one cap per run (estimated ms headless, real ms live); the first one always runs
+    const ucap = realTime ? INFRA_URGENT_FRAME_MS : INFRA_URGENT_BUDGET;
+    let uSpent = 0;
+    for (let rep = 0; rep < STEP_GUARD; rep++) {
       let k = 0;
       while (k < n && !(tasks[k].urgent(sim) && tasks[k].due(sim))) k++;
       if (k === n) break;
       const c = tasks[k].cost(sim);
+      const used = realTime ? nowMs() - t0 : uSpent;
+      if (rep > 0 && used + c > ucap) break;
+      uSpent += c;
       this.exec(sim, tasks[k]);
       this.estMs.set(tasks[k].name, (this.estMs.get(tasks[k].name) ?? 0) + c);
       credit[k] += c;
@@ -129,7 +177,7 @@ export class InfraScheduler {
       ran++;
     }
     // least-served due task next, until the budget is used
-    for (let guard = 0; guard < 64; guard++) {
+    for (let guard = 0; guard < STEP_GUARD; guard++) {
       let i = -1;
       for (let k = 0; k < n; k++) if ((i < 0 || credit[k] < credit[i]) && tasks[k].due(sim)) i = k;
       if (i < 0) break;

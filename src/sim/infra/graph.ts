@@ -223,6 +223,376 @@ export function perimeterNodes(nodeOfCell: Int32Array, N: number, b: Building, o
   return c;
 }
 
+// ---------------------------------------------------------------------------------------------- B2 piecewise builds
+/** netFlags bit 5: rail level crossing on a road cell (the rail graph's cells: Rail or a crossing; traffic.ts) */
+const NETFLAG_CROSSING_G = 1 << 5;
+/**
+ * estimated warm µs per unit of the piecewise build stages (GraphBuildRun; dense1m, B2 G1 fit): road numbering per cell,
+ * road attributes / edges / components per node, rail and subway numbering per cell (typed masks) and edges /
+ * components per node, the publish copies per cell and per node
+ */
+export const GRAPH_BUILD_US = {
+  roadCell: 0.0045, roadAttr: 0.006, roadEdge: 0.034, roadComp: 0.022,
+  gridCell: 0.0025, gridEdge: 0.012, gridComp: 0.012,
+  pubCell: 0.0012, pubNode: 0.006,
+} as const;
+
+/** a grid graph under construction (GraphBuildRun's rail / subway part) */
+class GridBuild {
+  nodeOf: Int32Array<ArrayBuffer> = new Int32Array(0);
+  cellOf: Int32Array<ArrayBuffer> = new Int32Array(0);
+  adj: Int32Array<ArrayBuffer> = new Int32Array(0);
+  comp: Int32Array<ArrayBuffer> = new Int32Array(0);
+  stack: Int32Array<ArrayBuffer> = new Int32Array(0);
+  n = 0;
+  nComp = 0;
+}
+
+const growInt = (a: Int32Array<ArrayBuffer>, n: number): Int32Array<ArrayBuffer> => {
+  if (a.length >= n) return a;
+  const b = new Int32Array(Math.max(n, 2 * a.length, 64));
+  b.set(a);
+  return b;
+};
+
+/**
+ * B2 (docs/dev/B2_DESIGN.md §2.5 / §3 rebuild): traffic's road, rail and subway graphs built in pieces from a private
+ * copy of the network / netFlags / subway grids taken at begin(), into private scratch graphs, then written into the live
+ * RoadGraph / GridGraph objects by publish() exactly as RoadGraph.build() / GridGraph.build() write them (same array
+ * allocations and tails, version + 1 each; the objects are kept: emergency holds the RoadGraph and checks its version).
+ * The graphs are a pure function of the grids, so the result is byte-identical to build() on the grids of begin(); a
+ * component DFS resumed from its saved stack visits nodes in the same order, so component ids are identical too. The
+ * rail and subway node masks are typed (Rail or a level crossing; subway != 0), not per-cell closures.
+ * run(budgetUs) does at least one unit of work and at most ~budgetUs estimated µs (GRAPH_BUILD_US); true when done.
+ */
+export class GraphBuildRun {
+  N = 0;
+  C = 0;
+  /** 0 road numbering, 1 road attributes, 2 road edges, 3 road components, 4-6 rail (numbering, edges, components),
+   *  7-9 subway, 10 done; -1 idle */
+  stage = -1;
+  private cur = 0;
+  private sp = 0;
+  private nc = 0;
+  private net: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  private flags: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  private sub: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  // road scratch graph
+  private rNodeOf: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private rCellOf: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private rType: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  private rT0: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private rCap: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private rFwd: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private rRev: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private rComp: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private rStack: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private rN = 0;
+  private rNComp = 0;
+  private readonly rail = new GridBuild();
+  private readonly subway = new GridBuild();
+
+  /** copy the grids and reset the cursors (the first piece of a rebuild) */
+  begin(state: CityState): void {
+    const N = state.size, C = N * N;
+    this.N = N;
+    this.C = C;
+    if (this.net.length !== C) { this.net = new Uint8Array(C); this.flags = new Uint8Array(C); this.sub = new Uint8Array(C); }
+    this.net.set(state.network.subarray(0, C));
+    this.flags.set(state.netFlags.subarray(0, C));
+    this.sub.set(state.subway.subarray(0, C));
+    if (this.rNodeOf.length !== C) this.rNodeOf = new Int32Array(C);
+    for (const g of [this.rail, this.subway]) if (g.nodeOf.length !== C) g.nodeOf = new Int32Array(C);
+    this.stage = 0;
+    this.cur = 0;
+    this.sp = 0;
+    this.nc = 0;
+    this.rN = 0;
+  }
+
+  /** a build is in progress (begin() ran, publish() not yet) */
+  get active(): boolean {
+    return this.stage >= 0;
+  }
+
+  /** forget an unfinished build (its scratch is reused by the next begin) */
+  cancel(): void {
+    this.stage = -1;
+  }
+
+  /** estimated µs left (all stages; the numbering stages assume the previous build's node counts) */
+  remainingUs(): number {
+    const U = GRAPH_BUILD_US, C = this.C, st = this.stage;
+    if (st < 0 || st >= 10) return 0;
+    const nR = st >= 1 ? this.rN : Math.max(this.rN, C >> 2), nRail = this.rail.n, nSub = this.subway.n;
+    let us = 0;
+    if (st <= 0) us += (C - this.cur) * U.roadCell;
+    if (st <= 1) us += nR * U.roadAttr;
+    if (st <= 2) us += nR * U.roadEdge;
+    if (st <= 3) us += nR * U.roadComp;
+    us += (st <= 4 ? C : 0) * U.gridCell + (st <= 7 ? C : 0) * U.gridCell;
+    us += (st <= 6 ? nRail * (U.gridEdge + U.gridComp) : 0) + (st <= 9 ? nSub * (U.gridEdge + U.gridComp) : 0);
+    return us;
+  }
+
+  /** run at most about budgetUs estimated µs of the build (at least one unit); true when every graph is built */
+  run(budgetUs: number): boolean {
+    let left = budgetUs;
+    let first = true;
+    while (this.stage >= 0 && this.stage < 10) {
+      const U = GRAPH_BUILD_US;
+      const st = this.stage;
+      const coef = st === 0 ? U.roadCell : st === 1 ? U.roadAttr : st === 2 ? U.roadEdge : st === 3 ? U.roadComp
+        : st === 4 || st === 7 ? U.gridCell : st === 5 || st === 8 ? U.gridEdge : U.gridComp;
+      let units = Math.floor(left / coef);
+      if (units < 1) { if (!first) return false; units = 1; }
+      first = false;
+      const used = this.stageRun(units);
+      left -= used * coef;
+      if (left <= 0 && this.stage === st) return false;
+    }
+    return this.stage >= 10;
+  }
+
+  /** at most `units` units of the current stage; returns the units used (the stage advances when complete) */
+  private stageRun(units: number): number {
+    switch (this.stage) {
+      case 0: return this.roadNumber(units);
+      case 1: return this.roadAttr(units);
+      case 2: return this.roadEdges(units);
+      case 3: return this.roadComps(units);
+      case 4: return this.gridNumber(this.rail, units, true);
+      case 5: return this.gridEdges(this.rail, units);
+      case 6: return this.gridComps(this.rail, units);
+      case 7: return this.gridNumber(this.subway, units, false);
+      case 8: return this.gridEdges(this.subway, units);
+      default: return this.gridComps(this.subway, units);
+    }
+  }
+
+  private next(): void {
+    this.stage++;
+    this.cur = 0;
+    this.sp = 0;
+    this.nc = 0;
+  }
+
+  private roadNumber(units: number): number {
+    const C = this.C, net = this.net, nodeOf = this.rNodeOf;
+    const i0 = this.cur, i1 = Math.min(C, i0 + units);
+    let n = this.rN;
+    if (this.rCellOf.length < n + (i1 - i0)) this.rCellOf = growInt(this.rCellOf, n + (i1 - i0));
+    const cellOf = this.rCellOf;
+    for (let i = i0; i < i1; i++) {
+      if (isRoad(net[i] as Network)) { cellOf[n] = i; nodeOf[i] = n++; } else nodeOf[i] = -1;
+    }
+    this.rN = n;
+    this.cur = i1;
+    if (i1 >= C) {
+      const cap = n + (n >> 3) + 16;
+      if (this.rType.length < n) {
+        this.rType = new Uint8Array(cap); this.rT0 = new Float32Array(cap); this.rCap = new Float32Array(cap);
+        this.rFwd = new Int32Array(cap * 4); this.rRev = new Int32Array(cap * 4); this.rComp = new Int32Array(cap); this.rStack = new Int32Array(cap);
+      }
+      this.next();
+    }
+    return i1 - i0;
+  }
+
+  private roadAttr(units: number): number {
+    const n = this.rN, net = this.net, cellOf = this.rCellOf, type = this.rType, t0 = this.rT0, capA = this.rCap;
+    const k0 = this.cur, k1 = Math.min(n, k0 + units);
+    for (let k = k0; k < k1; k++) {
+      const t = net[cellOf[k]];
+      type[k] = t;
+      t0[k] = NET_TIME[t];
+      capA[k] = NET_CAPACITY[t];
+    }
+    this.cur = k1;
+    if (k1 >= n) { this.next(); this.rFwd.fill(-1, 0, n * 4); this.rRev.fill(-1, 0, n * 4); }
+    return Math.max(1, k1 - k0);
+  }
+
+  private roadEdges(units: number): number {
+    const n = this.rN, N = this.N, flags = this.flags, nodeOfCell = this.rNodeOf, cellOf = this.rCellOf, type = this.rType;
+    const fwd = this.rFwd, rev = this.rRev;
+    const a0 = this.cur, a1 = Math.min(n, a0 + units);
+    for (let a = a0; a < a1; a++) {
+      const ci = cellOf[a];
+      const x = ci % N;
+      const z = (ci - x) / N;
+      const ta = type[a];
+      const dirA = (flags[ci] >> 2) & 3;
+      for (let k = 0; k < 4; k++) {
+        const nx = x + DX[k], nz = z + DZ[k];
+        if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
+        const cj = nz * N + nx;
+        const b = nodeOfCell[cj];
+        if (b < 0) continue;
+        const tb = type[b];
+        if (!roadsConnect(ta, tb)) continue;
+        const opp = (k + 2) & 3;
+        if (ta === Network.OneWay && k === ((dirA + 2) & 3)) continue;
+        if (tb === Network.OneWay && k === ((((flags[cj] >> 2) & 3) + 2) & 3)) continue;
+        fwd[a * 4 + k] = b;
+        rev[b * 4 + opp] = a;
+      }
+    }
+    this.cur = a1;
+    if (a1 >= n) { this.next(); this.rComp.fill(-1, 0, n); }
+    return Math.max(1, a1 - a0);
+  }
+
+  private roadComps(units: number): number {
+    const n = this.rN, comp = this.rComp, stack = this.rStack, fwd = this.rFwd, rev = this.rRev;
+    let s = this.cur, sp = this.sp, nc = this.nc, used = 0;
+    while (used < units) {
+      if (sp === 0) {
+        while (s < n && comp[s] >= 0) s++;
+        if (s >= n) break;
+        stack[sp++] = s;
+        comp[s] = nc;
+      }
+      const a = stack[--sp];
+      for (let k = 0; k < 4; k++) {
+        let b = fwd[a * 4 + k];
+        if (b >= 0 && comp[b] < 0) { comp[b] = nc; stack[sp++] = b; }
+        b = rev[a * 4 + k];
+        if (b >= 0 && comp[b] < 0) { comp[b] = nc; stack[sp++] = b; }
+      }
+      used++;
+      if (sp === 0) nc++;
+    }
+    this.cur = s; this.sp = sp; this.nc = nc;
+    if (sp === 0 && s >= n) { this.rNComp = nc; this.next(); }
+    return Math.max(1, used);
+  }
+
+  private gridNumber(g: GridBuild, units: number, rail: boolean): number {
+    const C = this.C, net = this.net, flags = this.flags, sub = this.sub, nodeOf = g.nodeOf;
+    const i0 = this.cur, i1 = Math.min(C, i0 + units);
+    if (i0 === 0) g.n = 0;
+    let n = g.n;
+    if (g.cellOf.length < n + (i1 - i0)) g.cellOf = growInt(g.cellOf, n + (i1 - i0));
+    const cellOf = g.cellOf, RAIL = Network.Rail;
+    if (rail) {
+      for (let i = i0; i < i1; i++) {
+        if (net[i] === RAIL || (flags[i] & NETFLAG_CROSSING_G) !== 0) { cellOf[n] = i; nodeOf[i] = n++; } else nodeOf[i] = -1;
+      }
+    } else {
+      for (let i = i0; i < i1; i++) {
+        if (sub[i] !== 0) { cellOf[n] = i; nodeOf[i] = n++; } else nodeOf[i] = -1;
+      }
+    }
+    g.n = n;
+    this.cur = i1;
+    if (i1 >= C) {
+      if (g.adj.length < n * 4) { const cap = n + (n >> 3) + 16; g.adj = new Int32Array(cap * 4); g.comp = new Int32Array(cap); g.stack = new Int32Array(cap); }
+      g.adj.fill(-1, 0, n * 4);
+      this.next();
+    }
+    return i1 - i0;
+  }
+
+  private gridEdges(g: GridBuild, units: number): number {
+    const n = g.n, N = this.N, nodeOf = g.nodeOf, cellOf = g.cellOf, adj = g.adj;
+    const a0 = this.cur, a1 = Math.min(n, a0 + units);
+    for (let a = a0; a < a1; a++) {
+      const ci = cellOf[a];
+      const x = ci % N, z = (ci - x) / N;
+      for (let k = 0; k < 4; k++) {
+        const nx = x + DX[k], nz = z + DZ[k];
+        if (nx < 0 || nz < 0 || nx >= N || nz >= N) continue;
+        const b = nodeOf[nz * N + nx];
+        if (b >= 0) adj[a * 4 + k] = b;
+      }
+    }
+    this.cur = a1;
+    if (a1 >= n) { this.next(); g.comp.fill(-1, 0, n); }
+    return Math.max(1, a1 - a0);
+  }
+
+  private gridComps(g: GridBuild, units: number): number {
+    const n = g.n, comp = g.comp, stack = g.stack, adj = g.adj;
+    let s = this.cur, sp = this.sp, nc = this.nc, used = 0;
+    while (used < units) {
+      if (sp === 0) {
+        while (s < n && comp[s] >= 0) s++;
+        if (s >= n) break;
+        stack[sp++] = s;
+        comp[s] = nc;
+      }
+      const a = stack[--sp];
+      for (let k = 0; k < 4; k++) {
+        const b = adj[a * 4 + k];
+        if (b >= 0 && comp[b] < 0) { comp[b] = nc; stack[sp++] = b; }
+      }
+      used++;
+      if (sp === 0) nc++;
+    }
+    this.cur = s; this.sp = sp; this.nc = nc;
+    if (sp === 0 && s >= n) { g.nComp = nc; this.next(); }
+    return Math.max(1, used);
+  }
+
+  /** estimated µs of publish() */
+  publishUs(): number {
+    const U = GRAPH_BUILD_US;
+    return 3 * this.C * U.pubCell + (this.rN + this.rail.n + this.subway.n) * U.pubNode;
+  }
+
+  /** write the built graphs into the live ones exactly as RoadGraph.build / GridGraph.build would (version + 1 each) */
+  publish(road: RoadGraph, rail: GridGraph, subway: GridGraph): void {
+    const N = this.N, C = this.C, n = this.rN;
+    if (road.nodeOfCell.length !== C) road.nodeOfCell = new Int32Array(C);
+    road.N = N;
+    road.C = C;
+    road.nodeOfCell.set(this.rNodeOf.subarray(0, C));
+    road.n = n;
+    if (road.cellOf.length < n) {
+      const cap = Math.max(n, 16) + (n >> 3);
+      road.cellOf = new Int32Array(cap);
+      road.type = new Uint8Array(cap);
+      road.fwd = new Int32Array(cap * 4);
+      road.rev = new Int32Array(cap * 4);
+      road.t0 = new Float32Array(cap);
+      road.cap = new Float32Array(cap);
+      road.comp = new Int32Array(cap);
+    }
+    road.cellOf.set(this.rCellOf.subarray(0, n));
+    road.type.set(this.rType.subarray(0, n));
+    road.t0.set(this.rT0.subarray(0, n));
+    road.cap.set(this.rCap.subarray(0, n));
+    road.fwd.set(this.rFwd.subarray(0, n * 4));
+    road.rev.set(this.rRev.subarray(0, n * 4));
+    road.comp.set(this.rComp.subarray(0, n));
+    road.nComp = this.rNComp;
+    road.version++;
+    this.publishGrid(this.rail, rail);
+    this.publishGrid(this.subway, subway);
+    this.stage = -1;
+  }
+
+  private publishGrid(b: GridBuild, g: GridGraph): void {
+    const N = this.N, C = this.C, n = b.n;
+    if (g.nodeOfCell.length !== C) g.nodeOfCell = new Int32Array(C);
+    g.N = N;
+    g.nodeOfCell.set(b.nodeOf.subarray(0, C));
+    g.n = n;
+    if (g.cellOf.length < n) {
+      const cap = Math.max(n, 16) + (n >> 3);
+      g.cellOf = new Int32Array(cap);
+      g.adj = new Int32Array(cap * 4);
+      g.comp = new Int32Array(cap);
+    }
+    g.cellOf.set(b.cellOf.subarray(0, n));
+    g.adj.set(b.adj.subarray(0, n * 4));
+    g.comp.set(b.comp.subarray(0, n));
+    g.nComp = b.nComp;
+    g.version++;
+  }
+}
+
 let scratch = new Int32Array(1024);
 /** shared scratch Int32Array of at least n entries (single-threaded use only) */
 export function scratchInt(n: number): Int32Array<ArrayBuffer> {

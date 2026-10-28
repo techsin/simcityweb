@@ -67,6 +67,96 @@ export function collectStops(state: CityState, out?: StopList): StopList {
   return res;
 }
 
+/**
+ * B2 (docs/dev/B2_DESIGN.md §2.6): collectStops in pieces — begin(out), building chunks over a pass's building list
+ * (pushes in list order), then cell ranges (the road-cell bus-stop flag, pushes in index order), then end() sets out.n.
+ * Same pushes in the same order as collectStops(state, out) over the same list, so the stop list is identical.
+ */
+export class StopCollector {
+  private out: StopList | null = null;
+  private n = 0;
+  /** next building index / cell index */
+  bi = 0;
+  ci = 0;
+
+  begin(out: StopList): void {
+    this.out = out;
+    this.n = 0;
+    this.bi = 0;
+    this.ci = 0;
+  }
+
+  private push(bid: number, mode: number, cell: number): void {
+    const res = this.out!;
+    const n = this.n;
+    if (n >= res.bid.length) {
+      const cap = res.bid.length * 2;
+      const b = new Int32Array(cap); b.set(res.bid); res.bid = b;
+      const m = new Uint8Array(cap); m.set(res.mode); res.mode = m;
+      const c = new Int32Array(cap); c.set(res.cell); res.cell = c;
+    }
+    res.bid[n] = bid;
+    res.mode[n] = mode;
+    res.cell[n] = cell;
+    this.n = n + 1;
+  }
+
+  /** buildings list[bi .. bi + count) (collectStops' building loop); true when the list is done */
+  buildings(state: CityState, list: readonly Building[], count: number): boolean {
+    const end = Math.min(list.length, this.bi + count);
+    for (let bI = this.bi; bI < end; bI++) {
+      const b = list[bI];
+      const inf = infoOf(state, b);
+      if (!isStopMode(inf.transit)) continue;
+      if (!isFunctional(b)) continue;
+      this.push(b.id, inf.transit, centerCell(state, b));
+    }
+    this.bi = end;
+    return end >= list.length;
+  }
+
+  /** cells ci .. ci + count (collectStops' road-cell bus stops); true when every cell is done */
+  cells(state: CityState, count: number): boolean {
+    const flags = state.netFlags, net = state.network, C = state.cells;
+    const end = Math.min(C, this.ci + count);
+    for (let i = this.ci; i < end; i++) {
+      if ((flags[i] & NETFLAG_BUS_STOP) !== 0 && net[i] >= 1 && net[i] <= 5) this.push(-1, Transit.Bus, i);
+    }
+    this.ci = end;
+    return end >= C;
+  }
+
+  /** stops collected so far */
+  get count(): number {
+    return this.n;
+  }
+
+  end(): StopList {
+    const res = this.out!;
+    res.n = this.n;
+    this.out = null;
+    return res;
+  }
+}
+
+/**
+ * B2: copy src's stops into dst as collectStops(state, dst) would have pushed them: dst grows by doubling (old contents
+ * copied), [0, n) is overwritten and the tail beyond n keeps what dst held (identical arrays, tails included)
+ */
+export function copyStopList(dst: StopList, src: StopList): void {
+  const n = src.n;
+  while (n > dst.bid.length) {
+    const cap = dst.bid.length > 0 ? dst.bid.length * 2 : 64;
+    const b = new Int32Array(cap); b.set(dst.bid); dst.bid = b;
+    const m = new Uint8Array(cap); m.set(dst.mode); dst.mode = m;
+    const c = new Int32Array(cap); c.set(dst.cell); dst.cell = c;
+  }
+  dst.bid.set(src.bid.subarray(0, n));
+  dst.mode.set(src.mode.subarray(0, n));
+  dst.cell.set(src.cell.subarray(0, n));
+  dst.n = n;
+}
+
 interface AttachApi { stopAttached?: (id: number) => boolean }
 
 /** traffic's attachment verdict for a stop building (true while traffic is not installed: legacy behaviour) */

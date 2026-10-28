@@ -139,8 +139,28 @@ export const INFRA_DAY_BUDGET = 2.6 + 0.15 /* WP3 share (P0-15) */ + 0.25 /* WP2
   + 0 /* WP7a share (PART B, max 0.1) */ + 0.05 /* WP7b share (PART B, max 0.2): parking raster, P&R, sinks, fleet (traffic +0.035 est. ms / day vs pre-WP7b on the stress city, r1) */;
 /** headless: unused budget (next step did not fit) carried to the next day, at most this much */
 export const INFRA_DAY_CARRY = 0.6;
+/** max priority (estimated ms) an idle task can bank in the scheduler's fairness credit (moved from scheduler.ts) */
+export const CREDIT_FLOOR = 4;
 /** with a live renderer: real ms of infra steps per frame (at least one step when due) */
 export const INFRA_FRAME_BUDGET_MS = 3;
+/**
+ * B2: estimated warm wall ms of one scheduler step ("piece") of a split infra task — the budget every chunk size is
+ * derived from (scheduler.ts pieceUnits(): units per piece = this / ms per unit; deterministic constants, no clock).
+ * Used for loops whose cold cost (first executions after a load, deopt waves) was measured at <= 10 x their warm cost:
+ * road / transit searches and the inbound / shop / freight passes (design review 2, item 1).
+ */
+export const INFRA_PIECE_MS = 0.3;
+/**
+ * B2: the piece budget of the loops that run cold most of the time — every Building loop and every stage that runs once
+ * per pass or less often (traffic prep, prepTransit, transit options, park & ride, commute end, parking, final, final2,
+ * the matching's per-round loops, graph rebuilds). Design review 2 measured split Building-loop pieces at p99 ~20 x and
+ * up to 37 x their warm cost in the first 200 days after a load, so 0.13 warm ms keeps them under ~3-5 ms cold.
+ */
+export const INFRA_PIECE_COLD_MS = 0.13;
+/** B2: headless, estimated ms of urgent steps (player-edit feedback) per scheduler run (replaces the pre-B2 8 steps) */
+export const INFRA_URGENT_BUDGET = 24;
+/** B2: live (frames active), real ms of urgent steps per frame (2 x INFRA_FRAME_BUDGET_MS; pre-B2: no time check) */
+export const INFRA_URGENT_FRAME_MS = 6;
 /** commute above this (min) counts as unreachable for employment purposes */
 export const MAX_COMMUTE = 110;
 

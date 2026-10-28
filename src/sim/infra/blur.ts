@@ -129,6 +129,99 @@ export function boxV(src: Float32Array, dst: Float32Array, N: number, r: number)
   }
 }
 
+/** B2: boxH over the rows [z0, z1) only — the same per-row operations as boxH (rows are independent), so ranges that
+ *  cover every row once give boxH's result exactly */
+export function boxHRows(src: Float32Array, dst: Float32Array, N: number, r: number, z0: number, z1: number): void {
+  const inv = 1 / (2 * r + 1);
+  if (canRestructure(src, dst, N, r)) {
+    let z = z0;
+    for (; z + 4 <= z1; z += 4) boxHRows4(src, dst, z * N, N, r, inv);
+    for (; z < z1; z++) boxHRow(src, dst, z * N, N, r, inv);
+    return;
+  }
+  for (let z = z0; z < z1; z++) {
+    const row = z * N;
+    let s = 0;
+    for (let x = 0; x < r && x < N; x++) s += src[row + x];
+    for (let x = 0; x < N; x++) {
+      if (x + r < N) s += src[row + x + r];
+      dst[row + x] = s * inv;
+      if (x - r >= 0) s -= src[row + x - r];
+    }
+  }
+}
+
+/**
+ * B2: boxV in row pieces — begin() is boxV's prologue (column sums of the first r rows), run(rows) continues the row
+ * loop with the same per-row operations; the running column sums live in the run (not in boxV's module scratch, which
+ * other code may use between two pieces). Rows in order give boxV's result exactly. src / dst must not change between
+ * the pieces (except dst rows already written).
+ */
+export class BoxVRun {
+  private cs: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private src: Float32Array = new Float32Array(0);
+  private dst: Float32Array = new Float32Array(0);
+  private N = 0;
+  private r = 0;
+  private inv = 1;
+  private restructure = false;
+  /** next row */
+  z = 0;
+
+  begin(src: Float32Array, dst: Float32Array, N: number, r: number): void {
+    this.inv = 1 / (2 * r + 1);
+    if (this.cs.length < N) this.cs = new Float64Array(N);
+    const cs = this.cs;
+    cs.fill(0, 0, N);
+    for (let z = 0; z < r && z < N; z++) {
+      const row = z * N;
+      for (let x = 0; x < N; x++) cs[x] += src[row + x];
+    }
+    this.src = src; this.dst = dst; this.N = N; this.r = r;
+    this.restructure = canRestructure(src, dst, N, r);
+    this.z = 0;
+  }
+
+  /** the next `rows` rows; true when the last row is done */
+  run(rows: number): boolean {
+    const src = this.src, dst = this.dst, N = this.N, r = this.r, inv = this.inv, cs = this.cs;
+    const z0 = this.z, z1 = Math.min(N, z0 + rows);
+    if (this.restructure) {
+      for (let z = z0; z < z1; z++) {
+        const row = z * N;
+        const add = z + r < N, sub = z >= r;
+        if (add && sub) {
+          const ra = (z + r) * N, rs = (z - r) * N;
+          for (let x = 0; x < N; x++) { const c = cs[x] + src[ra + x]; dst[row + x] = c * inv; cs[x] = c - src[rs + x]; }
+        } else if (add) {
+          const ra = (z + r) * N;
+          for (let x = 0; x < N; x++) { const c = cs[x] + src[ra + x]; dst[row + x] = c * inv; cs[x] = c; }
+        } else if (sub) {
+          const rs = (z - r) * N;
+          for (let x = 0; x < N; x++) { const c = cs[x]; dst[row + x] = c * inv; cs[x] = c - src[rs + x]; }
+        } else {
+          for (let x = 0; x < N; x++) dst[row + x] = cs[x] * inv;
+        }
+      }
+    } else {
+      for (let z = z0; z < z1; z++) {
+        const row = z * N;
+        if (z + r < N) {
+          const add = (z + r) * N;
+          for (let x = 0; x < N; x++) cs[x] += src[add + x];
+        }
+        for (let x = 0; x < N; x++) dst[row + x] = cs[x] * inv;
+        if (z - r >= 0) {
+          const sub = (z - r) * N;
+          for (let x = 0; x < N; x++) cs[x] -= src[sub + x];
+        }
+      }
+    }
+    this.z = z1;
+    return z1 >= N;
+  }
+}
+
 /** in-place ~Gaussian blur of `a` (3 box passes of radius r), tmp = scratch of same size */
 export function blur3(a: Float32Array, tmp: Float32Array, N: number, r: number): void {
   if (r <= 0) return;

@@ -161,6 +161,18 @@ export function baseSupply(st: CityState, out: Float32Array): void {
   }
 }
 
+/** B2: baseSupply over the cells [i0, i1) only (per-cell, so ranges covering every cell give baseSupply exactly) */
+export function baseSupplyRange(st: CityState, out: Float32Array, i0: number, i1: number): void {
+  const zone = st.zone, net = st.network, bld = st.building;
+  const ZS = ZONE_SUPPLY, RS = ROAD_SUPPLY, civic = PARKING_SUPPLY_CIVIC;
+  for (let i = i0; i < i1; i++) {
+    const t = net[i];
+    if (t !== Network.None) { out[i] = RS[t]; continue; }
+    const z = zone[i];
+    out[i] = z !== 0 ? ZS[z] : bld[i] >= 0 ? civic : 0;
+  }
+}
+
 /** smoothstep */
 function sstep(a: number, b: number, x: number): number {
   const t = x <= a ? 0 : x >= b ? 1 : (x - a) / (b - a);
@@ -209,6 +221,39 @@ export function parkingFromBoxes(N: number, D: Float32Array, S: Float32Array, bo
     }
   }
   return { demandWeighted: wSum > 0 ? pSum / wSum : 0, highShare: dCells > 0 ? high / dCells : 0, supply: sTot, demand: dTot };
+}
+
+/** B2: the running sums of parkingFromBoxes (parkingFromBoxesRange; same doubles / counts in cell order) */
+export interface ParkingSums { wSum: number; pSum: number; dCells: number; high: number; sTot: number; dTot: number }
+
+/** B2: parkingFromBoxes over the cells [i0, i1) into `out`, adding to `acc` (ranges in cell order covering every cell, then
+ *  parkingSummaryOf(acc), give parkingFromBoxes exactly) */
+export function parkingFromBoxesRange(N: number, D: Float32Array, S: Float32Array, boxD: Float32Array, boxS: Float32Array, out: Float32Array,
+  prev: Float32Array | null, blend: number, i0: number, i1: number, acc: ParkingSums): void {
+  const C = N * N;
+  const r0 = PARKING_RATIO[0], r1 = PARKING_RATIO[1];
+  const bl = prev && prev.length === C ? Math.max(0, Math.min(1, blend)) : 0;
+  let wSum = acc.wSum, pSum = acc.pSum, dCells = acc.dCells, high = acc.high, sTot = acc.sTot, dTot = acc.dTot;
+  for (let i = i0; i < i1; i++) {
+    const d = boxD[i];
+    sTot += S[i];
+    const di = D[i];
+    dTot += di;
+    const s = boxS[i];
+    let p = !(d > 1e-6) ? 0 : s > 1e-6 ? sstep(r0, r1, d / s) : 1;
+    if (bl > 0) p = bl * prev![i] + (1 - bl) * p;
+    out[i] = p;
+    if (di > 0) {
+      wSum += di; pSum += di * p; dCells++;
+      if (p > 0.6) high++;
+    }
+  }
+  acc.wSum = wSum; acc.pSum = pSum; acc.dCells = dCells; acc.high = high; acc.sTot = sTot; acc.dTot = dTot;
+}
+
+/** the summary of parkingFromBoxes from its running sums */
+export function parkingSummaryOf(a: ParkingSums): ParkingSummary {
+  return { demandWeighted: a.wSum > 0 ? a.pSum / a.wSum : 0, highShare: a.dCells > 0 ? a.high / a.dCells : 0, supply: a.sTot, demand: a.dTot };
 }
 
 /** mean parking pressure over a footprint */
