@@ -31,7 +31,7 @@ when or how often:
 | The full vitest, five times back to back at full parallelism | five consecutive runs, each **171 files passed, 1 skipped; 1,653 tests passed, 7 skipped** (36 s each). The recovery tests passed in all ten runs I made today. |
 | The 128 × 15 seed-7 bot, with the action log | identical to `93069fa`, line for line (**196,101** in 2015) |
 | Old saves | identical to `93069fa`: every file loads, continues 45 days and reloads identically (6 of 6) |
-| The W0.3b browser checklist (docs/dev/qa-W0.3b-reads.md) | a focused session (11 items and the leakprobe teardown check) runs next; its results follow in a note |
+| The W0.3b browser checklist (docs/dev/qa-W0.3b-reads.md) | **PASS**: all 11 items of a focused session and the leakprobe teardown check, with no console errors (docs/dev/reports/local-W0-complete-qa.md) |
 
 The lane's report follows.
 
