@@ -632,9 +632,11 @@ describe('catchments: transit reset, bulldozing, edges, empty city', () => {
     expect(st.eduElemCov[at]).toBeGreaterThan(0.9);
     const s = svc(sim) as unknown as { stepIdx: number; lastRun: number };
     const task = schedulerOf(sim).tasks.find((t) => t.name === 'services')!;
-    // start a pass, bulldoze after its prep step (the school is in this pass's facility list), finish the pass
+    // start a pass, bulldoze after its prep (the school is in this pass's facility list), finish the pass (B2: prep is
+    // several pieces — step until it is done, S_PREP = 0)
     s.lastRun = -1e9;
     task.step(sim);
+    while (s.stepIdx === 0) task.step(sim);
     expect(s.stepIdx).toBeGreaterThan(0);
     removeBuilding(sim, school);
     while (s.stepIdx >= 0) task.step(sim);

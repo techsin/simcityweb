@@ -50,13 +50,19 @@
  * SCHEDULING (InfraScheduler): a pass every SERVICES_PERIOD days (within SERVICES_DIRTY_DAYS after a service /
  * NIMBY building change, power flip or road change). Funding, ordinances, strikes, health water, staffing and justice
  * changes are urgent; live mode starts at most one pass per SERVICES_MIN_PASS_MS (ongoing passes keep running):
- *   prep (need rasters, facility lists, op factors) -> tiers police .. green + transit (bounded steps of
- *   WORK_PER_STEP work units: reach (cached / searched), seat allocation in seat order, crowded-facility demand,
- *   finalize) -> transit stops -> NIMBY (every 2nd pass unless a NIMBY source building or a highway / rail cell
- *   changed) -> access commute (seeds, search, land; every ACCESS_PERIOD days or after a network change) -> access
- *   shops (search, land) -> footprints (uniform coverage over large buildings; layers of empty slots skipped) ->
- *   finish (legacy combos, stats.needs, EQ / HQ fallback). Unserved clusters are computed on demand.
- *   Emits layerUpdated('services') and layerUpdated('catchments').
+ *   prep (need rasters, facility lists, op factors) -> tiers police .. green + transit (reach (cached / searched), seat
+ *   allocation in seat order, crowded-facility demand, finalize) -> transit stops -> NIMBY (every 2nd pass unless a
+ *   NIMBY source building or a highway / rail cell changed) -> access commute (seeds, search, land; every ACCESS_PERIOD
+ *   days or after a network change) -> access shops (search, land) -> footprints (uniform coverage over large buildings;
+ *   layers of empty slots skipped) -> finish (legacy combos, stats.needs, EQ / HQ fallback). Unserved clusters are
+ *   computed on demand. Emits layerUpdated('services') and layerUpdated('catchments').
+ *
+ * B2 (docs/dev/B2_DESIGN.md §4): every state's work is a sequence of PIECES, one per scheduler step, each of about
+ * INFRA_PIECE_MS (the tier engine) or half INFRA_PIECE_COLD_MS (every other loop: they run once per pass, so they run
+ * cold for many passes) estimated warm ms; the state ids and transitions are the pre-B2 ones. A pass whose pieces run
+ * with nothing in between (compute(), init, the scheduler's flush) computes bit-identical results to the pre-B2 steps:
+ * the loop bodies are the pre-B2 ones, loop-carried locals are fields of the same type, one building snapshot serves the
+ * whole pass (R4), and every external output changes in one piece per state (R7, audit below).
  */
 import type { Building, CityState, NeedStat, NeedTier } from '../CityState';
 import { BF } from '../CityState';
@@ -65,24 +71,24 @@ import type { SimSystem, Simulation } from '../Simulation';
 import type { CellRect } from '../../core/events';
 import { DevType, Network } from '../../core/types';
 import {
-  COV_KINDS, Fam, REACH_METRICS, SERVICE_TIERS, buildingList, ensureIdFloat, fundingFactor, infoOf, isFunctional, jobSlots,
+  BuildingSnapshot, COV_KINDS, Fam, REACH_METRICS, SERVICE_TIERS, ensureIdFloat, fundingFactor, infoOf, isFunctional, jobSlots,
   nowMs, readEffects, wealthOf, type DefInfo, type OrdEffects,
 } from './common';
 import {
   ACCESS_JOB_EXTRA, ACCESS_JOB_SLOTS, ACCESS_LAND_STEP, ACCESS_PERIOD, ACCESS_UNREACHED, CAR_OVERHEAD, CATCH_COLLEGE_WILL,
   CLUSTER_BLOCK, CLUSTER_COV, COLLEGE_ADULT_W, EDU_LEGACY_W, EQ_TAU_YEARS, GREEN_NEED_BASE, GREEN_NEED_NORM,
-  GREEN_NEED_SENIOR, HEALTH_NEED_NORM, HEALTH_NEED_W, HQ_TAU_YEARS, MAX_COMMUTE, NET_TIME, OVERCROWDED_UTIL, PLAY_TEEN_W,
-  RAMP_PENALTY, RES_PER_CS_JOB, ROAD_RADIUS_FACTOR, SHOP_BASE, SHOP_CAP_CELLS, SHOP_FAR, SHOP_NEAR, UNPOWERED_SERVICE_EFF,
-  UNWATERED_HEALTH_EFF,
+  GREEN_NEED_SENIOR, HEALTH_NEED_NORM, HEALTH_NEED_W, HQ_TAU_YEARS, INFRA_PIECE_COLD_MS, INFRA_PIECE_MS, MAX_COMMUTE, NET_TIME,
+  OVERCROWDED_UTIL, PLAY_TEEN_W, RAMP_PENALTY, RES_PER_CS_JOB, ROAD_RADIUS_FACTOR, SHOP_BASE, SHOP_CAP_CELLS, SHOP_FAR, SHOP_NEAR,
+  UNPOWERED_SERVICE_EFF, UNWATERED_HEALTH_EFF,
 } from './params';
-import { schedulerOf, sizeFactors } from './scheduler';
-import { collectStops, computeTransitCoverage, stopServes, transitCoverageActive, type StopList } from './transit';
+import { pieceBudgetUs, pieceUnits, schedulerOf } from './scheduler';
+import { StopCollector, stopServes, transitCoverageActive, transitCoverageRange, type StopList } from './transit';
 import { getDef } from '../catalog';
 import {
-  NEED_ORDER, TIER_NEED, TIME_Q, reachRaw, reachResult, roadDistMulti, roadTimeMulti, tierLayer, tierProvider,
-  type FacilityLoad,
+  NEED_ORDER, RoadDistRun, RoadTimeRun, TIER_NEED, TIME_Q, reachRaw, reachResult, tierLayer, tierProvider, type FacilityLoad,
+  type TierNeedRun,
 } from './catchments';
-import { nimbyCost, rebuildNimby } from './nimby';
+import { NimbyRun } from './nimby';
 import { cohortShares } from '../economy/demographics';
 import { justiceFactors } from './justice';
 import { facilityOpFactor } from './facilities';
@@ -95,10 +101,16 @@ export const SERVICES_DIRTY_DAYS = 2;
 export const SERVICES_MIN_PASS_MS = 1000;
 /** absolute change in facilityOpFactor since the last captured value; smaller drift waits for the periodic pass */
 export const SERVICES_STAFF_DELTA = 0.05;
-/** work units processed per tier step (bounds step cost: ~2.1 ms measured on the 256² stress city) */
-const WORK_PER_STEP = 120000;
-/** work units: per cell reached by a fresh search, per cached reach entry copied, per entry allocated / splatted */
-const U_SEARCH = 3.6, U_COPY = 0.1, U_ENTRY = 0.25;
+/**
+ * work units: per cell reached by a fresh search, per cached reach entry copied, per entry allocated / splatted, per
+ * entry of a crowded facility's demand report. B2 (design §4 S_TIERS a): re-weighted so that every kind of tier item
+ * costs about SC.tierUnit warm µs per unit (pre-B2: U_SEARCH 3.6, the report 0.25 per entry + 8, the init 0.1 per cell)
+ */
+const U_SEARCH = 1.75, U_COPY = 0.1, U_ENTRY = 0.25, U_REPORT = 0.45;
+/** tier work units per cell: a slot's init fills (A, cov, seat), an empty slot's layer fill, the final clamp / stats / publish */
+const U_INIT = 0.035, U_EMPTY = 0.0175, U_CLAMP = 0.11, U_STATS = 0.11, U_PUBLISH = 0.02;
+/** tier work units per footprint cell of the per-tier footprint max (two passes over each lot) */
+const FOOT_WORK = 0.22;
 const KIND_SERVICE: Record<string, ServiceKind> = {
   police: 'police', fire: 'fire', health: 'health', education: 'education', park: 'parks', transit: 'transit', garbage: 'utilities',
 };
@@ -114,13 +126,57 @@ const NEED_RASTER: readonly number[] = [0, 0, 1, 2, 3, 4, 5, 6];
 const N_RASTERS = 7;
 
 // steps
-/** tier work units per footprint cell of the per-tier footprint max (two passes; tierWork counts C × 0.2 for two passes
- *  over every cell) */
-const FOOT_WORK = 0.2;
 const S_PREP = 0, S_TIERS = 1, S_STOPS = 2, S_NIMBY = 3, S_ACC_SEED = 4, S_ACC_SEARCH = 5, S_ACC_LAND = 6, S_SHOP_A = 7,
   S_SHOP_B = 8, S_FOOT = 9, S_FINISH = 10;
 // tier phases (shared tiers: init -> search -> alloc (in seat order) -> report -> final; union: init -> search -> final)
 const P_INIT = 0, P_SEARCH = 1, P_ALLOC = 2, P_REPORT = 3, P_FINAL = 4;
+// B2 sub-states. prep: the hashes (the first piece consumes the pass inputs), setup, the need fills, the attachment
+// refresh, the snapshot, its chunk plan, the building chunks, the provider need rasters, the road count, the publish, the
+// work estimate
+const PR_CORRIDOR = 0, PR_NETHASH = 1, PR_WATERHASH = 2, PR_SETUP = 3, PR_FILLS = 4, PR_ATTACH = 5, PR_SNAP = 6, PR_PLAN = 7,
+  PR_BLD = 8, PR_PROV = 9, PR_ROADS = 10, PR_PUBLISH = 11, PR_WORK = 12;
+// the final items of a tier slot: clamp (rows), stats (rows), capacity / overcrowded, footprint max (lots), publish
+const F_CLAMP = 0, F_STATS = 1, F_CAP = 2, F_FOOT = 3, F_PUBLISH = 4;
+// stops: collector over the snapshot, over the cells, the attachment refresh, the disk setup, the disks, the compose, publish
+const ST_COLLECT_B = 0, ST_COLLECT_C = 1, ST_ATTACH = 2, ST_BEGIN = 3, ST_DISKS = 4, ST_COMPOSE = 5, ST_PUBLISH = 6;
+// access land / shop land: init rows, chamfer forward rows, backward rows, output rows, (access: home footprints) publish
+const AL_INIT = 0, AL_FWD = 1, AL_BWD = 2, AL_OUT = 3, AL_HOMES = 4, AL_PUBLISH = 5;
+const SB_INIT = 0, SB_FWD = 1, SB_BWD = 2, SB_POP = 3, SB_CS = 4, SB_BOX = 5, SB_OUT = 6, SB_PUBLISH = 7;
+// finish: the legacy combos (rows), their publish, the per-tier stats (rows), stats.needs, the stale records (ids), the EQ /
+// HQ fallback (buildings), the end
+const FI_COMBO = 0, FI_COMBO_PUB = 1, FI_TIERS = 2, FI_NEEDS = 3, FI_STALE = 4, FI_EQHQ = 5, FI_END = 6;
+
+/**
+ * B2 piece budgets (design R2, review 2 item 1): the tier engine's steps at INFRA_PIECE_MS (they run ~100 times per pass
+ * and stay near warm); every other services loop runs once per pass (the NIMBY rebuild every 2nd), so it runs cold for
+ * many passes after a load: half INFRA_PIECE_COLD_MS, like traffic's once-per-cycle loops (G1: 10-37 x their warm cost in
+ * days 0-80, ~45 x on first executions). Pure native fills / copies (no JIT state) use INFRA_PIECE_MS.
+ */
+const COLD = INFRA_PIECE_COLD_MS / 2, WARM = INFRA_PIECE_MS;
+/**
+ * the absolute scale of the estimates: stepCost = SV_EST x (SC.piece + the piece's units x SC) / 1000. SC sets the
+ * relative costs, so (with the budgets above) the chunk sizes; SV_EST makes the estimate honest warm wall ms without
+ * moving a chunk (traffic's TR_EST pattern, G1).
+ */
+const SV_EST = 1;
+/**
+ * B2 cost model (design §9): estimated warm wall µs per work unit of each kind of piece; a piece's estimate is SC.piece +
+ * its own work counts x these, and its chunk size is pieceUnits(coefficient, 1, budget), so both follow from the same
+ * cursor. Start values: the services mapping's in-schedule fits (dense1m / bot256 / vet cities); G2 refit.
+ */
+const SC = {
+  /** per piece (dispatch, cursors, the scheduler's bookkeeping) */
+  piece: 5,
+  consume: 15, corridor: 0.0012, hashWord: 0.002, setup: 25, idArrays: 0.0006, fill: 0.0004,
+  attach: 0.0046, snapTake: 0.02, snapPlan: 0.012,
+  prepB: 0.12, prepF: 0.09, provSum: 0.0012, roads: 0.0012, publish: 10, workFac: 0.15, workSlot: 2,
+  /** the tier engine: per re-weighted work unit (U_*), per step */
+  tierUnit: 0.0246, tierStep: 30,
+  stopB: 0.012, stopCell: 0.004, stopBegin: 5, disk: 0.51, compose: 0.0024,
+  seedB: 0.11, accSeed: 0.0034, accPop: 0.053, accInit: 0.002, chamfer: 0.009, accOut: 0.002, accHome: 0.035,
+  shopStart: 0.002, shopPop: 0.038, shopInit: 0.002, shopBlock: 0.009, shopCs: 0.03, shopBox: 0.05, shopOut: 0.008,
+  foot: 0.0168, combo: 0.0041, tierStat: 0.0026, needs: 10, stale: 0.004, eqhq: 0.06, end: 20,
+} as const;
 
 /** road-cell free-flow minutes (TIME_Q units) per Network for accessCommute (roads only) */
 const NET_TIME_Q: readonly number[] = NET_TIME.map((t, k) => (k >= 1 && k <= 5 ? Math.max(1, Math.round(t / TIME_Q)) : 0));
@@ -155,6 +211,27 @@ function keyOf(b: Building): number {
   return (((defNum(b.def) * 4096 + b.x) * 4096 + b.z) * 64 + (b.w & 63)) * 64 + (b.d & 63);
 }
 
+/** the traffic system's attachment refresh (a lazy cache other systems trigger through stopAttached) */
+interface AttachProbe { attachRefreshMs?(st: CityState): number; stopAttached?(id: number): boolean }
+
+/*
+ * B2 R7 audit — the public queries, what they read, and the piece that publishes it (every other field is pass-private):
+ *  layerOf(st, kind)          the CityState layers. Tier layers (police .. green): each slot's F_PUBLISH (.set of the clamped
+ *                             and lot-maxed buffer; an empty slot's layer: its P_INIT fill). eduCov / parkCov: FI_COMBO_PUB.
+ *                             transitCov: the transit slot's F_PUBLISH, ST_PUBLISH and the S_FOOT publish (three states, as
+ *                             pre-B2: design R7 exception). accessCommute: AL_PUBLISH. shopAccess: SB_PUBLISH. stigma /
+ *                             prestige / campus: the NIMBY run's publish piece.
+ *  facilityLoadOf(st, id)     tierById .. powById: written by each tier item (record / reportDemand) as pre-B2 (R7
+ *                             exception); the stale records are dropped by FI_STALE id ranges (a record of a facility the
+ *                             pass did not process may stay readable until its range runs; facilityLoadOf already drops
+ *                             removed / re-tiered buildings itself).
+ *  clustersOf(tier)           need / provNeed (PR_PUBLISH swaps them in), the tier layer, donePasses (FI_END).
+ *  needRaster(tier)           need / provNeed: PR_PUBLISH (prep builds into needBack / provBack).
+ *  policeMul / policeFx       PR_SETUP (crime reads them).
+ *  stats.needs / eq / hq      FI_NEEDS / FI_END. The events (layerUpdated): FI_END.
+ * Saved data among these (policeCov, fireCov, healthCov, eduCov, parkCov, transitCov, stats) changes within one piece
+ * per state, as within one step pre-B2 (R9).
+ */
 export class ServicesSystem implements SimSystem {
   readonly name = 'services';
   lastMs = 0;
@@ -263,6 +340,70 @@ export class ServicesSystem implements SimSystem {
   private donePasses = 0;
   private lastState: CityState | null = null;
 
+  // ---- B2 piece state (design §4). Every field below is reset at each pass start and end and in init (resetPieces /
+  // ensure); none is saved (R9).
+  /** sub-state of the current state (PR_* / ST_* / AL_* / SB_* / FI_*) */
+  private sub = 0;
+  /** loop cursor of the current sub-state (cells, rows, buildings, stops, facilities, lots, ids) */
+  private cur = 0;
+  /** second cursor (prep: the provider / work-estimate slot; finish: the tier of the stats) */
+  private cur2 = 0;
+  /** running hashes of prep (the corridor hash, then the network and water hashes) */
+  private hAcc = 0;
+  private hNet = 0;
+  /** the pass's building list (R4): prep, stops, NIMBY, the access seeds and homes, shopB's CS sums, the EQ / HQ fallback */
+  private snap = new BuildingSnapshot();
+  /** st.nextBuildingId when the snapshot was taken (the police need run's monthly scan) */
+  private snapNextId = 0;
+  /** prep's building loop: the 7 need sums (doubles, as the pre-B2 locals) and the CS frontage seed count */
+  private needAcc = new Float64Array(N_RASTERS);
+  private nCs = 0;
+  /** the need rasters prep fills (swapped with `need` in PR_PUBLISH) */
+  private needBack: Float32Array[] = [];
+  /** provider need rasters being built (swapped in per slot in PR_PUBLISH) and whether this pass's slot has one */
+  private provBack: (Float32Array | null)[] = new Array(NT).fill(null);
+  private provUse: boolean[] = new Array(NT).fill(false);
+  private provRun: TierNeedRun | null = null;
+  /** 0 the provider run, 1 its sum (by cell ranges) */
+  private provPh = 0;
+  private provAcc = 0;
+  private roadAcc = 0;
+  /** the tier work estimate being summed (PR_WORK) */
+  private workAcc = 0;
+  /** the tier slot's final items: item, cursor, the stats sums (doubles) */
+  private finSub = F_CLAMP;
+  private finCur = 0;
+  private finNeed = 0;
+  private finServed = 0;
+  private finUnreached = 0;
+  /** C-cell scratch: a tier layer before its publish, the composed transit layer, the transit lot max */
+  private finBuf = new Float32Array(0);
+  private stopCol = new StopCollector();
+  private stopFund = 0;
+  private stopActive: ((s: number) => boolean) | undefined = undefined;
+  private nimbyRun = new NimbyRun();
+  private accRun = new RoadTimeRun();
+  private shopRun = new RoadDistRun();
+  /** accessCommute's value for unreached cells (from stats.avgCommute, read at the output's first piece) */
+  private accUnreached = 0;
+  private accNext = new Float32Array(0);
+  private shopNext = new Float32Array(0);
+  /** shopB's coarse block sums and box3 scratch (pre-B2: allocated per call) */
+  private shopCs = new Float32Array(0);
+  private shopPop = new Float32Array(0);
+  private shopBoxTmp = new Float32Array(0);
+  private eduNext = new Float32Array(0);
+  private parkNext = new Float32Array(0);
+  /** the per-tier stats of finish (doubles) */
+  private fiServed = 0;
+  private fiUnreached = 0;
+  /** the EQ / HQ fallback sums (doubles) */
+  private eqPop = 0;
+  private eqEdu = 0;
+  private eqHealth = 0;
+  private eqAir = 0;
+  private eqWp1 = false;
+
   init(sim: Simulation): void {
     for (const u of this.unsub) u();
     this.inputs.clear();
@@ -300,6 +441,7 @@ export class ServicesSystem implements SimSystem {
     this.nimbyDirty = true;
     this.lastEqDay = sim.state.day;
     this.stepIdx = -1;
+    this.resetPieces();
     this.cache = new Array(NT + 1).fill(null);
     this.hadFac = new Array(NT + 1).fill(true);
     this.netEvents = false;
@@ -399,29 +541,6 @@ export class ServicesSystem implements SimSystem {
     return true;
   }
 
-  /** estimated ms of the next step (deterministic: from problem sizes; calibrated on the 256² stress city) */
-  private stepCost(sim: Simulation): number {
-    const { cells, bld } = sizeFactors(sim);
-    const roads = this.roadCells / 36000;
-    switch (this.stepIdx) {
-      case -1: case S_PREP: return 0.2 + 1.1 * bld + 0.5 * cells;
-      case S_TIERS: return 0.1 + 2.2 * Math.max(0.25, Math.min(1, this.workLeft / WORK_PER_STEP));
-      case S_STOPS: return 0.1 + 0.3 * bld + 0.9 * cells;
-      case S_NIMBY: return nimbyCost(sim);
-      case S_ACC_SEED: return 0.2 + 1.3 * bld + 0.2 * cells;
-      case S_ACC_SEARCH: return 0.2 + 2.2 * roads + 0.2 * cells;
-      case S_ACC_LAND: return 0.2 + 0.6 * bld + 1.6 * cells;
-      case S_SHOP_A: return 0.2 + 0.3 * bld + 1.3 * roads;
-      case S_SHOP_B: return 0.2 + 0.4 * bld + 1.7 * cells;
-      case S_FOOT: {
-        // (the transit layer only: footprints)
-        const L = this.hadFac[SLOT_TRANSIT] || (this.stops?.n ?? 0) > 0 ? 1 : 0;
-        return 0.1 + 0.3 * bld + 0.9 * (this.multi.length / 2000) * (L / 9);
-      }
-      default: return 0.2 + 0.5 * bld + 0.6 * cells;
-    }
-  }
-
   /** coverage layer for a CoverageKind name */
   layerOf(st: CityState, kind: string): Float32Array | null {
     switch (kind) {
@@ -444,57 +563,189 @@ export class ServicesSystem implements SimSystem {
     this.lastMs = nowMs() - t0;
   }
 
-  /** one step of the coverage pass */
+  /**
+   * one step (B2: one piece) of the coverage pass. The state ids and transitions are the pre-B2 ones; a state stays
+   * current until its last piece reports completion. A pass whose pieces run with nothing in between computes exactly
+   * what the pre-B2 steps computed.
+   */
   step(sim: Simulation): void {
     const t0 = nowMs();
-    if (this.stepIdx < 0) this.stepIdx = S_PREP;
+    // (B2 review 1 O8: an explicit pass start — a direct stepIdx = -1 (compute, tests) starts with every cursor reset)
+    if (this.stepIdx < 0) { this.resetPieces(); this.stepIdx = S_PREP; }
     switch (this.stepIdx) {
-      case S_PREP:
-        this.prep(sim);
-        this.stepIdx = S_TIERS;
-        break;
-      case S_TIERS:
-        this.tierWork(sim);
-        break;
-      case S_STOPS:
-        this.finishTransit(sim);
-        this.stepIdx = this.doNimby ? S_NIMBY : this.doAccess ? S_ACC_SEED : S_FOOT;
-        break;
-      case S_NIMBY:
-        rebuildNimby(sim);
-        this.stepIdx = this.doAccess ? S_ACC_SEED : S_FOOT;
-        break;
-      case S_ACC_SEED:
-        this.accessCommuteSeeds(sim);
-        this.stepIdx = S_ACC_SEARCH;
-        break;
-      case S_ACC_SEARCH:
-        roadTimeMulti(sim.state, this.idist, Math.round((MAX_COMMUTE + 60) / TIME_Q), NET_TIME_Q, RAMP_Q);
-        this.stepIdx = S_ACC_LAND;
-        break;
-      case S_ACC_LAND:
-        this.accessCommuteLand(sim);
-        this.stepIdx = S_SHOP_A;
-        break;
-      case S_SHOP_A:
-        roadDistMulti(sim.state, 1, this.csSeeds, this.nCsSeeds, SHOP_CAP_CELLS * 4, this.shopDist);
-        this.stepIdx = S_SHOP_B;
-        break;
-      case S_SHOP_B:
-        this.shopLand(sim);
-        this.stepIdx = S_FOOT;
-        break;
-      case S_FOOT:
-        this.footprints(sim.state);
-        this.stepIdx = S_FINISH;
-        break;
+      case S_PREP: if (this.prepPiece(sim)) this.nextState(S_TIERS); break;
+      case S_TIERS: this.tierWork(sim); break;
+      case S_STOPS: if (this.stopsPiece(sim)) this.nextState(this.doNimby ? S_NIMBY : this.doAccess ? S_ACC_SEED : S_FOOT); break;
+      case S_NIMBY: if (this.nimbyPiece(sim)) this.nextState(this.doAccess ? S_ACC_SEED : S_FOOT); break;
+      case S_ACC_SEED: if (this.accSeedPiece(sim)) this.nextState(S_ACC_SEARCH); break;
+      case S_ACC_SEARCH: if (this.accSearchPiece(sim)) this.nextState(S_ACC_LAND); break;
+      case S_ACC_LAND: if (this.accLandPiece(sim)) this.nextState(S_SHOP_A); break;
+      case S_SHOP_A: if (this.shopAPiece(sim)) this.nextState(S_SHOP_B); break;
+      case S_SHOP_B: if (this.shopBPiece(sim)) this.nextState(S_FOOT); break;
+      case S_FOOT: if (this.footPiece(sim)) this.nextState(S_FINISH); break;
       default:
-        this.finish(sim, this.firstPass);
-        this.stepIdx = -1;
-        this.firstPass = false;
-        this.passUrgent = false;
+        if (this.finishPiece(sim)) {
+          this.stepIdx = -1;
+          this.firstPass = false;
+          this.passUrgent = false;
+          this.resetPieces();
+        }
     }
     this.lastMs = nowMs() - t0;
+  }
+
+  private nextState(s: number): void {
+    this.stepIdx = s;
+    this.sub = 0;
+    this.cur = 0;
+    this.cur2 = 0;
+  }
+
+  /** B2: every piece cursor back to its reset value; the pass's snapshot and runs are released (R9) */
+  private resetPieces(): void {
+    this.sub = 0; this.cur = 0; this.cur2 = 0;
+    this.hAcc = 0; this.hNet = 0;
+    this.snap.release();
+    this.snapNextId = 0;
+    this.needAcc.fill(0);
+    this.nCs = 0;
+    this.provUse.fill(false);
+    this.provRun = null;
+    this.provPh = 0; this.provAcc = 0; this.roadAcc = 0; this.workAcc = 0;
+    this.finSub = F_CLAMP; this.finCur = 0; this.finNeed = 0; this.finServed = 0; this.finUnreached = 0;
+    this.stopFund = 0;
+    this.stopActive = undefined;
+    this.nimbyRun.release();
+    this.accRun.release();
+    this.shopRun.release();
+    this.accUnreached = 0;
+    this.fiServed = 0; this.fiUnreached = 0;
+    this.eqPop = 0; this.eqEdu = 0; this.eqHealth = 0; this.eqAir = 0; this.eqWp1 = false;
+  }
+
+  // ------------------------------------------------------------------------------------------------ B2 cost model
+  /**
+   * estimated warm wall ms of the next step (B2 §9: the next piece's own work counts x the SC coefficients, with the
+   * piece's own chunk sizes). Pure and O(1): reads the cursors and sizes, never runs a loop, never sets anything up.
+   */
+  stepCost(sim: Simulation): number {
+    return (SV_EST * (SC.piece + this.pieceUs(sim))) / 1000;
+  }
+
+  /** µs of the next piece (stepCost) */
+  private pieceUs(sim: Simulation): number {
+    const st = sim.state, C = st.cells, N = st.size;
+    const chunk = (us: number, left: number, budget = COLD) => Math.max(0, Math.min(pieceUnits(us, 1, budget), left)) * us;
+    const rowsUs = (us: number, rowsLeft: number, budget = COLD) => chunk(us * Math.max(1, N), rowsLeft, budget);
+    switch (this.stepIdx) {
+      case -1: case S_PREP: return this.prepUs(sim, chunk);
+      case S_TIERS: {
+        const unit = pieceUnits(SC.tierUnit, 1, WARM);
+        return SC.tierStep + SC.tierUnit * Math.min(unit, Math.max(unit * 0.25, this.workLeft));
+      }
+      case S_STOPS:
+        switch (this.sub) {
+          case ST_COLLECT_B: return chunk(SC.stopB, this.cur === 0 ? this.snap.n : this.snap.n - this.stopCol.bi);
+          case ST_COLLECT_C: return chunk(SC.stopCell, C - this.stopCol.ci);
+          case ST_ATTACH: { const a = this.attachUs(sim); return a > 0 ? a : SC.stopBegin + C * SC.fill; }
+          case ST_BEGIN: return SC.stopBegin + C * SC.fill;
+          case ST_DISKS: return chunk(SC.disk, (this.stops?.n ?? 0) - this.cur);
+          case ST_COMPOSE: return (this.cur === 0 ? C * SC.fill : 0) + rowsUs(SC.compose, N - this.cur);
+          default: return C * SC.fill;
+        }
+      case S_NIMBY: return this.nimbyRun.active ? this.nimbyRun.pieceUs(pieceBudgetUs(COLD)) : 4 * C * 0.0004;
+      case S_ACC_SEED: return this.sub === 0 ? C * SC.fill : chunk(SC.seedB, this.snap.n - this.cur);
+      case S_ACC_SEARCH:
+        if (this.sub === 0) return chunk(SC.accSeed, this.cur === 0 ? C : C - this.accRun.seedAt);
+        return chunk(SC.accPop, Math.max(1, this.accRun.queued));
+      case S_ACC_LAND:
+        switch (this.sub) {
+          case AL_INIT: return rowsUs(SC.accInit, N - this.cur);
+          case AL_FWD: case AL_BWD: return rowsUs(SC.chamfer, N - this.cur);
+          case AL_OUT: return rowsUs(SC.accOut, N - this.cur);
+          case AL_HOMES: return chunk(SC.accHome * 2, this.snap.n - this.cur);
+          default: return C * SC.fill;
+        }
+      case S_SHOP_A: return this.sub === 0 ? C * SC.fill + this.nCsSeeds * 0.01 : chunk(SC.shopPop, Math.max(1, this.shopRun.queued));
+      case S_SHOP_B:
+        switch (this.sub) {
+          case SB_INIT: return rowsUs(SC.shopInit, N - this.cur);
+          case SB_FWD: case SB_BWD: return rowsUs(SC.chamfer, N - this.cur);
+          case SB_POP: return rowsUs(SC.shopBlock, N - this.cur);
+          case SB_CS: return chunk(SC.shopCs, this.snap.n - this.cur);
+          case SB_BOX: { const nb = Math.ceil(N / CLUSTER_BLOCK); return nb * nb * SC.shopBox + N * 0.05; }
+          case SB_OUT: return rowsUs(SC.shopOut, N - this.cur);
+          default: return C * SC.fill;
+        }
+      case S_FOOT: return this.sub === 0 ? C * SC.fill : this.sub === 1 ? Math.min(pieceBudgetUs(COLD), this.multiCells * SC.foot) : C * SC.fill;
+      default:
+        switch (this.sub) {
+          case FI_COMBO: return rowsUs(SC.combo, N - this.cur);
+          case FI_COMBO_PUB: return 2 * C * SC.fill;
+          case FI_TIERS: return rowsUs(SC.tierStat, N - this.cur);
+          case FI_NEEDS: return chunk(SC.stale, Math.min(this.tierById.length, this.seenById.length));
+          case FI_STALE: return chunk(SC.stale, Math.min(this.tierById.length, this.seenById.length) - this.cur);
+          case FI_EQHQ: return chunk(SC.eqhq, this.snap.n - this.cur);
+          default: return SC.end + SC.needs;
+        }
+    }
+  }
+
+  /** µs of the next prep piece (pieceUs) */
+  private prepUs(sim: Simulation, chunk: (us: number, left: number, budget?: number) => number): number {
+    const st = sim.state, C = st.cells;
+    if (this.stepIdx < 0) return SC.consume + chunk(SC.corridor, st.network.length);
+    switch (this.sub) {
+      case PR_CORRIDOR: return (this.cur === 0 ? SC.consume : 0) + chunk(SC.corridor, st.network.length - this.cur);
+      case PR_NETHASH: return chunk(SC.hashWord, ((st.network.length & ~3) - this.cur) >> 2) + 1;
+      case PR_WATERHASH: return chunk(SC.hashWord, ((st.water.length & ~3) - this.cur) >> 2) + 1;
+      case PR_SETUP: return SC.setup;
+      case PR_FILLS: return chunk(C * SC.fill, N_RASTERS - this.cur, WARM);
+      case PR_ATTACH: { const a = this.attachUs(sim); return a > 0 ? a : st.buildings.size * SC.snapTake; }
+      case PR_SNAP: return st.buildings.size * SC.snapTake + 9 * Math.max(0, st.nextBuildingId + 1 - this.tierById.length) * SC.idArrays;
+      case PR_PLAN: return chunk(SC.snapPlan, this.snap.n - this.snap.planned);
+      case PR_BLD: return this.snap.countOf(this.cur) * SC.prepB + this.snap.cellsOf(this.cur) * SC.prepF;
+      case PR_PROV: {
+        const run = this.provRun;
+        if (run) return this.provPh === 0 ? run.pieceUs(pieceBudgetUs(COLD)) : chunk(SC.provSum, C - this.cur);
+        return SC.workSlot + C * SC.fill;
+      }
+      case PR_ROADS: return chunk(SC.roads, C - this.cur);
+      case PR_PUBLISH: return SC.publish;
+      default: return chunk(SC.workFac, this.facLeft()) + SC.workSlot;
+    }
+  }
+
+  /** facilities the work estimate has not visited yet (prepUs; O(slots)) */
+  private facLeft(): number {
+    let n = 0;
+    for (let k = this.cur2; k <= NT; k++) n += this.fac[k].length;
+    return Math.max(1, n - (this.cur2 <= NT ? this.cur : 0));
+  }
+
+  /** µs of traffic's pending attachment refresh (0 when current) */
+  private attachUs(sim: Simulation): number {
+    const tr = sim.getSystem('traffic') as unknown as AttachProbe | undefined;
+    return tr && typeof tr.attachRefreshMs === 'function' ? tr.attachRefreshMs(sim.state) * 1000 : 0;
+  }
+
+  /** B2: the name of the next piece ('prep.bld#3'), for the step tools (b2work cpumap / profile labels) */
+  get stepName(): string {
+    switch (this.stepIdx) {
+      case -1: return 'prep.corridor';
+      case S_PREP: return 'prep.' + ['corridor', 'netHash', 'waterHash', 'setup', 'fills', 'attach', 'snap', 'plan', 'bld', 'prov', 'roads', 'publish', 'work'][this.sub]
+        + (this.sub === PR_BLD ? '#' + this.cur : this.sub === PR_PROV && this.provRun ? '.' + (this.provPh === 0 ? this.provRun.label : 'sum') : '');
+      case S_TIERS: return 'tiers.' + (this.tierSlot > NT ? 'end' : ['init', 'search', 'alloc', 'report', 'final'][this.tierPhase]);
+      case S_STOPS: return 'stops.' + ['collectB', 'collectC', 'attach', 'begin', 'disks', 'compose', 'publish'][this.sub];
+      case S_NIMBY: return 'nimby.' + this.nimbyRun.label;
+      case S_ACC_SEED: return this.sub === 0 ? 'accSeed.fill' : 'accSeed.bld';
+      case S_ACC_SEARCH: return this.sub === 0 ? 'accSearch.seeds' : 'accSearch.run';
+      case S_ACC_LAND: return 'accLand.' + ['init', 'fwd', 'bwd', 'out', 'homes', 'publish'][this.sub];
+      case S_SHOP_A: return this.sub === 0 ? 'shopA.start' : 'shopA.run';
+      case S_SHOP_B: return 'shopB.' + ['init', 'fwd', 'bwd', 'pop', 'cs', 'box', 'out', 'publish'][this.sub];
+      case S_FOOT: return 'foot.' + ['copy', 'lots', 'publish'][this.sub];
+      default: return 'finish.' + ['combo', 'comboPub', 'tiers', 'needs', 'stale', 'eqhq', 'end'][this.sub];
+    }
   }
 
   // ------------------------------------------------------------------------------------------------ reach cache
@@ -509,37 +760,86 @@ export class ServicesSystem implements SimSystem {
     for (const e of this.curEnt.values()) if (e.road && e.valid && hit(e)) e.valid = false;
   }
 
-  /**
-   * network hash: detects edits that bypass networkChanged (tests, tools) -> drop every road reach; water hash:
-   * terraforming moves shores (the walk / drive near field stops at unbridged water) -> drop every road reach
-   */
-  private checkNetwork(st: CityState): void {
-    const h = hashBytes(st.network, st.cells), wh = hashBytes(st.water, st.cells);
-    if ((h !== this.netHash && !this.netEvents) || wh !== this.waterHash) this.invalidateReach(undefined);
-    this.netHash = h;
-    this.waterHash = wh;
-    this.netEvents = false;
-  }
-
   // ------------------------------------------------------------------------------------------------ prep
   private ensure(C: number): void {
     if (this.C === C) return;
     this.C = C;
     this.need = Array.from({ length: N_RASTERS }, () => new Float32Array(C));
+    this.needBack = Array.from({ length: N_RASTERS }, () => new Float32Array(C));
     this.provNeed = new Array(NT).fill(null);
+    this.provBack = new Array(NT).fill(null);
     this.A = new Float32Array(C);
     this.seat = new Float32Array(C);
     this.cov = new Float32Array(C);
     this.tmp = new Float32Array(C);
     this.idist = new Int32Array(C);
     this.shopDist = new Int32Array(C);
+    this.finBuf = new Float32Array(C);
+    this.accNext = new Float32Array(C);
+    this.shopNext = new Float32Array(C);
+    this.eduNext = new Float32Array(C);
+    this.parkNext = new Float32Array(C);
     this.cache = new Array(NT + 1).fill(null);
     this.hadFac = new Array(NT + 1).fill(true);
   }
 
+  /** the whole prep state in one go (pre-B2 name and semantics: tests, the one-go reference) */
   private prep(sim: Simulation): void {
+    if (this.stepIdx !== S_PREP) { this.resetPieces(); this.stepIdx = S_PREP; }
+    while (!this.prepPiece(sim)) { /* pieces */ }
+    this.nextState(S_TIERS);
+  }
+
+  /** one prep piece; true when prep is complete */
+  private prepPiece(sim: Simulation): boolean {
     const st = sim.state;
-    const N = st.size, C = st.cells;
+    for (;;) {
+      switch (this.sub) {
+        case PR_CORRIDOR:
+          if (this.cur === 0) this.prepConsume(sim);
+          if (this.prepCorridor(st)) { this.sub = PR_NETHASH; this.cur = 0; this.hAcc = 0x811c9dc5 ^ st.cells; }
+          return false;
+        case PR_NETHASH:
+          if (this.prepHash(st.network)) { this.hNet = this.hAcc; this.sub = PR_WATERHASH; this.cur = 0; this.hAcc = 0x811c9dc5 ^ st.cells; }
+          return false;
+        case PR_WATERHASH:
+          if (this.prepHash(st.water)) { this.prepCheckNetwork(this.hNet, this.hAcc); this.sub = PR_SETUP; this.cur = 0; }
+          return false;
+        case PR_SETUP: this.prepSetup(st); this.sub = PR_FILLS; this.cur = 0; return false;
+        case PR_FILLS:
+          if (this.prepFills()) { this.sub = PR_ATTACH; this.cur = 0; }
+          return false;
+        case PR_ATTACH:
+          this.sub = PR_SNAP;
+          if (this.prepAttach(sim)) return false;
+          continue;
+        case PR_SNAP:
+          this.prepSnapshot(st);
+          this.sub = PR_PLAN;
+          return false;
+        case PR_PLAN:
+          if (this.snap.planRun(pieceUnits(SC.snapPlan, 1, COLD))) { this.sub = PR_BLD; this.cur = 0; }
+          return false;
+        case PR_BLD:
+          if (this.cur < this.snap.chunks) this.prepBuildings(sim, this.cur++);
+          if (this.cur >= this.snap.chunks) this.prepEndBuildings();
+          return false;
+        case PR_PROV:
+          if (this.prepProviders(st)) { this.sub = PR_ROADS; this.cur = 0; this.roadAcc = 0; }
+          return false;
+        case PR_ROADS:
+          if (this.prepRoads(st)) this.sub = PR_PUBLISH;
+          return false;
+        case PR_PUBLISH: this.prepPublish(); this.sub = PR_WORK; this.cur = 0; this.cur2 = 0; this.workAcc = 0; return false;
+        default:
+          return this.prepWork(st);
+      }
+    }
+  }
+
+  /** the pass inputs (R5: consumed in the pass's first piece; events after it mark the next pass) */
+  private prepConsume(sim: Simulation): void {
+    const st = sim.state;
     if (this.lastState !== st) { this.lastState = st; this.cache = new Array(NT + 1).fill(null); this.hadFac = new Array(NT + 1).fill(true); }
     this.lastRun = st.day;
     if (this.framed && schedulerOf(sim).framesActive) this.lastPassMs = nowMs();
@@ -549,16 +849,48 @@ export class ServicesSystem implements SimSystem {
     this.doAccess = this.firstPass || this.accessDirty || st.day - this.lastAccess >= ACCESS_PERIOD;
     if (this.doAccess) { this.lastAccess = st.day; this.accessDirty = false; }
     this.nimbyAge++;
-    const ch = corridorHash(st);
+    this.ensure(st.cells);
+    this.hAcc = 0x2545f491;
+  }
+
+  /** the corridor hash by cell ranges; at its end the NIMBY decision (pre-B2 order: hash, compare, doNimby) */
+  private prepCorridor(st: CityState): boolean {
+    const n = st.network.length;
+    const i1 = Math.min(n, this.cur + pieceUnits(SC.corridor, 1, COLD));
+    this.hAcc = corridorHashRange(st, this.hAcc, this.cur, i1);
+    this.cur = i1;
+    if (i1 < n) return false;
+    const ch = this.hAcc;
     if (ch !== this.corridorH) { this.corridorH = ch; this.nimbyDirty = true; }
     this.doNimby = this.firstPass || this.nimbyDirty || this.nimbyAge >= 2;
     if (this.doNimby) { this.nimbyAge = 0; this.nimbyDirty = false; }
-    this.ensure(C);
-    this.checkNetwork(st);
-    const need = this.need;
-    for (const a of need) a.fill(0);
-    const [res, kids, teens, college, health, play, green] = need;
-    let sRes = 0, sKid = 0, sTeen = 0, sCol = 0, sHea = 0, sPla = 0, sGre = 0;
+    return true;
+  }
+
+  /** hashBytes(a, st.cells) by word ranges (hAcc), then its tail; true when done */
+  private prepHash(a: Uint8Array): boolean {
+    const n4 = a.length & ~3;
+    const i1 = Math.min(n4, this.cur + 4 * pieceUnits(SC.hashWord, 1, COLD));
+    this.hAcc = hashWords(a, this.hAcc, this.cur, i1);
+    this.cur = i1;
+    if (i1 < n4) return false;
+    this.hAcc = hashTail(a, this.hAcc);
+    return true;
+  }
+
+  /**
+   * network hash: detects edits that bypass networkChanged (tests, tools) -> drop every road reach; water hash:
+   * terraforming moves shores (the walk / drive near field stops at unbridged water) -> drop every road reach
+   */
+  private prepCheckNetwork(h: number, wh: number): void {
+    if ((h !== this.netHash && !this.netEvents) || wh !== this.waterHash) this.invalidateReach(undefined);
+    this.netHash = h;
+    this.waterHash = wh;
+    this.netEvents = false;
+  }
+
+  /** the pass's lists, effects, justice, funding and id arrays */
+  private prepSetup(st: CityState): void {
     for (const l of this.fac) l.length = 0;
     for (const l of this.facOp) l.length = 0;
     for (const l of this.facCap) l.length = 0;
@@ -570,9 +902,14 @@ export class ServicesSystem implements SimSystem {
     this.justiceMul = policeMul;
     this.recordFunding(st);
     this.policeFx = this.fx.policeEffect;
-    const sh = this.shares;
-    let nCs = 0;
-    const bL = buildingList(st);
+    this.needAcc.fill(0);
+    this.nCs = 0;
+  }
+
+  /** the pass snapshot (R4) and the per-id arrays, sized for every id of it (the tier items record by id) */
+  private prepSnapshot(st: CityState): void {
+    this.snap.take(st);
+    this.snapNextId = st.nextBuildingId;
     this.tierById = ensureIdFloat(this.tierById as Float32Array<ArrayBuffer>, st);
     this.capById = ensureIdFloat(this.capById as Float32Array<ArrayBuffer>, st);
     this.demById = ensureIdFloat(this.demById as Float32Array<ArrayBuffer>, st);
@@ -583,7 +920,38 @@ export class ServicesSystem implements SimSystem {
     this.powById = ensureIdFloat(this.powById as Float32Array<ArrayBuffer>, st);
     this.seenById = ensureIdFloat(this.seenById as Float32Array<ArrayBuffer>, st);
     this.passNo = (this.passNo % 1e6) + 1;
-    for (let bI = 0; bI < bL.length; bI++) {
+    this.snap.planBegin(SC.prepB, SC.prepF, pieceBudgetUs(COLD));
+  }
+
+  /** zero the back need rasters (native fills, several per piece) */
+  private prepFills(): boolean {
+    const per = pieceUnits(this.C * SC.fill + 1, 1, WARM);
+    const r1 = Math.min(N_RASTERS, this.cur + per);
+    for (let r = this.cur; r < r1; r++) this.needBack[r].fill(0);
+    this.cur = r1;
+    return r1 >= N_RASTERS;
+  }
+
+  /** traffic's pending attachment refresh in its own piece (review 2 item 5e); false when it is current (no piece) */
+  private prepAttach(sim: Simulation): boolean {
+    const tr = sim.getSystem('traffic') as unknown as AttachProbe | undefined;
+    if (!tr || typeof tr.attachRefreshMs !== 'function' || typeof tr.stopAttached !== 'function') return false;
+    if (!(tr.attachRefreshMs(sim.state) > 0)) return false;
+    tr.stopAttached(-1);
+    return true;
+  }
+
+  /** chunk k of the snapshot: the pre-B2 building loop body */
+  private prepBuildings(sim: Simulation, k: number): void {
+    const st = sim.state;
+    const N = st.size;
+    const [res, kids, teens, college, health, play, green] = this.needBack;
+    const acc = this.needAcc;
+    const policeMul = this.policeMul;
+    const sh = this.shares;
+    let nCs = this.nCs;
+    const bL = this.snap.list;
+    for (let bI = this.snap.bounds[k], e = this.snap.bounds[k + 1]; bI < e; bI++) {
       const b = bL[bI];
       this.observeBuilding(st, b, true);
       if (b.w * b.d > 1) { this.multi.push(b); this.multiCells += b.w * b.d; }
@@ -606,7 +974,7 @@ export class ServicesSystem implements SimSystem {
           res[i] += per; kids[i] += k; teens[i] += t; college[i] += vCol; health[i] += vHea; play[i] += vPla; green[i] += vGre;
           cells++;
         }
-        sRes += per * cells; sKid += k * cells; sTeen += t * cells; sCol += vCol * cells; sHea += vHea * cells; sPla += vPla * cells; sGre += vGre * cells;
+        acc[0] += per * cells; acc[1] += k * cells; acc[2] += t * cells; acc[3] += vCol * cells; acc[4] += vHea * cells; acc[5] += vPla * cells; acc[6] += vGre * cells;
         continue;
       }
       if (!isFunctional(b)) continue;
@@ -625,45 +993,128 @@ export class ServicesSystem implements SimSystem {
       this.facOp[slot].push(op);
       this.facCap[slot].push(cap);
     }
-    const ns = this.needSum;
-    ns[0] = sRes; ns[1] = sKid; ns[2] = sTeen; ns[3] = sCol; ns[4] = sHea; ns[5] = sPla; ns[6] = sGre;
-    this.nCsSeeds = nCs;
-    // tier modes + provider need rasters (WP7 registerTierProvider)
-    for (let k = 0; k < NT; k++) {
+    this.nCs = nCs;
+  }
+
+  /** after the building chunks: the need sums, the CS seed count; the providers start at slot 0 */
+  private prepEndBuildings(): void {
+    this.needSum.set(this.needAcc);
+    this.nCsSeeds = this.nCs;
+    this.sub = PR_PROV;
+    this.cur = 0;
+    this.cur2 = 0;
+    this.provRun = null;
+    this.provPh = 0;
+  }
+
+  /**
+   * tier modes + provider need rasters (WP7 registerTierProvider), slot by slot: a provider's need run in pieces (or its
+   * needOf in one piece) into the slot's back raster, then its sum by cell ranges; true when every slot is done
+   */
+  private prepProviders(st: CityState): boolean {
+    const C = st.cells;
+    while (this.cur2 < NT) {
+      const k = this.cur2;
       const prov = tierProvider(NEED_ORDER[k]);
-      this.shared[k] = prov?.shared ?? k >= 2;
-      if (prov?.needOf) {
-        let a = this.provNeed[k];
-        if (!a) a = this.provNeed[k] = new Float32Array(C);
+      if (!this.provRun && this.provPh === 0) {
+        this.shared[k] = prov?.shared ?? k >= 2;
+        if (!prov?.needOf) { this.provUse[k] = false; this.cur2++; continue; }
+        let a = this.provBack[k];
+        if (!a || a.length !== C) a = this.provBack[k] = new Float32Array(C);
         a.fill(0);
-        prov.needOf(st, res, a);
-        let sum = 0;
-        for (let i = 0; i < C; i++) sum += a[i];
-        this.provSum[k] = sum;
-      } else this.provNeed[k] = null;
+        this.provUse[k] = true;
+        if (prov.needRun) this.provRun = prov.needRun(st, this.needBack[0], a, this.snap.list, this.snapNextId);
+        else { prov.needOf(st, this.needBack[0], a); this.provPh = 1; this.cur = 0; this.provAcc = 0; return false; }
+      }
+      if (this.provPh === 0) {
+        if (this.provRun!.step(pieceBudgetUs(COLD))) { this.provRun = null; this.provPh = 1; this.cur = 0; this.provAcc = 0; }
+        return false;
+      }
+      // the sum (index order, a double, as pre-B2)
+      const a = this.provBack[k]!;
+      const i1 = Math.min(C, this.cur + pieceUnits(SC.provSum, 1, COLD));
+      let sum = this.provAcc;
+      for (let i = this.cur; i < i1; i++) sum += a[i];
+      this.provAcc = sum;
+      this.cur = i1;
+      if (i1 < C) return false;
+      this.provSum[k] = sum;
+      this.provPh = 0;
+      this.cur = 0;
+      this.cur2++;
+      return false;
     }
     this.shared[SLOT_TRANSIT] = false;
-    let roads = 0;
-    const net = st.network;
-    for (let i = 0; i < C; i++) { const t = net[i]; if (t >= 1 && t <= 5) roads++; }
-    this.roadCells = roads;
-    // work estimate of the tier steps (same units as tierWork's counter; cached reaches are cheap)
-    let w = 0;
-    for (let k = 0; k <= NT; k++) {
-      if (this.fac[k].length === 0) { if (this.hadFac[k] || k === SLOT_TRANSIT) w += C * 0.05; continue; }
-      w += C * (this.shared[k] ? 0.45 : 0.3) + (k === SLOT_TRANSIT ? 0 : FOOT_WORK * this.multiCells);
+    this.cur = 0;
+    return true;
+  }
+
+  /** the road cell count by ranges */
+  private prepRoads(st: CityState): boolean {
+    const C = st.cells, net = st.network;
+    const i1 = Math.min(C, this.cur + pieceUnits(SC.roads, 1, COLD));
+    let roads = this.roadAcc;
+    for (let i = this.cur; i < i1; i++) { const t = net[i]; if (t >= 1 && t <= 5) roads++; }
+    this.roadAcc = roads;
+    this.cur = i1;
+    return i1 >= C;
+  }
+
+  /** the new need rasters and provider rasters become visible (needRaster, clustersOf, the tier steps) */
+  private prepPublish(): void {
+    const t = this.need;
+    this.need = this.needBack;
+    this.needBack = t;
+    for (let k = 0; k < NT; k++) {
+      if (this.provUse[k]) {
+        const old = this.provNeed[k];
+        this.provNeed[k] = this.provBack[k];
+        this.provBack[k] = old;
+      } else if (this.provNeed[k]) {
+        if (!this.provBack[k]) this.provBack[k] = this.provNeed[k];
+        this.provNeed[k] = null;
+      }
+    }
+    this.roadCells = this.roadAcc;
+  }
+
+  /** the work estimate of the tier steps (same units as tierWork's counter; cached reaches are cheap), by facility ranges */
+  private prepWork(st: CityState): boolean {
+    const C = st.cells;
+    let budget = pieceUnits(SC.workFac, 1, COLD);
+    let w = this.workAcc;
+    while (this.cur2 <= NT && budget > 0) {
+      const k = this.cur2;
+      const list = this.fac[k];
+      if (this.cur === 0) {
+        if (list.length === 0) { if (this.hadFac[k] || k === SLOT_TRANSIT) w += C * U_EMPTY; this.cur2++; continue; }
+        w += C * (U_INIT + U_CLAMP + U_PUBLISH) + (k === SLOT_TRANSIT ? 0 : C * U_STATS + FOOT_WORK * this.multiCells);
+        if (this.shared[k]) w += list.length * Math.log2(list.length + 1);
+      }
       const cache = this.cache[k];
-      const perEntry = U_ENTRY * (this.shared[k] ? 3 : 2);
-      for (const b of this.fac[k]) {
+      const perEntry = this.shared[k] ? U_ENTRY * 2 + U_REPORT : U_ENTRY * 2;
+      const c1 = Math.min(list.length, this.cur + budget);
+      for (let c = this.cur; c < c1; c++) {
+        const b = list[c];
         const e = cache?.ent.get(b.id);
         if (e && e.key === keyOf(b)) w += (e.end - e.start) * ((e.valid ? U_COPY : U_SEARCH) + perEntry) + 16; // last reach size
         else w += this.workOf(st, b, k);
       }
+      budget -= c1 - this.cur;
+      this.cur = c1;
+      if (c1 < list.length) break;
+      this.cur = 0;
+      this.cur2++;
     }
+    this.workAcc = w;
+    if (this.cur2 <= NT) return false;
     this.workLeft = w;
     this.tierSlot = 0;
     this.tierPhase = P_INIT;
     this.cursor = 0;
+    this.finSub = F_CLAMP;
+    this.finCur = 0;
+    return true;
   }
 
   /** frontage road cells (4-neighbours of the footprint) of a building -> csSeeds */
@@ -706,100 +1157,252 @@ export class ServicesSystem implements SimSystem {
 
   /** estimated work units of one facility searched fresh (same units as tierWork's counter) */
   private workOf(st: CityState, b: Building, slot: number): number {
+    return this.searchCells(st, b, slot) * ((this.metricOf(st, b, slot) === 2 ? U_SEARCH / 2 : U_SEARCH) + (this.shared[slot] ? U_ENTRY * 2 + U_REPORT : U_ENTRY * 2)) + 24;
+  }
+  private metricOf(st: CityState, b: Building, slot: number): number {
+    return slot === SLOT_TRANSIT ? 2 : infoOf(st, b).metric;
+  }
+  /** expected cells reached by a fresh search of a facility (its reach disk; road reaches about half of it) */
+  private searchCells(st: CityState, b: Building, slot: number): number {
     const inf = infoOf(st, b);
     const metric = slot === SLOT_TRANSIT ? 2 : inf.metric;
     const R = slot === SLOT_TRANSIT ? inf.covRadius : inf.tierRadius;
     const r = metric === 2 ? R + Math.max(b.w, b.d) / 2 : R * ROAD_RADIUS_FACTOR * 0.8;
-    const cells = Math.PI * r * r * (metric === 2 ? 1 : 0.5);
-    return cells * ((metric === 2 ? U_SEARCH / 2 : U_SEARCH) + U_ENTRY * (this.shared[slot] ? 3 : 2)) + 24;
+    return Math.PI * r * r * (metric === 2 ? 1 : 0.5);
   }
 
   // ------------------------------------------------------------------------------------------------ tier engine
+  /**
+   * one tier step: items (an init, a facility's reach, its seat allocation, its demand report, a final row range / lot
+   * range, a publish) while the next item's units fit in the step's budget (B2 design §4 S_TIERS c: the budget is tested
+   * BEFORE an item, with the item's known units — a fresh reach by its expected size; a single item over the budget runs
+   * alone). A step stops only between items; A, cov, seat, the pool and curEnt persist between steps as pre-B2, so the
+   * units only move the boundaries.
+   */
   private tierWork(sim: Simulation): void {
     const st = sim.state;
-    const C = st.cells;
+    const budget = pieceUnits(SC.tierUnit, 1, WARM);
     let work = 0;
-    while (this.stepIdx === S_TIERS && work < WORK_PER_STEP) {
+    while (this.stepIdx === S_TIERS) {
       const k = this.tierSlot;
-      if (k > NT) { this.stepIdx = S_STOPS; break; }
-      const list = this.fac[k];
-      const shared = this.shared[k];
-      const needL = k < NT ? this.provNeed[k] ?? this.need[NEED_RASTER[k]] : this.need[0];
-      switch (this.tierPhase) {
-        case P_INIT: {
-          if (list.length === 0) {
-            // empty slot: zero the layer (once; the transit layer every pass, finishTransit composes the stop
-            // coverage onto it), stats without a cell loop
-            if (this.hadFac[k] || k === SLOT_TRANSIT) {
-              (k === SLOT_TRANSIT ? st.transitCov : tierLayer(st, NEED_ORDER[k])).fill(0);
-              work += C * 0.05; this.workLeft -= C * 0.05;
-            }
-            this.hadFac[k] = false;
-            this.cache[k] = null;
-            if (k < NT) {
-              const n = this.provNeed[k] ? this.provSum[k] : this.needSum[NEED_RASTER[k]];
-              const ts = this.tierStats[k];
-              ts.need = n; ts.served = 0; ts.capacity = 0; ts.unreached = n; ts.overcrowded = 0;
-            }
-            this.tierSlot++;
-            break;
+      if (k > NT) { this.nextState(S_STOPS); break; }
+      const u = this.tierItemUnits(st, k);
+      if (work > 0 && work + u > budget) break;
+      const done = this.tierItem(st, k, budget - work);
+      work += done;
+      this.workLeft -= done;
+    }
+  }
+
+  /** the next tier item's units, known before it runs (a fresh reach: its expected size; row / lot items: one row / lot) */
+  private tierItemUnits(st: CityState, k: number): number {
+    const C = st.cells, N = st.size;
+    const list = this.fac[k];
+    const shared = this.shared[k];
+    switch (this.tierPhase) {
+      case P_INIT:
+        if (list.length === 0) return this.hadFac[k] || k === SLOT_TRANSIT ? C * U_EMPTY : 0;
+        return C * U_INIT;
+      case P_SEARCH: {
+        if (this.cursor >= list.length) return shared ? list.length * Math.log2(list.length + 1) : 0;
+        const b = list[this.cursor];
+        if (!st.buildings.has(b.id)) return 0;
+        const cache = this.cache[k];
+        const e = cache?.ent.get(b.id);
+        if (cache && e && e.valid && e.key === keyOf(b)) return (e.end - e.start) * (U_COPY + (shared ? 0 : U_ENTRY * 2)) + (shared ? 8 : 16);
+        return this.searchCells(st, b, k) * ((this.metricOf(st, b, k) === 2 ? U_SEARCH / 2 : U_SEARCH) + (shared ? 0 : U_ENTRY * 2)) + (shared ? 16 : 24);
+      }
+      case P_ALLOC: {
+        if (this.cursor >= list.length) return 0;
+        const c = this.order[this.cursor];
+        const n = this.facEnd[c] - this.facStart[c];
+        return n > 0 ? 2 * n * U_ENTRY + 8 : 4;
+      }
+      case P_REPORT: {
+        if (this.cursor >= list.length) return 0;
+        const c = this.cursor;
+        const n = this.facEnd[c] - this.facStart[c];
+        return n > 0 && this.facSig[c] < 1 ? n * U_REPORT + 14 : 2;
+      }
+      default:
+        switch (this.finSub) {
+          case F_CLAMP: return N * U_CLAMP;
+          case F_STATS: return N * U_STATS;
+          case F_CAP: return shared ? list.length * 0.5 + 8 : 8;
+          case F_FOOT: {
+            const q = this.finCur;
+            if (q >= this.multi.length) return 0;
+            const b = this.multi[q];
+            return Math.max(1, Math.min(N, b.x + b.w) - Math.max(0, b.x)) * Math.max(1, Math.min(N, b.z + b.d) - Math.max(0, b.z)) * FOOT_WORK;
           }
-          this.hadFac[k] = true;
-          this.A.fill(0);
-          this.cov.fill(0);
-          if (shared) this.seat.fill(1);
-          this.poolN = 0;
-          this.curEnt = new Map();
-          this.facStart.length = 0; this.facEnd.length = 0;
-          this.facSig.length = 0; this.facSeat.length = 0;
-          this.cursor = 0;
-          this.tierPhase = P_SEARCH;
-          const w = C * 0.1;
-          work += w; this.workLeft -= w;
-          break;
+          default: return C * U_PUBLISH + 8;
         }
-        case P_SEARCH: {
-          if (this.cursor >= list.length) {
-            if (shared) { this.seatOrder(k); this.tierPhase = P_ALLOC; } else this.tierPhase = P_FINAL;
-            this.cursor = 0;
-            break;
+    }
+  }
+
+  /** run the next tier item (row / lot items: as many rows / lots as `room` units allow, at least one); returns its units */
+  private tierItem(st: CityState, k: number, room: number): number {
+    const C = st.cells;
+    const list = this.fac[k];
+    const shared = this.shared[k];
+    const needL = k < NT ? this.provNeed[k] ?? this.need[NEED_RASTER[k]] : this.need[0];
+    switch (this.tierPhase) {
+      case P_INIT: {
+        if (list.length === 0) {
+          // empty slot: zero the layer (once; the transit layer every pass, finishTransit composes the stop
+          // coverage onto it), stats without a cell loop
+          let w = 0;
+          if (this.hadFac[k] || k === SLOT_TRANSIT) {
+            (k === SLOT_TRANSIT ? st.transitCov : tierLayer(st, NEED_ORDER[k])).fill(0);
+            w = C * U_EMPTY;
           }
-          const c = this.cursor++;
-          const b = list[c];
-          if (!st.buildings.has(b.id)) { this.facStart[c] = this.facEnd[c] = this.poolN; continue; }
-          const u = this.reachOf(st, b, k, c) + (shared ? 0 : this.splatUnion(st, b, k, c, needL));
-          work += u; this.workLeft -= u;
-          break;
-        }
-        case P_ALLOC: {
-          // shared tiers: facilities take seats in seat order (best op first, then building id)
-          if (this.cursor >= list.length) { this.tierPhase = P_REPORT; this.cursor = 0; break; }
-          const c = this.order[this.cursor++];
-          const u = this.allocSeats(st, list[c], k, c, needL);
-          work += u; this.workLeft -= u;
-          break;
-        }
-        case P_REPORT: {
-          // shared tiers: demand / utilization of crowded facilities from the need left unseated in their reach
-          if (this.cursor >= list.length) { this.tierPhase = P_FINAL; break; }
-          const c = this.cursor++;
-          const u = this.reportDemand(st, list[c], k, c, needL);
-          work += u; this.workLeft -= u;
-          break;
-        }
-        default: {
-          this.finalizeTier(st, k, needL);
-          // this slot's pool becomes its cache; the old cache buffers are the next slot's pool
-          const old = this.cache[k];
-          this.cache[k] = { idx: this.pIdx, w: this.pW, ent: this.curEnt };
-          if (old) { this.pIdx = old.idx; this.pW = old.w; } else { this.pIdx = new Int32Array(0); this.pW = new Float32Array(0); }
-          this.poolN = 0;
-          this.curEnt = new Map();
-          const w = C * (shared ? 0.3 : 0.2) + (k === SLOT_TRANSIT ? 0 : FOOT_WORK * this.multiCells);
-          work += w; this.workLeft -= w;
+          this.hadFac[k] = false;
+          this.cache[k] = null;
+          if (k < NT) {
+            const n = this.provNeed[k] ? this.provSum[k] : this.needSum[NEED_RASTER[k]];
+            const ts = this.tierStats[k];
+            ts.need = n; ts.served = 0; ts.capacity = 0; ts.unreached = n; ts.overcrowded = 0;
+          }
           this.tierSlot++;
-          this.tierPhase = P_INIT;
+          return w;
         }
+        this.hadFac[k] = true;
+        this.A.fill(0);
+        this.cov.fill(0);
+        if (shared) this.seat.fill(1);
+        this.poolN = 0;
+        this.curEnt = new Map();
+        this.facStart.length = 0; this.facEnd.length = 0;
+        this.facSig.length = 0; this.facSeat.length = 0;
+        this.cursor = 0;
+        this.tierPhase = P_SEARCH;
+        return C * U_INIT;
+      }
+      case P_SEARCH: {
+        if (this.cursor >= list.length) {
+          let w = 0;
+          if (shared) { this.seatOrder(k); this.tierPhase = P_ALLOC; w = list.length * Math.log2(list.length + 1); }
+          else this.beginFinal();
+          this.cursor = 0;
+          return w;
+        }
+        const c = this.cursor++;
+        const b = list[c];
+        if (!st.buildings.has(b.id)) { this.facStart[c] = this.facEnd[c] = this.poolN; return 0; }
+        return this.reachOf(st, b, k, c) + (shared ? 0 : this.splatUnion(st, b, k, c, needL));
+      }
+      case P_ALLOC: {
+        // shared tiers: facilities take seats in seat order (best op first, then building id)
+        if (this.cursor >= list.length) { this.tierPhase = P_REPORT; this.cursor = 0; return 0; }
+        const c = this.order[this.cursor++];
+        return this.allocSeats(st, list[c], k, c, needL);
+      }
+      case P_REPORT: {
+        // shared tiers: demand / utilization of crowded facilities from the need left unseated in their reach
+        if (this.cursor >= list.length) { this.beginFinal(); return 0; }
+        const c = this.cursor++;
+        return this.reportDemand(st, list[c], k, c, needL);
+      }
+      default:
+        return this.finalItem(st, k, needL, room);
+    }
+  }
+
+  private beginFinal(): void {
+    this.tierPhase = P_FINAL;
+    this.finSub = F_CLAMP;
+    this.finCur = 0;
+    this.finNeed = 0; this.finServed = 0; this.finUnreached = 0;
+  }
+
+  /**
+   * the slot's final items (design §4 S_TIERS d): clamp cov into finBuf by rows; the stats by rows over finBuf (the
+   * pre-footprint values, as pre-B2 read the layer before its footprint max); capacity / overcrowded and tierStats; the
+   * footprint max on finBuf by lots; the publish (layer.set(finBuf), the cache swap, the next slot). The transit slot does
+   * the clamp and the publish only. The layer changes once, in the publish: no reader sees a tier layer without its lot max.
+   */
+  private finalItem(st: CityState, k: number, needL: Float32Array, room: number): number {
+    const N = st.size, C = st.cells;
+    const shared = this.shared[k];
+    const buf = this.finBuf;
+    switch (this.finSub) {
+      case F_CLAMP: {
+        const rows = Math.max(1, Math.floor(room / (N * U_CLAMP)));
+        const z0 = this.finCur, z1 = Math.min(N, z0 + rows);
+        const cov = this.cov;
+        for (let i = z0 * N, e = z1 * N; i < e; i++) { const v = cov[i]; buf[i] = v < 1 ? v : 1; }
+        this.finCur = z1;
+        if (z1 >= N) { this.finSub = k === SLOT_TRANSIT ? F_PUBLISH : F_STATS; this.finCur = 0; }
+        return (z1 - z0) * N * U_CLAMP;
+      }
+      case F_STATS: {
+        const rows = Math.max(1, Math.floor(room / (N * U_STATS)));
+        const z0 = this.finCur, z1 = Math.min(N, z0 + rows);
+        const A = this.A;
+        let need = this.finNeed, served = this.finServed, unreached = this.finUnreached;
+        for (let i = z0 * N, e = z1 * N; i < e; i++) {
+          const n = needL[i];
+          if (n <= 0) continue;
+          need += n;
+          served += n * buf[i];
+          if (A[i] <= 0) unreached += n;
+        }
+        this.finNeed = need; this.finServed = served; this.finUnreached = unreached;
+        this.finCur = z1;
+        if (z1 >= N) { this.finSub = F_CAP; this.finCur = 0; }
+        return (z1 - z0) * N * U_STATS;
+      }
+      case F_CAP: {
+        let capacity = 0, over = 0;
+        const list = this.fac[k], ops = this.facOp[k], caps = this.facCap[k];
+        // capacity-free (union) tiers report capacity 0 / no crowding
+        for (let c = 0; shared && c < list.length; c++) {
+          const S = caps[c];
+          if (!(S < Infinity)) continue;
+          capacity += S * ops[c];
+          const id = list[c].id;
+          if (id < this.utilById.length && this.tierById[id] > 0 && this.utilById[id] > OVERCROWDED_UTIL) over++;
+        }
+        const ts = this.tierStats[k];
+        ts.need = this.finNeed; ts.served = this.finServed; ts.capacity = capacity; ts.unreached = this.finUnreached; ts.overcrowded = over;
+        this.finSub = F_FOOT;
+        this.finCur = 0;
+        return shared ? list.length * 0.5 + 8 : 8;
+      }
+      case F_FOOT: {
+        // a lot is covered as a whole from the moment its tier is written (the max over its footprint, as the footprint
+        // step makes it at the end of the pass): the back rows of a deep lot, never reached per cell, would otherwise read
+        // 0 for the days until that step, and the desirability band, needsOf (Residents) and the data views read the layer
+        // (195k city: mean police over R cells 0.98 -> 0.46 on those days, a deep lot's stored desirability -9 vs raw +49)
+        const list = this.multi;
+        let used = 0, q = this.finCur;
+        for (; q < list.length; q++) {
+          const b = list[q];
+          const x0 = Math.max(0, b.x), z0 = Math.max(0, b.z), x1 = Math.min(N, b.x + b.w), z1 = Math.min(N, b.z + b.d);
+          const u = Math.max(1, x1 - x0) * Math.max(1, z1 - z0) * FOOT_WORK;
+          if (used > 0 && used + u > room) break;
+          used += u;
+          let m = 0;
+          for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) { const v = buf[z * N + x]; if (v > m) m = v; }
+          for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) buf[z * N + x] = m;
+        }
+        this.finCur = q;
+        if (q >= list.length) { this.finSub = F_PUBLISH; this.finCur = 0; }
+        return used;
+      }
+      default: {
+        (k === SLOT_TRANSIT ? st.transitCov : tierLayer(st, NEED_ORDER[k])).set(buf.subarray(0, C));
+        // this slot's pool becomes its cache; the old cache buffers are the next slot's pool
+        const old = this.cache[k];
+        this.cache[k] = { idx: this.pIdx, w: this.pW, ent: this.curEnt };
+        if (old) { this.pIdx = old.idx; this.pW = old.w; } else { this.pIdx = new Int32Array(0); this.pW = new Float32Array(0); }
+        this.poolN = 0;
+        this.curEnt = new Map();
+        this.tierSlot++;
+        this.tierPhase = P_INIT;
+        this.finSub = F_CLAMP;
+        this.finCur = 0;
+        return C * U_PUBLISH + 8;
       }
     }
   }
@@ -959,7 +1562,7 @@ export class ServicesSystem implements SimSystem {
       this.demById[id] = dem;
       this.utilById[id] = S < Infinity && S > 0 ? dem / S : 0;
     }
-    return (s1 - s0) * U_ENTRY + 8;
+    return (s1 - s0) * U_REPORT + 14;
   }
 
   private record(b: Building, inf: DefInfo, S: number, D: number, served: number, op: number, seated: number): void {
@@ -976,69 +1579,103 @@ export class ServicesSystem implements SimSystem {
     this.powById[id] = !inf.usesPower || (b.flags & BF.Powered) !== 0 ? 1 : 0;
   }
 
-  /** write the tier layer + stats.needs of the slot */
-  private finalizeTier(st: CityState, k: number, needL: Float32Array): void {
-    const C = st.cells;
-    const shared = this.shared[k];
-    const layer = k === SLOT_TRANSIT ? st.transitCov : tierLayer(st, NEED_ORDER[k]);
-    const A = this.A, cov = this.cov;
-    for (let i = 0; i < C; i++) { const v = cov[i]; layer[i] = v < 1 ? v : 1; }
-    if (k === SLOT_TRANSIT) return;
-    let need = 0, served = 0, unreached = 0;
-    for (let i = 0; i < C; i++) {
-      const n = needL[i];
-      if (n <= 0) continue;
-      need += n;
-      served += n * layer[i];
-      if (A[i] <= 0) unreached += n;
-    }
-    let capacity = 0, over = 0;
-    const list = this.fac[k], ops = this.facOp[k], caps = this.facCap[k];
-    // capacity-free (union) tiers report capacity 0 / no crowding
-    for (let c = 0; shared && c < list.length; c++) {
-      const S = caps[c];
-      if (!(S < Infinity)) continue;
-      capacity += S * ops[c];
-      const id = list[c].id;
-      if (id < this.utilById.length && this.tierById[id] > 0 && this.utilById[id] > OVERCROWDED_UTIL) over++;
-    }
-    const ts = this.tierStats[k];
-    ts.need = need; ts.served = served; ts.capacity = capacity; ts.unreached = unreached; ts.overcrowded = over;
-    // a lot is covered as a whole from the moment its tier is written (the max over its footprint, as the footprint step
-    // makes it at the end of the pass): the back rows of a deep lot, never reached per cell, would otherwise read 0 for
-    // the days until that step, and the desirability band, needsOf (Residents) and the data views read the layer (195k
-    // city: mean police over R cells 0.98 -> 0.46 on those days, a deep lot's stored desirability -9 vs raw +49)
-    this.footprintMax(st, layer);
+  // ------------------------------------------------------------------------------------------------ transit stops
+  /** the whole stops state in one go (pre-B2 name and semantics) */
+  private finishTransit(sim: Simulation): void {
+    if (this.stepIdx !== S_STOPS) this.nextState(S_STOPS);
+    while (!this.stopsPiece(sim)) { /* pieces */ }
   }
 
-  // ------------------------------------------------------------------------------------------------ transit stops
-  /** transit stops coverage (combined with the generic transit coverage) */
-  private finishTransit(sim: Simulation): void {
+  /**
+   * transit stops coverage (combined with the generic transit coverage), in pieces: the stop list over the snapshot and
+   * the cells (collectStops' order), traffic's attachment refresh (its own piece when pending), the funding capture, the
+   * disks by stop ranges into tmp, the compose by rows into a copy of transitCov, the publish (.set). True when done.
+   */
+  private stopsPiece(sim: Simulation): boolean {
     const st = sim.state;
-    const C = st.cells;
-    this.stops = collectStops(st, this.stops);
-    const tmp = this.tmp;
-    const stops = this.stops;
-    // WP7b: unattached stops (traffic.stopAttached) give no walking coverage; road-flag stops sit on a road
-    computeTransitCoverage(st, stops, tmp, Math.min(1.25, fundingFactor(st, 'transit')), true, (s) => stops.bid[s] < 0 || stopServes(sim, stops.bid[s]));
-    const T = st.transitCov;
-    for (let i = 0; i < C; i++) { const t = tmp[i]; if (t > 0) T[i] = 1 - (1 - T[i]) * (1 - Math.min(1, t)); }
+    const C = st.cells, N = st.size;
+    for (;;) {
+      switch (this.sub) {
+        case ST_COLLECT_B: {
+          if (this.cur === 0) {
+            this.stops ??= { n: 0, bid: new Int32Array(64), mode: new Uint8Array(64), cell: new Int32Array(64) };
+            this.stopCol.begin(this.stops);
+            this.cur = 1;
+          }
+          if (this.stopCol.buildings(st, this.snap.list, pieceUnits(SC.stopB, 1, COLD))) this.sub = ST_COLLECT_C;
+          return false;
+        }
+        case ST_COLLECT_C:
+          if (this.stopCol.cells(st, pieceUnits(SC.stopCell, 1, COLD))) { this.stops = this.stopCol.end(); this.sub = ST_ATTACH; }
+          return false;
+        case ST_ATTACH:
+          this.sub = ST_BEGIN;
+          if (this.prepAttach(sim)) return false;
+          continue;
+        case ST_BEGIN: {
+          this.stopFund = Math.min(1.25, fundingFactor(st, 'transit'));
+          // WP7b: unattached stops (traffic.stopAttached) give no walking coverage; road-flag stops sit on a road
+          const stops = this.stops!;
+          this.stopActive = (s) => stops.bid[s] < 0 || stopServes(sim, stops.bid[s]);
+          this.tmp.fill(0);
+          this.sub = ST_DISKS;
+          this.cur = 0;
+          return false;
+        }
+        case ST_DISKS: {
+          const stops = this.stops!;
+          const s1 = Math.min(stops.n, this.cur + pieceUnits(SC.disk, 1, COLD));
+          transitCoverageRange(st, stops, this.tmp, this.stopFund, true, this.stopActive, this.cur, s1);
+          this.cur = s1;
+          if (s1 >= stops.n) { this.sub = ST_COMPOSE; this.cur = 0; this.stopActive = undefined; }
+          return false;
+        }
+        case ST_COMPOSE: {
+          // the compose works on a byte copy of transitCov (cells without stop coverage keep their exact bits)
+          if (this.cur === 0) this.finBuf.set(st.transitCov.subarray(0, C));
+          const rows = Math.max(1, Math.floor(pieceUnits(SC.compose, 1, COLD) / Math.max(1, N)));
+          const z1 = Math.min(N, this.cur + rows);
+          const tmp = this.tmp, T = this.finBuf;
+          for (let i = this.cur * N, e = z1 * N; i < e; i++) { const t = tmp[i]; if (t > 0) T[i] = 1 - (1 - T[i]) * (1 - Math.min(1, t)); }
+          this.cur = z1;
+          if (z1 >= N) this.sub = ST_PUBLISH;
+          return false;
+        }
+        default:
+          st.transitCov.set(this.finBuf.subarray(0, C));
+          return true;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------------------------------------ NIMBY
+  /** NIMBY / YIMBY rasters in pieces over the pass snapshot (nimby.ts NimbyRun); true when published */
+  private nimbyPiece(sim: Simulation): boolean {
+    if (!this.nimbyRun.active) { this.nimbyRun.begin(sim, this.snap.list); }
+    return this.nimbyRun.step(pieceBudgetUs(COLD));
   }
 
   // ------------------------------------------------------------------------------------------------ access fields
-  /** accessCommute step 1: seeds on frontage road cells (homes: their commute; job sites: CAR_OVERHEAD + 2) */
+  /** the whole access-seed state in one go (pre-B2 name and semantics) */
   private accessCommuteSeeds(sim: Simulation): void {
+    if (this.stepIdx !== S_ACC_SEED) this.nextState(S_ACC_SEED);
+    while (!this.accSeedPiece(sim)) { /* pieces */ }
+  }
+
+  /** accessCommute step 1: seeds on frontage road cells (homes: their commute; job sites: CAR_OVERHEAD + 2) */
+  private accSeedPiece(sim: Simulation): boolean {
     const st = sim.state;
+    if (this.sub === 0) { this.idist.fill(-1); this.sub = 1; this.cur = 0; return false; }
     const N = st.size;
     const net = st.network;
     const dist = this.idist;
-    dist.fill(-1);
     const tr = sim.getSystem<TrafficSystem>('traffic');
     const jobKey = Math.round((CAR_OVERHEAD + ACCESS_JOB_EXTRA) / TIME_Q);
     const maxKey = Math.round(MAX_COMMUTE / TIME_Q);
     const cm = st.commute;
-    const bL = buildingList(st);
-    for (let bI = 0; bI < bL.length; bI++) {
+    const bL = this.snap.list;
+    const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.seedB, 1, COLD));
+    for (let bI = this.cur; bI < e; bI++) {
       const b = bL[bI];
       if (b.built < 1 || (b.flags & (BF.Burnt | BF.Abandoned)) !== 0) continue;
       const inf = infoOf(st, b);
@@ -1067,181 +1704,426 @@ export class ServicesSystem implements SimSystem {
         }
       }
     }
+    this.cur = e;
+    return e >= this.snap.n;
   }
 
-  /** accessCommute step 3: land cells (adjacent road + ACCESS_LAND_STEP per cell), unreached, R footprints */
+  /** accessCommute step 2: the multi-source free-flow search (catchments RoadTimeRun: seed scan, then the drain) */
+  private accSearchPiece(sim: Simulation): boolean {
+    if (this.sub === 0) {
+      if (this.cur === 0) { this.accRun.begin(sim.state, this.idist, Math.round((MAX_COMMUTE + 60) / TIME_Q), NET_TIME_Q, RAMP_Q); this.cur = 1; }
+      if (this.accRun.seed(pieceUnits(SC.accSeed, 1, COLD))) this.sub = 1;
+      return false;
+    }
+    if (!this.accRun.run(pieceUnits(SC.accPop, 1, COLD))) return false;
+    this.accRun.release();
+    return true;
+  }
+
+  /** the whole access-land state in one go (pre-B2 name and semantics) */
   private accessCommuteLand(sim: Simulation): void {
+    if (this.stepIdx !== S_ACC_LAND) this.nextState(S_ACC_LAND);
+    while (!this.accLandPiece(sim)) { /* pieces */ }
+  }
+
+  /**
+   * accessCommute step 3: land cells (adjacent road + ACCESS_LAND_STEP per cell), unreached, R footprints — the init,
+   * the two chamfer sweeps and the output by rows (each sweep reads only rows it finished, so it resumes at row
+   * boundaries), the home footprints over the snapshot, all into accNext; then the publish (.set)
+   */
+  private accLandPiece(sim: Simulation): boolean {
     const st = sim.state;
     const N = st.size, C = st.cells;
     const net = st.network;
-    const dist = this.idist;
     const v = this.tmp;
     const INF = 1e9;
-    for (let i = 0; i < C; i++) { const t = net[i]; v[i] = t >= 1 && t <= 5 && dist[i] >= 0 ? dist[i] * TIME_Q : INF; }
-    chamfer(v, N, net, ACCESS_LAND_STEP, INF);
-    const avg = st.stats.avgCommute;
-    const unreached = avg > 0 ? ACCESS_UNREACHED * avg : 0;
-    const out = st.accessCommute, cm = st.commute;
-    for (let i = 0; i < C; i++) out[i] = v[i] < INF * 0.5 ? v[i] : unreached;
-    // residential footprints keep their own (traffic) commute
-    const bL = buildingList(st);
-    for (let bI = 0; bI < bL.length; bI++) {
-      const b = bL[bI];
-      if (b.pop <= 0 || infoOf(st, b).fam !== Fam.R) continue;
-      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
-        if (x < 0 || z < 0 || x >= N || z >= N) continue;
-        const i = z * N + x;
-        if (cm[i] > 0) out[i] = cm[i];
+    const rows = (us: number) => Math.max(1, Math.floor(pieceUnits(us, 1, COLD) / Math.max(1, N)));
+    switch (this.sub) {
+      case AL_INIT: {
+        const dist = this.idist;
+        const z1 = Math.min(N, this.cur + rows(SC.accInit));
+        for (let i = this.cur * N, e = z1 * N; i < e; i++) { const t = net[i]; v[i] = t >= 1 && t <= 5 && dist[i] >= 0 ? dist[i] * TIME_Q : INF; }
+        this.cur = z1;
+        if (z1 >= N) { this.sub = AL_FWD; this.cur = 0; }
+        return false;
       }
+      case AL_FWD: {
+        const z1 = Math.min(N, this.cur + rows(SC.chamfer));
+        chamferForward(v, N, net, ACCESS_LAND_STEP, INF, this.cur, z1);
+        this.cur = z1;
+        if (z1 >= N) { this.sub = AL_BWD; this.cur = 0; }
+        return false;
+      }
+      case AL_BWD: {
+        // (cur counts the rows done from the bottom)
+        const r1 = Math.min(N, this.cur + rows(SC.chamfer));
+        chamferBackward(v, N, net, ACCESS_LAND_STEP, INF, N - r1, N - this.cur);
+        this.cur = r1;
+        if (r1 >= N) { this.sub = AL_OUT; this.cur = 0; }
+        return false;
+      }
+      case AL_OUT: {
+        if (this.cur === 0) { const avg = st.stats.avgCommute; this.accUnreached = avg > 0 ? ACCESS_UNREACHED * avg : 0; }
+        const unreached = this.accUnreached;
+        const out = this.accNext;
+        const z1 = Math.min(N, this.cur + rows(SC.accOut));
+        for (let i = this.cur * N, e = z1 * N; i < e; i++) out[i] = v[i] < INF * 0.5 ? v[i] : unreached;
+        this.cur = z1;
+        if (z1 >= N) { this.sub = AL_HOMES; this.cur = 0; }
+        return false;
+      }
+      case AL_HOMES: {
+        // residential footprints keep their own (traffic) commute
+        const out = this.accNext, cm = st.commute;
+        const bL = this.snap.list;
+        const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.accHome * 2, 1, COLD));
+        for (let bI = this.cur; bI < e; bI++) {
+          const b = bL[bI];
+          if (b.pop <= 0 || infoOf(st, b).fam !== Fam.R) continue;
+          for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
+            if (x < 0 || z < 0 || x >= N || z >= N) continue;
+            const i = z * N + x;
+            if (cm[i] > 0) out[i] = cm[i];
+          }
+        }
+        this.cur = e;
+        if (e >= this.snap.n) this.sub = AL_PUBLISH;
+        return false;
+      }
+      default:
+        st.accessCommute.set(this.accNext.subarray(0, C));
+        return true;
     }
   }
 
-  /** shopAccess step 2: land cells, distance score x (base + supply ratio of CS jobs to residents per coarse block) */
+  /** shopAccess step 1: road distance from the CS frontage seeds (catchments RoadDistRun) */
+  private shopAPiece(sim: Simulation): boolean {
+    if (this.sub === 0) {
+      this.shopRun.start(sim.state, 1, this.csSeeds, this.nCsSeeds, SHOP_CAP_CELLS * 4, this.shopDist);
+      this.sub = 1;
+      return false;
+    }
+    if (!this.shopRun.run(pieceUnits(SC.shopPop, 1, COLD))) return false;
+    this.shopRun.release();
+    return true;
+  }
+
+  /** the whole shop-land state in one go (pre-B2 name and semantics) */
   private shopLand(sim: Simulation): void {
+    if (this.stepIdx !== S_SHOP_B) this.nextState(S_SHOP_B);
+    while (!this.shopBPiece(sim)) { /* pieces */ }
+  }
+
+  /**
+   * shopAccess step 2: land cells, distance score x (base + supply ratio of CS jobs to residents per coarse block) — the
+   * init and the chamfer by rows, the block sums (residents by rows, CS capacity over the snapshot), box3 x 2 + the ratio
+   * + the LUT + the column taps, the bilinear output by rows into shopNext; then the publish (.set)
+   */
+  private shopBPiece(sim: Simulation): boolean {
     const st = sim.state;
     const N = st.size, C = st.cells;
     const net = st.network;
-    const d = this.shopDist;
     const v = this.tmp;
     const INF = 1e9;
-    for (let i = 0; i < C; i++) { const t = net[i]; v[i] = t >= 1 && t <= 5 && d[i] >= 0 ? d[i] : INF; }
-    chamfer(v, N, net, 4, INF);
-    // coarse supply ratio: CS job capacity x RES_PER_CS_JOB / residents, blurred over 3x3 blocks
     const B = CLUSTER_BLOCK;
     const nb = Math.ceil(N / B);
-    const cs = new Float32Array(nb * nb), pop = new Float32Array(nb * nb);
-    const res = this.need[0];
-    for (let z = 0; z < N; z++) { const bz = (z / B) | 0; for (let x = 0; x < N; x++) { const r = res[z * N + x]; if (r > 0) pop[bz * nb + ((x / B) | 0)] += r; } }
-    const bL = buildingList(st);
-    for (let bI = 0; bI < bL.length; bI++) {
-      const b = bL[bI];
-      const inf = infoOf(st, b);
-      if (inf.fam !== Fam.C || inf.dev < DevType.CS1 || inf.dev > DevType.CS3 || !isFunctional(b)) continue;
-      const x = Math.min(N - 1, b.x + (b.w >> 1)), z = Math.min(N - 1, b.z + (b.d >> 1));
-      cs[((z / B) | 0) * nb + ((x / B) | 0)] += b.capacity;
-    }
-    box3(cs, nb); box3(pop, nb);
-    const ratio = cs;
-    for (let q = 0; q < nb * nb; q++) ratio[q] = Math.min(1, (cs[q] * RES_PER_CS_JOB) / (pop[q] + 1));
-    const out = st.shopAccess;
-    const capQ = SHOP_CAP_CELLS * 4;
-    // distance score LUT (quarter-cell integer distances) and per-column bilinear taps into the coarse ratio grid
-    if (this.shopLut.length !== capQ + 1) {
-      this.shopLut = new Float32Array(capQ + 1);
-      for (let q = 0; q <= capQ; q++) this.shopLut[q] = 1 - smoothstep(SHOP_NEAR, SHOP_FAR, q / 4);
-    }
-    const lut = this.shopLut;
-    if (this.colX0.length !== N) { this.colX0 = new Int32Array(N); this.colX1 = new Int32Array(N); this.colT = new Float32Array(N); }
-    const cx0 = this.colX0, cx1 = this.colX1, ct = this.colT;
-    for (let x = 0; x < N; x++) {
-      const f = Math.min(nb - 1, Math.max(0, (x + 0.5) / B - 0.5));
-      const x0 = Math.floor(f);
-      cx0[x] = x0; cx1[x] = Math.min(nb - 1, x0 + 1); ct[x] = f - x0;
-    }
-    for (let z = 0; z < N; z++) {
-      const fz = Math.min(nb - 1, Math.max(0, (z + 0.5) / B - 0.5));
-      const z0 = Math.floor(fz), tz = fz - z0;
-      const r0 = z0 * nb, r1 = Math.min(nb - 1, z0 + 1) * nb;
-      const row = z * N;
-      for (let x = 0; x < N; x++) {
-        const i = row + x;
-        const q = v[i];
-        if (!(q <= capQ)) { out[i] = 0; continue; }
-        const tx = ct[x], a = cx0[x], c = cx1[x];
-        const r = (ratio[r0 + a] + (ratio[r0 + c] - ratio[r0 + a]) * tx) * (1 - tz) + (ratio[r1 + a] + (ratio[r1 + c] - ratio[r1 + a]) * tx) * tz;
-        out[i] = lut[q | 0] * (SHOP_BASE + (1 - SHOP_BASE) * r);
+    const rows = (us: number) => Math.max(1, Math.floor(pieceUnits(us, 1, COLD) / Math.max(1, N)));
+    switch (this.sub) {
+      case SB_INIT: {
+        const d = this.shopDist;
+        const z1 = Math.min(N, this.cur + rows(SC.shopInit));
+        for (let i = this.cur * N, e = z1 * N; i < e; i++) { const t = net[i]; v[i] = t >= 1 && t <= 5 && d[i] >= 0 ? d[i] : INF; }
+        this.cur = z1;
+        if (z1 >= N) { this.sub = SB_FWD; this.cur = 0; }
+        return false;
       }
+      case SB_FWD: {
+        const z1 = Math.min(N, this.cur + rows(SC.chamfer));
+        chamferForward(v, N, net, 4, INF, this.cur, z1);
+        this.cur = z1;
+        if (z1 >= N) { this.sub = SB_BWD; this.cur = 0; }
+        return false;
+      }
+      case SB_BWD: {
+        const r1 = Math.min(N, this.cur + rows(SC.chamfer));
+        chamferBackward(v, N, net, 4, INF, N - r1, N - this.cur);
+        this.cur = r1;
+        if (r1 >= N) { this.sub = SB_POP; this.cur = 0; }
+        return false;
+      }
+      case SB_POP: {
+        // coarse supply ratio: CS job capacity x RES_PER_CS_JOB / residents, blurred over 3x3 blocks
+        if (this.cur === 0) {
+          if (this.shopCs.length !== nb * nb) { this.shopCs = new Float32Array(nb * nb); this.shopPop = new Float32Array(nb * nb); this.shopBoxTmp = new Float32Array(nb * nb); }
+          this.shopCs.fill(0);
+          this.shopPop.fill(0);
+        }
+        const pop = this.shopPop;
+        const res = this.need[0];
+        const z1 = Math.min(N, this.cur + rows(SC.shopBlock));
+        for (let z = this.cur; z < z1; z++) { const bz = (z / B) | 0; for (let x = 0; x < N; x++) { const r = res[z * N + x]; if (r > 0) pop[bz * nb + ((x / B) | 0)] += r; } }
+        this.cur = z1;
+        if (z1 >= N) { this.sub = SB_CS; this.cur = 0; }
+        return false;
+      }
+      case SB_CS: {
+        const cs = this.shopCs;
+        const bL = this.snap.list;
+        const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.shopCs, 1, COLD));
+        for (let bI = this.cur; bI < e; bI++) {
+          const b = bL[bI];
+          const inf = infoOf(st, b);
+          if (inf.fam !== Fam.C || inf.dev < DevType.CS1 || inf.dev > DevType.CS3 || !isFunctional(b)) continue;
+          const x = Math.min(N - 1, b.x + (b.w >> 1)), z = Math.min(N - 1, b.z + (b.d >> 1));
+          cs[((z / B) | 0) * nb + ((x / B) | 0)] += b.capacity;
+        }
+        this.cur = e;
+        if (e >= this.snap.n) { this.sub = SB_BOX; this.cur = 0; }
+        return false;
+      }
+      case SB_BOX: {
+        const cs = this.shopCs, pop = this.shopPop;
+        box3(cs, nb, this.shopBoxTmp); box3(pop, nb, this.shopBoxTmp);
+        const ratio = cs;
+        for (let q = 0; q < nb * nb; q++) ratio[q] = Math.min(1, (cs[q] * RES_PER_CS_JOB) / (pop[q] + 1));
+        const capQ = SHOP_CAP_CELLS * 4;
+        // distance score LUT (quarter-cell integer distances) and per-column bilinear taps into the coarse ratio grid
+        if (this.shopLut.length !== capQ + 1) {
+          this.shopLut = new Float32Array(capQ + 1);
+          for (let q = 0; q <= capQ; q++) this.shopLut[q] = 1 - smoothstep(SHOP_NEAR, SHOP_FAR, q / 4);
+        }
+        if (this.colX0.length !== N) { this.colX0 = new Int32Array(N); this.colX1 = new Int32Array(N); this.colT = new Float32Array(N); }
+        const cx0 = this.colX0, cx1 = this.colX1, ct = this.colT;
+        for (let x = 0; x < N; x++) {
+          const f = Math.min(nb - 1, Math.max(0, (x + 0.5) / B - 0.5));
+          const x0 = Math.floor(f);
+          cx0[x] = x0; cx1[x] = Math.min(nb - 1, x0 + 1); ct[x] = f - x0;
+        }
+        this.sub = SB_OUT;
+        this.cur = 0;
+        return false;
+      }
+      case SB_OUT: {
+        const ratio = this.shopCs;
+        const out = this.shopNext;
+        const capQ = SHOP_CAP_CELLS * 4;
+        const lut = this.shopLut;
+        const cx0 = this.colX0, cx1 = this.colX1, ct = this.colT;
+        const z1 = Math.min(N, this.cur + rows(SC.shopOut));
+        for (let z = this.cur; z < z1; z++) {
+          const fz = Math.min(nb - 1, Math.max(0, (z + 0.5) / B - 0.5));
+          const z0 = Math.floor(fz), tz = fz - z0;
+          const r0 = z0 * nb, r1 = Math.min(nb - 1, z0 + 1) * nb;
+          const row = z * N;
+          for (let x = 0; x < N; x++) {
+            const i = row + x;
+            const q = v[i];
+            if (!(q <= capQ)) { out[i] = 0; continue; }
+            const tx = ct[x], a = cx0[x], c = cx1[x];
+            const r = (ratio[r0 + a] + (ratio[r0 + c] - ratio[r0 + a]) * tx) * (1 - tz) + (ratio[r1 + a] + (ratio[r1 + c] - ratio[r1 + a]) * tx) * tz;
+            out[i] = lut[q | 0] * (SHOP_BASE + (1 - SHOP_BASE) * r);
+          }
+        }
+        this.cur = z1;
+        if (z1 >= N) this.sub = SB_PUBLISH;
+        return false;
+      }
+      default:
+        st.shopAccess.set(this.shopNext.subarray(0, C));
+        return true;
     }
   }
 
   // ------------------------------------------------------------------------------------------------ footprints / finish
-  /** uniform transit coverage over building footprints (max over the footprint). The tier layers are uniform per lot
-   *  already (finalizeTier applies the footprint max as it writes each one, and empty slots are all 0); the transit layer
-   *  gets the stop coverage composed after its slot (finishTransit), so it is the one layer left. (WP6b: redoing every
-   *  tier here gave the same layers and a step estimate of 4.5 ms on the 1.5M bot city, over the 3 ms step budget) */
+  /** the whole footprint state in one go (pre-B2 name and semantics) */
   private footprints(st: CityState): void {
-    if (this.hadFac[SLOT_TRANSIT] || (this.stops?.n ?? 0) > 0) this.footprintMax(st, st.transitCov);
+    if (this.stepIdx !== S_FOOT) this.nextState(S_FOOT);
+    while (!this.footPiece({ state: st } as Simulation)) { /* pieces */ }
   }
-  /** one layer's max over each multi-cell footprint (finalizeTier: a tier is uniform per lot as soon as it is written) */
-  private footprintMax(st: CityState, L: Float32Array): void {
-    const N = st.size, list = this.multi;
-    for (let q = 0; q < list.length; q++) {
-      const b = list[q];
-      const x0 = Math.max(0, b.x), z0 = Math.max(0, b.z), x1 = Math.min(N, b.x + b.w), z1 = Math.min(N, b.z + b.d);
-      let m = 0;
-      for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) { const v = L[z * N + x]; if (v > m) m = v; }
-      for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) L[z * N + x] = m;
+
+  /**
+   * uniform transit coverage over building footprints (max over the footprint). The tier layers are uniform per lot
+   * already (each slot's final items apply the footprint max before its publish, and empty slots are all 0); the transit
+   * layer gets the stop coverage composed after its slot (S_STOPS), so it is the one layer left. (WP6b: redoing every tier
+   * here gave the same layers and a step estimate of 4.5 ms on the 1.5M bot city, over the 3 ms step budget.) B2: on a
+   * byte copy of transitCov by lots, published by .set().
+   */
+  private footPiece(sim: Simulation): boolean {
+    const st = sim.state;
+    const N = st.size, C = st.cells;
+    switch (this.sub) {
+      case 0:
+        if (!(this.hadFac[SLOT_TRANSIT] || (this.stops?.n ?? 0) > 0)) return true;
+        this.finBuf.set(st.transitCov.subarray(0, C));
+        this.sub = 1;
+        this.cur = 0;
+        return false;
+      case 1: {
+        const L = this.finBuf, list = this.multi;
+        const room = pieceBudgetUs(COLD);
+        let used = 0, q = this.cur;
+        for (; q < list.length; q++) {
+          const b = list[q];
+          const x0 = Math.max(0, b.x), z0 = Math.max(0, b.z), x1 = Math.min(N, b.x + b.w), z1 = Math.min(N, b.z + b.d);
+          const u = Math.max(1, x1 - x0) * Math.max(1, z1 - z0) * SC.foot;
+          if (used > 0 && used + u > room) break;
+          used += u;
+          let m = 0;
+          for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) { const v = L[z * N + x]; if (v > m) m = v; }
+          for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) L[z * N + x] = m;
+        }
+        this.cur = q;
+        if (q >= list.length) this.sub = 2;
+        return false;
+      }
+      default:
+        st.transitCov.set(this.finBuf.subarray(0, C));
+        return true;
     }
   }
 
-  /** last step: legacy combos, stats.needs, stale facility records, EQ / HQ fallback, layerUpdated */
+  /** the whole finish state in one go (pre-B2 name and semantics) */
   private finish(sim: Simulation, first: boolean): void {
+    if (this.stepIdx !== S_FINISH) this.nextState(S_FINISH);
+    this.firstPass = first;
+    while (!this.finishPiece(sim)) { /* pieces */ }
+  }
+
+  /**
+   * last state: legacy combos (rows into private buffers, then their publish), the per-tier stats.needs pass (rows),
+   * stats.needs, stale facility records (id ranges), the EQ / HQ fallback (snapshot chunks), then the end: EQ / HQ,
+   * layerUpdated. True when done.
+   */
+  private finishPiece(sim: Simulation): boolean {
     const st = sim.state;
     const N = st.size, C = st.cells;
-    const E = st.eduElemCov, H = st.eduHighCov, K = st.eduCollegeCov, P = st.playCov, G = st.greenCov;
-    // legacy layers for untouched consumers
-    const edu = st.eduCov, park = st.parkCov;
-    const [we, wh, wc] = EDU_LEGACY_W;
-    for (let i = 0; i < C; i++) {
-      const e = we * E[i] + wh * H[i] + wc * K[i];
-      edu[i] = e < 1 ? e : 1;
-      park[i] = 1 - (1 - P[i]) * (1 - G[i]);
-    }
-    // stats.needs — per building: the footprint pass made each lot's coverage uniform, so the back rows of deep lots
-    // (no road within one cell: never reached per cell) count as served / reached with their front door (WP6a probe)
-    for (let k = 0; k < NT; k++) {
-      if (!this.hadFac[k]) continue;
-      const needL = this.provNeed[k] ?? this.need[NEED_RASTER[k]];
-      if (!needL || needL.length !== C) continue;
-      const layer = tierLayer(st, NEED_ORDER[k]);
-      let served = 0, unreached = 0;
-      for (let i = 0; i < C; i++) { const n = needL[i]; if (n <= 0) continue; const v = layer[i]; served += n * v; if (v <= 0) unreached += n; }
-      this.tierStats[k].served = served;
-      this.tierStats[k].unreached = unreached;
-    }
-    const needs = st.stats.needs as Record<NeedTier, NeedStat> | undefined;
-    if (needs) {
-      for (let k = 0; k < NT; k++) {
-        const t = NEED_ORDER[k];
-        const src = this.tierStats[k];
-        const dst = needs[t] ?? (needs[t] = { need: 0, served: 0, capacity: 0, unreached: 0, overcrowded: 0 });
-        dst.need = Math.round(src.need);
-        dst.served = Math.round(src.served);
-        dst.capacity = Math.round(src.capacity);
-        dst.unreached = Math.round(src.unreached);
-        dst.overcrowded = src.overcrowded;
+    const rows = (us: number) => Math.max(1, Math.floor(pieceUnits(us, 1, COLD) / Math.max(1, N)));
+    for (;;) {
+      switch (this.sub) {
+        case FI_COMBO: {
+          // legacy layers for untouched consumers
+          const E = st.eduElemCov, H = st.eduHighCov, K = st.eduCollegeCov, P = st.playCov, G = st.greenCov;
+          const edu = this.eduNext, park = this.parkNext;
+          const [we, wh, wc] = EDU_LEGACY_W;
+          const z1 = Math.min(N, this.cur + rows(SC.combo));
+          for (let i = this.cur * N, e = z1 * N; i < e; i++) {
+            const v = we * E[i] + wh * H[i] + wc * K[i];
+            edu[i] = v < 1 ? v : 1;
+            park[i] = 1 - (1 - P[i]) * (1 - G[i]);
+          }
+          this.cur = z1;
+          if (z1 >= N) this.sub = FI_COMBO_PUB;
+          return false;
+        }
+        case FI_COMBO_PUB:
+          st.eduCov.set(this.eduNext.subarray(0, C));
+          st.parkCov.set(this.parkNext.subarray(0, C));
+          this.sub = FI_TIERS;
+          this.cur = 0;
+          this.cur2 = 0;
+          this.fiServed = 0; this.fiUnreached = 0;
+          return false;
+        case FI_TIERS: {
+          // stats.needs — per building: the footprint pass made each lot's coverage uniform, so the back rows of deep lots
+          // (no road within one cell: never reached per cell) count as served / reached with their front door (WP6a probe)
+          let k = this.cur2;
+          while (k < NT) {
+            if (!this.hadFac[k]) { k++; continue; }
+            const needL = this.provNeed[k] ?? this.need[NEED_RASTER[k]];
+            if (!needL || needL.length !== C) { k++; continue; }
+            break;
+          }
+          this.cur2 = k;
+          if (k >= NT) { this.sub = FI_NEEDS; continue; }
+          const needL = this.provNeed[k] ?? this.need[NEED_RASTER[k]];
+          const layer = tierLayer(st, NEED_ORDER[k]);
+          const z1 = Math.min(N, this.cur + rows(SC.tierStat));
+          let served = this.fiServed, unreached = this.fiUnreached;
+          for (let i = this.cur * N, e = z1 * N; i < e; i++) { const n = needL[i]; if (n <= 0) continue; const v = layer[i]; served += n * v; if (v <= 0) unreached += n; }
+          this.fiServed = served; this.fiUnreached = unreached;
+          this.cur = z1;
+          if (z1 >= N) {
+            this.tierStats[k].served = served;
+            this.tierStats[k].unreached = unreached;
+            this.cur = 0;
+            this.cur2 = k + 1;
+            this.fiServed = 0; this.fiUnreached = 0;
+          }
+          return false;
+        }
+        case FI_NEEDS:
+          // (stats.needs is written in the end piece, with stats.eq / hq: saved data that changed within one pre-B2 step
+          // changes within one piece, R9; nothing in between reads it)
+          this.sub = FI_STALE;
+          this.cur = 0;
+          continue;
+        case FI_STALE: {
+          // facilities not processed this pass (removed / no longer a tier facility) drop out of facilityLoad
+          const tb = this.tierById, seen = this.seenById, pass = this.passNo;
+          const n = Math.min(tb.length, seen.length);
+          const id1 = Math.min(n, this.cur + pieceUnits(SC.stale, 1, COLD));
+          for (let id = this.cur; id < id1; id++) if (tb[id] > 0 && seen[id] !== pass) tb[id] = 0;
+          this.cur = id1;
+          if (id1 >= n) { this.sub = FI_EQHQ; this.cur = 0; this.eqPop = 0; this.eqEdu = 0; this.eqHealth = 0; this.eqAir = 0; this.eqWp1 = false; }
+          return false;
+        }
+        case FI_EQHQ: {
+          // EQ / HQ legacy fallback (WP1 owns them once buildings carry the education stock b.edu)
+          const E = st.eduElemCov, H = st.eduHighCov, K = st.eduCollegeCov;
+          let popSum = this.eqPop, eduA = this.eqEdu, health = this.eqHealth, air = this.eqAir, wp1 = false;
+          const bL = this.snap.list;
+          const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.eqhq, 1, COLD));
+          let bI = this.cur;
+          for (; bI < e; bI++) {
+            const b = bL[bI];
+            if (b.pop <= 0) continue;
+            if (infoOf(st, b).fam !== Fam.R) continue;
+            if (b.edu !== undefined) { wp1 = true; break; }
+            const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
+            popSum += b.pop;
+            eduA += b.pop * (1 - (1 - E[i]) * (1 - H[i]) * (1 - K[i]));
+            health += b.pop * st.healthCov[i];
+            air += b.pop * st.airPollution[i];
+          }
+          this.eqPop = popSum; this.eqEdu = eduA; this.eqHealth = health; this.eqAir = air;
+          this.cur = bI;
+          if (wp1) { this.eqWp1 = true; this.sub = FI_END; return false; }
+          if (bI >= this.snap.n) this.sub = FI_END;
+          return false;
+        }
+        default: {
+          const stats = st.stats;
+          const needs = stats.needs as Record<NeedTier, NeedStat> | undefined;
+          if (needs) {
+            for (let k = 0; k < NT; k++) {
+              const t = NEED_ORDER[k];
+              const src = this.tierStats[k];
+              const dst = needs[t] ?? (needs[t] = { need: 0, served: 0, capacity: 0, unreached: 0, overcrowded: 0 });
+              dst.need = Math.round(src.need);
+              dst.served = Math.round(src.served);
+              dst.capacity = Math.round(src.capacity);
+              dst.unreached = Math.round(src.unreached);
+              dst.overcrowded = src.overcrowded;
+            }
+          }
+          const dtDays = Math.max(0, st.day - this.lastEqDay);
+          this.lastEqDay = st.day;
+          const popSum = this.eqPop;
+          let eduA = this.eqEdu, health = this.eqHealth, air = this.eqAir;
+          if (!this.eqWp1 && popSum > 0 && !this.firstPass && dtDays > 0) {
+            eduA /= popSum; health /= popSum; air /= popSum;
+            const eqT = Math.min(150, 25 + 125 * eduA);
+            const hqT = Math.min(150, Math.max(0, (30 + 120 * health) * (1 - 0.35 * air)));
+            stats.eq += (eqT - stats.eq) * (1 - Math.exp(-dtDays / (EQ_TAU_YEARS * 360)));
+            stats.hq += (hqT - stats.hq) * (1 - Math.exp(-dtDays / (HQ_TAU_YEARS * 360)));
+          }
+          this.donePasses++;
+          sim.events.emit('layerUpdated', 'services');
+          sim.events.emit('layerUpdated', 'catchments');
+          return true;
+        }
       }
     }
-    // facilities not processed this pass (removed / no longer a tier facility) drop out of facilityLoad
-    const tb = this.tierById, seen = this.seenById, pass = this.passNo;
-    for (let id = 0, n = Math.min(tb.length, seen.length); id < n; id++) if (tb[id] > 0 && seen[id] !== pass) tb[id] = 0;
-    // EQ / HQ legacy fallback (WP1 owns them once buildings carry the education stock b.edu)
-    let popSum = 0, eduA = 0, health = 0, air = 0, wp1 = false;
-    const bL = buildingList(st);
-    for (let bI = 0; bI < bL.length; bI++) {
-      const b = bL[bI];
-      if (b.pop <= 0) continue;
-      if (infoOf(st, b).fam !== Fam.R) continue;
-      if (b.edu !== undefined) { wp1 = true; break; }
-      const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
-      popSum += b.pop;
-      eduA += b.pop * (1 - (1 - E[i]) * (1 - H[i]) * (1 - K[i]));
-      health += b.pop * st.healthCov[i];
-      air += b.pop * st.airPollution[i];
-    }
-    const stats = st.stats;
-    const dtDays = Math.max(0, st.day - this.lastEqDay);
-    this.lastEqDay = st.day;
-    if (!wp1 && popSum > 0 && !first && dtDays > 0) {
-      eduA /= popSum; health /= popSum; air /= popSum;
-      const eqT = Math.min(150, 25 + 125 * eduA);
-      const hqT = Math.min(150, Math.max(0, (30 + 120 * health) * (1 - 0.35 * air)));
-      stats.eq += (eqT - stats.eq) * (1 - Math.exp(-dtDays / (EQ_TAU_YEARS * 360)));
-      stats.hq += (hqT - stats.hq) * (1 - Math.exp(-dtDays / (HQ_TAU_YEARS * 360)));
-    }
-    this.donePasses++;
-    sim.events.emit('layerUpdated', 'services');
-    sim.events.emit('layerUpdated', 'catchments');
   }
 
   /** coarse CLUSTER_BLOCK blocks: need x (1 - cov) where cov < CLUSTER_COV, need-weighted centroid, top 16 */
@@ -1316,11 +2198,10 @@ export class ServicesSystem implements SimSystem {
   }
 }
 
-/** hash of the highway / rail cells with their bridge / tunnel bits (NIMBY corridor stigma sources) */
-function corridorHash(st: CityState): number {
+/** corridorHash over net[i0, i1) from h (the whole hash: one range [0, net.length) from 0x2545f491) */
+function corridorHashRange(st: CityState, h: number, i0: number, i1: number): number {
   const net = st.network, fl = st.netFlags;
-  let h = 0x2545f491;
-  for (let i = 0; i < net.length; i++) {
+  for (let i = i0; i < i1; i++) {
     const t = net[i];
     if (t !== Network.Highway && t !== Network.Rail) continue;
     h = Math.imul(h ^ (i * 16 + t * 4 + (fl[i] & 3)), 16777619) ^ (h >>> 15);
@@ -1328,15 +2209,17 @@ function corridorHash(st: CityState): number {
   return h;
 }
 
-/** FNV-style hash of a byte layer (4 bytes per round) */
-function hashBytes(a: Uint8Array, seed: number): number {
-  let h = 0x811c9dc5 ^ seed;
-  const n4 = a.length & ~3;
-  for (let i = 0; i < n4; i += 4) {
+/** hashBytes' word rounds over a[i0, i1) (4 bytes per round; i0, i1 multiples of 4 up to a.length & ~3) */
+function hashWords(a: Uint8Array, h: number, i0: number, i1: number): number {
+  for (let i = i0; i < i1; i += 4) {
     const v = a[i] | (a[i + 1] << 8) | (a[i + 2] << 16) | (a[i + 3] << 24);
     h = Math.imul(h ^ v, 16777619) ^ (h >>> 13);
   }
-  for (let i = n4; i < a.length; i++) h = Math.imul(h ^ a[i], 16777619);
+  return h;
+}
+/** hashBytes' tail (the last a.length % 4 bytes) */
+function hashTail(a: Uint8Array, h: number): number {
+  for (let i = a.length & ~3; i < a.length; i++) h = Math.imul(h ^ a[i], 16777619);
   return h;
 }
 
@@ -1345,9 +2228,8 @@ function smoothstep(a: number, b: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
-/** 3x3 box blur on an n x n grid in place (zero boundary) */
-function box3(a: Float32Array, n: number): void {
-  const t = new Float32Array(a.length);
+/** 3x3 box blur on an n x n grid in place (zero boundary); `t` = n x n scratch (pre-B2: allocated per call) */
+function box3(a: Float32Array, n: number, t: Float32Array): void {
   for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
     let s = a[z * n + x];
     if (x > 0) s += a[z * n + x - 1];
@@ -1363,11 +2245,13 @@ function box3(a: Float32Array, n: number): void {
 }
 
 /**
- * two-pass chamfer (4-neighbour) over non-road cells: v = min(v, neighbour + step); road cells (net 1..5) keep their
- * value and act as sources. Values >= inf are "unset".
+ * the two-pass chamfer (4-neighbour) over non-road cells: v = min(v, neighbour + step); road cells (net 1..5) keep their
+ * value and act as sources. Values >= inf are "unset". B2: the forward sweep over rows [z0, z1) (ascending) and the
+ * backward sweep over rows [z0, z1) (descending). Each sweep reads only rows it finished (and road cells, which it never
+ * writes), so consecutive row ranges — forward from 0, backward from N — give exactly the pre-B2 chamfer(v, N, net, step, inf).
  */
-function chamfer(v: Float32Array, N: number, net: Uint8Array, step: number, inf: number): void {
-  for (let z = 0; z < N; z++) {
+function chamferForward(v: Float32Array, N: number, net: Uint8Array, step: number, inf: number, z0: number, z1: number): void {
+  for (let z = z0; z < z1; z++) {
     const row = z * N;
     for (let x = 0; x < N; x++) {
       const i = row + x;
@@ -1381,7 +2265,9 @@ function chamfer(v: Float32Array, N: number, net: Uint8Array, step: number, inf:
       v[i] = m < inf ? m : inf;
     }
   }
-  for (let z = N - 1; z >= 0; z--) {
+}
+function chamferBackward(v: Float32Array, N: number, net: Uint8Array, step: number, inf: number, z0: number, z1: number): void {
+  for (let z = z1 - 1; z >= z0; z--) {
     const row = z * N;
     for (let x = N - 1; x >= 0; x--) {
       const i = row + x;
