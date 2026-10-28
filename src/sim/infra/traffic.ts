@@ -1632,6 +1632,16 @@ export class TrafficSystem implements SimSystem {
     return (this.attach.get(id) ?? 0) === 1;
   }
   /**
+   * B2 (G2, design review 2 item 5e): estimated warm ms of the lazy attachment refresh the next stopAttached /
+   * freightRailCells call would run (0 when it is current). Other tasks run it in a piece of their own while it is
+   * pending (stopAttached(-1)), so it never lands inside one of their loop pieces. Pure.
+   */
+  attachRefreshMs(st: CityState): number {
+    const cur = this.lastState;
+    if (!cur) return 0;
+    return this.attachDirty || this.attachFor !== cur ? (TR_EST * (TC.piece + TC.attach * st.cells)) / 1000 : 0;
+  }
+  /**
    * riders (boardings + alightings / day, smoothed across assignments), current wait (min), the depot (building id, -1 =
    * none / minibuses) of a stop building, walkers = residents within walking distance whose nearest jobs are a walk from
    * this stop (they don't ride: last assignment), rho = the service ratio of its bus pool (buses / buses needed; bus

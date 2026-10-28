@@ -184,8 +184,18 @@ export function transitCoverageActive(sim: Simulation, b: Building, inf: DefInfo
 export function computeTransitCoverage(state: CityState, stops: StopList, out: Float32Array, funding: number, skipWithCoverage = true,
   active?: (s: number) => boolean): void {
   out.fill(0);
+  transitCoverageRange(state, stops, out, funding, skipWithCoverage, active, 0, stops.n);
+}
+
+/**
+ * B2 (docs/dev/B2_DESIGN.md §4 S_STOPS): computeTransitCoverage's disks for the stops [s0, s1) into `out`, which is NOT
+ * cleared (the caller zero-fills it once before the first range). The same skips and the same in-place accumulation in
+ * stop order, so consecutive ranges from 0 to stops.n give exactly the whole call's raster.
+ */
+export function transitCoverageRange(state: CityState, stops: StopList, out: Float32Array, funding: number, skipWithCoverage: boolean,
+  active: ((s: number) => boolean) | undefined, s0: number, s1: number): void {
   const N = state.size;
-  for (let s = 0; s < stops.n; s++) {
+  for (let s = s0; s < s1; s++) {
     if (skipWithCoverage && stops.bid[s] >= 0) {
       const b = state.buildings.get(stops.bid[s]);
       if (b && infoOf(state, b).cov >= 0) continue;

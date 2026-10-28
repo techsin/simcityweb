@@ -101,10 +101,26 @@ export function unservedClusters(sim: Simulation, tier: NeedTier, max = 5): { x:
 export interface TierProvider {
   /** fill `out` (cells) with the tier's need; `res` = residents per cell */
   needOf?(st: CityState, res: Float32Array, out: Float32Array): void;
+  /**
+   * B2 (docs/dev/B2_DESIGN.md §4 S_PREP): needOf as a resumable run, so services' prep can spread it over pieces. `list` is
+   * the services pass's building list (its snapshot) and `listNextId` the state's nextBuildingId when it was taken. Run to
+   * completion with nothing in between, it writes exactly what needOf(st, res, out) writes (`out` arrives zeroed).
+   * Optional: services runs needOf in one piece when a provider has no run.
+   */
+  needRun?(st: CityState, res: Float32Array, out: Float32Array, list: readonly Building[], listNextId: number): TierNeedRun;
   /** capacity of a facility in tier units (Infinity = capacity-free) */
   capacityOf?(st: CityState, b: Building): number;
   /** true: share capacity across the catchment like schools (conserving); false: legacy union of coverages */
   shared?: boolean;
+}
+/** B2: a provider's need raster in pieces (TierProvider.needRun) */
+export interface TierNeedRun {
+  /** run one piece of at most about `budgetUs` estimated warm µs; true when the raster is complete */
+  step(budgetUs: number): boolean;
+  /** estimated warm µs of the next piece at `budgetUs` (pure: reads the cursors only) */
+  pieceUs(budgetUs: number): number;
+  /** the next piece's label (step tools) */
+  readonly label: string;
 }
 const providers = new Map<NeedTier, TierProvider>();
 export function registerTierProvider(tier: NeedTier, p: TierProvider | null): void {
@@ -430,8 +446,257 @@ export function roadDistMulti(st: CityState, metric: number, seeds: Int32Array, 
   return settled;
 }
 
+/**
+ * B2 (docs/dev/B2_DESIGN.md §4 S_SHOP_A): roadDistMulti in pieces, on a private 8-bucket circular queue (other code calls
+ * reachRaw / roadDistMulti / roadTimeMulti on the module engine between the pieces). start() is the whole call's
+ * prologue (out.fill(-1) + the seeds), run(maxPops) its drain with the budget checked before an entry is taken. The bucket
+ * being drained is detached before it drains (pushes go to the queue heads), so resuming at the saved entry pops exactly
+ * the whole call's sequence: `out` and `settled` are identical for any cut.
+ */
+export class RoadDistRun {
+  private head = new Int32Array(8);
+  private enode = new Int32Array(4096);
+  private enext = new Int32Array(4096);
+  private en = 0;
+  private pending = 0;
+  private cur = 0;
+  private e = -1;
+  private open = false;
+  private st: CityState | null = null;
+  private out: Int32Array = new Int32Array(0);
+  private metric = 0;
+  private maxQ = 0;
+  settled = 0;
+
+  start(st: CityState, metric: number, seeds: Int32Array, nSeeds: number, maxQ: number, out: Int32Array): void {
+    this.st = st; this.out = out; this.metric = metric; this.maxQ = maxQ;
+    const net = st.network;
+    const cost = metric === 0 ? WALK_COST : DRIVE_COST;
+    out.fill(-1);
+    const head = this.head;
+    head.fill(-1);
+    this.en = 0;
+    this.pending = 0;
+    this.cur = 0; this.e = -1; this.open = false; this.settled = 0;
+    for (let s = 0; s < nSeeds; s++) {
+      const i = seeds[s];
+      if (out[i] === 0 || cost[net[i]] === 0) continue;
+      out[i] = 0;
+      this.push(0, i);
+      this.pending++;
+    }
+  }
+
+  private push(slot: number, v: number): void {
+    const e = this.en++;
+    if (e >= this.enode.length) {
+      const c = this.enode.length * 2;
+      const a = new Int32Array(c); a.set(this.enode); this.enode = a;
+      const b = new Int32Array(c); b.set(this.enext); this.enext = b;
+    }
+    this.enode[e] = v;
+    this.enext[e] = this.head[slot];
+    this.head[slot] = e;
+  }
+
+  /** drain at most maxPops queue entries; true when the search is complete */
+  run(maxPops: number): boolean {
+    const st = this.st;
+    if (!st) return true;
+    const N = st.size, net = st.network, out = this.out, head = this.head, maxQ = this.maxQ;
+    const cost = this.metric === 0 ? WALK_COST : DRIVE_COST;
+    const drive = this.metric === 1;
+    let pops = 0;
+    while (this.pending > 0) {
+      const cur = this.cur;
+      const slot = cur & 7;
+      let e: number;
+      if (this.open) e = this.e;
+      else { e = head[slot]; head[slot] = -1; this.open = true; }
+      while (e >= 0) {
+        if (pops >= maxPops) { this.e = e; return false; }
+        pops++;
+        const u = this.enode[e];
+        e = this.enext[e];
+        this.pending--;
+        if (out[u] !== cur) continue;
+        this.settled++;
+        const x = u % N, z = (u - x) / N;
+        const tu = net[u];
+        const hu = tu === HW;
+        for (let k = 0; k < 4; k++) {
+          let j: number;
+          if (k === 0) { if (x === 0) continue; j = u - 1; }
+          else if (k === 1) { if (x === N - 1) continue; j = u + 1; }
+          else if (k === 2) { if (z === 0) continue; j = u - N; }
+          else { if (z === N - 1) continue; j = u + N; }
+          const tj = net[j];
+          let c = cost[tj];
+          if (c === 0) continue;
+          if (drive && hu !== (tj === HW)) {
+            if (tu === STREET || tj === STREET) continue;
+            c += RAMP_COST;
+          }
+          const nd = cur + c;
+          if (nd > maxQ) continue;
+          const oj = out[j];
+          if (oj < 0 || nd < oj) {
+            out[j] = nd;
+            this.push(nd & 7, j);
+            this.pending++;
+          }
+        }
+      }
+      this.open = false;
+      this.cur = cur + 1;
+    }
+    return true;
+  }
+
+  /** entries still queued (cost estimates) */
+  get queued(): number {
+    return this.pending;
+  }
+
+  /** drop the state / output references (pass end; the resume entry too, so a finished run's state is canonical) */
+  release(): void {
+    this.st = null;
+    this.out = new Int32Array(0);
+    this.e = -1;
+    this.open = false;
+  }
+}
+
 /** quantum (minutes) of roadTimeMulti labels */
 export const TIME_Q = 0.005;
+/**
+ * B2 (docs/dev/B2_DESIGN.md §4 S_ACC_SEARCH): roadTimeMulti in pieces, on a private linear bucket queue. begin() is the
+ * whole call's prologue up to the seed scan, seed(count) the seed scan by cell ranges (index order, as the whole call
+ * pushes them), run(maxPops) the drain with the budget checked before an entry is taken. Edge costs are integers >= 1
+ * and the bucket being drained is detached first, so its list is fixed while it drains: resuming at the saved entry
+ * pops exactly the whole call's sequence (the labels in `out` and `settled` are identical for any cut).
+ */
+export class RoadTimeRun {
+  private head = new Int32Array(0);
+  private enode = new Int32Array(4096);
+  private enext = new Int32Array(4096);
+  private en = 0;
+  private pending = 0;
+  private cur = 0;
+  private e = -1;
+  private open = false;
+  private nb = 0;
+  private st: CityState | null = null;
+  private out: Int32Array = new Int32Array(0);
+  private limitQ = 0;
+  private netTimeQ: readonly number[] = [];
+  private rampQ = 0;
+  /** next cell of the seed scan */
+  seedAt = 0;
+  settled = 0;
+
+  begin(st: CityState, out: Int32Array, limitQ: number, netTimeQ: readonly number[], rampQ: number): void {
+    this.st = st; this.out = out; this.limitQ = limitQ; this.netTimeQ = netTimeQ; this.rampQ = rampQ;
+    const nb = (this.nb = limitQ + 1);
+    if (this.head.length < nb) this.head = new Int32Array(nb + 1024);
+    this.head.fill(-1, 0, nb);
+    this.en = 0;
+    this.pending = 0;
+    this.cur = 0; this.e = -1; this.open = false; this.seedAt = 0; this.settled = 0;
+  }
+
+  private grow(): void {
+    const c = this.enode.length * 2;
+    const a = new Int32Array(c); a.set(this.enode); this.enode = a;
+    const b = new Int32Array(c); b.set(this.enext); this.enext = b;
+  }
+
+  /** the seed scan over cells [seedAt, seedAt + count); true when every cell is scanned */
+  seed(count: number): boolean {
+    const st = this.st;
+    if (!st) return true;
+    const C = st.cells, net = st.network, out = this.out, head = this.head, limitQ = this.limitQ, netTimeQ = this.netTimeQ;
+    const i1 = Math.min(C, this.seedAt + count);
+    for (let i = this.seedAt; i < i1; i++) {
+      const l = out[i];
+      if (l < 0) continue;
+      if (l > limitQ || netTimeQ[net[i]] === 0) { out[i] = -1; continue; }
+      const e = this.en++;
+      if (e >= this.enode.length) this.grow();
+      this.enode[e] = i; this.enext[e] = head[l]; head[l] = e;
+      this.pending++;
+    }
+    this.seedAt = i1;
+    return i1 >= C;
+  }
+
+  /** drain at most maxPops queue entries; true when the search is complete */
+  run(maxPops: number): boolean {
+    const st = this.st;
+    if (!st) return true;
+    const N = st.size, net = st.network, out = this.out, head = this.head, nb = this.nb, limitQ = this.limitQ;
+    const netTimeQ = this.netTimeQ, rampQ = this.rampQ;
+    let pops = 0;
+    while (this.cur < nb && this.pending > 0) {
+      const cur = this.cur;
+      let e: number;
+      if (this.open) e = this.e;
+      else { e = head[cur]; head[cur] = -1; this.open = true; }
+      while (e >= 0) {
+        if (pops >= maxPops) { this.e = e; return false; }
+        pops++;
+        const u = this.enode[e];
+        e = this.enext[e];
+        this.pending--;
+        if (out[u] !== cur) continue;
+        this.settled++;
+        const x = u % N, z = (u - x) / N;
+        const tu = net[u];
+        const hu = tu === HW;
+        for (let k = 0; k < 4; k++) {
+          let j: number;
+          if (k === 0) { if (x === 0) continue; j = u - 1; }
+          else if (k === 1) { if (x === N - 1) continue; j = u + 1; }
+          else if (k === 2) { if (z === 0) continue; j = u - N; }
+          else { if (z === N - 1) continue; j = u + N; }
+          const tj = net[j];
+          let c = netTimeQ[tj];
+          if (c === 0) continue;
+          if (hu !== (tj === HW)) {
+            if (tu === STREET || tj === STREET) continue;
+            c += rampQ;
+          }
+          const nd = cur + c;
+          if (nd > limitQ) continue;
+          const oj = out[j];
+          if (oj < 0 || nd < oj) {
+            out[j] = nd;
+            const en = this.en++;
+            if (en >= this.enode.length) this.grow();
+            this.enode[en] = j; this.enext[en] = head[nd]; head[nd] = en;
+            this.pending++;
+          }
+        }
+      }
+      this.open = false;
+      this.cur = cur + 1;
+    }
+    return true;
+  }
+
+  /** entries still queued (cost estimates) */
+  get queued(): number {
+    return this.pending;
+  }
+
+  /** drop the state / output references (pass end; the resume entry too, so a finished run's state is canonical) */
+  release(): void {
+    this.st = null;
+    this.out = new Int32Array(0);
+    this.e = -1;
+    this.open = false;
+  }
+}
 let lhead = new Int32Array(0);
 /**
  * INTERNAL (services accessCommute): multi-source free-flow travel time over road cells (Street .. Highway; NET_TIME
