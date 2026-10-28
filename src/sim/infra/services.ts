@@ -147,15 +147,15 @@ const SB_INIT = 0, SB_FWD = 1, SB_BWD = 2, SB_POP = 3, SB_CS = 4, SB_BOX = 5, SB
 const FI_COMBO = 0, FI_COMBO_PUB = 1, FI_TIERS = 2, FI_NEEDS = 3, FI_STALE = 4, FI_EQHQ = 5, FI_END = 6;
 
 /**
- * B2 piece budgets (design R2, review 2 item 1): the tier engine's steps at INFRA_PIECE_MS (they run ~100 times per pass
- * and stay near warm); every other services loop runs once per pass (the NIMBY rebuild every 2nd), so it runs cold for
- * many passes after a load: half INFRA_PIECE_COLD_MS, like traffic's once-per-cycle loops (G1: 10-37 x their warm cost in
- * days 0-80, ~45 x on first executions). Pure native fills / copies (no JIT state) use INFRA_PIECE_MS.
+ * B2 piece budgets (design R2, review 2 item 1). Every services loop but the tier items runs once per pass (the NIMBY
+ * rebuild every 2nd), so it runs cold for many passes after a load: half INFRA_PIECE_COLD_MS, like traffic's
+ * once-per-cycle loops (G1: 10-37 x their warm cost in days 0-80, ~45 x on first executions), and a cell loop at most the
+ * cold cell floor's cells (cellUnits). Pure native fills / copies (no JIT state) use INFRA_PIECE_MS.
  */
 const COLD = INFRA_PIECE_COLD_MS / 2, WARM = INFRA_PIECE_MS;
 /**
- * the tier steps' budget: half INFRA_PIECE_MS. The tier items run thousands of times per pass and are near warm after
- * init's pass, but the first scheduled passes after a load still ran them at ~10 x (G2 dense1m: 2-4.4 ms steps at 0.3)
+ * the tier steps' budget: half INFRA_PIECE_MS. The tier items run hundreds of times per pass and are near warm after a
+ * few passes, but the first scheduled passes after a load still ran them at ~10 x (G2 dense1m: 2-4.4 ms steps at 0.3)
  */
 const TIER = INFRA_PIECE_MS / 2;
 /** cells of one piece of a once-per-pass cell loop costing `us` per cell (params INFRA_CELL_SIZING_US: the cold floor) */
@@ -165,22 +165,23 @@ function cellUnits(us: number, budget = COLD): number {
 /**
  * the absolute scale of the estimates: stepCost = SV_EST x (SC.piece + the piece's units x SC) / 1000. SC sets the
  * relative costs, so (with the budgets above) the chunk sizes; SV_EST makes the estimate honest warm wall ms without
- * moving a chunk (traffic's TR_EST pattern, G1).
+ * moving a chunk (traffic's TR_EST pattern, G1). G2 fit: the median of estimate / wall over the services steps of dense1m
+ * --warm 300 --days 120 (2 runs, 4,736 steps) was 1.23 at SV_EST 1 with these fixed costs.
  */
-const SV_EST = 1;
+const SV_EST = 0.8;
 /**
  * B2 cost model (design §9): estimated warm wall µs per work unit of each kind of piece; a piece's estimate is SC.piece +
  * its own work counts x these, and its chunk size is pieceUnits(coefficient, 1, budget), so both follow from the same
  * cursor. Start values: the services mapping's in-schedule fits (dense1m / bot256 / vet cities); G2 refit.
  */
 const SC = {
-  /** per piece (dispatch, cursors, the scheduler's bookkeeping) */
-  piece: 5,
+  /** per piece (dispatch, cursors; G2 dense1m: the shortest pieces, a swap or an empty range, took 2-5 µs) */
+  piece: 3,
   consume: 15, corridor: 0.0012, hashWord: 0.002, setup: 25, idArrays: 0.0006, fill: 0.0004,
   attach: 0.0046, snapTake: 0.02, snapPlan: 0.012,
-  prepB: 0.12, prepF: 0.09, provSum: 0.0012, roads: 0.0012, publish: 10, workFac: 0.15, workSlot: 2,
-  /** the tier engine: per re-weighted work unit (U_*), per step */
-  tierUnit: 0.0246, tierStep: 30,
+  prepB: 0.12, prepF: 0.09, provSum: 0.0012, roads: 0.0012, publish: 1, workFac: 0.15, workSlot: 2,
+  /** the tier engine: per re-weighted work unit (U_*), per step (G2 dense1m: a final row item of 41.6 µs of units took 45) */
+  tierUnit: 0.0246, tierStep: 3,
   stopB: 0.012, stopCell: 0.004, stopBegin: 5, disk: 0.51, compose: 0.0024,
   seedB: 0.11, accSeed: 0.0034, accPop: 0.053, accInit: 0.002, chamfer: 0.009, accOut: 0.002, accHome: 0.035,
   shopStart: 0.002, shopPop: 0.038, shopInit: 0.002, shopBlock: 0.009, shopCs: 0.03, shopBox: 0.05, shopOut: 0.008,
