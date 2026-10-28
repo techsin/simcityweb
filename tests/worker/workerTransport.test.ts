@@ -89,26 +89,28 @@ describe('the worker loop (in-process)', () => {
     } finally { w.dispose(); }
   });
 
-  it('honours maxDaysPerFrame: 0 holds the calendar while frame hooks run; the cap then works as Simulation.update', async () => {
-    let sim!: Simulation, hooks = 0, days = 0;
-    const system: SimSystem = { name: 'hold', init(s) { sim = s; s.maxDaysPerFrame = 0; }, frame() { hooks++; }, daily() { days++; } };
+  it('holdCalendar (maxDaysPerFrame 0) holds the calendar while frame hooks run; the cap then works as Simulation.update', async () => {
+    let hooks = 0, days = 0;
+    const system: SimSystem = { name: 'hold', frame() { hooks++; }, daily() { days++; } };
     const w = inProcess([system], { initialSpeed: 3 });
-    // a zero-day run waits for the frame in progress, so its Ack marks that frame's end
     let seq = 0;
-    const frameEnded = async () => {
-      w.send({ t: 'cmd', seq: ++seq, op: 'debug.runDays', args: [0] });
-      await w.until((m) => m.t === 'pkt' && m.p.cmd === seq, `the barrier ${seq}`);
+    const command = async (op: 'holdCalendar' | 'debug.runDays', args: unknown[]) => {
+      w.send({ t: 'cmd', seq: ++seq, op, args });
+      await w.until((m) => m.t === 'pkt' && m.p.cmd === seq, `command ${seq}`);
     };
+    // a zero-day run waits for the frame in progress, so its Ack marks that frame's end
+    const frameEnded = () => command('debug.runDays', [0]);
     try {
       await w.until((m) => m.t === 'ready', 'ready');
-      // NOTE-041: holdCalendar sets maxDaysPerFrame through SimCore's command path; a frame starts after the last ended
+      // NOTE-041: T031's command sets maxDaysPerFrame through SimCore's command path; a frame starts after the last ended
+      await command('holdCalendar', [true]);
       for (let tick = 1; tick <= 2; tick++) {
         w.send({ t: 'tick', seq: tick, dt: 0.25, ack: 0 });
         await waitFor(() => hooks === tick, `frame ${tick}`);
       }
       await frameEnded();
       expect(days).toBe(0);
-      sim.maxDaysPerFrame = 4;
+      await command('holdCalendar', [false]);
       w.send({ t: 'tick', seq: 3, dt: 0.25, ack: 0 });
       await waitFor(() => hooks === 3, 'frame 3');
       await frameEnded();
@@ -152,6 +154,24 @@ describe('the real worker (node worker_threads)', () => {
       expect((await within(host.save('hidden'))).cmd).toBe(0);
       expect(posted).toContain('ack');
       expect(posted).not.toContain('tick');
+    } finally { await host.dispose(); }
+  });
+
+  it('holdCalendar holds the real worker\'s calendar while its frames run, and the replica\'s clock with it (NOTE-041)', { timeout: 30000 }, async () => {
+    const host = await bootNode(initialCity(), { kv: new MemoryKV(), initialSpeed: 3 });
+    const frames = async (n: number) => { for (let i = 0; i < n; i++) { host.frame(0.25); await new Promise((r) => setTimeout(r, 5)); } };
+    try {
+      const day = host.state.day;
+      await within(send(host, 'holdCalendar', [true]));
+      await frames(5);
+      // zero-day runs wait for the frame in progress: after two, every frame posted before them has run
+      await within(host.runDays(0)); await within(host.runDays(0));
+      expect(host.state.day).toBe(day);
+      expect(host.replica.clock.frac, 'frames ran: a whole day is due and held').toBe(1);
+      expect(host.speed, 'the player\'s speed is untouched').toBe(3);
+      await within(send(host, 'holdCalendar', [false]));
+      await frames(3);
+      await waitFor(() => host.state.day > day, 'a day after the release');
     } finally { await host.dispose(); }
   });
 
