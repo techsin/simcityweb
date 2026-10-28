@@ -4,7 +4,7 @@ import { DevType, Network, Zone } from '../../src/core/types';
 import { clearRecoveryBase, getCityRecord, getRecoveryBase, saveCity } from '../../src/save/cities';
 import { setKV } from '../../src/save/db';
 import {
-  JOURNAL_OPS, JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, journalMatches, rebuildRecoveredCity,
+  JOURNAL_OPS, JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, buildRecoverySnapshot, journalMatches, rebuildRecoveredCity,
   type JournalBase, type RecoveryJournal,
 } from '../../src/save/recoveryCodec';
 import { adoptRecoveryJournal, findRecoverySnapshot, readRecoveryJournal, storeJournalIdb, storeRecoveryIdb } from '../../src/save/recoveryIdb';
@@ -72,7 +72,9 @@ async function fixture() {
     return copy.record;
   };
   const snapshot = async () => {
-    const s = l.core.copyRecoverySnapshot(city.regionId, city.tileKey, info(l.primary)), cmd = seq;
+    // as ProtocolInbox cuts one: against the stored save, encoded to the slot less the journal's reserve
+    const s = buildRecoverySnapshot(city.regionId, city.tileKey, l.primary, getRecoveryBase(city.regionId, city.tileKey),
+      { ...info(l.primary), at: Date.now() }, LS_BUDGET_BYTES - JOURNAL_RESERVE_BYTES), cmd = seq;
     await storeRecoveryIdb(kv, s.marker, s.payload);
     const reply = cloneMessage({ t: 'snapped', id: 1, marker: s.marker, payload: s.payload, cmd });
     expect(mirror.onSnapped(reply.marker, reply.payload, reply.cmd)).toBe(true);

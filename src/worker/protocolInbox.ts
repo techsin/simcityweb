@@ -4,7 +4,7 @@
 import { FallbackActions } from '../game/fallback/FallbackActions';
 import type { CityRecord } from '../save/cities';
 import { CHANGE_EVENTS, cityFingerprint } from '../save/fingerprint';
-import { buildRecoverySnapshot, LS_BUDGET_BYTES, type RecoverySnapshot } from '../save/recoveryCodec';
+import { buildRecoverySnapshot, JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, type RecoverySnapshot } from '../save/recoveryCodec';
 import type { CitySaveCopy, SimCore } from './SimCore';
 import type { ChangeRecorder } from './recorder';
 import { copyOwned, errorText, type M2W, type Packet, type Reply } from './protocol';
@@ -156,7 +156,7 @@ export class ProtocolInbox {
       snapshot: buildRecoverySnapshot(p.regionId, p.tileKey, st, this.pendingBase ?? store.recoveryBase(p.regionId, p.tileKey), {
         cityName: st.config.name, regionName: p.regionName, population: st.stats.population, funds: st.funds,
         why: m.why, lean: m.why === 'periodic', at: Date.now(),
-      }, LS_BUDGET_BYTES - 128 * 1024), // W0.6's journal reserve, without importing the localStorage module.
+      }, LS_BUDGET_BYTES - JOURNAL_RESERVE_BYTES), // the page's journal keeps its share of the slot (§4.3)
       fp: cityFingerprint(st),
     }), failed);
     if (!built) return;

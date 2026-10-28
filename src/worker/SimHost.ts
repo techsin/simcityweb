@@ -36,9 +36,9 @@ export interface SaveAck {
 }
 export interface SnapshotAck extends WriteResult, RecoverySnapshot { cmd: number; fp: string; changes: number }
 export interface CityPersistence { regionId: string; tileKey: string; regionName?: string }
-// W1.1b: the local host keeps recovery=null; T032 attaches the mirror to its packet/command paths.
-export type { RecoveryMirror } from './recoveryMirror';
-import type { RecoveryMirror } from './recoveryMirror';
+/** The page's unload write (W0.6's App paths, §4.4's crash path): synchronous, from copies the host already holds. The
+ *  local host writes its snapshots synchronously and keeps null; packet hosts back it with their RecoveryMirror. */
+export interface RecoveryWriter { writeNow(why: SnapshotWhy | 'crash'): void }
 
 export type { QueryName, QueryArgs, QueryResult, WatchPolicy } from './queries';
 
@@ -293,7 +293,7 @@ export interface SimHost {
 /** W0.6 persistence; independent of queries, policy and views. */
 export interface SimHost {
   readonly changes: number;
-  readonly recovery: RecoveryMirror | null;
+  readonly recovery: RecoveryWriter | null;
   save(reason: SaveReason): Promise<SaveAck>;
   snapshot(why: SnapshotWhy): Promise<SnapshotAck | null>;
 }

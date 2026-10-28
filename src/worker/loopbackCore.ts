@@ -13,6 +13,7 @@ import { ProtocolInbox, type InboxStore } from './protocolInbox';
 import { getRecoveryBase } from '../save/cities';
 import { openKV } from '../save/db';
 import { storeRecoveryIdb } from '../save/recoveryIdb';
+import { carriedJournal, type JournalBase, type RecoveryJournal } from '../save/recoveryCodec';
 
 export interface LoopbackOptions {
   cadence?: 'design' | 'live';
@@ -31,6 +32,8 @@ export interface LoopbackOptions {
   persistence?: CityPersistence;
   now?: () => number;
   lag?: LagProfile;
+  /** T033 (§4.3): the journal bound to the loaded save, replayed after boot and before any tick */
+  recovery?: { journal: RecoveryJournal; base: JournalBase };
 }
 export interface ProtocolTiming { flushMs: number; cloneMs: number; applyMs: number; packets: number }
 
@@ -84,7 +87,9 @@ export class LoopbackCore {
     this.replica = opts.replicaInstance ?? new Replica(opts.replica);
     this.inbox = new ProtocolInbox(this.core, this.recorder, { now: () => this.now(), flush: (force) => this.flush(force),
       signal: this.abort.signal, persistence: opts.persistence, store: idbStore(this.core), fatal: (e) => this.fatal(e) });
-    this.deliver(this.ready());
+    // T033: after the inbox, so the replayed edits count as changes; the Ready's snapshot holds them
+    const carried = opts.recovery && this.replayJournal(opts.recovery.journal, opts.recovery.base);
+    this.deliver(carried ? { ...this.ready(), journal: carried } : this.ready());
     for (const reply of bootErrors) this.recorder.reply(reply);
     opts.signal?.addEventListener('abort', this.stop, { once: true });
     if (opts.signal?.aborted) this.dispose();
@@ -96,6 +101,15 @@ export class LoopbackCore {
     ready.changes = this.inbox.changes;
     this.sentRoad = { traffic: this.primary.traffic.slice(), congestion: this.primary.congestion.slice() };
     return ready;
+  }
+  /** T033: the boot replay's outcome, for the harness (null when no journal matched) */
+  recovered: { applied: number[]; failed: number[] } | null = null;
+  /** §4.3: the edits replayed onto the save, renumbered ahead of the session's commands. The Ready carries them until a
+   *  save holds them: the loopback posts no boot save before its Ready. */
+  private replayJournal(journal: RecoveryJournal, base: JournalBase): RecoveryJournal | undefined {
+    try { this.recovered = this.core.replayRecoveryJournal(journal, base); }
+    catch { return undefined; } // no CityActions (reported at boot): the stored journal waits for a later session
+    return this.recovered && !base.snapshot ? carriedJournal(journal, this.recovered.applied, base.savedAt, Date.now()) : undefined;
   }
   get state(): CityState { return this.replica.state; }
   get primary(): CityState { return this.core.sim.state; }

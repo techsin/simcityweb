@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DevType, Overlay, Zone } from '../../src/core/types';
 import { LoopbackSimHost } from '../../src/worker/LoopbackSimHost';
+import { RecoveryMirror } from '../../src/worker/recoveryMirror';
 import { QUERY_HANDLERS, exactDigest } from '../../src/worker/queries';
 import { CommandOutcomeLost, EntryType, assertOwnedBuffers, type Packet } from '../../src/worker/protocol';
 import { overlayLayer, overlayReady } from '../../src/sim/infra/overlays';
@@ -192,15 +193,18 @@ describe('LoopbackSimHost packets', () => {
 
   it('flushes the latest slider into the journal hook before synchronous recovery writes', async () => {
     const journal: unknown[] = [], writes: unknown[][] = [];
-    const host = new LoopbackSimHost(newState(16), {
-      onPost: (m) => journal.push(m), recovery: { writeNow: () => writes.push(structuredClone(journal)) },
-    });
+    // T033: the option takes the real mirror; its write is observed here
+    const recovery = new RecoveryMirror({ regionId: 'r', tileKey: 't', savedAt: 0, info: { cityName: 'c', day: 0, population: 0, funds: 0 },
+      signal: new AbortController().signal, kv: new MemoryKV() });
+    vi.spyOn(recovery, 'writeNow').mockImplementation(() => { writes.push(structuredClone(journal)); });
+    const host = new LoopbackSimHost(newState(16), { onPost: (m) => journal.push(m), recovery });
     await host.start();
     try {
       host.post('setTax', [DevType.R1, 4]); host.post('setTax', [DevType.R1, 12]);
       expect(journal).toEqual([]);
       host.recovery!.writeNow('beforeunload');
       expect(writes).toEqual([[{ t: 'cmd', seq: 1, op: 'setTax', args: [DevType.R1, 12] }]]);
+      expect(recovery.journal.ops).toEqual([{ seq: 1, op: 'setTax', args: [DevType.R1, 12] }]);
       await host.drain();
     } finally { await host.dispose(); }
   });

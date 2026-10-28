@@ -9,9 +9,9 @@ import type { Simulation } from '../sim/Simulation';
 import { attachOverlays, registerDerivedSource, TAP_T0 } from '../sim/infra/overlays';
 import { serializeCity } from '../save/serialize';
 import { CHANGE_EVENTS } from '../save/fingerprint';
-import { clearRecoveryAfterSave, storeRecoveryLs } from '../save/recoveryLs';
+import { clearRecoveryAfterSave, peekRecoveryMarker, storeRecoveryLs } from '../save/recoveryLs';
 import { Gesture, type ActOptions, type Cause, type Command, type CommandArgs, type CommandOp, type CommandResult,
-  type GestureOwner, type LocalSimHostOptions, type PolicySnapshot, type PolicyView, type RecoveryMirror,
+  type GestureOwner, type LocalSimHostOptions, type PolicySnapshot, type PolicyView, type RecoveryWriter,
   type SaveAck, type SaveReason, type SimHost, type SnapshotAck, type SnapshotWhy, type SpeedSource, type Ticket, type WatchHandle } from './SimHost';
 import { exactDigest, queryKey, type QueryArgs, type QueryName, type QueryResult, type WatchPolicy } from './queries';
 import { cloneMessage, CommandOutcomeLost, copyOwned, EVENT_TYPES, type M2W, type Packet, type PolicyState,
@@ -20,6 +20,12 @@ import { Replica } from './replica';
 import { NO_PENDING, type PendingView } from './PendingEdits';
 import { viewLayers } from './recorder';
 import type { LoopbackCore, LoopbackOptions } from './loopbackCore';
+// T033: the page's recovery journal; the loopback reads the loaded save's journal for its core to replay.
+import { RecoveryMirror, recoveryInfo } from './recoveryMirror';
+import { getRecoveryBase } from '../save/cities';
+import { openKV, type KV } from '../save/db';
+import { readRecoveryJournal } from '../save/recoveryIdb';
+import type { JournalBase, RecoveryJournal } from '../save/recoveryCodec';
 
 /** Structural T031 seam: this branch neither copies nor owns HostActions / PendingEdits. */
 export interface PacketActions extends CityActionsApi {
@@ -40,6 +46,8 @@ export interface PacketActions extends CityActionsApi {
 export type ActionFactory = (host: PacketSimHost) => PacketActions;
 export interface PacketHostOptions extends LocalSimHostOptions {
   actions?: ActionFactory;
+  /** T033: a mirror built by the caller (a host that has its Ready at construction). LoopbackSimHost builds its own
+   *  from the core's Ready when `persistence` is set. */
   recovery?: RecoveryMirror;
   /** T033 can observe the posted command and packet replies without owning the transport. */
   onPost?: (command: Extract<M2W, { t: 'cmd' }>) => void;
@@ -117,8 +125,14 @@ export class PacketSimHost implements SimHost {
   readonly replica: Replica;
   readonly sim: Simulation;
   readonly policy: PolicyView;
-  readonly recovery: RecoveryMirror | null;
   readonly ready: Promise<void>;
+  // T033: the page's RecoveryMirror, fed what was transmitted and what the worker answered; its writer flushes held
+  // sliders first. The saves the mirror pinned and whose replies are still due tell a resync which replies it dropped.
+  private mirror: RecoveryMirror | null = null;
+  private writer: RecoveryWriter | null = null;
+  private pinnedSaves = new Set<number>();
+  /** the boot Ready's base, for a host that builds its mirror once its core is up */
+  protected bootReady: Pick<Ready, 'savedAt' | 'cmd' | 'journal'> | null = null;
   private readiness = deferred<void>();
   private controller: PacketActions | null = null;
   private optimistic: CityActions | null = null;
@@ -156,10 +170,7 @@ export class PacketSimHost implements SimHost {
   constructor(readonly kind: 'loopback' | 'worker', initial: Ready, options: PacketHostOptions = {}, initialIsReady = true) {
     this.options = options;
     this.ready = this.readiness.promise;
-    this.recovery = options.recovery ? { writeNow: (why) => {
-      if (this.closed) return;
-      this.flushCommands(); this.options.recovery?.writeNow(why);
-    } } : null;
+    if (options.recovery) this.attachRecovery(options.recovery);
     this.replica = new Replica({
       tag: (seq) => this.tickets.get(seq)?.tag ?? null,
       ack: (seq, result) => this.ack(seq, result),
@@ -231,6 +242,26 @@ export class PacketSimHost implements SimHost {
     this.sender = send;
     for (const message of this.outbox.splice(0)) send(message);
   }
+  get recovery(): RecoveryWriter | null { return this.writer; }
+  /** T033: from here on the mirror journals every transmitted command and follows every ack, save, snapshot and
+   *  resync. Commands and saves sent before the transport connected are still in the outbox, after the Ready's base. */
+  protected attachRecovery(mirror: RecoveryMirror): void {
+    if (this.closed || this.mirror) { if (mirror !== this.mirror) mirror.dispose(); return; }
+    this.mirror = mirror;
+    for (const m of this.outbox) {
+      if (m.t === 'cmd') this.mirrored((r) => r.onCommand(m.seq, m.op, m.args));
+      else if (m.t === 'save') { this.pinnedSaves.add(m.id); this.mirrored((r) => r.onSaving()); }
+    }
+    this.writer = { writeNow: (why) => {
+      if (this.closed) return;
+      this.flushCommands(); this.mirrored((r) => r.writeNow(why));
+    } };
+  }
+  /** A recovery failure is reported; it never stops the packet or post that fed the mirror. */
+  private mirrored<T>(call: (mirror: RecoveryMirror) => T): T | undefined {
+    if (!this.mirror) return undefined;
+    try { return call(this.mirror); } catch (e) { this.report('recovery', e); return undefined; }
+  }
   protected send(message: M2W): void {
     if (this.closed) return;
     if (message.t !== 'cmd') this.flushCommands();
@@ -282,12 +313,14 @@ export class PacketSimHost implements SimHost {
   }
   private transmit(message: Extract<M2W, { t: 'cmd' }>): void {
     try { this.options.onPost?.(copyOwned(message)); } catch (e) { this.report('command observer', e); }
+    this.mirrored((m) => m.onCommand(message.seq, message.op, message.args));
     this.send(message);
   }
   private ack(seq: number, result: unknown): void {
     const ticket = this.tickets.get(seq);
     this.edits.delete(seq); this.controller?.pending.ack(seq); this.tickets.delete(seq);
     try { this.options.onAck?.(seq, result); } catch (e) { this.report('ack observer', e); }
+    this.mirrored((m) => m.onAck(seq, result)); // the replayed outcome, never the prediction
     if (result && typeof result === 'object' && 'commandError' in result) ticket?.reject(new Error(String(result.commandError)));
     else ticket?.resolve(result);
   }
@@ -391,7 +424,10 @@ export class PacketSimHost implements SimHost {
   }
   save(reason: SaveReason): Promise<SaveAck> {
     if (!this.closed) { try { this.options.onSaving?.(); } catch (e) { this.report('save observer', e); } }
-    return this.request({ t: 'save', id: ++this.id, reason });
+    const id = ++this.id;
+    // T033: pins the journal suffix this copy may still need, until its reply (or a resync) settles it
+    if (this.mirror && !this.closed) { this.pinnedSaves.add(id); this.mirrored((m) => m.onSaving()); }
+    return this.request({ t: 'save', id, reason });
   }
   snapshot(why: SnapshotWhy): Promise<SnapshotAck | null> { return this.request({ t: 'snapshot', id: ++this.id, why }); }
   private request<T>(message: Extract<M2W, { t: 'save' | 'snapshot' }>): Promise<T> {
@@ -414,17 +450,22 @@ export class PacketSimHost implements SimHost {
     if (reply.t === 'qres') {
       if (reply.ok) wait.resolve(reply.value); else wait.reject(new Error(reply.error));
     } else if (reply.t === 'saved') {
-      if (!reply.ok) { wait.reject(new Error(reply.error)); return; }
+      const pinned = this.pinnedSaves.delete(reply.id);
+      if (!reply.ok) { if (pinned) this.mirrored((m) => m.onSaveFailed()); wait.reject(new Error(reply.error)); return; }
       const p = this.options.persistence;
       const dropped = p ? clearRecoveryAfterSave(p.regionId, p.tileKey, reply.savedAt!) : false;
+      // T033: the journal rebinds to this copy and keeps the edits after its watermark
+      this.mirrored((m) => m.onSaved(reply.savedAt!, reply.cmd, recoveryInfo(this.state, p?.regionName, reply.summary)));
       wait.resolve({ savedAt: reply.savedAt!, cmd: reply.cmd, pktSeq: reply.pktSeq!, fp: reply.fp!, summary: reply.summary!,
         changes: reply.changes ?? this.changes, recoveryDropped: dropped || !!reply.recoveryDropped } satisfies SaveAck);
     } else if (reply.ok === false) {
       if (reply.error) wait.reject(new Error(reply.error)); else wait.resolve(null);
     } else {
-      const ls = storeRecoveryLs(reply.marker, reply.payload);
+      // T033: with a mirror, the slot takes the snapshot with its journal, and only a delta of the mirror's own save
+      const kept = this.mirror ? this.mirrored((m) => m.onSnapped(reply.marker, reply.payload, reply.cmd)) ?? false : null;
+      const ls = kept === null ? storeRecoveryLs(reply.marker, reply.payload) : kept && peekRecoveryMarker()?.ls === true;
       wait.resolve({ ...reply.result, marker: reply.marker, payload: reply.payload, dropped: reply.marker.dropped,
-        ok: true, bytes: reply.payload.length, ms: reply.result?.ms ?? 0, idb: reply.result?.idb ?? false, ls,
+        ok: kept !== false, bytes: reply.payload.length, ms: reply.result?.ms ?? 0, idb: reply.result?.idb ?? false, ls,
         cmd: reply.cmd, fp: reply.fp!, changes: reply.changes ?? this.changes } satisfies SnapshotAck);
     }
   }
@@ -434,20 +475,29 @@ export class PacketSimHost implements SimHost {
     if (message.t === 'fatal') {
       const error = new Error(message.message);
       if (message.stack) error.stack = message.stack;
+      this.writer?.writeNow('crash'); // §4.4: the journal is safe before anything else
       this.fail(error); void this.dispose(); return;
     }
     if (message.t === 'ready') {
       const resync = this.hasReady;
+      let lostSaves = 0;
       if (resync) {
         // only the reads whose replies the resync dropped: later reads, and saves still being written, reply after it
-        for (const id of message.lost ?? []) { this.requests.get(id)?.reject(new Error('Read interrupted by resync')); this.requests.delete(id); }
+        for (const id of message.lost ?? []) {
+          this.requests.get(id)?.reject(new Error('Read interrupted by resync')); this.requests.delete(id);
+          if (this.pinnedSaves.delete(id)) lostSaves++;
+        }
         this.queries.clear();
       }
       this.hasReady = true;
+      if (!resync) this.bootReady = { savedAt: message.savedAt, cmd: message.cmd, journal: message.journal };
       // the worker's count: events in packets dropped by a resync must not leave dirty tracking behind for good
       if (message.changes !== undefined) this.changes = message.changes;
       this.replica.adopt(message); this.readiness.resolve(undefined);
-      if (resync) { try { this.options.onResync?.(message.cmd); } catch (e) { this.report('resync observer', e); } }
+      if (resync) {
+        this.mirrored((m) => m.onResync(message.cmd, message.savedAt, lostSaves)); // T033: see RecoveryMirror.onResync
+        try { this.options.onResync?.(message.cmd); } catch (e) { this.report('resync observer', e); }
+      }
       return;
     }
     if (message.t !== 'pkt') return;
@@ -511,13 +561,14 @@ export class PacketSimHost implements SimHost {
     for (const off of this.policies.values()) off();
     this.gesture?.end(); this.controller?.dispose(); this.offViews(); this.events.clear();
     this.sender = null; this.outbox = []; this.sliders.clear(); this.queuedView = null;
+    this.mirror?.dispose(); this.mirror = null; this.writer = null; this.pinnedSaves.clear(); // T033: the journal ends with the city
     this.options = {};
     return Promise.resolve();
   }
 }
 
 export interface LoopbackSimHostOptions extends PacketHostOptions {
-  loopback?: Omit<LoopbackOptions, 'receive' | 'replicaInstance' | 'signal' | 'persistence'>;
+  loopback?: Omit<LoopbackOptions, 'receive' | 'replicaInstance' | 'signal' | 'persistence' | 'recovery'>;
 }
 /** T031's HostActions loads with the core: its previews run the real CityActions, which the city screen's static
  *  graph must not pull in (FH-07a; Vite bundles an eager glob as a static import). */
@@ -548,15 +599,36 @@ export class LoopbackSimHost extends PacketSimHost {
           try { await (await import('../wasm/browser')).initSimWasmBrowser({ flag }); }
           catch (e) { this.report('wasm', e, 'WASM kernels failed to load'); }
         }
+        const recovery = await this.recoveryBoot();
         if (this.closed) return;
         this.loop = new LoopbackCore(this.initial!, { cadence: 'live', ...this.opts.loopback, initialSpeed: this.opts.initialSpeed,
           rctx: this.opts.rctx, flags: this.opts.flags, signal: this.opts.signal, persistence: this.opts.persistence,
-          now: this.opts.now, replicaInstance: this.replica, receive: (m) => this.receive(m) });
+          now: this.opts.now, replicaInstance: this.replica, receive: (m) => this.receive(m), recovery: recovery?.replay });
         this.initial = null;
+        if (recovery) this.recoverFrom(recovery.kv);
         this.connect((m) => this.loop?.post(m));
       } catch (e) { this.fail(e); throw e; }
     })();
     return this.starting;
+  }
+  /** T033 (§4.3): the opened store and, when one is bound to the loaded save, its journal for the core to replay after
+   *  boot and before any tick. A journal bound to another save is deleted on the way. */
+  private async recoveryBoot(): Promise<{ kv: KV; replay?: { journal: RecoveryJournal; base: JournalBase } } | null> {
+    const p = this.opts.persistence;
+    if (!p) return null;
+    const kv = await openKV(), saved = getRecoveryBase(p.regionId, p.tileKey);
+    const base = saved && { regionId: p.regionId, tileKey: p.tileKey, savedAt: saved.savedAt };
+    const journal = base ? await readRecoveryJournal(kv, base).catch(() => null) : null;
+    return { kv, replay: base && journal ? { journal, base } : undefined };
+  }
+  /** T033: the mirror starts from the core's Ready (its save, its watermark, any replayed edits it carries), before
+   *  the transport connects, so it sees every command the core will apply. */
+  private recoverFrom(kv: KV): void {
+    const p = this.opts.persistence, ready = this.bootReady;
+    if (!p || !ready || this.recovery) return;
+    this.attachRecovery(new RecoveryMirror({ regionId: p.regionId, tileKey: p.tileKey, savedAt: ready.savedAt, cmd: ready.cmd,
+      journal: ready.journal as RecoveryJournal | undefined, info: recoveryInfo(this.state, p.regionName), kv,
+      signal: this.opts.signal ?? new AbortController().signal, requestSnapshot: () => this.snapshot('journal') }));
   }
   /** Deterministic test/harness API; never exposes the authoritative state through SimHost.sim. */
   get harness(): LoopbackCore { if (!this.loop) throw new Error('Loopback host has not started'); return this.loop; }

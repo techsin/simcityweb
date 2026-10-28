@@ -20,9 +20,10 @@ export const JOURNAL_OPS: Readonly<Record<JournalOp, true>> = {
 };
 export function isJournalOp(op: string): op is JournalOp { return Object.hasOwn(JOURNAL_OPS, op); }
 
-/** This base predates FH-07a's refund fields: keep the bulldoze ack's signed net charge. */
+/** FH-07a: a bulldoze carries the charge (`cost`, net) and the gross refund its ack reported, so a replay on an earlier
+ *  day books what the player was charged, never a fresh refund decision. */
 export interface RecoveryJournal extends Journal {
-  ops: (Journal['ops'][number] & { cost?: number })[];
+  ops: (Journal['ops'][number] & { cost?: number; refund?: number })[];
 }
 
 /** Metadata only; the page never needs the serialized city to bind its journal. */
@@ -39,10 +40,25 @@ export function journalMatches(journal: RecoveryJournal, base: JournalBase): boo
   let seq = journal.fromCmd;
   for (const entry of journal.ops) {
     if (!entry || !Number.isSafeInteger(entry.seq) || entry.seq <= seq || !isJournalOp(entry.op) || !Array.isArray(entry.args)
-      || (entry.cost !== undefined && (entry.op !== 'bulldoze' || !Number.isFinite(entry.cost)))) return false;
+      || (entry.cost !== undefined && (entry.op !== 'bulldoze' || !Number.isFinite(entry.cost)))
+      || (entry.refund !== undefined && (entry.cost === undefined || !Number.isFinite(entry.refund)))) return false;
     seq = entry.seq;
   }
   return true;
+}
+
+/** §4.3: edits a boot replayed onto `savedAt` that no save holds yet, renumbered to seqs ≤ 0 ahead of the session's
+ *  commands. The session's first save, which contains them, trims them. */
+export function carriedJournal(journal: RecoveryJournal, applied: readonly number[], savedAt: number, at: number): RecoveryJournal | undefined {
+  const kept = journal.ops.filter((e) => applied.includes(e.seq));
+  if (!kept.length) return undefined;
+  return { v: 1, regionId: journal.regionId, tileKey: journal.tileKey, at: Math.max(at, savedAt), base: { kind: 'save', savedAt },
+    fromCmd: -kept.length, ops: kept.map((e, i) => ({ ...structuredClone(e), seq: i + 1 - kept.length })) };
+}
+
+/** §4.3: a restored snapshot becomes the save; the journal bound to it follows, unchanged apart from its base. */
+export function rebindJournal(journal: RecoveryJournal, savedAt: number): RecoveryJournal {
+  return { ...structuredClone(journal), at: Math.max(journal.at, savedAt), base: { kind: 'save', savedAt } };
 }
 
 /**
