@@ -9,6 +9,36 @@ import { newState, place } from '../infra/cityGen';
 afterEach(() => vi.restoreAllMocks());
 
 describe('LocalSimHost queries and watches', () => {
+  it.each([
+    [0, 'Refund §25,000 (built today)'],
+    [20, 'Refund §12,500 (under 30 days old)'],
+    [31, null],
+  ] as const)('carries the preview refund through demolishRisks at age %i without recomputing it', async (age, line) => {
+    const host = new LocalSimHost(newState(32));
+    await host.start();
+    try {
+      expect(host.act('plop', ['util_coal_plant', 10, 10, 0]).predicted?.ok).toBe(true);
+      const b = host.state.buildingAt(10, 10)!;
+      b.age = age;
+      const rect = { x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d };
+      const pre = host.preview.bulldoze(rect);
+      b.age = 31; // the query must use the caller's preview, not re-run the refund rule
+      const risk = await host.query('demolishRisks', { rect, cost: pre.cost, refund: pre.refund, refundNote: pre.refundNote });
+      expect(risk?.items[0]).toMatch(/^Your only power plant/);
+      expect(risk?.items.filter((item) => item.startsWith('Refund'))).toEqual(line ? [line] : []);
+      expect(host.state.buildings.has(b.id)).toBe(true);
+    } finally { await host.dispose(); }
+  });
+
+  it('carries plain refund data through sideDemolishRisks without changing its displacement risk', async () => {
+    const st = newState(32), b = place(st, 't_r1', 4, 4, { pop: 1500 });
+    const host = new LocalSimHost(st);
+    try {
+      const risk = await host.query('sideDemolishRisks', { ids: [b.id], fee: 300, refund: 100, refundNote: 'built today' });
+      expect(risk?.items).toEqual(['1 building will be demolished — 1,500 residents will be lost', 'Refund §100 (built today)']);
+    } finally { await host.dispose(); }
+  });
+
   it('evaluates immediately, deduplicates pending reads, and reads after a command or tick in a new epoch', async () => {
     const host = new LocalSimHost(newState(32));
     const read = vi.spyOn(QUERY_HANDLERS, 'verify');
