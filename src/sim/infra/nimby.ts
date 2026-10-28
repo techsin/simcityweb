@@ -19,7 +19,7 @@ import { getDef } from '../catalog';
 import { Fam, buildingList, infoOf, isFunctional } from './common';
 import { falloff } from './catchments';
 import {
-  NIMBY_HIGHWAY, NIMBY_HIGHWAY_BRIDGE, NIMBY_ID, NIMBY_IM, NIMBY_LANDFILL_IDLE, NIMBY_PLANT_IDLE, NIMBY_RAIL,
+  INFRA_CELL_SIZING_US, NIMBY_HIGHWAY, NIMBY_HIGHWAY_BRIDGE, NIMBY_ID, NIMBY_IM, NIMBY_LANDFILL_IDLE, NIMBY_PLANT_IDLE, NIMBY_RAIL,
   PRESTIGE_HIGH_C, PRESTIGE_HIGH_C_STAGE,
 } from './params';
 
@@ -157,7 +157,7 @@ export class NimbyRun {
       case 0: return NIMBY_US.piece + 4 * C * NIMBY_US.fill;
       case 1: return NIMBY_US.piece + Math.min(budgetUs, (this.list.length - this.cur) * NIMBY_US.bld);
       case 2: return NIMBY_US.piece + Math.min(budgetUs, Math.max(0, (N - this.lfZ) >> 1) * N * NIMBY_US.lfRow);
-      case 3: return NIMBY_US.piece + Math.min(budgetUs, (C - this.cur) * NIMBY_US.corridorCell);
+      case 3: return NIMBY_US.piece + Math.min(Math.max(4, Math.floor(budgetUs / Math.max(NIMBY_US.corridorCell, INFRA_CELL_SIZING_US))), C - this.cur) * NIMBY_US.corridorCell;
       case 4: return NIMBY_US.piece + c(NIMBY_US.final * N, N - this.cur);
       case 5: return NIMBY_US.piece + 3 * C * NIMBY_US.publish;
       default: return 0;
@@ -272,7 +272,8 @@ export class NimbyRun {
     const N = st.size, C = st.cells;
     const line = this.line, net = st.network, flags = st.netFlags, words = this.words, wordEnd = this.wordEnd;
     const highway = Network.Highway * 0x01010101, rail = Network.Rail * 0x01010101;
-    const chunk = Math.max(4, Math.floor(budgetUs / NIMBY_US.corridorCell));
+    // (sized with the cold cell floor: a once-per-pass cell loop)
+    const chunk = Math.max(4, Math.floor(budgetUs / Math.max(NIMBY_US.corridorCell, INFRA_CELL_SIZING_US)));
     const i1 = chunk >= C - this.cur ? C : Math.min(C, (this.cur + chunk) - ((this.cur + chunk) % 4));
     let touches = this.touches;
     for (let i = this.cur; i < i1; i++) {

@@ -247,7 +247,7 @@ function policeCellRange(res: Float32Array, out: Float32Array, crime: Float32Arr
 }
 
 /** B2: estimated warm µs per unit of the police need run's pieces (services' prep budget; G2 fit, dense1m) */
-const PN_US = { scan: 0.03, jobs: 0.02, jobCell: 0.004, cell: 0.004, piece: 2 } as const;
+const PN_US = { scan: 0.06, jobs: 0.02, jobCell: 0.004, cell: 0.004, piece: 2 } as const;
 /**
  * B2 (docs/dev/B2_DESIGN.md §4 S_PREP, review 2 item 5b): policeNeed in pieces over services' pass list (the catchments
  * TierNeedRun) — the monthly scan when stale, by building chunks of `list` (installed at its end, jobNext = the list's

@@ -166,6 +166,13 @@ export const INFRA_PIECE_COLD_MS = 0.13;
 export const INFRA_URGENT_BUDGET = 24;
 /** B2: live (frames active), real ms of urgent steps per frame (2 x INFRA_FRAME_BUDGET_MS; pre-B2: no time check) */
 export const INFRA_URGENT_FRAME_MS = 6;
+/**
+ * B2 (G2): the sizing floor, in estimated µs per cell, of the cell loops that run once per pass: on their first
+ * executions after a load they run interpreted at ~100 ns per cell (G2 dense1m runs: 25-70 x their warm cost), so a piece
+ * of such a loop holds at most pieceUnits(INFRA_CELL_SIZING_US, 1, budget) cells (~16k at half INFRA_PIECE_COLD_MS) however
+ * cheap the loop is warm. Chunk sizes only — the estimates keep the loops' own coefficients.
+ */
+export const INFRA_CELL_SIZING_US = 0.004;
 /** commute above this (min) counts as unreachable for employment purposes */
 export const MAX_COMMUTE = 110;
 
