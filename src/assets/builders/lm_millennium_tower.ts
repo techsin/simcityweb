@@ -36,9 +36,11 @@ function skyDeck(b: ModelBuilder, y: number, r: number, tint: number): void {
 }
 
 function millenniumTower(b: ModelBuilder, v: number, rng: RNG): void {
-  const E = 32, tint = v === 0 ? 5 : 4;
+  // v0 sky-blue glass with blue corner glazing; v1 bronze-gold glass with dark corners, so the two read apart from
+  // the city camera (silver fins, decks and needle on both)
+  const E = 32, tint = v === 0 ? 5 : 2;
   const plaza = 0xc2c3bb, silver = P(0xcbd2d8, Surf.Metal), roof = P(0x828f92, Surf.RoofFlat);
-  const glass = P(0x8ba8be, Surf.GlassCurtain, tint), corner = P(0x6c8d9f, Surf.GlassCurtain, 0);
+  const glass = P(0x8ba8be, Surf.GlassCurtain, tint), corner = P(0x6c8d9f, Surf.GlassCurtain, v === 0 ? 0 : 3);
   b.paint(plaza, Surf.Pavement).slab(-E, -E, E, E, 0.1);
   b.paint(0x8d9b9f, Surf.Pavement);
   for (const x of [-8, 8]) rect(b, x - 0.25, 22.5, x + 0.25, E, 0.115);

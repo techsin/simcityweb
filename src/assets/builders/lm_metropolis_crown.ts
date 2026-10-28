@@ -54,9 +54,11 @@ function coronet(b: ModelBuilder, y: number, v: number, bronze: Paint): void {
 
 function metropolisCrown(b: ModelBuilder, v: number, rng: RNG): void {
   const E = 32, plaza = 0xc6bda9;
-  const bronze = P(v === 0 ? 0xb9a06a : 0xc8b78d, Surf.Metal);
+  // v0 stone and teal glass with a bronze coronet; v1 a dark glass shaft with gold piers and coronet, so the two read
+  // apart from the city camera
+  const bronze = P(v === 0 ? 0xb9a06a : 0xcfa959, Surf.Metal);
   const stone = P(0xc7baa0, Surf.Stone, 1, 40), roof = P(0x7d8277, Surf.RoofFlat);
-  const windows = P(0xc3b599, Surf.WallWindows, 5), glass = P(0x739c9c, Surf.GlassCurtain, 1);
+  const windows = P(0xc3b599, Surf.WallWindows, 5), glass = P(0x739c9c, Surf.GlassCurtain, v === 0 ? 1 : 3);
   b.paint(plaza, Surf.Pavement).slab(-E, -E, E, E, 0.1);
   b.paint(0x9c9077, Surf.Pavement);
   for (const x of [-9, 9]) rect(b, x - 0.3, 23, x + 0.3, E, 0.115);

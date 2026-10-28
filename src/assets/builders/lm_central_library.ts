@@ -69,10 +69,19 @@ function centralLibrary(b: ModelBuilder, v: number, rng: RNG): void {
   }
   b.paint(lit).box(-10.4, 13.8, 9.6, 10.4, 15.1, 15.5);
   b.paint(trim, Surf.Stone).gableRoof(0, 12.5, 21.6, 6.4, 15.1, 4.6, 'z', 0.15, lit);
-  b.paint(0x9b875d, Surf.Metal, 3);
-  // Open-book relief in the tympanum.
+  // Open-book relief in the tympanum: pale floodlit pages with text lines on a dark cover and spine.
+  b.paint(0x4a3526, Surf.Plain);
+  polyZ(b, [[-2.4, 15.92], [0, 15.5], [2.4, 15.92], [2.4, 18.2], [0, 17.82], [-2.4, 18.2]], 15.84);
+  b.paint(P(0xefe7d4, Surf.Plain, 1, 26));
   polyZ(b, [[-2.2, 16.1], [0, 15.7], [0, 17.7], [-2.2, 18]], 15.88);
   polyZ(b, [[0, 15.7], [2.2, 16.1], [2.2, 18], [0, 17.7]], 15.88);
+  b.paint(0x6b5a48, Surf.Plain);
+  for (const s of [-1, 1]) for (const c of [16.2, 16.7, 17.2]) {
+    // lines follow the pages' slope (they rise 0.4 m over the 2.2 m page width, away from the spine)
+    const at = (a: number, dy: number): P2 => [s * a, c + 0.1818 * a + dy];
+    polyZ(b, [at(0.25, -0.06), at(1.95, -0.06), at(1.95, 0.06), at(0.25, 0.06)], 15.91);
+  }
+  b.box(-0.1, 15.55, 15.84, 0.1, 17.85, 15.93, { nz: null });
   b.paint(trim, Surf.Stone);
   for (let i = -9; i <= 9; i++) b.box(i * 1.05 - 0.18, 14.65, 15.5, i * 1.05 + 0.18, 15.15, 15.8);
   // Variant silhouettes: rounded copper dome versus a taller octagonal glazed lantern.
