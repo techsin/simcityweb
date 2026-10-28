@@ -241,6 +241,11 @@ function policeNeed(st: CityState, res: Float32Array, out: Float32Array): void {
   for (let i = 0; i < C; i++) out[i] = (res[i] + out[i]) * (POLICE_CRIME_BASE + crime[i]);
 }
 
+/** policeNeed's cell pass over [i0, i1): people >= 0, so (res + jobs) x (base + crime) is exactly 0 where nobody is */
+function policeCellRange(res: Float32Array, out: Float32Array, crime: Float32Array, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) out[i] = (res[i] + out[i]) * (POLICE_CRIME_BASE + crime[i]);
+}
+
 /** B2: estimated warm µs per unit of the police need run's pieces (services' prep budget; G2 fit, dense1m) */
 const PN_US = { scan: 0.03, jobs: 0.02, jobCell: 0.004, cell: 0.004, piece: 2 } as const;
 /**
@@ -296,43 +301,47 @@ class PoliceNeedRun implements TierNeedRun {
         this.startJobs();
         return false;
       }
-      case 2: {
-        const N = st.size, grid = st.building, out = this.out, list = this.jobs;
-        const k1 = Math.min(list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.jobs)));
-        let n = this.n;
-        for (let k = this.cur; k < k1; k++) {
-          const b = list[k];
-          const x = b.x, z = b.z;
-          if (grid[z * N + x] !== b.id) continue; // removed (building ids are never reused)
-          list[n++] = b;
-          const j = b.jobs;
-          if (!(j > 0) || b.pop > 0) continue;
-          const w = b.w, d = b.d;
-          if (w === 1 && d === 1) { out[z * N + x] += POLICE_JOB_W * j; continue; }
-          const v = (POLICE_JOB_W * j) / (w * d);
-          const x1 = Math.min(N, x + w), z1 = Math.min(N, z + d);
-          for (let zz = z; zz < z1; zz++) for (let xx = x; xx < x1; xx++) out[zz * N + xx] += v;
-        }
-        this.n = n;
-        this.cur = k1;
-        if (k1 < list.length) return false;
-        list.length = n;
-        this.stage = 3;
-        this.cur = 0;
-        return false;
-      }
-      case 3: {
-        const C = st.cells, res = this.res, out = this.out, crime = st.crime;
-        const i1 = Math.min(C, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.cell)));
-        // people >= 0: (res + jobs) x (base + crime) is exactly 0 where nobody is (branchless)
-        for (let i = this.cur; i < i1; i++) out[i] = (res[i] + out[i]) * (POLICE_CRIME_BASE + crime[i]);
-        this.cur = i1;
-        if (i1 < C) return false;
-        this.stage = 4;
-        return true;
-      }
+      case 2: this.jobSites(budgetUs); return false;
+      case 3: return this.cells(budgetUs);
       default: return true;
     }
+  }
+
+  /** the job sites in chunks: the jobs part of the raster (and the list's compaction, as policeNeed) */
+  private jobSites(budgetUs: number): void {
+    const st = this.st, N = st.size, grid = st.building, out = this.out, list = this.jobs;
+    const k1 = Math.min(list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.jobs)));
+    let n = this.n;
+    for (let k = this.cur; k < k1; k++) {
+      const b = list[k];
+      const x = b.x, z = b.z;
+      if (grid[z * N + x] !== b.id) continue; // removed (building ids are never reused)
+      list[n++] = b;
+      const j = b.jobs;
+      if (!(j > 0) || b.pop > 0) continue;
+      const w = b.w, d = b.d;
+      if (w === 1 && d === 1) { out[z * N + x] += POLICE_JOB_W * j; continue; }
+      const v = (POLICE_JOB_W * j) / (w * d);
+      const x1 = Math.min(N, x + w), z1 = Math.min(N, z + d);
+      for (let zz = z; zz < z1; zz++) for (let xx = x; xx < x1; xx++) out[zz * N + xx] += v;
+    }
+    this.n = n;
+    this.cur = k1;
+    if (k1 < list.length) return;
+    list.length = n;
+    this.stage = 3;
+    this.cur = 0;
+  }
+
+  /** the cell pass by ranges; true when the raster is complete */
+  private cells(budgetUs: number): boolean {
+    const C = this.st.cells;
+    const i1 = Math.min(C, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.cell)));
+    policeCellRange(this.res, this.out, this.st.crime, this.cur, i1);
+    this.cur = i1;
+    if (i1 < C) return false;
+    this.stage = 4;
+    return true;
   }
 
   private startJobs(): void {

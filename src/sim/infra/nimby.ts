@@ -164,156 +164,175 @@ export class NimbyRun {
     }
   }
 
-  /** one piece of at most about `budgetUs` estimated µs; true when the rasters are published (the run is idle again) */
+  /**
+   * one piece of at most about `budgetUs` estimated µs; true when the rasters are published (the run is idle again). A thin
+   * switch: every stage's loop is a method of its own (design R10)
+   */
   step(budgetUs: number): boolean {
     const st = this.st;
     if (!st) return true;
-    const N = st.size, C = st.cells;
     switch (this.stage) {
-      case 0: {
-        this.stig.fill(0); this.line.fill(0); this.pres.fill(0); this.camp.fill(0);
-        this.stage = 1;
-        this.cur = 0;
-        return false;
-      }
-      case 1: {
-        const { stig, pres, camp } = this;
-        const plantLoad = this.plantLoad;
-        const bL = this.list;
-        let touches = this.touches, us = 0, bI = this.cur;
-        // (at least one building per piece; skipped buildings count their test)
-        for (; bI < bL.length && (us === 0 || us < budgetUs); bI++) {
-          const b = bL[bI];
-          us += NIMBY_US.bld;
-          if (!isFunctional(b)) continue;
-          const inf = infoOf(st, b);
-          let sA = inf.stigmaAmt, sR = inf.stigmaR;
-          let pA = inf.prestigeAmt, pR = inf.prestigeR;
-          if (inf.fam === Fam.I) {
-            if (inf.dev === DevType.ID) { sA = NIMBY_ID.amount; sR = NIMBY_ID.radius; }
-            else if (inf.dev === DevType.IM) { sA = NIMBY_IM.amount; sR = NIMBY_IM.radius; }
-          } else if (inf.fam === Fam.C && pA === 0 && (inf.dev === DevType.CS3 || inf.dev === DevType.CO3)) {
-            const stage = getDef(b.def)?.stage ?? 0;
-            if (stage >= PRESTIGE_HIGH_C_STAGE) { pA = PRESTIGE_HIGH_C.amount; pR = PRESTIGE_HIGH_C.radius; }
-          }
-          if (sA > 0 && inf.powerOut > 0 && plantLoad) {
-            const load = plantLoad(b.id);
-            if (load >= 0) sA *= NIMBY_PLANT_IDLE + (1 - NIMBY_PLANT_IDLE) * Math.min(1, load);
-          }
-          const t0 = touches;
-          if (sA > 0) touches += splatAdd(stig, N, b.x, b.z, b.w, b.d, sA, sR);
-          if (pA > 0) touches += splatAdd(pres, N, b.x, b.z, b.w, b.d, pA, pR);
-          if (inf.campusAmt > 0) touches += splatAdd(camp, N, b.x, b.z, b.w, b.d, inf.campusAmt, inf.campusR);
-          us += (touches - t0) * NIMBY_US.touch;
-        }
-        this.touches = touches;
-        this.cur = bI;
-        if (bI < bL.length) return false;
-        // landfill zones: per 2x2 block, scaled by how full the block's own landfill cells are (WP3's landfillFill stock:
-        // an empty landfill is only mildly stigmatised, a mountain of garbage fully — incinerators / recycling elsewhere
-        // in the city do not count)
-        const lfDef = getDef('util_landfill_tile');
-        this.lfA = lfDef?.stigma?.amount ?? 0.35;
-        this.lfR = lfDef?.stigma?.radius ?? 6;
-        this.lfNext = st.zone.indexOf(Zone.Landfill);
-        this.lfZ = 0;
-        this.stage = 2;
-        return false;
-      }
-      case 2: {
-        const stig = this.stig, zone = st.zone, lfFill = st.landfillFill, lfA = this.lfA, lfR = this.lfR;
-        let touches = this.touches, lfNext = this.lfNext, z = this.lfZ, us = 0;
-        // (at least one row pair with landfill per piece; row pairs without landfill are skipped for free)
-        for (; z < N && lfNext >= 0 && (us === 0 || us < budgetUs); z += 2) {
-          const rowEnd = Math.min(z + 2, N) * N;
-          if (lfNext >= rowEnd) continue; // neither row contains landfill
-          us += N * NIMBY_US.lfRow;
-          for (let x = 0; x < N; x += 2) {
-            let cnt = 0, fill = 0;
-            for (let dz = 0; dz < 2 && z + dz < N; dz++) for (let dx = 0; dx < 2 && x + dx < N; dx++) {
-              const i = (z + dz) * N + x + dx;
-              if (zone[i] !== Zone.Landfill) continue;
-              cnt++;
-              const f = lfFill ? lfFill[i] : 0;
-              fill += f > 0 ? (f < 1 ? f : 1) : 0;
-            }
-            if (cnt > 0) touches += splatAdd(stig, N, x, z, 2, 2, lfA * (NIMBY_LANDFILL_IDLE + (1 - NIMBY_LANDFILL_IDLE) * (fill / cnt)) * cnt / 4, lfR);
-          }
-          lfNext = zone.indexOf(Zone.Landfill, rowEnd);
-        }
-        this.touches = touches;
-        this.lfNext = lfNext;
-        this.lfZ = z;
-        if (z < N && lfNext >= 0) return false;
-        // network corridors (max-combined)
-        const net = st.network;
-        this.wordEnd = (net.byteOffset & 3) === 0 ? Math.floor(Math.min(C, net.length) / 4) * 4 : 0;
-        this.words = this.wordEnd > 0 ? new Uint32Array(net.buffer, net.byteOffset, this.wordEnd / 4) : null;
-        this.cur = 0;
-        this.stage = 3;
-        return false;
-      }
-      case 3: {
-        const line = this.line, net = st.network, flags = st.netFlags, words = this.words, wordEnd = this.wordEnd;
-        const highway = Network.Highway * 0x01010101, rail = Network.Rail * 0x01010101;
-        // (a range starts at a multiple of 4 and ends at one or at C, so a skipped word never straddles two pieces)
-        const chunk = Math.max(4, Math.floor(budgetUs / NIMBY_US.corridorCell));
-        const i1 = chunk >= C - this.cur ? C : Math.min(C, (this.cur + chunk) - ((this.cur + chunk) % 4));
-        let touches = this.touches;
-        for (let i = this.cur; i < i1; i++) {
-          if (words && i < wordEnd && (i & 3) === 0) {
-            const word = words[i >>> 2], h = word ^ highway, r = word ^ rail;
-            // XOR each byte, then test for a zero byte: correct on little-endian targets (and byte-order independent).
-            // Only skip whole empty words; matching cells, tails and unaligned views keep the original index order.
-            if (((h - 0x01010101) & ~h & 0x80808080) === 0 && ((r - 0x01010101) & ~r & 0x80808080) === 0) {
-              i += 3;
-              continue;
-            }
-          }
-          const t = net[i];
-          if (t === Network.Highway) {
-            const f = flags[i];
-            if (f & 2) continue; // tunnel
-            touches += splatMax(line, N, i % N, (i / N) | 0, f & 1 ? NIMBY_HIGHWAY_BRIDGE : NIMBY_HIGHWAY.amount, NIMBY_HIGHWAY.radius);
-          } else if (t === Network.Rail) {
-            touches += splatMax(line, N, i % N, (i / N) | 0, NIMBY_RAIL.amount, NIMBY_RAIL.radius);
-          }
-        }
-        this.touches = touches;
-        this.cur = i1;
-        if (i1 < C) return false;
-        this.words = null;
-        this.cur = 0;
-        this.stage = 4;
-        return false;
-      }
-      case 4: {
-        const { stig, line, pres, camp, sNext: S, pNext: P, kNext: K } = this;
-        const z1 = Math.min(N, this.cur + Math.max(1, Math.floor(budgetUs / (NIMBY_US.final * Math.max(1, N)))));
-        for (let i = this.cur * N, e = z1 * N; i < e; i++) {
-          const a = stig[i] + line[i];
-          S[i] = a > 0 ? 1 - Math.exp(-a) : 0;
-          const p = pres[i];
-          P[i] = p > 0 ? 1 - Math.exp(-p) : 0;
-          const c = camp[i];
-          K[i] = c > 0 ? 1 - Math.exp(-c) : 0;
-        }
-        this.cur = z1;
-        if (z1 < N) return false;
-        this.stage = 5;
-        return false;
-      }
-      case 5: {
-        st.stigma.set(this.sNext.subarray(0, st.stigma.length));
-        st.prestige.set(this.pNext.subarray(0, st.prestige.length));
-        st.campus.set(this.kNext.subarray(0, st.campus.length));
-        // cost model (calibrated on the 256² stress city): per-cell passes + splat touches + building loop
-        costEst.set(st, 0.3 + 0.9 * (C / 65536) + 0.45 * (this.list.length / 20000) + this.touches * 6e-6);
-        this.release();
-        return true;
-      }
+      case 0: this.fills(); return false;
+      case 1: this.buildings(st, budgetUs); return false;
+      case 2: this.landfill(st, budgetUs); return false;
+      case 3: this.corridors(st, budgetUs); return false;
+      case 4: this.final(st, budgetUs); return false;
+      case 5: this.publish(st); return true;
       default: return true;
     }
+  }
+
+  private fills(): void {
+    this.stig.fill(0); this.line.fill(0); this.pres.fill(0); this.camp.fill(0);
+    this.stage = 1;
+    this.cur = 0;
+  }
+
+  /** a building chunk: until its estimate reaches the budget (at least one building; skipped ones count their test) */
+  private buildings(st: CityState, budgetUs: number): void {
+    const N = st.size;
+    const { stig, pres, camp } = this;
+    const plantLoad = this.plantLoad;
+    const bL = this.list;
+    let touches = this.touches, us = 0, bI = this.cur;
+    for (; bI < bL.length && (us === 0 || us < budgetUs); bI++) {
+      const b = bL[bI];
+      us += NIMBY_US.bld;
+      if (!isFunctional(b)) continue;
+      const inf = infoOf(st, b);
+      let sA = inf.stigmaAmt, sR = inf.stigmaR;
+      let pA = inf.prestigeAmt, pR = inf.prestigeR;
+      if (inf.fam === Fam.I) {
+        if (inf.dev === DevType.ID) { sA = NIMBY_ID.amount; sR = NIMBY_ID.radius; }
+        else if (inf.dev === DevType.IM) { sA = NIMBY_IM.amount; sR = NIMBY_IM.radius; }
+      } else if (inf.fam === Fam.C && pA === 0 && (inf.dev === DevType.CS3 || inf.dev === DevType.CO3)) {
+        const stage = getDef(b.def)?.stage ?? 0;
+        if (stage >= PRESTIGE_HIGH_C_STAGE) { pA = PRESTIGE_HIGH_C.amount; pR = PRESTIGE_HIGH_C.radius; }
+      }
+      if (sA > 0 && inf.powerOut > 0 && plantLoad) {
+        const load = plantLoad(b.id);
+        if (load >= 0) sA *= NIMBY_PLANT_IDLE + (1 - NIMBY_PLANT_IDLE) * Math.min(1, load);
+      }
+      const t0 = touches;
+      if (sA > 0) touches += splatAdd(stig, N, b.x, b.z, b.w, b.d, sA, sR);
+      if (pA > 0) touches += splatAdd(pres, N, b.x, b.z, b.w, b.d, pA, pR);
+      if (inf.campusAmt > 0) touches += splatAdd(camp, N, b.x, b.z, b.w, b.d, inf.campusAmt, inf.campusR);
+      us += (touches - t0) * NIMBY_US.touch;
+    }
+    this.touches = touches;
+    this.cur = bI;
+    if (bI < bL.length) return;
+    // landfill zones: per 2x2 block, scaled by how full the block's own landfill cells are (WP3's landfillFill stock:
+    // an empty landfill is only mildly stigmatised, a mountain of garbage fully — incinerators / recycling elsewhere
+    // in the city do not count)
+    const lfDef = getDef('util_landfill_tile');
+    this.lfA = lfDef?.stigma?.amount ?? 0.35;
+    this.lfR = lfDef?.stigma?.radius ?? 6;
+    this.lfNext = st.zone.indexOf(Zone.Landfill);
+    this.lfZ = 0;
+    this.stage = 2;
+  }
+
+  /** landfill row pairs: until the estimate reaches the budget (at least one pair with landfill; pairs without are free) */
+  private landfill(st: CityState, budgetUs: number): void {
+    const N = st.size, C = st.cells;
+    const stig = this.stig, zone = st.zone, lfFill = st.landfillFill, lfA = this.lfA, lfR = this.lfR;
+    let touches = this.touches, lfNext = this.lfNext, z = this.lfZ, us = 0;
+    for (; z < N && lfNext >= 0 && (us === 0 || us < budgetUs); z += 2) {
+      const rowEnd = Math.min(z + 2, N) * N;
+      if (lfNext >= rowEnd) continue; // neither row contains landfill
+      us += N * NIMBY_US.lfRow;
+      for (let x = 0; x < N; x += 2) {
+        let cnt = 0, fill = 0;
+        for (let dz = 0; dz < 2 && z + dz < N; dz++) for (let dx = 0; dx < 2 && x + dx < N; dx++) {
+          const i = (z + dz) * N + x + dx;
+          if (zone[i] !== Zone.Landfill) continue;
+          cnt++;
+          const f = lfFill ? lfFill[i] : 0;
+          fill += f > 0 ? (f < 1 ? f : 1) : 0;
+        }
+        if (cnt > 0) touches += splatAdd(stig, N, x, z, 2, 2, lfA * (NIMBY_LANDFILL_IDLE + (1 - NIMBY_LANDFILL_IDLE) * (fill / cnt)) * cnt / 4, lfR);
+      }
+      lfNext = zone.indexOf(Zone.Landfill, rowEnd);
+    }
+    this.touches = touches;
+    this.lfNext = lfNext;
+    this.lfZ = z;
+    if (z < N && lfNext >= 0) return;
+    // network corridors (max-combined)
+    const net = st.network;
+    this.wordEnd = (net.byteOffset & 3) === 0 ? Math.floor(Math.min(C, net.length) / 4) * 4 : 0;
+    this.words = this.wordEnd > 0 ? new Uint32Array(net.buffer, net.byteOffset, this.wordEnd / 4) : null;
+    this.cur = 0;
+    this.stage = 3;
+  }
+
+  /** corridor cells by index ranges that start and end on multiples of 4 (or at C): a skipped word never straddles two */
+  private corridors(st: CityState, budgetUs: number): void {
+    const N = st.size, C = st.cells;
+    const line = this.line, net = st.network, flags = st.netFlags, words = this.words, wordEnd = this.wordEnd;
+    const highway = Network.Highway * 0x01010101, rail = Network.Rail * 0x01010101;
+    const chunk = Math.max(4, Math.floor(budgetUs / NIMBY_US.corridorCell));
+    const i1 = chunk >= C - this.cur ? C : Math.min(C, (this.cur + chunk) - ((this.cur + chunk) % 4));
+    let touches = this.touches;
+    for (let i = this.cur; i < i1; i++) {
+      if (words && i < wordEnd && (i & 3) === 0) {
+        const word = words[i >>> 2], h = word ^ highway, r = word ^ rail;
+        // XOR each byte, then test for a zero byte: correct on little-endian targets (and byte-order independent).
+        // Only skip whole empty words; matching cells, tails and unaligned views keep the original index order.
+        if (((h - 0x01010101) & ~h & 0x80808080) === 0 && ((r - 0x01010101) & ~r & 0x80808080) === 0) {
+          i += 3;
+          continue;
+        }
+      }
+      const t = net[i];
+      if (t === Network.Highway) {
+        const f = flags[i];
+        if (f & 2) continue; // tunnel
+        touches += splatMax(line, N, i % N, (i / N) | 0, f & 1 ? NIMBY_HIGHWAY_BRIDGE : NIMBY_HIGHWAY.amount, NIMBY_HIGHWAY.radius);
+      } else if (t === Network.Rail) {
+        touches += splatMax(line, N, i % N, (i / N) | 0, NIMBY_RAIL.amount, NIMBY_RAIL.radius);
+      }
+    }
+    this.touches = touches;
+    this.cur = i1;
+    if (i1 < C) return;
+    this.words = null;
+    this.cur = 0;
+    this.stage = 4;
+  }
+
+  /** the 1 - exp(-x) pass by rows into the private rasters */
+  private final(st: CityState, budgetUs: number): void {
+    const N = st.size;
+    const z1 = Math.min(N, this.cur + Math.max(1, Math.floor(budgetUs / (NIMBY_US.final * Math.max(1, N)))));
+    saturateRange(this.stig, this.line, this.pres, this.camp, this.sNext, this.pNext, this.kNext, this.cur * N, z1 * N);
+    this.cur = z1;
+    if (z1 >= N) this.stage = 5;
+  }
+
+  /** the publish piece: the three layers (.set) and the cost estimate of the next rebuild */
+  private publish(st: CityState): void {
+    const C = st.cells;
+    st.stigma.set(this.sNext.subarray(0, st.stigma.length));
+    st.prestige.set(this.pNext.subarray(0, st.prestige.length));
+    st.campus.set(this.kNext.subarray(0, st.campus.length));
+    // cost model (calibrated on the 256² stress city): per-cell passes + splat touches + building loop
+    costEst.set(st, 0.3 + 0.9 * (C / 65536) + 0.45 * (this.list.length / 20000) + this.touches * 6e-6);
+    this.release();
+  }
+}
+
+/** the NIMBY layers over [i0, i1): stigma (+ corridors), prestige, campus saturated with 1 - exp(-x) */
+function saturateRange(stig: Float32Array, line: Float32Array, pres: Float32Array, camp: Float32Array, S: Float32Array, P: Float32Array,
+  K: Float32Array, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) {
+    const a = stig[i] + line[i];
+    S[i] = a > 0 ? 1 - Math.exp(-a) : 0;
+    const p = pres[i];
+    P[i] = p > 0 ? 1 - Math.exp(-p) : 0;
+    const c = camp[i];
+    K[i] = c > 0 ? 1 - Math.exp(-c) : 0;
   }
 }
 

@@ -285,6 +285,12 @@ export class ServicesSystem implements SimSystem {
   private multi: Building[] = [];
   /** Σ footprint cells of `multi` (work estimate of the per-tier footprint max in finalizeTier) */
   private multiCells = 0;
+  /**
+   * B2: the lots of `multi` as clipped rectangles (x0, z0, x1, z1 per lot), captured in prep: the footprint-max loops read
+   * these instead of Building fields (a building's footprint never changes, so the values are the ones the pre-B2 loops
+   * read), which keeps them out of the Building-shape deopt waves
+   */
+  private multiRect = new Int32Array(256);
   private fx: OrdEffects | null = null;
   private roadCells = 0;
   private csSeeds = new Int32Array(0);
@@ -376,6 +382,9 @@ export class ServicesSystem implements SimSystem {
   private finNeed = 0;
   private finServed = 0;
   private finUnreached = 0;
+  /** accumulator scratch of the stats loops (doubles) and the lot-max loop's units */
+  private finAcc = new Float64Array(3);
+  private lotOut = new Float64Array(1);
   /** C-cell scratch: a tier layer before its publish, the composed transit layer, the transit lot max */
   private finBuf = new Float32Array(0);
   private stopCol = new StopCollector();
@@ -613,6 +622,7 @@ export class ServicesSystem implements SimSystem {
     this.provRun = null;
     this.provPh = 0; this.provAcc = 0; this.roadAcc = 0; this.workAcc = 0;
     this.finSub = F_CLAMP; this.finCur = 0; this.finNeed = 0; this.finServed = 0; this.finUnreached = 0;
+    this.finAcc.fill(0); this.lotOut.fill(0);
     this.stopFund = 0;
     this.stopActive = undefined;
     this.nimbyRun.release();
@@ -954,7 +964,7 @@ export class ServicesSystem implements SimSystem {
     for (let bI = this.snap.bounds[k], e = this.snap.bounds[k + 1]; bI < e; bI++) {
       const b = bL[bI];
       this.observeBuilding(st, b, true);
-      if (b.w * b.d > 1) { this.multi.push(b); this.multiCells += b.w * b.d; }
+      if (b.w * b.d > 1) { this.pushLot(b, N); this.multiCells += b.w * b.d; }
       const inf = infoOf(st, b);
       if (inf.fam === Fam.R) {
         if (b.pop <= 0) continue;
@@ -996,6 +1006,15 @@ export class ServicesSystem implements SimSystem {
     this.nCs = nCs;
   }
 
+  /** a multi-cell building: the lot list and its clipped rectangle */
+  private pushLot(b: Building, N: number): void {
+    const q = this.multi.length;
+    this.multi.push(b);
+    if (this.multiRect.length < 4 * q + 4) { const a = new Int32Array(Math.max(8 * q + 8, 256)); a.set(this.multiRect); this.multiRect = a; }
+    const r = this.multiRect;
+    r[4 * q] = Math.max(0, b.x); r[4 * q + 1] = Math.max(0, b.z); r[4 * q + 2] = Math.min(N, b.x + b.w); r[4 * q + 3] = Math.min(N, b.z + b.d);
+  }
+
   /** after the building chunks: the need sums, the CS seed count; the providers start at slot 0 */
   private prepEndBuildings(): void {
     this.needSum.set(this.needAcc);
@@ -1031,11 +1050,8 @@ export class ServicesSystem implements SimSystem {
         return false;
       }
       // the sum (index order, a double, as pre-B2)
-      const a = this.provBack[k]!;
       const i1 = Math.min(C, this.cur + pieceUnits(SC.provSum, 1, COLD));
-      let sum = this.provAcc;
-      for (let i = this.cur; i < i1; i++) sum += a[i];
-      this.provAcc = sum;
+      const sum = (this.provAcc = sumRange(this.provBack[k]!, this.provAcc, this.cur, i1));
       this.cur = i1;
       if (i1 < C) return false;
       this.provSum[k] = sum;
@@ -1051,11 +1067,9 @@ export class ServicesSystem implements SimSystem {
 
   /** the road cell count by ranges */
   private prepRoads(st: CityState): boolean {
-    const C = st.cells, net = st.network;
+    const C = st.cells;
     const i1 = Math.min(C, this.cur + pieceUnits(SC.roads, 1, COLD));
-    let roads = this.roadAcc;
-    for (let i = this.cur; i < i1; i++) { const t = net[i]; if (t >= 1 && t <= 5) roads++; }
-    this.roadAcc = roads;
+    this.roadAcc = countRoads(st.network, this.roadAcc, this.cur, i1);
     this.cur = i1;
     return i1 >= C;
   }
@@ -1232,8 +1246,8 @@ export class ServicesSystem implements SimSystem {
           case F_FOOT: {
             const q = this.finCur;
             if (q >= this.multi.length) return 0;
-            const b = this.multi[q];
-            return Math.max(1, Math.min(N, b.x + b.w) - Math.max(0, b.x)) * Math.max(1, Math.min(N, b.z + b.d) - Math.max(0, b.z)) * FOOT_WORK;
+            const r = this.multiRect;
+            return Math.max(1, r[4 * q + 2] - r[4 * q]) * Math.max(1, r[4 * q + 3] - r[4 * q + 1]) * FOOT_WORK;
           }
           default: return C * U_PUBLISH + 8;
         }
@@ -1242,70 +1256,82 @@ export class ServicesSystem implements SimSystem {
 
   /** run the next tier item (row / lot items: as many rows / lots as `room` units allow, at least one); returns its units */
   private tierItem(st: CityState, k: number, room: number): number {
-    const C = st.cells;
-    const list = this.fac[k];
-    const shared = this.shared[k];
-    const needL = k < NT ? this.provNeed[k] ?? this.need[NEED_RASTER[k]] : this.need[0];
     switch (this.tierPhase) {
-      case P_INIT: {
-        if (list.length === 0) {
-          // empty slot: zero the layer (once; the transit layer every pass, finishTransit composes the stop
-          // coverage onto it), stats without a cell loop
-          let w = 0;
-          if (this.hadFac[k] || k === SLOT_TRANSIT) {
-            (k === SLOT_TRANSIT ? st.transitCov : tierLayer(st, NEED_ORDER[k])).fill(0);
-            w = C * U_EMPTY;
-          }
-          this.hadFac[k] = false;
-          this.cache[k] = null;
-          if (k < NT) {
-            const n = this.provNeed[k] ? this.provSum[k] : this.needSum[NEED_RASTER[k]];
-            const ts = this.tierStats[k];
-            ts.need = n; ts.served = 0; ts.capacity = 0; ts.unreached = n; ts.overcrowded = 0;
-          }
-          this.tierSlot++;
-          return w;
-        }
-        this.hadFac[k] = true;
-        this.A.fill(0);
-        this.cov.fill(0);
-        if (shared) this.seat.fill(1);
-        this.poolN = 0;
-        this.curEnt = new Map();
-        this.facStart.length = 0; this.facEnd.length = 0;
-        this.facSig.length = 0; this.facSeat.length = 0;
-        this.cursor = 0;
-        this.tierPhase = P_SEARCH;
-        return C * U_INIT;
-      }
-      case P_SEARCH: {
-        if (this.cursor >= list.length) {
-          let w = 0;
-          if (shared) { this.seatOrder(k); this.tierPhase = P_ALLOC; w = list.length * Math.log2(list.length + 1); }
-          else this.beginFinal();
-          this.cursor = 0;
-          return w;
-        }
-        const c = this.cursor++;
-        const b = list[c];
-        if (!st.buildings.has(b.id)) { this.facStart[c] = this.facEnd[c] = this.poolN; return 0; }
-        return this.reachOf(st, b, k, c) + (shared ? 0 : this.splatUnion(st, b, k, c, needL));
-      }
-      case P_ALLOC: {
-        // shared tiers: facilities take seats in seat order (best op first, then building id)
-        if (this.cursor >= list.length) { this.tierPhase = P_REPORT; this.cursor = 0; return 0; }
-        const c = this.order[this.cursor++];
-        return this.allocSeats(st, list[c], k, c, needL);
-      }
-      case P_REPORT: {
-        // shared tiers: demand / utilization of crowded facilities from the need left unseated in their reach
-        if (this.cursor >= list.length) { this.beginFinal(); return 0; }
-        const c = this.cursor++;
-        return this.reportDemand(st, list[c], k, c, needL);
-      }
-      default:
-        return this.finalItem(st, k, needL, room);
+      case P_INIT: return this.fac[k].length === 0 ? this.tierEmpty(st, k) : this.tierInit(st, k);
+      case P_SEARCH: return this.cursor >= this.fac[k].length ? this.tierSearchEnd(k) : this.tierSearch(st, k);
+      case P_ALLOC: return this.tierAlloc(st, k);
+      case P_REPORT: return this.tierReport(st, k);
+      default: return this.finalItem(st, k, room);
     }
+  }
+
+  /** an empty slot: zero the layer (once; the transit layer every pass, the stops state composes the stop coverage onto
+   *  it), stats without a cell loop */
+  private tierEmpty(st: CityState, k: number): number {
+    let w = 0;
+    if (this.hadFac[k] || k === SLOT_TRANSIT) {
+      (k === SLOT_TRANSIT ? st.transitCov : tierLayer(st, NEED_ORDER[k])).fill(0);
+      w = st.cells * U_EMPTY;
+    }
+    this.hadFac[k] = false;
+    this.cache[k] = null;
+    if (k < NT) {
+      const n = this.provNeed[k] ? this.provSum[k] : this.needSum[NEED_RASTER[k]];
+      const ts = this.tierStats[k];
+      ts.need = n; ts.served = 0; ts.capacity = 0; ts.unreached = n; ts.overcrowded = 0;
+    }
+    this.tierSlot++;
+    return w;
+  }
+
+  private tierInit(st: CityState, k: number): number {
+    this.hadFac[k] = true;
+    this.A.fill(0);
+    this.cov.fill(0);
+    if (this.shared[k]) this.seat.fill(1);
+    this.poolN = 0;
+    this.curEnt = new Map();
+    this.facStart.length = 0; this.facEnd.length = 0;
+    this.facSig.length = 0; this.facSeat.length = 0;
+    this.cursor = 0;
+    this.tierPhase = P_SEARCH;
+    return st.cells * U_INIT;
+  }
+
+  private tierSearchEnd(k: number): number {
+    let w = 0;
+    if (this.shared[k]) { this.seatOrder(k); this.tierPhase = P_ALLOC; w = this.fac[k].length * Math.log2(this.fac[k].length + 1); }
+    else this.beginFinal();
+    this.cursor = 0;
+    return w;
+  }
+
+  private tierSearch(st: CityState, k: number): number {
+    const c = this.cursor++;
+    const b = this.fac[k][c];
+    if (!st.buildings.has(b.id)) { this.facStart[c] = this.facEnd[c] = this.poolN; return 0; }
+    return this.reachOf(st, b, k, c) + (this.shared[k] ? 0 : this.splatUnion(st, b, k, c, this.needOfSlot(k)));
+  }
+
+  /** shared tiers: facilities take seats in seat order (best op first, then building id) */
+  private tierAlloc(st: CityState, k: number): number {
+    const list = this.fac[k];
+    if (this.cursor >= list.length) { this.tierPhase = P_REPORT; this.cursor = 0; return 0; }
+    const c = this.order[this.cursor++];
+    return this.allocSeats(st, list[c], k, c, this.needOfSlot(k));
+  }
+
+  /** shared tiers: demand / utilization of crowded facilities from the need left unseated in their reach */
+  private tierReport(st: CityState, k: number): number {
+    const list = this.fac[k];
+    if (this.cursor >= list.length) { this.beginFinal(); return 0; }
+    const c = this.cursor++;
+    return this.reportDemand(st, list[c], k, c, this.needOfSlot(k));
+  }
+
+  /** the need raster of slot k (the transit slot: residents) */
+  private needOfSlot(k: number): Float32Array {
+    return k < NT ? this.provNeed[k] ?? this.need[NEED_RASTER[k]] : this.need[0];
   }
 
   private beginFinal(): void {
@@ -1321,90 +1347,82 @@ export class ServicesSystem implements SimSystem {
    * footprint max on finBuf by lots; the publish (layer.set(finBuf), the cache swap, the next slot). The transit slot does
    * the clamp and the publish only. The layer changes once, in the publish: no reader sees a tier layer without its lot max.
    */
-  private finalItem(st: CityState, k: number, needL: Float32Array, room: number): number {
-    const N = st.size, C = st.cells;
-    const shared = this.shared[k];
-    const buf = this.finBuf;
+  private finalItem(st: CityState, k: number, room: number): number {
     switch (this.finSub) {
-      case F_CLAMP: {
-        const rows = Math.max(1, Math.floor(room / (N * U_CLAMP)));
-        const z0 = this.finCur, z1 = Math.min(N, z0 + rows);
-        const cov = this.cov;
-        for (let i = z0 * N, e = z1 * N; i < e; i++) { const v = cov[i]; buf[i] = v < 1 ? v : 1; }
-        this.finCur = z1;
-        if (z1 >= N) { this.finSub = k === SLOT_TRANSIT ? F_PUBLISH : F_STATS; this.finCur = 0; }
-        return (z1 - z0) * N * U_CLAMP;
-      }
-      case F_STATS: {
-        const rows = Math.max(1, Math.floor(room / (N * U_STATS)));
-        const z0 = this.finCur, z1 = Math.min(N, z0 + rows);
-        const A = this.A;
-        let need = this.finNeed, served = this.finServed, unreached = this.finUnreached;
-        for (let i = z0 * N, e = z1 * N; i < e; i++) {
-          const n = needL[i];
-          if (n <= 0) continue;
-          need += n;
-          served += n * buf[i];
-          if (A[i] <= 0) unreached += n;
-        }
-        this.finNeed = need; this.finServed = served; this.finUnreached = unreached;
-        this.finCur = z1;
-        if (z1 >= N) { this.finSub = F_CAP; this.finCur = 0; }
-        return (z1 - z0) * N * U_STATS;
-      }
-      case F_CAP: {
-        let capacity = 0, over = 0;
-        const list = this.fac[k], ops = this.facOp[k], caps = this.facCap[k];
-        // capacity-free (union) tiers report capacity 0 / no crowding
-        for (let c = 0; shared && c < list.length; c++) {
-          const S = caps[c];
-          if (!(S < Infinity)) continue;
-          capacity += S * ops[c];
-          const id = list[c].id;
-          if (id < this.utilById.length && this.tierById[id] > 0 && this.utilById[id] > OVERCROWDED_UTIL) over++;
-        }
-        const ts = this.tierStats[k];
-        ts.need = this.finNeed; ts.served = this.finServed; ts.capacity = capacity; ts.unreached = this.finUnreached; ts.overcrowded = over;
-        this.finSub = F_FOOT;
-        this.finCur = 0;
-        return shared ? list.length * 0.5 + 8 : 8;
-      }
-      case F_FOOT: {
-        // a lot is covered as a whole from the moment its tier is written (the max over its footprint, as the footprint
-        // step makes it at the end of the pass): the back rows of a deep lot, never reached per cell, would otherwise read
-        // 0 for the days until that step, and the desirability band, needsOf (Residents) and the data views read the layer
-        // (195k city: mean police over R cells 0.98 -> 0.46 on those days, a deep lot's stored desirability -9 vs raw +49)
-        const list = this.multi;
-        let used = 0, q = this.finCur;
-        for (; q < list.length; q++) {
-          const b = list[q];
-          const x0 = Math.max(0, b.x), z0 = Math.max(0, b.z), x1 = Math.min(N, b.x + b.w), z1 = Math.min(N, b.z + b.d);
-          const u = Math.max(1, x1 - x0) * Math.max(1, z1 - z0) * FOOT_WORK;
-          if (used > 0 && used + u > room) break;
-          used += u;
-          let m = 0;
-          for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) { const v = buf[z * N + x]; if (v > m) m = v; }
-          for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) buf[z * N + x] = m;
-        }
-        this.finCur = q;
-        if (q >= list.length) { this.finSub = F_PUBLISH; this.finCur = 0; }
-        return used;
-      }
-      default: {
-        (k === SLOT_TRANSIT ? st.transitCov : tierLayer(st, NEED_ORDER[k])).set(buf.subarray(0, C));
-        // this slot's pool becomes its cache; the old cache buffers are the next slot's pool
-        const old = this.cache[k];
-        this.cache[k] = { idx: this.pIdx, w: this.pW, ent: this.curEnt };
-        if (old) { this.pIdx = old.idx; this.pW = old.w; } else { this.pIdx = new Int32Array(0); this.pW = new Float32Array(0); }
-        this.poolN = 0;
-        this.curEnt = new Map();
-        this.tierSlot++;
-        this.tierPhase = P_INIT;
-        this.finSub = F_CLAMP;
-        this.finCur = 0;
-        return C * U_PUBLISH + 8;
-      }
+      case F_CLAMP: return this.finClamp(st, k, room);
+      case F_STATS: return this.finStats(st, k, room);
+      case F_CAP: return this.finCap(k);
+      case F_FOOT: return this.finFoot(st, room);
+      default: return this.finPublish(st, k);
     }
+  }
+
+  private finClamp(st: CityState, k: number, room: number): number {
+    const N = st.size;
+    const z0 = this.finCur, z1 = Math.min(N, z0 + Math.max(1, Math.floor(room / (N * U_CLAMP))));
+    clampRange(this.cov, this.finBuf, z0 * N, z1 * N);
+    this.finCur = z1;
+    if (z1 >= N) { this.finSub = k === SLOT_TRANSIT ? F_PUBLISH : F_STATS; this.finCur = 0; }
+    return (z1 - z0) * N * U_CLAMP;
+  }
+
+  private finStats(st: CityState, k: number, room: number): number {
+    const N = st.size;
+    const z0 = this.finCur, z1 = Math.min(N, z0 + Math.max(1, Math.floor(room / (N * U_STATS))));
+    const acc = this.finAcc;
+    acc[0] = this.finNeed; acc[1] = this.finServed; acc[2] = this.finUnreached;
+    tierStatsRange(this.needOfSlot(k), this.finBuf, this.A, acc, z0 * N, z1 * N);
+    this.finNeed = acc[0]; this.finServed = acc[1]; this.finUnreached = acc[2];
+    this.finCur = z1;
+    if (z1 >= N) { this.finSub = F_CAP; this.finCur = 0; }
+    return (z1 - z0) * N * U_STATS;
+  }
+
+  private finCap(k: number): number {
+    const shared = this.shared[k];
+    let capacity = 0, over = 0;
+    const list = this.fac[k], ops = this.facOp[k], caps = this.facCap[k];
+    // capacity-free (union) tiers report capacity 0 / no crowding
+    for (let c = 0; shared && c < list.length; c++) {
+      const S = caps[c];
+      if (!(S < Infinity)) continue;
+      capacity += S * ops[c];
+      const id = list[c].id;
+      if (id < this.utilById.length && this.tierById[id] > 0 && this.utilById[id] > OVERCROWDED_UTIL) over++;
+    }
+    const ts = this.tierStats[k];
+    ts.need = this.finNeed; ts.served = this.finServed; ts.capacity = capacity; ts.unreached = this.finUnreached; ts.overcrowded = over;
+    this.finSub = F_FOOT;
+    this.finCur = 0;
+    return shared ? list.length * 0.5 + 8 : 8;
+  }
+
+  /**
+   * a lot is covered as a whole from the moment its tier is written (the max over its footprint, as the footprint step
+   * makes it at the end of the pass): the back rows of a deep lot, never reached per cell, would otherwise read 0 for the
+   * days until that step, and the desirability band, needsOf (Residents) and the data views read the layer (195k city:
+   * mean police over R cells 0.98 -> 0.46 on those days, a deep lot's stored desirability -9 vs raw +49)
+   */
+  private finFoot(st: CityState, room: number): number {
+    const r = lotMaxRange(this.finBuf, st.size, this.multiRect, this.multi.length, this.finCur, room, FOOT_WORK, this.lotOut);
+    this.finCur = r;
+    if (r >= this.multi.length) { this.finSub = F_PUBLISH; this.finCur = 0; }
+    return this.lotOut[0];
+  }
+
+  private finPublish(st: CityState, k: number): number {
+    (k === SLOT_TRANSIT ? st.transitCov : tierLayer(st, NEED_ORDER[k])).set(this.finBuf.subarray(0, st.cells));
+    // this slot's pool becomes its cache; the old cache buffers are the next slot's pool
+    const old = this.cache[k];
+    this.cache[k] = { idx: this.pIdx, w: this.pW, ent: this.curEnt };
+    if (old) { this.pIdx = old.idx; this.pW = old.w; } else { this.pIdx = new Int32Array(0); this.pW = new Float32Array(0); }
+    this.poolN = 0;
+    this.curEnt = new Map();
+    this.tierSlot++;
+    this.tierPhase = P_INIT;
+    this.finSub = F_CLAMP;
+    this.finCur = 0;
+    return st.cells * U_PUBLISH + 8;
   }
 
   /** seat order of shared slot k: operating factor descending (better-run facilities fill first), then building id */
@@ -1635,8 +1653,7 @@ export class ServicesSystem implements SimSystem {
           if (this.cur === 0) this.finBuf.set(st.transitCov.subarray(0, C));
           const rows = Math.max(1, Math.floor(pieceUnits(SC.compose, 1, COLD) / Math.max(1, N)));
           const z1 = Math.min(N, this.cur + rows);
-          const tmp = this.tmp, T = this.finBuf;
-          for (let i = this.cur * N, e = z1 * N; i < e; i++) { const t = tmp[i]; if (t > 0) T[i] = 1 - (1 - T[i]) * (1 - Math.min(1, t)); }
+          composeRange(this.finBuf, this.tmp, this.cur * N, z1 * N);
           this.cur = z1;
           if (z1 >= N) this.sub = ST_PUBLISH;
           return false;
@@ -1664,8 +1681,16 @@ export class ServicesSystem implements SimSystem {
 
   /** accessCommute step 1: seeds on frontage road cells (homes: their commute; job sites: CAR_OVERHEAD + 2) */
   private accSeedPiece(sim: Simulation): boolean {
-    const st = sim.state;
     if (this.sub === 0) { this.idist.fill(-1); this.sub = 1; this.cur = 0; return false; }
+    const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.seedB, 1, COLD));
+    this.accSeedRange(sim, this.cur, e);
+    this.cur = e;
+    return e >= this.snap.n;
+  }
+
+  /** the access seeds of the snapshot buildings [b0, b1) */
+  private accSeedRange(sim: Simulation, b0: number, b1: number): void {
+    const st = sim.state;
     const N = st.size;
     const net = st.network;
     const dist = this.idist;
@@ -1674,8 +1699,7 @@ export class ServicesSystem implements SimSystem {
     const maxKey = Math.round(MAX_COMMUTE / TIME_Q);
     const cm = st.commute;
     const bL = this.snap.list;
-    const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.seedB, 1, COLD));
-    for (let bI = this.cur; bI < e; bI++) {
+    for (let bI = b0; bI < b1; bI++) {
       const b = bL[bI];
       if (b.built < 1 || (b.flags & (BF.Burnt | BF.Abandoned)) !== 0) continue;
       const inf = infoOf(st, b);
@@ -1704,8 +1728,6 @@ export class ServicesSystem implements SimSystem {
         }
       }
     }
-    this.cur = e;
-    return e >= this.snap.n;
   }
 
   /** accessCommute step 2: the multi-source free-flow search (catchments RoadTimeRun: seed scan, then the drain) */
@@ -1740,9 +1762,8 @@ export class ServicesSystem implements SimSystem {
     const rows = (us: number) => Math.max(1, Math.floor(pieceUnits(us, 1, COLD) / Math.max(1, N)));
     switch (this.sub) {
       case AL_INIT: {
-        const dist = this.idist;
         const z1 = Math.min(N, this.cur + rows(SC.accInit));
-        for (let i = this.cur * N, e = z1 * N; i < e; i++) { const t = net[i]; v[i] = t >= 1 && t <= 5 && dist[i] >= 0 ? dist[i] * TIME_Q : INF; }
+        accInitRange(v, net, this.idist, INF, this.cur * N, z1 * N);
         this.cur = z1;
         if (z1 >= N) { this.sub = AL_FWD; this.cur = 0; }
         return false;
@@ -1764,28 +1785,15 @@ export class ServicesSystem implements SimSystem {
       }
       case AL_OUT: {
         if (this.cur === 0) { const avg = st.stats.avgCommute; this.accUnreached = avg > 0 ? ACCESS_UNREACHED * avg : 0; }
-        const unreached = this.accUnreached;
-        const out = this.accNext;
         const z1 = Math.min(N, this.cur + rows(SC.accOut));
-        for (let i = this.cur * N, e = z1 * N; i < e; i++) out[i] = v[i] < INF * 0.5 ? v[i] : unreached;
+        accOutRange(this.accNext, v, INF, this.accUnreached, this.cur * N, z1 * N);
         this.cur = z1;
         if (z1 >= N) { this.sub = AL_HOMES; this.cur = 0; }
         return false;
       }
       case AL_HOMES: {
-        // residential footprints keep their own (traffic) commute
-        const out = this.accNext, cm = st.commute;
-        const bL = this.snap.list;
         const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.accHome * 2, 1, COLD));
-        for (let bI = this.cur; bI < e; bI++) {
-          const b = bL[bI];
-          if (b.pop <= 0 || infoOf(st, b).fam !== Fam.R) continue;
-          for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
-            if (x < 0 || z < 0 || x >= N || z >= N) continue;
-            const i = z * N + x;
-            if (cm[i] > 0) out[i] = cm[i];
-          }
-        }
+        this.accHomes(st, this.cur, e);
         this.cur = e;
         if (e >= this.snap.n) this.sub = AL_PUBLISH;
         return false;
@@ -1793,6 +1801,22 @@ export class ServicesSystem implements SimSystem {
       default:
         st.accessCommute.set(this.accNext.subarray(0, C));
         return true;
+    }
+  }
+
+  /** residential footprints of the snapshot buildings [b0, b1) keep their own (traffic) commute */
+  private accHomes(st: CityState, b0: number, b1: number): void {
+    const N = st.size;
+    const out = this.accNext, cm = st.commute;
+    const bL = this.snap.list;
+    for (let bI = b0; bI < b1; bI++) {
+      const b = bL[bI];
+      if (b.pop <= 0 || infoOf(st, b).fam !== Fam.R) continue;
+      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
+        if (x < 0 || z < 0 || x >= N || z >= N) continue;
+        const i = z * N + x;
+        if (cm[i] > 0) out[i] = cm[i];
+      }
     }
   }
 
@@ -1830,9 +1854,8 @@ export class ServicesSystem implements SimSystem {
     const rows = (us: number) => Math.max(1, Math.floor(pieceUnits(us, 1, COLD) / Math.max(1, N)));
     switch (this.sub) {
       case SB_INIT: {
-        const d = this.shopDist;
         const z1 = Math.min(N, this.cur + rows(SC.shopInit));
-        for (let i = this.cur * N, e = z1 * N; i < e; i++) { const t = net[i]; v[i] = t >= 1 && t <= 5 && d[i] >= 0 ? d[i] : INF; }
+        shopInitRange(v, net, this.shopDist, INF, this.cur * N, z1 * N);
         this.cur = z1;
         if (z1 >= N) { this.sub = SB_FWD; this.cur = 0; }
         return false;
@@ -1858,25 +1881,15 @@ export class ServicesSystem implements SimSystem {
           this.shopCs.fill(0);
           this.shopPop.fill(0);
         }
-        const pop = this.shopPop;
-        const res = this.need[0];
         const z1 = Math.min(N, this.cur + rows(SC.shopBlock));
-        for (let z = this.cur; z < z1; z++) { const bz = (z / B) | 0; for (let x = 0; x < N; x++) { const r = res[z * N + x]; if (r > 0) pop[bz * nb + ((x / B) | 0)] += r; } }
+        shopPopRows(this.shopPop, this.need[0], N, B, nb, this.cur, z1);
         this.cur = z1;
         if (z1 >= N) { this.sub = SB_CS; this.cur = 0; }
         return false;
       }
       case SB_CS: {
-        const cs = this.shopCs;
-        const bL = this.snap.list;
         const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.shopCs, 1, COLD));
-        for (let bI = this.cur; bI < e; bI++) {
-          const b = bL[bI];
-          const inf = infoOf(st, b);
-          if (inf.fam !== Fam.C || inf.dev < DevType.CS1 || inf.dev > DevType.CS3 || !isFunctional(b)) continue;
-          const x = Math.min(N - 1, b.x + (b.w >> 1)), z = Math.min(N - 1, b.z + (b.d >> 1));
-          cs[((z / B) | 0) * nb + ((x / B) | 0)] += b.capacity;
-        }
+        this.shopCsRange(st, this.cur, e);
         this.cur = e;
         if (e >= this.snap.n) { this.sub = SB_BOX; this.cur = 0; }
         return false;
@@ -1904,26 +1917,8 @@ export class ServicesSystem implements SimSystem {
         return false;
       }
       case SB_OUT: {
-        const ratio = this.shopCs;
-        const out = this.shopNext;
-        const capQ = SHOP_CAP_CELLS * 4;
-        const lut = this.shopLut;
-        const cx0 = this.colX0, cx1 = this.colX1, ct = this.colT;
         const z1 = Math.min(N, this.cur + rows(SC.shopOut));
-        for (let z = this.cur; z < z1; z++) {
-          const fz = Math.min(nb - 1, Math.max(0, (z + 0.5) / B - 0.5));
-          const z0 = Math.floor(fz), tz = fz - z0;
-          const r0 = z0 * nb, r1 = Math.min(nb - 1, z0 + 1) * nb;
-          const row = z * N;
-          for (let x = 0; x < N; x++) {
-            const i = row + x;
-            const q = v[i];
-            if (!(q <= capQ)) { out[i] = 0; continue; }
-            const tx = ct[x], a = cx0[x], c = cx1[x];
-            const r = (ratio[r0 + a] + (ratio[r0 + c] - ratio[r0 + a]) * tx) * (1 - tz) + (ratio[r1 + a] + (ratio[r1 + c] - ratio[r1 + a]) * tx) * tz;
-            out[i] = lut[q | 0] * (SHOP_BASE + (1 - SHOP_BASE) * r);
-          }
-        }
+        shopOutRows(this.shopNext, v, this.shopCs, this.shopLut, this.colX0, this.colX1, this.colT, N, B, nb, SHOP_CAP_CELLS * 4, this.cur, z1);
         this.cur = z1;
         if (z1 >= N) this.sub = SB_PUBLISH;
         return false;
@@ -1931,6 +1926,22 @@ export class ServicesSystem implements SimSystem {
       default:
         st.shopAccess.set(this.shopNext.subarray(0, C));
         return true;
+    }
+  }
+
+  /** shopB's CS job capacity per coarse block, snapshot buildings [b0, b1) */
+  private shopCsRange(st: CityState, b0: number, b1: number): void {
+    const N = st.size;
+    const B = CLUSTER_BLOCK;
+    const nb = Math.ceil(N / B);
+    const cs = this.shopCs;
+    const bL = this.snap.list;
+    for (let bI = b0; bI < b1; bI++) {
+      const b = bL[bI];
+      const inf = infoOf(st, b);
+      if (inf.fam !== Fam.C || inf.dev < DevType.CS1 || inf.dev > DevType.CS3 || !isFunctional(b)) continue;
+      const x = Math.min(N - 1, b.x + (b.w >> 1)), z = Math.min(N - 1, b.z + (b.d >> 1));
+      cs[((z / B) | 0) * nb + ((x / B) | 0)] += b.capacity;
     }
   }
 
@@ -1959,21 +1970,9 @@ export class ServicesSystem implements SimSystem {
         this.cur = 0;
         return false;
       case 1: {
-        const L = this.finBuf, list = this.multi;
-        const room = pieceBudgetUs(COLD);
-        let used = 0, q = this.cur;
-        for (; q < list.length; q++) {
-          const b = list[q];
-          const x0 = Math.max(0, b.x), z0 = Math.max(0, b.z), x1 = Math.min(N, b.x + b.w), z1 = Math.min(N, b.z + b.d);
-          const u = Math.max(1, x1 - x0) * Math.max(1, z1 - z0) * SC.foot;
-          if (used > 0 && used + u > room) break;
-          used += u;
-          let m = 0;
-          for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) { const v = L[z * N + x]; if (v > m) m = v; }
-          for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) L[z * N + x] = m;
-        }
+        const q = lotMaxRange(this.finBuf, N, this.multiRect, this.multi.length, this.cur, pieceBudgetUs(COLD), SC.foot, this.lotOut);
         this.cur = q;
-        if (q >= list.length) this.sub = 2;
+        if (q >= this.multi.length) this.sub = 2;
         return false;
       }
       default:
@@ -2002,15 +2001,8 @@ export class ServicesSystem implements SimSystem {
       switch (this.sub) {
         case FI_COMBO: {
           // legacy layers for untouched consumers
-          const E = st.eduElemCov, H = st.eduHighCov, K = st.eduCollegeCov, P = st.playCov, G = st.greenCov;
-          const edu = this.eduNext, park = this.parkNext;
-          const [we, wh, wc] = EDU_LEGACY_W;
           const z1 = Math.min(N, this.cur + rows(SC.combo));
-          for (let i = this.cur * N, e = z1 * N; i < e; i++) {
-            const v = we * E[i] + wh * H[i] + wc * K[i];
-            edu[i] = v < 1 ? v : 1;
-            park[i] = 1 - (1 - P[i]) * (1 - G[i]);
-          }
+          comboRange(st.eduElemCov, st.eduHighCov, st.eduCollegeCov, st.playCov, st.greenCov, this.eduNext, this.parkNext, this.cur * N, z1 * N);
           this.cur = z1;
           if (z1 >= N) this.sub = FI_COMBO_PUB;
           return false;
@@ -2036,15 +2028,15 @@ export class ServicesSystem implements SimSystem {
           this.cur2 = k;
           if (k >= NT) { this.sub = FI_NEEDS; continue; }
           const needL = this.provNeed[k] ?? this.need[NEED_RASTER[k]];
-          const layer = tierLayer(st, NEED_ORDER[k]);
           const z1 = Math.min(N, this.cur + rows(SC.tierStat));
-          let served = this.fiServed, unreached = this.fiUnreached;
-          for (let i = this.cur * N, e = z1 * N; i < e; i++) { const n = needL[i]; if (n <= 0) continue; const v = layer[i]; served += n * v; if (v <= 0) unreached += n; }
-          this.fiServed = served; this.fiUnreached = unreached;
+          const acc = this.finAcc;
+          acc[0] = this.fiServed; acc[1] = this.fiUnreached;
+          finishStatsRange(needL, tierLayer(st, NEED_ORDER[k]), acc, this.cur * N, z1 * N);
+          this.fiServed = acc[0]; this.fiUnreached = acc[1];
           this.cur = z1;
           if (z1 >= N) {
-            this.tierStats[k].served = served;
-            this.tierStats[k].unreached = unreached;
+            this.tierStats[k].served = this.fiServed;
+            this.tierStats[k].unreached = this.fiUnreached;
             this.cur = 0;
             this.cur2 = k + 1;
             this.fiServed = 0; this.fiUnreached = 0;
@@ -2059,36 +2051,17 @@ export class ServicesSystem implements SimSystem {
           continue;
         case FI_STALE: {
           // facilities not processed this pass (removed / no longer a tier facility) drop out of facilityLoad
-          const tb = this.tierById, seen = this.seenById, pass = this.passNo;
-          const n = Math.min(tb.length, seen.length);
+          const n = Math.min(this.tierById.length, this.seenById.length);
           const id1 = Math.min(n, this.cur + pieceUnits(SC.stale, 1, COLD));
-          for (let id = this.cur; id < id1; id++) if (tb[id] > 0 && seen[id] !== pass) tb[id] = 0;
+          staleRange(this.tierById, this.seenById, this.passNo, this.cur, id1);
           this.cur = id1;
           if (id1 >= n) { this.sub = FI_EQHQ; this.cur = 0; this.eqPop = 0; this.eqEdu = 0; this.eqHealth = 0; this.eqAir = 0; this.eqWp1 = false; }
           return false;
         }
         case FI_EQHQ: {
-          // EQ / HQ legacy fallback (WP1 owns them once buildings carry the education stock b.edu)
-          const E = st.eduElemCov, H = st.eduHighCov, K = st.eduCollegeCov;
-          let popSum = this.eqPop, eduA = this.eqEdu, health = this.eqHealth, air = this.eqAir, wp1 = false;
-          const bL = this.snap.list;
-          const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.eqhq, 1, COLD));
-          let bI = this.cur;
-          for (; bI < e; bI++) {
-            const b = bL[bI];
-            if (b.pop <= 0) continue;
-            if (infoOf(st, b).fam !== Fam.R) continue;
-            if (b.edu !== undefined) { wp1 = true; break; }
-            const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
-            popSum += b.pop;
-            eduA += b.pop * (1 - (1 - E[i]) * (1 - H[i]) * (1 - K[i]));
-            health += b.pop * st.healthCov[i];
-            air += b.pop * st.airPollution[i];
-          }
-          this.eqPop = popSum; this.eqEdu = eduA; this.eqHealth = health; this.eqAir = air;
+          const bI = this.eqhqRange(st, this.cur, Math.min(this.snap.n, this.cur + pieceUnits(SC.eqhq, 1, COLD)));
           this.cur = bI;
-          if (wp1) { this.eqWp1 = true; this.sub = FI_END; return false; }
-          if (bI >= this.snap.n) this.sub = FI_END;
+          if (this.eqWp1 || bI >= this.snap.n) this.sub = FI_END;
           return false;
         }
         default: {
@@ -2124,6 +2097,31 @@ export class ServicesSystem implements SimSystem {
         }
       }
     }
+  }
+
+  /**
+   * the EQ / HQ legacy fallback over the snapshot buildings [b0, b1) (WP1 owns them once buildings carry the education
+   * stock b.edu: the first such home ends the loop); returns the next building
+   */
+  private eqhqRange(st: CityState, b0: number, b1: number): number {
+    const N = st.size;
+    const E = st.eduElemCov, H = st.eduHighCov, K = st.eduCollegeCov;
+    let popSum = this.eqPop, eduA = this.eqEdu, health = this.eqHealth, air = this.eqAir;
+    const bL = this.snap.list;
+    let bI = b0;
+    for (; bI < b1; bI++) {
+      const b = bL[bI];
+      if (b.pop <= 0) continue;
+      if (infoOf(st, b).fam !== Fam.R) continue;
+      if (b.edu !== undefined) { this.eqWp1 = true; break; }
+      const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
+      popSum += b.pop;
+      eduA += b.pop * (1 - (1 - E[i]) * (1 - H[i]) * (1 - K[i]));
+      health += b.pop * st.healthCov[i];
+      air += b.pop * st.airPollution[i];
+    }
+    this.eqPop = popSum; this.eqEdu = eduA; this.eqHealth = health; this.eqAir = air;
+    return bI;
   }
 
   /** coarse CLUSTER_BLOCK blocks: need x (1 - cov) where cov < CLUSTER_COV, need-weighted centroid, top 16 */
@@ -2196,6 +2194,127 @@ export class ServicesSystem implements SimSystem {
     if (k < 0 || this.need.length === 0) return null;
     return this.provNeed[k] ?? this.need[NEED_RASTER[k]];
   }
+}
+
+// ------------------------------------------------------------------------------------------------ B2 piece loops
+// (design R10: every loop of a piece is a function of its own, so a deopt of a Building loop never drags a cell loop of
+// the same dispatcher into the interpreter)
+
+/** a[i0, i1) summed onto `acc` in index order (a double) */
+function sumRange(a: Float32Array, acc: number, i0: number, i1: number): number {
+  for (let i = i0; i < i1; i++) acc += a[i];
+  return acc;
+}
+
+/** road cells (network 1..5) in [i0, i1), added to n */
+function countRoads(net: Uint8Array, n: number, i0: number, i1: number): number {
+  for (let i = i0; i < i1; i++) { const t = net[i]; if (t >= 1 && t <= 5) n++; }
+  return n;
+}
+
+/** the final clamp of a tier slot over [i0, i1): buf = min(cov, 1) */
+function clampRange(cov: Float32Array, buf: Float32Array, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) { const v = cov[i]; buf[i] = v < 1 ? v : 1; }
+}
+
+/** a tier slot's stats over [i0, i1) onto acc = [need, served, unreached] (doubles, index order) */
+function tierStatsRange(needL: Float32Array, buf: Float32Array, A: Float32Array, acc: Float64Array, i0: number, i1: number): void {
+  let need = acc[0], served = acc[1], unreached = acc[2];
+  for (let i = i0; i < i1; i++) {
+    const n = needL[i];
+    if (n <= 0) continue;
+    need += n;
+    served += n * buf[i];
+    if (A[i] <= 0) unreached += n;
+  }
+  acc[0] = need; acc[1] = served; acc[2] = unreached;
+}
+
+/** the stop coverage composed onto T over [i0, i1) (cells with t <= 0 keep their bits) */
+function composeRange(T: Float32Array, tmp: Float32Array, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) { const t = tmp[i]; if (t > 0) T[i] = 1 - (1 - T[i]) * (1 - Math.min(1, t)); }
+}
+
+/** accessCommute's init over [i0, i1): road cells with a label -> minutes, everything else INF */
+function accInitRange(v: Float32Array, net: Uint8Array, dist: Int32Array, inf: number, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) { const t = net[i]; v[i] = t >= 1 && t <= 5 && dist[i] >= 0 ? dist[i] * TIME_Q : inf; }
+}
+
+/** accessCommute's output over [i0, i1): reached cells keep their minutes, the rest the unreached value */
+function accOutRange(out: Float32Array, v: Float32Array, inf: number, unreached: number, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) out[i] = v[i] < inf * 0.5 ? v[i] : unreached;
+}
+
+/** shopAccess's init over [i0, i1): road cells with a distance keep it, everything else INF */
+function shopInitRange(v: Float32Array, net: Uint8Array, d: Int32Array, inf: number, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) { const t = net[i]; v[i] = t >= 1 && t <= 5 && d[i] >= 0 ? d[i] : inf; }
+}
+
+/** shopAccess's residents per coarse block, rows [z0, z1) */
+function shopPopRows(pop: Float32Array, res: Float32Array, N: number, B: number, nb: number, z0: number, z1: number): void {
+  for (let z = z0; z < z1; z++) { const bz = (z / B) | 0; for (let x = 0; x < N; x++) { const r = res[z * N + x]; if (r > 0) pop[bz * nb + ((x / B) | 0)] += r; } }
+}
+
+/** shopAccess's bilinear output, rows [z0, z1) */
+function shopOutRows(out: Float32Array, v: Float32Array, ratio: Float32Array, lut: Float32Array, cx0: Int32Array, cx1: Int32Array, ct: Float32Array,
+  N: number, B: number, nb: number, capQ: number, z0r: number, z1r: number): void {
+  for (let z = z0r; z < z1r; z++) {
+    const fz = Math.min(nb - 1, Math.max(0, (z + 0.5) / B - 0.5));
+    const z0 = Math.floor(fz), tz = fz - z0;
+    const r0 = z0 * nb, r1 = Math.min(nb - 1, z0 + 1) * nb;
+    const row = z * N;
+    for (let x = 0; x < N; x++) {
+      const i = row + x;
+      const q = v[i];
+      if (!(q <= capQ)) { out[i] = 0; continue; }
+      const tx = ct[x], a = cx0[x], c = cx1[x];
+      const r = (ratio[r0 + a] + (ratio[r0 + c] - ratio[r0 + a]) * tx) * (1 - tz) + (ratio[r1 + a] + (ratio[r1 + c] - ratio[r1 + a]) * tx) * tz;
+      out[i] = lut[q | 0] * (SHOP_BASE + (1 - SHOP_BASE) * r);
+    }
+  }
+}
+
+/** the legacy combos over [i0, i1) into edu / park */
+function comboRange(E: Float32Array, H: Float32Array, K: Float32Array, P: Float32Array, G: Float32Array, edu: Float32Array, park: Float32Array,
+  i0: number, i1: number): void {
+  const [we, wh, wc] = EDU_LEGACY_W;
+  for (let i = i0; i < i1; i++) {
+    const v = we * E[i] + wh * H[i] + wc * K[i];
+    edu[i] = v < 1 ? v : 1;
+    park[i] = 1 - (1 - P[i]) * (1 - G[i]);
+  }
+}
+
+/** finish's per-tier stats over [i0, i1) onto acc = [served, unreached] (doubles, index order) */
+function finishStatsRange(needL: Float32Array, layer: Float32Array, acc: Float64Array, i0: number, i1: number): void {
+  let served = acc[0], unreached = acc[1];
+  for (let i = i0; i < i1; i++) { const n = needL[i]; if (n <= 0) continue; const v = layer[i]; served += n * v; if (v <= 0) unreached += n; }
+  acc[0] = served; acc[1] = unreached;
+}
+
+/**
+ * the max over each lot's footprint, written back over it (the per-tier / transit footprint max), for the lots q0.. of
+ * `rect` (x0, z0, x1, z1 per lot, clipped to the map): lots while their units (cells x perCell) fit in `room` (at least
+ * one); returns the next lot, out[0] = the units used
+ */
+function lotMaxRange(L: Float32Array, N: number, rect: Int32Array, nLots: number, q0: number, room: number, perCell: number, out: Float64Array): number {
+  let used = 0, q = q0;
+  for (; q < nLots; q++) {
+    const x0 = rect[4 * q], z0 = rect[4 * q + 1], x1 = rect[4 * q + 2], z1 = rect[4 * q + 3];
+    const u = Math.max(1, x1 - x0) * Math.max(1, z1 - z0) * perCell;
+    if (used > 0 && used + u > room) break;
+    used += u;
+    let m = 0;
+    for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) { const v = L[z * N + x]; if (v > m) m = v; }
+    for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) L[z * N + x] = m;
+  }
+  out[0] = used;
+  return q;
+}
+
+/** the stale-record clear over ids [i0, i1) */
+function staleRange(tb: Float32Array, seen: Float32Array, pass: number, i0: number, i1: number): void {
+  for (let id = i0; id < i1; id++) if (tb[id] > 0 && seen[id] !== pass) tb[id] = 0;
 }
 
 /** corridorHash over net[i0, i1) from h (the whole hash: one range [0, net.length) from 0x2545f491) */
