@@ -1,7 +1,7 @@
 /**
  * Instrument library for the procedural soundtrack.
  *
- * Every note builds a tiny short-lived graph (oscillators / noise / KS-buffer source -> filter -> envelope gain) that
+ * Every note uses a pooled graph (oscillators / noise / KS-buffer source -> filter -> envelope gain) that
  * feeds a long-lived per-instrument CHANNEL (hp -> eq -> lp -> fader -> panner, with post-fader reverb + tempo-synced
  * ping-pong delay sends). Channels, LFOs and shared filters are created lazily once per Instruments instance (= one
  * song play) and live until dispose().
@@ -17,6 +17,7 @@
  * sits well in a -18 LUFS mix at channel level 1 (see COMPOSER GUIDE in the lab / director docs).
  */
 import { RNG, hashString } from '../../core/rng';
+import { OneShotPool, type OneShot } from '../oneShot';
 
 const mtof = (m: number): number => 440 * Math.pow(2, (m - 69) / 12);
 const clamp = (v: number, a: number, b: number): number => (v < a ? a : v > b ? b : v);
@@ -495,12 +496,15 @@ export class Instruments {
   private sharedNodes = new Map<string, AudioNode>();
   private lfos = new Map<string, OscillatorNode>();
   private allLfos: OscillatorNode[] = [];
+  private lfoEnd = Infinity;
   private loops: AudioScheduledSourceNode[] = [];
   private waves = new Map<string, PeriodicWave>();
   private delay: { input: GainNode; dl: DelayNode; dr: DelayNode; fb: GainNode; lp: BiquadFilterNode; ret: GainNode } | null = null;
   private delayCfg = { beats: 0.75, feedback: 0.34, tone: 3200, level: 1 };
   private disposed = false;
   private nowT = 0;
+  private pool: OneShotPool;
+  private voice: OneShot | null = null;
 
   constructor(ctx: BaseAudioContext, out: AudioNode, reverb: AudioNode, noise: AudioBuffer, o: InstrumentsOptions) {
     this.ctx = ctx;
@@ -513,20 +517,44 @@ export class Instruments {
     this.recordStats = !!o.stats;
     this.rng = new RNG((o.seed ?? 1) ^ 0x5bd1e995);
     this.nyq = ctx.sampleRate * 0.45;
+    this.pool = new OneShotPool(ctx, () => this.count());
+    // Scope the whole note, including partials and modulation, without changing the instrument signatures.
+    for (const name of [...Object.keys(DEFS), 'brushSwirl'] as (InstrumentName | 'brushSwirl')[]) {
+      const play = this[name] as (...args: unknown[]) => void;
+      Object.defineProperty(this, name, { configurable: true, writable: true, value: (...args: unknown[]) => this.oneShot(() => play.apply(this, args)) });
+    }
+  }
+
+  /** @internal scope a track-specific voice, including its sources, releases and modulation. */
+  oneShot<T>(schedule: (nodes: OneShot) => T): T {
+    const previous = this.voice;
+    const voice = this.voice = this.pool.begin();
+    try {
+      return schedule(voice);
+    } finally {
+      voice.finish();
+      this.voice = previous;
+    }
+  }
+
+  private permanent<T>(make: () => T): T {
+    const voice = this.voice;
+    this.voice = null;
+    try { return make(); } finally { this.voice = voice; }
   }
 
   // ---------------------------------------------------------------- node factory (counted)
   /** @internal low-level node constructors (counted in stats.nodes) */
   readonly node = {
     gain: (v = 0): GainNode => {
-      this.count();
-      const g = this.ctx.createGain();
+      if (!this.voice) this.count();
+      const g = this.voice ? this.voice.gain() : this.ctx.createGain();
       g.gain.value = v;
       return g;
     },
     filter: (type: BiquadFilterType, f: number, q = 0.707): BiquadFilterNode => {
-      this.count();
-      const b = this.ctx.createBiquadFilter();
+      if (!this.voice) this.count();
+      const b = this.voice ? this.voice.filter() : this.ctx.createBiquadFilter();
       // k-rate: coefficients are recomputed once per 128-sample block instead of per sample while automated
       kRate(b.frequency, b.detune, b.Q, b.gain);
       b.type = type;
@@ -535,8 +563,8 @@ export class Instruments {
       return b;
     },
     panner: (p = 0): StereoPannerNode => {
-      this.count();
-      const s = this.ctx.createStereoPanner();
+      if (!this.voice) this.count();
+      const s = this.voice ? this.voice.panner() : this.ctx.createStereoPanner();
       kRate(s.pan);
       s.pan.value = clamp(p, -1, 1);
       return s;
@@ -561,6 +589,7 @@ export class Instruments {
     o.frequency.value = Math.min(f, this.nyq);
     o.start(t);
     o.stop(end);
+    this.voice?.source(o, end);
     return o;
   }
 
@@ -572,6 +601,7 @@ export class Instruments {
     s.playbackRate.value = rate;
     s.start(t, this.rng.next() * (this.noise.duration - 0.05));
     s.stop(end);
+    this.voice?.source(s, end);
     return s;
   }
 
@@ -581,7 +611,9 @@ export class Instruments {
     s.buffer = buf;
     s.playbackRate.value = rate;
     s.start(t);
-    s.stop(Math.min(end, t + buf.duration / rate + 0.01));
+    const stop = Math.min(end, t + buf.duration / rate + 0.01);
+    s.stop(stop);
+    this.voice?.source(s, stop);
     return s;
   }
 
@@ -614,8 +646,18 @@ export class Instruments {
     o.type = type;
     o.frequency.value = rate;
     o.start(this.ctx.currentTime);
+    if (Number.isFinite(this.lfoEnd)) o.stop(this.lfoEnd);
     this.allLfos.push(o);
     return o;
+  }
+
+  /** @internal finite lifetime even when a hidden director has no cleanup timer. */
+  endAt(at: number): void {
+    if (at >= this.lfoEnd) return;
+    this.lfoEnd = at;
+    for (const o of this.allLfos) {
+      try { o.stop(at); } catch { /* context closed */ }
+    }
   }
 
   private lfo(key: string, rate: number, depth: number): GainNode {
@@ -623,41 +665,29 @@ export class Instruments {
     if (!g) {
       const o = this.lfoNode(rate);
       this.lfos.set(key, o);
-      g = this.node.gain(depth);
+      g = this.permanent(() => this.node.gain(depth));
       o.connect(g);
       this.sharedNodes.set(`lfo:${key}`, g);
     }
     return g;
   }
 
-  /** connect a shared LFO to a short-lived param and disconnect it when `src` ends (avoids leaks) */
-  private modulate(lfo: AudioNode, param: AudioParam, src: AudioScheduledSourceNode): void {
+  /** Disconnect shared modulation when the note's graph is reclaimed, without a per-source ended listener. */
+  private modulate(lfo: AudioNode, param: AudioParam, _src: AudioScheduledSourceNode): void {
     lfo.connect(param);
-    src.addEventListener('ended', () => {
-      try {
-        lfo.disconnect(param);
-      } catch {
-        /* already gone */
-      }
-    });
+    this.voice!.input(lfo, param);
   }
 
   /** like modulate() but for a node input (per-note depth gain fed by a shared LFO) */
-  private modulateNode(lfo: AudioNode, dest: AudioNode, src: AudioScheduledSourceNode): void {
+  private modulateNode(lfo: AudioNode, dest: AudioNode, _src: AudioScheduledSourceNode): void {
     lfo.connect(dest);
-    src.addEventListener('ended', () => {
-      try {
-        lfo.disconnect(dest);
-      } catch {
-        /* already gone */
-      }
-    });
+    this.voice!.input(lfo, dest);
   }
 
   private shared<T extends AudioNode>(key: string, make: () => T): T {
     let n = this.sharedNodes.get(key) as T | undefined;
     if (!n) {
-      n = make();
+      n = this.permanent(make);
       this.sharedNodes.set(key, n);
     }
     return n;
@@ -668,7 +698,7 @@ export class Instruments {
     let c = this.channels.get(name);
     if (!c) {
       const base = name.split(':')[0] as InstrumentName;
-      c = new Channel(this, DEFS[base] ?? DEFS.pad);
+      c = this.permanent(() => new Channel(this, DEFS[base] ?? DEFS.pad));
       this.channels.set(name, c);
     }
     return c;
@@ -690,7 +720,7 @@ export class Instruments {
    * smoothly from that time (automation); without it the value is set immediately (use at song start).
    */
   mix(name: InstrumentName | string, s: MixSettings, at?: number): void {
-    this.channel(name).mix(s, at === undefined ? null : at);
+    this.permanent(() => this.channel(name).mix(s, at === undefined ? null : at));
   }
 
   /** tempo-synced ping-pong delay: beats (0.75 = dotted 8th), feedback 0..0.9, tone = lowpass Hz, level = return gain */
@@ -871,8 +901,7 @@ export class Instruments {
     const peak = (0.2 * vc(v)) / Math.sqrt(ms.length);
     const g = this.node.gain();
     const end = env(g.gain, t, [[att, peak], [att + 3, peak * 0.85]], t + dur, rel);
-    this.count();
-    const merge = this.ctx.createChannelMerger(2);
+    const merge = this.voice!.merger();
     const cut = (o.cutoff ?? 2200) * (0.45 + 0.7 * v);
     const lp = this.node.filter('lowpass', cut, 0.6);
     lp.frequency.setValueAtTime(cut * 0.45, t);
@@ -908,8 +937,7 @@ export class Instruments {
     const peak = (0.2 * vc(v)) / Math.sqrt(ms.length);
     const g = this.node.gain();
     const end = env(g.gain, t, [[att, peak], [att + 1.5, peak * 0.9]], t + dur, rel);
-    this.count();
-    const merge = this.ctx.createChannelMerger(2);
+    const merge = this.voice!.merger();
     const cut = (o.cutoff ?? 5000) * (0.35 + 0.65 * v);
     const lp = this.node.filter('lowpass', cut, 0.5);
     lp.frequency.setValueAtTime(cut * 0.5, t);
@@ -1484,6 +1512,7 @@ export class Instruments {
     env(g.gain, t0, [[1.5, pk]], Math.max(t0 + 1.5, t1 - 2), 2);
     src.start(t0, this.rng.next() * 3);
     src.stop(t1 + 0.1);
+    this.voice?.source(src, t1 + 0.1);
     src.connect(g).connect(this.chIn('vinyl'));
     this.loops.push(src);
   }
@@ -1493,6 +1522,7 @@ export class Instruments {
     if (this.disposed) return;
     this.disposed = true;
     const t = Math.max(at ?? this.ctx.currentTime, this.ctx.currentTime);
+    if (t === this.ctx.currentTime) this.pool.dispose();
     for (const o of this.allLfos) {
       try {
         o.stop(t);

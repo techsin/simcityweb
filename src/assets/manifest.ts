@@ -30,7 +30,9 @@ export type AssetGroup =
   | 'transport'
   | 'nature'
   | 'vehicle'
-  | 'prop';
+  | 'prop'
+  /** Art interfaces awaiting their catalog definitions; gallery.html?group=placeholder. */
+  | 'placeholder';
 
 export interface ManifestEntry {
   id: string;
@@ -54,6 +56,14 @@ export interface ManifestEntry {
   mirror?: boolean;
   /** number of distinct variants the builder implements (defaults to `variants`) */
   buildVariants?: number;
+  /**
+   * Item id (e.g. 'LG-02') that brings this model's catalog def. The art is final and in its real building group;
+   * only the def is still to land, so tests/sim/catalog.test.ts skips the entry in its "def for every building
+   * model" check. A guard test there fails once a flagged entry has a def (remove the flag then) and for a flag
+   * outside the groups that check covers. No game-side filter: the game only offers catalog defs, and the gallery
+   * shows the model as usual. Unfinished stand-ins stay in the 'placeholder' group instead.
+   */
+  pendingCatalog?: string;
 }
 
 const E = (
@@ -64,6 +74,9 @@ const E = (
   height: [number, number],
   desc: string,
 ): ManifestEntry => ({ id, group, footprint, variants, height, desc });
+
+/** `e` with its catalog def still to come from `item` (ManifestEntry.pendingCatalog) */
+const pending = (item: string, e: ManifestEntry): ManifestEntry => ({ ...e, pendingCatalog: item });
 
 export const MANIFEST: ManifestEntry[] = [
   // ------------------------------------------------------------------ RESIDENTIAL
@@ -191,6 +204,14 @@ export const MANIFEST: ManifestEntry[] = [
   E('lm_pyramid', 'landmark', [3, 3], 1, [30, 50], 'Glass pyramid pavilion with plaza and fountains.'),
   E('lm_castle', 'landmark', [4, 4], 1, [25, 50], 'Medieval castle with keep, towers, crenellated walls.'),
   E('lm_lighthouse', 'landmark', [1, 1], 1, [25, 40], 'Lighthouse with red/white stripes and lantern room (emissive light).'),
+  // late-game rewards (POLISH_PLAN LG-02); their catalog defs land with LG-02 (round 3)
+  pending('LG-02', E('lm_central_library', 'landmark', [3, 3], 2, [35, 38], 'Central Library: columned entrance, reading gardens and stack wings; copper dome or octagonal glazed lantern.')),
+  pending('LG-02', E('lm_grand_central', 'landmark', [4, 3], 2, [31, 42], 'Grand Central Station: arched stone concourse, platforms, bus shelter and metro entrance; single train vault with clock pediment or twin vaults with clock tower.')),
+  pending('LG-02', E('lm_stock_exchange', 'landmark', [3, 3], 2, [74, 87], 'Stock Exchange: columned trading hall, market frieze and bronze bull; stepped limestone office tower or taller bronze-glass tower.')),
+  pending('LG-02', E('lm_botanical_dome', 'landmark', [4, 4], 2, [26, 32], 'Botanical Dome: triangulated glass conservatories, vent lanterns, glazed entrance, lily pools and planted gardens.')),
+  pending('LG-02', E('lm_world_trade_center', 'landmark', [4, 4], 2, [390, 415], 'World Trade Center: ribbed silver twins or stepped teal office towers, broadcast mast, conference podium and globe plaza.')),
+  pending('LG-02', E('lm_millennium_tower', 'landmark', [4, 4], 2, [530, 590], 'Millennium Tower: stepped glass skyscraper with panoramic sky decks, silver needle and reflecting-pool plaza.')),
+  pending('LG-02', E('lm_metropolis_crown', 'landmark', [4, 4], 2, [600, 650], 'Metropolis Crown: fluted civic skyscraper with an open bronze coronet, sky hall and formal garden plaza.')),
 
   // ------------------------------------------------------------------ REWARDS / BUSINESS DEALS
   E('rw_military_base', 'reward', [8, 8], 1, [5, 25], 'Military base: runway strip, hangars, barracks, radar dish, fences.'),
@@ -251,10 +272,33 @@ export const MANIFEST: ManifestEntry[] = [
   E('container_stack', 'prop', [1, 1], 3, [2.6, 8], 'Stack of shipping containers, varied colors.'),
   E('construction_site', 'prop', [1, 1], 3, [2, 25], 'Construction site dressing: dirt, fence, crane or scaffolding (overlay for buildings under construction; scaled to lot by renderer).'),
   E('rubble', 'prop', [1, 1], 4, [0.5, 3.5], 'Rubble / burnt debris of destroyed buildings, one 16 m cell (tile it over bigger lots): v0 charred brick, v1 concrete, v2 concrete + burnt car, v3 low debris field with a standing wall corner.'),
+
+  // ------------------------------------------------------------------ POLISH ROUND 2–3 STUBS
+  // Building groups require catalog defs. Move each entry to its final group and remove its polish_stubs builder
+  // when that content lands. Sizes are provisional except LG-04's 5x5 / 6x6 and in-place parks.
+  E('tr_express_metro', 'placeholder', [2, 2], 1, [8, 12], 'STUB LG-03: Express Metro project (transport).'),
+  E('util_fusion_plant', 'placeholder', [6, 6], 1, [40, 60], 'STUB LG-03: Fusion Power Plant (utility).'),
+  E('lm_world_expo', 'placeholder', [6, 6], 1, [20, 30], 'STUB LG-03: World Expo site (landmark).'),
+  E('lm_expo_tower', 'placeholder', [2, 2], 1, [80, 100], 'STUB LG-03: permanent Expo Tower (landmark).'),
+  E('rw_space_center', 'placeholder', [8, 8], 1, [40, 60], 'STUB LG-03: Space Center (reward).'),
+  E('com_business_arcology', 'placeholder', [5, 5], 2, [90, 120], 'STUB LG-04: Business Arcology (commercial), two massing variants.'),
+  E('res_arcology', 'placeholder', [6, 6], 2, [100, 140], 'STUB LG-04: Residential Arcology (residential), two massing variants.'),
+  E('res_arcology_mixed', 'placeholder', [6, 6], 2, [120, 160], 'STUB LG-04: Arcology II, mixed (residential), two massing variants.'),
+  E('facility_level_2', 'placeholder', [1, 1], 1, [1.5, 1.5], 'STUB LG-19: shared level 2 badge (prop), for schools, health, libraries, police, fire and parks.'),
+  E('facility_level_3', 'placeholder', [1, 1], 1, [1.5, 1.5], 'STUB LG-19: shared level 3 badge (prop), for schools, health, libraries, police, fire and parks.'),
+  E('park_small_level_2', 'placeholder', [1, 1], 1, [3, 3], 'STUB LG-19: Small Park level 2, Plaza (park), retains the 1x1 lot.'),
+  E('park_small_level_3', 'placeholder', [1, 1], 1, [4, 4], 'STUB LG-19: Small Park level 3, Formal Garden (park), retains the 1x1 lot.'),
+  E('park_eco_plaza', 'placeholder', [2, 2], 1, [4, 6], 'STUB LG-20: Eco Plaza honour reward (park).'),
+  E('lm_firefighters_memorial', 'placeholder', [2, 2], 1, [6, 10], "STUB LG-20: Firefighters' Memorial honour reward (landmark)."),
+  E('rw_honour_plaque', 'placeholder', [1, 1], 1, [2, 2], 'STUB LG-20: shared completion plaque for the twelve honours (reward).'),
+  E('civ_emergency_operations_center', 'placeholder', [3, 3], 1, [16, 20], 'STUB LG-15: Emergency Operations Center (civic).'),
+  E('garbage_pile', 'placeholder', [1, 1], 2, [0.8, 1.2], 'STUB FEEL-17: kerbside garbage (prop), variants 0 bags / 1 bin.'),
+  E('for_lease_sign', 'placeholder', [1, 1], 1, [2, 2], 'STUB FEEL-18: For lease sign (prop).'),
 ];
 
 // showpiece / waterfront metadata
 for (const e of MANIFEST) {
+  if (e.group === 'placeholder') e.budget = 200;
   if (e.id === 'tr_seaport' || e.id === 'tr_ferry_terminal' || e.id === 'park_marina' || e.id === 'lm_lighthouse') e.waterfront = true;
   if (e.id === 'park_zoo' || e.id === 'park_golf' || e.id === 'park_amusement') e.budget = 6000;
   if (e.id === 'park_stadium' || e.id === 'park_large') e.budget = 4500;

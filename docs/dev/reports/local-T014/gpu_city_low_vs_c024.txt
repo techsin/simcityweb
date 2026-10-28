@@ -1,0 +1,70 @@
+== GT_city_low (city low, GPU timer, 1280x720 unthrottled): 8 rows, labels R1 c024 c0242 new new2; disjoint events new 0 c024 0 R1 0 new2 0 c0242 0
+still:street   pairs 1.005 [1.000-1.011] (11/16)  vmeans 1.004 [0.997-1.017] (5/8)  A/A c024 1.004 [0.995-1.009]  new 1.005 [0.994-1.014]
+     GPU ms (per frame): R1 2.458 c024 2.429 c0242 2.438 new 2.446 new2 2.462
+     tris main/shadow per frame, calls main/shadow, shadow renders: R1 1557.1k/8.5k c92/0 sh2 c024 1575.5k/8.9k c92/0 sh2 c0242 1575.5k/8.9k c92/0 sh2 new 1557.0k/8.5k c92/0 sh2 new2 1557.0k/8.5k c92/0 sh2
+     GPU-process CPU ms/frame: R1 NaN c024 NaN c0242 NaN new NaN new2 NaN
+     tris new/c024: main 0.9883, all 0.9881
+     vs R1: GPU rows 0.996 [0.987-1.005] (3/8) vmeans 1.000 [0.992-1.007]; main tris 0.9999
+still:default  pairs 0.973 [0.965-0.983] (1/16)  vmeans 0.976 [0.972-0.981] (0/8)  A/A c024 1.003 [0.990-1.007]  new 0.991 [0.983-1.002]
+     GPU ms (per frame): R1 1.295 c024 1.324 c0242 1.321 new 1.291 new2 1.283
+     tris main/shadow per frame, calls main/shadow, shadow renders: R1 875.2k/40.5k c50/2 sh2 c024 903.8k/42.9k c50/2 sh2 c0242 903.8k/42.9k c50/2 sh2 new 874.8k/40.5k c50/2 sh2 new2 874.8k/40.5k c50/2 sh2
+     GPU-process CPU ms/frame: R1 NaN c024 NaN c0242 NaN new NaN new2 NaN
+     tris new/c024: main 0.9679, all 0.9668
+     vs R1: GPU rows 0.999 [0.988-1.013] (4/8) vmeans 1.000 [0.984-1.011]; main tris 0.9996
+still:far      pairs 1.012 [1.007-1.018] (15/16)  vmeans 1.015 [1.008-1.019] (8/8)  A/A c024 0.999 [0.995-1.003]  new 1.001 [0.995-1.009]
+     GPU ms (per frame): R1 4.585 c024 4.549 c0242 4.548 new 4.580 new2 4.593
+     tris main/shadow per frame, calls main/shadow, shadow renders: R1 1811.2k/51.0k c177/5 sh2 c024 1811.9k/53.8k c214/7 sh2 c0242 1811.9k/53.8k c214/7 sh2 new 1811.2k/51.0k c177/5 sh2 new2 1811.2k/51.0k c177/5 sh2
+     GPU-process CPU ms/frame: R1 NaN c024 NaN c0242 NaN new NaN new2 NaN
+     tris new/c024: main 0.9996, all 0.9981
+     vs R1: GPU rows 0.998 [0.992-1.004] (4/8) vmeans 1.001 [0.997-1.003]; main tris 1.0000
+still:edgelow  pairs 1.014 [1.001-1.029] (12/16)  vmeans 1.021 [0.999-1.041] (6/8)  A/A c024 0.994 [0.974-1.004]  new 1.004 [0.996-1.022]
+     GPU ms (per frame): R1 0.495 c024 0.493 c0242 0.489 new 0.496 new2 0.496
+     tris main/shadow per frame, calls main/shadow, shadow renders: R1 348.1k/14.5k c38/2 sh2 c024 353.5k/14.9k c38/2 sh2 c0242 353.5k/14.9k c38/2 sh2 new 348.1k/14.5k c38/2 sh2 new2 348.1k/14.5k c38/2 sh2
+     GPU-process CPU ms/frame: R1 NaN c024 NaN c0242 NaN new NaN new2 NaN
+     tris new/c024: main 0.9847, all 0.9843
+     vs R1: GPU rows 1.008 [0.988-1.013] (5/8) vmeans 1.010 [0.984-1.025]; main tris 1.0000
+stillsh:default pairs 0.968 [0.948-0.979] (2/16)  vmeans 0.967 [0.928-0.980] (1/8)  A/A c024 1.002 [0.993-1.006]  new 0.989 [0.961-1.004]
+     GPU ms (per frame): R1 2.066 c024 2.135 c0242 2.129 new 2.062 new2 2.047
+     tris main/shadow per frame, calls main/shadow, shadow renders: R1 863.5k/593.4k c50/29 sh30 c024 894.6k/629.3k c50/29 sh30 c0242 894.6k/629.3k c50/29 sh30 new 863.5k/593.4k c50/29 sh30 new2 863.5k/593.4k c50/29 sh30
+     GPU-process CPU ms/frame: R1 NaN c024 NaN c0242 NaN new NaN new2 NaN
+     tris new/c024: main 0.9653, all 0.9560
+     vs R1: GPU rows 0.993 [0.981-1.050] (3/8) vmeans 0.990 [0.974-1.045]; main tris 1.0000
+stillsh:far    pairs 0.952 [0.950-0.954] (0/16)  vmeans 0.951 [0.950-0.954] (0/8)  A/A c024 1.000 [0.997-1.006]  new 1.007 [1.002-1.012]
+     GPU ms (per frame): R1 6.843 c024 7.211 c0242 7.223 new 6.842 new2 6.880
+     tris main/shadow per frame, calls main/shadow, shadow renders: R1 1811.1k/765.3k c177/70 sh30 c024 1811.7k/807.0k c214/109 sh30 c0242 1811.7k/807.0k c214/109 sh30 new 1811.1k/765.3k c177/70 sh30 new2 1811.1k/765.3k c177/70 sh30
+     GPU-process CPU ms/frame: R1 NaN c024 NaN c0242 NaN new NaN new2 NaN
+     tris new/c024: main 0.9997, all 0.9839
+     vs R1: GPU rows 1.002 [0.995-1.004] (5/8) vmeans 1.003 [0.999-1.007]; main tris 1.0000
+seg:cuts       pairs 0.941 [0.931-0.984] (3/16)  vmeans 0.942 [0.921-0.984] (1/8)  A/A c024 1.000 [0.951-1.053]  new 0.959 [0.940-1.004]
+     GPU ms (sum): R1 70.315 c024 74.124 c0242 74.091 new 70.873 new2 69.983
+     tris main/shadow per frame, calls main/shadow, shadow renders: R1 1511.3k/74.3k c124/5 sh3 c024 1527.0k/78.6k c144/7 sh3 c0242 1527.0k/78.6k c144/7 sh3 new 1511.2k/74.3k c124/5 sh3 new2 1511.2k/74.3k c124/5 sh3
+     GPU-process CPU ms/frame: R1 NaN c024 NaN c0242 NaN new NaN new2 NaN
+     tris new/c024: main 0.9896, all 0.9875
+     vs R1: GPU rows 1.018 [0.989-1.085] (6/8) vmeans 1.014 [0.985-1.058]; main tris 0.9999
+seg:zoomout    pairs 0.670 [0.655-0.679] (0/16)  vmeans 0.672 [0.632-0.688] (0/8)  A/A c024 0.990 [0.938-1.023]  new 1.026 [0.950-1.043]
+     GPU ms (sum): R1 212.923 c024 312.435 c0242 309.383 new 203.089 new2 207.472
+     tris main/shadow per frame, calls main/shadow, shadow renders: R1 1339.5k/373.8k c87/19 sh45 c024 1696.2k/813.6k c88/39 sh90 c0242 1696.2k/813.6k c88/39 sh90 new 1339.3k/373.8k c87/19 sh45 new2 1339.3k/373.8k c87/19 sh45
+     GPU-process CPU ms/frame: R1 NaN c024 NaN c0242 NaN new NaN new2 NaN
+     tris new/c024: main 0.7896, all 0.6826
+     vs R1: GPU rows 0.958 [0.928-1.042] (3/8) vmeans 0.980 [0.953-1.024]; main tris 0.9999
+seg:farorbit   pairs 0.733 [0.669-0.770] (1/16)  vmeans 0.717 [0.673-0.813] (0/8)  A/A c024 0.888 [0.829-1.037]  new 0.989 [0.758-0.997]
+     GPU ms (sum): R1 406.083 c024 599.004 c0242 518.049 new 418.462 new2 385.724
+     tris main/shadow per frame, calls main/shadow, shadow renders: R1 1920.2k/398.9k c180/36 sh30 c024 1945.4k/904.1k c219/110 sh60 c0242 1945.4k/904.1k c219/110 sh60 new 1920.2k/398.9k c180/36 sh30 new2 1920.2k/398.9k c180/36 sh30
+     GPU-process CPU ms/frame: R1 NaN c024 NaN c0242 NaN new NaN new2 NaN
+     tris new/c024: main 0.9871, all 0.8139
+     vs R1: GPU rows 0.988 [0.923-1.170] (3/8) vmeans 0.972 [0.905-1.045]; main tris 1.0000
+seg:fastpan    pairs 0.762 [0.755-0.791] (0/16)  vmeans 0.769 [0.726-0.792] (0/8)  A/A c024 0.976 [0.900-1.016]  new 0.956 [0.918-0.988]
+     GPU ms (sum): R1 56.309 c024 75.334 c0242 72.126 new 57.373 new2 55.299
+     tris main/shadow per frame, calls main/shadow, shadow renders: R1 941.8k/353.1k c49/14 sh15 c024 972.9k/753.4k c49/28 sh30 c0242 972.9k/753.4k c49/28 sh30 new 941.8k/353.1k c49/14 sh15 new2 941.8k/353.1k c49/14 sh15
+     GPU-process CPU ms/frame: R1 NaN c024 NaN c0242 NaN new NaN new2 NaN
+     tris new/c024: main 0.9681, all 0.7501
+     vs R1: GPU rows 1.015 [0.966-1.098] (4/8) vmeans 0.996 [0.944-1.080]; main tris 1.0000
+PER-PAGE moving sums main tris: R1 294.253M c024 329.113M c0242 329.113M new 294.235M new2 294.235M | new/c024 0.8940 new/R1 0.9999
+                     all tris: R1 363.905M c024 480.755M c0242 480.755M new 363.888M new2 363.888M | new/c024 0.7569 new/R1 1.0000
+                     calls (x1e6): R1 0.027M c024 0.037M c0242 0.037M new 0.027M new2 0.027M | new/c024 0.7370 new/R1 1.0000
+POOLED stills  pairs 1.003 [1.001-1.007] (12/16)  vmeans 1.005 [1.003-1.008] (8/8)  A/A c024 0.999 [0.995-1.002]  new 1.004 [0.996-1.010]
+     vs R1: rows 0.996 [0.987-1.001] (3/8) vmeans 0.999 [0.989-1.006]
+POOLED stills+sh pairs 0.953 [0.950-0.958] (0/16)  vmeans 0.955 [0.948-0.958] (0/8)  A/A c024 1.001 [0.999-1.003]  new 1.004 [0.994-1.007]
+     vs R1: rows 0.998 [0.995-1.022] (3/8) vmeans 0.998 [0.997-1.025]
+POOLED moving  pairs 0.732 [0.699-0.758] (0/16)  vmeans 0.727 [0.700-0.769] (0/8)  A/A c024 0.925 [0.895-1.004]  new 0.982 [0.846-0.996]
+     vs R1: rows 0.988 [0.956-1.099] (3/8) vmeans 0.976 [0.948-1.004]

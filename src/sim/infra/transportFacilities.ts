@@ -689,14 +689,14 @@ export function stopsNear(sim: Simulation, x: number, z: number, w: number, d: n
   const tr = trafficOf(sim);
   if (!tr) return [];
   const MODE: Record<number, string> = { [Transit.Bus]: 'bus', [Transit.Subway]: 'subway', [Transit.Train]: 'train', [Transit.Ferry]: 'ferry' };
-  return tr.stopsNear(sim.state, x, z, w, d, r).map((s) => ({ id: s.id, name: nameOf(sim.state, s.id), mode: MODE[s.mode] ?? 'transit', dist: Math.round(s.dist * 10) / 10, ride: s.ride }));
+  return tr.stopsNear(sim.state, x, z, w, d, r, false).map((s) => ({ id: s.id, name: nameOf(sim.state, s.id), mode: MODE[s.mode] ?? 'transit', dist: Math.round(s.dist * 10) / 10, ride: s.ride }));
 }
 
 /** partners (and crossing minutes) a ferry terminal placed at (x, z, w, d, rot) would link to (ferry plop preview) */
 export function ferryPartnersFor(sim: Simulation, x: number, z: number, w: number, d: number, rot: number): { id: number; name: string; minutes: number }[] {
   const tr = trafficOf(sim);
   if (!tr) return [];
-  return tr.ferryPartnersFor(sim.state, x, z, w, d, rot).map((p) => ({ id: p.id, name: nameOf(sim.state, p.id), minutes: Math.round(p.minutes * 10) / 10 }));
+  return tr.ferryPartnersFor(sim.state, x, z, w, d, rot, false).map((p) => ({ id: p.id, name: nameOf(sim.state, p.id), minutes: Math.round(p.minutes * 10) / 10 }));
 }
 
 /** ferry links (terminal ids a < b, water path cells a -> b, crossing minutes) — "[render] ferry boats on ferry links" */

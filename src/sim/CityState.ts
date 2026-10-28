@@ -448,6 +448,8 @@ export interface NewsItem {
   x?: number;
   z?: number;
   advisor?: string;
+  /** stable ids for news actions, independent of the displayed text */
+  ref?: { advice?: string; reward?: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -685,8 +687,9 @@ export class CityState {
     return id >= 0 ? this.buildings.get(id) : undefined;
   }
   /** add a news / notification item */
-  notify(text: string, kind: NewsItem['kind'] = 'info', x?: number, z?: number, advisor?: string): NewsItem {
+  notify(text: string, kind: NewsItem['kind'] = 'info', x?: number, z?: number, advisor?: string, ref?: NewsItem['ref']): NewsItem {
     const n: NewsItem = { day: this.day, text, kind, x, z, advisor };
+    if (ref !== undefined) n.ref = { ...ref };
     this.news.push(n);
     if (this.news.length > 200) this.news.splice(0, this.news.length - 200);
     return n;

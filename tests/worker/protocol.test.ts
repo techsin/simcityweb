@@ -30,14 +30,16 @@ describe('worker protocol messages', () => {
     const journal = { v: 1 as const, regionId: 'r', tileKey: 't', at: 10, base: { kind: 'save' as const, savedAt: 9 }, fromCmd: 0,
       ops: [{ seq: 1, op: 'setHistoric' as const, args: [1, true] }] };
     const replies: Reply[] = [
-      { t: 'qres', id: 1, ok: true, value: { route: new Uint32Array([1, 2]), eta: Infinity, missing: undefined } },
-      { t: 'qres', id: 2, ok: false, error: 'unknown building' },
+      { t: 'qres', cmd: 0, id: 1, ok: true, value: { route: new Uint32Array([1, 2]), eta: Infinity, missing: undefined } },
+      { t: 'qres', cmd: 0, id: 2, ok: false, error: 'unknown building' },
       { t: 'saved', id: 3, ok: true, savedAt: 10, cmd: 2, fp: 'abc', pktSeq: 1,
         record: { key: 'r:t', regionId: 'r', tileKey: 't', savedAt: 10, city: snapshot } },
-      { t: 'saved', id: 4, ok: false, error: 'storage unavailable' },
+      { t: 'saved', cmd: 0, id: 4, ok: false, error: 'storage unavailable' },
       { t: 'snapped', id: 5, marker: { v: 1, regionId: 'r', tileKey: 't', at: 11, baseSavedAt: 10, bytes: 3,
         ls: true, dropped: [], cityName: 'City', day: 4, population: 12, funds: 10 }, payload: new Uint8Array([1, 2, 3]), cmd: 2 },
-      { t: 'error', key: 'system:fire', title: 'Fire failed', message: 'error', stack: 'stack', sim: true, disabled: true },
+      { t: 'snapped', id: 6, cmd: 2, ok: false, error: 'storage unavailable' },
+      { t: 'snapped', id: 7, cmd: 2, ok: false },
+      { t: 'error', cmd: 0, key: 'system:fire', title: 'Fire failed', message: 'error', stack: 'stack', sim: true, disabled: true },
     ];
     const packet: Packet = {
       seq: 1, cmd: 2, clock, log: [[EntryType.BuildingAdded, 4, 0, 2], [EntryType.Emergency, 4, [{ type: 'failed', id: 1, kind: 'fire', x: 2, z: 3, major: true, manualPossible: false }, 0]], [EntryType.Ack, 4, 0, 2]],
@@ -48,7 +50,7 @@ describe('worker protocol messages', () => {
       emergency: { incidents: [incident()], vehicles: [], active: true, layersReady: true, stVer: 3, stations: [] },
       traffic: { routes: [{ cells: new Uint32Array([1, 2]), weight: 10, kind: 'car' }], trucks: { idx: new Uint32Array([1]), val: new Float32Array([2]) } },
       disasters: [{ kind: 'tornado', x: 1, z: 2, heading: 0, daysLeft: 4, magnitude: 1 }], policy,
-      watch: [{ id: 1, key: 'building:1', value: { pop: 12 } }], replies, acks: [encodeAck({ ok: true, cells: [{ x: 1, z: 1, ok: true }] })],
+      watch: [{ id: 1, cmd: 0, key: 'building:1', value: { pop: 12 } }, { id: 2, cmd: 2, key: '{}', error: 'query failed' }], replies, acks: [encodeAck({ ok: true, cells: [{ x: 1, z: 1, ok: true }] })],
       pong: 4, stats: { busy: 0.5, msPerDay: 3, units: { day: 1 }, queue: 0 }, digest: 123,
     };
     const init = { t: 'init' as const, v: PROTOCOL_VERSION, rctx: null, initialSpeed: 3,
@@ -81,7 +83,7 @@ describe('worker protocol messages', () => {
 
   it('rejects borrowed buffers recursively and counts a clone of the whole backing allocation', () => {
     const buffer = new ArrayBuffer(4096), view = new Uint8Array(buffer, 64, 16);
-    const message = { t: 'qres' as const, id: 1, ok: true, value: new Map([['nested', new Set([view])]]) };
+    const message = { t: 'qres' as const, cmd: 0, id: 1, ok: true, value: new Map([['nested', new Set([view])]]) };
     expect(() => cloneMessage(message)).toThrow(/own/);
     const clone = structuredClone(view);
     expect(clone.buffer.byteLength).toBe(4096);
@@ -91,7 +93,7 @@ describe('worker protocol messages', () => {
     const owned = copyOwned(message);
     expect(() => assertOwnedBuffers(owned)).not.toThrow();
     expect(cloneMessage(owned)).toEqual(owned);
-    expect(() => cloneMessage({ t: 'qres', id: 1, ok: true, value: () => 1 })).toThrow();
+    expect(() => cloneMessage({ t: 'qres', cmd: 0, id: 1, ok: true, value: () => 1 })).toThrow();
   });
 });
 
