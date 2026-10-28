@@ -99,11 +99,25 @@ export function watchSignature<K extends QueryName>(sim: Simulation, name: K, ar
 }
 
 /** Exact mirrored state only; this works on a replica too, without serializing or touching sim caches. */
+/** one canonical quiet NaN per float width (0x7fc00000, 0x7ff8000000000000), for exactDigest */
+const NAN32 = new Uint8Array(new Float32Array([NaN]).buffer), NAN64 = new Uint8Array(new Float64Array([NaN]).buffer);
+
 export function exactDigest(st: CityState): number {
   let hash = 2166136261;
   const byte = (n: number) => { hash = Math.imul(hash ^ n, 16777619) >>> 0; };
   const str = (s: string) => { for (let i = 0; i < s.length; i++) { byte(s.charCodeAt(i) & 255); byte(s.charCodeAt(i) >>> 8); } byte(255); };
   const walk = (v: unknown): void => {
+    // NOTE-039: which NaN bits a float holds depends on the V8 tier that wrote it, so every NaN hashes as one canonical
+    // NaN; every other byte (-0 included) is hashed as stored
+    if (v instanceof Float32Array || v instanceof Float64Array) {
+      str(v.constructor.name);
+      const w = v.BYTES_PER_ELEMENT, raw = new Uint8Array(v.buffer, v.byteOffset, v.byteLength), nan = w === 4 ? NAN32 : NAN64;
+      for (let i = 0; i < v.length; i++) {
+        if (Number.isNaN(v[i])) for (let k = 0; k < w; k++) byte(nan[k]);
+        else for (let k = i * w, end = k + w; k < end; k++) byte(raw[k]);
+      }
+      return;
+    }
     if (ArrayBuffer.isView(v)) { str(v.constructor.name); for (const n of new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) byte(n); return; }
     if (v instanceof Set) { walk([...v].sort()); return; }
     if (Array.isArray(v)) { str('array'); for (const n of v) walk(n); str('end'); return; }
