@@ -46,7 +46,7 @@ const CHANGED: GameSettings = {
   masterVolume: 0.35, musicVolume: 0.2, sfxVolume: 0.45, ambienceVolume: 0.1, musicPauses: false, muteInBackground: false,
   showGrid: false, showFps: true, autosaveMonths: 12, pauseWhenHidden: false, toasts: false, newYear: 'fireworks', newYearCamera: false,
   emergencyUncovered: 'pause', emergencyAlerts: 'all', emergencyLiveSlowmo: 4.5,
-  motion: 'reduced', textSize: 20, colourVision: 'red-green', tips: false, cameraMoments: false, newYearPacing: 'everyYear',
+  motion: 'reduced', textSize: 20, colourVision: 'red-green', cameraMoments: false, newYearPacing: 'everyYear',
   problemIcons: 'always', yearReview: false, panSpeed: 1.6, invertOrbit: true, keyBindings: { bulldoze: 'KeyX', 'zone:1': 'KeyR' },
 };
 /** the in-game keys before the polish schema: what today's builds store in 'metropolis.settings.v1' */
@@ -174,10 +174,21 @@ describe('in-game settings (metropolis.settings.v1): the other §7.5 keys', () =
   it('defaults: the new keys with their §7.5 defaults; the accessibility copies match the app defaults', () => {
     expect(loadGameSettings()).toEqual(GAME_DEFAULTS);
     expect(GAME_DEFAULTS).toMatchObject({
-      tips: true, cameraMoments: true, musicPauses: true, muteInBackground: true, newYearPacing: 'milestones', uiScale: 1,
+      cameraMoments: true, musicPauses: true, muteInBackground: true, newYearPacing: 'milestones', uiScale: 1,
       problemIcons: 'query', yearReview: true, panSpeed: 1, invertOrbit: false, keyBindings: {},
     });
     expect(GAME_DEFAULTS).toMatchObject({ motion: APP_DEFAULTS.motion, textSize: APP_DEFAULTS.textSize, colourVision: APP_DEFAULTS.colourVision, uiScale: APP_DEFAULTS.uiScale });
+    // NOTE-042: tips on/off is the guide's per-profile pref, not a setting
+    expect(GAME_DEFAULTS).not.toHaveProperty('tips');
+  });
+
+  it("drops the tips key a step-1 build stored (NOTE-042: the guide's profile pref holds it)", () => {
+    put(GAME, { ...today(), tips: false });
+    const s = loadGameSettings();
+    expect(s).not.toHaveProperty('tips');
+    expect(s).toEqual({ ...GAME_DEFAULTS, ...today() });
+    saveGameSettings(s);
+    expect(read(GAME)).not.toHaveProperty('tips');
   });
 
   it('round-trips every key', () => {

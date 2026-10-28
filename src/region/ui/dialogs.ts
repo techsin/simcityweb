@@ -99,8 +99,15 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
 }
 
 /**
- * "Accessibility & interface" (FH-23): UI scale, text size, motion and colour vision. They are app-level settings, so they
- * apply before any city exists and a city opens with them (src/region/settings.ts).
+ * The accessibility controls the section shows (NOTE-042: a control that changes nothing reads as broken). Text size waits
+ * for FH-23, motion for FEEL-21 and colour vision for FH-20; each lane shows its control in the change that wires it. A
+ * hidden key keeps its default, its stored value and its loader (src/region/settings.ts).
+ */
+const SHOWN: Readonly<Record<'textSize' | 'motion' | 'colourVision', boolean>> = { textSize: false, motion: false, colourVision: false };
+
+/**
+ * "Accessibility & interface" (FH-23): UI scale, then text size, motion and colour vision once they work (SHOWN). They are
+ * app-level settings, so they apply before any city exists and a city opens with them (src/region/settings.ts).
  */
 function accessibilitySection(s: AppSettings, commit: () => void): HTMLElement {
   const field = (label: string, control: HTMLElement) => h('div', { class: 'field' }, h('label', {}, label), control);
@@ -117,54 +124,59 @@ function accessibilitySection(s: AppSettings, commit: () => void): HTMLElement {
       commit();
     },
   });
-  const text = segmented<TextSize>({
-    items: TEXT_SIZES.map((v) => ({ value: v, title: v ? `+${v}%` : 'Default' })),
-    value: s.textSize,
-    cols: 4,
-    onChange: (v) => {
-      s.textSize = v;
-      commit();
-    },
-  });
-  const motion = segmented<MotionPref>({
-    items: [
-      { value: 'system', title: 'System', sub: `Your device: ${resolveMotion('system')}` },
-      { value: 'full', title: 'Full', sub: 'Every animation' },
-      { value: 'reduced', title: 'Reduced', sub: 'No shake or flashing' },
-    ],
-    value: s.motion,
-    cols: 3,
-    onChange: (v) => {
-      s.motion = v;
-      commit();
-    },
-  });
-  const vision = segmented<ColourVision>({
-    items: [
-      { value: 'standard', title: 'Standard', sub: 'Default colours' },
-      { value: 'red-green', title: 'Red-green safe', sub: 'Deuteranopia, protanopia' },
-      { value: 'blue-yellow', title: 'Blue-yellow safe', sub: 'Tritanopia' },
-    ],
-    value: s.colourVision,
-    cols: 3,
-    onChange: (v) => {
-      s.colourVision = v;
-      commit();
-    },
-  });
+  const text = SHOWN.textSize
+    ? segmented<TextSize>({
+        items: TEXT_SIZES.map((v) => ({ value: v, title: v ? `+${v}%` : 'Default' })),
+        value: s.textSize,
+        cols: 4,
+        onChange: (v) => {
+          s.textSize = v;
+          commit();
+        },
+      })
+    : null;
+  const motion = SHOWN.motion
+    ? segmented<MotionPref>({
+        items: [
+          { value: 'system', title: 'System', sub: `Your device: ${resolveMotion('system')}` },
+          { value: 'full', title: 'Full', sub: 'Every animation' },
+          { value: 'reduced', title: 'Reduced', sub: 'No shake or flashing' },
+        ],
+        value: s.motion,
+        cols: 3,
+        onChange: (v) => {
+          s.motion = v;
+          commit();
+        },
+      })
+    : null;
+  const vision = SHOWN.colourVision
+    ? segmented<ColourVision>({
+        items: [
+          { value: 'standard', title: 'Standard', sub: 'Default colours' },
+          { value: 'red-green', title: 'Red-green safe', sub: 'Deuteranopia, protanopia' },
+          { value: 'blue-yellow', title: 'Blue-yellow safe', sub: 'Tritanopia' },
+        ],
+        value: s.colourVision,
+        cols: 3,
+        onChange: (v) => {
+          s.colourVision = v;
+          commit();
+        },
+      })
+    : null;
+  // Reset covers what the section shows: UI scale, plus each control once its lane shows it
+  const covers = ['UI scale', text && 'text size', motion && 'motion', vision && 'colour vision'].filter((v): v is string => !!v);
   const reset = button('Reset to defaults', {
     icon: 'refresh',
     cls: 'ghost',
-    title: 'UI scale, text size, motion and colour vision',
+    title: covers.length > 1 ? `${covers.slice(0, -1).join(', ')} and ${covers[covers.length - 1]}` : covers[0],
     onClick: () => {
       s.uiScale = DEFAULT_SETTINGS.uiScale;
-      s.textSize = DEFAULT_SETTINGS.textSize;
-      s.motion = DEFAULT_SETTINGS.motion;
-      s.colourVision = DEFAULT_SETTINGS.colourVision;
       scale.set(s.uiScale);
-      text.set(s.textSize);
-      motion.set(s.motion);
-      vision.set(s.colourVision);
+      if (text) text.set((s.textSize = DEFAULT_SETTINGS.textSize));
+      if (motion) motion.set((s.motion = DEFAULT_SETTINGS.motion));
+      if (vision) vision.set((s.colourVision = DEFAULT_SETTINGS.colourVision));
       commit();
     },
   });
@@ -172,10 +184,11 @@ function accessibilitySection(s: AppSettings, commit: () => void): HTMLElement {
     'div',
     { class: 'a11y-settings' },
     scale.el,
-    field('Text size', text.el),
-    field('Motion', motion.el),
-    field('Colour vision', vision.el),
-    h('div', { style: 'display:flex; justify-content:flex-end; margin: -6px 0 14px' }, reset),
+    text && field('Text size', text.el),
+    motion && field('Motion', motion.el),
+    vision && field('Colour vision', vision.el),
+    // (the 10 px gap of step 1's layout: a field ends on a 16 px margin, the slider on 12 px)
+    h('div', { style: `display:flex; justify-content:flex-end; margin: ${text || motion || vision ? -6 : -2}px 0 14px` }, reset),
   );
 }
 

@@ -44,14 +44,13 @@ export interface GameSettings {
   emergencyLiveSlowmo: number;
   // Polish schema (docs/POLISH_PLAN.md §7.5); each consumer lands with its item. uiScale, textSize, motion and colourVision
   // are app-level settings (src/region/settings.ts): the app passes them in as overrides, so these are the city's copies.
+  // §7.5's tips on/off is not a setting: it is the guide's per-profile pref (FH-22's loadPref, GuideProfile; NOTE-042).
   /** motion and flashing (FEEL-21); resolveMotion turns 'system' into full or reduced */
   motion: MotionPref;
   /** text size: +0, +10, +20 or +30 % (FH-23) */
   textSize: TextSize;
   /** colour vision palette (FH-20) */
   colourVision: ColourVision;
-  /** first-time tips and explainers (§4.1 "Tips on/off") */
-  tips: boolean;
   /** spotlight camera for the city's firsts (FEEL-07) */
   cameraMoments: boolean;
   /** New Year show: a full show for milestones only, or every year (today's pacing) — FEEL-02a, D17 */
@@ -107,7 +106,6 @@ export const DEFAULT_SETTINGS: GameSettings = {
   motion: APP_DEFAULTS.motion,
   textSize: APP_DEFAULTS.textSize,
   colourVision: APP_DEFAULTS.colourVision,
-  tips: true,
   cameraMoments: true,
   newYearPacing: 'milestones',
   problemIcons: 'query',

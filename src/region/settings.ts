@@ -3,7 +3,9 @@
  * The accessibility keys (uiScale, textSize, motion, colourVision: docs/POLISH_PLAN.md §7.5) live here, so the title, region
  * and New City screens can apply them before any city exists; a city reads them with the other shared keys (cityOverrides)
  * and hands its changes back (takeCityChanges). The other §7.5 keys are in-game settings (src/game/settings.ts), except
- * disasterRate and crises (per-city config, src/sim/config.ts, with LG-15 and LG-25) and the first-run quality (FH-21).
+ * disasterRate and crises (per-city config, src/sim/config.ts, with LG-15 and LG-25), the first-run quality (FH-21) and
+ * tips on/off (the guide's per-profile pref, NOTE-042). The title screen shows text size, motion and colour vision only
+ * once each one works (NOTE-042; src/region/ui/dialogs.ts).
  */
 import type { QualityLevel } from '../render/contracts';
 
