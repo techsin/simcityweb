@@ -713,6 +713,11 @@ const OTHER_RUINS: ReadonlySet<string> = new Set(['reward', 'landmark', 'civic',
 type FacScanData = { [K in IdKeys]: number[] } & { burntMW: number; civicUnpowered: number; civicFirst: number; liveMW: number; fireStations: number };
 
 const idAsc = (a: number, b: number): number => a - b;
+/** sort ids ascending in place, unless they already are (the common case: rt.plopped stays in id order until a removal,
+ *  and a once-a-month sort call with a comparator costs up to ~0.9 ms cold) */
+function sortIds(ids: number[]): void {
+  for (let k = 1; k < ids.length; k++) if (ids[k] < ids[k - 1]) { ids.sort(idAsc); return; }
+}
 function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
   const f: FacScanData = {
     plants: [], plantsBurnt: [], plantsIsolated: [], burntMW: 0, plantsDry: [], waterOk: [], waterBurnt: [], waterNoRoad: [], waterNoPower: [],
@@ -757,7 +762,7 @@ function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
   // swap-removes reorder it) while a loaded game rebuilds it in Map order, ascending id. The advice takes the first of a
   // list as its "Show me" place (and A1 predicts it from this scan), so a game loaded before the scan finds the same
   // buildings first. The counts and the MW sums (the catalog's integer MW) are the same in any order
-  for (const k of ID_KEYS) if (f[k].length > 1) f[k].sort(idAsc);
+  for (const k of ID_KEYS) sortIds(f[k]);
   return f;
 }
 
