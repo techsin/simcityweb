@@ -1,0 +1,33 @@
+== RO_town_ultra (town ultra, cpu): 4 rows, labels R1 R1nor new new2 nor, field cpu; machine CPU per row (median): 3.1 2.8 2.6 2.9 %
+farorbit       pairs 1.079 [1.048-1.109] (4/4)  vmeans 1.071 [1.021-1.090] (4/4)  A/A nor nan [nan-nan]  new 0.967 [0.949-0.987]
+     medians: R1 57.98 R1nor 55.38 new 57.71 new2 55.73 nor 53.39 | frames>16.7: R1 0 R1nor 0 new 0 new2 0 nor 0
+     vs R1: rows 0.983 [0.957-1.027] (1/4)  vmeans 0.965 [0.944-1.009]
+     vs R1nor: rows 1.052 [1.025-1.062] (4/4)  vmeans 1.034 [0.999-1.055]
+zoomout        pairs 1.004 [0.993-1.067] (2/4)  vmeans 1.014 [1.006-1.053] (3/4)  A/A nor nan [nan-nan]  new 1.006 [0.974-1.040]
+     medians: R1 102.68 R1nor 98.69 new 100.36 new2 102.43 nor 99.59 | frames>16.7: R1 0 R1nor 0 new 0 new2 0 nor 0
+     vs R1: rows 0.989 [0.977-1.014] (1/4)  vmeans 1.002 [0.984-1.007]
+     vs R1nor: rows 1.013 [0.988-1.076] (3/4)  vmeans 1.017 [1.008-1.061]
+edgepan        pairs 1.076 [1.032-1.113] (4/4)  vmeans 1.098 [1.040-1.121] (4/4)  A/A nor nan [nan-nan]  new 1.014 [0.987-1.047]
+     medians: R1 63.03 R1nor 55.30 new 59.37 new2 60.28 nor 54.57 | frames>16.7: R1 0 R1nor 0 new 0 new2 0 nor 0
+     vs R1: rows 0.950 [0.921-0.970] (0/4)  vmeans 0.957 [0.940-0.964]
+     vs R1nor: rows 1.064 [1.050-1.103] (4/4)  vmeans 1.075 [1.065-1.102]
+edgeturn       pairs 1.109 [1.091-1.123] (4/4)  vmeans 1.094 [1.069-1.122] (4/4)  A/A nor nan [nan-nan]  new 0.974 [0.959-0.998]
+     medians: R1 69.25 R1nor 63.75 new 69.25 new2 69.00 nor 62.44 | frames>16.7: R1 0 R1nor 0 new 0 new2 0 nor 0
+     vs R1: rows 1.013 [0.988-1.037] (2/4)  vmeans 1.000 [0.978-1.029]
+     vs R1nor: rows 1.108 [1.075-1.136] (4/4)  vmeans 1.093 [1.074-1.113]
+edgefast       pairs 1.151 [1.029-1.208] (3/4)  vmeans 1.121 [1.043-1.141] (3/4)  A/A nor nan [nan-nan]  new 0.959 [0.889-1.027]
+     medians: R1 30.42 R1nor 28.05 new 32.11 new2 29.86 nor 28.15 | frames>16.7: R1 0 R1nor 0 new 0 new2 0 nor 0
+     vs R1: rows 1.061 [0.966-1.098] (3/4)  vmeans 1.036 [0.968-1.048]
+     vs R1nor: rows 1.119 [1.037-1.157] (3/4)  vmeans 1.069 [1.013-1.156]
+cuts           pairs 1.095 [0.904-1.119] (3/4)  vmeans 1.056 [0.905-1.096] (3/4)  A/A nor nan [nan-nan]  new 0.979 [0.928-1.000]
+     medians: R1 22.18 R1nor 22.21 new 22.37 new2 21.93 nor 21.68 | frames>16.7: R1 0 R1nor 0 new 0 new2 0 nor 0
+     vs R1: rows 1.049 [0.887-1.167] (2/4)  vmeans 1.034 [0.887-1.131]
+     vs R1nor: rows 1.007 [0.887-1.184] (2/4)  vmeans 0.996 [0.887-1.144]
+zoomin         pairs 1.018 [0.970-1.059] (2/4)  vmeans 1.001 [0.956-1.037] (2/4)  A/A nor nan [nan-nan]  new 0.973 [0.957-0.984]
+     medians: R1 64.33 R1nor 60.35 new 64.50 new2 61.78 nor 61.82 | frames>16.7: R1 0 R1nor 0 new 0 new2 0 nor 0
+     vs R1: rows 0.987 [0.973-1.029] (1/4)  vmeans 0.967 [0.962-1.014]
+     vs R1nor: rows 1.056 [0.982-1.144] (2/4)  vmeans 1.034 [0.974-1.127]
+POOLED moving  pairs 1.066 [1.027-1.083] (4/4)  vmeans 1.055 [1.030-1.066] (4/4)  A/A nor nan [nan-nan]  new 0.987 [0.968-1.004]  [farorbit,zoomout,edgepan,edgeturn,edgefast,cuts,zoomin]
+     vs R1: rows 0.995 [0.975-1.014] (2/4)  vmeans 0.989 [0.975-0.998]
+     vs R1nor: rows 1.054 [1.041-1.084] (4/4)  vmeans 1.049 [1.040-1.068]
+long frames (main-thread CPU > 16.7 ms) / frames: R1 0/1520 (max 4.9)  R1nor 0/1520 (max 4.6)  new 0/1520 (max 4.1)  new2 0/1520 (max 5.1)  nor 0/1520 (max 4.9)

@@ -1,0 +1,33 @@
+== FTH (fresh town high): 40 runs, labels R1 base base2 new new2, reps 8; machine CPU over the runs: median of run medians 4.3 % (range 2.6-10.1), median p90 30.8 %; field cpu
+street         pairs 0.912 [0.878-0.936] (0/16)  vmeans 0.907 [0.812-0.933] (0/8)  A/A base 0.994 [0.978-0.998]  new 1.013 [0.983-1.164]  -> ok (<= base)
+     medians (ms): R1 21.0 base 30.0 base2 29.6 new 27.2 new2 27.2 | frames>16.7: R1 0 base 0 base2 0 new 0 new2 0 | >33.3: R1 0 base 0 base2 0 new 0 new2 0
+     vs R1: pairs 1.264 [1.139-1.341] (7/8)  vmeans 1.314 [1.205-1.350]
+zoomout        pairs 1.027 [0.991-1.058] (10/16)  vmeans 1.029 [1.000-1.048] (6/8)  A/A base 0.998 [0.989-1.008]  new 0.985 [0.967-1.017]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+     medians (ms): R1 105.6 base 104.9 base2 104.5 new 109.0 new2 106.3 | frames>16.7: R1 0 base 0 base2 0 new 0 new2 0 | >33.3: R1 0 base 0 base2 0 new 0 new2 0
+     vs R1: pairs 1.038 [0.936-1.119] (5/8)  vmeans 1.029 [0.943-1.085]
+farorbit       pairs 1.120 [1.084-1.139] (15/16)  vmeans 1.098 [1.086-1.145] (8/8)  A/A base 0.988 [0.946-1.034]  new 0.995 [0.924-1.017]  -> MAJOR (excess shown)
+     medians (ms): R1 62.3 base 54.0 base2 53.1 new 59.6 new2 59.3 | frames>16.7: R1 0 base 0 base2 0 new 0 new2 0 | >33.3: R1 0 base 0 base2 0 new 0 new2 0
+     vs R1: pairs 0.946 [0.927-1.052] (3/8)  vmeans 0.949 [0.935-1.026]
+default        pairs 0.887 [0.820-0.893] (1/16)  vmeans 0.860 [0.816-0.927] (0/8)  A/A base 1.011 [0.969-1.042]  new 1.004 [0.952-1.201]  -> ok (<= base)
+     medians (ms): R1 18.2 base 21.1 base2 20.9 new 18.7 new2 18.7 | frames>16.7: R1 0 base 0 base2 0 new 0 new2 0 | >33.3: R1 0 base 0 base2 0 new 0 new2 0
+     vs R1: pairs 1.007 [0.866-1.071] (4/8)  vmeans 1.017 [0.935-1.072]
+zoomin         pairs 0.832 [0.812-0.850] (0/16)  vmeans 0.829 [0.818-0.853] (0/8)  A/A base 0.997 [0.990-1.008]  new 1.052 [1.003-1.080]  -> ok (<= base)
+     medians (ms): R1 64.5 base 74.2 base2 74.7 new 60.3 new2 63.3 | frames>16.7: R1 0 base 0 base2 0 new 0 new2 0 | >33.3: R1 0 base 0 base2 0 new 0 new2 0
+     vs R1: pairs 0.941 [0.899-1.015] (3/8)  vmeans 0.959 [0.930-1.031]
+streetpan      pairs 0.864 [0.846-0.883] (0/16)  vmeans 0.859 [0.836-0.878] (0/8)  A/A base 0.994 [0.950-1.027]  new 1.022 [1.001-1.037]  -> ok (<= base)
+     medians (ms): R1 61.9 base 71.7 base2 70.1 new 61.2 new2 61.7 | frames>16.7: R1 0 base 0 base2 0 new 0 new2 0 | >33.3: R1 0 base 0 base2 0 new 0 new2 0
+     vs R1: pairs 0.961 [0.948-1.034] (3/8)  vmeans 0.965 [0.953-1.035]
+streetfast     pairs 0.914 [0.888-0.953] (3/16)  vmeans 0.931 [0.921-0.946] (0/8)  A/A base 0.953 [0.935-1.004]  new 1.015 [0.959-1.104]  -> ok (<= base)
+     medians (ms): R1 34.3 base 38.2 base2 36.7 new 34.7 new2 35.5 | frames>16.7: R1 0 base 0 base2 0 new 0 new2 0 | >33.3: R1 0 base 0 base2 0 new 0 new2 0
+     vs R1: pairs 0.979 [0.952-1.063] (3/8)  vmeans 0.998 [0.986-1.043]
+pan            pairs 0.932 [0.915-0.939] (1/16)  vmeans 0.933 [0.909-0.947] (0/8)  A/A base 1.012 [0.982-1.032]  new 0.985 [0.968-1.034]  -> ok (<= base)
+     medians (ms): R1 66.9 base 70.8 base2 72.4 new 66.6 new2 66.6 | frames>16.7: R1 0 base 0 base2 0 new 0 new2 0 | >33.3: R1 0 base 0 base2 0 new 0 new2 0
+     vs R1: pairs 1.005 [0.990-1.027] (6/8)  vmeans 1.001 [0.992-1.006]
+fastpan        pairs 0.994 [0.971-1.006] (7/16)  vmeans 0.977 [0.964-0.998] (2/8)  A/A base 0.999 [0.962-1.019]  new 0.976 [0.924-1.020]  -> ok (<= base)
+     medians (ms): R1 35.8 base 35.5 base2 34.9 new 34.8 new2 34.0 | frames>16.7: R1 0 base 0 base2 0 new 0 new2 0 | >33.3: R1 0 base 0 base2 0 new 0 new2 0
+     vs R1: pairs 0.985 [0.916-1.019] (3/8)  vmeans 0.959 [0.918-0.995]
+cuts           pairs 1.008 [0.937-1.032] (9/16)  vmeans 0.993 [0.916-1.045] (4/8)  A/A base 1.012 [0.970-1.057]  new 1.020 [0.995-1.045]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+     medians (ms): R1 21.9 base 21.8 base2 22.1 new 21.5 new2 21.9 | frames>16.7: R1 0 base 0 base2 0 new 0 new2 0 | >33.3: R1 0 base 0 base2 0 new 0 new2 0
+     vs R1: pairs 1.008 [0.944-1.029] (5/8)  vmeans 0.995 [0.955-1.046]
+POOLED moving  pairs 0.953 [0.941-0.965] (0/16)  vmeans 0.959 [0.942-0.961] (0/8)  A/A base 0.987 [0.983-1.029]  new 1.002 [0.987-1.019]  [zoomout,farorbit,zoomin,streetpan,streetfast,pan,fastpan,cuts]
+     vs R1: pairs 0.993 [0.967-1.018] (3/8)  vmeans 0.996 [0.967-1.011]
