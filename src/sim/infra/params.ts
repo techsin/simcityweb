@@ -173,6 +173,14 @@ export const INFRA_URGENT_FRAME_MS = 6;
  * cheap the loop is warm. Chunk sizes only — the estimates keep the loops' own coefficients.
  */
 export const INFRA_CELL_SIZING_US = 0.004;
+/**
+ * B2 (G2): the same floor for the once-per-pass Building loops, in estimated µs per building (services prep's chunks, the
+ * stop list, the access seeds and homes, shopB's block sums, the EQ / HQ fallback, the police scan and job sites): their
+ * first executions after a load and the Building-shape deopts ran them at 1-8 µs per building (G2 dense1m: 25-75 x
+ * warm), so a piece holds at most pieceUnits(INFRA_BLD_SIZING_US, 1, budget) buildings (~325 at half
+ * INFRA_PIECE_COLD_MS). Chunk sizes only.
+ */
+export const INFRA_BLD_SIZING_US = 0.2;
 /** commute above this (min) counts as unreachable for employment purposes */
 export const MAX_COMMUTE = 110;
 

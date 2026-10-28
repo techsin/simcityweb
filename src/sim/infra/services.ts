@@ -77,7 +77,8 @@ import {
 import {
   ACCESS_JOB_EXTRA, ACCESS_JOB_SLOTS, ACCESS_LAND_STEP, ACCESS_PERIOD, ACCESS_UNREACHED, CAR_OVERHEAD, CATCH_COLLEGE_WILL,
   CLUSTER_BLOCK, CLUSTER_COV, COLLEGE_ADULT_W, EDU_LEGACY_W, EQ_TAU_YEARS, GREEN_NEED_BASE, GREEN_NEED_NORM,
-  GREEN_NEED_SENIOR, HEALTH_NEED_NORM, HEALTH_NEED_W, HQ_TAU_YEARS, INFRA_CELL_SIZING_US, INFRA_PIECE_COLD_MS, INFRA_PIECE_MS, MAX_COMMUTE, NET_TIME,
+  GREEN_NEED_SENIOR, HEALTH_NEED_NORM, HEALTH_NEED_W, HQ_TAU_YEARS, INFRA_BLD_SIZING_US, INFRA_CELL_SIZING_US, INFRA_PIECE_COLD_MS, INFRA_PIECE_MS,
+  MAX_COMMUTE, NET_TIME,
   OVERCROWDED_UTIL, PLAY_TEEN_W, RAMP_PENALTY, RES_PER_CS_JOB, ROAD_RADIUS_FACTOR, SHOP_BASE, SHOP_CAP_CELLS, SHOP_FAR, SHOP_NEAR,
   UNPOWERED_SERVICE_EFF, UNWATERED_HEALTH_EFF,
 } from './params';
@@ -161,6 +162,10 @@ const TIER = INFRA_PIECE_MS / 2;
 /** cells of one piece of a once-per-pass cell loop costing `us` per cell (params INFRA_CELL_SIZING_US: the cold floor) */
 function cellUnits(us: number, budget = COLD): number {
   return pieceUnits(us > INFRA_CELL_SIZING_US ? us : INFRA_CELL_SIZING_US, 1, budget);
+}
+/** buildings of one piece of a once-per-pass Building loop costing `us` per building (params INFRA_BLD_SIZING_US) */
+function bldUnits(us: number, budget = COLD): number {
+  return pieceUnits(us > INFRA_BLD_SIZING_US ? us : INFRA_BLD_SIZING_US, 1, budget);
 }
 /**
  * the absolute scale of the estimates: stepCost = SV_EST x (SC.piece + the piece's units x SC) / 1000. SC sets the
@@ -282,11 +287,16 @@ export class ServicesSystem implements SimSystem {
   private fac: Building[][] = Array.from({ length: NT + 1 }, () => [] as Building[]);
   private facOp: number[][] = Array.from({ length: NT + 1 }, () => [] as number[]);
   private facCap: number[][] = Array.from({ length: NT + 1 }, () => [] as number[]);
-  private facStart: number[] = [];
-  private facEnd: number[] = [];
-  /** current shared slot, per facility: seated fraction of its claims, seats taken */
-  private facSig: number[] = [];
-  private facSeat: number[] = [];
+  /**
+   * current slot, per facility: its pool range; shared slots: seated fraction of its claims, seats taken. Typed, grown
+   * once (tierInit): every entry of the slot is written (the search writes every range, the seat allocation every
+   * fraction and seat count) before it is read. (G2: pre-B2's JS arrays, emptied per slot and filled in seat order, made
+   * allocSeats deoptimise on an out-of-bounds store and run unoptimised for whole tier steps.)
+   */
+  private facStart = new Int32Array(64);
+  private facEnd = new Int32Array(64);
+  private facSig = new Float64Array(64);
+  private facSeat = new Float64Array(64);
   /** seat order of the current shared slot (facility indices, best op first, then building id) */
   private order = new Int32Array(0);
   private shared: boolean[] = new Array(NT + 1).fill(false);
@@ -657,6 +667,7 @@ export class ServicesSystem implements SimSystem {
     const st = sim.state, C = st.cells, N = st.size;
     const chunk = (us: number, left: number, budget = COLD) => Math.max(0, Math.min(pieceUnits(us, 1, budget), left)) * us;
     const cells = (us: number, left: number) => Math.max(0, Math.min(cellUnits(us), left)) * us;
+    const blds = (us: number, left: number) => Math.max(0, Math.min(bldUnits(us), left)) * us;
     const rowsUs = (us: number, rowsLeft: number) => Math.max(0, Math.min(Math.max(1, Math.floor(cellUnits(us) / Math.max(1, N))), rowsLeft)) * us * N;
     switch (this.stepIdx) {
       case -1: case S_PREP: return this.prepUs(sim, chunk);
@@ -671,7 +682,7 @@ export class ServicesSystem implements SimSystem {
       }
       case S_STOPS:
         switch (this.sub) {
-          case ST_COLLECT_B: return chunk(SC.stopB, this.cur === 0 ? this.snap.n : this.snap.n - this.stopCol.bi);
+          case ST_COLLECT_B: return blds(SC.stopB, this.cur === 0 ? this.snap.n : this.snap.n - this.stopCol.bi);
           case ST_COLLECT_C: return cells(SC.stopCell, C - this.stopCol.ci);
           case ST_ATTACH: { const a = this.attachUs(sim); return a > 0 ? a : SC.stopBegin + C * SC.fill; }
           case ST_BEGIN: return SC.stopBegin + C * SC.fill;
@@ -680,7 +691,7 @@ export class ServicesSystem implements SimSystem {
           default: return C * SC.fill;
         }
       case S_NIMBY: return this.nimbyRun.active ? this.nimbyRun.pieceUs(pieceBudgetUs(COLD)) : 4 * C * 0.0004;
-      case S_ACC_SEED: return this.sub === 0 ? C * SC.fill : chunk(SC.seedB, this.snap.n - this.cur);
+      case S_ACC_SEED: return this.sub === 0 ? C * SC.fill : blds(SC.seedB, this.snap.n - this.cur);
       case S_ACC_SEARCH:
         if (this.sub === 0) return cells(SC.accSeed, this.cur === 0 ? C : C - this.accRun.seedAt);
         return chunk(SC.accPop, Math.max(1, this.accRun.queued));
@@ -689,7 +700,7 @@ export class ServicesSystem implements SimSystem {
           case AL_INIT: return rowsUs(SC.accInit, N - this.cur);
           case AL_FWD: case AL_BWD: return rowsUs(SC.chamfer, N - this.cur);
           case AL_OUT: return rowsUs(SC.accOut, N - this.cur);
-          case AL_HOMES: return chunk(SC.accHome * 2, this.snap.n - this.cur);
+          case AL_HOMES: return blds(SC.accHome * 2, this.snap.n - this.cur);
           default: return C * SC.fill;
         }
       case S_SHOP_A: return this.sub === 0 ? C * SC.fill + this.nCsSeeds * 0.01 : chunk(SC.shopPop, Math.max(1, this.shopRun.queued));
@@ -698,7 +709,7 @@ export class ServicesSystem implements SimSystem {
           case SB_INIT: return rowsUs(SC.shopInit, N - this.cur);
           case SB_FWD: case SB_BWD: return rowsUs(SC.chamfer, N - this.cur);
           case SB_POP: return rowsUs(SC.shopBlock, N - this.cur);
-          case SB_CS: return chunk(SC.shopCs, this.snap.n - this.cur);
+          case SB_CS: return blds(SC.shopCs, this.snap.n - this.cur);
           case SB_BOX: { const nb = Math.ceil(N / CLUSTER_BLOCK); return nb * nb * SC.shopBox + N * 0.05; }
           case SB_OUT: return rowsUs(SC.shopOut, N - this.cur);
           default: return C * SC.fill;
@@ -711,7 +722,7 @@ export class ServicesSystem implements SimSystem {
           case FI_TIERS: return rowsUs(SC.tierStat, N - this.cur);
           case FI_NEEDS: return cells(SC.stale, Math.min(this.tierById.length, this.seenById.length));
           case FI_STALE: return cells(SC.stale, Math.min(this.tierById.length, this.seenById.length) - this.cur);
-          case FI_EQHQ: return chunk(SC.eqhq, this.snap.n - this.cur);
+          case FI_EQHQ: return blds(SC.eqhq, this.snap.n - this.cur);
           default: return SC.end + SC.needs;
         }
     }
@@ -947,7 +958,8 @@ export class ServicesSystem implements SimSystem {
     this.powById = ensureIdFloat(this.powById as Float32Array<ArrayBuffer>, st);
     this.seenById = ensureIdFloat(this.seenById as Float32Array<ArrayBuffer>, st);
     this.passNo = (this.passNo % 1e6) + 1;
-    this.snap.planBegin(SC.prepB, SC.prepF, pieceBudgetUs(COLD));
+    // (chunks planned with the cold Building floor; PR_BLD's estimate keeps prepB / prepF)
+    this.snap.planBegin(Math.max(SC.prepB, INFRA_BLD_SIZING_US), SC.prepF, pieceBudgetUs(COLD));
   }
 
   /** zero the back need rasters (native fills, several per piece) */
@@ -1319,8 +1331,12 @@ export class ServicesSystem implements SimSystem {
     if (this.shared[k]) this.seat.fill(1);
     this.poolN = 0;
     this.curEnt = new Map();
-    this.facStart.length = 0; this.facEnd.length = 0;
-    this.facSig.length = 0; this.facSeat.length = 0;
+    const n = this.fac[k].length;
+    if (this.facStart.length < n) {
+      const cap = Math.max(n, this.facStart.length * 2);
+      this.facStart = new Int32Array(cap); this.facEnd = new Int32Array(cap);
+      this.facSig = new Float64Array(cap); this.facSeat = new Float64Array(cap);
+    }
     this.cursor = 0;
     this.tierPhase = P_SEARCH;
     return st.cells * U_INIT;
@@ -1432,7 +1448,9 @@ export class ServicesSystem implements SimSystem {
    * mean police over R cells 0.98 -> 0.46 on those days, a deep lot's stored desirability -9 vs raw +49)
    */
   private finFoot(st: CityState, room: number): number {
-    const r = lotMaxRange(this.finBuf, st.size, this.multiRect, this.multi.length, this.finCur, room, FOOT_WORK, this.lotOut);
+    // (at most the cold cell floor's lot cells: a once-per-pass cell loop)
+    const cap = cellUnits(FOOT_WORK * SC.tierUnit) * FOOT_WORK;
+    const r = lotMaxRange(this.finBuf, st.size, this.multiRect, this.multi.length, this.finCur, room < cap ? room : cap, FOOT_WORK, this.lotOut);
     this.finCur = r;
     if (r >= this.multi.length) { this.finSub = F_PUBLISH; this.finCur = 0; }
     return this.lotOut[0];
@@ -1465,9 +1483,9 @@ export class ServicesSystem implements SimSystem {
 
   /** reach of facility c of slot k into the pool (cached copy or fresh search); returns work units */
   private reachOf(st: CityState, b: Building, k: number, c: number): number {
-    const key = keyOf(b);
+    const key = keyOf(b), id = b.id;
     const cache = this.cache[k];
-    const e = cache?.ent.get(b.id);
+    const e = cache?.ent.get(id);
     const off = this.poolN;
     if (cache && e && e.valid && e.key === key) {
       const n = e.end - e.start;
@@ -1476,7 +1494,7 @@ export class ServicesSystem implements SimSystem {
       this.pW.set(cache.w.subarray(e.start, e.end), off);
       this.poolN = off + n;
       this.facStart[c] = off; this.facEnd[c] = off + n;
-      this.curEnt.set(b.id, { key, start: off, end: off + n, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, road: e.road, valid: true });
+      this.curEnt.set(id, { key, start: off, end: off + n, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, road: e.road, valid: true });
       return n * U_COPY + 8;
     }
     const inf = infoOf(st, b);
@@ -1501,7 +1519,7 @@ export class ServicesSystem implements SimSystem {
     }
     this.poolN = m;
     this.facStart[c] = off; this.facEnd[c] = m;
-    this.curEnt.set(b.id, { key, start: off, end: m, x0, z0, x1, z1, road: metric !== 2, valid: true });
+    this.curEnt.set(id, { key, start: off, end: m, x0, z0, x1, z1, road: metric !== 2, valid: true });
     return n * (metric === 2 ? U_SEARCH / 2 : U_SEARCH) + 16;
   }
 
@@ -1514,6 +1532,7 @@ export class ServicesSystem implements SimSystem {
 
   /** union tier (police / fire / transit): legacy combination from the pool range; returns work units */
   private splatUnion(st: CityState, b: Building, k: number, c: number, needL: Float32Array): number {
+    const id = b.id, flags = b.flags;
     const inf = infoOf(st, b);
     const transit = k === SLOT_TRANSIT;
     const s = transit ? inf.covStrength : inf.tierStrength;
@@ -1535,7 +1554,7 @@ export class ServicesSystem implements SimSystem {
         cov[i] = 1 - (1 - cov[i]) * (1 - v);
       }
     }
-    if (!transit) this.record(b, inf, S, D, served, op, S < Infinity && D > S ? S : D);
+    if (!transit) this.record(id, flags, inf, S, D, served, op, S < Infinity && D > S ? S : D);
     return (s1 - s0) * U_ENTRY * 2 + 8;
   }
 
@@ -1547,6 +1566,7 @@ export class ServicesSystem implements SimSystem {
     const s0 = this.facStart[c], s1 = this.facEnd[c];
     this.facSig[c] = 1; this.facSeat[c] = 0;
     if (s1 <= s0) return 4;
+    const id = b.id, flags = b.flags;
     const inf = infoOf(st, b);
     const s = inf.tierStrength;
     const pIdx = this.pIdx, pW = this.pW, u = this.seat, A = this.A, cov = this.cov;
@@ -1577,7 +1597,7 @@ export class ServicesSystem implements SimSystem {
     this.facSig[c] = sig;
     this.facSeat[c] = seated;
     // demand of an uncrowded facility = its claims; crowded ones are re-measured in reportDemand
-    this.record(b, inf, S, D, D * rho, op, seated);
+    this.record(id, flags, inf, S, D, D * rho, op, seated);
     return 2 * (s1 - s0) * U_ENTRY + 8;
   }
 
@@ -1611,8 +1631,7 @@ export class ServicesSystem implements SimSystem {
     return (s1 - s0) * U_REPORT + 14;
   }
 
-  private record(b: Building, inf: DefInfo, S: number, D: number, served: number, op: number, seated: number): void {
-    const id = b.id;
+  private record(id: number, flags: number, inf: DefInfo, S: number, D: number, served: number, op: number, seated: number): void {
     if (id >= this.tierById.length) return;
     this.tierById[id] = inf.tier + 1;
     this.seenById[id] = this.passNo;
@@ -1622,7 +1641,7 @@ export class ServicesSystem implements SimSystem {
     this.seatById[id] = seated;
     this.opById[id] = op;
     this.utilById[id] = S < Infinity && S > 0 ? D / S : 0;
-    this.powById[id] = !inf.usesPower || (b.flags & BF.Powered) !== 0 ? 1 : 0;
+    this.powById[id] = !inf.usesPower || (flags & BF.Powered) !== 0 ? 1 : 0;
   }
 
   // ------------------------------------------------------------------------------------------------ transit stops
@@ -1648,7 +1667,7 @@ export class ServicesSystem implements SimSystem {
             this.stopCol.begin(this.stops);
             this.cur = 1;
           }
-          if (this.stopCol.buildings(st, this.snap.list, pieceUnits(SC.stopB, 1, COLD))) this.sub = ST_COLLECT_C;
+          if (this.stopCol.buildings(st, this.snap.list, bldUnits(SC.stopB))) this.sub = ST_COLLECT_C;
           return false;
         }
         case ST_COLLECT_C:
@@ -1711,7 +1730,7 @@ export class ServicesSystem implements SimSystem {
   /** accessCommute step 1: seeds on frontage road cells (homes: their commute; job sites: CAR_OVERHEAD + 2) */
   private accSeedPiece(sim: Simulation): boolean {
     if (this.sub === 0) { this.idist.fill(-1); this.sub = 1; this.cur = 0; return false; }
-    const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.seedB, 1, COLD));
+    const e = Math.min(this.snap.n, this.cur + bldUnits(SC.seedB));
     this.accSeedRange(sim, this.cur, e);
     this.cur = e;
     return e >= this.snap.n;
@@ -1821,7 +1840,7 @@ export class ServicesSystem implements SimSystem {
         return false;
       }
       case AL_HOMES: {
-        const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.accHome * 2, 1, COLD));
+        const e = Math.min(this.snap.n, this.cur + bldUnits(SC.accHome * 2));
         this.accHomes(st, this.cur, e);
         this.cur = e;
         if (e >= this.snap.n) this.sub = AL_PUBLISH;
@@ -1917,7 +1936,7 @@ export class ServicesSystem implements SimSystem {
         return false;
       }
       case SB_CS: {
-        const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.shopCs, 1, COLD));
+        const e = Math.min(this.snap.n, this.cur + bldUnits(SC.shopCs));
         this.shopCsRange(st, this.cur, e);
         this.cur = e;
         if (e >= this.snap.n) { this.sub = SB_BOX; this.cur = 0; }
@@ -2088,7 +2107,7 @@ export class ServicesSystem implements SimSystem {
           return false;
         }
         case FI_EQHQ: {
-          const bI = this.eqhqRange(st, this.cur, Math.min(this.snap.n, this.cur + pieceUnits(SC.eqhq, 1, COLD)));
+          const bI = this.eqhqRange(st, this.cur, Math.min(this.snap.n, this.cur + bldUnits(SC.eqhq)));
           this.cur = bI;
           if (this.eqWp1 || bI >= this.snap.n) this.sub = FI_END;
           return false;

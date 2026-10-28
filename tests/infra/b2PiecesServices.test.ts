@@ -126,6 +126,12 @@ function svcEdit(c: SvcCity, k: number): void {
 /** services fields whose content depends on where the pieces fall (the estimates, the clocks, the snapshot's chunk plan),
  *  and the state reference (the state digest covers the state) */
 const SV_EXCLUDE = ['lastMs', 'lastPassMs', 'workLeft', 'snap', 'lastState'];
+/**
+ * the tier engine's per-facility scratch of the current slot: JS arrays emptied per slot in the original, typed arrays
+ * grown once in W (every entry is written before it is read within a slot; after a pass they hold the last slot's
+ * scratch). Compared between W runs, not against the original's representation.
+ */
+const SV_SCRATCH = ['facStart', 'facEnd', 'facSig', 'facSeat'];
 
 /** the city digest with systemData per key */
 function cityDigest(st: CityState): Record<string, string> {
@@ -302,9 +308,10 @@ describe('B2 G2 services: a pass in one go = in pieces = the frozen pre-B2 pass'
     it(`${name}: production and random pieces = the frozen original (41ae570), every original field`, () => {
       // (the original's own field names: W's new piece fields have no counterpart; the estimates / clocks differ by design)
       const orig = withPieceScale(1, () => svcSim(mk(), systems, true));
-      const keys = Object.keys(orig.svc).filter((k) => !SV_EXCLUDE.includes(k));
+      const keys = Object.keys(orig.svc).filter((k) => !SV_EXCLUDE.includes(k) && !SV_SCRATCH.includes(k));
       const w = withPieceScale(1, () => svcSim(mk(), systems));
       const onlyW = Object.keys(w.svc).filter((k) => !keys.includes(k));
+      expect(SV_SCRATCH.every((k) => k in orig.svc && k in w.svc)).toBe(true);
       const ref = runPasses(mk, systems, passes, 1, { orig: true, exclude: Object.keys(orig.svc).filter((k) => !keys.includes(k)) });
       expectSameRuns(ref, runPasses(mk, systems, passes, 1, { exclude: onlyW }), `${name} production vs original`);
       expectSameRuns(ref, runPasses(mk, systems, passes, 'random', { exclude: onlyW }), `${name} random vs original`);

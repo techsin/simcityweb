@@ -40,7 +40,8 @@ import {
   type TierNeedRun,
 } from './catchments';
 import {
-  AIRPORT_CAP, AIRPORT_PAX_EXP, AIRPORT_PAX_K, COURTHOUSE_POLICE_MUL, CRIME_SPILL, GARBAGE_UNPOWERED, HOLDING_CELLS, JAIL_BEDS,
+  AIRPORT_CAP, AIRPORT_PAX_EXP, AIRPORT_PAX_K, COURTHOUSE_POLICE_MUL, CRIME_SPILL, GARBAGE_UNPOWERED, HOLDING_CELLS, INFRA_BLD_SIZING_US,
+  INFRA_CELL_SIZING_US, JAIL_BEDS,
   JUSTICE_CRIME_K, JUSTICE_POLICE_K, OVERCROWDED_UTIL, PATIENTS_PER_BED, POLICE_CAP, POLICE_CRIME_BASE, POLICE_JOB_W, RECYCLE_MAX_SHARE, SEAPORT_TRUCKS,
   SOLAR_SUMMER, SOLAR_WINTER, STAFF_CITY_INFO, STAFF_CITY_MIN, STAFF_FLAG, STAFF_OP_MIN, STAFF_STEP, THERMAL_UNWATERED, UNPOWERED_SERVICE_EFF,
   UNWATERED_HEALTH_EFF, USE_FACTOR_MIN, USE_FULL, WIND_TURBINE_BASE, WIND_TURBINE_GAIN,
@@ -247,7 +248,11 @@ function policeCellRange(res: Float32Array, out: Float32Array, crime: Float32Arr
 }
 
 /** B2: estimated warm µs per unit of the police need run's pieces (services' prep budget; G2 fit, dense1m) */
-const PN_US = { scan: 0.06, jobs: 0.02, jobCell: 0.004, cell: 0.004, piece: 2 } as const;
+const PN_US = { scan: 0.03, jobs: 0.02, jobCell: 0.004, cell: 0.004, piece: 2 } as const;
+/** the police run's chunks: its Building loops (scan, job sites) and its cell pass at the cold floors (params.ts) */
+const PN_SIZE = {
+  scan: Math.max(PN_US.scan, INFRA_BLD_SIZING_US), jobs: Math.max(PN_US.jobs, INFRA_BLD_SIZING_US), cell: Math.max(PN_US.cell, INFRA_CELL_SIZING_US),
+} as const;
 /**
  * B2 (docs/dev/B2_DESIGN.md §4 S_PREP, review 2 item 5b): policeNeed in pieces over services' pass list (the catchments
  * TierNeedRun) — the monthly scan when stale, by building chunks of `list` (installed at its end, jobNext = the list's
@@ -270,16 +275,16 @@ class PoliceNeedRun implements TierNeedRun {
   }
 
   pieceUs(budgetUs: number): number {
-    const c = (us: number, left: number) => Math.max(0, Math.min(Math.max(1, Math.floor(budgetUs / us)), left)) * us + PN_US.piece;
+    const c = (us: number, size: number, left: number) => Math.max(0, Math.min(Math.max(1, Math.floor(budgetUs / size)), left)) * us + PN_US.piece;
     switch (this.stage) {
       case 0: {
         // (the stale check falls through into the scan or the job sites; side-effect free: no cache is created here)
         const sc = stateCache.get(this.st);
-        return !sc || sc.jobNext !== this.st.nextBuildingId ? c(PN_US.scan, this.list.length) : c(PN_US.jobs, sc.jobs.length);
+        return !sc || sc.jobNext !== this.st.nextBuildingId ? c(PN_US.scan, PN_SIZE.scan, this.list.length) : c(PN_US.jobs, PN_SIZE.jobs, sc.jobs.length);
       }
-      case 1: return c(PN_US.scan, this.list.length - this.cur);
-      case 2: return c(PN_US.jobs, this.jobs.length - this.cur);
-      case 3: return c(PN_US.cell, this.st.cells - this.cur);
+      case 1: return c(PN_US.scan, PN_SIZE.scan, this.list.length - this.cur);
+      case 2: return c(PN_US.jobs, PN_SIZE.jobs, this.jobs.length - this.cur);
+      case 3: return c(PN_US.cell, PN_SIZE.cell, this.st.cells - this.cur);
       default: return 0;
     }
   }
@@ -293,7 +298,7 @@ class PoliceNeedRun implements TierNeedRun {
     }
     switch (this.stage) {
       case 1: {
-        const end = Math.min(this.list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.scan)));
+        const end = Math.min(this.list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_SIZE.scan)));
         scanRange(st, cacheOf(st), this.list, this.cur, end, this.scan);
         this.cur = end;
         if (end < this.list.length) return false;
@@ -310,7 +315,7 @@ class PoliceNeedRun implements TierNeedRun {
   /** the job sites in chunks: the jobs part of the raster (and the list's compaction, as policeNeed) */
   private jobSites(budgetUs: number): void {
     const st = this.st, N = st.size, grid = st.building, out = this.out, list = this.jobs;
-    const k1 = Math.min(list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.jobs)));
+    const k1 = Math.min(list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_SIZE.jobs)));
     let n = this.n;
     for (let k = this.cur; k < k1; k++) {
       const b = list[k];
@@ -336,7 +341,7 @@ class PoliceNeedRun implements TierNeedRun {
   /** the cell pass by ranges; true when the raster is complete */
   private cells(budgetUs: number): boolean {
     const C = this.st.cells;
-    const i1 = Math.min(C, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.cell)));
+    const i1 = Math.min(C, this.cur + Math.max(1, Math.floor(budgetUs / PN_SIZE.cell)));
     policeCellRange(this.res, this.out, this.st.crime, this.cur, i1);
     this.cur = i1;
     if (i1 < C) return false;
