@@ -192,18 +192,20 @@ export class WorkerSimHost extends PacketSimHost {
   override receive(message: WorkerOutput): void {
     if (this.closed) return;
     if (message.t === 'fatal') { this.crash(Object.assign(new Error(message.message), message.stack ? { stack: message.stack } : {})); return; }
-    if (message.t === 'ready') {
-      // a resync: the worker numbers packets afresh, and trusts tick acks again once this epoch is acked
-      this.epoch++; this.acked = 0;
+    try {
+      if (message.t === 'ready') {
+        // a resync: the worker numbers packets afresh, and trusts tick acks again once this epoch is acked
+        this.epoch++; this.acked = 0;
+        super.receive(message);
+        if (!this.closed) this.link.post({ t: 'ack', ack: 0, epoch: this.epoch });
+        return;
+      }
       super.receive(message);
-      if (!this.closed) this.link.post({ t: 'ack', ack: 0, epoch: this.epoch });
-      return;
-    }
-    super.receive(message);
-    if (message.t !== 'pkt' || this.closed || this.replica.diverged) return;
-    // acks ride on ticks, which stop with the tab hidden (T032 minor 8): ack a packet with replies at once, and ack
-    // before the worker's window fills, so the hidden path's save reply never waits for the tab to come back
-    if (message.p.replies?.length || this.replica.seq - this.acked >= ACK_WINDOW - 1) this.postAck();
+      if (message.t !== 'pkt' || this.closed || this.replica.diverged) return;
+      // acks ride on ticks, which stop with the tab hidden (T032 minor 8): ack a packet with replies at once, and ack
+      // before the worker's window fills, so the hidden path's save reply never waits for the tab to come back
+      if (message.p.replies?.length || this.replica.seq - this.acked >= ACK_WINDOW - 1) this.postAck();
+    } catch (e) { this.crash(e); } // a packet's own failures resync inside Replica.apply; this is the host's
   }
   override frame(dt: number): void {
     super.frame(dt);
