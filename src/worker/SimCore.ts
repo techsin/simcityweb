@@ -14,6 +14,15 @@ import { AlertQueue, LIVE_IDLE, followingDispatch, pendingCount, sendDays, speed
 import type { EmergencyEvent } from '../sim/Simulation';
 import type { Incident } from '../sim/infra/emergency';
 import type { PolicySnapshot, PolicyView, SimSettings } from './SimHost';
+// W0.6: authoritative save copies and IDB only; browser recovery composition stays in LocalSimHost.
+import { createCityRecord, putCityRecord, type CityRecord } from '../save/cities';
+import { openKV } from '../save/db';
+import { cityFingerprint } from '../save/fingerprint';
+import { clearRecoveryAfterSave } from '../save/recoveryIdb';
+import { summarizeCity } from '../region/citySummary';
+import type { RegionCitySummary } from '../region/types';
+
+export interface CitySaveCopy { record: CityRecord; fp: string; summary: RegionCitySummary }
 
 /** The page's flags, passed at init (WORKER_DESIGN §1). */
 export interface SimFlags {
@@ -44,11 +53,13 @@ export class SimCore {
   private abort = new AbortController();
   readonly livePolicy: LivePolicy;
 
-  constructor(state: CityState, errors?: SimErrors, flags: SimFlags = { simwasm: null }) {
+  /** `clock`: the real-time milliseconds the live policy's alert close delays count in (the host's clock, so a
+   *  deterministic harness stays deterministic); performance.now by default. */
+  constructor(state: CityState, errors?: SimErrors, flags: SimFlags = { simwasm: null }, clock?: () => number) {
     this.sim = new Simulation(state, []);
     this.guard = { errors: errors ?? null };
     this.flags = flags;
-    this.livePolicy = new LivePolicy(this.sim, this.abort.signal);
+    this.livePolicy = new LivePolicy(this.sim, this.abort.signal, clock);
   }
 
   get isDisposed(): boolean { return this.disposed; }
@@ -98,6 +109,19 @@ export class SimCore {
 
   querySignature<K extends QueryName>(name: K, args: QueryArgs<K>, when: WatchPolicy, commands: number): string {
     return `${this.booted}:${watchSignature(this.sim, name, args, when, commands)}`;
+  }
+
+  // W0.6: all values describing a save are captured in the same synchronous unit.
+  copySave(regionId: string, tileKey: string): CitySaveCopy {
+    if (this.disposed) throw new Error('Simulation core is disposed');
+    const st = this.sim.state;
+    return { record: createCityRecord(regionId, tileKey, st), fp: cityFingerprint(st), summary: summarizeCity(st) };
+  }
+
+  async putSave(copy: CitySaveCopy): Promise<boolean> {
+    const kv = await openKV(), rec = copy.record;
+    await putCityRecord(kv, rec);
+    return clearRecoveryAfterSave(kv, rec.regionId, rec.tileKey, rec.savedAt).catch(() => false);
   }
 
   /** Commands run synchronously between local ticks, through the same authoritative actions as before. */
@@ -217,7 +241,7 @@ export class LivePolicy {
   private attached = false;
   private flushQueued = false;
 
-  constructor(private sim: Simulation, private signal: AbortSignal) {
+  constructor(private sim: Simulation, private signal: AbortSignal, private clock: () => number = () => performance.now()) {
     const self = this;
     this.view = {
       get alerts() { return self.snapshot.alerts; },
@@ -344,7 +368,7 @@ export class LivePolicy {
       if (unbanneredPrompt(inc, this.alerts, this.dismissed, (i) => this.send(em, i))) this.incoming.add(inc.id);
     }
     this.flush();
-    const now = this.sim.simTime(), nowMs = performance.now();
+    const now = this.sim.simTime(), nowMs = this.clock();
     for (const [id, alert] of this.alerts) {
       const inc = em?.incident(id);
       const waiting = inc && (inc.state === 'uncovered' || inc.state === 'queued');

@@ -3,8 +3,8 @@ import type { CellRect } from '../core/events';
 import type { Overlay } from '../core/types';
 import type { RegionContext } from '../region/regionEffects';
 import type { RegionCitySummary } from '../region/types';
-import type { CityRecord } from '../save/index';
-import type { RecoveryMarker } from '../save/recovery';
+import type { CityRecord } from '../save/cities';
+import type { RecoveryMarker, WriteResult } from '../save/recoveryCodec';
 import type { AnyTypedArray, SerializedCity } from '../save/serialize';
 import type { Building, CityState, HistorySeries } from '../sim/CityState';
 import type { EmergencyEvent } from '../sim/Simulation';
@@ -19,11 +19,12 @@ export type CommandOp = 'zone' | 'dezone' | 'bulldoze' | 'buildNetwork' | 'build
   | 'debug.runDays' | 'debug.verify' | 'debug.setStepBudget' | 'debug.setTrafficMinCycle';
 export type QueryName = 'inspectBuilding' | 'inspectCell' | 'dispatchOptions' | 'routePreview' | 'emergencyReport'
   | 'demolishRisks' | 'sideDemolishRisks' | 'stopsNear' | 'ferryPartnersFor' | 'openAdvice' | 'advisorIssues'
-  | 'capHints' | 'tourismSummary' | 'attractivenessBreakdown' | 'unservedClusters' | 'computeMonthlyBudget' | 'garageStates' | 'verify';
+  | 'capHints' | 'tourismSummary' | 'attractivenessBreakdown' | 'unservedClusters' | 'computeMonthlyBudget' | 'garageStates' | 'verify'
+  | 'upkeepContext';
 // These wire policies are completed by the W0 query / persistence lanes; no handlers live here.
 export type WatchPolicy = 'daily' | 'monthly' | 'change';
 export type SaveReason = 'manual' | 'autosave' | 'hidden' | 'exit';
-export type SnapshotWhy = 'periodic' | 'hidden' | 'journal';
+export type SnapshotWhy = 'periodic' | 'hidden' | 'journal' | 'beforeunload' | 'pagehide' | 'exit';
 export interface SimSettings {
   emergencyUncovered: 'live' | 'pause' | 'ignore';
   emergencyLiveSlowmo: number;
@@ -53,15 +54,28 @@ export type M2W =
 export type W2M =
   | { t: 'hello'; v: number }
   | { t: 'boot'; phase: 'idb' | 'deserialize' | 'wasm' | 'systems' | 'journal' | 'snapshot'; pct: number }
-  | { t: 'ready'; snapshot: SerializedCity; streams: Streams; policy: PolicyState; clock: Clock; savedAt: number; cmd: number; journal?: Journal }
+  | { t: 'ready'; snapshot: SerializedCity; streams: Streams; policy: PolicyState; clock: Clock; savedAt: number; cmd: number; journal?: Journal; changes?: number;
+      /** a resync's: the request ids whose replies it dropped (W1.1b). Main rejects only these; the rest still reply. */
+      lost?: number[] }
   | { t: 'pkt'; p: Packet }
   | { t: 'fatal'; message: string; stack?: string };
 export type Ready = Extract<W2M, { t: 'ready' }>;
+// W1.1b: captured watermarks survive delayed delivery; all outcomes travel after the packet's log.
 export type Reply =
-  | { t: 'qres'; id: number; ok: boolean; value?: unknown; error?: string }
-  | { t: 'saved'; id: number; ok: boolean; savedAt?: number; cmd?: number; summary?: RegionCitySummary; fp?: string; pktSeq?: number; record?: CityRecord; error?: string }
-  | { t: 'snapped'; id: number; marker: RecoveryMarker; payload: Uint8Array; cmd: number }
-  | { t: 'error'; key: string; title: string; message: string; stack?: string; sim: boolean; disabled?: boolean };
+  | { t: 'qres'; id: number; cmd: number; ok: boolean; value?: unknown; error?: string }
+  | { t: 'saved'; id: number; cmd: number; ok: boolean; savedAt?: number; summary?: RegionCitySummary; fp?: string; pktSeq?: number; record?: CityRecord; changes?: number; recoveryDropped?: boolean; error?: string }
+  | { t: 'snapped'; id: number; cmd: number; ok?: true; marker: RecoveryMarker; payload: Uint8Array; fp?: string; changes?: number; result?: WriteResult }
+  | { t: 'snapped'; id: number; cmd: number; ok: false; error?: string }
+  | { t: 'error'; cmd: number; key: string; title: string; message: string; stack?: string; sim: boolean; disabled?: boolean };
+export interface WatchValue { id: number; key: string; cmd: number; value?: unknown; error?: string }
+export interface CommandFailure { ok: false; commandError: string }
+/** The text an error crosses the protocol as; main rebuilds an Error from it, so no "Error: Error: …". */
+export const errorText = (e: unknown): string => e instanceof Error ? e.message : String(e);
+/** A command the worker applied whose Ack a resync dropped (W1.1b): its ticket rejects with this, and callers skip
+ *  failure feedback, since the edit happened. */
+export class CommandOutcomeLost extends Error {
+  constructor(readonly seq: number) { super('Command applied; its outcome was lost in a resync'); this.name = 'CommandOutcomeLost'; }
+}
 
 export interface Clock { day: number; frac: number; speed: number; slow: number; spd: number; live: boolean }
 export interface PolicyState {
@@ -118,8 +132,10 @@ export interface Packet extends Streams {
   seq: number; cmd: number; clock: Clock; log: Entry[];
   recs?: Float64Array; incs?: IncidentRecord[]; defs?: string[]; cells?: CellPatch[]; layers?: LayerPatch[];
   rasters?: RasterPatch[]; blds?: Float64Array; plain?: PlainPatch; policy?: PolicyState;
-  watch?: { id: number; key: string; value: unknown }[]; replies?: Reply[]; acks?: unknown[];
+  watch?: WatchValue[]; replies?: Reply[]; acks?: unknown[];
   pong?: number; stats?: WorkerStats; digest?: number;
+  /** the worker's change-event count at this packet (W1.1b): main mirrors it, so dirty tracking survives a resync */
+  changes?: number;
 }
 
 export const REC_FIELDS = ['id', 'x', 'z', 'w', 'd', 'rot', 'variant', 'pop', 'jobs', 'capacity', 'wealth', 'built', 'age',

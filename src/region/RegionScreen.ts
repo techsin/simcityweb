@@ -3,6 +3,7 @@
  * music, settings), founded-cities list, hover tooltip, floating city labels and the selected-tile card
  * (Found new city / Play / Delete city).
  */
+import * as THREE from 'three';
 import { audio } from '../audio';
 import type { QualityLevel } from '../render/contracts';
 import { PRESET_BY_ID, type RegionModel } from './RegionModel';
@@ -36,6 +37,14 @@ export class RegionScreen {
   private tileCard: HTMLElement | null = null;
   private labels = new Map<string, HTMLElement>();
   private labelLayer: HTMLElement;
+  private labelWidth = 0;
+  private labelHeight = 0;
+  private labelResize: ResizeObserver | null = null;
+  private labelView = new THREE.Matrix4();
+  private labelProjection = new THREE.Matrix4();
+  private labelsMoving = false;
+  private labelsDisposed = false;
+  private lastLabels = -Infinity;
   private player!: MusicPlayer;
   private hoverKey = '';
   private fileInput: HTMLInputElement;
@@ -78,6 +87,11 @@ export class RegionScreen {
     };
     this.view.onDoubleClick = (tile) => (tile.city ? cb.onPlay(tile) : cb.onFound(tile));
     this.view.onFrame = () => this.updateLabels();
+    this.resizeLabels();
+    if (typeof ResizeObserver !== 'undefined') {
+      this.labelResize = new ResizeObserver(() => this.resizeLabels());
+      this.labelResize.observe(this.view.renderer.domElement);
+    }
     window.addEventListener('keydown', this.onKey);
     void this.view.refreshCities();
     this.view.start();
@@ -265,7 +279,24 @@ export class RegionScreen {
     return c;
   }
 
-  private updateLabels(): void {
+  private resizeLabels(): void {
+    if (this.labelsDisposed) return;
+    const r = this.view.renderer.domElement.getBoundingClientRect();
+    this.labelWidth = r.width;
+    this.labelHeight = r.height;
+    this.updateLabels(true);
+  }
+
+  private updateLabels(force = false): void {
+    if (this.labelsDisposed) return;
+    const cam = this.view.camera, now = performance.now();
+    const moving = !this.labelView.equals(cam.matrixWorld) || !this.labelProjection.equals(cam.projectionMatrix);
+    const stopped = this.labelsMoving && !moving;
+    this.labelsMoving = moving;
+    this.labelView.copy(cam.matrixWorld);
+    this.labelProjection.copy(cam.projectionMatrix);
+    if (!force && !stopped && (!moving || now - this.lastLabels < 100)) return;
+    this.lastLabels = now;
     const seen = new Set<string>();
     for (const t of this.model.data.tiles) {
       if (!t.city) continue;
@@ -281,13 +312,14 @@ export class RegionScreen {
         el.dataset.txt = txt;
         el.replaceChildren(t.city.name, h('small', {}, formatPop(t.city.population)));
       }
-      const p = this.view.project(this.view.tileCenter(t, 260));
-      if (!p) {
+      const p = this.view.tileCenter(t, 260).project(cam);
+      if (p.z > 1 || p.z < -1) {
         el.style.opacity = '0';
         continue;
       }
       el.style.opacity = '1';
-      el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
+      const x = (p.x * 0.5 + 0.5) * this.labelWidth, y = (-p.y * 0.5 + 0.5) * this.labelHeight;
+      el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
     }
     for (const [k, el] of this.labels)
       if (!seen.has(k)) {
@@ -352,10 +384,13 @@ export class RegionScreen {
     this.renderCard();
     this.renderList();
     if (this.view.selectedTile) this.selectTile(this.view.selectedTile);
+    this.updateLabels(true);
     await this.view.refreshCities();
   }
 
   dispose(): void {
+    this.labelsDisposed = true;
+    this.labelResize?.disconnect();
     window.removeEventListener('keydown', this.onKey);
     this.player.dispose();
     this.view.dispose();

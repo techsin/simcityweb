@@ -54,6 +54,8 @@ describe('build card tooltips: no "Click to select" under a card that does not s
     const ctx = {
       get state() { return sim.state; },
       sim,
+      // the shared ruin index (src/ui/ruinState.ts) listens for building flag flips through the host's events
+      host: { events: sim.events, commandCount: 0 },
       signal: new AbortController().signal,
       ui: { on: () => () => undefined },
       tools: { activeId: null, select: () => true },
@@ -75,6 +77,7 @@ describe('build card tooltips: no "Click to select" under a card that does not s
     expect(html).not.toContain('Click to select');
     // in ruins: the r4 reason, no footer
     range.flags |= BF.Burnt;
+    sim.events.emit('buildingChanged', range); // as fire.ts and disasters.ts do when a building burns
     html = show(findToolSpec(ctx, 'plop:rw_missile_range')!);
     expect(textOf(tip)).toContain(UNIQUE_RUINS_TEXT);
     expect(html).not.toContain('Click to select');

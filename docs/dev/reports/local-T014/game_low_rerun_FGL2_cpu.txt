@@ -1,0 +1,27 @@
+== FGL2 (game  low): 40 runs, labels base base2 c024 new new2, reps 8; machine CPU over the runs: median of run medians 10.4 % (range 6.3-22.5), median p90 34.2 %; field cpu
+street         pairs 0.762 [0.740-0.781] (1/16)  vmeans 0.753 [0.702-0.775] (0/8)  A/A base 0.979 [0.798-1.176]  new 1.064 [1.029-1.232]  -> ok (<= base)
+     medians (ms): base 28.1 base2 28.0 c024 26.8 new 20.6 new2 22.3 | frames>16.7: base 0 base2 0 c024 0 new 0 new2 0 | >33.3: base 0 base2 0 c024 0 new 0 new2 0
+     vs c024: pairs 0.795 [0.755-0.806] (0/8)  vmeans 0.801 [0.777-0.870]
+zoomout        pairs 0.773 [0.731-0.795] (0/16)  vmeans 0.768 [0.747-0.785] (0/8)  A/A base 1.054 [0.982-1.063]  new 1.024 [0.955-1.111]  -> ok (<= base)
+     medians (ms): base 142.0 base2 147.4 c024 139.7 new 107.4 new2 114.4 | frames>16.7: base 0 base2 0 c024 0 new 0 new2 0 | >33.3: base 0 base2 0 c024 0 new 0 new2 0
+     vs c024: pairs 0.762 [0.725-0.772] (0/8)  vmeans 0.779 [0.722-0.818]
+farorbit       pairs 0.923 [0.880-1.001] (5/16)  vmeans 0.904 [0.844-0.993] (2/8)  A/A base 0.987 [0.926-1.043]  new 1.063 [0.882-1.111]  -> ok (<= base)
+     medians (ms): base 85.3 base2 85.6 c024 100.5 new 76.6 new2 79.1 | frames>16.7: base 0 base2 0 c024 0 new 0 new2 0 | >33.3: base 0 base2 0 c024 0 new 0 new2 0
+     vs c024: pairs 0.754 [0.707-0.817] (0/8)  vmeans 0.754 [0.709-0.790]
+default        pairs 0.977 [0.901-1.022] (5/16)  vmeans 0.940 [0.892-1.030] (3/8)  A/A base 1.002 [0.948-1.050]  new 0.930 [0.838-1.225]  -> ok (<= base)
+     medians (ms): base 25.9 base2 26.7 c024 30.7 new 26.8 new2 25.0 | frames>16.7: base 0 base2 0 c024 0 new 0 new2 0 | >33.3: base 0 base2 0 c024 0 new 0 new2 0
+     vs c024: pairs 0.874 [0.737-0.907] (0/8)  vmeans 0.817 [0.732-0.886]
+zoomin         pairs 0.965 [0.934-1.047] (6/16)  vmeans 0.981 [0.923-1.029] (4/8)  A/A base 1.025 [0.998-1.033]  new 0.976 [0.910-1.226]  -> ok (<= base)
+     medians (ms): base 83.3 base2 83.9 c024 99.9 new 83.2 new2 81.0 | frames>16.7: base 0 base2 0 c024 0 new 0 new2 0 | >33.3: base 0 base2 0 c024 0 new 0 new2 0
+     vs c024: pairs 0.811 [0.691-0.841] (0/8)  vmeans 0.791 [0.776-0.832]
+pan            pairs 0.930 [0.906-0.957] (3/16)  vmeans 0.917 [0.864-0.980] (0/8)  A/A base 1.010 [0.935-1.052]  new 1.042 [0.956-1.169]  -> ok (<= base)
+     medians (ms): base 80.0 base2 78.1 c024 91.1 new 75.3 new2 75.3 | frames>16.7: base 0 base2 0 c024 0 new 0 new2 0 | >33.3: base 0 base2 0 c024 0 new 0 new2 0
+     vs c024: pairs 0.793 [0.709-0.819] (1/8)  vmeans 0.781 [0.752-0.843]
+fastpan        pairs 1.006 [0.956-1.026] (8/16)  vmeans 0.983 [0.923-1.016] (3/8)  A/A base 0.996 [0.955-1.065]  new 1.050 [0.956-1.145]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+     medians (ms): base 37.7 base2 37.5 c024 47.8 new 36.3 new2 37.2 | frames>16.7: base 0 base2 0 c024 0 new 0 new2 0 | >33.3: base 0 base2 0 c024 0 new 0 new2 0
+     vs c024: pairs 0.781 [0.676-0.798] (0/8)  vmeans 0.767 [0.724-0.791]
+cuts           pairs 1.001 [0.935-1.019] (9/16)  vmeans 0.969 [0.938-1.047] (3/8)  A/A base 1.085 [1.001-1.131]  new 1.038 [0.915-1.060]  -> minor/inconclusive (point > 1, CI reaches <= 1.02)
+     medians (ms): base 24.7 base2 26.0 c024 31.9 new 25.3 new2 25.6 | frames>16.7: base 0 base2 0 c024 0 new 0 new2 0 | >33.3: base 0 base2 0 c024 0 new 0 new2 0
+     vs c024: pairs 0.810 [0.754-0.857] (0/8)  vmeans 0.801 [0.773-0.827]
+POOLED moving  pairs 0.909 [0.884-0.923] (0/16)  vmeans 0.907 [0.860-0.916] (0/8)  A/A base 1.004 [0.992-1.035]  new 1.005 [0.954-1.155]  [zoomout,farorbit,zoomin,pan,fastpan,cuts]
+     vs c024: pairs 0.784 [0.719-0.803] (0/8)  vmeans 0.778 [0.758-0.799]

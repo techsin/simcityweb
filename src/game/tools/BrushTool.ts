@@ -2,7 +2,7 @@
 import { CELL_SIZE } from '../../core/constants';
 import type { ActionResult, TerraformKind } from '../../sim/actions';
 import type { GameContext } from '../context';
-import { h, slider } from '../../ui/dom';
+import { h, paintFill, slider } from '../../ui/dom';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
 
 /** brush settings shared by all brush tools */
@@ -113,9 +113,10 @@ export class BrushTool extends Tool {
   }
   override key(e: KeyboardEvent, p: ToolPointer | null): boolean {
     if (e.type !== 'keydown') return false;
-    if (e.key === '[' || e.key === ']') {
+    const delta = e.code === 'Equal' ? 1 : e.code === 'Minus' ? -1 : e.key === ']' ? 1 : e.key === '[' ? -1 : 0;
+    if (delta) {
       const before = brush.radius;
-      brush.radius = Math.max(1, Math.min(10, brush.radius + (e.key === ']' ? 1 : -1)));
+      brush.radius = Math.max(1, Math.min(10, brush.radius + delta));
       // detent tick pitched like the size slider (bigger = higher); a dull tap at the limits
       if (brush.radius !== before) this.ctx.sound('tick', { pitch: 0.84 + 0.42 * ((brush.radius - 1) / 9) });
       else if (!e.repeat) this.ctx.sound('tap', { pitch: 0.6 });
@@ -130,7 +131,7 @@ export class BrushTool extends Tool {
   private syncOptions(): void {
     if (!this.opts) return;
     this.opts.r.value = String(brush.radius);
-    (this.opts.r as any).__paint?.();
+    paintFill(this.opts.r);
     this.opts.rv.textContent = String(brush.radius);
   }
   override options(): HTMLElement {

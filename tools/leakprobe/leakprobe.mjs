@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 /**
  * Browser exit-leak gate (close-out c4, T016): play a city, query one growable building, Esc, Save & exit to region,
- * then count the live CityScene / CityState objects after a forced GC. Both must be 0 at +3 s on every cycle.
- * See tools/leakprobe/README.md.
+ * then count the live CityScene / CityState objects after a forced GC. Both must be 0 at +3 s on every cycle, and
+ * each must be at least 1 in the city before the exit (the positive control: a count of another module instance
+ * cannot pass vacuously). See tools/leakprobe/README.md.
  *
- *   node tools/leakprobe/leakprobe.mjs --city <x.region.metropolis> [--mode fresh|persistent] [--cycles 3]
- *        [--size 1280x720] [--hostile] [--census] [--out result.json] [--port 5310]
+ *   node tools/leakprobe/leakprobe.mjs --city <x.region.metropolis> [--mode fresh|persistent|budget] [--cycles 3]
+ *        [--months 40] [--size 1280x720] [--hostile] [--census] [--out result.json] [--port 5310]
+ *        [--scene-module URL] [--state-module URL] [--help]
  *
  * --mode fresh       one browser launched by Playwright for the run (a fresh profile)
  * --mode persistent  one Chromium started with a remote-debugging port and its own user-data dir, kept for the whole
  *                    run; every step connects over CDP and disconnects again (the T013 playtester's setup)
+ * --mode budget      fresh browser; Budget stays open for 40+ months per tab at speed 3 (Taxes, then Services)
  * --hostile          run each cycle the way the T013 playtester's harness did (Playwright locator calls on the inspector's
  *                    WHY? header and the pause menu, a getByText exit): that harness keeps a node of the exited city's
  *                    DOM alive, and the city must still be freed (it was not before close-out c4)
@@ -24,7 +27,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
+import { assertFlat, assertInCity, measure } from './counts.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const argv = process.argv.slice(2);
@@ -32,7 +35,8 @@ const arg = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 && argv[
 const flag = (k) => argv.includes(`--${k}`);
 const CITY = arg('city');
 const MODE = arg('mode', 'fresh');
-const CYCLES = +arg('cycles', '3');
+const CYCLES = +arg('cycles', MODE === 'budget' ? '1' : '3');
+const MONTHS = +arg('months', '40');
 const [W, H] = arg('size', '1280x720').split('x').map(Number);
 const HOSTILE = flag('hostile');
 const CENSUS = flag('census');
@@ -41,7 +45,29 @@ const PORT = +arg('port', '5310');
 const CDP_PORT = PORT + 1000;
 const URL = `http://127.0.0.1:${PORT}/`;
 const GPU = ['--enable-gpu', '--ignore-gpu-blocklist', '--use-angle=default'];
-if (!CITY) { console.error('usage: node tools/leakprobe/leakprobe.mjs --city <x.region.metropolis> [--mode fresh|persistent] ...'); process.exit(2); }
+const SCENE_MODULE = arg('scene-module', '/src/game/CityScene.ts');
+const STATE_MODULE = arg('state-module', '/src/sim/CityState.ts');
+const HELP = `usage: node tools/leakprobe/leakprobe.mjs --city <x.region.metropolis> [options]
+  --mode fresh|persistent|budget  default fresh; budget uses a fresh browser
+  --hostile                      locator-held inspector node (fresh / persistent only)
+  --cycles N                     default 3; budget default 1
+  --months N                     budget: months per tab, at least 40 (default 40)
+  --size WxH                     default 1280x720
+  --port N                       own Vite port (default 5310); persistent CDP uses N+1000
+  --census                       detached-tree listener census after exit
+  --out file.json                in-city, after-exit and Budget measurements
+  --scene-module URL             CityScene import for counts (default /src/game/CityScene.ts)
+  --state-module URL             CityState import for counts (default /src/sim/CityState.ts)
+  --help                         show this help without loading Playwright or starting a browser
+Budget: Taxes then Services, speed 3; each tab's input / DOM counts must stay within +/-5%.
+Every cycle first requires CityScene >= 1 and CityState >= 1 in the city, then both 0 after exit.`;
+if (flag('help')) { console.log(HELP); process.exit(0); }
+if (!CITY || !['fresh', 'persistent', 'budget'].includes(MODE) || !Number.isInteger(CYCLES) || CYCLES < 1 ||
+    !Number.isInteger(MONTHS) || MONTHS < 40 || (MODE === 'budget' && HOSTILE) ||
+    ![W, H].every((v) => Number.isInteger(v) && v > 0) || !Number.isInteger(PORT) || PORT < 1 || PORT > 64535) {
+  console.error(HELP); process.exit(2);
+}
+const { chromium } = await import('playwright');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -70,7 +96,7 @@ function killTree(p) {
 let launched = null; // fresh: the Playwright browser; persistent: the spawned Chromium process
 let profileDir = null;
 async function openBrowser() {
-  if (MODE === 'fresh') {
+  if (MODE !== 'persistent') {
     launched = await chromium.launch({ headless: true, args: GPU });
     const page = await launched.newPage({ viewport: { width: W, height: H } });
     return { page, done: async () => {} };
@@ -93,7 +119,7 @@ async function connectStep() {
 
 // ---------------------------------------------------------------- CDP counts (raw socket: no Playwright session involved)
 async function pageSocket() {
-  const port = MODE === 'fresh' ? null : CDP_PORT;
+  const port = MODE === 'persistent' ? CDP_PORT : null;
   if (port === null) return null;
   const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   const t = list.find((x) => x.type === 'page' && x.url.startsWith(URL));
@@ -103,29 +129,18 @@ async function pageSocket() {
   ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.id && pend.has(m.id)) { const p = pend.get(m.id); pend.delete(m.id); m.error ? p.rej(new Error(JSON.stringify(m.error))) : p.res(m.result); } };
   return { send: (method, params = {}) => new Promise((res, rej) => { const i = ++id; pend.set(i, { res, rej }); ws.send(JSON.stringify({ id: i, method, params })); }), close: () => ws.close() };
 }
-async function counts(page) {
+async function counts(page, afterExit = false) {
   // fresh mode: a Playwright CDP session (objectGroup on every call, released); persistent: a raw socket
   let cdp = await pageSocket(), session = null;
   if (!cdp) { session = await page.context().newCDPSession(page); cdp = { send: (m, p) => session.send(m, p), close: () => session.detach().catch(() => {}) }; }
   const G = 'leakprobe';
   try {
-    await cdp.send('Runtime.enable');
-    for (let i = 0; i < 3; i++) await cdp.send('HeapProfiler.collectGarbage');
-    const out = {};
-    for (const [name, expr] of [['CityScene', "import('/src/game/CityScene.ts').then((m) => m.CityScene.prototype)"], ['CityState', "import('/src/sim/CityState.ts').then((m) => m.CityState.prototype)"], ['HTMLCanvasElement', 'HTMLCanvasElement.prototype']]) {
-      const r = await cdp.send('Runtime.evaluate', { expression: expr, objectGroup: G, awaitPromise: true });
-      const q = await cdp.send('Runtime.queryObjects', { prototypeObjectId: r.result.objectId, objectGroup: G });
-      const n = await cdp.send('Runtime.callFunctionOn', { objectId: q.objects.objectId, functionDeclaration: 'function () { return this.length; }', returnByValue: true, objectGroup: G });
-      out[name] = n.result.value;
-      await cdp.send('Runtime.releaseObjectGroup', { objectGroup: G });
-    }
-    const hu = await cdp.send('Runtime.getHeapUsage');
-    out.heapMB = +(hu.usedSize / 1048576).toFixed(1);
-    if (CENSUS) out.detached = await census(cdp, G);
+    const out = await measure(cdp, { sceneModule: SCENE_MODULE, stateModule: STATE_MODULE, dom: MODE === 'budget' });
+    if (CENSUS && afterExit) out.detached = await census(cdp, G);
     return out;
   } finally {
     await cdp.send('Runtime.releaseObjectGroup', { objectGroup: G }).catch(() => {});
-    cdp.close();
+    await cdp.close();
   }
 }
 /** listeners left on each detached DOM tree (by type), and how many nodes JS still retains in it */
@@ -282,20 +297,117 @@ async function saveAndExit(page) {
   await until(page, atRegion, 120000, 'region screen after exit');
 }
 
+// ---------------------------------------------------------------- Budget growth (T025)
+/** Settings controls can be below the fold: scroll with the mouse, returning only positions / plain values. */
+async function clickSetting(page, label, text) {
+  for (let i = 0; i < 12; i++) {
+    const p = await page.evaluate(([label, text]) => {
+      const body = document.querySelector('.settings-body');
+      const row = [...body.querySelectorAll('.set-row')].find((r) => r.querySelector('.sr-l')?.textContent === label);
+      const b = text === null ? row?.querySelector('.ui-switch') : [...(row?.querySelectorAll('button') ?? [])].find((b) => b.textContent === text);
+      if (!b) throw new Error(`no setting ${label}: ${text}`);
+      if (text === null && b.getAttribute('aria-checked') === 'false') return { done: true };
+      const r = b.getBoundingClientRect(), a = body.getBoundingClientRect();
+      const top = body.querySelector('.set-nav').getBoundingClientRect().bottom;
+      const y = r.y + r.height / 2;
+      return y > top + 8 && y < a.bottom - 8 ? { click: [r.x + r.width / 2, y] } :
+        { scroll: [a.right - 20, (top + a.bottom) / 2, y - (top + a.bottom) / 2] };
+    }, [label, text]);
+    if (p.done) return;
+    if (p.click) { await clickAt(page, p.click); return; }
+    await page.mouse.move(p.scroll[0], p.scroll[1]);
+    await page.mouse.wheel(0, p.scroll[2]);
+    await sleep(300);
+  }
+  throw new Error(`setting did not scroll into view: ${label}`);
+}
+const budgetState = (page) => page.evaluate(() => {
+  const sc = window.__metropolis.city.scene, p = sc.panels.get('budget');
+  return { day: sc.sim.state.day, month: sc.sim.state.monthIndex, speed: sc.sim.speed,
+    open: !!p?.isOpen && p.el.isConnected, tab: p?.el.querySelector('.tabs button.on')?.textContent,
+    inputs: p?.el.querySelectorAll('input[type="range"]').length ?? 0,
+    // diagnostics for the +/-5 % node rule: the attached tree and the emergency banners up at the checkpoint
+    attachedNodes: (() => { const w = document.createTreeWalker(document, NodeFilter.SHOW_ALL); let n = 1; while (w.nextNode()) n++; return n; })(),
+    banners: document.querySelectorAll('.emg-banner').length };
+});
+async function budgetSample(page, tab) {
+  await clickText(page, '.speed button[title="Pause (Space)"]');
+  await until(page, async (p) => (await budgetState(p)).speed === 0, 5000, 'paused for Budget count');
+  // Toasts and closing DOM can live for 12 s. Settle at every checkpoint while Budget stays open.
+  await sleep(15000);
+  const state = await budgetState(page);
+  if (!state.open || state.tab !== tab || state.inputs < 1) throw new Error(`Budget ${tab} is not open: ${JSON.stringify(state)}`);
+  const count = await counts(page);
+  assertInCity(count);
+  return { ...state, ...count };
+}
+async function budgetCycle(page, tabs) {
+  await clickText(page, '.speed button[title="Pause (Space)"]');
+  await clickText(page, 'button[data-panel="settings"]');
+  await clickText(page, '.set-nav button', 'Gameplay');
+  await clickSetting(page, 'Autosave', 'Off');
+  await clickSetting(page, 'New Year celebration', 'Off');
+  await clickSetting(page, 'Uncovered emergencies', 'Keep going');
+  await clickText(page, '.set-nav button', 'Interface');
+  await clickSetting(page, 'Notifications', null);
+  const settings = await page.evaluate(() => {
+    const s = window.__metropolis.city.scene.settings;
+    return { autosaveMonths: s.autosaveMonths, newYear: s.newYear, emergencyUncovered: s.emergencyUncovered, toasts: s.toasts };
+  });
+  if (settings.autosaveMonths !== 0 || settings.newYear !== 'off' || settings.emergencyUncovered !== 'ignore' || settings.toasts !== false) {
+    throw new Error(`Budget setup did not apply: ${JSON.stringify(settings)}`);
+  }
+  log('Budget setup', JSON.stringify(settings));
+  await page.keyboard.press('Escape');
+  await sleep(300);
+  await clickText(page, 'button[data-panel="budget"]');
+  const daysPerMonth = await page.evaluate(async () => (await import('/src/core/constants.ts')).DAYS_PER_MONTH);
+  for (const tab of ['Taxes', 'Services']) {
+    await clickText(page, '.panel .tabs button', tab);
+    const baseline = await budgetSample(page, tab);
+    const entry = { tab, baseline, samples: [] };
+    tabs.push(entry);
+    log(`Budget ${tab}: baseline day ${baseline.day}, inputs ${baseline.HTMLInputElement}, nodes ${baseline.nodes}`);
+    for (const months of [Math.ceil(MONTHS / 2), MONTHS]) {
+      await page.keyboard.press('3');
+      await until(page, async (p) => {
+        const state = await budgetState(p);
+        if (!state.open || state.tab !== tab || state.speed !== 3) throw new Error(`Budget run interrupted: ${JSON.stringify(state)}`);
+        return state.day - baseline.day >= months * daysPerMonth;
+      }, 300000, `Budget ${tab}: ${months} months at speed 3`);
+      const sample = await budgetSample(page, tab);
+      sample.months = (sample.day - baseline.day) / daysPerMonth;
+      entry.samples.push(sample);
+      log(`Budget ${tab}: ${sample.months.toFixed(1)} months, inputs ${sample.HTMLInputElement}, nodes ${sample.nodes}`);
+      assertFlat(baseline, sample);
+    }
+  }
+}
+
 // ---------------------------------------------------------------- run
-const result = { city: CITY, mode: MODE, hostile: HOSTILE, size: [W, H], cycles: [], pass: false };
+const result = { city: CITY, mode: MODE, hostile: HOSTILE, size: [W, H], sceneModule: SCENE_MODULE, stateModule: STATE_MODULE, cycles: [], pass: false };
+if (MODE === 'budget') result.monthsPerTab = MONTHS;
 let vite = null;
 try {
   vite = await startVite();
   log('vite', URL, 'mode', MODE, HOSTILE ? '(hostile)' : '');
   let step = await openBrowser();
-  result.browser = MODE === 'fresh' ? launched.version() : (await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json()).Browser;
+  result.browser = MODE !== 'persistent' ? launched.version() : (await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json()).Browser;
   await importAndPlay(step.page);
   for (let c = 1; c <= CYCLES; c++) {
     if (c > 1) { if (MODE === 'persistent') { await step.done(); step = await connectStep(); } await play(step.page); }
     if (MODE === 'persistent') { await step.done(); step = await connectStep(); }
+    const cycle = { c, inCity: await counts(step.page) };
+    result.cycles.push(cycle);
+    log(`cycle ${c}: in-city CityScene ${cycle.inCity.CityScene}, CityState ${cycle.inCity.CityState}`);
+    assertInCity(cycle.inCity);
     let queried;
-    if (HOSTILE) queried = await hostileCycle(step.page);
+    if (MODE === 'budget') {
+      cycle.budget = [];
+      await budgetCycle(step.page, cycle.budget);
+      queried = 'Budget: Taxes, Services';
+      await saveAndExit(step.page);
+    } else if (HOSTILE) queried = await hostileCycle(step.page);
     else {
       queried = await queryGrowable(step.page);
       if (MODE === 'persistent') { await step.done(); step = await connectStep(); }
@@ -303,21 +415,21 @@ try {
     }
     if (MODE === 'persistent') await step.done();
     await sleep(3000);
-    const at3 = await counts(step.page);
+    const at3 = await counts(step.page, true);
     log(`cycle ${c}: queried ${queried}; at +3 s CityScene ${at3.CityScene}, CityState ${at3.CityState}, canvases ${at3.HTMLCanvasElement}, heap ${at3.heapMB} MB`);
-    result.cycles.push({ c, queried, at3 });
+    Object.assign(cycle, { queried, at3 });
     if (MODE === 'persistent') step = await connectStep();
   }
-  result.pass = result.cycles.length === CYCLES && result.cycles.every((x) => x.at3.CityScene === 0 && x.at3.CityState === 0);
+  result.pass = result.cycles.length === CYCLES && result.cycles.every((x) => x.inCity.CityScene >= 1 && x.inCity.CityState >= 1 && x.at3.CityScene === 0 && x.at3.CityState === 0);
 } catch (e) {
   result.error = String(e?.stack ?? e);
   log('ERROR', result.error);
 } finally {
-  if (MODE === 'fresh') await launched?.close().catch(() => {});
+  if (MODE !== 'persistent') await launched?.close().catch(() => {});
   else killTree(launched);
   killTree(vite);
   if (profileDir) { await sleep(1000); try { rmSync(profileDir, { recursive: true, force: true }); } catch { /* still locked */ } }
 }
 if (OUT) writeFileSync(OUT, JSON.stringify(result, null, 1));
-log(result.pass ? 'PASS' : 'FAIL', JSON.stringify(result.cycles.map((x) => [x.at3.CityScene, x.at3.CityState])));
+log(result.pass ? 'PASS' : 'FAIL', JSON.stringify(result.cycles.map((x) => x.at3 ? [x.at3.CityScene, x.at3.CityState] : null)));
 process.exit(result.pass ? 0 : 1);
