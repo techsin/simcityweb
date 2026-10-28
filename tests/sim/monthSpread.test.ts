@@ -30,6 +30,7 @@ import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { getDef } from '../../src/sim/catalog';
 import { placeBuilding } from '../../src/sim/economy/buildings';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
+import { decodeBundle, encodeBundle } from '../../src/save/bundle';
 
 // ------------------------------------------------------------------------------------------------ the town
 const SIZE = 160;
@@ -195,8 +196,9 @@ function sha(v: unknown): string {
   feed(v);
   return h.digest('hex');
 }
-/** the window of the hotel-room / historic slices that `day` belongs to (the days after one TOURISM_DAY up to the next) */
-const windowOf = (day: number) => Math.ceil((day - TOURISM_DAY) / TOURISM_SLICES);
+/** the window of the hotel-room / historic slices that `day` belongs to (the days after one TOURISM_DAY up to the next;
+ *  0, not −0, before the first one) */
+const windowOf = (day: number) => Math.ceil((day - TOURISM_DAY) / TOURISM_SLICES) + 0;
 
 // ------------------------------------------------------------------------------------------------ tests
 describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick', () => {
@@ -276,6 +278,65 @@ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick'
       }
       // … and so does the whole city: its save on day 91, field by field and by digest (savedAt is the clock time)
       const e = serializeCity(g.st, { copy: true });
+      expect(diffPath({ ...end, savedAt: 0 }, { ...e, savedAt: 0 }), `save on day ${s}: the whole city on day 91`).toBe('');
+      expect(sha(e), `save on day ${s}: the city digest on day 91`).toBe(sha(end));
+    }
+  });
+
+  it('a save in the city\'s first month continues exactly: the slice window is 0, never −0 (the bundle codec stores 0)', { timeout: 120000 }, () => {
+    const ref = town();
+    const saves = new Map<number, SerializedCity>();
+    while (ref.st.day < 91) {
+      ref.sim.advanceDay();
+      if (ref.st.day === 3 || ref.st.day === 25) {
+        expect(Object.is((ref.st.systemData.tourismAcc as { m: number }).m, 0), `day ${ref.st.day}: window 0`).toBe(true);
+        saves.set(ref.st.day, serializeCity(ref.st, { copy: true }));
+      }
+    }
+    const end = serializeCity(ref.st, { copy: true });
+    for (const [s, ser] of saves) {
+      // the game's save files (the bundle codec) and a structured clone load the same city, and both continue the game
+      const viaBundle = deserializeCity(decodeBundle(encodeBundle(ser)) as SerializedCity);
+      const viaClone = deserializeCity(structuredClone(ser));
+      expect(diffPath(viaClone.systemData, viaBundle.systemData), `save on day ${s}: bundle / clone`).toBe('');
+      for (const st of [viaBundle, viaClone]) {
+        const sim = new Simulation(st, systemsOf('tourism'));
+        runTo(sim, 91);
+        const e = serializeCity(st, { copy: true });
+        expect(diffPath({ ...end, savedAt: 0 }, { ...e, savedAt: 0 }), `save on day ${s}: the whole city on day 91`).toBe('');
+      }
+    }
+  });
+
+  it('a layer listener that throws on the pass day leaves the pass saved and the next window started: saves on days 56–59 continue', { timeout: 120000 }, () => {
+    const g = town();
+    let thrown = 0;
+    g.sim.events.on('layerUpdated', (n) => { if (n === 'tourism' && g.st.day === 56 && thrown++ === 0) throw new Error('overlay'); });
+    // (the browser's guard: the scene catches what a day throws and runs the next day)
+    const step = () => { try { g.sim.advanceDay(); } catch (e) { expect((e as Error).message).toBe('overlay'); } };
+    while (g.st.day < 56) step();
+    expect(thrown).toBe(1);
+    // the pass of day 56 is the saved one (fresh for the tick of day 60), and the slice record is the next window's
+    expect(passOf(g.st).m).toBe(2);
+    const acc = g.st.systemData.tourismAcc as { m: number; done: number; rooms: number; hist: number[] };
+    expect([acc.m, acc.done, acc.rooms, acc.hist.length]).toEqual([windowOf(57), 0, 0, 0]);
+    const all = Object.values(g.ids);
+    const saves = new Map<number, SerializedCity>(), views = new Map<number, ReturnType<typeof tourismView>>();
+    for (;;) {
+      if (g.st.day <= 59) {
+        saves.set(g.st.day, serializeCity(g.st, { copy: true }));
+        views.set(g.st.day, tourismView(g.st, all));
+      }
+      if (g.st.day >= 91) break;
+      step();
+    }
+    const end = serializeCity(g.st, { copy: true });
+    for (const [s, ser] of saves) {
+      const h = load(ser);
+      expect(passOf(h.st).m, `save on day ${s}`).toBe(2);
+      expect(diffPath(views.get(s), tourismView(h.st, all)), `save on day ${s}: right after the load`).toBe('');
+      runTo(h.sim, 91);
+      const e = serializeCity(h.st, { copy: true });
       expect(diffPath({ ...end, savedAt: 0 }, { ...e, savedAt: 0 }), `save on day ${s}: the whole city on day 91`).toBe('');
       expect(sha(e), `save on day ${s}: the city digest on day 91`).toBe(sha(end));
     }

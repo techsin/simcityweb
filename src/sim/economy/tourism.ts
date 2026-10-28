@@ -497,8 +497,9 @@ const TOURISM_ALL = (2 ** TOURISM_SLICES) - 1;
 /** systemData.tourismAcc v2 (B3; v1's window ended on the month tick): the window's sums so far, its window
  *  m = tourismWindow(day) and the slices done (bit k = slice k) */
 interface TourismAcc { v: 2; m: number; done: number; rooms: number; hist: number[] }
-/** the window of `day`: the days after one TOURISM_DAY up to and with the next (as demographics.ts' eqHqMonth) */
-const tourismWindow = (day: number): number => Math.ceil((day - TOURISM_DAY) / TOURISM_SLICES);
+/** the window of `day`: the days after one TOURISM_DAY up to and with the next (as demographics.ts' eqHqMonth). (+ 0:
+ *  the days before a city's first TOURISM_DAY would give −0, which a save stores as 0) */
+const tourismWindow = (day: number): number => Math.ceil((day - TOURISM_DAY) / TOURISM_SLICES) + 0;
 /** add the hotel rooms (Σ hotel jobs × HOTEL_ROOMS_PER_JOB) and historic building ids of a slice (−1 = all) */
 function growablesSlice(rt: EconRuntime, slice: number, out: { rooms: number; hist: number[] }): void {
   // (a slice: only its bucket, in list order — the same buildings and sums as the filtered full list; final fixes SE-3)
@@ -524,11 +525,13 @@ function growablesSlice(rt: EconRuntime, slice: number, out: { rooms: number; hi
 export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; refresh(sim: Simulation): void } {
   /**
    * The VENUE PASS (1–3 of the header): venues, historic sites, hotel rooms, beaches, hotels, the totals, the venue
-   * records and the visitor raster, in ascending building id. `acc`: the window's slices (the daily on TOURISM_DAY, every
+   * records and the visitor raster, in ascending building id. `acc`: the window's sums (the daily on TOURISM_DAY, every
    * slice in); null: one full growables pass. systemData.tourismPass is written last: a throw on the way leaves the old
-   * pass, whose stale m sends the tick to its fallback instead of a half-written pass.
+   * pass, whose stale m sends the tick to its fallback instead of a half-written pass. It emits nothing: every caller
+   * emits layerUpdated 'tourism' as its own last statement (as the base's update did), so a listener that throws cannot
+   * leave the saved pass, the slice window or the attract step behind the state in memory.
    */
-  const venuePass = (sim: Simulation, acc: TourismAcc | null): TourismPass => {
+  const venuePass = (sim: Simulation, acc: { rooms: number; hist: readonly number[] } | null): TourismPass => {
     const st = sim.state;
     rt.ensureLists();
     const t0 = performance.now();
@@ -625,7 +628,6 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
     rasterize(st, rt, p.spl);
     rt.timing['tourism.splat'] = performance.now() - tp;
     states.set(st, { venues, pass: p });
-    sim.events.emit('layerUpdated', 'tourism');
     st.systemData.tourismPass = p;
     rt.timing['tourism.pass'] = performance.now() - t0;
     return p;
@@ -731,6 +733,7 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
     /** the whole update now — a venue pass with one full growables pass, then the attract step (tests, tools) */
     refresh(sim) {
       attract(sim, venuePass(sim, null));
+      sim.events.emit('layerUpdated', 'tourism');
     },
     daily(sim) {
       // the window's hotel rooms / historic buildings in daily slices; the venue pass on TOURISM_DAY (after that day's
@@ -750,9 +753,12 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
         a.done |= 1 << k;
       }
       if (k !== TOURISM_DAY) return;
-      venuePass(sim, a.done === TOURISM_ALL ? a : null);
-      // the next window starts with the day after the pass
+      // the window's sums go to the pass and the next window starts with the day after it, before the pass runs; its
+      // layer event goes out last (a listener that throws leaves the record and the saved pass complete)
+      const win = a.done === TOURISM_ALL ? { rooms: a.rooms, hist: a.hist } : null;
       a.m = m + 1; a.done = 0; a.rooms = 0; a.hist = [];
+      venuePass(sim, win);
+      sim.events.emit('layerUpdated', 'tourism');
     },
     init(sim) {
       rt.attach(sim);
@@ -779,6 +785,7 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
       const keep = st.day > 0 && Object.keys(d.attractTerms).length > 0 ? savedOutputs(st) : null;
       attract(sim, venuePass(sim, null));
       if (keep) restoreOutputs(st, keep, st.day % DAYS_PER_MONTH < TOURISM_DAY);
+      sim.events.emit('layerUpdated', 'tourism');
     },
     monthly(sim) {
       const t0 = performance.now();
@@ -789,6 +796,8 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
       const fresh = p !== null && p.m === Math.ceil(st.day / DAYS_PER_MONTH) && states.get(st)?.pass === p;
       attract(sim, fresh ? p : venuePass(sim, null));
       rt.timing.tourism = performance.now() - t0;
+      // (a pass of its own: the layer event after the attract step)
+      if (!fresh) sim.events.emit('layerUpdated', 'tourism');
     },
   };
 }
