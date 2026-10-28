@@ -40,8 +40,11 @@ Keep the console open for errors. See [the report](reports/local-W0.6-saves.md) 
   Both remain available; restoring or discarding one does not remove the other.
 - [ ] Save a city after a recovery snapshot. The old delta is no longer offered. With a deliberately delayed save,
   take a snapshot before completion: the old-base delta is dropped and a fresh one is scheduled while still dirty.
-- [ ] Using the existing storage fault harness, deny localStorage payload writes while keeping IDB available;
-  recovery still works from IDB. Lose the IDB recovery record while keeping a valid LS snapshot; startup adopts it.
+- [ ] Deny localStorage payload writes while keeping IDB available: in DevTools, wrap `Storage.prototype.setItem` so
+  it throws a QuotaExceededError for the key `metropolis.recovery.data`. Recovery still works from IDB. Then lose
+  the IDB recovery record while keeping a valid LS snapshot (DevTools → Application → IndexedDB → the `recovery` store,
+  delete the city's entry): startup adopts the LS snapshot. There is no fault harness in the repo; these are manual
+  steps.
 - [ ] Force a full-save failure, then exit. Local retry/recovery must preserve progress, report the failure, and not
   falsely mark it clean. Remove the fault, recover, save and re-enter.
 

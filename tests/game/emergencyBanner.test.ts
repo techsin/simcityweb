@@ -525,6 +525,7 @@ describe('EmergencyBanner: final-fix round 2', () => {
       } else {
         // (both trucks out behind the sim's back: the banner itself checks the live free counts)
         (em as unknown as { out: Map<number, number> }).out.set(station.id, 2);
+        (em as unknown as { stVer: number }).stVer++; // publish the fixture's synthetic fleet change
         h.tick();
         expect(sim.speed).toBe(3);
         expect(h.banner.liveActive).toBe(false);
@@ -803,6 +804,7 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     expect(s.shown.slice(0, idsB.length)).toEqual(idsB.slice(0, s.shown.length));
     // both of B's trucks out (behind the sim's back, as in the EM-1 test): street B's banners read "No free unit"
     (em as unknown as { out: Map<number, number> }).out.set(stationB.id, 2);
+    (em as unknown as { stVer: number }).stVer++;
     for (const b of (h.banner as unknown as { banners: Map<number, { optsVersion: number }> }).banners.values()) b.optsVersion = -1;
     h.tick();
     h.tick();
