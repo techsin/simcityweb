@@ -45,7 +45,9 @@
  * pre-WP5 rules need (zoned blocks, plopped facilities) run on the last days of the month (MONTH_SCAN_DAYS) and are
  * saved with the city (AdvisorData.scan), so a game loaded mid-scan gives the same advice. The places of the rules
  * (unservedClusters / uncoveredHotspots / the worst home) are looked up only for advice that is announced or listed
- * (Advice.where); the Advisors panel reads advisorIssues (the month tick's list) while the game runs.
+ * (Advice.where); the Advisors panel reads advisorIssues (the month tick's list) while the game runs. B3 (A1): on the
+ * second scan day the coming tick's announcements are predicted with the tick's own test (announce) and their places
+ * looked up then (AdvisorData.scan.places); the tick takes a predicted place instead of a lookup.
  *
  * Flavour headlines: a shuffle bag over HEADLINES (each line once per cycle; lines that don't fit the city's size,
  * season, climate or buildings wait in the bag), and no line again within HEADLINE_REPEAT_DAYS (2 in-game years).
@@ -54,6 +56,7 @@
 import type { SimSystem, Simulation } from '../Simulation';
 import { BF, RESP_NONE, type Building, type CityState, type NeedStat, type NeedTier } from '../CityState';
 import { DEV_TYPE_COUNT, DEV_TYPE_LABELS, DevType, Network, Zone, zoneDensity } from '../../core/types';
+import { DAYS_PER_MONTH } from '../../core/constants';
 import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runtime';
 import { capHints, regionInputs } from './demand';
 import { residentCoverage, residentSurvey } from './approval';
@@ -118,12 +121,12 @@ const QUIET_DAYS = 90;
  * lazily loaded rewards chunk into the eager bundle (src/game/modules.ts loads it on demand)
  */
 export const WATER_TREATMENT_UNLOCK_POP = 6000;
-/** a news item matching `re` was posted within QUIET_DAYS */
-function recentNews(st: CityState, re: RegExp): boolean {
+/** a news item matching `re` was posted within QUIET_DAYS of `day` (today, or the coming month tick: A1) */
+function recentNews(st: CityState, re: RegExp, day = st.day): boolean {
   const news = st.news;
   for (let k = news.length - 1; k >= 0; k--) {
     const n = news[k];
-    if (st.day - n.day > QUIET_DAYS) break;
+    if (day - n.day > QUIET_DAYS) break;
     if (re.test(n.text)) return true;
   }
   return false;
@@ -164,12 +167,48 @@ export interface AdvisorData {
 }
 /** the month tick's map scans (AdvisorData.scan; each optional: a scan saved by an older version lacks the newer ones and
  *  the month tick then takes it fresh) — zone blocks (day 28), facilities + the worst jam + the residents beyond fire
- *  reach (day 29; resp null = the emergency layers were not ready) */
-interface MonthScans { zone?: ZoneScan; fac?: FacScanData; jam?: JamScan; resp?: { residents: number; fireOut: number } | null }
+ *  reach (day 29; resp null = the emergency layers were not ready) — and (B3 A1, day 29 after the scans) the places
+ *  [x, z] ([-1, -1]: none found) of the advice the coming tick is predicted to announce (absent: looked up on the tick) */
+interface MonthScans {
+  zone?: ZoneScan; fac?: FacScanData; jam?: JamScan; resp?: { residents: number; fireOut: number } | null;
+  places?: Record<string, [number, number]>;
+}
+/** a predicted place of MonthScans.places, if it is one (a saved record is data: anything else is looked up) */
+function savedPlace(places: MonthScans['places'], id: string): [number, number] | null {
+  const p = places && Object.prototype.hasOwnProperty.call(places, id) ? places[id] : undefined;
+  return Array.isArray(p) && p.length === 2 && Number.isInteger(p[0]) && Number.isInteger(p[1]) ? p : null;
+}
 /** a family whose ready lots wait this long (days) with demand and no growth at all: growthStalled */
 const STALL_DAYS = 330;
 /** advice posts kept in AdvisorData.posts (2 a month at most: two years) */
 const POSTS_KEPT = 48;
+
+/**
+ * The month tick's announcement test (B3 A1: one function for monthly() and the day-29 prediction, so the two cannot
+ * drift). `list` in priority order, `day` the tick's day. An advice speaks when its confirm rule has held CONFIRM_DAYS
+ * (its first sighting in `seen`), its cooldown — doubled per repeat while its condition persists, at most × 8
+ * (`streak`) — is over, and its quietIf matches no news of the QUIET_DAYS before `day` nor an advice spoken earlier in
+ * this pass; at most ADVICE_PER_MONTH. `speak` runs for each in order before the next one is tested: on the tick it posts
+ * the advice, so its cooldown and its news item count for the rest of the pass, as they always did.
+ */
+function announce(st: CityState, list: readonly Advice[], day: number, cooldowns: Readonly<Record<string, number>>,
+  streak: Readonly<Record<string, number>>, seen: Readonly<Record<string, number>>, speak: (a: Advice) => void): void {
+  const spoken: Advice[] = [];
+  for (const a of list) {
+    if (spoken.length >= ADVICE_PER_MONTH) break;
+    if (a.confirm) {
+      const s0 = seen[a.id];
+      if (s0 === undefined || day - s0 < CONFIRM_DAYS) continue;
+    }
+    const last = cooldowns[a.id];
+    const cooldown = Math.max(MIN_COOLDOWN, a.cooldown) * 2 ** Math.min(3, streak[a.id] ?? 0);
+    if (last !== undefined && day - last < cooldown) continue;
+    if (spoken.some((o) => o.id === a.id)) continue;
+    if (a.quietIf && (recentNews(st, a.quietIf, day) || spoken.some((o) => a.quietIf!.test(o.text)))) continue;
+    spoken.push(a);
+    speak(a);
+  }
+}
 
 export function advisorData(st: CityState): AdvisorData {
   let a = st.systemData.advisors as AdvisorData | undefined;
@@ -1111,6 +1150,9 @@ interface Scans {
   /** a rule's map location (unservedClusters / uncoveredHotspots / the worst home), looked up lazily through
    *  Advice.where: fresh on the month tick, memoised for the Advisors panel (LOCATE_TTL) */
   locate: (key: string, f: () => { x: number; z: number } | undefined) => { x?: number; z?: number };
+  /** the day-29 prediction of the tick's announcements (B3 A1): the garbage rule takes no resident survey (off the month
+   *  tick one full pass over the homes), so it is not predicted (the tick looks its place up) */
+  predict?: boolean;
 }
 const pctS = (v: number) => `${Math.round(v * 100)}%`;
 const EDGE_NAME: Record<string, string> = { n: 'north', s: 'south', e: 'east', w: 'west' };
@@ -1336,7 +1378,7 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
   // garbage: ONE rule (critic item 31) — residents without pickup (approval's monthly survey), with the reason and
   // where; from 300 residents (QA)
   rt.ensureLists();
-  const survey = pop >= 300 ? residentSurvey(st, rt, inf) : null;
+  const survey = pop >= 300 && !sc.predict ? residentSurvey(st, rt, inf) : null;
   const garbageHomes = survey && survey.pop[3] > 0 ? survey.noGarbage[3] : 0;
   const legacyShort = !inf.pollution && pop > 2000 && s.garbageProduced > s.garbageCapacity * 1.02;
   if ((pop >= 300 && survey !== null && survey.pop[3] >= 200 && garbageHomes >= 0.2) || legacyShort) {
@@ -1458,6 +1500,9 @@ export interface AdvisorsSystem extends SimSystem {
   /** advice whose condition holds right now, highest priority first (confirm rules once the monthly pass confirmed
    *  them). Evaluated on demand between the monthly passes; reads the city only (no rng, no state writes) */
   openAdvice(st: CityState): OpenAdvice[];
+  /** B3 A1: the places [x, z] ([-1, -1]: none) of the advice the coming month tick is predicted to announce, from the
+   *  month's saved scans (empty without them). Read-only: the day-29 daily stores them in AdvisorData.scan.places */
+  predictPlaces(st: CityState): Record<string, [number, number]>;
 }
 
 /** the open advice of `sim` (see AdvisorsSystem.openAdvice); [] without the advisors system */
@@ -1570,8 +1615,9 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     .replaceAll('{year}', String(st.year)).replaceAll('{pop}', int(st.stats.population));
 
   /** every rule's advice holding now; 'month' = the month tick (saved scans, fresh places), 'open' = the Advisors
-   *  panel (fresh scans, memoised places, reads the city only) */
-  const gather = (st: CityState, mode: 'month' | 'open', scans?: MonthScans): Advice[] => {
+   *  panel (fresh scans, memoised places, reads the city only), 'predict' = the day-29 prediction (saved scans, fresh
+   *  places, reads the city only, no garbage survey; B3 A1) */
+  const gather = (st: CityState, mode: 'month' | 'open' | 'predict', scans?: MonthScans): Advice[] => {
     const out: Advice[] = [];
     const s = st.stats;
     const d = econData(st);
@@ -1608,7 +1654,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     const util = inf.utilities;
     const scan = scans?.zone ?? zoneScan(st, util);
     const fac = resolveFac(st, scans?.fac ?? scanFacilities(st, rt));
-    const loc = mode === 'month' ? freshLocate : memoLocate(st);
+    const loc = mode === 'open' ? memoLocate(st) : freshLocate;
     const at = (b: Building) => ({ x: b.x + (b.w >> 1), z: b.z + (b.d >> 1) });
     const cellAt = (i: number): { x?: number; z?: number } => (i >= 0 ? { x: i % N, z: (i / N) | 0 } : {});
     const burntWhat = (list: Building[], many: string) => (list.length > 1 ? `${list.length} ${many}` : `The ${nameOf(list[0])}`);
@@ -1840,7 +1886,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         text: 'Smog is choking our neighborhoods. Separate industry from homes, plant trees, or pass the Clean Air Act.' });
     }
     // ---------------- WP5: services, emergencies, justice, environment, tourism, region, transit (depthRules)
-    depthRules(st, rt, inf, { zone: scan, fac, noisy: noisyOf(st), resp: pop > 1500 ? (scans && scans.resp !== undefined ? scans.resp : respOut(st)) : null, locate: loc }, out);
+    depthRules(st, rt, inf, { zone: scan, fac, noisy: noisyOf(st), resp: pop > 1500 ? (scans && scans.resp !== undefined ? scans.resp : respOut(st)) : null, locate: loc, predict: mode === 'predict' }, out);
     // one fire advisor (critic item 31): a city without any fire station hears it once — noFireResponse names the
     // plants' accident risk too
     if (out.some((a) => a.id === 'noFireResponse')) {
@@ -2113,8 +2159,33 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     return out;
   };
 
+  /**
+   * B3 A1: the places of the advice the coming month tick is predicted to announce — the tick's rules on the saved scans
+   * (gather 'predict') through the tick's own test (announce) for the tick's day; for each with a lazy place, its lookup
+   * now ([-1, -1]: none found). Read-only. Without a saved zone scan (an older save loaded after day 28) none: gather would
+   * scan the zones now and the tick once more.
+   */
+  const predictPlaces = (st: CityState, scans: MonthScans): Record<string, [number, number]> => {
+    const places: Record<string, [number, number]> = {};
+    if (!scans.zone) return places;
+    const d = econData(st);
+    const seen = (st.systemData.advisors as AdvisorData | undefined)?.seen ?? {};
+    const tick = (Math.floor(st.day / DAYS_PER_MONTH) + 1) * DAYS_PER_MONTH;
+    const list = gather(st, 'predict', scans).sort((a, b) => b.priority - a.priority);
+    announce(st, list, tick, d.cooldowns, d.streak ?? {}, seen, (a) => {
+      if (!a.where || a.x !== undefined) return;
+      const p = a.where();
+      places[a.id] = p.x !== undefined && p.z !== undefined ? [p.x, p.z] : [-1, -1];
+    });
+    return places;
+  };
+
   return {
     name: 'economy.advisors',
+    predictPlaces(st) {
+      const sc = (st.systemData.advisors as AdvisorData | undefined)?.scan;
+      return sc && sc.month === st.monthIndex ? predictPlaces(st, sc) : {};
+    },
     init(sim) {
       rt.attach(sim);
       const d = econData(sim.state);
@@ -2156,6 +2227,8 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
           // (final fixes V5: the two typed-array passes the rules need, off the month tick)
           a0.scan.jam = scanJam(st);
           a0.scan.resp = st.stats.population > 1500 ? respOut(st) : null;
+          // (B3 A1: the coming tick's announcements, predicted on these scans, and their places: off the month tick)
+          a0.scan.places = predictPlaces(st, a0.scan);
         }
       }
       // population milestones
@@ -2193,23 +2266,20 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       const seen = advisorData(st).seen;
       for (const id of Object.keys(seen)) if (!active.has(id)) delete seen[id];
       for (const a of list) if (a.confirm) seen[a.id] ??= st.day;
-      let shown = 0;
-      for (const a of list) {
-        if (shown >= ADVICE_PER_MONTH) break;
-        if (a.confirm && st.day - seen[a.id] < CONFIRM_DAYS) continue;
-        const last = d.cooldowns[a.id];
-        const cooldown = Math.max(MIN_COOLDOWN, a.cooldown) * 2 ** Math.min(3, streak[a.id] ?? 0);
-        if (last !== undefined && st.day - last < cooldown) continue;
-        if (a.quietIf && recentNews(st, a.quietIf)) continue;
+      announce(st, list, st.day, d.cooldowns, streak, seen, (a) => {
         d.cooldowns[a.id] = st.day;
         streak[a.id] = (streak[a.id] ?? 0) + 1;
-        placed(a, a.where);
+        // its place: the day-29 prediction's when it made one (B3 A1; [-1, -1]: none, as a lookup that finds nothing),
+        // else looked up now
+        const pp = a.where && a.x === undefined ? savedPlace(ms?.places, a.id) : null;
+        if (pp) {
+          if (pp[0] >= 0 && pp[1] >= 0) { a.x = pp[0]; a.z = pp[1]; }
+        } else placed(a, a.where);
         sim.notify(a.text, a.kind === 'info' ? 'advisor' : a.kind, a.x, a.z, a.advisor);
         const posts = (advisorData(st).posts ??= []);
         posts.push({ day: st.day, id: a.id, text: a.text });
         if (posts.length > POSTS_KEPT) posts.splice(0, posts.length - POSTS_KEPT);
-        shown++;
-      }
+      });
       // every open issue for advisorIssues (the announced ones already know their place; the others look it up when read)
       const issues: OpenAdvice[] = [];
       for (const a of list) {
