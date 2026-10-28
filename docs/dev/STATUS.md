@@ -149,6 +149,11 @@ town first zoom-out 1.059, first zoom-in 1.057 (A/A within ±3 %).
 
 ## Lead decisions, Oct 28
 
+- **An intermittent sim exactness failure on dev, under investigation (Oct 28, 01:05):**
+  - the test: `tests/sim/exact/traffic.test.ts` > J2 "pool/inbound scratch", which fails with `pool 56.oMc: different array bytes (888, 888)`;
+  - it failed once in the full run after the T026 + T008 merges, and the same file passes alone;
+  - the merges do not touch anything it imports, and the bot is identical;
+  - repeat runs and a bisect follow.
 - **T014 finding 1, the fresh town HIGH far orbit at 1.12x a284b80 [1.084-1.139], A/A 0.99, is a MINOR.** It is not a ring segment, because ring on minus ring off is about 0 µs per frame, so the ring allowance does not apply. It is accepted on magnitude: +93 µs per frame, on a fresh page's first HIGH far orbit only; the warm far orbit is 0.58x base and the page's pooled sum is 0.95x base. Two levers go to POLISH_BACKLOG, re-measured in the final verification. **Render round 2 is closed.**
 - **T008 gate 4 passes on what the pool controls:** new processing nodes -90.6 to -94.2 %, and deletion-task CPU -63 %. The per-sound finish and deletion tasks are native: one finish per source node, and deletion tasks from filter tail-processing. The 90 % target on them could not be met by any pool.
 - **T008 gate 3, fixed by the lead (4b173f8):**
