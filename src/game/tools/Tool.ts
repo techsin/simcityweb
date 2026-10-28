@@ -5,7 +5,9 @@ import type { ActionResult } from '../../sim/actions';
 import type { GameContext } from '../context';
 import type { CommandArgs, CommandOp, CommandResult, Gesture, Ticket } from '../../worker/SimHost';
 import { escapeHtml } from '../../ui/dom';
-import { money } from '../../ui/format';
+import { money, moneySigned } from '../../ui/format';
+import type { CityState } from '../../sim/CityState';
+import type { BuildingDef } from '../../sim/catalogTypes';
 
 export interface ToolPointer {
   clientX: number;
@@ -110,15 +112,68 @@ export function commitAction<K extends ActionOp>(ctx: GameContext, owner: object
   return ticket;
 }
 
-/** Tooltip html for an action preview. */
-export function resultTip(title: string, r: ActionResult | null, extra = ''): { html: string; kind: 'ok' | 'bad' } {
-  if (!r) return { html: `<b>${escapeHtml(title)}</b>`, kind: 'ok' };
+/** Tooltip html for an action preview (`more`: html lines under the sub line, above the reason — FH-05's budget line). */
+export function resultTip(title: string, r: ActionResult | null, extra = '', more = ''): { html: string; kind: 'ok' | 'bad' } {
+  if (!r) return { html: `<b>${escapeHtml(title)}</b>${more}`, kind: 'ok' };
   const cost = r.cost ?? 0;
   const note = r.refundNote ? ` (${escapeHtml(r.refundNote)})` : '';
   const costTxt = cost < 0 ? `<span class="tip-refund">Refund ${money(-cost)}${note}</span>` : cost > 0 ? `<span class="tip-cost">${money(cost)}</span>` : '';
   const reason = r.reason ? `<div class="${r.ok ? 'tip-warn' : 'tip-reason'}">${escapeHtml(r.reason)}</div>` : '';
   const head = `<div class="tip-head"><b>${escapeHtml(title)}</b>${costTxt}</div>`;
-  return { html: head + (extra ? `<div class="tip-sub">${extra}</div>` : '') + reason, kind: r.ok ? 'ok' : 'bad' };
+  return { html: head + (extra ? `<div class="tip-sub">${extra}</div>` : '') + more + reason, kind: r.ok ? 'ok' : 'bad' };
+}
+
+/** FH-05: what placing a building does to the monthly budget (the plop tip's line, the build card's row) */
+export interface BudgetEffect {
+  /** last month's recurring net (§ / month) */
+  before: number;
+  /** before + the building's monthly effect */
+  after: number;
+  /** "+§259 → −§280 after this" (a venue or an airport: ", before its income (up to §1,500 when busy)") */
+  text: string;
+  /** below zero after it: how long the treasury lasts at that rate ("≈ 7 months of reserves"); '' otherwise */
+  reserves: string;
+  /** below zero after it: the line is red */
+  bad: boolean;
+}
+
+/**
+ * FH-05: "Monthly budget: +§259 → −§280 after this", before a building is placed: a Fire Station read ≈§539/mo while
+ * the town made +§259/mo, and players overbuilt services without knowing it (shots2/024, shots2/078).
+ * Before: last month's recurring net, the top bar's figure (mirrored budget.lastIncome / lastExpense; one-offs such as
+ * construction, loan money and refunds left out). After: before minus the upkeep the tip quotes (`upkeep`: the spot's
+ * "Upkeep here", the card's city-wide estimate or the catalog figure), plus a business deal's income, which pays as it
+ * is; a venue's or an airport's income follows its visitors and traffic, so it is named, not counted. Below zero after
+ * it, the line turns red and says how long the treasury lasts at that rate, never more than 60 months. Mirrored reads
+ * only: no computeMonthlyBudget per mouse move (a Worker watch, WORKER_DESIGN §2.8).
+ * null without a budget report yet (a city's first month: the top bar's "No report yet"), in a sandbox (money is no
+ * object), or when the building changes nothing.
+ */
+export function budgetEffect(st: Pick<CityState, 'budget' | 'funds'>, def: Pick<BuildingDef, 'category' | 'income'>, upkeep: number, sandbox = false,
+  opts: { venueNote?: boolean } = {}): BudgetEffect | null {
+  const b = st.budget;
+  if (sandbox || !b) return null;
+  let before = 0, report = false;
+  for (const k in b.lastIncome) { report = true; if (!k.startsWith('oneoff:')) before += b.lastIncome[k] || 0; }
+  for (const k in b.lastExpense) { report = true; if (!k.startsWith('oneoff:')) before -= b.lastExpense[k] || 0; }
+  const deal = def.category === 'reward' ? def.income ?? 0 : 0;
+  const change = deal - Math.max(0, upkeep || 0);
+  if (!report || Math.round(change) === 0) return null;
+  const after = before + change;
+  const venue = def.category === 'reward' || opts.venueNote === false ? 0 : def.income ?? 0;
+  const text = `${moneySigned(before)} → ${moneySigned(after)} after this${venue > 0 ? `, before its income (up to ${money(venue)} when busy)` : ''}`;
+  const bad = Math.round(after) < 0;
+  return { before, after, text, reserves: bad ? reservesText(st.funds, -after) : '', bad };
+}
+
+/** how long `funds` last at a loss of `loss` § a month (FH-05): "≈ 7 months of reserves", never more than 60 months */
+export function reservesText(funds: number, loss: number): string {
+  if (!(funds > 0)) return 'no reserves left';
+  const months = funds / loss;
+  if (months < 1) return 'less than a month of reserves';
+  if (months > 60) return 'more than 5 years of reserves';
+  const n = Math.floor(months);
+  return `≈ ${n} month${n === 1 ? '' : 's'} of reserves`;
 }
 
 /** call an action safely (sim-core code may throw while WIP) */

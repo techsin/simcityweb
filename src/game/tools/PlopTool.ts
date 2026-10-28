@@ -7,8 +7,9 @@
  * what the spot gives: transit stops within reach of a garage (park & ride), partner terminals of a ferry; what the
  * building costs a month here — "Upkeep here ≈§A/mo now · up to §B at full use" (final fixes P3 / UI-1: A = the budget
  * change it makes at this spot, placement.ts upkeepHere; the build menu, Rewards panel and facility facts quote the
- * city's typical figure, "≈§X/mo typical in this city"); and, in red, that a staffed service without a road won't work
- * (final fixes P8).
+ * city's typical figure, "≈§X/mo typical in this city"); what that does to the monthly budget — "Monthly budget: +§259
+ * → −§280 after this", in red with the months of reserves left once it goes negative (FH-05, Tool.ts budgetEffect);
+ * and, in red, that a staffed service without a road won't work (final fixes P8).
  */
 import { CELL_SIZE } from '../../core/constants';
 import { Overlay } from '../../core/types';
@@ -22,7 +23,7 @@ import type { GameContext } from '../context';
 import { escapeHtml } from '../../ui/dom';
 import { money } from '../../ui/format';
 import { upkeepEstimate } from '../../ui/upkeepModel';
-import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
+import { budgetEffect, FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
 import { shoreFacesWater, shoreRotation, staffedService, type Rot } from './placement';
 import type { QueryResult } from '../../worker/SimHost';
 
@@ -81,6 +82,8 @@ export class PlopTool extends Tool {
   /** the current spot: a staffed service without a road (P8) / a shore building not facing water (P14) */
   private noRoad = false;
   private shoreHint = '';
+  /** the monthly upkeep the upkeep line quotes for the current spot (FH-05's budget line counts it), made with res */
+  private upkeepMo = 0;
 
   constructor(ctx: GameContext, private def: BuildingDef, icon: string) {
     super(ctx);
@@ -243,7 +246,10 @@ export class PlopTool extends Tool {
       this.ctx.world.setHighlight(cells);
     }
     const facing = this.manual ? 'R rotate' : this.facingWater ? 'Auto-facing water · R rotate' : 'Auto-facing road · R rotate';
-    const t = resultTip(this.def.name, this.shown(), [this.upkeep, facing].filter(Boolean).map(escapeHtml).join(' · '));
+    // FH-05: what it does to the monthly budget at the upkeep quoted above (a placeable spot only; red below zero)
+    const be = this.res?.ok ? safe(() => budgetEffect(this.ctx.state, this.def, this.upkeepMo, this.ctx.sandbox()), null) : null;
+    const budget = be ? `<div class="${be.bad ? 'tip-reason' : 'tip-sub'}">Monthly budget: ${escapeHtml(be.text)}${be.reserves ? ` · ${escapeHtml(be.reserves)}` : ''}</div>` : '';
+    const t = resultTip(this.def.name, this.shown(), [this.upkeep, facing].filter(Boolean).map(escapeHtml).join(' · '), budget);
     const pv = this.place ? this.placementPreview(this.place.x, this.place.z, this.place.rot) : '';
     // (a staffed service without a road is placeable but won't work: a red line and a red tip, P8)
     const bad = this.noRoad ? `<div class="tip-reason">${escapeHtml(NO_ROAD_STAFFED)}</div>` : '';
@@ -266,7 +272,11 @@ export class PlopTool extends Tool {
       // figure here is then the most it costs — no "up to" the same number, UI-1)
       const full = money(Math.max(now, est.full));
       this.upkeep = `Upkeep${here !== null ? ' here' : ''} ≈${money(now)}/mo now${full !== money(now) ? ` · up to ${full} at full use` : ''}`;
-    } else this.upkeep = def.upkeep ? `Upkeep ${money(def.upkeep)}/mo` : '';
+      this.upkeepMo = now;
+    } else {
+      this.upkeep = def.upkeep ? `Upkeep ${money(def.upkeep)}/mo` : '';
+      this.upkeepMo = def.upkeep ?? 0;
+    }
     const res = this.res;
     this.noRoad = !!res?.ok && staffedService(def) && !safe(() => lotTouchesRoad(st, x, z, w, d), true);
     this.shoreHint = '';
