@@ -7,6 +7,7 @@ import type { CityState } from '../../../src/sim/CityState';
 import { Simulation } from '../../../src/sim/Simulation';
 import { PR_OPTIONS } from '../../../src/sim/infra/params';
 import { Search } from '../../../src/sim/infra/search';
+import { setPieceScale } from '../../../src/sim/infra/scheduler';
 import { TrafficSystem } from '../../../src/sim/infra/traffic';
 import { newState, place, roadLine, stressCity } from '../../infra/cityGen';
 import { lineTown } from '../../infra/prTowns';
@@ -20,11 +21,24 @@ function same(a: any, b: any, at: string, seen = new WeakMap<object, object>()):
   if (typeof a === 'function' && typeof b === 'function') return;
   if (Object.is(a, b)) return;
   if (ArrayBuffer.isView(a) && ArrayBuffer.isView(b)) {
-    if (a.constructor !== b.constructor || a.byteLength !== b.byteLength
-      || !Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(Buffer.from(b.buffer, b.byteOffset, b.byteLength))) {
+    if (a.constructor !== b.constructor || a.byteLength !== b.byteLength) {
       throw new Error(`${at}: different array bytes (${a.byteLength}, ${b.byteLength})`);
     }
-    return;
+    const ab = Buffer.from(a.buffer, a.byteOffset, a.byteLength), bb = Buffer.from(b.buffer, b.byteOffset, b.byteLength);
+    if (ab.equals(bb)) return;
+    // NaN bits are not part of JS semantics: a NaN made by arithmetic (x86's 0xffc00000) and a propagated one can be
+    // stored differently depending on which tier runs the code, so a NaN matches any NaN; every other byte must match
+    if ((a instanceof Float32Array && b instanceof Float32Array) || (a instanceof Float64Array && b instanceof Float64Array)) {
+      const stride = a.BYTES_PER_ELEMENT;
+      for (let i = 0; i < a.length; i++) {
+        if (Number.isNaN(a[i]) && Number.isNaN(b[i])) continue;
+        for (let j = i * stride; j < (i + 1) * stride; j++) {
+          if (ab[j] !== bb[j]) throw new Error(`${at}: different array bytes at [${i}] (${a[i]}, ${b[i]})`);
+        }
+      }
+      return;
+    }
+    throw new Error(`${at}: different array bytes (${a.byteLength}, ${b.byteLength})`);
   }
   if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) {
     throw new Error(`${at}: ${String(a)} != ${String(b)}`);
@@ -215,59 +229,78 @@ describe('traffic exact J2', () => {
     }
   });
 
-  it('cities: all fields and scheduler costs after every phase, across edits, reloads and multiple traffic cycles', () => {
-    const factories = [
-      () => newState(8),
-      () => { const st = newState(9); st.network.fill(Network.Road); st.netFlags.fill(16); return st; },
-      () => smallCity(32, 7),
-      () => smallCity(48, 81),
-      () => lineTown([48, 60, 72, 84, 96], 2).st,
-    ];
-    const phases = new Set<number>();
-    let steps = 0;
-    for (let c = 0; c < factories.length; c++) {
-      let stA = factories[c](), stB = factories[c]();
-      const original = new TrafficSystemOriginal(), current = new TrafficSystem();
-      const simA = new Simulation(stA, [original]), simB = new Simulation(stB, [current]);
-      const a = fields(original), b = fields(current);
-      const check = (at: string) => {
-        sameTraffic(a, b, at);
-        same(stA, stB, `${at} city`);
-        same(original.stepCost(simA), current.stepCost(simB), `${at} scheduler cost`);
-      };
-      check(`city ${c} warm start`);
-      for (let cycle = 0; cycle < 6; cycle++) {
-        if (cycle === 2 || cycle === 4) {
-          for (const sim of [simA, simB]) {
-            const st = sim.state, end = st.size - 1;
-            roadLine(st, 0, end, end, end, cycle === 2 ? Network.Avenue : Network.None);
-            for (let i = 0; i < st.cells; i++) if (i % 11 === 0) st.netFlags[i] ^= 16;
-            sim.events.emit('networkChanged', { x0: 0, z0: 0, x1: st.size, z1: st.size });
+  // B2 (docs/dev/B2_DESIGN.md §11.5): a phase of the original is one step (or a few: the rebuild + prep, park & ride's
+  // stages, the overflow's chunks, the commute's two steps); B2 runs it as many pieces. Both arms advance one phase
+  // VISIT at a time (until the phase id changes) and are compared at every phase transition and at cycle ends, every
+  // original field included; the scheduler estimates are recalibrated by design (not compared). Arm B runs at the
+  // production piece size and with tiny pieces (one work unit per piece where the city is small).
+  for (const [label, scale] of [['production pieces', 1], ['tiny pieces', 1e-9], ['small pieces', 0.03]] as const) {
+    it(`cities (${label}): all fields after every phase, across edits, reloads and multiple traffic cycles`, () => {
+      const factories = [
+        () => newState(8),
+        () => { const st = newState(9); st.network.fill(Network.Road); st.netFlags.fill(16); return st; },
+        () => smallCity(32, 7),
+        () => smallCity(48, 81),
+        () => lineTown([48, 60, 72, 84, 96], 2).st,
+      ];
+      const phases = new Set<number>();
+      let visits = 0, pieces = 0;
+      const prev = setPieceScale(scale);
+      try {
+        for (let c = 0; c < factories.length; c++) {
+          // (tiny pieces on the 192² town: per-cell stages would take ~10^5 pieces per cycle; small pieces there)
+          if (scale < 1e-3 && c === factories.length - 1) setPieceScale(0.02);
+          let stA = factories[c](), stB = factories[c]();
+          const original = new TrafficSystemOriginal(), current = new TrafficSystem();
+          const simA = new Simulation(stA, [original]), simB = new Simulation(stB, [current]);
+          const a = fields(original), b = fields(current);
+          const check = (at: string) => {
+            sameTraffic(a, b, at);
+            same(stA, stB, `${at} city`);
+          };
+          check(`city ${c} warm start`);
+          for (let cycle = 0; cycle < 6; cycle++) {
+            if (cycle === 2 || cycle === 4) {
+              for (const sim of [simA, simB]) {
+                const st = sim.state, end = st.size - 1;
+                roadLine(st, 0, end, end, end, cycle === 2 ? Network.Avenue : Network.None);
+                for (let i = 0; i < st.cells; i++) if (i % 11 === 0) st.netFlags[i] ^= 16;
+                sim.events.emit('networkChanged', { x0: 0, z0: 0, x1: st.size, z1: st.size });
+              }
+            }
+            stA.day += 2; stB.day += 2;
+            a.phase = b.phase = 0; a.lastCycleStart = b.lastCycleStart = stA.day;
+            let cycleVisits = 0;
+            while (a.phase >= 0) {
+              if (++cycleVisits > 500) throw new Error('traffic cycle did not finish');
+              const ph = a.phase;
+              phases.add(ph);
+              expect(b.phase, `city ${c} cycle ${cycle} visit ${cycleVisits} phase`).toBe(ph);
+              let steps = 0;
+              while (a.phase === ph) { original.step(simA); if (++steps > 10000) throw new Error('original phase did not end'); }
+              steps = 0;
+              while (b.phase === ph) { current.step(simB); pieces++; if (++steps > 5_000_000) throw new Error('B2 phase did not end'); }
+              visits++;
+              check(`city ${c} cycle ${cycle} after visit ${cycleVisits} (phase ${ph})`);
+            }
+            same(serializeCity(stA, { copy: true }), serializeCity(stB, { copy: true }), `city ${c} cycle ${cycle} save`);
+            if (cycle === 3) {
+              stA = deserializeCity(serializeCity(stA, { copy: true }));
+              stB = deserializeCity(serializeCity(stB, { copy: true }));
+              simA.replaceState(stA); simB.replaceState(stB);
+              check(`city ${c} reload`);
+            }
           }
+          if (scale < 1e-3) setPieceScale(scale);
         }
-        stA.day += 2; stB.day += 2;
-        a.phase = b.phase = 0; a.lastCycleStart = b.lastCycleStart = stA.day;
-        let cycleSteps = 0;
-        while (a.phase >= 0) {
-          if (++cycleSteps > 500) throw new Error('traffic cycle did not finish');
-          phases.add(a.phase);
-          check(`city ${c} cycle ${cycle} before ${cycleSteps}`);
-          original.step(simA); current.step(simB);
-          steps++;
-          check(`city ${c} cycle ${cycle} after ${cycleSteps}`);
-        }
-        same(serializeCity(stA, { copy: true }), serializeCity(stB, { copy: true }), `city ${c} cycle ${cycle} save`);
-        if (cycle === 3) {
-          stA = deserializeCity(serializeCity(stA, { copy: true }));
-          stB = deserializeCity(serializeCity(stB, { copy: true }));
-          simA.replaceState(stA); simB.replaceState(stB);
-          check(`city ${c} reload`);
-        }
+      } finally {
+        setPieceScale(prev);
       }
-    }
-    expect(steps).toBeGreaterThan(500);
-    expect(phases.has(15), 'park & ride overflow exercised').toBe(true);
-  }, 30_000);
+      expect(visits).toBeGreaterThan(250);
+      expect(pieces).toBeGreaterThanOrEqual(visits);
+      expect(phases.has(15), 'park & ride overflow exercised').toBe(true);
+    }, 600_000);
+  }
 });
 
 function smallCity(size: number, seed: number): CityState {

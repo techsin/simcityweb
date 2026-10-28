@@ -84,9 +84,15 @@ describe('infra perf (256x256 stress city)', () => {
     // P0-8 step budget: estimated cost <= 3.0 per step, every task (WP3 split pollution / crime, WP7b traffic's transit
     // step; WP6b dropped the last per-task exception)
     for (const [name, c] of maxEst) expect(c, `estimated step cost of ${name}`).toBeLessThanOrEqual(3.0);
+    // B2 (docs/dev/B2_DESIGN.md §11.5): every traffic piece is estimated within about one INFRA_PIECE_MS (the other tasks
+    // follow in their groups)
+    expect(maxEst.get('traffic') ?? 0, 'estimated piece cost of traffic').toBeLessThanOrEqual(1.0);
     // P0-15 utilisation of the headless budget (deterministic: estimated costs). Lead decision (ROUTED_ITEMS #30): <= 0.89
-    // until the million-population performance phase, which owns the scheduler budget and its 0.88 gate
-    expect(util, 'stress-city scheduler utilisation').toBeLessThanOrEqual(0.89);
+    // until the million-population performance phase, which owns the scheduler budget. B2 G1 re-baselines it (design §9.4
+    // item 5): traffic's pieces (~0.13-0.3 estimated ms) fill a day's budget to within one piece, and traffic is due every
+    // day on this city (a cycle spans several days), so the share of the budget used no longer measures headroom (base
+    // 41ae570: 0.869 with 2-3 ms steps; G1: 0.961). The per-task cadence (G4's table) is the headroom check instead.
+    expect(util, 'stress-city scheduler utilisation').toBeLessThanOrEqual(0.985);
     // measured max per step <= 6 ms (CI slack); wall-clock on shared machines spikes (GC / load), so strict mode only
     if (process.env.PERF_STRICT) for (const [name, ms] of sch.maxStepMs) expect(ms, `measured step ms of ${name}`).toBeLessThanOrEqual(6);
     expect(city.buildings).toBeGreaterThan(15000);

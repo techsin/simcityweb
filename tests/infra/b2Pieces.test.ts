@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { Network } from '../../src/core/types';
 import { RNG } from '../../src/core/rng';
 import type { CityState } from '../../src/sim/CityState';
-import type { Simulation } from '../../src/sim/Simulation';
+import { Simulation } from '../../src/sim/Simulation';
 import { boxH, boxHRows, boxV, BoxVRun } from '../../src/sim/infra/blur';
 import { BuildingSnapshot } from '../../src/sim/infra/common';
 import { GraphBuildRun, GridGraph, RoadGraph } from '../../src/sim/infra/graph';
@@ -27,8 +27,11 @@ import {
 } from '../../src/sim/infra/search';
 import { MinHeap } from '../../src/sim/infra/heap';
 import { StopCollector, collectStops, copyStopList, type StopList } from '../../src/sim/infra/transit';
-import { newState, place, stressCity } from './cityGen';
-import { digest } from './b2Harness';
+import { TrafficSystem } from '../../src/sim/infra/traffic';
+import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
+import { newState, place, roadLine, stressCity } from './cityGen';
+import { lineTown } from './prTowns';
+import { diffDigests, digest, fieldsDigest, stateDigest, trafficCycle } from './b2Harness';
 
 // ------------------------------------------------------------------------------------------------ helpers
 function randomRoads(rng: RNG, N: number, density = 0.55): CityState {
@@ -323,3 +326,249 @@ describe('B2 core: resumable kernels equal their whole-call originals', () => {
   });
 });
 
+// ------------------------------------------------------------------------------------------------ traffic (G1)
+/** the stress generator's city with transit inside the map (its subway row 97 is off a 96² map), a rail line to the
+ *  map edge with a freight station beside it (a freight sink: PH_SINKS), a bus depot (the depot BFS) and parking garages
+ *  in the blocks beside the subway stations */
+function transitCity(size: number, seed: number): CityState {
+  const st = stressCity(size, seed, { withTransit: false, jobsPerWorker: 0.7 }).st;
+  for (let i = 0; i < st.cells; i++) if (st.network[i] && i % 17 === 0) st.netFlags[i] |= 16;
+  const z = size - 3;
+  roadLine(st, 0, z, size - 1, z, Network.Road);
+  for (let x = 1; x < size - 1; x++) st.subway[st.idx(x, z + 1)] = 1;
+  for (let x = 1; x < size - 1; x += 12) { clearArea(st, x, z + 1, 1, 1); place(st, 't_subway', x, z + 1); }
+  // garages in the 2x2 blocks just north of the stations' road (blocks: cells 3k + 2, 3k + 3)
+  const bz = Math.floor((z - 4) / 3) * 3 + 2;
+  for (let x = 13; x < size - 4; x += 24) { const bx = Math.floor(x / 3) * 3 + 2; clearArea(st, bx, bz, 2, 2); place(st, 'tr_parking_garage', bx, bz); }
+  // rail from the west edge (x = 0) along z = 3, a level crossing on the road x = 1, a freight station above it
+  clearArea(st, 2, 2, 2, 2);
+  st.network[st.idx(0, 3)] = Network.Rail;
+  st.netFlags[st.idx(1, 3)] |= 1 << 5;
+  st.network[st.idx(2, 3)] = Network.Rail;
+  st.network[st.idx(3, 3)] = Network.Rail;
+  place(st, 't_freight', 2, 2);
+  // a bus depot (3x3, on a cleared corner of a road grid square)
+  clearArea(st, 26, 26, 3, 3, true);
+  place(st, 'civ_bus_depot', 26, 26);
+  return st;
+}
+/** remove the buildings (and with `roads` the network) on a rectangle */
+function clearArea(st: CityState, x0: number, z0: number, w: number, d: number, roads = false): void {
+  for (let z = z0; z < z0 + d; z++) for (let x = x0; x < x0 + w; x++) {
+    const i = st.idx(x, z), id = st.building[i];
+    if (roads) st.network[i] = 0;
+    if (id < 0) continue;
+    const b = st.buildings.get(id)!;
+    for (let zz = b.z; zz < b.z + b.d; zz++) for (let xx = b.x; xx < b.x + b.w; xx++) st.building[st.idx(xx, zz)] = -1;
+    st.buildings.delete(id);
+  }
+}
+
+/** B2 piece state and scratch whose content depends on where the pieces fall (not results) */
+const TRAFFIC_SCRATCH = ['snap', 'gb', 'task', 'unsub', 'lastState', 'transportFor', 'attachFor', 'phaseMs', 'lastCycleMs', 'lastCycleMs0', 'heap'];
+/** the query-owned scratch and caches (findPath's BFS, garageReach's search and cache): queries change them by design */
+const QUERY_SCRATCH = ['SP', 'SR', 'reachCache'];
+const trafficOf = (sim: Simulation) => sim.getSystem('traffic') as unknown as TrafficSystem;
+
+/** the network / building edits between two cycles (graph rebuilds, a new / removed building, carried state) */
+function edit(sim: Simulation, k: number): void {
+  const st = sim.state, N = st.size;
+  if (k % 3 === 0) {
+    const z = 4 + 3 * (k % 7);
+    roadLine(st, 2, z, N - 3, z, k % 2 === 0 ? Network.Avenue : Network.Road);
+    sim.events.emit('networkChanged', { x0: 0, z0: z, x1: N, z1: z + 1 });
+  } else if (k % 3 === 1) {
+    for (const b of st.buildings.values()) {
+      if (b.pop > 0 && b.id % 5 === k % 5) { b.pop = Math.max(0, b.pop - 3); }
+    }
+    let x = 2 + (k * 7) % (N - 6), z = 2 + (k * 11) % (N - 6);
+    while (st.building[st.idx(x, z)] >= 0 || st.network[st.idx(x, z)] !== 0) { x = (x + 1) % (N - 2); if (x === 0) z = (z + 1) % (N - 2); }
+    sim.events.emit('buildingAdded', place(st, k % 2 ? 'tr_bus_stop' : 't_cs', x, z));
+  } else {
+    const ids = [...st.buildings.keys()];
+    const b = st.buildings.get(ids[(k * 31) % ids.length])!;
+    for (let zz = b.z; zz < b.z + b.d; zz++) for (let xx = b.x; xx < b.x + b.w; xx++) st.building[st.idx(xx, zz)] = -1;
+    st.buildings.delete(b.id);
+    sim.events.emit('buildingRemoved', b);
+  }
+}
+
+/** a city's traffic over `cycles` cycles (edits between them), each cycle at piece scale `scale` (random per cycle:
+ *  'random'); hook after every piece; the digests at every cycle end */
+/** the phases and named pieces any run visited (coverage of the test cities) */
+const visited = new Set<string>();
+function runCycles(mk: () => CityState, cycles: number, scale: number | 'random', hook?: (sim: Simulation, k: number) => void, exclude: readonly string[] = []): Record<string, string>[] {
+  const st = mk();
+  const tr = new TrafficSystem();
+  const sim = new Simulation(st, [tr]);
+  const rng = new RNG(0x5ca1e);
+  const out: Record<string, string>[] = [];
+  const t = tr as unknown as { stepName: string };
+  for (let c = 0; c < cycles; c++) {
+    if (c > 0) edit(sim, c);
+    st.day += 2;
+    const s = scale === 'random' ? rng.pick([1e9, 1, 0.3, 0.05, 0.004]) : scale;
+    withPieceScale(s, () => trafficCycle(sim, (k) => { visited.add(t.stepName.replace(/#\d+$/, '')); hook?.(sim, k); }));
+    out.push({ ...stateDigest(st), ...fieldsDigest(tr, [...TRAFFIC_SCRATCH, ...exclude]) });
+  }
+  return out;
+}
+
+function expectSameRuns(a: Record<string, string>[], b: Record<string, string>[], label: string): void {
+  expect(b.length).toBe(a.length);
+  for (let c = 0; c < a.length; c++) expect(diffDigests(a[c], b[c]), `${label}: cycle ${c}`).toEqual([]);
+}
+
+describe('B2 G1 traffic: a cycle in one go = in pieces', () => {
+  const cities: [string, () => CityState][] = [
+    ['transit city 48', () => transitCity(48, 11)],
+    ['line town (P&R, overflow)', () => lineTown([48, 60, 72, 84, 96], 2).st],
+    ['transit city 96', () => transitCity(96, 7)],
+  ];
+  for (const [name, mk] of cities) {
+    it(`${name}: one go = production pieces = small / random pieces, at every cycle end across edits`, () => {
+      const cycles = name.endsWith('96') ? 4 : 6;
+      const one = runCycles(mk, cycles, 1e9);
+      expectSameRuns(one, runCycles(mk, cycles, 1), `${name} production`);
+      expectSameRuns(one, runCycles(mk, cycles, name.endsWith('48') ? 1e-9 : 0.01), `${name} tiny`);
+      expectSameRuns(one, runCycles(mk, cycles, 'random'), `${name} random`);
+    }, 300_000);
+  }
+
+  it('the test cities exercise the WP7b stages: park & ride, the overflow, the freight sinks, parking, the depot BFS, rebuilds', () => {
+    for (const k of ['parkRide.search', 'parkRide.options', 'overflow.alloc', 'overflow.rest', 'sinks.2', 'parking.8', 'prepTransit.depotBfs',
+      'prep.rb3', 'prep.rbPublish', 'freight.5', 'commute.ovLegs', 'transit.search', 'roundMatch.accept', 'final2.5']) expect(visited.has(k), k).toBe(true);
+  });
+
+  it('R8: cross-system queries between every two pieces change nothing (findPath, garageReach, stopsNear, routeInfo, stopAttached / freightRailCells with the attachment forced dirty)', () => {
+    const mk = () => transitCity(48, 23);
+    const base = runCycles(mk, 4, 0.05, undefined, QUERY_SCRATCH);
+    const rng = new RNG(0x9e7);
+    const withQueries = runCycles(mk, 4, 0.05, (sim, k) => {
+      const tr = trafficOf(sim), st = sim.state, f = tr as unknown as { attachDirty: boolean };
+      tr.findPath(sim, rng.int(0, st.cells - 1), rng.int(0, st.cells - 1));
+      for (const b of st.buildings.values()) {
+        if (b.def === 'tr_parking_garage') { tr.garageReach(b.id); tr.garageInfo(b.id); }
+        if (b.id % 13 === k % 13) { tr.routeInfo(b.id); tr.stopLoad(b.id); tr.workerAccess(b.id); }
+      }
+      tr.stopsNear(st, rng.int(0, st.size - 3), rng.int(0, st.size - 3), 2, 2);
+      if (k % 5 === 0) { f.attachDirty = true; tr.stopAttached(rng.int(0, st.nextBuildingId)); tr.freightRailCells(); }
+      void tr.nodeTimes; tr.connectionReport(); tr.getSampleRoutes(20);
+    }, QUERY_SCRATCH);
+    expectSameRuns(base, withQueries, 'queries between pieces');
+  }, 300_000);
+
+  it('R7 / R4: every external output changes in at most one piece per stage (phase visit) — production pieces', () => {
+    const st = transitCity(64, 5);
+    const tr = new TrafficSystem();
+    const sim = new Simulation(st, [tr]);
+    const outputs = (): Record<string, string> => ({
+      traffic: digest(st.traffic), congestion: digest(st.congestion), commute: digest(st.commute), parking: digest(st.parking),
+      save: digest(st.systemData.infraTransport), stats: digest(st.stats),
+      flags: digest([...st.buildings.values()].map((b) => b.flags)),
+      access: digest(tr.accessById), jobFill: digest(tr.jobFillById), freight: digest(tr.freightById),
+      nodeTimes: digest(tr.nodeTimes), graph: String(tr.graphVersion),
+      stops: digest([...st.buildings.values()].map((b) => tr.stopLoad(b.id))),
+      garages: digest([...st.buildings.values()].filter((b) => b.def === 'tr_parking_garage').map((b) => tr.garageInfo(b.id))),
+      depots: digest([tr.minibusInfo, tr.depotStopsServed]),
+      routes: digest(tr.getSampleRoutes(1000).map((r) => r.cells)), connections: digest(tr.connectionReport()),
+      trucks: digest(tr.truckVolume()), sinks: digest([...st.buildings.values()].map((b) => tr.sinkTrucks(b.id))),
+      inbound: String(tr.inboundTotal), bus: digest([...Array(st.cells).keys()].filter((i) => i % 7 === 0).map((i) => tr.cellBusRiders(i))),
+    });
+    for (let c = 0; c < 5; c++) {
+      if (c > 0) edit(sim, c);
+      st.day += 2;
+      let prev = outputs();
+      const changes = new Map<string, number>();
+      const t = tr as unknown as { phase: number };
+      let pieces = 0, visit = 0, ph = 0;
+      trafficCycle(sim, () => {
+        pieces++;
+        const now = outputs();
+        for (const k of Object.keys(now)) if (now[k] !== prev[k]) changes.set(`${k}@${visit}:${ph}`, (changes.get(`${k}@${visit}:${ph}`) ?? 0) + 1);
+        prev = now;
+        if (t.phase !== ph) { visit++; ph = t.phase; }
+      });
+      expect(pieces).toBeGreaterThan(20);
+      // (pre-B2: one step per phase visit; the rebuild was its own step before prep's: road.n and the node times change
+      // at the graph publish and again at prep's)
+      for (const [k, n] of changes) expect(n, `cycle ${c}: ${k} changed in ${n} pieces`).toBeLessThanOrEqual(/^(nodeTimes|graph)@\d+:0$/.test(k) ? 2 : 1);
+    }
+  }, 300_000);
+
+  it('R9: a save taken mid-cycle holds no cycle state; it loads idle and loads the same twice', () => {
+    const st = transitCity(48, 3);
+    const tr = new TrafficSystem();
+    const sim = new Simulation(st, [tr]);
+    const between = Object.keys(serializeCity(st, { copy: true })).sort();
+    const sdBetween = Object.keys((serializeCity(st, { copy: true }).data.systemData ?? {}) as object).sort();
+    st.day += 2;
+    const t = tr as unknown as { phase: number; lastCycleStart: number; step(s: Simulation): void };
+    t.phase = 0; t.lastCycleStart = st.day;
+    let saved: SerializedCity | null = null;
+    withPieceScale(0.02, () => {
+      let k = 0;
+      while (t.phase >= 0) { t.step(sim); if (++k === 300) saved = structuredClone(serializeCity(st, { copy: true })); }
+    });
+    expect(saved, 'mid-cycle save taken').not.toBeNull();
+    expect(Object.keys(saved!).sort()).toEqual(between);
+    expect(Object.keys((saved!.data.systemData ?? {}) as object).sort()).toEqual(sdBetween);
+    const load = () => {
+      const s2 = deserializeCity(structuredClone(saved!));
+      const tr2 = new TrafficSystem();
+      const sim2 = new Simulation(s2, [tr2]);
+      const f = tr2 as unknown as Record<string, number>;
+      expect(f.phase).toBeLessThan(0);
+      for (const k of ['rbStage', 'pSub', 'tSub', 'trSub', 'otSub', 'prSub', 'rsSub', 'mSub', 'cmSub', 'ceSub', 'sfSub', 'pkSub', 'fiSub', 'f2Sub']) expect(f[k], k).toBe(0);
+      for (let c = 0; c < 3; c++) { s2.day += 2; trafficCycle(sim2); }
+      return { ...stateDigest(s2), ...fieldsDigest(tr2, TRAFFIC_SCRATCH) };
+    };
+    expect(diffDigests(load(), load())).toEqual([]);
+  }, 300_000);
+
+  it('two cities stepped interleaved, piece by piece, equal their solo runs (no module scratch shared across cities)', () => {
+    const mkA = () => transitCity(48, 31), mkB = () => lineTown([48, 60, 72], 2).st;
+    const soloA = runCycles(mkA, 3, 0.05), soloB = runCycles(mkB, 3, 0.05);
+    const stA = mkA(), stB = mkB(), trA = new TrafficSystem(), trB = new TrafficSystem();
+    const simA = new Simulation(stA, [trA]), simB = new Simulation(stB, [trB]);
+    const a: Record<string, string>[] = [], b: Record<string, string>[] = [];
+    withPieceScale(0.05, () => {
+      for (let c = 0; c < 3; c++) {
+        if (c > 0) { edit(simA, c); edit(simB, c); }
+        stA.day += 2; stB.day += 2;
+        const ta = trA as unknown as { phase: number; lastCycleStart: number }, tb = trB as unknown as { phase: number; lastCycleStart: number };
+        ta.phase = tb.phase = 0; ta.lastCycleStart = stA.day; tb.lastCycleStart = stB.day;
+        while (ta.phase >= 0 || tb.phase >= 0) { trA.step(simA); trB.step(simB); }
+        a.push({ ...stateDigest(stA), ...fieldsDigest(trA, TRAFFIC_SCRATCH) });
+        b.push({ ...stateDigest(stB), ...fieldsDigest(trB, TRAFFIC_SCRATCH) });
+      }
+    });
+    expectSameRuns(soloA, a, 'city A interleaved');
+    expectSameRuns(soloB, b, 'city B interleaved');
+  }, 300_000);
+
+  it('every piece estimate stays within its budget at the production size (stress city 128, cycles with a rebuild)', () => {
+    const st = transitCity(128, 9);
+    const tr = new TrafficSystem();
+    const sim = new Simulation(st, [tr]);
+    const max = new Map<string, number>();
+    for (let c = 0; c < 3; c++) {
+      if (c === 1) edit(sim, 3);
+      st.day += 2;
+      const t = tr as unknown as { phase: number; lastCycleStart: number; step(s: Simulation): void; stepName: string };
+      t.phase = 0; t.lastCycleStart = st.day;
+      while (t.phase >= 0) {
+        const name = t.stepName.replace(/#\d+$/, ''), c0 = tr.stepCost(sim);
+        if (c0 > (max.get(name) ?? 0)) max.set(name, c0);
+        t.step(sim);
+      }
+    }
+    // (budget: INFRA_PIECE_MS for the searches; the edit-only attachment refresh and the rebuild's publish are the only
+    // exceptions: R2)
+    for (const [name, c] of max) {
+      const cap = /attach|rbPublish|rb0/.test(name) ? 2 : INFRA_PIECE_MS * 1.5;
+      expect(c, `${name} estimate`).toBeLessThanOrEqual(cap);
+    }
+    expect(max.size).toBeGreaterThan(40);
+  }, 300_000);
+});
