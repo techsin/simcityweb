@@ -14,6 +14,7 @@ import { upkeepEstimate } from '../../src/ui/upkeepModel';
 import { Network } from '../../src/core/types';
 import { newState, place, roadLine } from '../infra/cityGen';
 import { installFakeDom } from './fakeDom';
+import { queryHost } from './queryHost';
 
 vi.mock('../../src/ui/thumbs', () => ({ thumbs: { cached: () => null } }));
 installFakeDom();
@@ -36,7 +37,7 @@ describe('W0.3b upkeep display values', () => {
     ['civ_police_station', '§915', '§2,211'],
     ['civ_fire_station', '§539', '§749'],
     ['park_small', '§30', '§41'],
-  ])('pins %s typical and full-use prices from 93069fa', (id, typical, full) => {
+  ])('pins hand-derived %s typical and full-use prices', (id, typical, full) => {
     const estimate = upkeepEstimate(city(), getDef(id))!;
     expect(money(estimate.now)).toBe(typical);
     expect(money(estimate.full)).toBe(full);
@@ -88,7 +89,7 @@ describe('W0.3b upkeep display values', () => {
     ['civ_elementary_school', 132], ['civ_high_school', 252], ['civ_college', 720],
     ['civ_library', 75], ['civ_museum', 210], ['civ_clinic', 66.63], ['civ_hospital', 337.8],
     ['civ_police_station', 56.328], ['civ_fire_station', 52.08], ['park_small', 4.65], ['park_playground', 5.7],
-  ])('pins %s cursor upkeep from 93069fa for 100 nearby unserved people', (defId, expected) => {
+  ])('pins hand-derived %s cursor upkeep for 100 nearby unserved people', (defId, expected) => {
     const st = city(), sim = new Simulation(st);
     roadLine(st, 2, 10, 29, 10, Network.Road);
     const need = new Float32Array(st.cells);
@@ -98,20 +99,23 @@ describe('W0.3b upkeep display values', () => {
   });
 
   it('keeps both ruin checks and their upkeep values current from exact mirrored flags while paused', () => {
-    const st = city(), abort = new AbortController(), def = getDef('rw_missile_range')!;
+    const st = city(), abort = new AbortController(), def = getDef('civ_mayor_house')!;
+    const sim = new Simulation(st);
     const b = place(st, def.id, 5, 5, { flags: BF.Plopped });
     st.milestones[def.id] = 1;
     const ctx = {
-      state: st, mods: {}, sandbox: () => false, signal: abort.signal,
+      state: st, host: queryHost(sim), mods: {}, sandbox: () => false, signal: abort.signal,
       get sim() { throw new Error('ruin display reached into the simulation'); },
     } as unknown as GameContext;
     const rewards = new RewardsPanel(ctx) as unknown as { ruins(): RuinState; upkeepChip(def: BuildingDef): HTMLElement };
     try {
       const upkeep = rewards.upkeepChip(def).textContent;
+      expect(upkeep).toBe('§50/mo');
       expect(plopSpec(ctx, def).disabled).toBe(UNIQUE_BUILT_TEXT);
       expect(rewards.ruins().live.has(def.id)).toBe(true);
       // Replica delivery replaces the record; no live system object or economy-runtime list is available.
       st.buildings.set(b.id, { ...b, flags: BF.Plopped | BF.Burnt } as Building);
+      sim.events.emit('buildingChanged', st.buildings.get(b.id)!);
       expect(plopSpec(ctx, def).disabled).toBe(UNIQUE_RUINS_TEXT);
       expect(rewards.ruins().ruin.get(def.id)?.id).toBe(b.id);
       expect(rewards.ruins().live.has(def.id)).toBe(false);

@@ -102,7 +102,8 @@ describe('string packing', () => {
   });
 });
 
-describe('city delta', () => {
+// NOTE-031: these cases build and encode whole cities; under a loaded machine one took 140 s
+describe('city delta', { timeout: 300_000 }, () => {
   it('a delta of a few edits is tiny and restores the exact city', () => {
     const st = city();
     const base = serializeCity(st, { copy: true });
@@ -202,7 +203,7 @@ describe('city delta', () => {
   });
 });
 
-describe('write -> find -> restore', () => {
+describe('write -> find -> restore', { timeout: 300_000 }, () => {
   let ls: MemStorage;
   let now: number;
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); clearRecoveryBase(); });
