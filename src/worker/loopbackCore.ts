@@ -6,12 +6,11 @@ import { createSystems } from '../sim/systems';
 import { SimCore, type SimErrors, type SimFlags, type SimModules } from './SimCore';
 import { ChangeRecorder, type RecorderOptions } from './recorder';
 import { Replica, type ReplicaHooks } from './replica';
-import { cloneMessage, copyOwned, type M2W, type Packet, type Ready, type ViewState, type W2M, type Reply } from './protocol';
-import type { CityPersistence, Command } from './SimHost';
-import { queryKey, type QueryArgs, type QueryName } from './queries';
-import { CHANGE_EVENTS, cityFingerprint } from '../save/fingerprint';
+import { cloneMessage, errorText, type M2W, type Packet, type Ready, type ViewState, type W2M, type Reply } from './protocol';
+import type { CityPersistence } from './SimHost';
+import { SeededLag, type LagProfile } from './lag';
+import { ProtocolInbox, type InboxStore } from './protocolInbox';
 import { getRecoveryBase } from '../save/cities';
-import { buildRecoverySnapshot, LS_BUDGET_BYTES } from '../save/recoveryCodec';
 import { openKV } from '../save/db';
 import { storeRecoveryIdb } from '../save/recoveryIdb';
 
@@ -35,152 +34,13 @@ export interface LoopbackOptions {
 }
 export interface ProtocolTiming { flushMs: number; cloneMs: number; applyMs: number; packets: number }
 
-/** Virtual transport time, never a busy wait or a change to simulation dt. */
-export interface LagProfile { seed: number; packetTicks?: number; ackTicks?: number; longUnitChance?: number; unitMs?: readonly [number, number] }
-export class SeededLag {
-  private seed: number;
-  constructor(readonly profile: LagProfile) { this.seed = profile.seed >>> 0; }
-  random(): number { this.seed = (Math.imul(this.seed, 1664525) + 1013904223) >>> 0; return this.seed / 0x100000000; }
-  packet(ack: boolean): number { return Math.floor(this.random() * ((this.profile.packetTicks ?? 6) + 1)) + (ack ? this.profile.ackTicks ?? 3 : 0); }
-  unit(): number {
-    if (this.random() >= (this.profile.longUnitChance ?? 0.1)) return 0;
-    const [lo, hi] = this.profile.unitMs ?? [50, 150];
-    return lo + Math.floor(this.random() * (hi - lo + 1));
-  }
-}
-
-type WatchRequest = Extract<M2W, { t: 'watch' }>;
-interface CoreWatch {
-  request: WatchRequest; at: number;
-  cache: Map<string, { signature: string; at: number }>;
-  /** dispatchOptions: the command seq of its last run (a dispatch command bypasses the cap, as LocalWatch) */
-  cmd?: number;
-}
-
-/** W1.1b: FIFO handlers shared with a worker inbox; scheduling remains the transport's responsibility. */
-export class ProtocolInbox {
-  cmd = 0;
-  changes = 0;
-  private watches = new Map<number, CoreWatch>();
-  private errors = new Map<string, number>();
-  constructor(readonly core: SimCore, readonly recorder: ChangeRecorder, private opts: {
-    now(): number; flush(force?: boolean): Packet | null; signal: AbortSignal; persistence?: CityPersistence;
-  }) {
-    const offs = CHANGE_EVENTS.map((type) => core.sim.events.on(type, () => { this.changes++; }));
-    opts.signal.addEventListener('abort', () => { for (const off of offs) off(); this.watches.clear(); }, { once: true });
-  }
-
-  handle(message: M2W): void | Promise<void> {
-    const m = message;
-    switch (m.t) {
-      case 'cmd': {
-        if (m.seq !== this.cmd + 1) throw new Error(`Command gap: expected ${this.cmd + 1}, got ${m.seq}`);
-        if (m.atDay !== undefined && m.atDay !== this.core.sim.state.day) throw new Error('atDay requires a deterministic day boundary');
-        this.recorder.cause = m.seq;
-        let result: unknown;
-        try {
-          if (m.op.startsWith('debug.')) throw new Error('Debug units belong to the worker scheduler');
-          if (!this.core.actions) throw new Error('City actions are unavailable');
-          result = this.core.applyCommand({ op: m.op, args: m.args } as unknown as Command, this.core.actions);
-        } catch (e) {
-          result = { ok: false, commandError: String(e) };
-          this.error(`command:${m.op}`, `Command “${m.op}” failed`, e);
-        } finally { this.recorder.cause = undefined; }
-        this.cmd = m.seq;
-        this.recorder.ack(m.seq, result);
-        this.refresh(); this.opts.flush();
-        return;
-      }
-      case 'query':
-        try { this.recorder.reply({ t: 'qres', id: m.id, cmd: this.cmd, ok: true, value: copyOwned(this.core.runQuery(m.name, m.args as QueryArgs<QueryName>)) }); }
-        catch (e) {
-          this.recorder.reply({ t: 'qres', id: m.id, cmd: this.cmd, ok: false, error: String(e) });
-          this.error(`query:${m.name}`, `Query “${m.name}” failed`, e);
-        }
-        this.opts.flush(); return;
-      case 'watch': {
-        const old = this.watches.get(m.id);
-        this.watches.set(m.id, old ? { ...old, request: m } : { request: m, at: -Infinity, cache: new Map() });
-        this.refresh(); this.opts.flush(); return;
-      }
-      case 'unwatch': this.watches.delete(m.id); return;
-      case 'view': this.recorder.setView(m.v); this.opts.flush(); return;
-      case 'ping': this.recorder.ping(m.n); this.opts.flush(); return;
-      case 'save': return this.save(m);
-      case 'snapshot': return this.snapshot(m);
-      default: throw new Error(`Transport must handle ${m.t}`);
-    }
-  }
-
-  refresh(): void {
-    const now = this.opts.now();
-    for (const w of this.watches.values()) {
-      const m = w.request, key = queryKey(m.args), cached = w.cache.get(key);
-      const interval = m.name === 'inspectBuilding' || m.name === 'inspectCell' ? 1000 : 200;
-      // as LocalWatch (W0.3b, EM-1): argument changes share the cap; a dispatch command bypasses it for dispatchOptions
-      const epoch = m.name === 'dispatchOptions' ? this.cmd : undefined;
-      if (epoch === w.cmd && (now - w.at < 200 || (cached && now - cached.at < interval))) continue;
-      const args = m.args as QueryArgs<QueryName>;
-      const signature = this.core.querySignature(m.name, args, m.when, this.cmd);
-      if (cached?.signature === signature) { w.cmd = epoch; continue; }
-      w.at = now; w.cmd = epoch;
-      try { this.recorder.watch({ id: m.id, key, cmd: this.cmd, value: copyOwned(this.core.runQuery(m.name, args)) }); }
-      catch (e) {
-        this.recorder.watch({ id: m.id, key, cmd: this.cmd, error: String(e) });
-        this.error(`query:${m.name}`, `Watch “${m.name}” failed`, e);
-      }
-      w.cache.delete(key); w.cache.set(key, { signature, at: now });
-      if (w.cache.size > 64) w.cache.delete(w.cache.keys().next().value!);
-    }
-  }
-  resetWatches(): void { for (const w of this.watches.values()) { w.cache.clear(); w.at = -Infinity; } }
-
-  error(key: string, title: string, e: unknown, sim = false): void {
-    const now = this.opts.now(), disabled = title.includes('disabled');
-    if (!disabled && now - (this.errors.get(key) ?? -Infinity) < 1000) return;
-    this.errors.set(key, now);
-    this.recorder.reply({ t: 'error', cmd: this.cmd, key, title, message: String(e), stack: e instanceof Error ? e.stack : undefined, sim, ...(disabled ? { disabled: true } : {}) });
-  }
-
-  private async save(m: Extract<M2W, { t: 'save' }>): Promise<void> {
-    const cmd = this.cmd;
-    try {
-      const p = this.opts.persistence;
-      if (!p) throw new Error('City persistence is not configured');
-      const copy = this.core.copySave(p.regionId, p.tileKey), changes = this.changes;
-      const boundary = this.opts.flush(true);
-      const pktSeq = boundary?.seq ?? this.recorder.sequence + 1;
-      const recoveryDropped = await this.core.putSave(copy);
-      if (this.opts.signal.aborted) return;
-      this.recorder.reply({ t: 'saved', id: m.id, cmd, ok: true, savedAt: copy.record.savedAt, fp: copy.fp, summary: copy.summary, pktSeq, changes, recoveryDropped });
-    } catch (e) {
-      if (this.opts.signal.aborted) return;
-      this.recorder.reply({ t: 'saved', id: m.id, cmd, ok: false, error: String(e) });
-    }
-    this.opts.flush();
-  }
-
-  private async snapshot(m: Extract<M2W, { t: 'snapshot' }>): Promise<void> {
-    const cmd = this.cmd, p = this.opts.persistence;
-    try {
-      if (!p) { this.recorder.reply({ t: 'snapped', id: m.id, cmd, ok: false }); this.opts.flush(); return; }
-      const start = performance.now(), st = this.core.sim.state;
-      const snapshot = buildRecoverySnapshot(p.regionId, p.tileKey, st, getRecoveryBase(p.regionId, p.tileKey), {
-        cityName: st.config.name, regionName: p.regionName, population: st.stats.population, funds: st.funds,
-        why: m.why, lean: m.why === 'periodic', at: Date.now(),
-      }, LS_BUDGET_BYTES - 128 * 1024); // W0.6's journal reserve, without importing the localStorage module.
-      const fp = cityFingerprint(st), changes = this.changes;
-      const kv = await openKV();
-      await storeRecoveryIdb(kv, snapshot.marker, snapshot.payload);
-      if (this.opts.signal.aborted) return;
-      this.recorder.reply({ t: 'snapped', id: m.id, cmd, ...snapshot, fp, changes,
-        result: { ok: true, bytes: snapshot.payload.length, ls: false, idb: kv.persistent, dropped: snapshot.dropped, ms: performance.now() - start } });
-    } catch (e) {
-      if (this.opts.signal.aborted) return;
-      this.recorder.reply({ t: 'snapped', id: m.id, cmd, ok: false, error: String(e) });
-    }
-    this.opts.flush();
-  }
+/** The loopback writes IndexedDB itself, as LocalSimHost does (and the worker will, in W1.3). */
+function idbStore(core: SimCore): InboxStore {
+  return {
+    putSave: async (copy) => ({ recoveryDropped: await core.putSave(copy) }),
+    putSnapshot: async ({ marker, payload }) => { const kv = await openKV(); await storeRecoveryIdb(kv, marker, payload); return kv.persistent; },
+    recoveryBase: getRecoveryBase,
+  };
 }
 
 export class LoopbackCore {
@@ -201,7 +61,8 @@ export class LoopbackCore {
   private busyUntil = 0;
   private transportTick = 0;
   private lag: SeededLag | null;
-  private acked = 0;
+  /** the traffic layers as last sent: a traffic pass writes them one step before it announces them (F6) */
+  private sentRoad = { traffic: new Float32Array(0), congestion: new Float32Array(0) };
   private stop = () => this.dispose();
 
   constructor(state: CityState, private opts: LoopbackOptions = {}) {
@@ -211,7 +72,7 @@ export class LoopbackCore {
     this.core = new SimCore(state, { report: (title, e, details) => {
       if (!opts.receive) opts.errors?.report(title, e, details);
       if (this.inbox) { this.inbox.error(details?.key ?? title, title, e, details?.sim); return; }
-      const reply: Reply = { t: 'error', cmd: 0, key: details?.key ?? title, title, message: String(e), sim: details?.sim ?? false };
+      const reply: Reply = { t: 'error', cmd: 0, key: details?.key ?? title, title, message: errorText(e), stack: e instanceof Error ? e.stack : undefined, sim: details?.sim ?? false };
       if (this.recorder) this.recorder.reply(reply); else bootErrors.push(reply);
     } }, opts.flags, () => this.now());
     this.core.sim.speed = opts.initialSpeed ?? 1;
@@ -221,7 +82,8 @@ export class LoopbackCore {
       return { alerts: alerts.map((a) => ({ ...a })), live, toast, warn };
     }, ...opts.recorder, now: () => this.now(), signal: this.abort.signal });
     this.replica = opts.replicaInstance ?? new Replica(opts.replica);
-    this.inbox = new ProtocolInbox(this.core, this.recorder, { now: () => this.now(), flush: (force) => this.flush(force), signal: this.abort.signal, persistence: opts.persistence });
+    this.inbox = new ProtocolInbox(this.core, this.recorder, { now: () => this.now(), flush: (force) => this.flush(force),
+      signal: this.abort.signal, persistence: opts.persistence, store: idbStore(this.core), fatal: (e) => this.fatal(e) });
     this.deliver(this.ready());
     for (const reply of bootErrors) this.recorder.reply(reply);
     opts.signal?.addEventListener('abort', this.stop, { once: true });
@@ -232,15 +94,17 @@ export class LoopbackCore {
     const ready = this.recorder.ready(this.inbox.cmd, this.live), p = this.opts.persistence;
     if (p) ready.savedAt = getRecoveryBase(p.regionId, p.tileKey)?.savedAt ?? 0;
     ready.changes = this.inbox.changes;
+    this.sentRoad = { traffic: this.primary.traffic.slice(), congestion: this.primary.congestion.slice() };
     return ready;
   }
   get state(): CityState { return this.replica.state; }
   get primary(): CityState { return this.core.sim.state; }
-  /** The authoritative state as the replica should see it: the live state, with the utilities layers as last sent
-   *  (a utilities pass in flight has written them but not yet announced them). For the harness's comparisons. */
+  /** The authoritative state as the replica should see it: the live state, with the utilities and traffic layers as
+   *  last sent (a pass in flight has written them but not yet announced them). For the harness's comparisons. */
   get delivered(): CityState {
     const sent = this.recorder.sentUtilities(), st = this.primary;
-    return Object.assign(Object.create(st) as CityState, { powered: sent.powered ?? st.powered, watered: sent.watered ?? st.watered });
+    return Object.assign(Object.create(st) as CityState, { powered: sent.powered ?? st.powered, watered: sent.watered ?? st.watered,
+      traffic: this.sentRoad.traffic, congestion: this.sentRoad.congestion });
   }
   /** Harness clock used to verify the recorder's 4-per-second group throttle independently. */
   get elapsedTimeMs(): number { return this.elapsedMs; }
@@ -275,12 +139,15 @@ export class LoopbackCore {
   }
   flush(force = false, rollingCount?: number): Packet | null {
     this.assertOpen();
-    if (this.opts.receive && this.recorder.sequence - this.acked > 4) return null;
+    // §2.10's backpressure, measured on this transport: packets still in flight. Main applies a packet as it arrives,
+    // and its acks ride on ticks, which stop with the tab hidden while the hidden path's save reply must still go out.
+    if (this.opts.receive && this.inFlight() > 4) return null;
     const start = performance.now();
     const packet = this.recorder.flush({ live: this.live, force, rollingCount });
     this.timing.flushMs += performance.now() - start;
     if (!packet) return null;
     packet.changes = this.inbox.changes;
+    for (const patch of packet.layers ?? []) if (patch.name === 'traffic' || patch.name === 'congestion') this.sentRoad[patch.name].set(this.primary[patch.name]);
     const message = this.deliver({ t: 'pkt', p: packet });
     return message.t === 'pkt' ? message.p : null;
   }
@@ -295,11 +162,23 @@ export class LoopbackCore {
   resync(): Ready {
     this.assertOpen();
     cloneMessage<M2W>({ t: 'resync' });
-    this.outgoing = []; this.acked = 0;
+    // replies in packets still in flight, and those not yet flushed, are lost with them: main rejects only these reads
+    const lost = [...this.outgoing.flatMap((o) => o.message.t === 'pkt' ? o.message.p.replies ?? [] : []), ...this.recorder.pendingReplies]
+      .flatMap((r) => r.t === 'error' ? [] : [r.id]);
+    this.outgoing = [];
     this.inbox.resetWatches();
     const ready = this.ready();
+    if (lost.length) ready.lost = lost;
     this.deliver(ready);
     return ready;
+  }
+  private inFlight(): number {
+    let n = 0;
+    for (const o of this.outgoing) if (o.message.t === 'pkt') n++;
+    return n;
+  }
+  private fatal(e: unknown): void {
+    if (!this.disposed) this.deliver({ t: 'fatal', message: errorText(e), stack: e instanceof Error ? e.stack : undefined });
   }
   private deliver(message: W2M): W2M {
     let start = performance.now();
@@ -326,10 +205,7 @@ export class LoopbackCore {
   post(message: M2W): void {
     this.assertOpen();
     const received = cloneMessage(message);
-    if (received.t === 'tick') {
-      this.acked = Math.max(this.acked, received.ack);
-      this.advanceTransport(received.dt * 1000);
-    }
+    if (received.t === 'tick') this.advanceTransport(received.dt * 1000);
     this.queue.push(received);
     if (!this.scheduled) {
       this.scheduled = true;
@@ -361,16 +237,11 @@ export class LoopbackCore {
           this.inbox.refresh(); this.flush();
         } else if (m.t === 'resync') this.resync();
         else if (m.t === 'dispose') this.dispose();
-        else {
-          const waiting = this.inbox.handle(m);
-          if (waiting) await waiting;
-        }
+        else this.inbox.handle(m);
         this.busyUntil = this.elapsedMs + (this.lag?.unit() ?? 0);
       }
     };
-    this.processing = run().catch((e) => {
-      if (!this.disposed) this.deliver({ t: 'fatal', message: String(e), stack: e instanceof Error ? e.stack : undefined });
-    }).finally(() => {
+    this.processing = run().catch((e) => this.fatal(e)).finally(() => {
       this.processing = null;
       if (!this.disposed && this.queue.length && this.elapsedMs >= this.busyUntil) queueMicrotask(() => { if (!this.disposed) void this.pump(); });
     });
@@ -381,10 +252,11 @@ export class LoopbackCore {
     this.assertOpen();
     await this.processing;
     do {
-      this.deliverDue(true); this.acked = this.replica.seq;
+      this.deliverDue(true);
       await this.pump(true);
-      this.deliverDue(true); this.acked = this.replica.seq;
-      this.flush(); this.deliverDue(true); this.acked = this.replica.seq;
+      await this.inbox.idle; // saves and snapshots reply when their writes settle
+      this.deliverDue(true);
+      this.flush(); this.deliverDue(true);
     } while (this.queue.length || this.outgoing.length);
   }
   resetTiming(): void {

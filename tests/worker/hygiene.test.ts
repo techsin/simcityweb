@@ -151,6 +151,14 @@ describe('worker migration hygiene gates', () => {
   it('W0.6: SimCore import graph excludes bundle.ts, save/index.ts and recoveryLs.ts', async () => {
     await expectCleanGraph('src/worker/SimCore.ts');
   });
+  it('W1.1b: the protocol inbox is worker-safe: no replica, loopback, IndexedDB or main-thread save module', async () => {
+    // W1.2's worker hosts it; its writes go through an injected store (R14's persistence 'main')
+    const graph = await importGraph('src/worker/protocolInbox.ts');
+    expect(graph).toContain('src/worker/protocolInbox.ts');
+    expect(graph.filter((p) => ['src/worker/replica.ts', 'src/worker/loopbackCore.ts', 'src/worker/LoopbackSimHost.ts',
+      'src/save/db.ts', 'src/save/recoveryIdb.ts', 'src/save/cities.ts', 'src/save/bundle.ts', 'src/save/index.ts',
+      'src/save/recoveryLs.ts'].includes(p))).toEqual([]);
+  });
   it.skip('W1.2: simWorker import graph excludes bundle.ts, save/index.ts and recoveryLs.ts', async () => {
     await expectCleanGraph('src/worker/simWorker.ts');
   });

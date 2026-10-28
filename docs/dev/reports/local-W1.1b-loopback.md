@@ -1,14 +1,95 @@
-# local-W1.1b-loopback — commands and replies through the loopback host (T032)
+# T032 — W1.1b part 2: commands and replies through the loopback host
 
-Branch `local/W1.1b-loopback`, base `0fe14c2` (`local/W0-complete`). Changes are uncommitted. No push or queue
-`.done` file was made, as requested. TypeScript and whitespace checks pass. Runtime acceptance is pending:
-Vitest fails before collecting tests with `spawn EPERM` in this sandbox.
+## Review and gates (the local worker)
+
+Branch `local/W1.1b-loopback`: the Codex lane's commit `fd6b92d` on the provisional W0-complete, then the final
+`local/W0-complete` and dev `7826490` merged in. My review found 1 blocker, 4 majors (one of them an integration
+decision), 7 minors and 2 nits. They are fixed in `998c6e5`, `a18754b` and the round's last commit, except two minors
+that NOTE-041 gives to other lanes.
+
+### What changed in the review
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | **Blocker:** after the merge, tsc failed (W0.3b's `SimHost.commandCount`), and so did FH-07a's hygiene rule (a static import of CityActions) | `commandCount` counts every post, coalesced slider moves included. CityActions loads lazily in `start()`. |
+| 2 | **Major:** a `dispatchOptions` watch kept the 200 ms cap after a dispatch command; LocalWatch bypasses it (EM-1) | ProtocolInbox keys the cap on the command epoch for `dispatchOptions`, as LocalWatch does. |
+| 3 | **Major:** reads the replica could not answer as the worker does | `approvalBreakdown` leaves REPLICA_SAFE: its detail lines read the survey WeakMap (its terms and values still match). The recorder re-sends young plops (age < 30) daily, so T026's age-based refund previews match. The harness compares the utilities and traffic layers as last sent (below). |
+| 4 | **Major:** `host.changes` counted the events in packets main received, so a resync that dropped packets left main.ts's dirty tracking off for good | Packets and Ready carry the worker's count, and main mirrors it. |
+| 5 | **Major (integration):** two WorkerSimHosts, T032's and T034's | T032's stays; see the next section. |
+| 6 | Minor: an IndexedDB write blocked the whole inbox, so every autosave and 30 s snapshot was a hitch, then a catch-up | The save copy, its `cmd` and its change count are taken in the unit. The writes are chained in request order, and each replies when it settles. A snapshot taken while a save is still being written deltas against that save, the base once it lands (recoveryIdb's stale check). |
+| 7 | Minor: a resync rejected every pending read, including reads, saves and snapshots posted after it; a save posted then was written, yet the app said "Saving failed". It also rejected applied commands whose acks were lost, so `commitAction` played an error for an edit that happened | The Ready lists the request ids whose replies the resync dropped (`lost`); only those reject. Applied commands with lost acks reject with `CommandOutcomeLost`, so callers can skip failure feedback (T031's `commitAction` must). New `onResync(cmd)` hook for T033. |
+| 8 | Minor: backpressure counted unacked packets, and acks ride on ticks, which stop with the tab hidden: the hidden path's save reply was held until the tab came back | Loopback counts the packets actually in flight. The real worker still needs acks outside ticks (on ping, for example): T034's. |
+| 9 | Minor: `NewYear.holdDate` writes `sim.maxDaysPerFrame`, which the facade drops | NOTE-041: a `holdCalendar(on)` command, owned by T031, with T034's worker handler. |
+| 10 | Minor: WorldView does not rebind on a resync | NOTE-041: T034's, tested through this loopback host with a forced resync. |
+| 11 | Minor: an `atDay` mismatch was fatal (the host disposed), and a failed CityActions constructor failed every op, pause included | An `atDay` mismatch is a rejected command (`commandError`). The inbox uses stand-in FallbackActions, as LocalSimHost does, so every op still runs. |
+| 12 | Minor: `options.onPacket` was unguarded | It is guarded and reported like the other observers. |
+| 13 | Nit: the lag suite's quality | Two tautological asserts are gone. The fuzzer posts its command groups in a seeded order and subset, and its no-revert check covers the historic toggle and real dismissals too (the grown city dismisses two real alerts). F8's dev assertion (§2.4 step 7) is wired in PacketSimHost: after every packet, each field with a pending op must still hold that op's value. The suite fails on any report. |
+| 14 | Nits | Errors cross as their message with the worker's stack (no "Error: Error: …"). `PacketWatch.error` returns one Error per failure. Frames posted before boot are dropped, not replayed. The unused AbortController is gone. `PROTOCOL_VERSION` stays 1, as §2.10's content-hash rule allows. |
+
+The round also found a real query side effect in the sim. The grown city's later days depended on when the inspector
+looked: `TrafficSystem.stopsNear` refreshed the stop attachments, and the traffic assignment then reused them
+(querySideEffects, bisected). The query wrappers now pass `refresh = false`; the sim's own call keeps the refresh, so
+the bot is unchanged. That hunk is in src/sim/infra/traffic.ts and transportFacilities.ts, outside T032's files.
+SimCore and SimHost gained a clock option for LivePolicy, so the loopback's alert delays count in the host's clock.
+
+### Major 5: which WorkerSimHost stays
+
+T032's PacketSimHost (main side) and ProtocolInbox (worker side) stay. T034 rebuilds its WorkerSimHost and simWorker on
+them. NOTE-040 left the choice to me. The reasons:
+- T034's own task says so: the main side reuses T031/T032's host code, built against the same SimHost interface.
+  T034's WorkerSimHost (532 lines) and simWorker (308 lines) are a second copy instead: their own R1 path, watch cache,
+  save and snapshot handling, and message shapes (workerProtocol.ts).
+- Two copies drift, and these already had. The dispatch cap bypass (major 2) was missing from T032's. T034's watch
+  keeps one signature per watch, with no per-key cache, no inspector 1 Hz gate per key, no failure memo and no command
+  epoch.
+- The W1.1b suites run on T032's code: the lag fuzzer, replicaSafe, querySideEffects and the loopback host tests.
+  With one implementation they also cover the worker path, and T034's hosts.test (Local, Loopback and Worker hashes)
+  becomes a test of the transport alone.
+- T034 keeps what is truly its own: the worker loop (rAF ticks; one day and one scheduler step per task; the explicit
+  live flag, O7), boot progress with its 20 s timeout, hello and versioning, liveness on visible time, failing fast on
+  `onerror` and `messageerror`, persistence 'main', and the protector test on the real worker.
+
+For that, ProtocolInbox moved to its own worker-safe module, src/worker/protocolInbox.ts. A hygiene gate checks that
+its import graph has no replica, loopback core, IndexedDB module or main-thread save module. Saves and snapshots are
+written through an injected `InboxStore`: the loopback writes IndexedDB, and R14's persistence 'main' can return the
+record for the page to store. SeededLag moved to src/worker/lag.ts. T034 also owns acks outside ticks (minor 8), the
+worker side of a resync (main must say which replies it discarded, as `Ready.lost` does here), and, per NOTE-041,
+`holdCalendar`'s worker handler and WorldView's resync wiring.
+
+### The harness's view of the traffic layers
+
+With the new backpressure and the new fuzzer, the lag suite's generated run failed: at the end, the replica's traffic
+layer differed from the worker's in 7,000 cells, with no error and no resync.
+- **Why the run changed course.** The lag model draws packet delays and unit stalls from one seeded stream. With the
+  new backpressure the core flushes a different number of packets, so the stalls fall differently, and the same
+  commands apply on different days (setSettings on day 2 instead of 3, for example). The simulation is deterministic
+  given those days. I checked: the same commands from the same state, then the apply days, logged for both variants.
+- **Why the check failed.** The traffic system writes `traffic` and `congestion` in one phase (PH_FINAL) and announces
+  them in the next (PH_FINAL2), so a pass can be in flight when a run stops. That is F6: the replica rightly holds the
+  last announced pass. The harness compared the live arrays. `delivered` now uses the traffic layers as last sent, as
+  it already did for utilities.
+
+### Gates
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| Worker suites with the fixtures (both cities x 120 days: lag, replicaSafe, querySideEffects; protocol, replica, replicaLive; loopbackHost) | 19 files; 156 passed, 2 skipped (W1.2's simWorker graph gate, and the HostActions oracle until T031) |
+| Full vitest (with the fixtures) | **184 files passed, 1 skipped; 1,860 tests passed, 8 skipped** |
+| The bot (128x15, seed 7) | identical to `93069fa`, action log included: 196,101 in 2015 |
+| Each new test against its fix reverted | all fail: majors 2 and 4 separately; minors 6, 7, 8, 11 and 12 and the error-text nit against `a18754b`'s host and core; the frames-before-boot nit separately |
+| The game playable in loopback | waits for T031 (HostActions): the merged T031 + T032 build goes to T028's harness slot |
+
+## The lane's summary (Codex, at `fd6b92d`)
+
+Superseded where the review changed it: the resync rejection, ProtocolInbox's IndexedDB writes and its home,
+backpressure, and the verification notes. The Codex sandbox could not run vitest; every suite above ran here.
 
 Read the requested design sections and R1/R3/R16, the W1.1a/W0.6/W0.3b reports, and the worker sources/tests.
 The T031/T033 interfaces were also inspected read-only in their sibling worktrees; their files were not copied
 or edited. No simulation algorithm, LocalSimHost implementation, guard holder, save brand, or null view changed.
 
-## Changes
+### Changes
 
 | File | Change |
 |---|---|
@@ -39,7 +120,7 @@ inspector's additional 1 Hz gate per key. Listeners use the supplied signal or t
 News items are copied whole by recorder/replay. No field projection was introduced. The focused test passes an
 item containing both `ref.advice` and `ref.reward` and checks equality and ownership, covering T035's optional ref.
 
-## Lane handoff
+### Lane handoff
 
 **T031:** `LoopbackSimHost` discovers `HostActions.ts` through an optional eager Vite glob, or accepts
 `options.actions(host)`. `post()` returns `{seq, done}`; the controller supplies predictions and pending map edits.
@@ -65,7 +146,7 @@ the ticket. The mirror is not constructed automatically in this branch; journal 
 composition. The snapshot budget reserves W0.6's 128 KiB without importing localStorage code into the core; once
 T033's constant moves into `recoveryCodec`, replace that literal with its shared constant.
 
-## Design differences needing review
+### Design differences needing review
 
 - `emptyZoneStatus` is not unconditionally replica-safe in this base: it reads all desirability variants and land
   value, which are subscribed-only layers. The test demonstrates disagreement before delivery and equality after
@@ -89,7 +170,7 @@ T033's constant moves into `recoveryCodec`, replace that literal with its shared
   provisional replica, then adopts core Ready and releases the input reference. Worker ready-first construction,
   full host selection, recovery boot and browser fallback belong to T034/integration.
 
-## Verification
+### Verification
 
 - **Passed:** `npx tsc --noEmit`; `git diff --check`.
 - **Blocked before collection:** `npx vitest run tests/worker/protocol.test.ts --maxWorkers=1`. Vite's

@@ -3,12 +3,27 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DevType, Overlay, Zone } from '../../src/core/types';
 import { LoopbackSimHost } from '../../src/worker/LoopbackSimHost';
 import { QUERY_HANDLERS, exactDigest } from '../../src/worker/queries';
-import { EntryType, assertOwnedBuffers, type Packet } from '../../src/worker/protocol';
+import { CommandOutcomeLost, EntryType, assertOwnedBuffers, type Packet } from '../../src/worker/protocol';
 import { overlayLayer, overlayReady } from '../../src/sim/infra/overlays';
 import { emergencyOf } from '../../src/sim/infra/emergency';
+import { createSystems } from '../../src/sim/systems';
 import { getCityRecord, clearRecoveryBase } from '../../src/save/cities';
-import { openKV, MemoryKV, setKV } from '../../src/save/db';
+import { openKV, MemoryKV, setKV, type StoreName } from '../../src/save/db';
 import { newState, place, roadLine } from '../infra/cityGen';
+
+/** the promise, or a rejection after a second: an outcome that never comes fails fast instead of timing out */
+const within = <T>(p: Promise<T>, ms = 1000) => Promise.race([p,
+  new Promise<never>((_, no) => setTimeout(() => no(new Error(`still pending after ${ms} ms`)), ms))]);
+/** holds the city saves' IndexedDB writes until released */
+class GatedKV extends MemoryKV {
+  private open!: () => void;
+  private gate = new Promise<void>((resolve) => { this.open = resolve; });
+  release(): void { this.open(); }
+  override async put(store: StoreName, value: unknown, key?: string): Promise<void> {
+    if (store === 'cities') await this.gate;
+    return super.put(store, value, key);
+  }
+}
 
 afterEach(() => { vi.restoreAllMocks(); clearRecoveryBase(); setKV(new MemoryKV()); });
 
@@ -99,6 +114,10 @@ describe('LoopbackSimHost packets', () => {
       const failed = host.query('openAdvice', {}), w = host.watch('openAdvice', {}, 'daily');
       const rejected = expect(failed).rejects.toThrow(/cloneable/);
       await host.drain(); await rejected;
+      // the worker's message and frames, not "Error: Error: …" with this replay's stack
+      const [, reported] = report.mock.calls.find(([title]) => title === 'Query “openAdvice” failed')!;
+      expect((reported as Error).message).toBe('Non-cloneable protocol value');
+      expect((reported as Error).stack).toMatch(/copyOwned/);
       expect(w.error).toBeInstanceOf(Error); expect(w.value).toBeUndefined();
       expect(packets.some((p) => p.replies?.some((r) => r.t === 'error'))).toBe(true);
       expect(report).toHaveBeenCalled(); spy.mockRestore();
@@ -236,6 +255,100 @@ describe('LoopbackSimHost packets', () => {
       const saved = host.save('manual');
       await host.drain();
       expect((await saved).changes).toBe(host.changes);
+    } finally { await host.dispose(); }
+  });
+
+  it('keeps the inbox running while a save is written, and deltas a snapshot taken meanwhile against that save', async () => {
+    const kv = new GatedKV(); setKV(kv);
+    const host = new LoopbackSimHost(newState(32), { initialSpeed: 0, persistence: { regionId: 'r', tileKey: 't' } });
+    await host.start();
+    try {
+      await host.drain();
+      const saved = host.save('manual'), snapshot = host.snapshot('hidden');
+      // the save's write is held: a command behind it in the FIFO still runs and acks
+      const ticket = host.post('setHistoric', [-1, true]);
+      await expect(within(ticket.done)).resolves.toBeUndefined();
+      kv.release();
+      await host.drain();
+      const ack = await saved, snap = await snapshot;
+      expect(ack.cmd).toBe(0); expect(snap?.cmd).toBe(0);
+      expect(snap?.marker.baseSavedAt).toBe(ack.savedAt);
+      expect((await getCityRecord(await openKV(), 'r', 't'))?.savedAt).toBe(ack.savedAt);
+    } finally { kv.release(); await host.dispose(); }
+  });
+
+  it('rejects on resync only what it dropped: later reads and saves still reply, applied commands settle as applied', async () => {
+    setKV(new MemoryKV());
+    const resyncs: number[] = [];
+    // packets wait up to 1000 transport ticks, none pass below, and the core never stalls: replies stay in flight
+    const host = new LoopbackSimHost(newState(32), { initialSpeed: 0, persistence: { regionId: 'r', tileKey: 't' },
+      onResync: (cmd) => resyncs.push(cmd), loopback: { lag: { seed: 3, packetTicks: 1000, longUnitChance: 0 } } });
+    await host.start();
+    const core = host.harness;
+    try {
+      await host.drain();
+      const early = host.query('verify', {}), ticket = host.post('setHistoric', [-1, true]);
+      const settled = [early, ticket.done].map((p) => { let done = false; void p.then(() => { done = true; }, () => { done = true; }); return () => done; });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(core.inbox.cmd).toBe(ticket.seq);
+      expect(settled.map((done) => done())).toEqual([false, false]);
+      core.post({ t: 'resync' });
+      const late = host.query('dispatchOptions', { incidentId: 999 }), saved = host.save('manual');
+      await host.drain();
+      await expect(early).rejects.toThrow(/interrupted by resync/);
+      await expect(ticket.done).rejects.toBeInstanceOf(CommandOutcomeLost);
+      await expect(late).resolves.toEqual([]);
+      expect((await saved).cmd).toBe(ticket.seq);
+      expect(resyncs).toEqual([ticket.seq]);
+    } finally { await host.dispose(); }
+  });
+
+  it('still replies with the tab hidden: no ticks ack packets, so backpressure counts those in flight', async () => {
+    setKV(new MemoryKV());
+    const host = new LoopbackSimHost(newState(32), { initialSpeed: 0, persistence: { regionId: 'r', tileKey: 't' } });
+    await host.start();
+    try {
+      // neither frame() nor drain(): nothing acks, as with requestAnimationFrame stopped
+      for (let i = 0; i < 6; i++) expect(await within(host.query('verify', {}))).toBe(exactDigest(host.state));
+      expect((await within(host.save('hidden'))).cmd).toBe(0);
+    } finally { await host.dispose(); }
+  });
+
+  it('rejects an atDay mismatch as a command, and runs every op on stand-in actions when CityActions fails', async () => {
+    const acks: [number, unknown][] = [];
+    const host = new LoopbackSimHost(newState(32), { initialSpeed: 0, onAck: (seq, result) => acks.push([seq, result]) });
+    await host.start();
+    try {
+      host.harness.post({ t: 'cmd', seq: 1, op: 'setSpeed', args: [1, 'keyboard'], atDay: 99 });
+      await host.drain();
+      expect(acks).toEqual([[1, { ok: false, commandError: 'atDay requires a deterministic day boundary' }]]);
+      expect(host.harness.core.isDisposed).toBe(false);
+    } finally { await host.dispose(); }
+    class Broken { constructor() { throw new Error('no actions'); } }
+    const degraded = new LoopbackSimHost(newState(32), { initialSpeed: 1, loopback: { modules: { createSystems, CityActions: Broken as never } } });
+    await degraded.start();
+    try {
+      const pause = degraded.post('setSpeed', [0, 'pause']), tax = degraded.post('setTax', [DevType.R1, 11]);
+      await degraded.drain();
+      await expect(pause.done).resolves.toBeUndefined(); await expect(tax.done).resolves.toBeUndefined();
+      expect(degraded.harness.core.sim.speed).toBe(0);
+      expect(degraded.harness.primary.budget.taxRates[DevType.R1]).toBe(11);
+    } finally { await degraded.dispose(); }
+  });
+
+  it('isolates a throwing packet observer, and drops frames posted before boot', async () => {
+    const report = vi.fn();
+    const host = new LoopbackSimHost(newState(16), { initialSpeed: 3, errors: { report }, onPacket: () => { throw new Error('observer'); } });
+    // before boot: the core starts from its own clock, so these never step it (four would be twenty days at speed 3)
+    for (let i = 0; i < 4; i++) host.frame(1);
+    await host.start();
+    try {
+      const day = host.harness.primary.day;
+      const read = host.query('verify', {}); await host.drain();
+      expect(await read).toBe(exactDigest(host.state));
+      expect(report).toHaveBeenCalledWith('packet observer', expect.objectContaining({ message: 'observer' }), expect.anything());
+      expect(host.harness.core.isDisposed).toBe(false);
+      expect(host.harness.primary.day).toBe(day); expect(day).toBe(0);
     } finally { await host.dispose(); }
   });
 });

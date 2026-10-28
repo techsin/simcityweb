@@ -54,7 +54,9 @@ export type M2W =
 export type W2M =
   | { t: 'hello'; v: number }
   | { t: 'boot'; phase: 'idb' | 'deserialize' | 'wasm' | 'systems' | 'journal' | 'snapshot'; pct: number }
-  | { t: 'ready'; snapshot: SerializedCity; streams: Streams; policy: PolicyState; clock: Clock; savedAt: number; cmd: number; journal?: Journal; changes?: number }
+  | { t: 'ready'; snapshot: SerializedCity; streams: Streams; policy: PolicyState; clock: Clock; savedAt: number; cmd: number; journal?: Journal; changes?: number;
+      /** a resync's: the request ids whose replies it dropped (W1.1b). Main rejects only these; the rest still reply. */
+      lost?: number[] }
   | { t: 'pkt'; p: Packet }
   | { t: 'fatal'; message: string; stack?: string };
 export type Ready = Extract<W2M, { t: 'ready' }>;
@@ -67,6 +69,13 @@ export type Reply =
   | { t: 'error'; cmd: number; key: string; title: string; message: string; stack?: string; sim: boolean; disabled?: boolean };
 export interface WatchValue { id: number; key: string; cmd: number; value?: unknown; error?: string }
 export interface CommandFailure { ok: false; commandError: string }
+/** The text an error crosses the protocol as; main rebuilds an Error from it, so no "Error: Error: …". */
+export const errorText = (e: unknown): string => e instanceof Error ? e.message : String(e);
+/** A command the worker applied whose Ack a resync dropped (W1.1b): its ticket rejects with this, and callers skip
+ *  failure feedback, since the edit happened. */
+export class CommandOutcomeLost extends Error {
+  constructor(readonly seq: number) { super('Command applied; its outcome was lost in a resync'); this.name = 'CommandOutcomeLost'; }
+}
 
 export interface Clock { day: number; frac: number; speed: number; slow: number; spd: number; live: boolean }
 export interface PolicyState {

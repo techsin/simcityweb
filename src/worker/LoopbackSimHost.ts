@@ -14,7 +14,7 @@ import { Gesture, type ActOptions, type Cause, type Command, type CommandArgs, t
   type GestureOwner, type LocalSimHostOptions, type PolicySnapshot, type PolicyView, type RecoveryMirror,
   type SaveAck, type SaveReason, type SimHost, type SnapshotAck, type SnapshotWhy, type SpeedSource, type Ticket, type WatchHandle } from './SimHost';
 import { exactDigest, queryKey, type QueryArgs, type QueryName, type QueryResult, type WatchPolicy } from './queries';
-import { cloneMessage, copyOwned, EVENT_TYPES, type M2W, type Packet, type PolicyState,
+import { cloneMessage, CommandOutcomeLost, copyOwned, EVENT_TYPES, type M2W, type Packet, type PolicyState,
   type RasterPatch, type Ready, type Reply, type ViewState, type W2M, type WatchValue } from './protocol';
 import { Replica } from './replica';
 import { viewLayers } from './recorder';
@@ -46,6 +46,8 @@ export interface PacketHostOptions extends LocalSimHostOptions {
   onSaving?: () => void;
   onReply?: (reply: Reply, packet: Packet) => void;
   onPacket?: (packet: Packet) => void;
+  /** T033: a resync adopted the worker's snapshot, which holds every command up to this seq */
+  onResync?: (cmd: number) => void;
   /** CityActions for the optimistic tax / funding / historic writes, when already loaded (tests). Hosts load it lazily
    *  and call useOptimisticActions: the city screen's static graph excludes src/sim/actions.ts (FH-07a). */
   optimistic?: typeof CityActions;
@@ -65,13 +67,20 @@ export class PacketWatch<K extends QueryName> implements WatchHandle<QueryResult
   private listeners = new Map<() => void, () => void>();
   private key: string;
   private closed = false;
+  private failure: { text: string; error: Error } | null = null;
   version = 0;
   constructor(readonly id: number, readonly name: K, private args: QueryArgs<K>, readonly when: WatchPolicy,
     private send: (message: M2W) => void, private remove: () => void, private report: (error: unknown) => void) {
     this.args = copyOwned(args); this.key = queryKey(args);
   }
   get value(): QueryResult<K> | undefined { return this.cache.get(this.key)?.value as QueryResult<K> | undefined; }
-  get error(): unknown { const e = this.cache.get(this.key)?.error; return e === undefined ? undefined : new Error(e); }
+  /** one Error per failure text, so a reader comparing errors across frames sees a stable value */
+  get error(): unknown {
+    const text = this.cache.get(this.key)?.error;
+    if (text === undefined) return undefined;
+    if (this.failure?.text !== text) this.failure = { text, error: new Error(text) };
+    return this.failure.error;
+  }
   request(): void { if (!this.closed) this.send({ t: 'watch', id: this.id, name: this.name, args: this.args, when: this.when }); }
   setArgs(args: QueryArgs<K>): void {
     if (this.closed || queryKey(args) === this.key) return;
@@ -116,6 +125,8 @@ export class PacketSimHost implements SimHost {
   private posted = 0;
   private edits = new Map<number, Command>();
   private tickets = new Map<number, Deferred & { promise: Promise<unknown>; tag: object | null }>();
+  /** F8: the latest pending op per optimistic field, with the value it wrote */
+  private pendingFields = new Map<string, { seq: number; read(): unknown; value: unknown }>();
   private sliders = new Map<string, Extract<M2W, { t: 'cmd' }>>();
   private queuedView: ViewState | null = null;
   private requests = new Map<number, Deferred>();
@@ -128,7 +139,6 @@ export class PacketSimHost implements SimHost {
   private ticks = 0;
   private gesture: Gesture | null = null;
   private offViews = () => {};
-  private abort = new AbortController();
   protected closed = false;
   protected options: PacketHostOptions;
   private sender: ((m: M2W) => void) | null = null;
@@ -224,7 +234,9 @@ export class PacketSimHost implements SimHost {
     if (this.closed) return;
     if (message.t !== 'cmd') this.flushCommands();
     const copy = cloneMessage(message);
-    if (this.sender) this.sender(copy); else this.outbox.push(copy);
+    if (this.sender) this.sender(copy);
+    // a frame before boot carries no time for the core to catch up on: it starts from its own clock
+    else if (copy.t !== 'tick') this.outbox.push(copy);
   }
 
   act<K extends CommandOp>(op: K, args: CommandArgs<K>, opts: ActOptions = {}): Ticket<CommandResult<K>> {
@@ -247,7 +259,7 @@ export class PacketSimHost implements SimHost {
     const pending = key ? this.sliders.get(key) : undefined;
     if (pending) {
       const command = copyOwned({ op, args }) as Command;
-      pending.args = command.args; this.edits.set(pending.seq, command); this.optimism(command);
+      pending.args = command.args; this.edits.set(pending.seq, command); this.optimism(command, pending.seq);
       return { seq: pending.seq, done: this.tickets.get(pending.seq)!.promise as Promise<CommandResult<K>> };
     }
     const command = copyOwned({ op, args }) as Command, seq = ++this.seq, wait = deferred<CommandResult<K>>();
@@ -257,7 +269,7 @@ export class PacketSimHost implements SimHost {
     const message: Extract<M2W, { t: 'cmd' }> = { t: 'cmd', seq, op, args: command.args };
     if (key) this.sliders.set(key, message);
     else this.transmit(message);
-    this.optimism(command);
+    this.optimism(command, seq);
     return { seq, done: wait.promise };
   }
   /** Coalesce sliders and focus per frame; reads/saves/non-slider commands also flush the pending inputs. */
@@ -286,7 +298,34 @@ export class PacketSimHost implements SimHost {
   }
   setSpeed(value: number, source: SpeedSource): void { this.act('setSpeed', [value, source]); }
   resume(source: SpeedSource): void { this.act('resume', [source]); }
-  private optimism(command: Command): void {
+  private optimism(command: Command, seq: number): void {
+    this.writeOptimistic(command);
+    const field = this.fieldOf(command);
+    if (field) this.pendingFields.set(field.key, { seq, read: field.read, value: field.read() });
+  }
+  /** The field an optimistic op writes, for F8's dev check; a building that is gone reads as undefined (not a revert). */
+  private fieldOf(command: Command): { key: string; read(): unknown } | null {
+    switch (command.op) {
+      case 'setTax': { const [dev] = command.args; return { key: `tax:${dev}`, read: () => this.state.budget.taxRates[dev] }; }
+      case 'setFunding': { const [kind] = command.args; return { key: `funding:${kind}`, read: () => this.state.budget.funding[kind] }; }
+      case 'setHistoric': {
+        const [id] = command.args;
+        return { key: `historic:${id}`, read: () => { const b = this.state.buildings.get(id); return b && !!(b.flags & BF.Historic); } };
+      }
+      case 'dismissAlert': { const [id] = command.args; return { key: `alert:${id}`, read: () => this.replica.policy.alerts.some((a) => a.id === id) }; }
+      case 'setSpeed': case 'resume': return { key: 'speed', read: () => this.speed };
+      default: return null;
+    }
+  }
+  /** F8 (§2.4 step 7), dev builds: after each packet, every field with a pending op still holds that op's value. */
+  private assertPending(): void {
+    for (const [key, f] of this.pendingFields) {
+      if (f.seq <= this.replica.applied) { this.pendingFields.delete(key); continue; }
+      const now = f.read();
+      if (now !== undefined && !Object.is(now, f.value)) this.report('F8', new Error(`F8: ${key} read ${String(now)} before ack ${f.seq}, which wrote ${String(f.value)}`));
+    }
+  }
+  private writeOptimistic(command: Command): void {
     switch (command.op) {
       case 'setTax': this.optimistic?.setTax(...command.args); break;
       case 'setFunding': this.optimistic?.setFunding(...command.args); break;
@@ -363,7 +402,11 @@ export class PacketSimHost implements SimHost {
   }
   protected reply(reply: Reply): void {
     this.assertWatermark(reply.cmd);
-    if (reply.t === 'error') { this.report(reply.key, new Error(reply.message), reply.title, reply.sim); return; }
+    if (reply.t === 'error') {
+      const error = new Error(reply.message);
+      if (reply.stack) error.stack = reply.stack; // the worker's frames, not this replay's
+      this.report(reply.key, error, reply.title, reply.sim); return;
+    }
     try { this.options.onReply?.(reply, this.packet!); } catch (e) { this.report('reply observer', e); }
     const wait = this.requests.get(reply.id); this.requests.delete(reply.id);
     if (!wait) return;
@@ -387,16 +430,24 @@ export class PacketSimHost implements SimHost {
 
   receive(message: W2M): void {
     if (this.closed) return;
-    if (message.t === 'fatal') { this.fail(new Error(message.message)); void this.dispose(); return; }
+    if (message.t === 'fatal') {
+      const error = new Error(message.message);
+      if (message.stack) error.stack = message.stack;
+      this.fail(error); void this.dispose(); return;
+    }
     if (message.t === 'ready') {
-      if (this.hasReady) {
-        for (const request of this.requests.values()) request.reject(new Error('Read interrupted by resync'));
-        this.requests.clear(); this.queries.clear();
+      const resync = this.hasReady;
+      if (resync) {
+        // only the reads whose replies the resync dropped: later reads, and saves still being written, reply after it
+        for (const id of message.lost ?? []) { this.requests.get(id)?.reject(new Error('Read interrupted by resync')); this.requests.delete(id); }
+        this.queries.clear();
       }
       this.hasReady = true;
       // the worker's count: events in packets dropped by a resync must not leave dirty tracking behind for good
       if (message.changes !== undefined) this.changes = message.changes;
-      this.replica.adopt(message); this.readiness.resolve(undefined); return;
+      this.replica.adopt(message); this.readiness.resolve(undefined);
+      if (resync) { try { this.options.onResync?.(message.cmd); } catch (e) { this.report('resync observer', e); } }
+      return;
     }
     if (message.t !== 'pkt') return;
     this.packet = message.p;
@@ -405,7 +456,9 @@ export class PacketSimHost implements SimHost {
     if (this.replica.apply(message.p)) {
       // the worker's count when the packet carries it (save and snapshot acks carry the same counter); else the log's
       this.changes = message.p.changes ?? this.changes + message.p.log.filter((e) => CHANGE_EVENTS.some((name) => EVENT_TYPES[name as keyof typeof EVENT_TYPES] === e[0])).length;
-      this.publishPolicy(); this.options.onPacket?.(message.p);
+      this.publishPolicy();
+      if (import.meta.env?.DEV) this.assertPending();
+      try { this.options.onPacket?.(message.p); } catch (e) { this.report('packet observer', e); }
     }
     this.packet = null;
   }
@@ -425,8 +478,9 @@ export class PacketSimHost implements SimHost {
     }, (o, v) => viewLayers({ overlay: o, variant: v, panels: [], focus: [] }).every((name) => this.replica.layerReady(name))
       && (o !== Overlay.Emergency || this.emergency.layersReady) && (o !== Overlay.Traffic || v !== 1 || this.traffic.truckVolume() !== null));
     this.offViews = () => { offSource(); offOverlay(); };
-    // A snapshot cannot reconstruct lost results. Fail explicitly instead of leaving awaited UI work hanging.
-    for (const [seq, ticket] of this.tickets) if (seq <= cmd) { ticket.reject(new Error('Command outcome lost during resync')); this.tickets.delete(seq); this.edits.delete(seq); this.controller?.pending.ack(seq); }
+    // A snapshot cannot reconstruct lost results, but these commands were applied: settle them as such, so callers
+    // skip failure feedback for an edit that happened, instead of leaving awaited UI work hanging.
+    for (const [seq, ticket] of this.tickets) if (seq <= cmd) { ticket.reject(new CommandOutcomeLost(seq)); this.tickets.delete(seq); this.edits.delete(seq); this.controller?.pending.ack(seq); }
     for (const w of this.watches.values()) w.reset();
     this.publishPolicy();
   }
@@ -444,13 +498,13 @@ export class PacketSimHost implements SimHost {
     this.readiness.reject(error);
     for (const ticket of this.tickets.values()) ticket.reject(error);
     for (const request of this.requests.values()) request.reject(error);
-    this.tickets.clear(); this.requests.clear(); this.queries.clear(); this.edits.clear();
+    this.tickets.clear(); this.requests.clear(); this.queries.clear(); this.edits.clear(); this.pendingFields.clear();
     if (report) this.report('host', error);
   }
   dispose(): Promise<void> {
     if (this.closed) return Promise.resolve();
     this.send({ t: 'dispose' }); this.closed = true;
-    this.options.signal?.removeEventListener('abort', this.stop); this.abort.abort('dispose');
+    this.options.signal?.removeEventListener('abort', this.stop);
     this.fail(new Error('Simulation host is disposed'), false);
     for (const w of this.watches.values()) w.dispose();
     for (const off of this.policies.values()) off();

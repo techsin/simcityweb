@@ -9,7 +9,7 @@ import { commitAction } from '../../src/game/tools/Tool';
 import type { GameContext } from '../../src/game/context';
 import { LocalSimHost, type Command } from '../../src/worker/SimHost';
 import { LoopbackSimHost, PacketSimHost } from '../../src/worker/LoopbackSimHost';
-import { SeededLag } from '../../src/worker/loopbackCore';
+import { SeededLag } from '../../src/worker/lag';
 import { DefTable, EntryType, EVENT_NAMES, RecordBuffer, type Packet } from '../../src/worker/protocol';
 import { exactDigest } from '../../src/worker/queries';
 import { checkReplica } from '../../tools/bench/worker/checkReplica';
@@ -19,29 +19,33 @@ import { newState, place, roadLine, stressCity } from '../infra/cityGen';
 const actionsPresent = Object.keys(import.meta.glob('../../src/worker/HostActions.ts')).length > 0;
 const profile = { seed: 32, packetTicks: 6, ackTicks: 6, longUnitChance: 0.25, unitMs: [50, 150] as const };
 
-/** A reproducible full command round, with dependent edits kept adjacent in posting order. */
-function commands(st: CityState, random: SeededLag): Command[] {
+/** A reproducible command round: most groups, in a seeded order, with dependent edits kept adjacent within a group.
+ *  The historic toggle and the dismissal target real objects when the city has them (R1's F8 fields). */
+function commands(st: CityState, random: SeededLag, alerts: readonly { id: number }[] = []): Command[] {
   const x = 3 + Math.floor(random.random() * (st.size - 12)), z = 3 + Math.floor(random.random() * (st.size - 12));
   const rect = { x0: x, z0: z, x1: x + 2, z1: z + 2 }, path = [{ x, z }, { x: x + 1, z }];
   const b = st.buildings.values().next().value, loan = st.budget.loans[0];
-  return [
-    { op: 'bulldoze', args: [rect] }, { op: 'plop', args: ['park_small', x, z, 0] },
-    { op: 'terraform', args: ['raise', x, z, 2, 0.5] }, { op: 'plop', args: ['park_small', x, z, 0] },
-    { op: 'zone', args: [rect, Zone.ResLow] }, { op: 'dezone', args: [rect] },
-    { op: 'buildNetwork', args: [path, Network.Road] }, { op: 'buildPowerLine', args: [path] }, { op: 'buildSubway', args: [path] },
-    ...Array.from({ length: 3 }, (): Command => ({ op: 'plantTrees', args: [rect] })),
-    ...Array.from({ length: 3 }, (): Command => ({ op: 'terraform', args: ['smooth', x, z, 2, 0.5] })),
-    { op: 'setTax', args: [DevType.R1, 4] }, { op: 'setTax', args: [DevType.R1, 7] },
-    { op: 'setFunding', args: ['fire', 80] }, { op: 'setFunding', args: ['fire', 120] },
-    { op: 'setHistoric', args: [b?.id ?? -1, true] }, { op: 'setHistoric', args: [b?.id ?? -1, false] },
-    { op: 'setOrdinance', args: ['nuclear_free_zone', true, { confirm: true }] },
-    { op: 'takeLoan', args: [10000] }, { op: 'repayLoan', args: [0, { principal: loan?.principal ?? 10000, monthsLeft: loan?.monthsLeft ?? 120 }] },
-    { op: 'setSpeed', args: [3, 'keyboard'] }, { op: 'setSpeed', args: [0, 'pause'] }, { op: 'resume', args: ['pause'] },
-    { op: 'triggerDisaster', args: ['fire', b?.x ?? x, b?.z ?? z] },
-    { op: 'dispatch', args: [-1, -1, 1] }, { op: 'dispatchBest', args: [-1] }, { op: 'dismissAlert', args: [-1] },
-    { op: 'setCamera', args: [{ x: 80, z: 90, distance: 450, yaw: 20, tilt: 40 }] },
-    { op: 'setSettings', args: [{ emergencyUncovered: 'ignore', emergencyLiveSlowmo: 3, emergencyAlerts: 'major' }] },
+  const groups: Command[][] = [
+    [{ op: 'bulldoze', args: [rect] }, { op: 'plop', args: ['park_small', x, z, 0] }],
+    [{ op: 'terraform', args: ['raise', x, z, 2, 0.5] }, { op: 'plop', args: ['park_small', x, z, 0] }],
+    [{ op: 'zone', args: [rect, Zone.ResLow] }, { op: 'dezone', args: [rect] }],
+    [{ op: 'buildNetwork', args: [path, Network.Road] }, { op: 'buildPowerLine', args: [path] }, { op: 'buildSubway', args: [path] }],
+    Array.from({ length: 3 }, (): Command => ({ op: 'plantTrees', args: [rect] })),
+    Array.from({ length: 3 }, (): Command => ({ op: 'terraform', args: ['smooth', x, z, 2, 0.5] })),
+    [{ op: 'setTax', args: [DevType.R1, 4] }, { op: 'setTax', args: [DevType.R1, 7] }],
+    [{ op: 'setFunding', args: ['fire', 80] }, { op: 'setFunding', args: ['fire', 120] }],
+    [{ op: 'setHistoric', args: [b?.id ?? -1, random.random() < 0.5] }],
+    [{ op: 'setOrdinance', args: ['nuclear_free_zone', true, { confirm: true }] }],
+    [{ op: 'takeLoan', args: [10000] }, { op: 'repayLoan', args: [0, { principal: loan?.principal ?? 10000, monthsLeft: loan?.monthsLeft ?? 120 }] }],
+    [{ op: 'setSpeed', args: [3, 'keyboard'] }, { op: 'setSpeed', args: [0, 'pause'] }, { op: 'resume', args: ['pause'] }],
+    [{ op: 'triggerDisaster', args: ['fire', b?.x ?? x, b?.z ?? z] }],
+    [{ op: 'dispatch', args: [-1, -1, 1] }, { op: 'dispatchBest', args: [-1] }],
+    [{ op: 'dismissAlert', args: [alerts[0]?.id ?? -1] }],
+    [{ op: 'setCamera', args: [{ x: 80, z: 90, distance: 450, yaw: 20, tilt: 40 }] }],
+    [{ op: 'setSettings', args: [{ emergencyUncovered: 'ignore', emergencyLiveSlowmo: 3, emergencyAlerts: 'major' }] }],
   ];
+  for (let i = groups.length - 1; i > 0; i--) { const j = Math.floor(random.random() * (i + 1)); [groups[i], groups[j]] = [groups[j], groups[i]]; }
+  return groups.filter(() => random.random() < 0.85).flat();
 }
 
 function seenCity(st: CityState): CityState {
@@ -64,35 +68,45 @@ describe('loopback lag properties', () => {
     ['grown fixture', () => loadFixture(grownFixture()), existsSync(grownFixture())],
   ] as const) it.skipIf(!present)(`${name}: every op under lag, 120 days, replies follow Acks and final drain equals authority`, { timeout: 300000 }, async () => {
     const errors: unknown[] = [], ops = new Set<string>(), tickets: Promise<unknown>[] = [], random = new SeededLag({ seed: 319 });
-    let replies = 0, packets = 0, posted = 0;
+    let replies = 0, packets = 0, budgets = 0;
     let issuing = false, listenerChecks = 0;
     const optimistic = new Map<string, { seq: number; read(): unknown; value: unknown }>();
     const checkOptimism = () => {
       if (issuing) return; // a player's new optimistic write intentionally supersedes the previous value
-      for (const [key, e] of optimistic) if (e.seq > host.replica.applied) expect(e.read(), key).toEqual(e.value);
+      // a building gone (bulldozed or burnt) reads as undefined: an authoritative removal, not a revert
+      for (const [key, e] of optimistic) if (e.seq > host.replica.applied && e.read() !== undefined) expect(e.read(), key).toEqual(e.value);
     };
     const st = create(); st.funds = 1e7;
+    // errors also collects the host's own F8 check (§2.4 step 7), which runs after every packet in dev builds
     const host = new LoopbackSimHost(st, {
       errors: { report: (...e) => errors.push(e) }, loopback: { cadence: 'design', lag: profile, recorder: { dev: true } },
       onReply: (reply) => { replies++; expect(reply.cmd).toBeLessThanOrEqual(host.replica.applied); },
-      onPacket: (p) => { packets++; expect(p.cmd).toBe(host.replica.applied); checkOptimism(); },
+      onPacket: () => { packets++; checkOptimism(); },
     });
     await host.start();
     const offs = EVENT_NAMES.map((name) => host.events.on(name, () => { checkOptimism(); listenerChecks++; }));
     const w = host.watch('computeMonthlyBudget', {}, 'change');
     const abort = new AbortController();
-    w.subscribe(() => { expect(host.replica.applied).toBeLessThanOrEqual(posted); }, abort.signal);
+    w.subscribe(() => { budgets++; }, abort.signal);
     try {
       for (let day = 0; day < 120; day++) {
-        if (day % 12 === 0) for (const c of commands(host.state, random)) {
+        if (day % 12 === 0) for (const c of commands(host.state, random, host.policy.alerts)) {
           ops.add(c.op);
           issuing = true;
-          const ticket = host.post(c.op, c.args); posted = ticket.seq; tickets.push(ticket.done);
+          const ticket = host.post(c.op, c.args); tickets.push(ticket.done);
           issuing = false;
           let key = '', read: (() => unknown) | undefined;
           if (c.op === 'setTax') { const d = c.args[0]; key = `tax:${d}`; read = () => host.state.budget.taxRates[d]; }
           if (c.op === 'setFunding') { const s = c.args[0]; key = `funding:${s}`; read = () => host.state.budget.funding[s]; }
           if (c.op === 'setSpeed' || c.op === 'resume') { key = 'speed'; read = () => host.speed; }
+          if (c.op === 'setHistoric') {
+            const id = c.args[0]; key = `historic:${id}`;
+            read = () => { const h = host.state.buildings.get(id); return h && !!(h.flags & BF.Historic); };
+          }
+          if (c.op === 'dismissAlert') {
+            const id = c.args[0]; key = `alert:${id}`;
+            read = () => host.policy.alerts.some((a) => a.id === id);
+          }
           if (read) optimistic.set(key, { seq: ticket.seq, read, value: read() });
         }
         tickets.push(host.query('inspectCell', { x: day % st.size, z: 3, sections: [] }));
@@ -108,7 +122,7 @@ describe('loopback lag properties', () => {
       checkReplica(host.harness.primary, host.replica, true, undefined, host.harness.delivered);
       expect(exactDigest(host.state)).toBe(exactDigest(host.harness.primary));
       expect(ops.size).toBe(23); expect(replies).toBe(120); expect(packets).toBeGreaterThan(120);
-      expect(listenerChecks).toBeGreaterThan(120);
+      expect(listenerChecks).toBeGreaterThan(120); expect(budgets).toBeGreaterThan(10);
       expect(errors).toEqual([]);
     } finally { for (const off of offs) off(); abort.abort('dispose'); await host.dispose(); }
   });

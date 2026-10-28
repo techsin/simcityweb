@@ -127,6 +127,8 @@ export class ChangeRecorder {
     this.command = seq;
   }
   reply(reply: Reply): void { this.replies.push(copyOwned(reply)); }
+  /** replies not yet flushed: a resync drops them with its fresh Ready (W1.1b's lost reads) */
+  get pendingReplies(): readonly Reply[] { return this.replies; }
   watch(value: WatchValue): void { this.watches.push(copyOwned(value)); }
   ping(n: number): void { this.pong = n; }
 
