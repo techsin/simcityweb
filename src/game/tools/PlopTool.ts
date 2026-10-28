@@ -224,7 +224,7 @@ export class PlopTool extends Tool {
       return;
     }
     const pl = this.choose(p);
-    const key = `${pl.x},${pl.z},${pl.rot}`;
+    const key = `${pl.x},${pl.z},${pl.rot},${this.ctx.host.pending?.revision ?? 0}`;
     if (key !== this.lastKey || force || this.upkeepRead && (this.upkeepRead.commands !== this.ctx.host.commandCount || this.upkeepRead.day !== this.ctx.state.day)) {
       this.lastKey = key;
       this.place = pl;

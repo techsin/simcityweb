@@ -67,12 +67,15 @@ function setup(over: Partial<GameSettings> = {}) {
   const fw = new FakeFireworks();
   const settings: GameSettings = { ...DEFAULT_SETTINGS, ...over };
   const toasts: string[] = [];
+  // NOTE-041: the hold is a host command; this records what the scene would post
+  const calendar = { held: false, calls: [] as boolean[] };
   const ny = new NewYearCelebration({
     sim,
     world: () => world as unknown as WorldViewApi,
     objects: () => ({ fireworks: fw }) as unknown as CityObjectsViewApi,
     settings: () => settings,
     toast: (text, _k, _c, title) => toasts.push(`${title}|${text}`),
+    holdCalendar: (on) => { calendar.held = on; calendar.calls.push(on); },
   });
   const step = (seconds: number, dt = 1 / 30) => {
     for (let t = 0; t < seconds - 1e-9; t += dt) {
@@ -81,7 +84,7 @@ function setup(over: Partial<GameSettings> = {}) {
       fw.tick(dt);
     }
   };
-  return { events, state, world, fw, settings, toasts, ny, step };
+  return { events, state, world, fw, settings, toasts, ny, step, calendar };
 }
 
 describe('NewYearCelebration', () => {
@@ -159,43 +162,42 @@ describe('NewYearCelebration', () => {
 describe('NewYearCelebration: final fixes P11', () => {
   function setupSim() {
     const base = setup();
-    const sim = base.ny['deps'].sim as unknown as { speed: number; maxDaysPerFrame: number };
+    const sim = base.ny['deps'].sim as unknown as { speed: number };
     sim.speed = 1;
-    sim.maxDaysPerFrame = 4;
     return { ...base, sim };
   }
 
   it('holds the calendar during the time-lapse and the countdown, lets it run again at midnight', () => {
-    const { ny, fw, sim, step } = setupSim();
+    const { ny, fw, sim, step, calendar } = setupSim();
     ny.frame(1 / 60);
     ny.celebrate({ year: 2006 });
     const midnight = fw.started!.delay!;
-    expect(sim.maxDaysPerFrame).toBe(0);
+    expect(calendar.held).toBe(true);
     step(midnight - 0.3);
-    expect(sim.maxDaysPerFrame).toBe(0);
+    expect(calendar.held).toBe(true);
     // the player's speed is left alone (the top bar and the emergency policy see it)
     expect(sim.speed).toBe(1);
     step(0.6);
-    expect(sim.maxDaysPerFrame).toBe(4);
+    expect(calendar.held).toBe(false);
     step(40);
     expect(ny.active).toBe(false);
-    expect(sim.maxDaysPerFrame).toBe(4);
+    expect(calendar.calls).toEqual([true, false]); // one hold, one release
   });
 
   it('a cancel (or leaving the city) never leaves the calendar held', () => {
-    const { ny, sim } = setupSim();
+    const { ny, calendar } = setupSim();
     ny.frame(1 / 60);
     ny.celebrate({ year: 2006 });
-    expect(sim.maxDaysPerFrame).toBe(0);
+    expect(calendar.held).toBe(true);
     ny.cancel();
-    expect(sim.maxDaysPerFrame).toBe(4);
+    expect(calendar.held).toBe(false);
     ny.celebrate({ year: 2007 });
     ny.dispose();
-    expect(sim.maxDaysPerFrame).toBe(4);
+    expect(calendar.held).toBe(false);
   });
 
   it('the player raising the speed ends the celebration: no new launches, the clock and the calendar come back', () => {
-    const { ny, fw, sim, world, step } = setupSim();
+    const { ny, fw, sim, world, step, calendar } = setupSim();
     ny.frame(1 / 60);
     ny.celebrate({ year: 2006 });
     const midnight = fw.started!.delay!;
@@ -209,18 +211,18 @@ describe('NewYearCelebration: final fixes P11', () => {
     expect(ny.active).toBe(false);
     expect(ny.ownsTime).toBe(false);
     expect(world.timeScale).toBe(2);
-    expect(sim.maxDaysPerFrame).toBe(4);
+    expect(calendar.held).toBe(false);
   });
 
   it('raising the speed during the countdown ends it too (and frees the calendar at once)', () => {
-    const { ny, fw, sim, step } = setupSim();
+    const { ny, fw, sim, step, calendar } = setupSim();
     ny.frame(1 / 60);
     ny.celebrate({ year: 2006 });
     step(1);
-    expect(sim.maxDaysPerFrame).toBe(0);
+    expect(calendar.held).toBe(true);
     sim.speed = 2;
     step(0.1);
-    expect(sim.maxDaysPerFrame).toBe(4);
+    expect(calendar.held).toBe(false);
     expect(fw.active).toBe(false);
     step(4);
     expect(ny.active).toBe(false);
@@ -234,15 +236,15 @@ describe('NewYearCelebration: final fixes P11', () => {
     ultra.ny.celebrate({ year: 2006 });
     expect(ultra.fw.started).not.toBeNull();
     // (an 18 s game year: a 2.8 s hold every year would slow ultra by a sixth for a show without a countdown)
-    expect(ultra.sim.maxDaysPerFrame).toBe(4);
+    expect(ultra.calendar.calls).toEqual([]);
     const fast = setupSim();
     (fast.sim as unknown as { secondsPerDay: () => number }).secondsPerDay = () => 0.2;
     fast.sim.speed = 2;
     fast.ny.frame(1 / 60);
     fast.ny.celebrate({ year: 2006 });
-    expect(fast.sim.maxDaysPerFrame).toBe(0);
+    expect(fast.calendar.held).toBe(true);
     fast.step(fast.fw.started!.delay! + 0.2);
-    expect(fast.sim.maxDaysPerFrame).toBe(4);
+    expect(fast.calendar.held).toBe(false);
   });
 
   it('pausing and resuming at the same speed does not end it', () => {
