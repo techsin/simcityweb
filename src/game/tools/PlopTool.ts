@@ -23,7 +23,8 @@ import { escapeHtml } from '../../ui/dom';
 import { money } from '../../ui/format';
 import { upkeepEstimate } from '../../ui/upkeepModel';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
-import { shoreFacesWater, shoreRotation, staffedService, upkeepHere, type Rot } from './placement';
+import { shoreFacesWater, shoreRotation, staffedService, type Rot } from './placement';
+import type { QueryResult } from '../../worker/SimHost';
 
 /** actions.ts plop's shore rule failure (the tip adds how to fix it) */
 const SHORE_FAIL = 'Must be placed on the shore with its front facing water';
@@ -76,6 +77,7 @@ export class PlopTool extends Tool {
   private placementRequest = 0;
   /** the upkeep line of the current spot ("Upkeep here ≈§A/mo now · up to §B at full use"), made with res */
   private upkeep = '';
+  private upkeepRead: { key: string; commands: number; day: number; value?: QueryResult<'upkeepContext'> } | null = null;
   /** the current spot: a staffed service without a road (P8) / a shore building not facing water (P14) */
   private noRoad = false;
   private shoreHint = '';
@@ -195,9 +197,25 @@ export class PlopTool extends Tool {
   /** the pointer of the last refresh (origins of the other rotations for the shore hint) */
   private lastPointer: ToolPointer | null = null;
 
+  /** Only the current placement is memoized: revisiting a lot reads the latest services pass. */
+  private upkeepAt(x: number, z: number, w: number, d: number): number | null {
+    const key = this.lastKey, commands = this.ctx.host.commandCount, day = this.ctx.state.day;
+    const cached = this.upkeepRead;
+    if (cached && cached.key === key && cached.commands === commands && cached.day === day) return cached.value?.here ?? null;
+    const read = this.upkeepRead = { key, commands, day, value: undefined as QueryResult<'upkeepContext'> | undefined };
+    const request = this.placementRequest;
+    void this.ctx.host.query('upkeepContext', { defId: this.def.id, x, z, w, d }).then((value) => {
+      if (this.ctx.signal.aborted || this.ctx.tools.active !== this || request !== this.placementRequest || key !== this.lastKey || read !== this.upkeepRead) return;
+      read.value = value;
+      if (this.lastPointer) this.refresh(this.lastPointer, true);
+    }).catch(() => { if (read === this.upkeepRead) this.upkeepRead = null; });
+    return null;
+  }
+
   private refresh(p: ToolPointer | null, force = false): void {
     this.lastPointer = p && p.hit ? p : null;
     if (!p || !p.hit) {
+      this.upkeepRead = null;
       this.ctx.objects.setGhost(null);
       this.ctx.world.setHighlight(null);
       this.ctx.tip.hide();
@@ -207,7 +225,7 @@ export class PlopTool extends Tool {
     }
     const pl = this.choose(p);
     const key = `${pl.x},${pl.z},${pl.rot}`;
-    if (key !== this.lastKey || force) {
+    if (key !== this.lastKey || force || this.upkeepRead && (this.upkeepRead.commands !== this.ctx.host.commandCount || this.upkeepRead.day !== this.ctx.state.day)) {
       this.lastKey = key;
       this.place = pl;
       this.res = safe(() => this.ctx.actions.plop(this.def.id, pl.x, pl.z, pl.rot, true), FAIL);
@@ -242,7 +260,7 @@ export class PlopTool extends Tool {
     const est = safe(() => upkeepEstimate(st, def), null);
     if (est) {
       // (the build menu's figure is city-wide; at the cursor it is this spot's: "Upkeep here")
-      const here = safe(() => upkeepHere(this.ctx.sim, def, x, z, w, d), null);
+      const here = safe(() => this.upkeepAt(x, z, w, d), null);
       const now = here ?? est.now;
       // (a fire station in a big unserved district can newly protect more than a typical station's "full use": the
       // figure here is then the most it costs — no "up to" the same number, UI-1)
@@ -277,6 +295,7 @@ export class PlopTool extends Tool {
   }
 
   override activate(): void {
+    this.upkeepRead = null;
     this.placementRequest++;
     this.placementReads.clear();
     this.lastKey = '';
@@ -286,6 +305,7 @@ export class PlopTool extends Tool {
     if (this.autoOverlay !== null && this.autoVariant >= 0) this.ctx.preferOverlayVariant?.(this.autoOverlay, this.autoVariant);
   }
   override deactivate(): void {
+    this.upkeepRead = null;
     this.placementRequest++;
     this.placementReads.clear();
     this.ctx.objects.setGhost(null);

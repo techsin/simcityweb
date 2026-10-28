@@ -66,24 +66,33 @@ export class MiniMap {
       this.canvas,
     );
     parent.appendChild(this.el);
-    const go = (e: PointerEvent) => {
+    const go = (e: PointerEvent, fly = false) => {
       const r = this.canvas.getBoundingClientRect();
       const u = (e.clientX - r.left) / r.width, v = (e.clientY - r.top) / r.height;
       const m = N * CELL_SIZE;
       try {
-        ctx.world.controls.focusOn(Math.max(0, Math.min(1, u)) * m, Math.max(0, Math.min(1, v)) * m);
+        ctx.world.controls.focusOn(Math.max(0, Math.min(1, u)) * m, Math.max(0, Math.min(1, v)) * m, undefined, fly ? { fly: true } : undefined);
       } catch {
         /* ignore */
       }
     };
+    // FEEL-08: a click is a long jump and flies (over 500 m); a drag scrubs, which also stops a flight. A click's few
+    // pixels of wobble do not count as a drag.
+    let downAt: { x: number; y: number } | null = null;
     this.canvas.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       this.dragging = true;
+      downAt = { x: e.clientX, y: e.clientY };
       this.canvas.setPointerCapture(e.pointerId);
       this.ctx.sound('tap');
+      go(e, true);
+    }, { signal: this.ctx.signal });
+    this.canvas.addEventListener('pointermove', (e) => {
+      if (!this.dragging) return;
+      if (downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) < 4) return;
+      downAt = null;
       go(e);
     }, { signal: this.ctx.signal });
-    this.canvas.addEventListener('pointermove', (e) => this.dragging && go(e), { signal: this.ctx.signal });
     this.canvas.addEventListener('pointerup', () => (this.dragging = false), { signal: this.ctx.signal });
     const ev = ctx.sim.events;
     const mark = () => (this.dirty = true);

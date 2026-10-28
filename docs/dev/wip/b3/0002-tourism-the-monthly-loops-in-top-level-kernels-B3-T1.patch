@@ -1,0 +1,185 @@
+From 6e1a875689373b6758477b74221b7c6cefb14412 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 21:36:01 +0000
+Subject: [PATCH 2/4] tourism: the monthly loops in top-level kernels (B3 T1,
+ bit-identical)
+
+The per-venue and per-cell loops of the once-a-month update ran in
+baseline code inside the big update() closure while V8 compiled the
+closure for OSR (12-73 ms on a background thread): 4-12 ms a tick at 1M
+instead of 1-2. venueLoop, splatVenues, visitorsLayer (1 - exp(-sum))
+and coarseBlur3 are small top-level functions now; same operations in
+the same order. (The map's tourism-jit-hygiene.patch, venuePass named
+venueLoop.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KT9tXthEhyzExdUuGEecAJ
+---
+ src/sim/economy/tourism.ts | 130 ++++++++++++++++++++++---------------
+ 1 file changed, 79 insertions(+), 51 deletions(-)
+
+diff --git a/src/sim/economy/tourism.ts b/src/sim/economy/tourism.ts
+index 32cac5f..6300762 100644
+--- a/src/sim/economy/tourism.ts
++++ b/src/sim/economy/tourism.ts
+@@ -330,6 +330,78 @@ function splat(acc: Float32Array, N: number, cx: number, cz: number, v: number):
+   }
+ }
+ 
++// ------------------------------------------------------------------------------------------------ monthly kernels
++// (PERF, B3: the per-cell / per-venue loops of the monthly update live in small top-level functions. Inside the big
++//  once-a-month update() closure V8 ran them in baseline code while it compiled the whole closure for OSR on a
++//  background thread (12-73 ms of compile), so a month tick cost 4-12 ms instead of 1-2 at 1M. Same operations in the
++//  same order: bit-identical results.)
++/** the venue pass of the monthly update: venue records, gross visits, culture visits, connections, college seats */
++function venueLoop(st: CityState, rt: EconRuntime, inf: InfraFlags, traffic: TrafficApi | undefined, aF: number, sizeF: number, drawMul: number,
++  venues: Map<number, VenueRecord>): { gross: number; culture: number; airportLarge: number; airportSmall: number; train: number; seaport: number; collegeSeats: number } {
++  const N = st.size, cw = rt.cw;
++  let gross = 0, culture = 0;
++  let airportLarge = 0, airportSmall = 0, train = 0, seaport = 0, collegeSeats = 0;
++  const plopped = rt.plopped;
++  for (let k = 0; k < plopped.length; k++) {
++    const b = plopped[k];
++    const def = rt.defOf(b);
++    if (!def) continue;
++    if (def.coverage?.tier === 'college' && def.coverage.capacity) collegeSeats += def.coverage.capacity * venueOp(st, b, def, inf);
++    const a = ATTRACTIONS[b.def];
++    if (!a) continue;
++    let op = venueOp(st, b, def, inf, TOURISM.opFundingMax);
++    if (op > 0 && (b.def === 'tr_train_station' || b.def === 'tr_ferry_terminal') && traffic?.stopAttached && !traffic.stopAttached(b.id)) op = 0;
++    if (op > 0) {
++      if (b.def === 'tr_airport_large') airportLarge = 1;
++      else if (b.def === 'tr_airport_small') airportSmall = 1;
++      else if (b.def === 'tr_train_station') train = 1;
++      else if (b.def === 'tr_seaport') seaport = 1;
++    }
++    const c = centre(st, b);
++    const blk = ((((c / N) | 0) / COARSE) | 0) * cw + (((c % N) / COARSE) | 0);
++    const access = Math.min(TOURISM.accessMax, TOURISM.accessBase + TOURISM.accessFreight * (rt.coarseFreight[blk] ?? 0)
++      + TOURISM.accessTransit * st.transitCov[c]);
++    // parks, plazas and gardens are local leisure: residents visit them in any town; far-away tourists need a big city
++    const v = op > 0 ? Math.min(a.capacity, a.draw * aF * access * op * (a.kind === 'nature' ? 1 : sizeF) * drawMul) : 0;
++    venues.set(b.id, { id: b.id, def: b.def, kind: a.kind, visits: v, gross: v, capacity: a.capacity, draw: a.draw, op, access });
++    gross += v;
++    if (a.kind === 'landmark' || a.kind === 'culture') culture += v;
++  }
++  return { gross, culture, airportLarge, airportSmall, train, seaport, collegeSeats };
++}
++/** every venue's visits into the splat sums and its coarse block */
++function splatVenues(st: CityState, acc: Float32Array, raw: Float64Array, venues: Map<number, VenueRecord>, cw: number): void {
++  const N = st.size;
++  for (const r of venues.values()) {
++    const b = st.buildings.get(r.id);
++    if (!b) continue;
++    splat(acc, N, b.x + b.w / 2, b.z + b.d / 2, r.visits);
++    raw[(((b.z + (b.d >> 1)) / COARSE) | 0) * cw + (((b.x + (b.w >> 1)) / COARSE) | 0)] += r.visits;
++  }
++}
++/** the visitors layer of the splat sums: 1 − exp(−Σ) */
++function visitorsLayer(vis: Float32Array, acc: Float32Array, n: number): void {
++  for (let i = 0; i < n; i++) vis[i] = acc[i] > 0 ? 1 - Math.exp(-acc[i]) : 0;
++}
++/** coarse visitors: 3×3 blur of the raw block sums (centre 1, neighbours 0.5) */
++function coarseBlur3(cv: Float32Array, raw: Float64Array, cw: number): void {
++  for (let bz = 0; bz < cw; bz++) {
++    for (let bx = 0; bx < cw; bx++) {
++      let s = 0;
++      for (let dz = -1; dz <= 1; dz++) {
++        const z = bz + dz;
++        if (z < 0 || z >= cw) continue;
++        for (let dx = -1; dx <= 1; dx++) {
++          const x = bx + dx;
++          if (x < 0 || x >= cw) continue;
++          s += raw[z * cw + x] * (dx === 0 && dz === 0 ? 1 : 0.5);
++        }
++      }
++      cv[bz * cw + bx] = s;
++    }
++  }
++}
++
+ // ------------------------------------------------------------------------------------------------ monthly slices
+ /**
+  * The hotel rooms and historic buildings of the month are gathered in daily slices (growables with id % TOURISM_SLICES
+@@ -382,32 +454,10 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime }
+     const traffic = sim.getSystem<SimSystem & TrafficApi>('traffic');
+     const venues = new Map<number, VenueRecord>();
+     const blocks = new Float64Array(cw * cw);
+-    let gross = 0, culture = 0;
+-    let airportLarge = 0, airportSmall = 0, train = 0, seaport = 0, collegeSeats = 0;
+-    for (const b of rt.plopped) {
+-      const def = rt.defOf(b);
+-      if (!def) continue;
+-      if (def.coverage?.tier === 'college' && def.coverage.capacity) collegeSeats += def.coverage.capacity * venueOp(st, b, def, inf);
+-      const a = ATTRACTIONS[b.def];
+-      if (!a) continue;
+-      let op = venueOp(st, b, def, inf, TOURISM.opFundingMax);
+-      if (op > 0 && (b.def === 'tr_train_station' || b.def === 'tr_ferry_terminal') && traffic?.stopAttached && !traffic.stopAttached(b.id)) op = 0;
+-      if (op > 0) {
+-        if (b.def === 'tr_airport_large') airportLarge = 1;
+-        else if (b.def === 'tr_airport_small') airportSmall = 1;
+-        else if (b.def === 'tr_train_station') train = 1;
+-        else if (b.def === 'tr_seaport') seaport = 1;
+-      }
+-      const c = centre(st, b);
+-      const blk = ((((c / N) | 0) / COARSE) | 0) * cw + (((c % N) / COARSE) | 0);
+-      const access = Math.min(TOURISM.accessMax, TOURISM.accessBase + TOURISM.accessFreight * (rt.coarseFreight[blk] ?? 0)
+-        + TOURISM.accessTransit * st.transitCov[c]);
+-      // parks, plazas and gardens are local leisure: residents visit them in any town; far-away tourists need a big city
+-      const v = op > 0 ? Math.min(a.capacity, a.draw * aF * access * op * (a.kind === 'nature' ? 1 : sizeF) * drawMul) : 0;
+-      venues.set(b.id, { id: b.id, def: b.def, kind: a.kind, visits: v, gross: v, capacity: a.capacity, draw: a.draw, op, access });
+-      gross += v;
+-      if (a.kind === 'landmark' || a.kind === 'culture') culture += v;
+-    }
++    const vp = venueLoop(st, rt, inf, traffic, aF, sizeF, drawMul, venues);
++    let gross = vp.gross;
++    const culture = vp.culture;
++    const airportLarge = vp.airportLarge, airportSmall = vp.airportSmall, train = vp.train, seaport = vp.seaport, collegeSeats = vp.collegeSeats;
+     // historic districts + hotel rooms: the month's daily slices (growablesSlice in daily()) on a regular month tick,
+     // else one pass over the growables (final fixes V5)
+     let historicBase = 0, rooms = 0;
+@@ -460,12 +510,7 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime }
+     acc.fill(0);
+     const cv = rt.coarseVisitors;
+     const raw = new Float64Array(cw * cw);
+-    for (const r of venues.values()) {
+-      const b = st.buildings.get(r.id);
+-      if (!b) continue;
+-      splat(acc, N, b.x + b.w / 2, b.z + b.d / 2, r.visits);
+-      raw[(((b.z + (b.d >> 1)) / COARSE) | 0) * cw + (((b.x + (b.w >> 1)) / COARSE) | 0)] += r.visits;
+-    }
++    splatVenues(st, acc, raw, venues, cw);
+     if (historic > 0 && historicBase > 0) {
+       const k = (historic * kEff) / historicBase;
+       for (const b of historicB) {
+@@ -483,25 +528,8 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime }
+         raw[blk] += v;
+       }
+     }
+-    const vis = st.visitors;
+-    for (let i = 0; i < st.cells; i++) vis[i] = acc[i] > 0 ? 1 - Math.exp(-acc[i]) : 0;
+-    if (cv && cv.length === cw * cw) {
+-      for (let bz = 0; bz < cw; bz++) {
+-        for (let bx = 0; bx < cw; bx++) {
+-          let s = 0;
+-          for (let dz = -1; dz <= 1; dz++) {
+-            const z = bz + dz;
+-            if (z < 0 || z >= cw) continue;
+-            for (let dx = -1; dx <= 1; dx++) {
+-              const x = bx + dx;
+-              if (x < 0 || x >= cw) continue;
+-              s += raw[z * cw + x] * (dx === 0 && dz === 0 ? 1 : 0.5);
+-            }
+-          }
+-          cv[bz * cw + bx] = s;
+-        }
+-      }
+-    }
++    visitorsLayer(st.visitors, acc, st.cells);
++    if (cv && cv.length === cw * cw) coarseBlur3(cv, raw, cw);
+     rt.timing['tourism.splat'] = performance.now() - tp; tp = performance.now();
+     // ---- attractiveness
+     const dump = toxicDumpOperating(rt);
+-- 
+2.43.0
+

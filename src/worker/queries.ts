@@ -1,16 +1,20 @@
 /** Headless query handlers and their watch invalidation policies (WORKER_DESIGN §2.8). */
 import type { CellRect } from '../core/events';
 import type { NeedTier, CityState } from '../sim/CityState';
+import { getDef } from '../sim/catalog';
 import type { Simulation } from '../sim/Simulation';
 import { advisorIssues, advisorIssuesReady, openAdvice, type OpenAdvice } from '../sim/economy/advisors';
 import { computeMonthlyBudget } from '../sim/economy/budget';
 import { capHints } from '../sim/economy/demand';
+import { opexTierOf } from '../sim/economy/opex';
 import { attractivenessBreakdown, tourismSummary } from '../sim/economy/tourism';
 import { unservedClusters } from '../sim/infra/catchments';
 import type { EmergencySystem } from '../sim/infra/emergency';
+import type { ServicesSystem } from '../sim/infra/services';
 import type { TrafficSystem } from '../sim/infra/traffic';
 import { ferryPartnersFor, stopsNear } from '../sim/infra/transportFacilities';
-import { demolishRisks, sideDemolishRisks, type Removal } from '../game/demolishRisk';
+import { demolishRisks, sideDemolishRisks, type DemolishRefund, type Removal } from '../game/demolishRisk';
+import { upkeepHere } from '../game/tools/placement';
 import { countGarages } from '../ui/statsModel';
 import { inspectBuilding, inspectCell, inspectSignature, type InspectBuildingArgs, type InspectCellArgs } from './inspect';
 import { EXACT_FIELDS, PLAIN_KEYS, PRIMARY_LAYERS, SYSTEM_KEYS, type QueryName as WireQueryName, type WatchPolicy } from './protocol';
@@ -23,7 +27,16 @@ function advice(rows: OpenAdvice[]): OpenAdvice[] {
   return rows.map(({ id, advisor, text, kind, priority, x, z }) => ({ id, advisor, text, kind, priority, x, z }));
 }
 
+/** W0.3b: keep the need raster on the sim side; only the existing marginal price crosses the query seam. */
+function upkeepContext(sim: Simulation, { defId, x, z, w, d }: PlacementArgs & { defId: string }): { here: number | null } {
+  const def = getDef(defId), tier = opexTierOf(def);
+  const svc = sim.getSystem<ServicesSystem>('services');
+  const need = tier && typeof svc?.needRaster === 'function' ? svc.needRaster(tier) : null;
+  return { here: def ? upkeepHere(sim.state, def, x, z, w, d, need) : null };
+}
+
 export const QUERY_HANDLERS = {
+  upkeepContext,
   inspectBuilding,
   inspectCell,
   dispatchOptions: (sim: Simulation, { incidentId }: { incidentId: number }) => sim.getSystem<EmergencySystem>('emergency')?.dispatchOptions(sim, incidentId) ?? [],
@@ -32,8 +45,8 @@ export const QUERY_HANDLERS = {
     const inc = sim.getSystem<EmergencySystem>('emergency')?.report(sim, x, z);
     return inc ? structuredClone(inc) : null;
   },
-  demolishRisks: (sim: Simulation, { rect, cost, sandbox }: { rect: CellRect; cost: number; sandbox?: boolean }) => demolishRisks(sim.state, rect, cost, { sandbox }),
-  sideDemolishRisks: (sim: Simulation, { ids, fee, sandbox, add }: { ids: readonly number[]; fee: number; sandbox?: boolean; add?: Removal['add'] }) => sideDemolishRisks(sim.state, ids, fee, { sandbox, add }),
+  demolishRisks: (sim: Simulation, { rect, cost, ...opts }: DemolishRefund & { rect: CellRect; cost: number; sandbox?: boolean }) => demolishRisks(sim.state, rect, cost, opts),
+  sideDemolishRisks: (sim: Simulation, { ids, fee, ...opts }: DemolishRefund & { ids: readonly number[]; fee: number; sandbox?: boolean; add?: Removal['add'] }) => sideDemolishRisks(sim.state, ids, fee, opts),
   stopsNear: (sim: Simulation, { x, z, w, d }: PlacementArgs) => stopsNear(sim, x, z, w, d),
   ferryPartnersFor: (sim: Simulation, { x, z, w, d, rot }: PlacementArgs & { rot: number }) => ferryPartnersFor(sim, x, z, w, d, rot),
   openAdvice: (sim: Simulation, _args: Record<string, never>) => advice(openAdvice(sim)),
@@ -68,11 +81,21 @@ export function queryKey(value: unknown): string {
 export function watchSignature<K extends QueryName>(sim: Simulation, name: K, args: QueryArgs<K>, when: WatchPolicy, commands: number): string {
   if (name === 'inspectBuilding' || name === 'inspectCell') return inspectSignature(sim, args as InspectBuildingArgs | InspectCellArgs);
   const st = sim.state;
+  const policy = String(when === 'monthly' ? st.monthIndex : when === 'daily' ? st.day : `${st.day}:${commands}`);
+  // W0.3b: constant-time inputs; returns while advancing and paused commands both change availability.
+  if (name === 'dispatchOptions') {
+    const em = sim.getSystem<EmergencySystem>('emergency');
+    const inc = em?.incident((args as QueryArgs<'dispatchOptions'>).incidentId);
+    // These system-local counters stay inside the worker; no station array is built for a signature.
+    const revision = em as unknown as { readonly stVer: number; readonly gEpoch: number } | undefined;
+    const vehicles = em?.vehicles(), units = inc?.units;
+    return `${policy}:${commands}:${revision?.stVer}:${revision?.gEpoch}:${vehicles?.length}:${vehicles?.at(-1)?.id}:${inc?.state}:${units?.length}:${units?.at(-1)}`;
+  }
   if (name === 'computeMonthlyBudget') {
     const b = st.budget;
     return `${st.day}:${st.buildings.size}:${queryKey(b.taxRates)}:${queryKey(b.funding)}:${queryKey(b.ordinances)}:${queryKey(b.loans)}`;
   }
-  return String(when === 'monthly' ? st.monthIndex : when === 'daily' ? st.day : `${st.day}:${commands}`);
+  return policy;
 }
 
 /** Exact mirrored state only; this works on a replica too, without serializing or touching sim caches. */

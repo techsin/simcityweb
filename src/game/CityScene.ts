@@ -18,7 +18,7 @@ import type { CityActionsApi } from '../sim/actions';
 import type { CityState } from '../sim/CityState';
 import type { Simulation } from '../sim/Simulation';
 import type { RegionContext } from '../region/regionEffects';
-import { LocalSimHost } from '../worker/SimHost';
+import { LocalSimHost, type CityPersistence, type HostState, type SaveReason } from '../worker/SimHost';
 import type { ViewState } from '../worker/protocol';
 import { pageSimWasmFlag } from '../wasm/simWasm';
 import type { GameContext, QueryTarget, SoundOpts, UIEvents } from './context';
@@ -66,8 +66,9 @@ export interface CitySceneOptions {
   container: HTMLElement;
   state: CityState;
   rctx?: RegionContext;
+  persistence?: CityPersistence;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
-  onSave: (state: CityState) => Promise<void>;
+  onSave: (state: HostState, reason?: SaveReason) => Promise<void>;
   /** initial settings (e.g. the app-level settings); keys given here win over the stored in-game prefs */
   settings?: Partial<GameSettings>;
   /** called whenever the player changes a setting in-game (the passed `settings` object is also updated in place) */
@@ -78,8 +79,8 @@ export interface CitySceneOptions {
   initialSpeed?: number;
 }
 
-/** keys the camera controller binds that we also use (we stop propagation only when we act on them) */
-const CAMERA_KEYS = new Set(['r', 'f']);
+/** physical camera keys: skip character hotkeys, and stop propagation when a tool consumes one */
+const CAMERA_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'NumpadEqual']);
 
 /** UI sound aliases -> audio engine sound names (src/audio/sfx.ts; any other name is passed through) */
 const SOUND_MAP: Record<string, string> = {
@@ -176,6 +177,7 @@ export class CityScene {
       rctx: opts.rctx, initialSpeed: opts.initialSpeed ?? (this.newCity ? 0 : undefined), errors: this.errors,
       flags: { simwasm: pageSimWasmFlag() },
       signal: this.abort.signal,
+      persistence: opts.persistence,
     });
     this.degraded.actions = true;
 
@@ -517,7 +519,7 @@ export class CityScene {
    * remember the view in the save (state.systemData.camera). A no-op until placeInitialCamera() ran on the real views:
    * the stand-in view's camera (map corner, 800 m) must not overwrite the saved / start view while the modules load.
    */
-  private storeCamera(): void {
+  storeCamera(): void {
     try {
       this.camMemory.store(this.host, this.world.controls, !!(this.world as NullWorldView).isNull);
     } catch {
@@ -612,9 +614,8 @@ export class CityScene {
       }
     }
     this.slowAcc += dt;
-    this.ambAcc += dt;
-    if (this.ambAcc > 0.5) {
-      this.ambAcc = 0;
+    if (now - this.ambAcc >= 500) {
+      this.ambAcc = now;
       this.updateAmbience();
     }
     if (this.slowAcc > 2) {
@@ -799,16 +800,20 @@ export class CityScene {
       this.sound(this.sim.speed === 0 ? 'pause' : 'speed' + this.sim.speed);
       return;
     }
-    if (k === '1' || k === '2' || k === '3') {
-      if (this.sim.speed !== Number(k)) this.sound('speed' + k);
-      this.host.setSpeed(Number(k), 'keyboard');
+    const speed = /^(?:Digit|Numpad)([123])$/.exec(e.code);
+    if (speed) {
+      e.preventDefault();
+      if (this.sim.speed !== Number(speed[1])) this.sound('speed' + speed[1]);
+      this.host.setSpeed(Number(speed[1]), 'keyboard');
       this.lastSpeed = this.sim.speed;
       return;
     }
-    if (k === 'Delete') {
+    if (k === 'Delete' || k === 'Backspace') {
+      e.preventDefault();
       this.tools.select('bulldoze');
       return;
     }
+    if (CAMERA_KEYS.has(e.code)) return;
     const lk = k.toLowerCase();
     const cycle = HOTKEY_CYCLES[lk];
     if (cycle && !e.shiftKey) {
@@ -832,7 +837,7 @@ export class CityScene {
   /** we handled this key: keep it from the camera controller too when the camera also binds it */
   private consume(e: KeyboardEvent): void {
     e.preventDefault();
-    if (CAMERA_KEYS.has(e.key.toLowerCase())) e.stopImmediatePropagation();
+    if (CAMERA_KEYS.has(e.code)) e.stopImmediatePropagation();
   }
 
   private onVisibility(): void {
@@ -856,17 +861,20 @@ export class CityScene {
     if (n > 0 && this.monthsSinceSave >= n) void this.save(true);
   }
 
-  async save(auto = false): Promise<void> {
+  async save(auto = false, reason: SaveReason = auto ? 'autosave' : 'manual'): Promise<void> {
+    if (this.disposed) return;
     if (this.saving) return this.saving;
     this.savePill.saving(auto);
     this.storeCamera();
     this.saving = (async () => {
       try {
-        await this.opts.onSave(this.sim.state);
+        await this.opts.onSave(this.host.state, reason);
+        if (this.disposed) return;
         this.monthsSinceSave = 0;
         this.savePill.done(true, auto ? 'Autosaved' : 'City saved');
         this.sound(auto ? 'autosave' : 'save', auto ? { volume: 0.8 } : undefined);
       } catch (e) {
+        if (this.disposed) return;
         this.savePill.done(false);
         this.sound('error');
         this.errors.report('Saving failed', e, { key: 'save' });
@@ -878,10 +886,12 @@ export class CityScene {
   }
 
   async exitToRegion(): Promise<void> {
+    if (this.disposed) return;
     this.host.setSpeed(0, 'exit');
     this.tools.select(null, { silent: true });
     this.panels.closeAll();
-    await this.save(false);
+    await this.save(false, 'exit');
+    if (this.disposed) return;
     let thumb: string | undefined;
     try {
       thumb = this.world.capture(512, 512, true) || undefined;
@@ -939,7 +949,7 @@ export class CityScene {
     // camera flight (toast / news / advisor / emergency "jump"): a very soft whoosh
     this.sound('whoosh', { volume: 0.7 });
     try {
-      this.world.controls.focusOn(x * CELL_SIZE + CELL_SIZE / 2, z * CELL_SIZE + CELL_SIZE / 2, distance);
+      this.world.controls.focusOn(x * CELL_SIZE + CELL_SIZE / 2, z * CELL_SIZE + CELL_SIZE / 2, distance, { fly: true });
     } catch (e) {
       console.warn(e);
     }
@@ -983,8 +993,8 @@ export class CityScene {
   /** feed the audio engine's city ambience (~2 Hz) */
   private updateAmbience(): void {
     this.feedSirens();
-    const a = this.mods.audio as (GameModules['audio'] & { setAmbience?: (p: Record<string, unknown>) => void }) | undefined;
-    if (!a?.setAmbience) return;
+    const a = this.mods.audio as (GameModules['audio'] & { setCityAmbience?: import('../audio/AudioEngine').AudioEngine['setCityAmbience'] }) | undefined;
+    if (!a?.setCityAmbience) return;
     try {
       const st = this.sim.state;
       const dist = this.world.controls.distance || 800;
@@ -998,7 +1008,8 @@ export class CityScene {
         }
         constructing = Math.min(1, k / Math.max(1, n) * 5);
       }
-      a.setAmbience({ population: st.stats.population, zoom: Math.max(0, Math.min(1, (dist - 60) / (st.size * CELL_SIZE))), night: hour < 6 || hour > 19.5, construction: constructing, activity: this.sim.speed / 3 });
+      const target = this.world.controls.target;
+      a.setCityAmbience(st, target.x, target.z, dist, hour < 6 || hour > 19.5, constructing, this.sim.speed / 3);
       // soundtrack context: night, city size, liveliness (sim speed + recent growth + construction)
       const m = this.musicPop;
       const now = performance.now();

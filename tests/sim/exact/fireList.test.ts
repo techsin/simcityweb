@@ -34,7 +34,17 @@ function exact(a: unknown, b: unknown, path = 'output'): void {
   if (ArrayBuffer.isView(b)) {
     assert.ok(ArrayBuffer.isView(a), path);
     assert.equal(a.constructor, b.constructor, path);
-    assert.ok(Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(Buffer.from(b.buffer, b.byteOffset, b.byteLength)), path);
+    const ab = Buffer.from(a.buffer, a.byteOffset, a.byteLength), bb = Buffer.from(b.buffer, b.byteOffset, b.byteLength);
+    if (!ab.equals(bb)) {
+      // a NaN matches any NaN (its bits depend on the tier that stored it); every other byte must match
+      assert.ok(a instanceof Float32Array || a instanceof Float64Array, path);
+      const fa = a as Float32Array | Float64Array, fb = b as Float32Array | Float64Array;
+      const stride = fa.BYTES_PER_ELEMENT;
+      for (let i = 0; i < fa.length; i++) {
+        if (Number.isNaN(fa[i]) && Number.isNaN(fb[i])) continue;
+        for (let j = i * stride; j < (i + 1) * stride; j++) assert.equal(ab[j], bb[j], `${path}[${i}]`);
+      }
+    }
   } else if (b instanceof Map) {
     assert.ok(a instanceof Map, path);
     exact([...a], [...b], path);

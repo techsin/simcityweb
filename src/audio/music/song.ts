@@ -100,6 +100,9 @@ export function song(env: MusicEnv, spec: SongSpec): SongPlayer {
     get endTime() {
       return endTime;
     },
+    get nextScheduleTime() {
+      return started && next < bars.length && barTimes[next] < stopAt ? barTimes[next] : Infinity;
+    },
     sections: marks,
     barTimes,
     start(t0: number) {
