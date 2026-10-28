@@ -2,7 +2,7 @@
 import { CELL_SIZE } from '../../core/constants';
 import type { ActionResult, TerraformKind } from '../../sim/actions';
 import type { GameContext } from '../context';
-import { h, slider } from '../../ui/dom';
+import { h, paintFill, slider } from '../../ui/dom';
 import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
 
 /** brush settings shared by all brush tools */
@@ -130,7 +130,7 @@ export class BrushTool extends Tool {
   private syncOptions(): void {
     if (!this.opts) return;
     this.opts.r.value = String(brush.radius);
-    (this.opts.r as any).__paint?.();
+    paintFill(this.opts.r);
     this.opts.rv.textContent = String(brush.radius);
   }
   override options(): HTMLElement {

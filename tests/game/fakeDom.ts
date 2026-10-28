@@ -34,12 +34,21 @@ export class FNode {
 
 type Listener = (e: unknown) => void;
 
+// A live signal must not own the target, even when the callback itself closes over that target (Chromium).
+function removeOnAbort(target: WeakRef<FEl>, t: string, listener: WeakRef<Listener>): () => void {
+  return () => {
+    const f = listener.deref();
+    if (f) target.deref()?.removeEventListener(t, f);
+  };
+}
+
 export class FEl extends FNode {
   className = '';
   dataset: Record<string, string> = {};
   attrs = new Map<string, string>();
   disabled = false;
   title = '';
+  value = '';
   scrollTop = 0;
   offsetLeft = 0;
   offsetTop = 0;
@@ -98,12 +107,15 @@ export class FEl extends FNode {
   getAttribute(k: string): string | null {
     return this.attrs.get(k) ?? null;
   }
+  get min(): string { return this.getAttribute('min') ?? ''; }
+  get max(): string { return this.getAttribute('max') ?? ''; }
+  get step(): string { return this.getAttribute('step') ?? ''; }
   /** options: `signal` removes the listener when it aborts (an aborted one adds nothing), as the DOM does */
   addEventListener(t: string, f: Listener, opts?: boolean | { signal?: AbortSignal }): void {
     const signal = typeof opts === 'object' ? opts.signal : undefined;
     if (signal?.aborted) return;
     this.listeners.set(t, [...(this.listeners.get(t) ?? []), f]);
-    signal?.addEventListener('abort', () => this.removeEventListener(t, f), { once: true });
+    signal?.addEventListener('abort', removeOnAbort(new WeakRef(this), t, new WeakRef(f)), { once: true });
   }
   removeEventListener(t: string, f: Listener): void {
     this.listeners.set(t, (this.listeners.get(t) ?? []).filter((g) => g !== f));
