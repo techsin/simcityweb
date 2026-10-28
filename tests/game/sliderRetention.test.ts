@@ -9,6 +9,7 @@ import { BudgetPanel } from '../../src/ui/panels/BudgetPanel';
 import { h, paintFill, setSlider, slider } from '../../src/ui/dom';
 import { newState } from '../infra/cityGen';
 import { FEl, installFakeDom, textOf } from './fakeDom';
+import { queryHost } from './queryHost';
 
 installFakeDom();
 v8.setFlagsFromString('--expose_gc');
@@ -61,7 +62,7 @@ describe('slider retention (T025)', () => {
     const ac = new AbortController();
     setMaxListeners(0, ac.signal);
     const state = newState(32), sim = new Simulation(state, []);
-    const ctx = { state, sim, signal: ac.signal, mods: {} } as unknown as GameContext;
+    const ctx = { state, sim, host: queryHost(sim), signal: ac.signal, mods: {} } as unknown as GameContext;
     const panel = new BudgetPanel(ctx);
     panel.mount(() => {}, () => {}, () => {});
     panel.isOpen = true;
