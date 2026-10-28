@@ -2,7 +2,7 @@
 
 ## Review and gates (the local worker)
 
-Branch `local/R1-guide-d` on `local/W0.3-5-integration` (`93069fa`). The Codex lane's work is one commit. I
+Branch `local/R1-guide-d` on `local/W0.3-5-integration` (`93069fa`), with dev `4a81e7e` merged in (`d4f7203`). The Codex lane's work is one commit. I
 reviewed it against docs/POLISH_PLAN.md FH-06, FH-09 and §7.2-§7.4, and against the sim's code:
 
 - **The panel's arithmetic is the sim's own.** The residential effect averages the three rates weighted by
@@ -21,8 +21,8 @@ reviewed it against docs/POLISH_PLAN.md FH-06, FH-09 and §7.2-§7.4, and agains
 | Gate | Result |
 |---|---|
 | Targeted tests (approvalGuide, budgetTaxes, approval, panelCommands, panelsMisc, guideCopy) | 6 files, 177 tests passed |
-| `npx tsc --noEmit` | FULLSUITE_TSC |
-| `npx vitest run` (full, with the fixtures) | FULLSUITE_VITEST |
+| `npx tsc --noEmit` (with dev `4a81e7e` merged in) | clean |
+| `npx vitest run` (full, with the fixtures; dev merged) | **197 files passed, 1 skipped; 1,976 tests passed, 8 skipped** |
 | The 128 × 15 seed-7 bot, with the action log | identical to `93069fa`, line for line (**196,101** in 2015) |
 | Browser checks (the checklist below) | pending: my browser slot, after the T014 timing runs |
 
