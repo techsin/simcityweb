@@ -288,6 +288,7 @@ log('design reviews: ' + dreviews.map((r) => r.verdict + ' (' + r.required.lengt
 
 phase('Build')
 const build = await __A(CTX + '\n\n' + implPrompt(design, dreviews), { label: 'build', phase: 'Build', schema: BUILD })
+if (!build) { log('build returned nothing (limit or error); stopping before the gates so a resume reruns it'); return { stopped: 'build' } }
 const gates = await __A(CTX + '\n\n' + gatesPrompt(build, maps, 1), { label: 'gates', phase: 'Build', schema: GATES })
 log('gates: pass=' + gates.pass + '; ' + gates.failures.join('; ').slice(0, 300))
 
