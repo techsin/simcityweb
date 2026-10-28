@@ -79,8 +79,8 @@ export interface CitySceneOptions {
   initialSpeed?: number;
 }
 
-/** keys the camera controller binds that we also use (we stop propagation only when we act on them) */
-const CAMERA_KEYS = new Set(['r', 'f']);
+/** physical camera keys: skip character hotkeys, and stop propagation when a tool consumes one */
+const CAMERA_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'NumpadEqual']);
 
 /** UI sound aliases -> audio engine sound names (src/audio/sfx.ts; any other name is passed through) */
 const SOUND_MAP: Record<string, string> = {
@@ -797,16 +797,20 @@ export class CityScene {
       this.sound(this.sim.speed === 0 ? 'pause' : 'speed' + this.sim.speed);
       return;
     }
-    if (k === '1' || k === '2' || k === '3') {
-      if (this.sim.speed !== Number(k)) this.sound('speed' + k);
-      this.host.setSpeed(Number(k), 'keyboard');
+    const speed = /^(?:Digit|Numpad)([123])$/.exec(e.code);
+    if (speed) {
+      e.preventDefault();
+      if (this.sim.speed !== Number(speed[1])) this.sound('speed' + speed[1]);
+      this.host.setSpeed(Number(speed[1]), 'keyboard');
       this.lastSpeed = this.sim.speed;
       return;
     }
-    if (k === 'Delete') {
+    if (k === 'Delete' || k === 'Backspace') {
+      e.preventDefault();
       this.tools.select('bulldoze');
       return;
     }
+    if (CAMERA_KEYS.has(e.code)) return;
     const lk = k.toLowerCase();
     const cycle = HOTKEY_CYCLES[lk];
     if (cycle && !e.shiftKey) {
@@ -830,7 +834,7 @@ export class CityScene {
   /** we handled this key: keep it from the camera controller too when the camera also binds it */
   private consume(e: KeyboardEvent): void {
     e.preventDefault();
-    if (CAMERA_KEYS.has(e.key.toLowerCase())) e.stopImmediatePropagation();
+    if (CAMERA_KEYS.has(e.code)) e.stopImmediatePropagation();
   }
 
   private onVisibility(): void {
@@ -942,7 +946,7 @@ export class CityScene {
     // camera flight (toast / news / advisor / emergency "jump"): a very soft whoosh
     this.sound('whoosh', { volume: 0.7 });
     try {
-      this.world.controls.focusOn(x * CELL_SIZE + CELL_SIZE / 2, z * CELL_SIZE + CELL_SIZE / 2, distance);
+      this.world.controls.focusOn(x * CELL_SIZE + CELL_SIZE / 2, z * CELL_SIZE + CELL_SIZE / 2, distance, { fly: true });
     } catch (e) {
       console.warn(e);
     }

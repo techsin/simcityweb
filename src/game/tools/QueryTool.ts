@@ -110,8 +110,12 @@ export class QueryTool extends Tool {
   }
   override down(p: ToolPointer): void {
     this.downAt = { x: p.clientX, y: p.clientY };
+    const c = this.ctx.world.controls as { beginPan?(x: number, y: number): void };
+    c.beginPan?.(p.clientX, p.clientY);
   }
   override up(p: ToolPointer): void {
+    const c = this.ctx.world.controls as { endPan?(): void };
+    c.endPan?.();
     if (!this.downAt) return;
     const moved = Math.hypot(p.clientX - this.downAt.x, p.clientY - this.downAt.y);
     this.downAt = null;

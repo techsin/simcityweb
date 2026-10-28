@@ -1,7 +1,7 @@
 /**
  * CameraController — SC4-style city camera (implements CameraControllerApi).
  *
- * Mouse:  LEFT is reserved for tools.  MIDDLE drag or SHIFT+RIGHT drag = pan (ground anchored: the point under the
+ * Mouse:  LEFT with Query, MIDDLE drag or SHIFT+RIGHT drag = pan (ground anchored: the point under the
  *         cursor follows the cursor).  RIGHT drag = orbit (yaw) / tilt.  WHEEL = smooth zoom toward the cursor.
  * Keys:   WASD / arrows = pan, Q / E = rotate 90° (smoothed snaps), PageUp / PageDown = tilt,
  *         + / - zoom, Home = recenter. Keys are ignored while an input / textarea / contenteditable is focused
@@ -70,6 +70,7 @@ export class CameraController implements CameraControllerApi {
   private goalYaw = SNAP0;
   private goalTilt = 52 * DEG;
   private groundY = 0;
+  private flight: { start: THREE.Vector3; distance: number; peak: number; elapsed: number; duration: number } | null = null;
 
   // interaction
   private panning = false;
@@ -139,20 +140,41 @@ export class CameraController implements CameraControllerApi {
     return this.tilt;
   }
 
-  focusOn(worldX: number, worldZ: number, distance?: number): void {
+  focusOn(worldX: number, worldZ: number, distance?: number, opts?: { fly?: boolean }): void {
+    this.cancelFlight();
     this.goalTarget.set(worldX, 0, worldZ);
     this.clampGoal();
     if (distance !== undefined) this.goalDistance = THREE.MathUtils.clamp(distance, this.opts.minDistance, this.opts.maxDistance);
     this.panVel.set(0, 0, 0);
+    const trip = Math.hypot(this.goalTarget.x - this._target.x, this.goalTarget.z - this._target.z);
+    if (opts?.fly && trip > 500) {
+      this.zoomAnchorActive = false;
+      this.flight = {
+        start: this._target.clone(), distance: this._distance,
+        peak: Math.min(this.opts.maxDistance, Math.max(this._distance, this.goalDistance, trip * 0.5)),
+        elapsed: 0, duration: Math.min(1.6, 0.6 + trip * 0.00025),
+      };
+    }
+  }
+
+  private cancelFlight(): void {
+    if (!this.flight) return;
+    this.flight = null;
+    this.goalTarget.copy(this._target);
+    this.goalDistance = this._distance;
+    this.panVel.set(0, 0, 0);
+    this.zoomAnchorActive = false;
   }
 
   rotateStep(dir: 1 | -1): void {
+    this.cancelFlight();
     const k = Math.round((this.goalYaw - SNAP0) / (Math.PI / 2));
     this.goalYaw = SNAP0 + (k + dir) * (Math.PI / 2);
   }
 
   /** immediately place the camera (no smoothing). Angles in degrees. */
   setView(x: number, z: number, distance: number, tiltDeg?: number, yawDeg?: number): void {
+    this.cancelFlight();
     this.goalTarget.set(x, 0, z);
     this.clampGoal();
     this._target.copy(this.goalTarget);
@@ -240,6 +262,7 @@ export class CameraController implements CameraControllerApi {
 
   private onPointerDown(e: PointerEvent) {
     if (!this.enabled) return;
+    this.cancelFlight();
     const pan = e.button === 1 || (e.button === 2 && e.shiftKey);
     const orbit = e.button === 2 && !e.shiftKey;
     if (!pan && !orbit) return;
@@ -247,12 +270,7 @@ export class CameraController implements CameraControllerApi {
     this.lastX = e.clientX;
     this.lastY = e.clientY;
     if (pan) {
-      if (this.groundHit(e.clientX, e.clientY, this.panAnchor)) {
-        this.panning = true;
-        this.panPlaneY = this.panAnchor.y;
-        this.panVel.set(0, 0, 0);
-        this.lastPanTime = performance.now();
-      }
+      this.beginPan(e.clientX, e.clientY);
     } else {
       this.orbiting = true;
     }
@@ -263,11 +281,24 @@ export class CameraController implements CameraControllerApi {
     }
   }
 
+  /** Query's left drag uses the same ground anchor as middle / Shift+right drag. */
+  beginPan(clientX: number, clientY: number): void {
+    if (!this.enabled) return;
+    this.cancelFlight();
+    if (this.groundHit(clientX, clientY, this.panAnchor)) {
+      this.panning = true;
+      this.panPlaneY = this.panAnchor.y;
+      this.panVel.set(0, 0, 0);
+      this.lastPanTime = performance.now();
+    }
+  }
+
   private onPointerMove(e: PointerEvent) {
     const r = this.dom.getBoundingClientRect();
     this.pointerX = e.clientX - r.left;
     this.pointerY = e.clientY - r.top;
     if (!this.enabled) return;
+    if (this.panning || this.orbiting) this.cancelFlight();
     if (this.panning) {
       // ground anchored: find where the cursor ray hits the anchor plane now, shift the target by the difference
       this.apply();
@@ -295,7 +326,7 @@ export class CameraController implements CameraControllerApi {
     this.lastY = e.clientY;
   }
 
-  private onPointerUp(e: PointerEvent) {
+  endPan(): void {
     if (this.panning) {
       // keep inertia only if the drag was still moving when released
       if (performance.now() - this.lastPanTime > 80) this.panVel.set(0, 0, 0);
@@ -303,6 +334,10 @@ export class CameraController implements CameraControllerApi {
       if (this.panVel.length() > maxV) this.panVel.setLength(maxV);
     }
     this.panning = false;
+  }
+
+  private onPointerUp(e: PointerEvent) {
+    this.endPan();
     this.orbiting = false;
     try {
       this.dom.releasePointerCapture(e.pointerId);
@@ -323,6 +358,7 @@ export class CameraController implements CameraControllerApi {
 
   /** zoom by factor (>1 = out) toward a screen point (client coords) */
   zoomBy(factor: number, clientX?: number, clientY?: number) {
+    this.cancelFlight();
     const nd = THREE.MathUtils.clamp(this.goalDistance * factor, this.opts.minDistance, this.opts.maxDistance);
     if (clientX !== undefined && clientY !== undefined && factor < 1 && this.groundHit(clientX, clientY, this.zoomAnchor)) {
       this.zoomAnchorActive = true;
@@ -333,22 +369,23 @@ export class CameraController implements CameraControllerApi {
   }
 
   private onKey(e: KeyboardEvent, down: boolean) {
-    if (isTypingTarget()) return;
-    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    const k = e.code;
     if (!down) {
       this.keys.delete(k);
       return;
     }
-    if (!this.enabled || e.defaultPrevented) return;
+    if (!this.enabled) return;
+    this.cancelFlight();
+    if (isTypingTarget() || e.defaultPrevented) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    const handled = ['w', 'a', 's', 'd', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', '+', '=', '-', '_'];
+    const handled = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'NumpadEqual'];
     if (handled.includes(k)) {
       this.keys.add(k);
       if (k.startsWith('Arrow') || k.startsWith('Page')) e.preventDefault();
     }
     if (e.repeat) return;
-    if (k === 'q') this.rotateStep(-1);
-    else if (k === 'e') this.rotateStep(1);
+    if (k === 'KeyQ') this.rotateStep(-1);
+    else if (k === 'KeyE') this.rotateStep(1);
     else if (k === 'Home') {
       this.recenter();
       e.preventDefault();
@@ -357,6 +394,7 @@ export class CameraController implements CameraControllerApi {
 
   private onTouch(e: TouchEvent) {
     if (!this.enabled) return;
+    this.cancelFlight();
     e.preventDefault();
     const r = this.dom.getBoundingClientRect();
     const prev = new Map(this.touches);
@@ -416,6 +454,7 @@ export class CameraController implements CameraControllerApi {
   }
 
   update(dt: number): void {
+    const flightDt = dt;
     dt = Math.min(dt, 0.1);
     if (this.shakeLeft > 0) {
       this.shakeLeft = Math.max(0, this.shakeLeft - dt);
@@ -424,11 +463,12 @@ export class CameraController implements CameraControllerApi {
     }
     // keyboard
     if (this.enabled && this.keys.size) {
+      this.cancelFlight();
       let fx = 0, fz = 0;
-      if (this.keys.has('w') || this.keys.has('ArrowUp')) fz += 1;
-      if (this.keys.has('s') || this.keys.has('ArrowDown')) fz -= 1;
-      if (this.keys.has('d') || this.keys.has('ArrowRight')) fx += 1;
-      if (this.keys.has('a') || this.keys.has('ArrowLeft')) fx -= 1;
+      if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) fz += 1;
+      if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) fz -= 1;
+      if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) fx += 1;
+      if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) fx -= 1;
       if (fx || fz) {
         const speed = this._distance * 1.1 * this.panSpeed;
         const sx = Math.sin(this.yaw), cz = -Math.cos(this.yaw);
@@ -441,8 +481,8 @@ export class CameraController implements CameraControllerApi {
       if (this.keys.has('PageUp')) this.goalTilt += 55 * DEG * dt;
       if (this.keys.has('PageDown')) this.goalTilt -= 55 * DEG * dt;
       this.goalTilt = THREE.MathUtils.clamp(this.goalTilt, this.minTiltRad(this.goalDistance), this.opts.maxTilt * DEG);
-      if (this.keys.has('+') || this.keys.has('=')) this.zoomBy(Math.exp(-1.6 * dt));
-      if (this.keys.has('-') || this.keys.has('_')) this.zoomBy(Math.exp(1.6 * dt));
+      if (this.keys.has('Equal') || this.keys.has('NumpadAdd') || this.keys.has('NumpadEqual')) this.zoomBy(Math.exp(-1.6 * dt));
+      if (this.keys.has('Minus') || this.keys.has('NumpadSubtract')) this.zoomBy(Math.exp(1.6 * dt));
     }
     // edge scrolling
     if (this.enabled && this.edgeScroll && this.pointerInside && !this.panning && !this.orbiting) {
@@ -453,6 +493,7 @@ export class CameraController implements CameraControllerApi {
       if (this.pointerY < m) fz = 1;
       else if (this.pointerY > h - m) fz = -1;
       if (fx || fz) {
+        this.cancelFlight();
         const speed = this._distance * 0.9;
         const sx = Math.sin(this.yaw), cz = -Math.cos(this.yaw);
         this.goalTarget.x += (sx * fz - cz * fx) * speed * dt;
@@ -474,11 +515,24 @@ export class CameraController implements CameraControllerApi {
     if (this.goalTilt < mt) this.goalTilt = mt;
     // smoothing
     const prevDist = this._distance;
-    if (!this.panning) {
-      this._target.x = damp(this._target.x, this.goalTarget.x, 10, dt);
-      this._target.z = damp(this._target.z, this.goalTarget.z, 10, dt);
+    const flight = this.flight;
+    if (flight) {
+      flight.elapsed = Math.min(flight.duration, flight.elapsed + flightDt);
+      const t = flight.elapsed / flight.duration;
+      const u = THREE.MathUtils.smoothstep(t, 0, 1);
+      this._target.x = THREE.MathUtils.lerp(flight.start.x, this.goalTarget.x, u);
+      this._target.z = THREE.MathUtils.lerp(flight.start.z, this.goalTarget.z, u);
+      this._distance = t < 0.5
+        ? THREE.MathUtils.lerp(flight.distance, flight.peak, THREE.MathUtils.smoothstep(t * 2, 0, 1))
+        : THREE.MathUtils.lerp(flight.peak, this.goalDistance, THREE.MathUtils.smoothstep(t * 2 - 1, 0, 1));
+      if (t === 1) this.flight = null;
+    } else {
+      if (!this.panning) {
+        this._target.x = damp(this._target.x, this.goalTarget.x, 10, dt);
+        this._target.z = damp(this._target.z, this.goalTarget.z, 10, dt);
+      }
+      this._distance = Math.exp(damp(Math.log(this._distance), Math.log(this.goalDistance), 9, dt));
     }
-    this._distance = Math.exp(damp(Math.log(this._distance), Math.log(this.goalDistance), 9, dt));
     this.yaw = damp(this.yaw, this.goalYaw, 9, dt);
     this.tilt = damp(this.tilt, this.goalTilt, 10, dt);
     // zoom toward cursor: keep the anchor fixed on screen while the distance changes
