@@ -16,7 +16,7 @@ every scratch file was lost), so anything the next round needs lives here or in 
 Reports of the latest rounds: `docs/dev/reports/*.md` (verbatim agent reports; paths inside them point at the old,
 now deleted scratch directory).
 
-## Running now (Oct 27, 21:45: WINDING DOWN until the weekly reset, Mon 2 Nov 15:00 UTC. The owner reports the weekly Claude limit over 70 % used, so we finish few things fully (NOTE-035). Finishing: the W0.3-5 integration QA (cloud), W0.6 + W0.3b → W0-complete, T014 (render round 2), T008/T010 gates (cloud), T025-T027. Paused: B2 after its design (docs/dev/B2_DESIGN.md; resume wf_13b4de49-6de), B3 after its build (docs/dev/B3_DESIGN.md; resume wf_96cfa1e8-a78), every other desktop lane after Codex commits its code.)
+## Running now (Oct 28, 01:40: ONE ITEM AT A TIME until the weekly reset, Mon 2 Nov 15:00 UTC (NOTE-035, NOTE-037). Merged tonight: T014 (render round 2 CLOSED), T025, W0-complete (T020: W0.1-W0.6 + W0.3b), T026, T008 with the lead's fixes. Desktop, in order: T027 camera QA; the W0.3-5 browser QA on dev (the cloud's run died at the 5-hour limit with no results); T030's timing gate, T038, T037d, T028; then the W1 lanes T032, T031, T033, T034, then T029. Paused: B2 after its design (resume at design-review:targets), B3 after four build steps (docs/dev/wip/b3), T010 (one fix round after the reset), and the new Codex lanes.)
 - **Paused desktop lanes, pushed Oct 27 ~22:10 (resume after the reset; none has a .done):** reviewed and gated, only the merge gate left: `local/R1-interfaces` (T035), `local/R1-guide-d` (T037d), `local/T030-ui-frame` (T030; its timing gate is queued after T014). Code only, review and gates left: `local/W1.1b-host` (T031), `local/W1.1b-loopback` (T032), `local/W1.1b-recovery` (T033), `local/W1.2-worker` (T034), `local/R1-guide-a` (T037a), `local/T028-qa-worker` (T028, mid fix round), `local/T029-emg-policy` (T029), `local/T038-r2-fh20` (T038). B2 stopped after `design-review:exactness`; it resumes at `design-review:targets` (journal wf_13b4de49-6de).
 
 On the cloud: **B3** (`wf_96cfa1e8-a78`, copy `docs/dev/workflows/b3-month-spread.js`; worktrees `<scratch>/b3`, base `<scratch>/b3base` = test merge `a59f08f`; baseline balance runs in `<scratch>/balance/base/`, which reproduce the recorded part B rows exactly) **B2** (Worker S3, the step split: `wf_13b4de49-6de`, copy `docs/dev/workflows/b2-step-split.js`; worktrees `<scratch>/b2` and base `<scratch>/b2base` = the B1 test merge `41ae570`; timing runs take the lock `<scratch>/timing.lock`), and **the independent J-fix check** (`wf_2d846103-df1`, copy `docs/dev/workflows/jfix-verify.js`, two read-mostly reviewers on the test merge `<scratch>/premerge`). A test merge with B1 is in `<scratch>/premerge-b1`. The graphics workflow `wf_08a5eb98-993` (`docs/dev/workflows/render2-final-v2r.js`)
@@ -146,6 +146,22 @@ version 17.
 Perf v1 ratios (new = V1, against the old base), for calibrating a rebuilt base: warm-page pooled moving CPU town
 0.740, dense city 0.675, ui LOW/HIGH/ULTRA 0.817/0.794/0.797; fresh dense-city HIGH street-settle 0.867; fresh LOW
 town first zoom-out 1.059, first zoom-in 1.057 (A/A within ±3 %).
+
+## Lead decisions, Oct 28
+
+- **T014 finding 1, the fresh town HIGH far orbit at 1.12x a284b80 [1.084-1.139], A/A 0.99, is a MINOR.** It is not a ring segment, because ring on minus ring off is about 0 µs per frame, so the ring allowance does not apply. It is accepted on magnitude: +93 µs per frame, on a fresh page's first HIGH far orbit only; the warm far orbit is 0.58x base and the page's pooled sum is 0.95x base. Two levers go to POLISH_BACKLOG, re-measured in the final verification. **Render round 2 is closed.**
+- **T008 gate 4 passes on what the pool controls:** new processing nodes -90.6 to -94.2 %, and deletion-task CPU -63 %. The per-sound finish and deletion tasks are native: one finish per source node, and deletion tasks from filter tail-processing. The 90 % target on them could not be met by any pool.
+- **T008 gate 3, fixed by the lead (4b173f8):**
+  - the hide fade anchors its ramp; it used to step at once, -17 to -19 dB, or cut to 0 after a volume change;
+  - city rests count from the start of the tail fade, so the real soundtrack's heard silences are about 15-40 s instead of 20-45 s;
+  - the mock AudioParam is Chromium-like, and a regression test fails without the anchor.
+- **T010 does not merge yet:**
+  - the art review found a major: the Stock Exchange's setback roofs z-fight, because the RoofFlat cap and the cornice cap are coplanar at y1, in both variants;
+  - three minors: the WTC roofs have the same construction, Grand Central v1's vault-foot strips sit 3.8 mm apart, and the Crown v1's ribs 4 mm;
+  - the registration commit fails catalog.test until pendingCatalog lands (NOTE-034, T035b);
+  - the builders commit 564c851 is green on its own;
+  - one fix round after the reset covers all of it.
+- **The W0-complete merge (cee02aa) left T025's new slider test without a host;** e0adb74 fixes the test. The product code is unchanged.
 
 ## Render gates (lead)
 
