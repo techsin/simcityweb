@@ -289,7 +289,7 @@ export class LivePolicy {
     this.incoming.clear();
     this.live = { ...LIVE_IDLE };
     this.cooldownLeft = 0;
-    this.cooldownAt = performance.now();
+    this.cooldownAt = this.clock();
     this.cooldownRunning = this.sim.speed > 0;
     this.sim.liveSlowdown = 1;
     this.trigger = this.episodeBad = this.scanned = false;
@@ -394,7 +394,7 @@ export class LivePolicy {
 
   /** Account for real time at every speed boundary, even when no host tick runs during a pause. */
   private updateCooldown(): void {
-    const now = performance.now();
+    const now = this.clock();
     if (this.cooldownRunning) this.cooldownLeft = Math.max(0, this.cooldownLeft - Math.max(0, now - this.cooldownAt));
     this.cooldownAt = now;
     this.cooldownRunning = this.sim.speed > 0;
@@ -417,7 +417,7 @@ export class LivePolicy {
     if (was !== this.live.active || step.toast) this.episodeBad = false;
     if (step.speed !== undefined && step.speed !== sim.speed) sim.speed = step.speed;
     if (sim.liveSlowdown !== step.liveSlowdown) sim.liveSlowdown = step.liveSlowdown;
-    if (was && !this.live.active) { this.cooldownLeft = LIVE_COOLDOWN_MS; this.cooldownAt = performance.now(); }
+    if (was && !this.live.active) { this.cooldownLeft = LIVE_COOLDOWN_MS; this.cooldownAt = this.clock(); }
     this.publish(step.toast, warn);
   }
 
