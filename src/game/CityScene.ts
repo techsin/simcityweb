@@ -79,8 +79,8 @@ export interface CitySceneOptions {
   initialSpeed?: number;
 }
 
-/** keys the camera controller binds that we also use (we stop propagation only when we act on them) */
-const CAMERA_KEYS = new Set(['r', 'f']);
+/** physical camera keys: skip character hotkeys, and stop propagation when a tool consumes one */
+const CAMERA_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'NumpadEqual']);
 
 /** UI sound aliases -> audio engine sound names (src/audio/sfx.ts; any other name is passed through) */
 const SOUND_MAP: Record<string, string> = {
@@ -595,25 +595,27 @@ export class CityScene {
       this.readyPending = false;
       this.resolveReady();
     }
-    this.minimap.frame(dt);
+    const cameraStopped = this.minimap.frame(dt);
     this.ticker.frame(dt);
     this.onboarding.frame(dt);
     // UI ticks (~6 Hz)
     this.uiAcc += dt;
-    if (this.uiAcc > 0.16) {
-      this.uiAcc = 0;
+    if (this.uiAcc > 0.16 || cameraStopped) {
+      const tick = this.uiAcc > 0.16;
+      if (tick) this.uiAcc = 0;
       try {
         this.topBar.update();
-        this.panels.tick();
-        this.uiEvents.emit('uiTick', undefined);
+        if (tick) {
+          this.panels.tick();
+          this.uiEvents.emit('uiTick', undefined);
+        }
       } catch (e) {
         this.errors.report('Interface error', e, { key: 'ui' });
       }
     }
     this.slowAcc += dt;
-    this.ambAcc += dt;
-    if (this.ambAcc > 0.5) {
-      this.ambAcc = 0;
+    if (now - this.ambAcc >= 500) {
+      this.ambAcc = now;
       this.updateAmbience();
     }
     if (this.slowAcc > 2) {
@@ -798,16 +800,20 @@ export class CityScene {
       this.sound(this.sim.speed === 0 ? 'pause' : 'speed' + this.sim.speed);
       return;
     }
-    if (k === '1' || k === '2' || k === '3') {
-      if (this.sim.speed !== Number(k)) this.sound('speed' + k);
-      this.host.setSpeed(Number(k), 'keyboard');
+    const speed = /^(?:Digit|Numpad)([123])$/.exec(e.code);
+    if (speed) {
+      e.preventDefault();
+      if (this.sim.speed !== Number(speed[1])) this.sound('speed' + speed[1]);
+      this.host.setSpeed(Number(speed[1]), 'keyboard');
       this.lastSpeed = this.sim.speed;
       return;
     }
-    if (k === 'Delete') {
+    if (k === 'Delete' || k === 'Backspace') {
+      e.preventDefault();
       this.tools.select('bulldoze');
       return;
     }
+    if (CAMERA_KEYS.has(e.code)) return;
     const lk = k.toLowerCase();
     const cycle = HOTKEY_CYCLES[lk];
     if (cycle && !e.shiftKey) {
@@ -831,7 +837,7 @@ export class CityScene {
   /** we handled this key: keep it from the camera controller too when the camera also binds it */
   private consume(e: KeyboardEvent): void {
     e.preventDefault();
-    if (CAMERA_KEYS.has(e.key.toLowerCase())) e.stopImmediatePropagation();
+    if (CAMERA_KEYS.has(e.code)) e.stopImmediatePropagation();
   }
 
   private onVisibility(): void {
@@ -943,7 +949,7 @@ export class CityScene {
     // camera flight (toast / news / advisor / emergency "jump"): a very soft whoosh
     this.sound('whoosh', { volume: 0.7 });
     try {
-      this.world.controls.focusOn(x * CELL_SIZE + CELL_SIZE / 2, z * CELL_SIZE + CELL_SIZE / 2, distance);
+      this.world.controls.focusOn(x * CELL_SIZE + CELL_SIZE / 2, z * CELL_SIZE + CELL_SIZE / 2, distance, { fly: true });
     } catch (e) {
       console.warn(e);
     }
@@ -987,8 +993,8 @@ export class CityScene {
   /** feed the audio engine's city ambience (~2 Hz) */
   private updateAmbience(): void {
     this.feedSirens();
-    const a = this.mods.audio as (GameModules['audio'] & { setAmbience?: (p: Record<string, unknown>) => void }) | undefined;
-    if (!a?.setAmbience) return;
+    const a = this.mods.audio as (GameModules['audio'] & { setCityAmbience?: import('../audio/AudioEngine').AudioEngine['setCityAmbience'] }) | undefined;
+    if (!a?.setCityAmbience) return;
     try {
       const st = this.sim.state;
       const dist = this.world.controls.distance || 800;
@@ -1002,7 +1008,8 @@ export class CityScene {
         }
         constructing = Math.min(1, k / Math.max(1, n) * 5);
       }
-      a.setAmbience({ population: st.stats.population, zoom: Math.max(0, Math.min(1, (dist - 60) / (st.size * CELL_SIZE))), night: hour < 6 || hour > 19.5, construction: constructing, activity: this.sim.speed / 3 });
+      const target = this.world.controls.target;
+      a.setCityAmbience(st, target.x, target.z, dist, hour < 6 || hour > 19.5, constructing, this.sim.speed / 3);
       // soundtrack context: night, city size, liveliness (sim speed + recent growth + construction)
       const m = this.musicPop;
       const now = performance.now();

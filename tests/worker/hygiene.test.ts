@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ROOT, importGraph, scan, scanFiles, sourceFiles } from './hygieneScan';
+import { ROOT, importGraph, scan, scanFiles, sourceFiles, staticImportGraph } from './hygieneScan';
 
 describe('S1 isolate hygiene', () => {
   it('sim, city persistence and node harnesses contain no detaching APIs', () => {
@@ -130,6 +130,11 @@ describe('worker migration hygiene gates', () => {
   });
   it('W0.5: CityScene reads system views through the host', () => {
     expect(scanFiles(['src/game/CityScene.ts'], 'systems')).toEqual([]);
+  });
+  it('FH-07a: CityScene reaches SimHost and demolition reads without statically loading actions', () => {
+    const graph = staticImportGraph('src/game/CityScene.ts');
+    expect(graph).toEqual(expect.arrayContaining(['src/game/CityScene.ts', 'src/worker/SimHost.ts', 'src/game/demolishRisk.ts']));
+    expect(graph).not.toContain('src/sim/actions.ts');
   });
   it('W0.6: UI, game and render never write into the replica outside src/worker', () => {
     const files = [...uiAndGame(), ...sourceFiles('src/render')]

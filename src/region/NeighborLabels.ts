@@ -16,6 +16,14 @@ export class NeighborLabels {
   private raf = 0;
   private disposed = false;
   private v = new THREE.Vector3();
+  private width = 0;
+  private height = 0;
+  private resizeObs: ResizeObserver | null = null;
+  private camera: THREE.Camera | null = null;
+  private cameraView = new THREE.Matrix4();
+  private cameraProjection = new THREE.Matrix4();
+  private moving = false;
+  private lastPaint = -Infinity;
 
   constructor(private container: HTMLElement, private getCamera: () => THREE.Camera | null | undefined, st: CityState, neighbors: RegionNeighbor[]) {
     this.layer = h('div', { class: 'neighbor-labels' });
@@ -41,14 +49,42 @@ export class NeighborLabels {
       this.layer.appendChild(el);
       this.items.push({ el, arrow, p: new THREE.Vector3(x, y, z) });
     }
-    if (this.items.length) this.loop();
+    if (this.items.length) {
+      this.resize();
+      if (typeof ResizeObserver !== 'undefined') {
+        this.resizeObs = new ResizeObserver(() => this.resize());
+        this.resizeObs.observe(container);
+      }
+      this.raf = requestAnimationFrame(this.loop);
+    }
   }
 
-  private loop = () => {
+  private resize(): void {
+    if (this.disposed) return;
+    this.width = this.container.clientWidth;
+    this.height = this.container.clientHeight;
+    this.update(performance.now(), true);
+  }
+
+  private loop = (now: number) => {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.loop);
-    const cam = this.getCamera();
-    const W = this.container.clientWidth, H = this.container.clientHeight;
+    this.update(now);
+  };
+
+  private update(now: number, force = false): void {
+    const cam = this.getCamera() ?? null;
+    const moving = cam !== this.camera || !!cam && (!this.cameraView.equals(cam.matrixWorld) || !this.cameraProjection.equals(cam.projectionMatrix));
+    const stopped = this.moving && !moving;
+    this.moving = moving;
+    this.camera = cam;
+    if (cam) {
+      this.cameraView.copy(cam.matrixWorld);
+      this.cameraProjection.copy(cam.projectionMatrix);
+    }
+    if (!force && !stopped && (!moving || now - this.lastPaint < 100)) return;
+    this.lastPaint = now;
+    const W = this.width, H = this.height;
     for (const it of this.items) {
       if (!cam) {
         it.el.style.opacity = '0';
@@ -75,11 +111,13 @@ export class NeighborLabels {
       it.el.style.opacity = '1';
       it.el.style.transform = `translate(${px}px, ${py}px) translate(-50%, -50%)`;
     }
-  };
+  }
 
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    this.resizeObs?.disconnect();
     this.layer.remove();
   }
 }

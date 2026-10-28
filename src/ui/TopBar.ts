@@ -84,17 +84,15 @@ export function capRatio(ctx: GameContext, d: DevType): number {
 function paintBar(el: HTMLElement, v: number, color: string): void {
   const fill = el.firstElementChild as HTMLElement;
   const a = Math.min(1, Math.abs(v));
-  if (v >= 0) {
-    fill.style.top = `${50 - a * 50}%`;
-    fill.style.height = `${a * 50}%`;
-    fill.style.background = color;
-    fill.style.opacity = '1';
-  } else {
-    fill.style.top = '50%';
-    fill.style.height = `${a * 50}%`;
-    fill.style.background = color;
-    fill.style.opacity = '0.45';
-  }
+  const scale = String(v >= 0 ? -a : a), opacity = v >= 0 ? '1' : '0.45';
+  if (fill.dataset.scale === scale && fill.dataset.color === color && fill.style.opacity === opacity) return;
+  fill.dataset.scale = scale;
+  fill.dataset.color = color;
+  fill.style.transform = `scaleY(${scale})`;
+  // Compensate the scaled corner radius so the settled fill keeps its original 2 px rounding.
+  fill.style.borderRadius = `2px / ${2 / (a || 1)}px`;
+  fill.style.background = color;
+  fill.style.opacity = opacity;
 }
 
 export class TopBar {
@@ -426,7 +424,8 @@ export class TopBar {
     const net = lastNet(ctx);
     const hasBudget = Object.keys(st.budget.lastIncome).length + Object.keys(st.budget.lastExpense).length > 0;
     setText(this.netEl, hasBudget ? `${moneySigned(net, Math.abs(net) >= 1e5)}/mo` : 'No report yet');
-    this.netEl.className = 'hud-sub ' + (hasBudget ? signClass(net) : 'faint');
+    const netClass = 'hud-sub ' + (hasBudget ? signClass(net) : 'faint');
+    if (this.netEl.className !== netClass) this.netEl.className = netClass;
 
     // population
     const pop = st.stats.population;
