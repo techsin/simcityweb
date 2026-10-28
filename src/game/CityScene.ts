@@ -441,7 +441,8 @@ export class CityScene {
     let world: WorldViewApi | null = null;
     if (this.mods.WorldView && force !== 'world' && force !== 'all') {
       try {
-        world = new this.mods.WorldView(this.canvas, state, events, { quality: this.settings.quality });
+        // a replica host swaps in a fresh state on a resync: the view rebuilds from it (NOTE-041)
+        world = new this.mods.WorldView(this.canvas, state, events, { quality: this.settings.quality, getState: () => this.sim.state });
       } catch (e) {
         this.errors.report('3D world view failed to start — using a simplified view', e);
         this.swapCanvas();

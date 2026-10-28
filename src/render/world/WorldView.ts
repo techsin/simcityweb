@@ -35,6 +35,8 @@ export interface WorldViewOptions {
   /** initial hour (default 10.5) */
   timeOfDay?: number;
   autoTime?: boolean;
+  /** the city's current state (ctx.state): a replica host swaps in a fresh one on a resync, then emits 'reset' (§2.10) */
+  getState?: () => CityState;
 }
 
 export interface WorldStats {
@@ -159,6 +161,7 @@ export class WorldView implements WorldViewApi {
 
   private canvas: HTMLCanvasElement;
   private state: CityState;
+  private getState: (() => CityState) | undefined;
   private events: Emitter<CityEvents>;
   private unsub: (() => void)[] = [];
   private q: QualitySettings;
@@ -239,6 +242,7 @@ export class WorldView implements WorldViewApi {
     loadWarm.open = typeof window !== 'undefined';
     this.canvas = canvas;
     this.state = state;
+    this.getState = opts.getState;
     this.events = events;
     this.q = QUALITY_PRESETS[opts.quality ?? 'high'];
     this.dynamicResolution = this.q.dynamicResolution;
@@ -382,7 +386,8 @@ export class WorldView implements WorldViewApi {
       ev.on('disaster', (d) => {
         if (d.active && d.kind === 'earthquake') this.cameraController.shake(1, 3);
       }),
-      ev.on('reset', () => this.setState(this.state)),
+      // rebuilt as a load does, from the state the host holds now; the camera stays where it is
+      ev.on('reset', () => this.setState(this.getState?.() ?? this.state)),
     );
   }
 
