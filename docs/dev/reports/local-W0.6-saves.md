@@ -51,7 +51,7 @@ The reviewer also confirmed, for old saves:
 | The full vitest, five times back to back at full parallelism (NOTE-031) | five consecutive runs, each **171 files passed, 1 skipped; 1,653 tests passed, 7 skipped** (36 s each). The recovery tests passed in all ten runs I made today. |
 | The 128 × 15 seed-7 bot, with the action log | identical to `93069fa`, line for line (**196,101** in 2015) |
 | Old saves (two 10-year cities, a 21- and a 43-year veteran, the old-format region and city) | identical to `93069fa`: every file loads, continues 45 days and reloads identically (6 of 6) |
-| The Appendix A / W0.6 browser checklist | a focused session (11 items and the leakprobe teardown check) runs next; its results follow in a note |
+| The Appendix A / W0.6 browser checklist | **PASS**: all 11 items of a focused session and the leakprobe teardown check, with no console errors (docs/dev/reports/local-W0-complete-qa.md) |
 
 The lane's report follows.
 
