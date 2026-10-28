@@ -209,7 +209,7 @@ export class LoopbackCore {
       if (this.inbox) { this.inbox.error(details?.key ?? title, title, e, details?.sim); return; }
       const reply: Reply = { t: 'error', cmd: 0, key: details?.key ?? title, title, message: String(e), sim: details?.sim ?? false };
       if (this.recorder) this.recorder.reply(reply); else bootErrors.push(reply);
-    } }, opts.flags);
+    } }, opts.flags, () => this.now());
     this.core.sim.speed = opts.initialSpeed ?? 1;
     this.core.boot(opts.rctx ?? null, opts.modules ?? { createSystems, CityActions });
     this.recorder = new ChangeRecorder(this.core.sim, { policy: () => {
@@ -231,6 +231,12 @@ export class LoopbackCore {
   }
   get state(): CityState { return this.replica.state; }
   get primary(): CityState { return this.core.sim.state; }
+  /** The authoritative state as the replica should see it: the live state, with the utilities layers as last sent
+   *  (a utilities pass in flight has written them but not yet announced them). For the harness's comparisons. */
+  get delivered(): CityState {
+    const sent = this.recorder.sentUtilities(), st = this.primary;
+    return Object.assign(Object.create(st) as CityState, { powered: sent.powered ?? st.powered, watered: sent.watered ?? st.watered });
+  }
   /** Harness clock used to verify the recorder's 4-per-second group throttle independently. */
   get elapsedTimeMs(): number { return this.elapsedMs; }
 

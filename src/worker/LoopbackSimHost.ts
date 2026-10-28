@@ -3,7 +3,7 @@ import { Overlay } from '../core/types';
 import type { CellRect } from '../core/events';
 import { SECONDS_PER_DAY } from '../core/constants';
 import { simWasmFlagSelects } from '../wasm/simWasm';
-import { CityActions, type CityActionsApi } from '../sim/actions';
+import type { CityActions, CityActionsApi } from '../sim/actions';
 import { BF, type Building, type CityState } from '../sim/CityState';
 import type { Simulation } from '../sim/Simulation';
 import { attachOverlays, registerDerivedSource, TAP_T0 } from '../sim/infra/overlays';
@@ -46,6 +46,9 @@ export interface PacketHostOptions extends LocalSimHostOptions {
   onSaving?: () => void;
   onReply?: (reply: Reply, packet: Packet) => void;
   onPacket?: (packet: Packet) => void;
+  /** CityActions for the optimistic tax / funding / historic writes, when already loaded (tests). Hosts load it lazily
+   *  and call useOptimisticActions: the city screen's static graph excludes src/sim/actions.ts (FH-07a). */
+  optimistic?: typeof CityActions;
 }
 interface Deferred { resolve(value: any): void; reject(error: unknown): void }
 function deferred<T>(): Deferred & { promise: Promise<T> } {
@@ -108,7 +111,9 @@ export class PacketSimHost implements SimHost {
   readonly ready: Promise<void>;
   private readiness = deferred<void>();
   private controller: PacketActions | null = null;
-  private optimistic: CityActions;
+  private optimistic: CityActions | null = null;
+  /** every post, coalesced slider moves included (a funding move changes upkeep): SimHost.commandCount */
+  private posted = 0;
   private edits = new Map<number, Command>();
   private tickets = new Map<number, Deferred & { promise: Promise<unknown>; tag: object | null }>();
   private sliders = new Map<string, Extract<M2W, { t: 'cmd' }>>();
@@ -174,7 +179,7 @@ export class PacketSimHost implements SimHost {
       runDays: () => { throw new Error('Use the host deterministic harness'); },
       advanceDay: () => { throw new Error('Use the host deterministic harness'); },
     } as unknown as Simulation;
-    this.optimistic = new CityActions(this.sim);
+    if (options.optimistic) this.useOptimisticActions(options.optimistic);
     this.policy = {
       get alerts() { return host.replica.policy.alerts; }, get live() { return host.replica.policy.live; },
       get toast() { return host.replica.policy.toast; }, get warn() { return host.replica.policy.warn; },
@@ -229,8 +234,14 @@ export class PacketSimHost implements SimHost {
     (opts.gesture ?? this.gesture)?.track(ticket.done);
     return { ...ticket, exact: false };
   }
+  get commandCount(): number { return this.posted; }
+  /** Install the optimistic writes once CityActions has loaded; until then those commands wait for their packet. */
+  useOptimisticActions(Actions: typeof CityActions): void {
+    if (!this.closed && !this.optimistic) this.optimistic = new Actions(this.sim);
+  }
   post<K extends CommandOp>(op: K, args: CommandArgs<K>, opts: ActOptions = {}): Pick<Ticket<CommandResult<K>>, 'seq' | 'done'> {
     this.assertOpen();
+    this.posted++;
     const key = op === 'setTax' || op === 'setFunding' ? `${op}:${args[0]}` : null;
     if (!key) this.flushCommands();
     const pending = key ? this.sliders.get(key) : undefined;
@@ -277,11 +288,11 @@ export class PacketSimHost implements SimHost {
   resume(source: SpeedSource): void { this.act('resume', [source]); }
   private optimism(command: Command): void {
     switch (command.op) {
-      case 'setTax': this.optimistic.setTax(...command.args); break;
-      case 'setFunding': this.optimistic.setFunding(...command.args); break;
+      case 'setTax': this.optimistic?.setTax(...command.args); break;
+      case 'setFunding': this.optimistic?.setFunding(...command.args); break;
       case 'setHistoric': {
         const [id, on] = command.args, b = this.state.buildings.get(id);
-        if (b && !!(b.flags & BF.Historic) !== on) this.optimistic.toggleHistoric(id);
+        if (b && !!(b.flags & BF.Historic) !== on) this.optimistic?.toggleHistoric(id);
         break;
       }
       case 'setSpeed':
@@ -301,8 +312,8 @@ export class PacketSimHost implements SimHost {
       } else if (policy) {
         if (c.op === 'dismissAlert') policy.alerts = policy.alerts.filter((a) => a.id !== c.args[0]);
       } else {
-        if (c.op === 'setTax') this.optimistic.setTax(...c.args);
-        if (c.op === 'setFunding') this.optimistic.setFunding(...c.args);
+        if (c.op === 'setTax') this.optimistic?.setTax(...c.args);
+        if (c.op === 'setFunding') this.optimistic?.setFunding(...c.args);
         if (c.op === 'setSpeed') this.speedMirror = Math.max(0, Math.min(3, c.args[0] | 0));
         if (c.op === 'resume') this.speedMirror = this.pausedFrom;
       }
@@ -469,7 +480,8 @@ export class LoopbackSimHost extends PacketSimHost {
     if (this.starting) return this.starting;
     this.starting = (async () => {
       try {
-        const { LoopbackCore } = await import('./loopbackCore');
+        const [{ LoopbackCore }, { CityActions }] = await Promise.all([import('./loopbackCore'), import('../sim/actions')]);
+        this.useOptimisticActions(CityActions);
         const flag = this.opts.flags?.simwasm;
         if (typeof window !== 'undefined' && flag != null && simWasmFlagSelects(flag, 'blur')) {
           try { await (await import('../wasm/browser')).initSimWasmBrowser({ flag }); }

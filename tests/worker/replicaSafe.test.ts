@@ -36,12 +36,15 @@ describe('REPLICA_SAFE', () => {
     for (const a of st.desirability) a.fill(-1);
     const loop = new LoopbackCore(st, { modules: {} });
     try {
-      expect(emptyZoneStatus(loop.state, x, z)).not.toEqual(emptyZoneStatus(st, x, z));
+      // desirability and land value are saved layers, so Ready carries them; a silent write on the authoritative side
+      // after Ready (as the systems' band writes are) leaves the replica's copy behind until the views are subscribed
+      for (const a of loop.primary.desirability) a.fill(1);
+      expect(emptyZoneStatus(loop.state, x, z)).not.toEqual(emptyZoneStatus(loop.primary, x, z));
       for (let variant = 0; variant < DEV_TYPE_COUNT; variant++) {
         loop.setView({ overlay: Overlay.Desirability, variant, panels: [], focus: [] }); loop.flush(true);
       }
       loop.setView({ overlay: Overlay.LandValue, variant: 0, panels: [], focus: [] }); loop.flush(true);
-      expect(emptyZoneStatus(loop.state, x, z)).toEqual(emptyZoneStatus(st, x, z));
+      expect(emptyZoneStatus(loop.state, x, z)).toEqual(emptyZoneStatus(loop.primary, x, z));
     } finally { loop.dispose(); }
   });
   for (const [name, create, present] of [
@@ -50,9 +53,11 @@ describe('REPLICA_SAFE', () => {
   ] as const) it.skipIf(!present)(`${name}: all reads and random previews agree at ten checkpoints across 120 days`, { timeout: 300000 }, () => {
     const loop = new LoopbackCore(create()), seen = new Set<string>();
     const rng = new SeededLag({ seed: 32 });
-    const compare = (name: typeof REPLICA_SAFE[number], fn: (st: CityState) => unknown) => {
+    const compare = (name: typeof REPLICA_SAFE[number], fn: (st: CityState) => unknown, detail = '') => {
       seen.add(name);
-      expect(fn(loop.state), `${name}, day ${loop.primary.day}`).toEqual(fn(loop.primary));
+      // against the authoritative state as delivered: a utilities pass in flight has written powered / watered
+      // without announcing them yet (F6), so the replica holds the last sent copies
+      expect(fn(loop.state), `${name}${detail}, day ${loop.primary.day}`).toEqual(fn(loop.delivered));
     };
     try {
       for (let checkpoint = 0; checkpoint < 10; checkpoint++) {
@@ -68,7 +73,11 @@ describe('REPLICA_SAFE', () => {
         for (const [overlay, variant] of views) { loop.setView({ overlay, variant, panels: [], focus: [] }); loop.flush(true); }
         const before = exactDigest(loop.state), liveBefore = exactDigest(loop.primary), simRng = loop.core.sim.rng.state;
         compare('listRewards', listRewards); compare('listOrdinances', listOrdinances);
-        compare('maxLoanAmount', maxLoanAmount); compare('approvalBreakdown', approvalBreakdown);
+        compare('maxLoanAmount', maxLoanAmount);
+        // approvalBreakdown is not replica-safe: its detail lines read approval.ts's survey WeakMap, which only the
+        // authoritative residentSurvey fills (see replicaSafe.ts); its terms and values are compared here
+        expect(approvalBreakdown(loop.state).map(({ id, value }) => [id, value]), `approvalBreakdown terms, day ${loop.primary.day}`)
+          .toEqual(approvalBreakdown(loop.primary).map(({ id, value }) => [id, value]));
         compare('regionTerms', (s) => econData(s).regionTerms); compare('demandInfo', demandInfo);
         compare('infraFlags', infraFlags); compare('windVector', windVector); compare('cityFingerprint', cityFingerprint);
         for (const service of ['education', 'health', 'fire', 'police', 'parks', 'transit', 'utilities'] as const) {
@@ -98,8 +107,8 @@ describe('REPLICA_SAFE', () => {
           compare('plantTrees', (s) => previews(s).plantTrees(rect, true));
         }
         for (const [overlay, variant] of [[Overlay.Power, 0], [Overlay.Traffic, 0], ...views]) {
-          compare('overlayLayer', (s) => overlayLayer(s, overlay, variant));
-          compare('overlayReadout', (s) => overlayReadout(s, overlay, 5, 5, variant));
+          compare('overlayLayer', (s) => overlayLayer(s, overlay, variant), ` ${Overlay[overlay]}:${variant}`);
+          compare('overlayReadout', (s) => overlayReadout(s, overlay, 5, 5, variant), ` ${Overlay[overlay]}:${variant}`);
         }
         expect(exactDigest(loop.state)).toBe(before); expect(exactDigest(loop.primary)).toBe(liveBefore);
         expect(loop.core.sim.rng.state).toBe(simRng);

@@ -81,6 +81,9 @@ export class ChangeRecorder {
   private shadow = new Float64Array(0);
   private exact = new Float64Array(0);
   private constructing = new Set<number>();
+  /** FH-07a: a plopped building's bulldoze refund depends on its exact age until 30 (CityActions.buildingRefund), so
+   *  young plops are re-sent once a day, like buildings under construction. Rolling records cover the rest. */
+  private young = new Set<number>();
   private cursor = 0;
   private auditCursor = 0;
   private constructionDay = -1;
@@ -112,6 +115,11 @@ export class ChangeRecorder {
   private abort = () => this.dispose();
 
   get sequence(): number { return this.seq; }
+  /** The utilities layers as last sent. The utilities pass writes `powered` / `watered` in its early steps and emits
+   *  layerUpdated('utilities') only when it finishes (F6), so mid-pass the replica holds these, not the live arrays. */
+  sentUtilities(): { powered?: Uint8Array; watered?: Uint8Array } {
+    return { powered: this.sparse.get('powered'), watered: this.sparse.get('watered') };
+  }
   ack(seq: number, result: unknown): void {
     const index = this.acks.length;
     this.acks.push(encodeAck(result));
@@ -155,7 +163,7 @@ export class ChangeRecorder {
     this.acks = []; this.replies = []; this.watches = []; this.pong = undefined;
     this.defs = new DefTable(defs);
     this.records.clear(); this.endRecords.clear(); this.log = []; this.incidents = []; this.rects.clear(); this.dirty.clear();
-    this.sentAt.clear(); this.sparse.clear(); this.constructing.clear(); this.incidentRefs.clear();
+    this.sentAt.clear(); this.sparse.clear(); this.constructing.clear(); this.young.clear(); this.incidentRefs.clear();
     this.seq = 0; this.cursor = 0; this.auditCursor = 0; this.stationVersion = -1; this.routeRefs = [];
     this.shadow = new Float64Array(0); this.exact = new Float64Array(0);
     this.ensureShadow(this.state.nextBuildingId);
@@ -163,6 +171,7 @@ export class ChangeRecorder {
       this.noteRecord(b);
       this.noteExact(b);
       if (b.built < 1) this.constructing.add(b.id);
+      if (b.flags & BF.Plopped && b.age < 30) this.young.add(b.id);
     }
     this.defs.takeAppends();
     for (const inc of this.emergency()?.incidents() ?? []) this.incidentRefs.set(inc.id, inc);
@@ -191,6 +200,8 @@ export class ChangeRecorder {
       this.noteRecord(b); this.noteExact(b);
       if (name === 'buildingRemoved' || b.built >= 1 || (name === 'buildingChanged' && !(b.flags & BF.Constructing))) this.constructing.delete(b.id);
       else if (b.built < 1) this.constructing.add(b.id);
+      if (name === 'buildingRemoved') this.young.delete(b.id);
+      else if (b.flags & BF.Plopped && b.age < 30) this.young.add(b.id);
       if (this.view.overlay === Overlay.Demographics) this.rasterDirty = true;
     } else if (name === 'emergency') {
       const e = value as EmergencyEvent;
@@ -264,6 +275,12 @@ export class ChangeRecorder {
         const b = st.buildings.get(id);
         if (b) add(b);
         if (!b || b.built >= 1) this.constructing.delete(id);
+      }
+      for (const id of this.young) {
+        const b = st.buildings.get(id);
+        if (b) add(b);
+        // the record with age 30 goes out once, then the refund no longer depends on the age
+        if (!b || b.age >= 30) this.young.delete(id);
       }
       this.constructionDay = st.day;
     }

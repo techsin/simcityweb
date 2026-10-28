@@ -104,7 +104,8 @@ describe('loopback lag properties', () => {
       host.harness.advanceTransport(1000); await host.drain();
       host.harness.flush(true, st.buildings.size); await host.drain();
       await Promise.all(tickets);
-      checkReplica(host.harness.primary, host.replica, true);
+      // mirrored layers against what was last sent: a utilities pass may still be in flight (F6)
+      checkReplica(host.harness.primary, host.replica, true, undefined, host.harness.delivered);
       expect(exactDigest(host.state)).toBe(exactDigest(host.harness.primary));
       expect(ops.size).toBe(23); expect(replies).toBe(120); expect(packets).toBeGreaterThan(120);
       expect(listenerChecks).toBeGreaterThan(120);
@@ -116,7 +117,7 @@ describe('loopback lag properties', () => {
     const st = newState(16), b = place(st, 't_r1', 3, 3);
     const snapshot = serializeCity(st, { copy: true }), clock = { day: 0, frac: 0, speed: 1, slow: 1, spd: 0.5, live: false };
     const errors: unknown[] = [];
-    const host = new PacketSimHost('loopback', { t: 'ready', snapshot, streams: {}, policy: { alerts: [{ id: 7, wasPossible: true }], live: false }, clock, savedAt: 0, cmd: 0 }, { errors: { report: (...e) => errors.push(e) } });
+    const host = new PacketSimHost('loopback', { t: 'ready', snapshot, streams: {}, policy: { alerts: [{ id: 7, wasPossible: true }], live: false }, clock, savedAt: 0, cmd: 0 }, { errors: { report: (...e) => errors.push(e) }, optimistic: CityActions });
     host.connect(() => {});
     const historic = host.post('setHistoric', [b.id, true]);
     host.post('setTax', [DevType.R1, 12]); host.post('setFunding', ['fire', 120]);
