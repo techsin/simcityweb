@@ -343,11 +343,16 @@ function addRubble(st: CityState, rt: EconRuntime, b: Building, lots: number[], 
   if (zn >= Zone.ResLow && zn <= Zone.IndHigh) perZone[zn] += b.w * b.d;
 }
 
-/** scanOutages' running counts (one per scan) */
-interface OutageCounts { pN: number; pRes: number; pJobs: number; pAt: number; pBig: number; wN: number; wRes: number; wJobs: number; wAt: number; wBig: number; pHomes: number }
-/** occupied growables without power / water (ZoneScan.outP ... outWAt): one pass over the growables */
+/** scanOutages' running counts (one per scan); pId / wId: the building at pAt / wAt */
+interface OutageCounts {
+  pN: number; pRes: number; pJobs: number; pAt: number; pBig: number; pId: number;
+  wN: number; wRes: number; wJobs: number; wAt: number; wBig: number; wId: number; pHomes: number;
+}
+/** occupied growables without power / water (ZoneScan.outP ... outWAt): one pass over the growables. outPAt / outWAt:
+ *  the centre of the most occupied one, of equals the lowest building id (B3: the same building in a loaded game, whose
+ *  rt.growables is in Map order, as in the running game, whose swap-removes reorder it) */
 function scanOutages(st: CityState, rt: EconRuntime, r: ZoneScan): void {
-  const o: OutageCounts = { pN: 0, pRes: 0, pJobs: 0, pAt: -1, pBig: 0, wN: 0, wRes: 0, wJobs: 0, wAt: -1, wBig: 0, pHomes: 0 };
+  const o: OutageCounts = { pN: 0, pRes: 0, pJobs: 0, pAt: -1, pBig: 0, pId: -1, wN: 0, wRes: 0, wJobs: 0, wAt: -1, wBig: 0, wId: -1, pHomes: 0 };
   rt.ensureLists();
   const list = rt.growables;
   for (let k = 0; k < list.length; k++) {
@@ -376,11 +381,11 @@ function addOutage(st: CityState, b: Building, people: number, p: boolean, w: bo
   if (!p) {
     o.pN++; o.pRes += b.pop; o.pJobs += b.jobs;
     if (b.pop > 0) o.pHomes++;
-    if (people > o.pBig) { o.pBig = people; o.pAt = at; }
+    if (people > o.pBig || (people === o.pBig && b.id < o.pId)) { o.pBig = people; o.pAt = at; o.pId = b.id; }
   }
   if (!w) {
     o.wN++; o.wRes += b.pop; o.wJobs += b.jobs;
-    if (people > o.wBig) { o.wBig = people; o.wAt = at; }
+    if (people > o.wBig || (people === o.wBig && b.id < o.wId)) { o.wBig = people; o.wAt = at; o.wId = b.id; }
   }
 }
 
@@ -707,6 +712,7 @@ const OTHER_RUINS: ReadonlySet<string> = new Set(['reward', 'landmark', 'civic',
 /** FacilityScan as plain data (building ids): saved in AdvisorData.scan */
 type FacScanData = { [K in IdKeys]: number[] } & { burntMW: number; civicUnpowered: number; civicFirst: number; liveMW: number; fireStations: number };
 
+const idAsc = (a: number, b: number): number => a - b;
 function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
   const f: FacScanData = {
     plants: [], plantsBurnt: [], plantsIsolated: [], burntMW: 0, plantsDry: [], waterOk: [], waterBurnt: [], waterNoRoad: [], waterNoPower: [],
@@ -744,9 +750,14 @@ function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
       else f.waterOk.push(b.id);
     } else if (!burnt && (def.powerUse ?? 0) > 0 && !(b.flags & BF.Powered)) {
       f.civicUnpowered++;
-      if (f.civicFirst < 0) f.civicFirst = b.id;
+      if (f.civicFirst < 0 || b.id < f.civicFirst) f.civicFirst = b.id;
     }
   }
+  // (B3) the lists in ascending building id, and civicFirst the lowest: rt.plopped is in the running game's order (its
+  // swap-removes reorder it) while a loaded game rebuilds it in Map order, ascending id. The advice takes the first of a
+  // list as its "Show me" place (and A1 predicts it from this scan), so a game loaded before the scan finds the same
+  // buildings first. The counts and the MW sums (the catalog's integer MW) are the same in any order
+  for (const k of ID_KEYS) if (f[k].length > 1) f[k].sort(idAsc);
   return f;
 }
 
@@ -1443,8 +1454,10 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
     const mb = sim?.getSystem<SimSystem & { minibusInfo?: { stops: number; need: number } }>('traffic')?.minibusInfo;
     const stopAt = () => loc('busStop', () => {
       rt.ensureLists();
-      for (const b of rt.plopped) if (b.def === 'tr_bus_stop' || rt.defOf(b)?.model === 'tr_bus_stop') return at(b);
-      return undefined;
+      // (the lowest id: the same stop in a loaded game, whose rt.plopped is in Map order — see scanFacilities)
+      let stop: Building | null = null;
+      for (const b of rt.plopped) if ((!stop || b.id < stop.id) && (b.def === 'tr_bus_stop' || rt.defOf(b)?.model === 'tr_bus_stop')) stop = b;
+      return stop ? at(stop) : undefined;
     });
     if (!dep) {
       out.push({ id: 'busFleetShort', cooldown: 150, priority: 4, kind: 'warning', advisor: 'transport', where: stopAt,
