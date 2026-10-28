@@ -1,13 +1,51 @@
-# local-W1.1b-host: main-thread predictions (T031)
+# T031 — W1.1b part 1: the main-thread prediction side (HostActions, pending edits, pending ghosts)
 
-Branch `local/W1.1b-host`, rebased onto `local/W0-complete` at `0fe14c2` (including W0.6 and W0.3b).
-The first pass is committed as `d58ebd7`; the cache-key follow-up, test fixes and report update are **uncommitted**.
-No push or `.done` marker.
+## Review and gates (the local worker)
 
-The owned implementation and the four approved cache-key hunks are implemented and typecheck. Vitest cannot
-start in this sandbox. T032's command transport and the integration gates remain outstanding.
+Branch `local/W1.1b-host`: the Codex lane's two passes (`d58ebd7`, `7390a2a`), the final `local/W0-complete`, then dev
+(`4953806`, and `4e2bb2d` with T032 merged), plus T032 itself, since T031's gates follow T032's (the task's "after").
 
-## Changes by file
+**What it is.** `HostActions` gives a replica host its predictions: exact while none of the player's own preview-affecting
+commands are in flight, provisional otherwise (R5). An exact refusal is never posted. `PendingEdits` reserves each
+in-flight command's funds, unique buildings and footprint, so the next preview sees them, and `rebase(cmd)` keeps a
+packet's plain sections from being debited twice. `PreviewActions` runs the real CityActions read-only on the replica.
+Gestures route corrections to the issuing tool once per gesture (R4), and the committed footprint stays drawn as a
+pending ghost until its Ack replays (O1). It meets T032's `PacketActions` seam as written.
+
+**Changed in the review:**
+- **The city screen's static graph pulled in CityActions.** LoopbackSimHost found HostActions through an eager
+  `import.meta.glob`. Vite bundles that as a static import, and HostActions -> PreviewActions -> src/sim/actions.ts then
+  sat in CityScene's static graph, which FH-07a's rule forbids. The hygiene scanner followed only import declarations,
+  so it passed. The scanner now follows eager globs (and failed on this branch), and HostActions loads with the core in
+  `start()`, before its Ready, as CityActions already did.
+- **NOTE-041's `holdCalendar(on)` command (T031's).** SimCore holds the day cap and gives the previous one back,
+  idempotently, so a worker's clock holds too; LocalSimHost applies it at once through the same path. NewYear posts it
+  through a CityScene dep with its cause tag, released on midnight, cancel and dispose (the dep skips once the scene is
+  disposing, when the host is already gone). A new hygiene rule keeps `maxDaysPerFrame` writes in src/worker and
+  src/sim. The op is on the wire list but not in JournalOp, so T033's journal leaves it out. T034's worker loop must
+  honour the cap (in its brief).
+- **`CommandOutcomeLost` (T032's resync).** `commitAction` treats it as applied: no failure feedback, and the prediction,
+  or a no-cost success, stands in for a stroke's totals. Any other rejection is still a failure.
+- PacketSimHost's pending fallback is T031's `NO_PENDING` (T032's nit).
+- Merging dev: ZoneTool's preview key keeps both T031's pending revision and T026's bulldoze day.
+
+The rest reads as designed. PendingEdits' overlay restores funds and milestones in a `finally`. The ghosts are bounded
+meshes (large drags are sampled), disposed on Ack and on teardown. ToolController's subscription is signal-bound.
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| T031's and T032's suites with the fixtures (tests/worker, pendingTools, pendingHover, toolCommands, pendingPreviews, queryReads, newyear) | 28 files; 234 passed, 1 skipped (W1.2's simWorker graph gate). The lag suite's HostActions oracle (property 1) now runs, and property 4 runs on the real controller. |
+| Full vitest (with the fixtures) | **199 files passed, 1 skipped; 1,975 tests passed, 7 skipped** |
+| The bot (128x15, seed 7) | identical to `93069fa`, action log included (196,101) |
+| New tests against their fixes reverted | commitAction's lost outcome fails without its branch; the FH-07a rule fails on the eager glob |
+| The game in loopback, in a browser (ghost continuity, playability, teardown) | T028's harness, once it lands: T031 + T032 together are the first build it can run in loopback mode |
+
+## The lane's summary (Codex, at `7390a2a`)
+
+Superseded where the review changed it (above). The Codex sandbox could not run vitest; every suite above ran here.
+
+### Changes by file
 
 | File | Change |
 |---|---|
@@ -29,7 +67,7 @@ No simulation, save, protocol, recorder, replica, null-view, scene wiring or gua
 BrushTool's existing W0.2 acknowledgement totals and settled release sound are retained. There was already no
 `actionCorrected` handler to remove.
 
-## T032 connection points
+### T032 connection points
 
 1. Create `HostActions` with a source exposing the current replica `state`, the public `act` delegate, and
    `post(op, args, opts)`. `post` owns sequence allocation, command cloning/queuing, cause-tag storage and optimistic
@@ -47,7 +85,7 @@ BrushTool's existing W0.2 acknowledgement totals and settled release sound are r
 `tests/worker/actionReplica.ts` is a held-command stub for this boundary, backed by a real `LocalSimHost` and
 replaceable state copies. It does not implement or claim packet/lag coverage.
 
-## Plan/code differences
+### Plan/code differences
 
 - **Stationary hover caches needed four extra owned hunks.** `tools.refresh()` only marks a move dirty, while
   the tools cache action previews by geometry/settings. The lead approved the four one-line key additions named
@@ -69,7 +107,7 @@ replaceable state copies. It does not implement or claim packet/lag coverage.
 - Geometry is taken from the committed command at the shared commit helper, keeping individual tool call sites
   within their existing ownership. These are neutral ground footprints, not copies of the full building models.
 
-## Tests and gates
+### Tests and gates
 
 | Test/check | Status |
 |---|---|
