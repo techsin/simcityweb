@@ -891,4 +891,6 @@ Judge (gameplay R4, the statistic the lead is asked to approve):
   test 2's town the approval terms right after a load then equal the uninterrupted game's on all 30 saves (29 of 30
   differ without it, in the base and in B3), and the whole city on day 91 still does (`approval/out_*.txt`). The other
   terms are recomputed from a full survey at load as before; keeping them too would need the survey's coverage, which
-  approval does not save.
+  approval does not save. `approval-resumed-tourism-test.patch` makes test 2 compare the approval terms right after
+  each load too: on a copy of cf6af9a it fails without the approval patch (day 31) and passes with it, as do
+  tests/sim/approval.test.ts and tests/save (tsc clean, 69 tests; `approval/l7_*.log`).
