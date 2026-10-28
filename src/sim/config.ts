@@ -28,6 +28,9 @@ export interface CityConfigData {
   tileZ?: number;
   /** sandbox: unlimited money + everything unlocked */
   sandbox?: boolean;
+  /** the New City dialog's "Guided start" (FH-11): false = this city starts without the founding guide, which reads it.
+   *  Absent in older saves and the bot (the guide decides as before) */
+  guided?: boolean;
 }
 
 export const DIFFICULTY_FUNDS: Record<Difficulty, number> = {

@@ -192,6 +192,18 @@
 .nc-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .nc-custom { overflow: hidden; transition: max-height 0.35s var(--ease), opacity 0.25s; }
 .nc-custom.hidden { max-height: 0 !important; opacity: 0; }
+/* FH-11: the note under Disasters */
+.nc-note { margin-top: 6px; line-height: 1.4; }
+/* short screens (1280×720, 1366×768): a smaller preview and tighter fields, so the four difficulty lines and the
+   disasters note fit without scrolling */
+@media (max-height: 820px) {
+  .modal:has(.nc-grid) .modal-head { padding: 16px 22px 10px; }
+  .nc-grid { grid-template-columns: 320px 1fr; gap: 22px; }
+  .nc-preview { width: 320px; height: 320px; }
+  .nc-grid .field { margin-bottom: 11px; }
+  .nc-grid .slider { margin-bottom: 8px; }
+  .nc-diff .seg-item { padding: 7px 11px; }
+}
 
 /* ------------------------------------------------------------------ region preset cards / region list */
 .preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
@@ -319,6 +331,9 @@
 }
 .city-label small { font-weight: 500; color: var(--text-dim); margin-left: 6px; }
 .city-label::after { content: ''; position: absolute; left: 50%; bottom: -5px; width: 8px; height: 8px; transform: translateX(-50%) rotate(45deg); background: rgba(10, 14, 22, 0.72); border-right: 1px solid rgba(255, 255, 255, 0.14); border-bottom: 1px solid rgba(255, 255, 255, 0.14); }
+/* FH-11: the recommended first tile (its terrain outline is the same gold: RegionTerrain's uRecommendColor) */
+.city-label.recommend { display: flex; align-items: center; gap: 6px; border-color: rgba(255, 200, 87, 0.75); color: #ffe2a0; }
+.city-label.recommend::after { border-right-color: rgba(255, 200, 87, 0.75); border-bottom-color: rgba(255, 200, 87, 0.75); }
 
 .toast-wrap { position: absolute; left: 50%; top: 20px; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
 .toast { padding: 10px 16px; border-radius: 12px; font-size: 13px; font-weight: 600; background: rgba(14, 20, 30, 0.92); border: 1px solid rgba(255, 255, 255, 0.12); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4); animation: pop 0.3s var(--ease) both; display: flex; gap: 8px; align-items: center; }

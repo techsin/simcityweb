@@ -294,6 +294,8 @@ export class RegionTerrain {
         uCityTex: { value: this.cityTex },
         uHover: { value: new THREE.Vector4(-1, -1, -1, -1) },
         uSelect: { value: new THREE.Vector4(-1, -1, -1, -1) },
+        uRecommend: { value: new THREE.Vector4(-1, -1, -1, -1) },
+        uRecommendColor: { value: col('#ffc857', 1) },
         uAccent: { value: col('#3fa7ff', 1) },
         uPulse: { value: 0 },
         ...fogU,
@@ -504,6 +506,10 @@ export class RegionTerrain {
   }
   setSelected(t: RegionTile | null): void {
     this.terrainMat.uniforms.uSelect.value = this.rectOf(t);
+  }
+  /** FH-11: outline the region's recommended first tile (null = none) */
+  setRecommended(t: RegionTile | null): void {
+    this.terrainMat.uniforms.uRecommend.value = this.rectOf(t);
   }
   setGridOpacity(v: number): void {
     this.terrainMat.uniforms.uGridOpacity.value = v;

@@ -1,7 +1,7 @@
 /**
  * RegionScreen — RegionView + HUD overlay: region card (name, totals, RCI), toolbar (menu, rename, export, import,
  * music, settings), founded-cities list, hover tooltip, floating city labels and the selected-tile card
- * (Found new city / Play / Delete city).
+ * (Found new city / Play / Delete city). A region with no cities outlines and labels one recommended tile (FH-11).
  */
 import * as THREE from 'three';
 import { audio } from '../audio';
@@ -13,6 +13,9 @@ import { button, formatMoney, formatPop, h, icon, timeAgo, withSounds } from './
 import { confirmDialog, promptDialog, toast } from './ui/modal';
 import { downloadBlob, exportRegion, importRegion, safeFileName } from '../save';
 import { MusicPlayer } from '../ui/MusicPlayer';
+
+/** FH-11: the recommended tile's label (§4.3 A3, as the guide's copy module words it: tests/game/newCity.test.ts) */
+export const GOOD_FIRST_CITY = 'A good first city for you';
 
 export interface RegionScreenCallbacks {
   onPlay(tile: RegionTile): void;
@@ -46,6 +49,9 @@ export class RegionScreen {
   private labelsDisposed = false;
   private lastLabels = -Infinity;
   private player!: MusicPlayer;
+  /** FH-11: the region's recommended first tile (null once a city stands) and its floating label */
+  private recommended: RegionTile | null = null;
+  private recLabel: HTMLElement | null = null;
   private hoverKey = '';
   private fileInput: HTMLInputElement;
   private onKey = (e: KeyboardEvent) => {
@@ -93,8 +99,20 @@ export class RegionScreen {
       this.labelResize.observe(this.view.renderer.domElement);
     }
     window.addEventListener('keydown', this.onKey);
+    this.setRecommended(model.recommendedTile());
     void this.view.refreshCities();
     this.view.start();
+  }
+
+  /** FH-11: outline and label the recommended first tile (null: none) */
+  private setRecommended(tile: RegionTile | null): void {
+    this.recommended = tile;
+    this.view.terrain.setRecommended(tile);
+    this.recLabel?.remove();
+    this.recLabel = tile ? h('div', { class: 'city-label recommend' }, icon('sparkles', 12), GOOD_FIRST_CITY) : null;
+    if (this.recLabel) this.labelLayer.appendChild(this.recLabel);
+    this.renderList();
+    this.updateLabels(true);
   }
 
   // ------------------------------------------------------------------ HUD
@@ -162,7 +180,11 @@ export class RegionScreen {
   private renderList(): void {
     const founded = this.model.data.tiles.filter((t) => t.city).sort((a, b) => (b.city!.population ?? 0) - (a.city!.population ?? 0));
     if (!founded.length) {
-      this.list.replaceChildren(h('div', { class: 'rc-empty' }, 'No cities yet. Click any tile on the map, then ', h('b', {}, 'Found New City'), ' to start building.'));
+      this.list.replaceChildren(
+        this.recommended
+          ? h('div', { class: 'rc-empty' }, `No cities yet. Click the tile marked “${GOOD_FIRST_CITY}”, then `, h('b', {}, 'Found New City'), '.')
+          : h('div', { class: 'rc-empty' }, 'No cities yet. Click any tile on the map, then ', h('b', {}, 'Found New City'), ' to start building.'),
+      );
       return;
     }
     this.list.replaceChildren(
@@ -240,7 +262,7 @@ export class RegionScreen {
         'div',
         { style: 'min-width:0' },
         h('div', { class: 'tc-title' }, h('h3', {}, c ? c.name : 'Unfounded land'), h('span', { class: `size-badge s${tile.size}` }, TILE_SIZE_LABEL[tile.size])),
-        h('div', { class: 'tc-sub' }, c ? `Mayor ${c.mayor} · ${c.difficulty} difficulty` : 'Found a city here — its terrain will match the neighbouring tiles.'),
+        h('div', { class: 'tc-sub' }, c ? `Mayor ${c.mayor} · ${c.difficulty} difficulty` : tile === this.recommended ? `${GOOD_FIRST_CITY}. Its terrain will match the neighbouring tiles.` : 'Found a city here — its terrain will match the neighbouring tiles.'),
         h('div', { class: 'tc-stats' }, ...stats),
         actions,
       ),
@@ -297,6 +319,17 @@ export class RegionScreen {
     this.labelProjection.copy(cam.projectionMatrix);
     if (!force && !stopped && (!moving || now - this.lastLabels < 100)) return;
     this.lastLabels = now;
+    // a label above the centre of its tile (hidden behind the camera)
+    const place = (el: HTMLElement, t: RegionTile): void => {
+      const p = this.view.tileCenter(t, 260).project(cam);
+      if (p.z > 1 || p.z < -1) {
+        el.style.opacity = '0';
+        return;
+      }
+      el.style.opacity = '1';
+      const x = (p.x * 0.5 + 0.5) * this.labelWidth, y = (-p.y * 0.5 + 0.5) * this.labelHeight;
+      el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
+    };
     const seen = new Set<string>();
     for (const t of this.model.data.tiles) {
       if (!t.city) continue;
@@ -312,20 +345,14 @@ export class RegionScreen {
         el.dataset.txt = txt;
         el.replaceChildren(t.city.name, h('small', {}, formatPop(t.city.population)));
       }
-      const p = this.view.tileCenter(t, 260).project(cam);
-      if (p.z > 1 || p.z < -1) {
-        el.style.opacity = '0';
-        continue;
-      }
-      el.style.opacity = '1';
-      const x = (p.x * 0.5 + 0.5) * this.labelWidth, y = (-p.y * 0.5 + 0.5) * this.labelHeight;
-      el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
+      place(el, t);
     }
     for (const [k, el] of this.labels)
       if (!seen.has(k)) {
         el.remove();
         this.labels.delete(k);
       }
+    if (this.recommended && this.recLabel) place(this.recLabel, this.recommended);
   }
 
   // ------------------------------------------------------------------ actions
@@ -351,6 +378,8 @@ export class RegionScreen {
     await this.cb.onDeleteCity(tile);
     audio.play('bulldoze');
     await this.refresh();
+    // the region's last city went: it gets its recommended first tile back (FH-11)
+    this.setRecommended(this.model.recommendedTile());
     this.selectTile(tile);
     toast(`${c.name} was deleted`);
   }

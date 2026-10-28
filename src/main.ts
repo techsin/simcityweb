@@ -26,7 +26,7 @@ import type { TerrainPreset, Difficulty, Climate } from './core/types';
 import { RegionModel, createRegionData, PRESET_BY_ID } from './region/RegionModel';
 import type { RegionData, RegionPresetId, RegionTile, TileSize } from './region/types';
 import { RegionScreen } from './region/RegionScreen';
-import { openNewCityDialog, terrainOptionsFor } from './region/NewCityDialog';
+import { loadNewCityChoice, openNewCityDialog, terrainOptionsFor } from './region/NewCityDialog';
 import { summarizeCity } from './region/citySummary';
 import { cityThumbnail, drawCityMap, normalizeThumbnail, regionPreviewDataUrl, regionPreviewKey } from './region/mapPreview';
 import { randomCityName, randomMayorName } from './region/names';
@@ -47,6 +47,7 @@ import {
   hasCity,
   hasRecoverySnapshot,
   isPersistent,
+  listRegions,
   loadCity,
   loadRegion,
   restoreRecoverySnapshot,
@@ -166,6 +167,8 @@ class App {
   private saveChain: Promise<void> = Promise.resolve();
   private settings: AppSettings = loadSettings();
   private busy = false;
+  /** the New City dialog is open (or about to open) */
+  private newCityOpen = false;
   /** saves survive a reload (IndexedDB available) — recovery snapshots are pointless otherwise */
   private persistent = false;
   private previewPending = false;
@@ -416,10 +419,18 @@ class App {
 
   // ------------------------------------------------------------------ cities
   async foundCity(tile: RegionTile): Promise<void> {
-    if (this.busy || !this.region) return;
-    const cfg = await openNewCityDialog({ region: this.region, tile });
+    if (this.busy || this.newCityOpen || !this.region) return;
+    const region = this.region;
+    // (held from the click: a quick second click while the saved regions are read must not open a second dialog)
+    this.newCityOpen = true;
+    let cfg: CityConfigData | null;
+    try {
+      cfg = await openNewCityDialog({ region, tile, firstCity: await isFirstCity(region) });
+    } finally {
+      this.newCityOpen = false;
+    }
     if (!cfg) return;
-    await this.startNewCity(this.region, tile, cfg);
+    await this.startNewCity(region, tile, cfg);
   }
 
   private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData): Promise<void> {
@@ -767,9 +778,9 @@ class App {
     await saveRegion(data);
     setLastRegionId(id);
     if (!openDialog) return this.showRegion(model, ld);
-    const tile = pickNiceTile(model, 2);
+    const tile = model.niceTile(2);
     await this.showRegion(model, ld, tile.key, false);
-    const p = openNewCityDialog({ region: model, tile });
+    const p = openNewCityDialog({ region: model, tile, firstCity: await isFirstCity(model) });
     markReady();
     const cfg = await p;
     if (cfg) await this.startNewCity(model, tile, cfg);
@@ -785,7 +796,7 @@ class App {
     await deleteRegion('quickstart').catch(() => undefined);
     const { data, model } = createRegionData({ seed, preset: 'greenvale', id: 'quickstart', name: 'Quickstart Valley' });
     this.region = model;
-    const tile = pickNiceTile(model, size);
+    const tile = model.niceTile(size);
     const partial: Partial<CityConfigData> = { name: randomCityName(), mayor: randomMayorName() };
     const terrain = q.get('terrain') as TerrainPreset | null;
     if (terrain && terrain !== 'region') partial.terrain = terrain;
@@ -815,20 +826,14 @@ function drawPreview(model: RegionModel): boolean {
   }
 }
 
-/** a tile of the wanted size with a pleasant amount of water (some, not much) */
-function pickNiceTile(model: RegionModel, size: TileSize): RegionTile {
-  const cands = model.data.tiles.filter((t) => t.size === size);
-  const pool = cands.length ? cands : model.data.tiles;
-  let best = pool[0], bestScore = -1e9;
-  for (const t of pool) {
-    const w = model.tileWaterFraction(t);
-    const score = -Math.abs(w - 0.12) - (w > 0.4 ? 1 : 0) - Math.hypot(t.x + t.size / 2 - 8, t.z + t.size / 2 - 8) * 0.01;
-    if (score > bestScore) {
-      bestScore = score;
-      best = t;
-    }
-  }
-  return best;
+/**
+ * FH-11: has this profile founded no city yet? The New City dialog then opens on Easy with the guide. Asked only until a
+ * New City choice is remembered, so the saved regions are read at most until the profile's first founding.
+ */
+async function isFirstCity(current: RegionModel): Promise<boolean> {
+  if (loadNewCityChoice() || current.data.tiles.some((t) => t.city)) return false;
+  const regions = await listRegions().catch(() => [] as RegionData[]);
+  return !regions.some((r) => r.id !== current.data.id && r.tiles.some((t) => t.city));
 }
 
 const host = document.getElementById('app') ?? document.body;

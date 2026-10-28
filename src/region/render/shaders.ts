@@ -87,6 +87,8 @@ uniform sampler2D uTileTex;
 uniform sampler2D uCityTex;
 uniform vec4 uHover;
 uniform vec4 uSelect;
+uniform vec4 uRecommend;
+uniform vec3 uRecommendColor;
 uniform vec3 uAccent;
 uniform float uPulse;
 varying vec3 vWorld;
@@ -175,6 +177,12 @@ void main() {
     if (tileId(cell + vec2(0.0, -1.0)) != id) border = max(border, 1.0 - smoothstep(0.0, fw.y, f.y));
     if (tileId(cell + vec2(0.0, 1.0)) != id) border = max(border, 1.0 - smoothstep(0.0, fw.y, 1.0 - f.y));
     lit = mix(lit, vec3(1.0), border * uGridOpacity);
+    // FH-11: the recommended first tile, a steady outline under hover and selection
+    if (unit.x >= uRecommend.x && unit.x < uRecommend.z && unit.y >= uRecommend.y && unit.y < uRecommend.w) {
+      float e = rectEdge(unit, uRecommend);
+      lit = mix(lit, uRecommendColor * 1.3, (1.0 - smoothstep(0.0, fw.x * 3.0, e)) * 0.9);
+      lit += uRecommendColor * (1.0 - smoothstep(0.0, fw.x * 18.0, e)) * 0.12;
+    }
     if (unit.x >= uHover.x && unit.x < uHover.z && unit.y >= uHover.y && unit.y < uHover.w) {
       float e = rectEdge(unit, uHover);
       lit = lit * 1.12 + uAccent * 0.05;

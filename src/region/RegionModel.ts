@@ -24,6 +24,8 @@ export const REGION_SAMPLES_PER_UNIT = 32;
 export const REGION_SIZE_X_M = REGION_W * REGION_UNIT_CELLS * CELL_SIZE;
 export const REGION_SIZE_Z_M = REGION_H * REGION_UNIT_CELLS * CELL_SIZE;
 export const UNIT_M = REGION_UNIT_CELLS * CELL_SIZE;
+/** a cell steeper than this (m between its corners) is not buildable: terrainStats' default, as the New City dialog shows it */
+export const FLAT_CELL_SLOPE = 2.5;
 
 export interface RegionPresetInfo {
   id: RegionPresetId;
@@ -247,6 +249,58 @@ export class RegionModel {
         if (this.heightAt(tile.x * UNIT_M + ((j + 0.5) / 16) * s, tile.z * UNIT_M + ((k + 0.5) / 16) * s) < 0) w++;
       }
     return w / n;
+  }
+
+  /**
+   * Share of a tile that is flat, dry land (FH-11): on the same 16 × 16 samples as tileWaterFraction, a cell-sized square
+   * (CELL_SIZE) above water whose corners differ by at most FLAT_CELL_SLOPE, the New City dialog's "buildable" rule.
+   */
+  tileFlatFraction(tile: RegionTile): number {
+    let n = 0, flat = 0;
+    const s = tile.size * UNIT_M;
+    for (let k = 0; k < 16; k++)
+      for (let j = 0; j < 16; j++) {
+        n++;
+        const x = tile.x * UNIT_M + ((j + 0.5) / 16) * s, z = tile.z * UNIT_M + ((k + 0.5) / 16) * s;
+        const a = this.heightAt(x, z), b = this.heightAt(x + CELL_SIZE, z), c = this.heightAt(x, z + CELL_SIZE), d = this.heightAt(x + CELL_SIZE, z + CELL_SIZE);
+        if (Math.min(a, b, c, d) >= 0 && Math.max(a, b, c, d) - Math.min(a, b, c, d) <= FLAT_CELL_SLOPE) flat++;
+      }
+    return flat / n;
+  }
+
+  /** quickstart's tile score (moved from main.ts): a pleasant amount of water (some, not much), near the region's centre */
+  private niceScore(t: RegionTile): number {
+    const w = this.tileWaterFraction(t);
+    return -Math.abs(w - 0.12) - (w > 0.4 ? 1 : 0) - Math.hypot(t.x + t.size / 2 - 8, t.z + t.size / 2 - 8) * 0.01;
+  }
+
+  /** the best tile of a size by `score` (any size when the region has none of it) */
+  private bestTile(size: TileSize, score: (t: RegionTile) => number): RegionTile {
+    const cands = this.data.tiles.filter((t) => t.size === size);
+    const pool = cands.length ? cands : this.data.tiles;
+    let best = pool[0], bestScore = -1e9;
+    for (const t of pool) {
+      const v = score(t);
+      if (v > bestScore) {
+        bestScore = v;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  /** a tile of the wanted size with a pleasant amount of water (the ?quickstart / ?newcity tile, as before) */
+  niceTile(size: TileSize): RegionTile {
+    return this.bestTile(size, (t) => this.niceScore(t));
+  }
+
+  /**
+   * FH-11: "A good first city" for a region with no cities yet: the medium tile with the best quickstart score plus its
+   * share of flat, dry land. null once any tile has a city.
+   */
+  recommendedTile(): RegionTile | null {
+    if (this.data.tiles.some((t) => t.city)) return null;
+    return this.bestTile(2, (t) => this.niceScore(t) + this.tileFlatFraction(t));
   }
 
   /** default city config for founding a city on this tile (region terrain) */
