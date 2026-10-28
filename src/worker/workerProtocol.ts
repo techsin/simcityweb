@@ -1,47 +1,24 @@
-/** W1.2 transport envelope. Command / reply contracts stay with the loopback lane. */
-import type { RegionContext } from '../region/regionEffects';
+/** W1.2: what protocol.ts's M2W / W2M lack for a real worker. Commands, reads, packets and replies stay there. */
 import type { CityRecord } from '../save/cities';
-import type { RecoverySnapshot } from '../save/recoveryCodec';
-import type { CitySaveCopy } from './SimCore';
-import type { Command, SnapshotWhy } from './SimHost';
-import type { QueryName, QueryArgs, WatchPolicy } from './queries';
-import type { CitySource, M2W, Packet, Ready, Reply, SimSettings } from './protocol';
+import type { CitySource, M2W, W2M } from './protocol';
 
 export type SerializedSource = Extract<CitySource, { kind: 'serialized' }>;
-export interface WorkerInit {
-  t: 'init'; v: number; city: SerializedSource; persistence: 'main';
-  rctx: RegionContext | null; initialSpeed: number; settings: SimSettings;
-  flags: { simwasm: string | null; dev: boolean };
-  deterministic?: boolean;
+/** R14: W1.2 boots a city main read without deserializing it, and main stores what the worker saves. */
+export type WorkerInit = Extract<M2W, { t: 'init' }> & {
+  city: SerializedSource; persistence: 'main';
+  /** recovery markers name the region (CityPersistence.regionName) */
   regionName?: string;
-}
-export type WorkerInput = WorkerInit
-  | (Command & { t: 'cmd'; seq: number })
-  | { t: 'query'; id: number; name: QueryName; args: QueryArgs<QueryName> }
-  | { t: 'watch'; id: number; name: QueryName; args: QueryArgs<QueryName>; when: WatchPolicy }
-  | Extract<M2W, { t: 'unwatch' | 'view' | 'save' | 'resync' | 'dispose' }>
-  | { t: 'snapshot'; id: number; why: SnapshotWhy }
-  | { t: 'tick'; seq: number; dt: number; ack: number; epoch: number }
+  /** deterministic mode (§5.1, hosts.test): the live flag stays off, ticks are ignored, days come from debug.runDays */
+  deterministic?: boolean;
+};
+export type WorkerInput = Exclude<M2W, { t: 'init' }> | WorkerInit
+  /** Backpressure (§2.10) without ticks: main acks after a packet with replies and before the worker's window fills,
+   *  so a hidden tab's save still replies (T032 minor 8). `epoch` counts the Readys main adopted: ticks posted before a
+   *  resync's Ready carry acks of the old packet numbering, so the worker trusts tick acks only once it sees this one. */
   | { t: 'ack'; ack: number; epoch: number }
-  | { t: 'ping'; n: number; ack: number; epoch: number }
-  | { t: 'stored'; id: number; ok: boolean }
-  | { t: 'run'; id: number; days: number };
-
-export type WorkerReply = Exclude<Reply, { t: 'saved' | 'snapped' }>
-  | ({ t: 'saved'; id: number; ok: true; cmd: number; changes: number } & CitySaveCopy)
-  | { t: 'saved'; id: number; ok: false; error: string }
-  | ({ t: 'snapped'; id: number; cmd: number; fp: string; changes: number } & RecoverySnapshot)
-  | { t: 'snapshotFailed'; id: number; error: string }
-  | { t: 'ran'; id: number; day: number }
-  | { t: 'watchError'; id: number; key: string; error: string };
-export type WorkerPacket = Omit<Packet, 'replies'> & { replies?: WorkerReply[]; changes: number };
-export type BootPhase = 'deserialize' | 'wasm' | 'systems' | 'snapshot';
-export type WorkerOutput =
-  | { t: 'hello'; v: number }
-  | { t: 'boot'; phase: BootPhase; pct: number }
-  | (Ready & { epoch: number; settled: { seq: number; result: unknown }[]; changes: number })
-  | { t: 'pkt'; epoch: number; p: WorkerPacket }
-  | { t: 'fatal'; message: string; stack?: string };
+  /** persistence 'main': main stored a save's record (or failed to), so the worker deltas its snapshots against it */
+  | { t: 'stored'; savedAt: number; ok: boolean };
+export type WorkerOutput = W2M;
 
 /** A single-argument post is deliberate: neither endpoint may transfer ownership. */
 export interface WorkerPort {
@@ -54,11 +31,13 @@ export interface SimWorkerScope {
   listen(receive: (message: WorkerInput) => void, fail: (error: unknown) => void, signal: AbortSignal): void;
 }
 
+/** the worker stops flushing past this many packets main has not acked; the recorder keeps merging meanwhile */
+export const ACK_WINDOW = 4;
 export const HELLO_TIMEOUT_MS = 10000;
 export const BOOT_TIMEOUT_MS = 20000;
 export const LIVENESS_TIMEOUT_MS = 10000;
 
-/** A wall-clock jump is not a frozen interval when the page supplies lifecycle resets (R11). */
+/** R11: only visible, unfrozen time counts; the page resets the count on its lifecycle events. */
 export class WorkerLiveness {
   private at: number;
   private elapsed = 0;

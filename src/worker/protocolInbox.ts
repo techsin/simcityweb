@@ -97,6 +97,15 @@ export class ProtocolInbox {
     }
   }
 
+  // W1.2: a debug unit (debug.runDays) spans several worker tasks, so the worker scheduler runs it and acknowledges it
+  // here, in the command sequence, once its last day has run.
+  acknowledge(seq: number, result: unknown): void {
+    if (seq !== this.cmd + 1) throw new Error(`Command gap: expected ${this.cmd + 1}, got ${seq}`);
+    this.cmd = seq;
+    this.recorder.ack(seq, result);
+    this.refresh(); this.opts.flush();
+  }
+
   refresh(): void {
     const now = this.opts.now();
     for (const w of this.watches.values()) {

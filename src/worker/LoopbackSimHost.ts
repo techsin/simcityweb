@@ -53,6 +53,8 @@ export interface PacketHostOptions extends LocalSimHostOptions {
   optimistic?: typeof CityActions;
 }
 interface Deferred { resolve(value: any): void; reject(error: unknown): void }
+/** A request's settlement, handed to PacketSimHost.settle (W1.2). */
+export type Settle = Deferred;
 function deferred<T>(): Deferred & { promise: Promise<T> } {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
@@ -412,7 +414,11 @@ export class PacketSimHost implements SimHost {
     if (!wait) return;
     if (reply.t === 'qres') {
       if (reply.ok) wait.resolve(reply.value); else wait.reject(new Error(reply.error));
-    } else if (reply.t === 'saved') {
+    } else this.settle(reply, wait);
+  }
+  /** A save or snapshot reply. W1.2's persistence 'main' (WorkerSimHost) stores the worker's record or payload first. */
+  protected settle(reply: Extract<Reply, { t: 'saved' | 'snapped' }>, wait: Settle): void {
+    if (reply.t === 'saved') {
       if (!reply.ok) { wait.reject(new Error(reply.error)); return; }
       const p = this.options.persistence;
       const dropped = p ? clearRecoveryAfterSave(p.regionId, p.tileKey, reply.savedAt!) : false;
@@ -519,6 +525,9 @@ export interface LoopbackSimHostOptions extends PacketHostOptions {
   loopback?: Omit<LoopbackOptions, 'receive' | 'replicaInstance' | 'signal' | 'persistence'>;
 }
 const ACTION_MODULES = import.meta.glob<{ HostActions: new (host: PacketSimHost) => PacketActions }>('./HostActions.ts', { eager: true });
+const ACTIONS = ACTION_MODULES['./HostActions.ts'];
+/** T031's HostActions when present; the loopback and worker hosts install it by default. */
+export const hostActions: ActionFactory | undefined = ACTIONS ? (host) => new ACTIONS.HostActions(host) : undefined;
 
 export class LoopbackSimHost extends PacketSimHost {
   private loop: LoopbackCore | null = null;
@@ -526,10 +535,9 @@ export class LoopbackSimHost extends PacketSimHost {
   private initial: CityState | null;
   constructor(state: CityState, private opts: LoopbackSimHostOptions = {}) {
     const speed = opts.initialSpeed ?? 1;
-    const actions = ACTION_MODULES['./HostActions.ts'];
     super('loopback', { t: 'ready', snapshot: serializeCity(state, { copy: true }), streams: {}, policy: { alerts: [], live: false },
       clock: { day: state.day, frac: 0, speed, slow: 1, spd: SECONDS_PER_DAY[speed], live: true }, savedAt: 0, cmd: 0 },
-      { ...opts, actions: opts.actions ?? (actions ? (host) => new actions.HostActions(host) : undefined) }, false);
+      { ...opts, actions: opts.actions ?? hostActions }, false);
     this.initial = this.closed ? null : state;
     if (this.closed) this.opts = {};
   }

@@ -45,7 +45,8 @@ if (isMainThread) {
     worker.on('error', reject);
     worker.on('messageerror', reject);
     worker.on('message', (m) => {
-      if (m.t === 'ready') worker.postMessage({ t: 'run', id: 1, days: 60 } satisfies WorkerInput);
+      // deterministic mode: 60 headless days, one per worker task (§3.1), acknowledged as command 1
+      if (m.t === 'ready') worker.postMessage({ t: 'cmd', seq: 1, op: 'debug.runDays', args: [60] } satisfies WorkerInput);
       else if (m.t === 'pkt') {
         try {
           assertOwnedBuffers(m);
@@ -54,7 +55,7 @@ if (isMainThread) {
             if (e[1] !== daysReceived) throw new Error('missing / unordered simulation results');
           }
           bytesReceived += cloneBytes(m);
-          worker.postMessage({ t: 'ack', epoch: m.epoch, ack: m.p.seq } satisfies WorkerInput);
+          worker.postMessage({ t: 'ack', epoch: 1, ack: m.p.seq } satisfies WorkerInput);
         } catch (e) { messageError = e as Error; }
       } else if (m.t === 'done') result = m.report as WorkerReport;
       else if (m.t === 'fatal') messageError = new Error(m.message);
@@ -85,6 +86,7 @@ if (isMainThread) {
   const { installSimWorker } = await import('../../src/worker/simWorker');
   const { registerTestDefs } = await import('../infra/cityGen');
   const { transferOnce, growOnce } = await import('../worker/protectorFaults');
+  const { EntryType } = await import('../../src/worker/protocol');
   registerTestDefs();
   const memoryBefore = wasm?.memory.buffer.byteLength ?? null;
   let memoryStable = true, afterBoot = false;
@@ -100,7 +102,7 @@ if (isMainThread) {
       memoryStable = memoryStable && (wasm?.memory.buffer.byteLength ?? null) === memoryBefore;
       probe();
       port.postMessage(m);
-      if (m.t === 'pkt' && m.p.replies?.some((r) => r.t === 'ran')) {
+      if (m.t === 'pkt' && m.p.log.some((e) => e[0] === EntryType.Ack && e[3] === 1)) {
         const status = simWasmStatus();
         const report: WorkerReport = { initial, afterBoot, intact: probe(), days: m.p.clock.day, mode,
           blurActive: status.kernels.blur?.active ?? false, memoryBefore, memoryAfter: wasm?.memory.buffer.byteLength ?? null,

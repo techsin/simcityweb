@@ -1,33 +1,16 @@
-/** The node adapter bundles the production worker loop, using the bench's kernel plugin. */
-import { mkdir } from 'node:fs/promises';
+/** The worker test bundle: the production worker loop behind a parentPort adapter (nodeWorker.ts), bundled in memory as
+ *  protector.test.ts bundles its child, and loaded as a data: URL, so no build file lands in the tree. */
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
 import { rolldown } from 'rolldown';
-import simPlugins from '../sim.plugins.mjs';
 
-const directory = new URL('./.tmp/', import.meta.url);
-export const hostPlugins = [...simPlugins, {
-  name: 'host-explicit-test-modules',
-  resolveId(source) { if (source.endsWith('.wasm?url')) return '\0node-wasm-url'; },
-  load(id) { if (id === '\0node-wasm-url') return 'export default "unused-in-node.wasm";'; },
-  transform(code, id) {
-    if (!id.replaceAll('\\', '/').endsWith('/src/worker/SimHost.ts')) return null;
-    // Tests pass start({ createSystems, CityActions }); only Vite supplies import.meta.glob.
-    return code.replace("import.meta.glob(['../sim/systems/index.ts', '../sim/actions.ts'])", '({})');
-  },
-}];
-export async function buildWorkerTest() {
-  await mkdir(directory, { recursive: true });
-  const output = new URL(`simWorker-${randomUUID()}.mjs`, directory);
-  const bundle = await rolldown({ input: fileURLToPath(new URL('./nodeWorker.ts', import.meta.url)), platform: 'node', plugins: simPlugins });
-  try { await bundle.write({ file: fileURLToPath(output), format: 'esm', codeSplitting: false }); }
-  finally { await bundle.close(); }
-  return output;
-}
-
-if (process.argv.includes('--protector')) {
-  await mkdir(directory, { recursive: true });
-  const bundle = await rolldown({ input: fileURLToPath(new URL('../../../tests/perf/protectorChild.ts', import.meta.url)), platform: 'node' });
-  try { await bundle.write({ file: fileURLToPath(new URL('protectorChild.mjs', directory)), format: 'esm', codeSplitting: false }); }
-  finally { await bundle.close(); }
+let built;
+export function buildWorkerTest() {
+  return built ??= (async () => {
+    const bundle = await rolldown({ input: fileURLToPath(new URL('./nodeWorker.ts', import.meta.url)), platform: 'node' });
+    try {
+      const { output } = await bundle.generate({ format: 'esm', codeSplitting: false });
+      if (output.length !== 1 || output[0].type !== 'chunk') throw new Error('expected one self-contained worker bundle');
+      return new URL(`data:text/javascript;base64,${Buffer.from(output[0].code).toString('base64')}`);
+    } finally { await bundle.close(); }
+  })();
 }
