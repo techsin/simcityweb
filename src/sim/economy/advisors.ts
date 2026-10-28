@@ -34,9 +34,11 @@
  * Polish (POLISH_PLAN FH-03, LG-05): every advice post carries NewsItem.ref.advice (the rule id, or Advice.ref for a
  * variant whose fix is another rule's), so toasts and Advisors cards find their button by id, never by the text
  * (src/ui/adviceActions.ts). Below ZONE_WARN_POP residents "no room to grow" (zoneR / zoneC / zoneI) is an amber warning
- * at most once per ZONE_WARN_DAYS. The day-28 zone scan also counts the free land: under BUILT_OUT_FREE of the map, with
- * a family's demand at least 0.5, one 'builtOut' card names what can still be done (rezone the lowest-value blocks,
- * connect to a neighbour with spare jobs; Advice.options) instead of the zone-more and unemployment texts.
+ * at most once per ZONE_WARN_DAYS — none for a family with no zoned land yet, and the cooldown starts over once the player
+ * zones more of the family (AdvisorData.zoned). The day-28 zone scan also counts the zoned tiles per family and the free
+ * land: under BUILT_OUT_FREE of the map, with a family's demand at least 0.5, one 'builtOut' card names what can still be
+ * done (rezone the lowest-value blocks, each to what it is not; connect to a neighbour with spare jobs; Advice.options)
+ * instead of the zone-more and unemployment texts.
  *
  * SIM_DEPTH_SPEC §F / WP5-4 rules (each with a map location): schools / health / playgrounds from the catchment needs
  * (unservedClusters), overcrowded schools / hospitals / police stations (facilityLoad), one fire rule (response gap
@@ -158,9 +160,11 @@ const GAP_MIN_TILES = 6;
 const NO_ACCESS_MIN_TILES = 8;
 /** FH-03: below this population "no room to grow" (zoneR / zoneC / zoneI) is a warning — the first-hour stall a toast
  *  with its zoning button must not let a newcomer miss — spoken at most once per ZONE_WARN_DAYS (the info it stays
- *  above: every 90 days); both back off while it persists */
+ *  above: every 90 days); both back off while it persists, and start over once the player zones more of the family */
 export const ZONE_WARN_POP = 20000;
 export const ZONE_WARN_DAYS = 180;
+/** the "no room to grow" rules per family (0 R, 1 C, 2 I) */
+const ZONE_RULE_IDS = ['zoneR', 'zoneC', 'zoneI'] as const;
 /** LG-05: free land (ZoneScan.free) under this share of the map, with a family's demand at least 0.5: built out */
 export const BUILT_OUT_FREE = 0.01;
 /** LG-05: the built-out card names this many rezoning candidates; a zone block of fewer tiles is a sliver, not one */

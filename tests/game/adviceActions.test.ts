@@ -7,15 +7,17 @@
  */
 import { setMaxListeners } from 'node:events';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { Emitter } from '../../src/core/events';
 import { Network, Overlay, Zone } from '../../src/core/types';
-import type { GameContext } from '../../src/game/context';
+import type { GameContext, UIEvents } from '../../src/game/context';
 import { CATEGORIES } from '../../src/game/toolCatalog';
 import type { CityState, NewsItem } from '../../src/sim/CityState';
 import { Simulation, type SimSystem } from '../../src/sim/Simulation';
 import { EconRuntime } from '../../src/sim/economy/runtime';
 import { advisorsSystem, type AdvisorsSystem } from '../../src/sim/economy/advisors';
-import { PULSE_MS, adviceAction, emptyFrontTiles, issueButtons, newsAction } from '../../src/ui/adviceActions';
+import { PULSE_CLASS, PULSE_MS, adviceAction, emptyFrontTiles, issueButtons, newsAction } from '../../src/ui/adviceActions';
 import { Toasts } from '../../src/ui/Notifications';
+import { Toolbar } from '../../src/ui/Toolbar';
 import { AdvisorsPanel } from '../../src/ui/panels/AdvisorsPanel';
 import { newState, place, roadLine } from '../infra/cityGen';
 import { queryHost } from './queryHost';
@@ -61,14 +63,15 @@ function harness(sim?: Simulation | { events: { on: (t: string, f: (n: NewsItem)
     sim: sim ?? { events: { on: () => () => undefined } },
     host: real ? queryHost(real) : undefined,
     state: real?.state,
-    tools: { select: (id: string) => { calls.selected.push(id); return true; } },
+    ui: new Emitter<UIEvents>(),
+    tools: { activeId: null, select: (id: string) => { calls.selected.push(id); return true; } },
     focusCell: (x: number, z: number) => { calls.focus.push([x, z]); },
     setOverlay: (o: Overlay) => { calls.overlay.push(o); ctx.overlay = o; },
     openFlyout: (id: string) => { calls.flyout.push(id); },
     sound: () => undefined,
-    panels: { open: () => undefined },
+    panels: { open: () => undefined, isOpen: () => false },
   } as unknown as GameContext;
-  const pulsing = () => bar.children.filter((b) => b.classList.contains('coach')).map((b) => b.dataset.cat);
+  const pulsing = () => bar.children.filter((b) => b.classList.contains(PULSE_CLASS)).map((b) => b.dataset.cat);
   return { ctx, calls, pulsing };
 }
 
@@ -83,10 +86,36 @@ describe('advice actions: by id, each opening its tool or view', () => {
     vi.advanceTimersByTime(PULSE_MS);
     expect(pulsing()).toEqual([]);
     adviceAction('zoneC')!.run(ctx, null);
-    // (a place: the camera goes there first — "zone next to your most desirable homes")
+    // (a place: the camera goes there first — "zone next to your most desirable homes"); a second pulse restarts the first
+    vi.advanceTimersByTime(3000);
     adviceAction('zoneI')!.run(ctx, { x: 4, z: 41 });
     expect(calls.selected).toEqual(['zone:1', 'zone:4', 'zone:8']);
     expect(calls.focus).toEqual([[4, 41]]);
+    vi.advanceTimersByTime(PULSE_MS - 1000);
+    expect(pulsing(), 'the first pulse\'s timer no longer ends the second').toEqual(['zones']);
+    vi.advanceTimersByTime(1000);
+    expect(pulsing()).toEqual([]);
+  });
+
+  it('the pulse survives the onboarding card\'s coach updates (Toolbar.setCoach, about twice a second) on the real toolbar', () => {
+    vi.useFakeTimers();
+    const { ctx } = harness();
+    const root = ctx.root as unknown as FEl;
+    root.innerHTML = ''; // (the real toolbar instead of the stand-in)
+    const toolbar = new Toolbar(ctx, ctx.root);
+    const btn = (id: string) => root.querySelector('.toolbar')!.querySelectorAll('.tb-btn')[CATEGORIES.findIndex((c) => c.id === id)];
+    adviceAction('zoneR')!.run(ctx, null);
+    expect(btn('zones').classList.contains(PULSE_CLASS)).toBe(true);
+    // the card at step 1 coaches Transport every half second; its "complete" phase clears every mark
+    for (let t = 0; t < 3000; t += 500) {
+      toolbar.setCoach(['transport']);
+      vi.advanceTimersByTime(500);
+    }
+    expect(btn('transport').classList.contains('coach')).toBe(true);
+    toolbar.setCoach([]);
+    expect(btn('zones').classList.contains(PULSE_CLASS), 'after 3 s of coach updates').toBe(true);
+    vi.advanceTimersByTime(PULSE_MS - 3000);
+    expect(btn('zones').classList.contains(PULSE_CLASS)).toBe(false);
   });
 
   it('Build roads: the Road tool; Rezone: the Land value view and the Zones tools at the block; Connect: the Highway tool at the edge', () => {

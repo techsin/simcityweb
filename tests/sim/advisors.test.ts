@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { BF, type Building, type NeedTier } from '../../src/sim/CityState';
 import { Network, Zone } from '../../src/core/types';
 import { Simulation, type SimSystem } from '../../src/sim/Simulation';
-import { EconRuntime } from '../../src/sim/economy/runtime';
+import { EconRuntime, econData } from '../../src/sim/economy/runtime';
 import { BUILT_OUT_FREE, MONTH_SCAN_DAYS, ZONE_WARN_DAYS, ZONE_WARN_POP, advisorData, advisorIssues, advisorsSystem, type AdvisorsSystem } from '../../src/sim/economy/advisors';
 import type { FacilityLoad } from '../../src/sim/infra/catchments';
 import { newState, place, roadLine } from '../infra/cityGen';
@@ -272,9 +272,12 @@ const zonePosts = (st: Simulation['state'], id = 'zoneR') => st.news.filter((n) 
 const planning = (st: Simulation['state'], id: string) => (advisorIssues(st).planning ?? []).find((a) => a.id === id);
 
 describe('FH-03: "no room to grow" a young town cannot miss', () => {
-  /** strong residential demand and 4 empty road-facing residential tiles (rt.emptyFront: the room growth sees) */
+  /** strong residential demand, 4 residential tiles zoned along a road, of them 4 empty (rt.emptyFront: the room growth
+   *  sees) */
   function noRoom(pop: number) {
     const c = city();
+    roadLine(c.st, 2, 20, 60, 20, Network.Road);
+    for (let x = 3; x < 7; x++) c.st.zone[c.st.idx(x, 21)] = Zone.ResLow;
     c.st.stats.population = pop;
     c.st.stats.demand[0] = 0.7;
     const s = start(c);
@@ -301,7 +304,7 @@ describe('FH-03: "no room to grow" a young town cannot miss', () => {
   it('room comes back, then runs out again: the warning returns 180 days after the last one, not sooner', () => {
     const { c, sim, adv } = noRoom(3000);
     monthTick(sim, adv, 30);
-    c.rt.emptyFront[Zone.ResLow] = 20; // the player zoned
+    c.rt.emptyFront[Zone.ResLow] = 20; // room came back without new zoning (buildings were bulldozed)
     monthTick(sim, adv, 60);
     expect(planning(c.st, 'zoneR')).toBeUndefined();
     c.rt.emptyFront[Zone.ResLow] = 3; // and the town filled it
@@ -323,6 +326,11 @@ describe('FH-03: "no room to grow" a young town cannot miss', () => {
 
   it('commercial and industrial too: zoneC / zoneI warnings with their own refs', () => {
     const c = city();
+    roadLine(c.st, 2, 20, 60, 20, Network.Road);
+    for (let x = 3; x < 7; x++) {
+      c.st.zone[c.st.idx(x, 21)] = Zone.ComLow;
+      c.st.zone[c.st.idx(x + 10, 21)] = Zone.IndMed;
+    }
     c.st.stats.population = 4000;
     c.st.stats.demand[3] = 0.8;
     c.st.stats.demand[9] = 0.8;
@@ -334,6 +342,62 @@ describe('FH-03: "no room to grow" a young town cannot miss', () => {
     monthTick(sim, adv, 60);
     expect(zonePosts(c.st, 'zoneC')).toHaveLength(1);
     expect(zonePosts(c.st, 'zoneI')).toHaveLength(1);
+  });
+
+  it('a family with no zoned land yet has no stall to warn about, so the first real stall is announced at once', () => {
+    // a new city with strong residential and industrial demand at founding and nothing zoned (Play pressed first)
+    const c = city();
+    roadLine(c.st, 2, 20, 60, 20, Network.Road);
+    c.st.stats.demand[0] = 0.82;
+    c.st.stats.demand[9] = 0.8;
+    const { sim, adv } = start(c);
+    monthTick(sim, adv, 30);
+    expect(planning(c.st, 'zoneR')).toBeUndefined();
+    expect(planning(c.st, 'zoneI')).toBeUndefined();
+    expect(zonePosts(c.st)).toHaveLength(0);
+    // the player zones homes along the road on day 31; by the next month tick every lot is built on
+    for (let x = 3; x < 13; x++) {
+      c.st.zone[c.st.idx(x, 21)] = Zone.ResLow;
+      place(c.st, 't_r1', x, 21, { pop: 10 });
+    }
+    c.st.stats.population = 100;
+    monthTick(sim, adv, 60);
+    const p = zonePosts(c.st);
+    expect(p, 'the cooldown was not spent on the empty city').toHaveLength(1);
+    expect(p[0].kind).toBe('warning');
+    // (industry still has no land of its own)
+    expect(planning(c.st, 'zoneI')).toBeUndefined();
+  });
+
+  it('the advice followed (more of the family zoned) starts the cooldown and back-off over: the newcomer bot\'s next cue comes as soon as its new patch is full', () => {
+    // the newcomer profile's founding (tools/simbot.ts): 4 × 4 patches of homes, shops and industry zoned on day 90
+    const c = city();
+    c.st.day = 90;
+    const patch = (x0: number, z0: number, zn: Zone) => {
+      roadLine(c.st, x0 - 1, z0 - 1, x0 + 4, z0 - 1, Network.Road);
+      for (let z = z0; z < z0 + 4; z++) for (let x = x0; x < x0 + 4; x++) {
+        c.st.zone[c.st.idx(x, z)] = zn;
+        place(c.st, 't_r1', x, z, { pop: 5 });
+      }
+    };
+    patch(10, 10, Zone.ResLow);
+    patch(20, 10, Zone.ResLow);
+    patch(30, 10, Zone.ComLow);
+    patch(40, 10, Zone.IndMed);
+    c.st.stats.population = 160;
+    c.st.stats.demand[0] = 0.8;
+    const { sim, adv } = start(c);
+    // the homes are full: the cue at the first month tick
+    monthTick(sim, adv, 120);
+    expect(zonePosts(c.st)).toHaveLength(1);
+    // still full, nothing zoned: the cooldown holds
+    monthTick(sim, adv, 150);
+    expect(zonePosts(c.st)).toHaveLength(1);
+    // the cue answered with one more patch, full by the next month tick: the next cue then, not 360 days on
+    patch(10, 20, Zone.ResLow);
+    monthTick(sim, adv, 180);
+    expect(zonePosts(c.st)).toHaveLength(2);
+    expect(econData(c.st).streak?.zoneR).toBe(1);
   });
 
   it('a variant whose fix is not more land names that fix: roadless zones → noRoadAccess (the Road tool)', () => {
@@ -384,17 +448,18 @@ describe('LG-05: a built-out city hears options that exist', () => {
   /** strip k's land value (rows 8k+1 … 8k+7): strips 3, 1 and 5 are the cheapest */
   const LV = [0.6, 0.25, 0.7, 0.1, 0.8, 0.3, 0.9, 0.5];
   /**
-   * a 64 × 64 map with a road on every eighth row and commercial zoning on every other tile (one shop per strip): no free
-   * land. `freeStrip`: leave the last strip unzoned (448 free tiles, 11% of the map: room to zone)
+   * a 64 × 64 map with a road on every eighth row and zoning on every other tile (commercial unless `zones` says otherwise
+   * for strip k; one shop per strip): no free land. `freeStrip`: leave the last strip unzoned (448 free tiles, 11% of the
+   * map: room to zone). Strong commercial demand and 9% unemployment unless `demand` / `unemployment` say otherwise
    */
-  function town(opts: { freeStrip?: boolean; neighbour?: boolean } = {}) {
+  function town(opts: { freeStrip?: boolean; neighbour?: boolean; zones?: Partial<Record<number, Zone>>; demand?: Partial<Record<number, number>>; unemployment?: number } = {}) {
     const c = city();
     const st = c.st;
     for (let z = 0; z < 64; z += 8) roadLine(st, 0, z, 63, z, Network.Road);
     for (let k = 0; k < 8; k++) {
       if (opts.freeStrip && k === 7) continue;
       for (let z = 8 * k + 1; z < 8 * k + 8; z++) for (let x = 0; x < 64; x++) {
-        st.zone[st.idx(x, z)] = Zone.ComLow;
+        st.zone[st.idx(x, z)] = opts.zones?.[k] ?? Zone.ComLow;
         st.landValue[st.idx(x, z)] = LV[k];
       }
       place(st, 't_cs', 5, 8 * k + 1, { jobs: 10 });
@@ -403,8 +468,8 @@ describe('LG-05: a built-out city hears options that exist', () => {
       st.systemData.region = { neighbors: [{ edge: 'e', tileKey: 'nb', name: 'Fooville', founded: true, population: 100000, jobs: 80000, workers: 50000, r: 0, c: 0, i: 0, from: 0, to: 64 }] };
     }
     st.stats.population = 50000;
-    st.stats.demand[3] = 0.8;
-    st.stats.unemployment = 0.09;
+    for (const [d, v] of Object.entries(opts.demand ?? { 3: 0.8 })) st.stats.demand[+d] = v!;
+    st.stats.unemployment = opts.unemployment ?? 0.09;
     return { c, ...start(c) };
   }
 
@@ -413,7 +478,7 @@ describe('LG-05: a built-out city hears options that exist', () => {
     monthTick(sim, adv, 30);
     const b = planning(c.st, 'builtOut')!;
     expect(b).toMatchObject({ kind: 'warning', priority: 7, x: 32, z: 28 });
-    expect(b.text).toBe('Unemployment is at 9% and commercial demand is strong, but the city is built out: no free land is left. Rezone the lowest-value blocks (around (32, 28), (32, 12) and (32, 44)) to commercial land.');
+    expect(b.text).toBe('Unemployment is at 9% and commercial demand is strong, but the city is built out: no free land is left. Rezone the lowest-value blocks (around (32, 28), (32, 12) and (32, 44)) to denser shops and offices.');
     expect(b.options).toEqual([{ id: 'rezone', x: 32, z: 28 }]);
     expect(planning(c.st, 'zoneC')).toBeUndefined();
     expect(planning(c.st, 'unemployment')).toBeUndefined();
@@ -425,8 +490,23 @@ describe('LG-05: a built-out city hears options that exist', () => {
     const { c, sim, adv } = town({ neighbour: true });
     monthTick(sim, adv, 30);
     const b = planning(c.st, 'builtOut')!;
-    expect(b.text).toMatch(/to commercial land, or connect a highway to Fooville on the east edge, which has 30,000 jobs to spare\.$/);
+    expect(b.text).toMatch(/to denser shops and offices, or connect a highway to Fooville on the east edge, which has 30,000 jobs to spare\.$/);
     expect(b.options).toEqual([{ id: 'rezone', x: 32, z: 28 }, { id: 'connect', x: 63, z: 32 }]);
+  });
+
+  it('each candidate block is rezoned to what it is not: an industrial strip to housing or denser industry, never to industry', () => {
+    const { c, sim, adv } = town({ zones: { 3: Zone.IndMed, 5: Zone.ResLow }, demand: { 0: 0.8, 9: 0.8 }, unemployment: 0 });
+    monthTick(sim, adv, 30);
+    expect(planning(c.st, 'builtOut')?.text).toBe('Residential and industrial demand is strong, but the city is built out: no free land is left. Rezone the lowest-value blocks (around (32, 28) to housing or denser industry; around (32, 12) to housing or industrial land; around (32, 44) to denser housing or industrial land).');
+  });
+
+  it('a block with nothing to become is passed over (high-density homes when only homes are wanted); blocks with the same targets are named together', () => {
+    const { c, sim, adv } = town({ zones: { 3: Zone.ResHigh, 5: Zone.ResLow }, demand: { 0: 0.8 }, unemployment: 0 });
+    monthTick(sim, adv, 30);
+    const b = planning(c.st, 'builtOut')!;
+    expect(b.text).toBe('Residential demand is strong, but the city is built out: no free land is left. Rezone the lowest-value blocks (around (32, 12) and (32, 60) to housing; around (32, 44) to denser housing).');
+    expect(b.options).toEqual([{ id: 'rezone', x: 32, z: 12 }]);
+    expect([b.x, b.z]).toEqual([32, 12]);
   });
 
   it('room left to zone (the y15 case): no built-out card, the zone rule as before; the scan counts the free land', () => {
