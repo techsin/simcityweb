@@ -61,13 +61,17 @@ function officeTower(b: ModelBuilder, x: number, z: number, height: number, step
     b.pop();
   }
   const half = stepped ? 7.5 : 10.5;
-  prismEdges(b, plan(x, z, half + 0.25, cut), height - 4, height - 0.9, () => P(dark, Surf.Corrugated), null);
-  prismEdges(b, plan(x, z, half + 0.4, cut), height - 0.9, height - 0.55, () => P(0x91a5ae, Surf.Emissive, 10), null);
+  prismEdges(b, plan(x, z, half + 0.25, cut), height - 4, height - 0.8, () => P(dark, Surf.Corrugated), null);
+  // Night-only crown light (x2, 1.6 m) under the coping, clear of the ribs: each tower top reads as a lit ring at night.
+  prismEdges(b, plan(x, z, half + 0.4, cut), height - 2.8, height - 1.2, () => P(0xa8c4d8, Surf.Emissive, 11), null);
   b.paint(dark, Surf.Corrugated).box(x - 3, height, z - 3, x + 3, height + 3.2, z + 3, { top: P(steel, Surf.RoofFlat) });
   if (mast) {
     b.paint(steel, Surf.Metal).cylinder(x, z, height + 3.2, 2.8, 1.5, 0.85, 8);
+    // The white bands of the mast are night-only lit, so at night it reads as a lit dashed line above the roof.
     for (let i = 0; i < 5; i++) {
-      b.paint(i % 2 ? 0xa95142 : 0xd3d5d2, Surf.Metal).cylinder(x, z, height + 6 + i * 8, 8, 0.85 - i * 0.13, 0.72 - i * 0.13, 6);
+      if (i % 2) b.paint(0xa95142, Surf.Metal);
+      else b.paint(0xd3d5d2, Surf.Emissive, 10);
+      b.cylinder(x, z, height + 6 + i * 8, 8, 0.85 - i * 0.13, 0.72 - i * 0.13, 6);
     }
     b.paint(steel, Surf.Metal).cylinder(x, z, height + 46, 8, 0.2, 0.05, 6);
     beacon(b, x, height + 54, z, 0.45);

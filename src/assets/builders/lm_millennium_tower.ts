@@ -22,7 +22,8 @@ function skyDeck(b: ModelBuilder, y: number, r: number, tint: number): void {
   const metal = P(0xd4d9dc, Surf.Metal), glass = P(0x849eaf, Surf.GlassCurtain, tint);
   const prof: ProfPt[] = [
     [r * 0.57, y - 8, metal], [r, y - 0.8], [r, y, glass], [r, y + 8, metal],
-    [r + 1.2, y + 8.6], [r + 1.2, y + 9.4, P(0x91a8b6, Surf.Emissive, 10)],
+    // night-only rim light (x2, 1.2 m), bright enough to outline the deck from the city camera
+    [r + 1.2, y + 8.6], [r + 1.2, y + 8.8, P(0xa8c4d8, Surf.Emissive, 11)],
     [r + 1.2, y + 10.0, metal], [r - 0.5, y + 10.6], [r * 0.48, y + 14], [0, y + 14],
   ];
   lathe(b, 0, 0, prof, 24, 28);
@@ -94,9 +95,13 @@ function millenniumTower(b: ModelBuilder, v: number, rng: RNG): void {
     skyDeck(b, 512, 10, tint);
   }
   const needleY = v === 0 ? 446 : 526, top = v === 0 ? 536 : 588;
+  // Three night-only light rings (x2, 1.5 m) on the needle's own profile, so the silver needle reads at night too.
+  const ring = P(0xa8c4d8, Surf.Emissive, 11), shaft = top - 10 - (needleY + 28);
+  const along = (t: number): [number, number] => [1.2 - 0.65 * t, needleY + 28 + shaft * t];
   const needle: ProfPt[] = [
-    [6.5, needleY, silver], [4.5, needleY + 12], [2.5, needleY + 24],
-    [1.2, needleY + 28], [0.55, top - 10], [0.18, top], [0, top],
+    [6.5, needleY, silver], [4.75, needleY + 10.5, ring], [4.5, needleY + 12, silver], [2.75, needleY + 22.5, ring],
+    [2.5, needleY + 24, silver], [1.2, needleY + 28], [...along(0.4), ring], [...along(0.4 + 1.5 / shaft), silver],
+    [0.55, top - 10], [0.18, top], [0, top],
   ];
   lathe(b, 0, 0, needle, 12, 30);
   b.paint(silver);

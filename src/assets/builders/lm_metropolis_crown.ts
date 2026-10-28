@@ -41,9 +41,10 @@ function coronet(b: ModelBuilder, y: number, v: number, bronze: Paint): void {
     const inner = at(a, r - 1.8, tipY - 10);
     b.beam(at(a - da, 14.4, y + 17), inner, 0.55).beam(inner, at(a + da, 14.4, y + 17), 0.55);
     b.beam(inner, tip, 0.7);
-    b.paint(0xad8b50, Surf.Emissive, 10);
-    b.beam(at(a - da, 16.4, y + 18), at(a, r + 0.7, tipY - 1), 0.3);
-    b.beam(at(a, r + 0.7, tipY - 1), at(a + da, 16.4, y + 18), 0.3);
+    // Gold night-only light (x2) on the outer face of every blade, 1 m wide so the coronet reads from the city camera.
+    b.paint(0xc9a05a, Surf.Emissive, 11);
+    b.beam(at(a - da, 16.4, y + 18), at(a, r + 0.7, tipY - 1), 1.0);
+    b.beam(at(a, r + 0.7, tipY - 1), at(a + da, 16.4, y + 18), 1.0);
     if (i % (v === 0 ? 2 : 3) === 0) beacon(b, Math.cos(a) * r, tipY, Math.sin(a) * r, 0.4);
   }
   // An open annular belt ties the crown feet; unlike a solid disk, it does not fill the space around the lantern.

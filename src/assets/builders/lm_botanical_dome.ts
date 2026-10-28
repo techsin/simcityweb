@@ -4,23 +4,32 @@ import type { ModelBuilders } from '../registry';
 import { Surf } from '../../core/types';
 import type { RNG } from '../../core/rng';
 import {
-  type V3, annulus, cylWall, flowerBed, lamp, lotModels, orientQuad, orientTri, parkBench, person, rect, rectPoly, tree,
+  type V3, annulus, cross, cylWall, dot, flowerBed, lamp, lotModels, nrm, parkBench, person, rect, rectPoly, tree,
 } from './park_lib';
 
 const TAU = Math.PI * 2;
 
-/** Triangular glazing with a steel border in the same plane: no overlapping glass / lattice faces. */
-function pane(b: ModelBuilder, a: V3, c: V3, d: V3, frame: number, pattern: number): void {
+/**
+ * Triangular glazing with a steel border in the same plane: no overlapping glass / lattice faces. Glass and frame take
+ * the shell's smooth normal (`shell`), so the sun's highlight glides across the dome as a spot instead of flashing one
+ * flat pane (or its frame) white.
+ */
+function pane(b: ModelBuilder, a: V3, c: V3, d: V3, frame: number, pattern: number, shell: (p: V3) => V3): void {
   const mid: V3 = [(a[0] + c[0] + d[0]) / 3, (a[1] + c[1] + d[1]) / 3, (a[2] + c[2] + d[2]) / 3];
   const inset = (p: V3): V3 => [p[0] + (mid[0] - p[0]) * 0.07, p[1] + (mid[1] - p[1]) * 0.07, p[2] + (mid[2] - p[2]) * 0.07];
   const ia = inset(a), ic = inset(c), id = inset(d);
   const out: V3 = [mid[0], mid[1] - 3.2, mid[2]];
+  const tri = (p: V3, q: V3, r: V3): void => {
+    if (dot(cross([q[0] - p[0], q[1] - p[1], q[2] - p[2]], [r[0] - p[0], r[1] - p[1], r[2] - p[2]]), out) >= 0) b.triN(p, q, r, shell(p), shell(q), shell(r));
+    else b.triN(p, r, q, shell(p), shell(r), shell(q));
+  };
   b.paint(0x88aaa5, Surf.GlassPlain, pattern);
-  orientTri(b, ia, ic, id, out);
+  tri(ia, ic, id);
   b.paint(frame, Surf.Metal);
-  orientQuad(b, a, c, ic, ia, out);
-  orientQuad(b, c, d, id, ic, out);
-  orientQuad(b, d, a, ia, id, out);
+  for (const [p, q, iq, ip] of [[a, c, ic, ia], [c, d, id, ic], [d, a, ia, id]]) {
+    tri(p, q, iq);
+    tri(p, iq, ip);
+  }
 }
 
 function conservatory(b: ModelBuilder, x: number, z: number, rx: number, rz: number, h: number, seg: number, rows: number, frame: number, pattern = 2): void {
@@ -39,17 +48,18 @@ function conservatory(b: ModelBuilder, x: number, z: number, rx: number, rz: num
   annulus(b, 0, 0, 3.35, rx - 0.12, rx + 0.12, seg);
   b.pop();
   // Staggered latitude rings give the shell a triangular space-frame rhythm; the apex is a single fan.
+  const shell = (p: V3): V3 => nrm([p[0] / (rx * rx), (p[1] - 3.2) / (h * h), p[2] / (rz * rz)]);
   const at = (j: number, i: number): V3 => {
     const e = (j / rows) * Math.PI / 2, a = ((i + (j % 2) * 0.5) / seg) * TAU;
     return [Math.cos(a) * Math.cos(e) * rx, 3.2 + Math.sin(e) * h, Math.sin(a) * Math.cos(e) * rz];
   };
   for (let j = 0; j < rows; j++) for (let i = 0; i < seg; i++) {
     const a = at(j, i), c = at(j, i + 1);
-    if (j === rows - 1) pane(b, a, c, [0, 3.2 + h, 0], frame, pattern);
+    if (j === rows - 1) pane(b, a, c, [0, 3.2 + h, 0], frame, pattern, shell);
     else {
       const d = at(j + 1, i + 1), e = at(j + 1, i);
-      pane(b, a, c, d, frame, pattern);
-      pane(b, a, d, e, frame, pattern);
+      pane(b, a, c, d, frame, pattern, shell);
+      pane(b, a, d, e, frame, pattern, shell);
     }
   }
   b.paint(frame, Surf.Metal);

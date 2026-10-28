@@ -13,20 +13,28 @@ import { archFrameZ, openingZ, roundArch } from './lm_lib';
 const TAU = Math.PI * 2;
 const P = (color: number, surf: Surf = Surf.Plain, pattern = 0, floor = 3.3): Paint => ({ color, surf, pattern, floor });
 
-/** Small bronze bull on the forecourt; +Z is its lowered head. */
+/** Small bronze bull on the forecourt, charging toward +Z: head lowered, horns curving forward, tail raised. */
 function marketBull(b: ModelBuilder, x: number, z: number): void {
   b.paint(0x8c8b80, Surf.Stone).box(x - 1.9, 0.1, z - 2.4, x + 1.9, 0.55, z + 2.4);
-  b.paint(0x6b795b, Surf.Metal, 3);
-  b.box(x - 0.7, 1.5, z - 1.5, x + 0.7, 2.7, z + 0.7);
-  b.box(x - 0.8, 1.8, z - 0.3, x + 0.8, 3.0, z + 0.6);
-  b.beam([x, 2.4, z + 0.5], [x, 1.7, z + 1.5], 0.8);
-  b.box(x - 0.5, 1.35, z + 1.2, x + 0.5, 2.1, z + 1.9);
+  b.paint(0x7a5a32, Surf.Metal, 3);
+  // Lean hindquarters, a deep chest and a shoulder hump that rises above the lowered neck.
+  b.box(x - 0.6, 1.5, z - 1.65, x + 0.6, 2.45, z - 0.35);
+  b.box(x - 0.78, 1.2, z - 0.45, x + 0.78, 2.7, z + 0.75);
+  b.beam([x, 2.5, z - 0.4], [x, 2.65, z + 0.55], 0.95);
+  b.beam([x, 2.35, z + 0.6], [x, 1.55, z + 1.45], 0.85);
+  b.box(x - 0.4, 1.05, z + 1.3, x + 0.4, 1.7, z + 1.85);
+  b.box(x - 0.27, 0.92, z + 1.85, x + 0.27, 1.42, z + 2.15);
   for (const sx of [-1, 1]) {
-    for (const zz of [-1.1, 0.5]) b.beam([x + sx * 0.55, 1.7, z + zz], [x + sx * 0.7, 0.55, z + zz + 0.15], 0.24);
-    b.beam([x + sx * 0.4, 2, z + 1.5], [x + sx * 1.1, 2.2, z + 1.4], 0.17);
-    b.beam([x + sx * 1.1, 2.2, z + 1.4], [x + sx * 1.2, 2.65, z + 1.65], 0.12);
+    // Forelegs braced forward, hind legs driving back.
+    b.beam([x + sx * 0.5, 1.45, z + 0.45], [x + sx * 0.58, 0.55, z + 0.85], 0.26);
+    b.beam([x + sx * 0.42, 1.75, z - 1.3], [x + sx * 0.55, 0.55, z - 1.85], 0.26);
+    // Horns: out from the poll, then forward and up.
+    b.beam([x + sx * 0.3, 1.62, z + 1.48], [x + sx * 0.82, 1.78, z + 1.6], 0.16);
+    b.beam([x + sx * 0.82, 1.78, z + 1.6], [x + sx * 0.72, 2.02, z + 2.08], 0.12);
   }
-  b.beam([x, 2.4, z - 1.4], [x + 0.7, 1.2, z - 1.9], 0.12);
+  // Tail whipped up over the rump.
+  b.beam([x, 2.35, z - 1.62], [x + 0.18, 2.85, z - 1.95], 0.12);
+  b.beam([x + 0.18, 2.85, z - 1.95], [x + 0.4, 2.65, z - 2.25], 0.1);
 }
 
 function stockExchange(b: ModelBuilder, v: number, rng: RNG): void {

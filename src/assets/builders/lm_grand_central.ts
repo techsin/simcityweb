@@ -118,9 +118,18 @@ function grandCentral(b: ModelBuilder, v: number, rng: RNG): void {
   if (v === 0) {
     b.paint(trim, Surf.Stone).gableRoof(0, 8.2, 22, 9.6, 21.8, 6.4, 'z', 0.15, edge);
     stationClock(b, 24.7, 13.18, 2.1);
-    b.paint(0x69816c, Surf.Metal, 3).box(-0.6, 28.2, 7.6, 0.6, 30.8, 8.8);
+    // Verdigris eagle on the ridge: body, head and hooked beak facing the street, wings raised with stepped feathers.
+    b.paint(0x69816c, Surf.Metal, 3).box(-0.42, 27.6, 7.75, 0.42, 30.2, 8.6);
+    b.box(-0.22, 30.2, 7.9, 0.22, 30.7, 8.55);
+    b.box(-0.08, 30.3, 8.55, 0.08, 30.48, 8.85);
+    const wing: P2[] = [
+      [0.35, 30.15], [2.2, 31.0], [4.2, 31.55], [4.0, 31.0], [3.35, 31.1], [3.15, 30.45],
+      [2.4, 30.6], [2.15, 29.9], [1.3, 30.0], [1.05, 29.35], [0.35, 29.3],
+    ];
     for (const s of [-1, 1]) {
-      b.quad2([0, 29.4, 8.2], [s * 4.3, 31.3, 8.2], [s * 2.9, 29.3, 8.2], [0, 28.8, 8.2]);
+      const pts = wing.map(([wx, wy]) => [s * wx, wy] as P2);
+      polyZ(b, pts, 8.2, 1);
+      polyZ(b, pts, 8.2, -1);
     }
   } else {
     b.paint(edge).box(-4.8, 21.8, 3.2, 4.8, 35.2, 12.8);
