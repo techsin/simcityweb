@@ -15,6 +15,7 @@
 import '../insight.css';
 import { DEV_TYPE_LABELS, DevType, Network, Zone, isRoad, zoneDensity, zoneFamily } from '../../core/types';
 import { BF, type Building } from '../../sim/CityState';
+import type { ActionResult } from '../../sim/actions';
 import { getDef } from '../../sim/catalog';
 import type { GameContext, QueryTarget } from '../../game/context';
 import { CATEGORY_COLORS, defIcon } from '../../game/toolCatalog';
@@ -614,12 +615,13 @@ export class InfoPanel extends Panel {
       }, { signal: this.ctx.signal });
       acts.appendChild(hb);
     }
-    let cost = 0;
+    let pre: ActionResult | null = null;
     try {
-      cost = this.ctx.actions.bulldoze({ x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d }, true).cost;
+      pre = this.ctx.actions.bulldoze({ x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d }, true);
     } catch {
-      cost = 0;
+      pre = null;
     }
+    const cost = pre?.cost ?? 0;
     const demo = h('button', { class: 'btn sm danger', html: icon('bulldoze', 13) + `<span>${rubble ? 'Clear rubble' : 'Demolish'}${cost ? ` · ${cost < 0 ? '+' : ''}${money(Math.abs(cost))}` : ''}</span>` });
     demo.addEventListener('click', async () => {
       const request = ++this.actionRequest;
@@ -642,7 +644,7 @@ export class InfoPanel extends Panel {
       };
       // last power plant / water source, landmark / reward, or > §20k: confirm first
       try {
-        const risk = await this.ctx.host.query('demolishRisks', { rect, cost, sandbox: this.ctx.sandbox() });
+        const risk = await this.ctx.host.query('demolishRisks', { rect, cost, refund: pre?.refund, refundNote: pre?.refundNote, sandbox: this.ctx.sandbox() });
         if (!current()) return;
         const yes = !risk || await confirmDialog(this.ctx, { title: risk.title, message: 'This demolition has consequences:', items: risk.items, confirm: 'Demolish', danger: true });
         if (yes && current() && this.ctx.state.buildings.has(b.id)) doIt();

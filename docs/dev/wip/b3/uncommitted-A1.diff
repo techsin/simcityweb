@@ -1,0 +1,532 @@
+diff --git a/docs/dev/B3_DESIGN.md b/docs/dev/B3_DESIGN.md
+index 7d28595..367839d 100644
+--- a/docs/dev/B3_DESIGN.md
++++ b/docs/dev/B3_DESIGN.md
+@@ -1,4 +1,4 @@
+-# B3: spreading the month-boundary work (design, rev 2)
++# B3: spreading the month-boundary work (design, rev 3: as built)
+ 
+ Design for docs/WASM_PLAN.md row B3 and docs/WORKER_DESIGN.md §6 row S4. Base: a59f08f, branch `b3-month-spread`.
+ It is built on the three B3 maps (tourism; population, EQ/HQ and advisors; the whole month day). The numbers below
+@@ -22,6 +22,46 @@ come from their runs on this machine: wall clock, idle-gated, interleaved B/W, b
+   validator, clamps, `tc` / `dump` in the pass, edge cases, the A1 leftovers, corrections); gameplay O1, O3–O9. Not
+   adopted: gameplay O2 (§3.1, "Rejected"), O10 is the gates agent's (§8).
+ 
++**Rev 3 (as built)** records what the implementation adds to rev 2 and what it measured. Commits: A0 616a760, T1 6e1a875,
++T2 6c0d1ed, P3 0a949fc, then A1 (last; it can be dropped on its own) and this revision.
++- **Verified (no timing runs; those are the gates agent's):**
++  - A0 and T1 are bit-identical. cityDigest after 120 days at design cadence equals the base on bot256 (`9f9a4666…eb54`)
++    and dense1m (`a4821afc…5899`); the 128×15 seed-7 bot ends 2015 at 194,432 [63702, 93494, 37236].
++  - T2 + P3 are deterministic: two runs of each fixture, 90 days at design cadence, give the same digest.
++  - A1 is bit-identical to T2 + P3: the same digests after 90 days on bot256 (`6653fea5…73ed`) and dense1m
++    (`dbdb1a30…0602`), and the 128×15 bot's output identical line for line.
++- **The bot changes by design** (128×15 seed 7, residents in 2015): base 194,432; T2 197,227 [65942, 93399, 37886];
++  T2 + P3 195,597 [63452, 94452, 37693]; with A1 the same.
++- **T2, beyond §3.1:**
++  - the tick's freshness test also requires that the venue records came from the saved pass object
++    (`TourismState.pass === systemData.tourismPass`): a pass replaced or deleted after init is recomputed;
++  - a new pass carries the previous pass's `tc` and `dump` (what the last tick scored) until the next tick;
++  - the daily resets a slice record whose `m`, `done` or `rooms` is not a finite number;
++  - init restores whenever a valid pass is present.
++- **P3, beyond §3.3:** population.ts exports `EQHQ_DAY`, `OUTAGE_PRUNE_DAY` (the prune day, named), `OCC_PHASE`,
++  `DEMO_PHASE`, `DEMOGRAPHICS_EVENT_PHASE` and `DEMO_AGG_DAYS` for the calendar test. growth.ts's `CORE_DAY` is not
++  exported (outside B3's files); the test states its value.
++- **A1, beyond §3.2:**
++  - The tick's announcement loop became `announce()`, which calls back for each advice before it tests the next. So the
++    tick takes the same decisions in the same order: an announced advice's cooldown and news item still count for the
++    rest of the pass. The prediction calls the same function.
++  - `AdvisorsSystem.predictPlaces(st)` exposes the prediction (tests). A saved place must be two integers; anything
++    else is looked up.
++  - **The rule wasted at d11040** (gameplay R2 a). The prototype (base + A1) predicted noise and playgrounds on d11039,
++    and the tick posted unemployment and noise. So **playgrounds** (priority 3) was wasted, and the term that differs is
++    the ADVICE_PER_MONTH cap: unemployment (priority 5) holds only from the tick. The base takes its employment sample on
++    the tick itself (11040 mod 4 = 0); with P3 that sample runs on d11037.
++  - With T2 + P3 under A1, dense1m's ticks 10950–11040 waste nothing. Two places were predicted (noElementary,
++    noCollege) and both were posted there. The d11039 prediction looks nothing up: d11040 posts plantFireReach and
++    unemployment, neither with a lazy place (`b3work/implementer/probe/waste_*.out`).
++- **Tests that differ from §7:** test 2's systems, test 3's sentinels and test 4's twins (see §7), plus two existing tests:
++  - `tests/infra/emergencyBot.test.ts`, EM-1 normal play: the town is seed 3 over 6 years instead of seed 7 over 4.
++    Seed 7's town raised 3 prompts in the base, 1 after T2 and none after T2 + P3. Across 5 seeds × 10 years the base
++    raised 21 prompts and B3 16 (seeds 7, 3, 11, 13, 21: 5/1, 7/4, 3/3, 3/6, 3/2): the bot's incidents are chaotic,
++    not fewer by design. Seed 3 over 6 years raises 5 (base), 2 (T2) and 3 (T2 + P3, with A1 too).
++  - `tests/sim/desirability.test.ts`, "a loaded city reads the saved demographics sample": its sample days follow
++    `DEMO_PHASE` (days 49 and 81 instead of 64 and 96).
++
+ ## 1. The decision
+ 
+ Five commits, in this order. Each one can be reverted on its own; A1, the last, can be dropped without touching the
+@@ -425,6 +465,17 @@ is also limited by approval's survey slices, population's float coarse sums and
+ order after a load and live outside B3's files. So continuity is tested per month-state on an economy-only town (§7) that
+ removes and adds **plopped** buildings, as in tests/sim/finalFixesEcon.test.ts, and not with fixture digests.
+ 
++Measured (rev 3):
++- **With every economy system, the rest of the economy does not continue exactly across a load**, in the base and in
++  B3 alike. A town saved on day 45 diverges on day 46: population's homes (pop, age, edu) after its post-load refill, and
++  approval's init recomputes its terms at load.
++- **With tourism, budget and approval on one runtime, the whole city continues bit for bit** to day 91 from every save
++  day 31–60 in B3. The base fails right after the load on every save day (its approximate rebuild), and a B3 copy
++  without the id sort fails at the ticks.
++- So §7's test 2 runs those three systems.
++- **The budget inserts its income lines in `rt.plopped` order**, which a load rebuilds in Map order. The values are
++  equal and only the key order differs (budget.ts, outside B3), so the test compares the lines key by key.
++
+ **Size.** `ven` + `spl` at dense1m: 445 venues → ≈ 2.7k doubles ≈ 21 kB, against bundles of 3.5–4.3 MB. The bundle codec
+ stores typed arrays in its binary blob. The recovery codec carries `systemData` (the `data` part) as-is through
+ `encodeBundle`, as a raw blob that the localStorage budget never drops (determinism O10: rev 1 said it XOR-codes them; it
+@@ -539,32 +590,37 @@ documented in the code:
+ - `tests/sim/exact/j10Original.ts`: the two P3 phases and the event day (determinism R3).
+ 
+ **New, in tests/sim/monthSpread.test.ts (T2, P3):**
+-1. **Schedule.** On a town with a castle, a hotel and a historic home:
++1. **Schedule.** On test 2's town, with every economy system:
+    - the totals, records and raster change on day 26 and on no other day;
+    - `layerUpdated` `'tourism'` is emitted on day 26 only;
+    - on the tick, only attractiveness, its terms, migration and migrants change, and `tourismPass.m === st.monthIndex`.
+-2. **Continuity on every day of the month** (determinism R4). An economy-only town (finalFixesEcon's `town()`) with
+-   venues (castle, museum, zoo, small and large airports, train station), hotels, historic homes, a college and a lake
+-   for beaches. A script of player actions runs in every game at the end of its day:
++2. **Continuity on every day of the month** (determinism R4). An economy-only 160² town: 148 apartment blocks, four of
++   them historic; six hotels; 22 venues (landmarks, culture, parks, both airports, a train station, a college); a lake
++   with beaches. It runs tourism, budget and approval on one runtime (rev 3: §4's measurements). A script of player
++   actions runs in every game at the end of its day:
+    - (a) day 30: bulldoze a venue that is **not the last plopped building** (the swap-remove reorders `rt.plopped`; a
+      load rebuilds Map order);
+    - (b) day 58: bulldoze a landmark and the operating large airport (saves on 58–60 carry a decremented
+      `pass.culture` / `conn` and a `ven` id whose building is gone);
+    - (c) day 58: plop a new venue (no record until day 86, so `venueIncomeFactor` is 1 on day 60 in both games).
+ 
+-   For each save day s = 31…60: `serializeCity({copy})` → `deserializeCity` → `new Sim(economySystems())`, then both
+-   games run to day 91 (passes on 56 and 86, ticks on 60 and 90). With `Object.is` / byte equality:
++   For each save day s = 31…60: `serializeCity({copy})` → `deserializeCity` → `new Sim` with the same three systems,
++   then both games run to day 91 (passes on 56 and 86, ticks on 60 and 90). With `Object.is` / byte equality (the income
++   lines key by key):
+    - right after the load: every `venueVisits`, `tourismSummary`, `attractivenessBreakdown` and `st.visitors`;
+    - at days 60 and 90: the econData tourism totals, attractiveness, `attractTerms`, migration and migrants; the stats;
+      `lastIncome['tourism']` and every `facility:*` line; `st.visitors`.
+ 3. **Fallbacks:**
+    - (a) Delete `tourismPass` before loading on dom 10 and on dom 28. Init rebuilds (records exist, raster > 0 at the
+-     venues). On dom 28 the tick uses init's pass; with the pass deleted after init, it runs its own.
+-   - (b) A v1 `tourismAcc` becomes v2, and the first pass's sums equal the sliced sums of an uninterrupted run.
++     venues). On dom 28 the tick uses init's pass; with the pass deleted after init, it runs its own. (Rev 3: the save
++     carries sentinel totals, which stay on dom 10 and give way to init's pass on dom 28.)
++   - (b) A v1 `tourismAcc` becomes v2, and the first pass's sums equal the sliced sums of an uninterrupted run (rev 3:
++     the whole pass and the tourism outputs equal the uninterrupted game's at day 56).
+    - (c) A pass that fails the validator (a Float32Array `ven`, a short `conn`) takes the fallback.
+ 4. **Removal between the pass and the tick.** Bulldoze a landmark and the only large airport on day 28. The totals drop
+    at once, as today. `pass.culture`, `pass.tc` and `pass.conn[0]` drop (never below 0). The tick's
+-   `attractTerms.connect` equals the value with no large airport.
++   `attractTerms.connect` equals the value with no large airport (rev 3: equal to a twin town that bulldozed them before
++   the pass, below one that kept them).
+ 5. **Determinism.** Two runs of the same city give identical `serializeCity` digests after a year (12 passes, 12 ticks).
+ 6. **Slicing units.** The window month (`m = ⌈(day − 26)/30⌉`) covers each slice exactly once per window; the pass reads
+    the window only from the daily; the venue order is ascending id whatever the order of `rt.plopped`.
+@@ -581,7 +637,9 @@ documented in the code:
+    tick's news item carries that x/z, and the rule's `where` is not called on the tick.
+ 7. **Predict is read-only** (gameplay O4). All of `st.systemData` (survey, popGrids, outages included), `st.news`,
+    econData and the RNG state are deep-equal before and after `predictPlaces`; `residentSurvey` is not called and no
+-   zone scan runs (module spies). Without `scan.zone` the prediction is empty.
++   zone scan runs (module spies). Without `scan.zone` the prediction is empty. (Rev 3: `residentSurvey` is spied, and the
++   spy is shown to see the advisors' calls. The zone scan has no export to spy on: gather takes the saved scan, and without
++   one the prediction returns before gather.)
+ 8. **Saves on day 28 and day 29** (determinism R4 d). The loaded games post the same news (text, x, z) on the tick as
+    the uninterrupted one: the day-28 save predicts on day 29 itself. With `scan.places` deleted, the tick looks the place
+    up and, in a steady city, finds the same one. The existing "month scans are saved with the city" test covers `places`
+@@ -602,7 +660,7 @@ documented in the code:
+ - approval ≥ 50 from year 30, and funds ≥ 0;
+ - EQ ≥ 100 by year 30;
+ - **tourism jobs within ±30 %** (gameplay R6): neither the balance-json rows nor the bot's table has a tourism-jobs
+-  column, and tools are outside B3's files. A scratch probe (`b3work/implementer/tourismJobs.ts`) runs the bot's city
++  column, and tools are outside B3's files. A scratch probe (`b3work/implementer/tourismJobs.mts`) runs the bot's city
+   and logs per year `econData.tourism` against `demandContext(st, rt).tourism` (the legacy formula, demand.ts:57), for B
+   and W on 256×60 seed 7; the ratio must stay within 0.7–1.3 and within ±30 % of B's;
+ - `totalMsPerDay` ≤ baseline + 3.
+@@ -641,7 +699,8 @@ Judge (gameplay R4, the statistic the lead is asked to approve):
+   - A1: `MonthScans.places`; `gather`'s `'predict'` mode and `depthRules`' `Scans.predict`; the shared announcement test;
+     `recentNews`' day; `predictPlaces`, the day-29 hook and the tick's use of saved places.
+ - `src/sim/economy/population.ts`: `OCC_PHASE`, `DEMO_PHASE` and the `'demographics'` event day.
+-- The tests in §7, and `tests/sim/exact/j10Original.ts`.
++- The tests in §7, and `tests/sim/exact/j10Original.ts`; rev 3: `tests/infra/emergencyBot.test.ts` (EM-1's town) and
++  `tests/sim/desirability.test.ts` (the sample days).
+ 
+ **Not touched:**
+ - `budget.ts`, `demographics.ts`, `tuning.ts`, `params.ts`;
+@@ -656,7 +715,8 @@ Judge (gameplay R4, the statistic the lead is asked to approve):
+   - `tools/monthbench.ts`, bundled with `tools/bundle.mjs --tree <worktree>`;
+   - `tools/tgate.py` and `tools/monthagg.py`;
+   - saves from dom 16 and 28: `map-month/fixtures/*_d{16,28}.metropolis`.
+-- The tourism-jobs probe: `implementer/tourismJobs.ts` (§8).
++- The tourism-jobs probe: `implementer/tourismJobs.mts` (§8; `TREE=<worktree> npx tsx tourismJobs.mts 256 60 7 out.json`,
++  run from inside the tree).
+ - The §5 model: `designer/model.py` (the m_ runs), `model_i.py` (the instrumented runs), `model_c.py` (first ticks after a
+   load), `doms.py` (days 26–29) and `resid.py` (per-tick residuals).
+ 
+diff --git a/src/sim/economy/advisors.ts b/src/sim/economy/advisors.ts
+index f28d5e8..caa6e85 100644
+--- a/src/sim/economy/advisors.ts
++++ b/src/sim/economy/advisors.ts
+@@ -45,7 +45,9 @@
+  * pre-WP5 rules need (zoned blocks, plopped facilities) run on the last days of the month (MONTH_SCAN_DAYS) and are
+  * saved with the city (AdvisorData.scan), so a game loaded mid-scan gives the same advice. The places of the rules
+  * (unservedClusters / uncoveredHotspots / the worst home) are looked up only for advice that is announced or listed
+- * (Advice.where); the Advisors panel reads advisorIssues (the month tick's list) while the game runs.
++ * (Advice.where); the Advisors panel reads advisorIssues (the month tick's list) while the game runs. B3 (A1): on the
++ * second scan day the coming tick's announcements are predicted with the tick's own test (announce) and their places
++ * looked up then (AdvisorData.scan.places); the tick takes a predicted place instead of a lookup.
+  *
+  * Flavour headlines: a shuffle bag over HEADLINES (each line once per cycle; lines that don't fit the city's size,
+  * season, climate or buildings wait in the bag), and no line again within HEADLINE_REPEAT_DAYS (2 in-game years).
+@@ -54,6 +56,7 @@
+ import type { SimSystem, Simulation } from '../Simulation';
+ import { BF, RESP_NONE, type Building, type CityState, type NeedStat, type NeedTier } from '../CityState';
+ import { DEV_TYPE_COUNT, DEV_TYPE_LABELS, DevType, Network, Zone, zoneDensity } from '../../core/types';
++import { DAYS_PER_MONTH } from '../../core/constants';
+ import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runtime';
+ import { capHints, regionInputs } from './demand';
+ import { residentCoverage, residentSurvey } from './approval';
+@@ -118,12 +121,12 @@ const QUIET_DAYS = 90;
+  * lazily loaded rewards chunk into the eager bundle (src/game/modules.ts loads it on demand)
+  */
+ export const WATER_TREATMENT_UNLOCK_POP = 6000;
+-/** a news item matching `re` was posted within QUIET_DAYS */
+-function recentNews(st: CityState, re: RegExp): boolean {
++/** a news item matching `re` was posted within QUIET_DAYS of `day` (today, or the coming month tick: A1) */
++function recentNews(st: CityState, re: RegExp, day = st.day): boolean {
+   const news = st.news;
+   for (let k = news.length - 1; k >= 0; k--) {
+     const n = news[k];
+-    if (st.day - n.day > QUIET_DAYS) break;
++    if (day - n.day > QUIET_DAYS) break;
+     if (re.test(n.text)) return true;
+   }
+   return false;
+@@ -164,13 +167,49 @@ export interface AdvisorData {
+ }
+ /** the month tick's map scans (AdvisorData.scan; each optional: a scan saved by an older version lacks the newer ones and
+  *  the month tick then takes it fresh) — zone blocks (day 28), facilities + the worst jam + the residents beyond fire
+- *  reach (day 29; resp null = the emergency layers were not ready) */
+-interface MonthScans { zone?: ZoneScan; fac?: FacScanData; jam?: JamScan; resp?: { residents: number; fireOut: number } | null }
++ *  reach (day 29; resp null = the emergency layers were not ready) — and (B3 A1, day 29 after the scans) the places
++ *  [x, z] ([-1, -1]: none found) of the advice the coming tick is predicted to announce (absent: looked up on the tick) */
++interface MonthScans {
++  zone?: ZoneScan; fac?: FacScanData; jam?: JamScan; resp?: { residents: number; fireOut: number } | null;
++  places?: Record<string, [number, number]>;
++}
++/** a predicted place of MonthScans.places, if it is one (a saved record is data: anything else is looked up) */
++function savedPlace(places: MonthScans['places'], id: string): [number, number] | null {
++  const p = places && Object.prototype.hasOwnProperty.call(places, id) ? places[id] : undefined;
++  return Array.isArray(p) && p.length === 2 && Number.isInteger(p[0]) && Number.isInteger(p[1]) ? p : null;
++}
+ /** a family whose ready lots wait this long (days) with demand and no growth at all: growthStalled */
+ const STALL_DAYS = 330;
+ /** advice posts kept in AdvisorData.posts (2 a month at most: two years) */
+ const POSTS_KEPT = 48;
+ 
++/**
++ * The month tick's announcement test (B3 A1: one function for monthly() and the day-29 prediction, so the two cannot
++ * drift). `list` in priority order, `day` the tick's day. An advice speaks when its confirm rule has held CONFIRM_DAYS
++ * (its first sighting in `seen`), its cooldown — doubled per repeat while its condition persists, at most × 8
++ * (`streak`) — is over, and its quietIf matches no news of the QUIET_DAYS before `day` nor an advice spoken earlier in
++ * this pass; at most ADVICE_PER_MONTH. `speak` runs for each in order before the next one is tested: on the tick it posts
++ * the advice, so its cooldown and its news item count for the rest of the pass, as they always did.
++ */
++function announce(st: CityState, list: readonly Advice[], day: number, cooldowns: Readonly<Record<string, number>>,
++  streak: Readonly<Record<string, number>>, seen: Readonly<Record<string, number>>, speak: (a: Advice) => void): void {
++  const spoken: Advice[] = [];
++  for (const a of list) {
++    if (spoken.length >= ADVICE_PER_MONTH) break;
++    if (a.confirm) {
++      const s0 = seen[a.id];
++      if (s0 === undefined || day - s0 < CONFIRM_DAYS) continue;
++    }
++    const last = cooldowns[a.id];
++    const cooldown = Math.max(MIN_COOLDOWN, a.cooldown) * 2 ** Math.min(3, streak[a.id] ?? 0);
++    if (last !== undefined && day - last < cooldown) continue;
++    if (spoken.some((o) => o.id === a.id)) continue;
++    if (a.quietIf && (recentNews(st, a.quietIf, day) || spoken.some((o) => a.quietIf!.test(o.text)))) continue;
++    spoken.push(a);
++    speak(a);
++  }
++}
++
+ export function advisorData(st: CityState): AdvisorData {
+   let a = st.systemData.advisors as AdvisorData | undefined;
+   if (!a || a.v !== 1) {
+@@ -1111,6 +1150,9 @@ interface Scans {
+   /** a rule's map location (unservedClusters / uncoveredHotspots / the worst home), looked up lazily through
+    *  Advice.where: fresh on the month tick, memoised for the Advisors panel (LOCATE_TTL) */
+   locate: (key: string, f: () => { x: number; z: number } | undefined) => { x?: number; z?: number };
++  /** the day-29 prediction of the tick's announcements (B3 A1): the garbage rule takes no resident survey (off the month
++   *  tick one full pass over the homes), so it is not predicted (the tick looks its place up) */
++  predict?: boolean;
+ }
+ const pctS = (v: number) => `${Math.round(v * 100)}%`;
+ const EDGE_NAME: Record<string, string> = { n: 'north', s: 'south', e: 'east', w: 'west' };
+@@ -1336,7 +1378,7 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans,
+   // garbage: ONE rule (critic item 31) — residents without pickup (approval's monthly survey), with the reason and
+   // where; from 300 residents (QA)
+   rt.ensureLists();
+-  const survey = pop >= 300 ? residentSurvey(st, rt, inf) : null;
++  const survey = pop >= 300 && !sc.predict ? residentSurvey(st, rt, inf) : null;
+   const garbageHomes = survey && survey.pop[3] > 0 ? survey.noGarbage[3] : 0;
+   const legacyShort = !inf.pollution && pop > 2000 && s.garbageProduced > s.garbageCapacity * 1.02;
+   if ((pop >= 300 && survey !== null && survey.pop[3] >= 200 && garbageHomes >= 0.2) || legacyShort) {
+@@ -1458,6 +1500,9 @@ export interface AdvisorsSystem extends SimSystem {
+   /** advice whose condition holds right now, highest priority first (confirm rules once the monthly pass confirmed
+    *  them). Evaluated on demand between the monthly passes; reads the city only (no rng, no state writes) */
+   openAdvice(st: CityState): OpenAdvice[];
++  /** B3 A1: the places [x, z] ([-1, -1]: none) of the advice the coming month tick is predicted to announce, from the
++   *  month's saved scans (empty without them). Read-only: the day-29 daily stores them in AdvisorData.scan.places */
++  predictPlaces(st: CityState): Record<string, [number, number]>;
+ }
+ 
+ /** the open advice of `sim` (see AdvisorsSystem.openAdvice); [] without the advisors system */
+@@ -1570,8 +1615,9 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
+     .replaceAll('{year}', String(st.year)).replaceAll('{pop}', int(st.stats.population));
+ 
+   /** every rule's advice holding now; 'month' = the month tick (saved scans, fresh places), 'open' = the Advisors
+-   *  panel (fresh scans, memoised places, reads the city only) */
+-  const gather = (st: CityState, mode: 'month' | 'open', scans?: MonthScans): Advice[] => {
++   *  panel (fresh scans, memoised places, reads the city only), 'predict' = the day-29 prediction (saved scans, fresh
++   *  places, reads the city only, no garbage survey; B3 A1) */
++  const gather = (st: CityState, mode: 'month' | 'open' | 'predict', scans?: MonthScans): Advice[] => {
+     const out: Advice[] = [];
+     const s = st.stats;
+     const d = econData(st);
+@@ -1608,7 +1654,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
+     const util = inf.utilities;
+     const scan = scans?.zone ?? zoneScan(st, util);
+     const fac = resolveFac(st, scans?.fac ?? scanFacilities(st, rt));
+-    const loc = mode === 'month' ? freshLocate : memoLocate(st);
++    const loc = mode === 'open' ? memoLocate(st) : freshLocate;
+     const at = (b: Building) => ({ x: b.x + (b.w >> 1), z: b.z + (b.d >> 1) });
+     const cellAt = (i: number): { x?: number; z?: number } => (i >= 0 ? { x: i % N, z: (i / N) | 0 } : {});
+     const burntWhat = (list: Building[], many: string) => (list.length > 1 ? `${list.length} ${many}` : `The ${nameOf(list[0])}`);
+@@ -1840,7 +1886,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
+         text: 'Smog is choking our neighborhoods. Separate industry from homes, plant trees, or pass the Clean Air Act.' });
+     }
+     // ---------------- WP5: services, emergencies, justice, environment, tourism, region, transit (depthRules)
+-    depthRules(st, rt, inf, { zone: scan, fac, noisy: noisyOf(st), resp: pop > 1500 ? (scans && scans.resp !== undefined ? scans.resp : respOut(st)) : null, locate: loc }, out);
++    depthRules(st, rt, inf, { zone: scan, fac, noisy: noisyOf(st), resp: pop > 1500 ? (scans && scans.resp !== undefined ? scans.resp : respOut(st)) : null, locate: loc, predict: mode === 'predict' }, out);
+     // one fire advisor (critic item 31): a city without any fire station hears it once — noFireResponse names the
+     // plants' accident risk too
+     if (out.some((a) => a.id === 'noFireResponse')) {
+@@ -2113,8 +2159,33 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
+     return out;
+   };
+ 
++  /**
++   * B3 A1: the places of the advice the coming month tick is predicted to announce — the tick's rules on the saved scans
++   * (gather 'predict') through the tick's own test (announce) for the tick's day; for each with a lazy place, its lookup
++   * now ([-1, -1]: none found). Read-only. Without a saved zone scan (an older save loaded after day 28) none: gather would
++   * scan the zones now and the tick once more.
++   */
++  const predictPlaces = (st: CityState, scans: MonthScans): Record<string, [number, number]> => {
++    const places: Record<string, [number, number]> = {};
++    if (!scans.zone) return places;
++    const d = econData(st);
++    const seen = (st.systemData.advisors as AdvisorData | undefined)?.seen ?? {};
++    const tick = (Math.floor(st.day / DAYS_PER_MONTH) + 1) * DAYS_PER_MONTH;
++    const list = gather(st, 'predict', scans).sort((a, b) => b.priority - a.priority);
++    announce(st, list, tick, d.cooldowns, d.streak ?? {}, seen, (a) => {
++      if (!a.where || a.x !== undefined) return;
++      const p = a.where();
++      places[a.id] = p.x !== undefined && p.z !== undefined ? [p.x, p.z] : [-1, -1];
++    });
++    return places;
++  };
++
+   return {
+     name: 'economy.advisors',
++    predictPlaces(st) {
++      const sc = (st.systemData.advisors as AdvisorData | undefined)?.scan;
++      return sc && sc.month === st.monthIndex ? predictPlaces(st, sc) : {};
++    },
+     init(sim) {
+       rt.attach(sim);
+       const d = econData(sim.state);
+@@ -2156,6 +2227,8 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
+           // (final fixes V5: the two typed-array passes the rules need, off the month tick)
+           a0.scan.jam = scanJam(st);
+           a0.scan.resp = st.stats.population > 1500 ? respOut(st) : null;
++          // (B3 A1: the coming tick's announcements, predicted on these scans, and their places: off the month tick)
++          a0.scan.places = predictPlaces(st, a0.scan);
+         }
+       }
+       // population milestones
+@@ -2193,23 +2266,20 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
+       const seen = advisorData(st).seen;
+       for (const id of Object.keys(seen)) if (!active.has(id)) delete seen[id];
+       for (const a of list) if (a.confirm) seen[a.id] ??= st.day;
+-      let shown = 0;
+-      for (const a of list) {
+-        if (shown >= ADVICE_PER_MONTH) break;
+-        if (a.confirm && st.day - seen[a.id] < CONFIRM_DAYS) continue;
+-        const last = d.cooldowns[a.id];
+-        const cooldown = Math.max(MIN_COOLDOWN, a.cooldown) * 2 ** Math.min(3, streak[a.id] ?? 0);
+-        if (last !== undefined && st.day - last < cooldown) continue;
+-        if (a.quietIf && recentNews(st, a.quietIf)) continue;
++      announce(st, list, st.day, d.cooldowns, streak, seen, (a) => {
+         d.cooldowns[a.id] = st.day;
+         streak[a.id] = (streak[a.id] ?? 0) + 1;
+-        placed(a, a.where);
++        // its place: the day-29 prediction's when it made one (B3 A1; [-1, -1]: none, as a lookup that finds nothing),
++        // else looked up now
++        const pp = a.where && a.x === undefined ? savedPlace(ms?.places, a.id) : null;
++        if (pp) {
++          if (pp[0] >= 0 && pp[1] >= 0) { a.x = pp[0]; a.z = pp[1]; }
++        } else placed(a, a.where);
+         sim.notify(a.text, a.kind === 'info' ? 'advisor' : a.kind, a.x, a.z, a.advisor);
+         const posts = (advisorData(st).posts ??= []);
+         posts.push({ day: st.day, id: a.id, text: a.text });
+         if (posts.length > POSTS_KEPT) posts.splice(0, posts.length - POSTS_KEPT);
+-        shown++;
+-      }
++      });
+       // every open issue for advisorIssues (the announced ones already know their place; the others look it up when read)
+       const issues: OpenAdvice[] = [];
+       for (const a of list) {
+diff --git a/tests/sim/advisorsPredict.test.ts b/tests/sim/advisorsPredict.test.ts
+new file mode 100644
+index 0000000..99819c1
+--- /dev/null
++++ b/tests/sim/advisorsPredict.test.ts
+@@ -0,0 +1,139 @@
++/**
++ * B3 A1 (docs/dev/B3_DESIGN.md §3.2): on the second month-scan day (29) the advisors predict the coming month tick's
++ * announcements with the tick's own test and look their "Show me" places up then (AdvisorData.scan.places); the tick
++ * posts a predicted place without a lookup. The prediction is read-only, saved with the city, and a scan without places
++ * is looked up on the tick, as before.
++ */
++import { describe, expect, it, vi } from 'vitest';
++import * as approval from '../../src/sim/economy/approval';
++import type { CityState, NeedTier } from '../../src/sim/CityState';
++import { Simulation, type SimSystem } from '../../src/sim/Simulation';
++import { EconRuntime } from '../../src/sim/economy/runtime';
++import { MONTH_SCAN_DAYS, advisorData, advisorsSystem, openAdvice, type AdvisorsSystem } from '../../src/sim/economy/advisors';
++import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
++import { newState } from '../infra/cityGen';
++
++type Clusters = Partial<Record<NeedTier, { x: number; z: number; people: number }[]>>;
++/** a city with only the advisors system and a fake services system serving `clusters` (and counting the lookups) */
++function game(clusters: Clusters, st?: CityState) {
++  if (!st) {
++    st = newState(64);
++    st.systemData.infraVersion = 1; // infra layers "present": the services rules are on
++    st.stats.population = 20000;
++    st.stats.needs.elementary = { need: 4000, served: 2500, capacity: 2600, unreached: 800, overcrowded: 0 };
++  }
++  const calls = { n: 0 };
++  const services = {
++    name: 'services',
++    clustersOf: (t: NeedTier, max: number) => { calls.n++; return (clusters[t] ?? []).slice(0, max); },
++    facilityLoadOf: () => null,
++  } as unknown as SimSystem;
++  const adv = advisorsSystem(new EconRuntime());
++  const sim = new Simulation(st, [services, adv]);
++  const g = {
++    st, sim, adv: adv as AdvisorsSystem, calls,
++    /** the advisors' daily of day d */
++    day: (d: number) => { st!.day = d; adv.daily!(sim); },
++    /** the month tick of day d (a multiple of 30) */
++    tick: (d: number) => { st!.day = d; adv.monthly!(sim); },
++    /** the news the tick of day d posted */
++    posted: (d: number) => st!.news.filter((n) => n.day === d).map((n) => ({ text: n.text, x: n.x, z: n.z })),
++  };
++  return g;
++}
++const load = (ser: SerializedCity, clusters: Clusters) => game(clusters, deserializeCity(structuredClone(ser)));
++const SCHOOL = /^800 children have no elementary school/;
++
++describe('B3 A1: the coming tick\'s announcements predicted on day 29, their places looked up then', () => {
++  it('day 29 stores the predicted place of a lazy-place rule; the tick posts it without a lookup', () => {
++    const clusters: Clusters = { elementary: [{ x: 40, z: 44, people: 900 }] };
++    const g = game(clusters);
++    g.day(MONTH_SCAN_DAYS[0]);
++    expect(advisorData(g.st).scan?.places).toBeUndefined();
++    g.day(MONTH_SCAN_DAYS[1]);
++    expect(advisorData(g.st).scan?.places).toEqual({ noElementary: [40, 44] });
++    expect(g.calls.n).toBe(1);
++    // the cluster moves before the tick: the tick posts the place of day 29, and looks nothing up
++    clusters.elementary = [{ x: 10, z: 12, people: 900 }];
++    g.calls.n = 0;
++    g.tick(30);
++    const n = g.posted(30).filter((p) => SCHOOL.test(p.text));
++    expect(n).toEqual([{ text: n[0].text, x: 40, z: 44 }]);
++    expect(g.calls.n).toBe(0);
++    expect(advisorData(g.st).scan).toBeUndefined();
++    // a predicted "nowhere" ([-1, -1]) posts no place, as a lookup that finds nothing; the Advisors panel looks it up
++    const h = game({});
++    h.day(MONTH_SCAN_DAYS[0]);
++    h.day(MONTH_SCAN_DAYS[1]);
++    expect(advisorData(h.st).scan?.places).toEqual({ noElementary: [-1, -1] });
++    h.tick(30);
++    const m = h.posted(30).filter((p) => SCHOOL.test(p.text));
++    expect(m.length).toBe(1);
++    expect([m[0].x, m[0].z]).toEqual([undefined, undefined]);
++  });
++
++  it('the prediction is read-only: city data, news and the random stream unchanged, no resident survey; none without a zone scan', () => {
++    const g = game({ elementary: [{ x: 40, z: 44, people: 900 }] });
++    g.day(MONTH_SCAN_DAYS[0]);
++    g.day(MONTH_SCAN_DAYS[1]);
++    g.sim.rng.next(); // (a random stream with a saved state)
++    const before = structuredClone({ sd: g.st.systemData, news: g.st.news, stats: g.st.stats, budget: g.st.budget, day: g.st.day });
++    const spy = vi.spyOn(approval, 'residentSurvey');
++    try {
++      // (the spy sees the advisors' survey: the Advisors panel's gather takes it)
++      openAdvice(g.sim);
++      expect(spy).toHaveBeenCalled();
++      spy.mockClear();
++      const s1 = structuredClone({ sd: g.st.systemData, news: g.st.news, stats: g.st.stats, budget: g.st.budget, day: g.st.day });
++      expect(g.adv.predictPlaces(g.st)).toEqual({ noElementary: [40, 44] });
++      expect(spy).not.toHaveBeenCalled();
++      expect(structuredClone({ sd: g.st.systemData, news: g.st.news, stats: g.st.stats, budget: g.st.budget, day: g.st.day })).toStrictEqual(s1);
++      expect(s1).toStrictEqual(before);
++    } finally {
++      spy.mockRestore();
++    }
++    // without the day-28 zone scan (an older save loaded after day 28) nothing is predicted: no scan on day 29
++    delete advisorData(g.st).scan!.zone;
++    expect(g.adv.predictPlaces(g.st)).toEqual({});
++    // the tick posts the same news either way
++    g.tick(30);
++    expect(g.posted(30).filter((p) => SCHOOL.test(p.text)).map((p) => [p.x, p.z])).toEqual([[40, 44]]);
++  });
++
++  it('saves on day 28 and day 29 post the uninterrupted game\'s news on the tick; without places the tick looks them up', () => {
++    const clusters: Clusters = { elementary: [{ x: 40, z: 44, people: 900 }] };
++    const a = game(clusters);
++    a.day(MONTH_SCAN_DAYS[0]);
++    const s28 = serializeCity(a.st, { copy: true });
++    a.day(MONTH_SCAN_DAYS[1]);
++    const s29 = serializeCity(a.st, { copy: true });
++    const places = structuredClone(advisorData(a.st).scan!.places);
++    a.tick(30);
++    const ref = a.posted(30);
++    expect(ref.some((p) => SCHOOL.test(p.text) && p.x === 40 && p.z === 44)).toBe(true);
++    // the day-28 save predicts on day 29 itself; the day-29 save carries the places
++    const b = load(s28, clusters);
++    b.day(MONTH_SCAN_DAYS[1]);
++    expect(advisorData(b.st).scan!.places).toEqual(places);
++    b.tick(30);
++    expect(b.posted(30)).toEqual(ref);
++    const c = load(s29, clusters);
++    expect(advisorData(c.st).scan!.places).toEqual(places);
++    c.calls.n = 0;
++    c.tick(30);
++    expect(c.posted(30)).toEqual(ref);
++    expect(c.calls.n).toBe(0);
++    // a save without places (an older version): the tick looks the place up — in a steady city, the same one
++    const d = load(s29, clusters);
++    delete advisorData(d.st).scan!.places;
++    d.calls.n = 0;
++    d.tick(30);
++    expect(d.posted(30)).toEqual(ref);
++    expect(d.calls.n).toBe(1);
++    // a corrupt record is looked up too
++    const e = load(s29, clusters);
++    (advisorData(e.st).scan!.places as Record<string, unknown>).noElementary = 'here';
++    e.tick(30);
++    expect(e.posted(30)).toEqual(ref);
++  });
++});

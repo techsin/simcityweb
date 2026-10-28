@@ -51,12 +51,13 @@
 import './emergency.css';
 import type { GameContext } from '../game/context';
 import { MAX_BANNERS, sendDays } from '../game/emergencyPolicy';
-import type { PolicySnapshot } from '../worker/SimHost';
+import type { EmergencyView, PolicySnapshot } from '../worker/SimHost';
+import { DispatchOptionsWatches } from './dispatchOptions';
 import type { IncidentKind, Responder } from '../sim/CityState';
 import type { EmergencyEvent } from '../sim/Simulation';
 import {
-  INCIDENT_COLOR, INCIDENT_ICON, INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_UNIT, dispatchWindowEnd, emergencyOf,
-  type EmergencySystem, type EmergencyVehicle, type Incident,
+  INCIDENT_COLOR, INCIDENT_ICON, INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_UNIT, dispatchWindowEnd,
+  type EmergencyVehicle, type Incident,
 } from '../sim/infra/emergency';
 import { EMERG_DAYS_PER_MIN } from '../sim/infra/params';
 import { openDispatch } from '../game/tools/DispatchTool';
@@ -282,7 +283,7 @@ export function failText(inc: Pick<Incident, 'kind' | 'answered' | 'prompted'>, 
 }
 /** the unit still driving to an incident that arrives first (of `responder`, else of any kind): its station, the time
  *  left (days) and its kind */
-export function nextArrival(em: EmergencySystem | undefined, inc: Incident, now: number, responder?: Responder): { station: string; days: number; responder: Responder } | null {
+export function nextArrival(em: EmergencyView | undefined, inc: Incident, now: number, responder?: Responder): { station: string; days: number; responder: Responder } | null {
   if (!em) return null;
   let best: EmergencyVehicle | null = null;
   for (const v of em.vehicles()) {
@@ -293,7 +294,7 @@ export function nextArrival(em: EmergencySystem | undefined, inc: Incident, now:
 const cap1 = (s: string) => s[0].toUpperCase() + s.slice(1);
 /** what is happening to an incident, in words (with `em`: a live countdown to the first arrival). Every vehicle is named
  *  by its own kind: an industrial accident's ambulance is no "fire truck" */
-export function stateText(inc: Incident, now: number, em?: EmergencySystem): string {
+export function stateText(inc: Incident, now: number, em?: EmergencyView): string {
   const primary = INCIDENT_RESPONDERS[inc.kind][0];
   switch (inc.state) {
     case 'queued': return inc.reason === 'busy' ? 'Waiting for a unit to come back' : 'Dispatch pending';
@@ -325,7 +326,7 @@ export function lossText(inc: Pick<Incident, 'lost' | 'deaths'>): string {
  * A waiting incident's supporting units (an industrial accident's or a collapse's ambulance) and the primary unit it
  * still needs: "Ambulance from Medical Clinic #1 on the way — no fire truck yet: dispatch one" ('' when none is out).
  */
-export function supportText(inc: Incident, now: number, em?: EmergencySystem): string {
+export function supportText(inc: Incident, now: number, em?: EmergencyView): string {
   if (!em || !(inc.state === 'uncovered' || inc.state === 'queued')) return '';
   const primary = INCIDENT_RESPONDERS[inc.kind][0];
   let on: EmergencyVehicle | null = null, out: EmergencyVehicle | null = null;
@@ -350,7 +351,7 @@ export function supportText(inc: Incident, now: number, em?: EmergencySystem): s
   return `${what} — ${tail}`;
 }
 /** the responders an incident still misses units of (need > units driving there or on scene), primary first */
-export function missingResponders(em: EmergencySystem, inc: Incident): Responder[] {
+export function missingResponders(em: EmergencyView, inc: Incident): Responder[] {
   const out: Responder[] = [];
   for (const r of INCIDENT_RESPONDERS[inc.kind]) {
     let n = 0;
@@ -380,8 +381,8 @@ interface BannerEl {
   sendLbl: HTMLElement;
   sendEta: HTMLElement;
   choose: HTMLButtonElement;
-  /** the sim day the Send button last read the dispatch options (-1: read them at the next refresh) */
-  optsDay: number;
+  /** the options watch version last shown by Send (-1: read it at the next refresh) */
+  optsVersion: number;
   /** outcome line once the incident is over */
   outcome?: string;
   /** a unit could make it in time at some point (the alert held the speed policy) */
@@ -419,6 +420,7 @@ function inBox(e: MouseEvent, r: DOMRect | null): boolean {
 export class EmergencyBanner {
   readonly el: HTMLDivElement;
   private banners = new Map<number, BannerEl>();
+  private options: DispatchOptionsWatches;
   /** the "N more emergencies" pill and its text (built once: EM-4) */
   private more: HTMLDivElement;
   private moreText: HTMLElement;
@@ -465,6 +467,7 @@ export class EmergencyBanner {
   private flyHigh = 0;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
+    this.options = new DispatchOptionsWatches(ctx.host, ctx.signal);
     this.el = h('div', { class: 'emg-banners' });
     this.moreText = h('span');
     this.more = h('div', { class: 'emg-more mp-glass', style: 'display:none' }, h('span', { class: 'emg-more-ico', html: icon('alert', 14) }), this.moreText);
@@ -615,6 +618,7 @@ export class EmergencyBanner {
   get liveActive(): boolean { return this.ctx.host.policy.live; }
 
   private reset(): void {
+    this.options.dispose();
     for (const b of this.banners.values()) b.el.remove();
     this.banners.clear();
     this.dockDirty = true;
@@ -622,7 +626,7 @@ export class EmergencyBanner {
 
   /** Policy snapshots contain no incident objects; the emergency view supplies their display data. */
   private renderPolicy(policy: PolicySnapshot, feedback = false): void {
-    const em = emergencyOf(this.ctx.sim);
+    const em = this.ctx.host.emergency;
     const ids = new Set(policy.alerts.map((a) => a.id));
     for (const id of this.banners.keys()) if (!ids.has(id)) this.removeBanner(id);
     for (const alert of policy.alerts) {
@@ -647,23 +651,24 @@ export class EmergencyBanner {
     }], { tag: this });
   }
 
-  /** Layout and the count pill use the same current free-unit check as the policy. */
-  private answerable(em: EmergencySystem, inc: Incident): boolean {
-    return !Number.isNaN(sendDays(inc, this.ctx.host.simTime(), () => em.dispatchOptions(this.ctx.sim, inc.id)));
+  /** Layout and the count pill use the policy's send window with the latest delivered options. */
+  private answerable(inc: Incident): boolean {
+    return !Number.isNaN(sendDays(inc, this.ctx.host.simTime(), () => this.options.get(inc.id).value ?? []));
   }
 
   private onEvent(e: EmergencyEvent): void {
     const b = this.banners.get(e.id);
     if (e.type === 'resolved' || e.type === 'failed') {
       if (b) {
+        b.inc = this.ctx.host.emergency.incident(e.id) ?? b.inc;
         const losses = lossText(b.inc);
         b.outcome = (e.type === 'failed' ? failText(b.inc, !!b.wasPossible) : `${INCIDENT_LABEL[e.kind]} under control`) + (losses ? ` — ${losses}` : '');
       }
       return;
     }
     // Any dispatch can take the unit another banner's Send nearest button counted on (EM-1).
-    if (e.type === 'dispatched') for (const o of this.banners.values()) o.optsDay = -1;
-    else if (b && (e.type === 'uncovered' || e.type === 'queued')) b.optsDay = -1;
+    if (e.type === 'dispatched') for (const o of this.banners.values()) o.optsVersion = -1;
+    else if (b && (e.type === 'uncovered' || e.type === 'queued')) b.optsVersion = -1;
   }
 
   private addBanner(inc: Incident): void {
@@ -690,7 +695,7 @@ export class EmergencyBanner {
     choose.addEventListener('click', () => openDispatch(this.ctx, inc.id), { signal: this.ctx.signal });
     close.addEventListener('click', () => this.ctx.host.act('dismissAlert', [inc.id], { tag: this }), { signal: this.ctx.signal });
     this.el.insertBefore(el, this.more);
-    const b: BannerEl = { id: inc.id, inc, el, title, place, note, sub, time, send, sendLbl, sendEta, choose, optsDay: -1, settleUntil: 0, settleGen: 0 };
+    const b: BannerEl = { id: inc.id, inc, el, title, place, note, sub, time, send, sendLbl, sendEta, choose, optsVersion: -1, settleUntil: 0, settleGen: 0 };
     this.banners.set(inc.id, b);
     this.ro?.observe(el);
     this.dockDirty = true;
@@ -699,7 +704,7 @@ export class EmergencyBanner {
   }
 
   private jump(id: number): void {
-    const inc = emergencyOf(this.ctx.sim)?.incident(id);
+    const inc = this.ctx.host.emergency.incident(id);
     if (!inc) return;
     this.ctx.focusCell(inc.x, inc.z, 420);
     // the camera whoosh is the sound (silent inspector)
@@ -707,8 +712,7 @@ export class EmergencyBanner {
   }
 
   private async sendNearest(id: number): Promise<void> {
-    const em = emergencyOf(this.ctx.sim);
-    if (!em) return;
+    const em = this.ctx.host.emergency;
     let r;
     try {
       r = await this.ctx.host.act('dispatchBest', [id]).done;
@@ -732,7 +736,7 @@ export class EmergencyBanner {
     const b = this.banners.get(id);
     const inc = em.incident(id);
     if (b && inc) {
-      b.optsDay = -1;
+      b.optsVersion = -1;
       this.refresh(b, inc);
     }
   }
@@ -755,12 +759,12 @@ export class EmergencyBanner {
   }
 
   private refresh(b: BannerEl, inc: Incident): void {
-    const sim = this.ctx.sim;
     const now = this.ctx.host.simTime();
     setText(b.title, INCIDENT_LABEL[inc.kind] + (inc.kind === 'fire' && inc.fires.length > 1 ? ` · ${inc.fires.length} buildings` : inc.kind === 'riot' ? ` · radius ${Math.round(inc.radius)}` : ''));
     setText(b.place, placeText(inc, ' · '));
     const waiting = inc.state === 'uncovered' || inc.state === 'queued';
-    const em = emergencyOf(sim);
+    const em = this.ctx.host.emergency;
+    b.inc = inc;
     setText(b.note, waiting ? inc.note || stateText(inc, now, em) : stateText(inc, now, em));
     const sub = supportText(inc, now, em);
     setText(b.sub, sub);
@@ -775,22 +779,24 @@ export class EmergencyBanner {
     toggleClass(b.el, 'urgent', counting && left < 2 * EMERG_DAYS_PER_MIN);
     toggleClass(b.el, 'handled', !waiting);
     // "Send nearest (ETA)" from the (3-day cached) dispatch options, for the units the incident still misses (an
-    // industrial accident whose ambulance is out: the fire truck — what dispatchBest sends); read once a sim day and
-    // whenever the dispatch situation changed (optsDay -1). The texts change in place (EM-4)
-    if (waiting && em && b.optsDay !== sim.state.day) {
-      b.optsDay = sim.state.day;
+    // industrial accident whose ambulance is out: the fire truck — what dispatchBest sends). The daily watch also
+    // refreshes changed fleets while paused, capped at 5 Hz. The texts change in place (EM-4).
+    const watch = waiting ? this.options.get(inc.id) : null;
+    const options = watch?.value;
+    if (watch && b.optsVersion !== watch.version) {
+      b.optsVersion = watch.version;
       const miss = missingResponders(em, inc);
-      const best = em.dispatchOptions(sim, inc.id).find((o) => o.free > 0 && Number.isFinite(o.etaMin) && miss.includes(o.responder));
+      const best = options?.find((o) => o.free > 0 && Number.isFinite(o.etaMin) && miss.includes(o.responder));
       if (b.send.disabled !== !best) b.send.disabled = !best;
       // warn when the fastest free unit cannot arrive before the deadline (same unit: emergency minutes) — never for an
       // industrial accident: a truck SENT before the ignition saves the plant, whenever it arrives (EM-5)
       const arriveLeft = inc.deadline - now;
       const late = !!best && inc.kind !== 'industrial' && best.etaDays > arriveLeft;
-      setText(b.sendLbl, best ? 'Send nearest' : 'No free unit');
+      setText(b.sendLbl, best ? 'Send nearest' : options ? 'No free unit' : 'Loading…');
       setText(b.sendEta, best ? `${minText(best.etaMin)}${late ? ' · too far?' : ''}` : '');
       const ed = best ? '' : 'none';
       if (b.sendEta.style.display !== ed) b.sendEta.style.display = ed;
-      const title = best ? `${best.name}: arrives in ${minText(best.etaMin)}${late ? ` — only ${emgTime(Math.max(0, arriveLeft))} left: probably too late, build a station closer` : ''}` : 'Every station of this type is busy or cannot reach it';
+      const title = best ? `${best.name}: arrives in ${minText(best.etaMin)}${late ? ` — only ${emgTime(Math.max(0, arriveLeft))} left: probably too late, build a station closer` : ''}` : options ? 'Every station of this type is busy or cannot reach it' : 'Loading dispatch options…';
       if (b.send.title !== title) b.send.title = title;
     }
     const vd = waiting ? '' : 'none';
@@ -815,12 +821,12 @@ export class EmergencyBanner {
    * "N more" pill (final fixes r3); oldest first within each
    */
   private ordered(): BannerEl[] {
-    const em = emergencyOf(this.ctx.sim);
+    const em = this.ctx.host.emergency;
     const prio = new Map<number, number>();
     for (const b of this.banners.values()) {
       const inc = em?.incident(b.id);
       const waiting = !!inc && (inc.state === 'uncovered' || inc.state === 'queued');
-      prio.set(b.id, !inc || !em ? 2 : this.answerable(em, inc) ? 0 : waiting && b.send.disabled ? 3 : 1);
+      prio.set(b.id, !inc ? 2 : this.answerable(inc) ? 0 : waiting && b.send.disabled ? 3 : 1);
     }
     return [...this.banners.values()].sort((a, b) => prio.get(a.id)! - prio.get(b.id)! || a.inc.start - b.inc.start || a.id - b.id);
   }
@@ -830,7 +836,7 @@ export class EmergencyBanner {
    *  order (ordered), the rest compact (title, time and buttons); CSS order, so no banner is moved in the DOM (no
    *  restarted animations) */
   private layout(): void {
-    const em = emergencyOf(this.ctx.sim);
+    const em = this.ctx.host.emergency;
     const list = this.ordered();
     let capped = 0;
     // (a banner's slot: the shown banners above it, full or compact, and its own state — a banner re-ordered, added,
@@ -1094,8 +1100,7 @@ export class EmergencyBanner {
   }
 
   private tick(): void {
-    const sim = this.ctx.sim;
-    const em = emergencyOf(sim);
+    const em = this.ctx.host.emergency;
     const now = this.ctx.host.simTime();
     this.renderPolicy(this.ctx.host.policy);
     for (const b of this.banners.values()) {
@@ -1110,7 +1115,7 @@ export class EmergencyBanner {
     let hidden = 0;
     if (em) {
       for (const inc of em.incidents()) {
-        if (inc.state === 'uncovered' && inc.major && !this.banners.has(inc.id) && this.answerable(em, inc)) hidden++;
+        if (inc.state === 'uncovered' && inc.major && !this.banners.has(inc.id) && this.answerable(inc)) hidden++;
       }
     }
     // (the docking keeps room for the pill while these exist: final fixes r3)
@@ -1120,7 +1125,7 @@ export class EmergencyBanner {
     }
     const showMore = () => {
       let needYou = hidden;
-      if (em && this.capped) for (const b of this.banners.values()) if (b.el.classList.contains('capped')) { const inc = em.incident(b.id); if (inc && this.answerable(em, inc)) needYou++; }
+      if (this.capped) for (const b of this.banners.values()) if (b.el.classList.contains('capped')) { const inc = em.incident(b.id); if (inc && this.answerable(inc)) needYou++; }
       const total = hidden + this.capped;
       const md = total ? '' : 'none';
       if (this.more.style.display !== md) {
@@ -1135,6 +1140,7 @@ export class EmergencyBanner {
     showMore();
     // A newly shown pill gets its safe place in this tick, before it can paint over the panel for one UI interval.
     if (this.moreShown && this.dockDirty) { this.dock(); showMore(); }
+    this.options.retain(new Set(em.incidents().filter((i) => (i.state === 'uncovered' || i.state === 'queued') && (this.banners.has(i.id) || i.major)).map((i) => i.id)));
   }
 
   /** tests / dev: current banners (incident ids) */
@@ -1143,6 +1149,7 @@ export class EmergencyBanner {
   }
 
   dispose(): void {
+    this.options.dispose();
     this.ro?.disconnect();
     this.mo?.disconnect();
     clear(this.el);

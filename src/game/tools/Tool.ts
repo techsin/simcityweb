@@ -114,7 +114,8 @@ export function commitAction<K extends ActionOp>(ctx: GameContext, owner: object
 export function resultTip(title: string, r: ActionResult | null, extra = ''): { html: string; kind: 'ok' | 'bad' } {
   if (!r) return { html: `<b>${escapeHtml(title)}</b>`, kind: 'ok' };
   const cost = r.cost ?? 0;
-  const costTxt = cost < 0 ? `<span class="tip-refund">Refund ${money(-cost)}</span>` : cost > 0 ? `<span class="tip-cost">${money(cost)}</span>` : '';
+  const note = r.refundNote ? ` (${escapeHtml(r.refundNote)})` : '';
+  const costTxt = cost < 0 ? `<span class="tip-refund">Refund ${money(-cost)}${note}</span>` : cost > 0 ? `<span class="tip-cost">${money(cost)}</span>` : '';
   const reason = r.reason ? `<div class="${r.ok ? 'tip-warn' : 'tip-reason'}">${escapeHtml(r.reason)}</div>` : '';
   const head = `<div class="tip-head"><b>${escapeHtml(title)}</b>${costTxt}</div>`;
   return { html: head + (extra ? `<div class="tip-sub">${extra}</div>` : '') + reason, kind: r.ok ? 'ok' : 'bad' };

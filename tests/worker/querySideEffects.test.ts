@@ -99,6 +99,10 @@ async function run(reads: boolean) {
         await read('sideDemolishRisks', { ids: sample.slice(0, 6).map((b) => b.id), fee: 300, add: { cells: [{ x: 9, z: 21 }], pipes: true } });
         await read('stopsNear', { x: 33, z: 37, w: 2, d: 2 });
         await read('ferryPartnersFor', { x: 5, z: 51, w: 2, d: 2, rot: 0 });
+        for (const defId of ['civ_elementary_school', 'civ_library', 'civ_museum', 'civ_clinic', 'civ_police_station', 'civ_fire_station', 'park_small', 'tr_parking_garage', 'missing-def']) {
+          await read('upkeepContext', { defId, x: 22, z: 21, w: 2, d: 2 });
+          await read('upkeepContext', { defId, x: 60, z: 60, w: 2, d: 2 });
+        }
         await read('openAdvice', {});
         await read('advisorIssues', {});
         await read('capHints', {});

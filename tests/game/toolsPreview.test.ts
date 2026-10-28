@@ -16,14 +16,15 @@ import { getDef } from '../../src/sim/catalog';
 import type { Simulation } from '../../src/sim/Simulation';
 import type { GameContext } from '../../src/game/context';
 import { queryHost } from './queryHost';
-import type { ToolPointer } from '../../src/game/tools/Tool';
+import { resultTip, type ToolPointer } from '../../src/game/tools/Tool';
 import { CUT_SETTLE_MS, RectTool } from '../../src/game/tools/ZoneTool';
 import { NetworkTool } from '../../src/game/tools/NetworkTool';
 import { NO_ROAD_STAFFED, PlopTool } from '../../src/game/tools/PlopTool';
-import { upkeepHere } from '../../src/game/tools/placement';
+import { runQuery } from '../../src/worker/queries';
 import { upkeepEstimate } from '../../src/ui/upkeepModel';
 import { money } from '../../src/ui/format';
 import { newSim, newState, place, roadLine, setRoad } from '../infra/cityGen';
+import { makeCity } from '../sim/helpers';
 
 type Cells = { x: number; z: number; ok: boolean }[] | null;
 
@@ -124,6 +125,47 @@ describe('bulldoze / rezone / road previews: utility cuts (N1)', () => {
   });
 });
 
+describe('bulldoze refund tips (FH-07a)', () => {
+  it.each([
+    [0, 'Refund §25,000 (built today)'],
+    [20, 'Refund §12,500 (under 30 days old)'],
+    [31, null],
+  ] as const)('renders a plop at age %i in resultTip and the bulldoze tool', (days, refund) => {
+    const { st, sim } = makeCity();
+    const f = fakeCtx(sim), tool = new RectTool(f.ctx, { kind: 'bulldoze' }, 'bulldoze', 'Bulldoze', 'bulldoze');
+    f.ctx.actions.plop('util_coal_plant', 10, 10, 0);
+    sim.runDays(days);
+    expect(st.buildingAt(10, 10)!.age).toBe(days);
+    const pre = f.ctx.actions.bulldoze({ x0: 10, z0: 10, x1: 11, z1: 11 }, true);
+    tool.move(at(10, 10));
+    for (const html of [resultTip('Bulldoze', pre).html, f.lastTip().html]) {
+      if (refund) expect(text(html)).toContain(refund);
+      else expect(text(html)).not.toContain('Refund');
+    }
+    tool.deactivate();
+  });
+
+  it('refreshes an unmoved bulldoze preview across days, including both refund boundaries', () => {
+    const { sim } = makeCity();
+    const f = fakeCtx(sim), tool = new RectTool(f.ctx, { kind: 'bulldoze' }, 'bulldoze', 'Bulldoze', 'bulldoze');
+    f.ctx.actions.plop('util_coal_plant', 10, 10, 0);
+    const preview = vi.spyOn(f.ctx.actions, 'bulldoze');
+    tool.move(at(10, 10));
+    tool.move(at(10, 10));
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(text(f.lastTip().html)).toContain('Refund §25,000 (built today)');
+    sim.advanceDay();
+    tool.move(at(10, 10));
+    expect(preview).toHaveBeenCalledTimes(2);
+    expect(text(f.lastTip().html)).toContain('Refund §12,500 (under 30 days old)');
+    sim.runDays(29);
+    tool.move(at(10, 10));
+    expect(preview).toHaveBeenCalledTimes(3);
+    expect(text(f.lastTip().html)).not.toContain('Refund');
+    tool.deactivate();
+  });
+});
+
 describe('zone preview: no road access (N3)', () => {
   it('a 3×3 zone one unzoned column off the road is tinted red and flagged; against the road it is not', () => {
     const st = newState(32);
@@ -154,18 +196,21 @@ describe('zone preview: no road access (N3)', () => {
 });
 
 describe('plop tool tip (P3 / P8 / P14)', () => {
-  it('a school beside the homes: the upkeep here and at full use; away from every road: the red staffed line', () => {
+  it('a school beside the homes: the upkeep here and at full use; away from every road: the red staffed line', async () => {
     const { sim } = town();
     const f = fakeCtx(sim);
     const tool = new PlopTool(f.ctx, getDef('civ_elementary_school')!, 'school');
+    Object.assign(f.ctx.tools, { active: tool });
     tool.activate();
     // on the street's west side (4, 18), a walk from the homes
     tool.move(at(4, 18));
+    await Promise.resolve();
     let t = text(f.lastTip().html);
     expect(t).toMatch(/Upkeep here ≈§[\d,]+\/mo now · up to §[\d,]+ at full use/);
     expect(t).not.toContain(NO_ROAD_STAFFED);
     // open land with no road beside it
     tool.move(at(20, 25));
+    await Promise.resolve();
     const tip = f.lastTip();
     t = text(tip.html);
     expect(t).toContain(NO_ROAD_STAFFED);
@@ -179,7 +224,7 @@ describe('plop tool tip (P3 / P8 / P14)', () => {
     expect(text(f.lastTip().html)).not.toContain(NO_ROAD_STAFFED);
   });
 
-  it('final fixes UI-1: the tip quotes upkeepHere; past the full-use figure (a fire station in a big unserved district) no "up to" the same number', () => {
+  it('final fixes UI-1: the tip quotes upkeepHere; past the full-use figure (a fire station in a big unserved district) no "up to" the same number', async () => {
     // a dense town: streets every 5 tiles, full 2×2 towers (400) on both sides, no fire station anywhere
     const st = newState(64);
     st.funds = 1e7;
@@ -195,11 +240,13 @@ describe('plop tool tip (P3 / P8 / P14)', () => {
     const def = getDef('civ_fire_station')!;
     const f = fakeCtx(sim);
     const tool = new PlopTool(f.ctx, def, 'fire');
+    Object.assign(f.ctx.tools, { active: tool });
     tool.activate();
     // (the cursor at the lot's centre: origin (28, 30), beside the street x = 27)
     tool.move(at(28, 30, 29, 31));
+    await Promise.resolve();
     const t = text(f.lastTip().html);
-    const here = upkeepHere(sim, def, 28, 30, 2, 2)!;
+    const here = runQuery(sim, 'upkeepContext', { defId: def.id, x: 28, z: 30, w: 2, d: 2 }).here!;
     const full = upkeepEstimate(st, def)!.full;
     expect(here).toBeGreaterThan(full);
     expect(t).toContain(`Upkeep here ≈${money(here)}/mo now`);

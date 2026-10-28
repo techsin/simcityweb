@@ -5,9 +5,6 @@
 import { Network, Zone } from '../core/types';
 import * as catalogMod from '../sim/catalog';
 import type { BuildingCategory, BuildingDef } from '../sim/catalogTypes';
-import { BF, type Building } from '../sim/CityState';
-import type { SimSystem } from '../sim/Simulation';
-import type { EconRuntime } from '../sim/economy/runtime';
 import type { GameContext } from './context';
 import { RectTool, ZONE_LABELS } from './tools/ZoneTool';
 import { NetworkTool, type NetKind } from './tools/NetworkTool';
@@ -18,6 +15,7 @@ import { DisasterTool } from './tools/DisasterTool';
 import { DISPATCH_SPEC } from './tools/DispatchTool';
 import type { Tool } from './tools/Tool';
 import { titleCase } from '../ui/format';
+import { ruinsFor, type RuinState } from '../ui/ruinState';
 
 export interface ToolSpec {
   id: string;
@@ -126,32 +124,11 @@ export const UNIQUE_RUINS_TEXT = 'In ruins — bulldoze its ruins first';
  * A one-per-city building is disabled by the sim's own rule (actions.ts plop): one is counted in state.milestones (the
  * plopped buildings, ruins included until they are bulldozed). Final fixes r4: a ruined one read "Already built (one
  * per city)" while the ruins texts say "bulldoze it and build it again" — in ruins when every plopped building of the
- * def is a ruin (BF.Burnt). Read from the economy runtime's plopped list (RewardsPanel.ruins), not a scan of every
- * building of the city per def.
+ * def is a ruin (BF.Burnt). The mirrored building flags are exact, including changes while paused.
  */
-function disabledOf(ctx: GameContext, d: BuildingDef): string | null {
-  if (!d.unique || !((ctx.state.milestones[d.id] ?? 0) > 0)) return null;
-  let ruin = false;
-  for (const b of ploppedBuildings(ctx)) {
-    if (b.def !== d.id || !(b.flags & BF.Plopped)) continue;
-    if (!(b.flags & BF.Burnt)) return UNIQUE_BUILT_TEXT;
-    ruin = true;
-  }
-  return ruin ? UNIQUE_RUINS_TEXT : UNIQUE_BUILT_TEXT;
-}
-
-/** the city's player-placed buildings: the economy runtime's plopped list, else every building */
-function ploppedBuildings(ctx: GameContext): Iterable<Building> {
-  try {
-    const rt = ctx.sim.getSystem<SimSystem & { rt?: EconRuntime }>('economy.population')?.rt;
-    if (rt) {
-      rt.ensureLists();
-      return rt.plopped;
-    }
-  } catch {
-    /* the whole city */
-  }
-  return ctx.state.buildings.values();
+function disabledOf(d: BuildingDef, ruins: RuinState | null): string | null {
+  if (!ruins) return null;
+  return !ruins.live.has(d.id) && ruins.ruin.has(d.id) ? UNIQUE_RUINS_TEXT : UNIQUE_BUILT_TEXT;
 }
 
 export function plopSpec(ctx: GameContext, d: BuildingDef): ToolSpec {
@@ -167,7 +144,7 @@ export function plopSpec(ctx: GameContext, d: BuildingDef): ToolSpec {
     income: d.income,
     def: d,
     locked: lockOf(ctx, d),
-    disabled: disabledOf(ctx, d),
+    disabled: disabledOf(d, d.unique && (ctx.state.milestones[d.id] ?? 0) > 0 ? ruinsFor(ctx) : null),
     create: (c) => new PlopTool(c, d, icon),
   };
 }

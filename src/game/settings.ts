@@ -15,6 +15,10 @@ export interface GameSettings {
   musicVolume: number;
   sfxVolume: number;
   ambienceVolume: number;
+  /** 15-40 second rests between songs in the city */
+  musicPauses: boolean;
+  /** fade and suspend audio while the browser tab is hidden */
+  muteInBackground: boolean;
   /** show the cell grid while zoning / building */
   showGrid: boolean;
   /** show frames-per-second counter */
@@ -52,6 +56,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
   musicVolume: 0.5,
   sfxVolume: 0.8,
   ambienceVolume: 0.6,
+  musicPauses: true,
+  muteInBackground: true,
   showGrid: true,
   showFps: false,
   autosaveMonths: 6,

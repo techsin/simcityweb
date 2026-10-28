@@ -1,0 +1,19 @@
+== FTL (fresh town low): first frames and load, per label (48 runs)
+V1     n 8: ready 2.50 s, main CPU nav->ready 0.68 s (bench script 0.64 s), load frame CPU 87 ms (wall js 930 ms), frame 2 26.790 [26.215-29.150] ms, veil frames 2-31 CPU>16.7 1,1,1,1,1,1,1,1 >33.3 0,0,0,1,0,0,0,0, heap after GC 274.3 MB, programs 50, warm -
+base   n 8: ready 3.92 s, main CPU nav->ready 0.48 s (bench script 0.46 s), load frame CPU 45 ms (wall js 2516 ms), frame 2 3.565 [3.350-3.995] ms, veil frames 2-31 CPU>16.7 0,0,0,0,0,0,0,0 >33.3 0,0,0,0,0,0,0,0, heap after GC 198.3 MB, programs 24, warm -
+base2  n 8: ready 3.86 s, main CPU nav->ready 0.49 s (bench script 0.47 s), load frame CPU 46 ms (wall js 2467 ms), frame 2 3.810 [3.310-4.580] ms, veil frames 2-31 CPU>16.7 0,0,0,0,0,0,0,0 >33.3 0,0,0,0,0,0,0,0, heap after GC 199.2 MB, programs 24, warm -
+c024   n 8: ready 2.90 s, main CPU nav->ready 0.59 s (bench script 0.57 s), load frame CPU 81 ms (wall js 1457 ms), frame 2 4.385 [4.285-4.460] ms, veil frames 2-31 CPU>16.7 0,0,0,0,0,0,0,0 >33.3 0,0,0,0,0,0,0,0, heap after GC 218.3 MB, programs 46, warm -
+new    n 8: ready 2.63 s, main CPU nav->ready 0.70 s (bench script 0.66 s), load frame CPU 125 ms (wall js 1012 ms), frame 2 2.165 [2.085-2.775] ms, veil frames 2-31 CPU>16.7 0,0,0,0,0,0,0,0 >33.3 0,0,0,0,0,0,0,0, heap after GC 282.5 MB, programs 50, warm {"queueMs":25.299999713897705,"viewMs":6.400000095367432,"queued":5,"views":5}
+new2   n 8: ready 2.58 s, main CPU nav->ready 0.70 s (bench script 0.66 s), load frame CPU 122 ms (wall js 997 ms), frame 2 2.260 [2.075-2.385] ms, veil frames 2-31 CPU>16.7 0,0,0,0,0,0,0,0 >33.3 0,0,0,0,0,0,0,0, heap after GC 282.8 MB, programs 50, warm {"queueMs":25.199999809265137,"viewMs":6.199999809265137,"queued":5,"views":5}
+  V1     segment frames > 16.7 ms CPU: 0 
+  V1     frames whose callback WALL time > 16.7 ms (veil + segments): 8 r0 veil f2 26; r1 veil f2 30; r2 veil f2 27; r3 veil f2 35; r4 veil f2 29; r5 veil f2 27; r6 veil f2 27; r7 veil f2 26
+  base   segment frames > 16.7 ms CPU: 0 
+  base   frames whose callback WALL time > 16.7 ms (veil + segments): 8 r0 street f0 364; r1 street f0 372; r2 street f0 392; r3 street f0 434; r4 street f0 429; r5 street f0 363; r6 street f0 361; r7 street f0 375
+  base2  segment frames > 16.7 ms CPU: 0 
+  base2  frames whose callback WALL time > 16.7 ms (veil + segments): 8 r0 street f0 364; r1 street f0 374; r2 street f0 366; r3 street f0 382; r4 street f0 392; r5 street f0 370; r6 street f0 359; r7 street f0 393
+  c024   segment frames > 16.7 ms CPU: 0 
+  c024   frames whose callback WALL time > 16.7 ms (veil + segments): 0 
+  new    segment frames > 16.7 ms CPU: 0 
+  new    frames whose callback WALL time > 16.7 ms (veil + segments): 0 
+  new2   segment frames > 16.7 ms CPU: 0 
+  new2   frames whose callback WALL time > 16.7 ms (veil + segments): 0 

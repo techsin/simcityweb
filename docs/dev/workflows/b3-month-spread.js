@@ -16,7 +16,7 @@ const B = S + '/b3base'
 const WORK = S + '/b3work'
 
 const __C = {}
-const __R = ["map:month", "design"]
+const __R = ["map:month", "design", "build"]
 const __NOTE = 'RESUMING: an earlier run of this exact task was interrupted (usage limit, restart or crash). Your scratch dir under ' + WORK + ' may hold partial work from it: read it first, keep what is sound, check git -C ' + W + ' log and status for commits or edits it already made, and continue rather than redo. Every process of yours from before the restart was stopped: restart what you need.'
 async function __A(prompt, opts) {
   const lab = opts && opts.label

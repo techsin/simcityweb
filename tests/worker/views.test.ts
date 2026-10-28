@@ -71,14 +71,14 @@ describe('W0.5 LocalSimHost views', () => {
     try {
       await host.start();
       host.sim.runDays(2);
-      const before = serializeCity(host.state, { copy: true });
+      const before = serializeCity(host.sim.state, { copy: true });
       host.setView({ overlay: Overlay.Water, variant: 1, panels: ['emergencies'], focus: [] });
       host.emergency.incidents(); host.emergency.vehicles(); host.emergency.stationList();
       host.emergency.stationFleet(1); host.emergency.stationName(1);
       host.traffic.sampleRoutes(1024); host.traffic.truckVolume();
       host.utilities.waterQualityAt(host.sim, 0);
       host.simTime(); host.secondsPerDay();
-      expect(serializeCity(host.state, { copy: true })).toEqual(before);
+      expect(serializeCity(host.sim.state, { copy: true })).toEqual(before);
       const next = newState(32);
       host.sim.replaceState(next);
       expect(host.emergency.incidents()).toEqual([]);

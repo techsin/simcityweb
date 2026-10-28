@@ -171,7 +171,6 @@ export class BudgetPanel extends Panel {
       this.ctx.host.act('setTax', [d, v]);
     } catch (e) {
       console.warn(e);
-      this.ctx.state.budget.taxRates[d] = v;
     }
   }
 
@@ -228,8 +227,8 @@ export class BudgetPanel extends Panel {
         oninput: (val) => {
           try {
             this.ctx.host.act('setFunding', [s.key, val]);
-          } catch {
-            b.funding[s.key] = val;
+          } catch (e) {
+            console.warn(e);
           }
           this.update();
         },

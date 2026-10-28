@@ -1,0 +1,11 @@
+== FGL2 (game  low): first frames and load, per label (40 runs)
+base   n 8: frame1 CPU 53 ms (51-55; wu 9 ou 12 wr 30 wm 0), frame1 wall 2889 ms | frame2 9.290 [9.180-9.370] ms (lp 5.3 wu 1.8 ou 0.5 wr 1.9 wm 0.0) | frame3 2.5 | frames 2-30: CPU>16.7 0,0,0,0,0,0,0,0 (sum 0), >33.3 0,0,0,0,0,0,0,0 (sum 0), wall interval>25 ms 1,1,1,1,1,1,1,1 | load CPU click->frame 41 0.82 s (to world 0.70 s), click->frames 4.51 s, heap 228 MB, buildings 2953
+base2  n 8: frame1 CPU 53 ms (51-63; wu 10 ou 11 wr 31 wm 0), frame1 wall 2946 ms | frame2 9.545 [9.150-10.065] ms (lp 5.5 wu 1.9 ou 0.6 wr 1.9 wm 0.0) | frame3 2.6 | frames 2-30: CPU>16.7 0,0,0,0,0,0,0,0 (sum 0), >33.3 0,0,0,0,0,0,0,0 (sum 0), wall interval>25 ms 1,1,1,1,1,1,1,1 | load CPU click->frame 41 0.81 s (to world 0.69 s), click->frames 4.54 s, heap 230 MB, buildings 2953
+c024   n 8: frame1 CPU 90 ms (87-98; wu 11 ou 14 wr 60 wm 0), frame1 wall 1896 ms | frame2 5.870 [5.655-6.875] ms (lp 4.8 wu 2.0 ou 0.9 wr 1.6 wm 0.0) | frame3 3.3 | frames 2-30: CPU>16.7 0,0,0,0,0,0,0,0 (sum 0), >33.3 0,0,0,0,0,0,0,0 (sum 0), wall interval>25 ms 1,1,1,1,1,1,1,1 | load CPU click->frame 41 0.98 s (to world 0.78 s), click->frames 3.60 s, heap 248 MB, buildings 2953
+new    n 8: frame1 CPU 133 ms (127-136; wu 11 ou 13 wr 97 wm 3), frame1 wall 1415 ms | frame2 2.965 [2.840-3.250] ms (lp 2.2 wu 0.3 ou 0.8 wr 1.0 wm 0.0) | frame3 1.8 | frames 2-30: CPU>16.7 0,0,0,0,0,0,0,0 (sum 0), >33.3 0,0,0,0,0,0,0,0 (sum 0), wall interval>25 ms 1,1,1,1,1,1,1,1 | load CPU click->frame 41 1.06 s (to world 0.87 s), click->frames 3.20 s, heap 286 MB, buildings 2953
+new2   n 8: frame1 CPU 131 ms (123-147; wu 11 ou 13 wr 97 wm 4), frame1 wall 1404 ms | frame2 3.090 [2.895-6.815] ms (lp 2.3 wu 0.4 ou 0.8 wr 1.0 wm 0.0) | frame3 1.7 | frames 2-30: CPU>16.7 0,0,0,0,0,0,0,0 (sum 0), >33.3 0,0,0,0,0,0,0,0 (sum 0), wall interval>25 ms 1,1,1,1,1,1,1,1 | load CPU click->frame 41 1.08 s (to world 0.87 s), click->frames 3.23 s, heap 286 MB, buildings 2953
+  base   segment frames > 16.7 ms CPU: 0 
+  base2  segment frames > 16.7 ms CPU: 0 
+  c024   segment frames > 16.7 ms CPU: 0 
+  new    segment frames > 16.7 ms CPU: 0 
+  new2   segment frames > 16.7 ms CPU: 0 

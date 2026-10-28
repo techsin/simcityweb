@@ -101,6 +101,14 @@ export class SettingsPanel extends Panel {
       this.row('Music', null, this.range('musicVolume', 0, 1, 0.05, pctf)),
       this.row('Effects', null, this.range('sfxVolume', 0, 1, 0.05, pctf)),
       this.row('Ambience', null, this.range('ambienceVolume', 0, 1, 0.05, pctf)),
+      this.row('Music pauses', '15–40 second rests between songs in the city', toggle(s.musicPauses, (on) => {
+        this.ctx.applySettings({ musicPauses: on });
+        (this.ctx.mods.audio as { setMusicPauses?: (on: boolean) => void } | undefined)?.setMusicPauses?.(on);
+      })),
+      this.row('Mute when in background', 'Fade out audio when the tab is hidden, then resume on return', toggle(s.muteInBackground, (on) => {
+        this.ctx.applySettings({ muteInBackground: on });
+        (this.ctx.mods.audio as { setMuteInBackground?: (on: boolean) => void } | undefined)?.setMuteInBackground?.(on);
+      })),
       (this.musicHost = h('div', { class: 'set-music' })),
     );
   }
