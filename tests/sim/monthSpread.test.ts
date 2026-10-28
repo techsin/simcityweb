@@ -265,6 +265,7 @@ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick'
       if (ref.st.day === 60 || ref.st.day === 90) outs.set(ref.st.day, tourismOutputs(ref.st));
     }
     expect(venueVisits(ref.st, late)!.visits).toBeGreaterThan(0);
+    const end = serializeCity(ref.st, { copy: true });
     for (const [s, ser] of saves) {
       const g = load(ser);
       expect(diffPath(views.get(s), tourismView(g.st, all)), `save on day ${s}: right after the load`).toBe('');
@@ -273,6 +274,10 @@ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick'
         script(g.sim, g.A, ref.ids);
         if (g.st.day === 60 || g.st.day === 90) expect(diffPath(outs.get(g.st.day), tourismOutputs(g.st)), `save on day ${s}: day ${g.st.day}`).toBe('');
       }
+      // … and so does the whole city: its save on day 91, field by field and by digest (savedAt is the clock time)
+      const e = serializeCity(g.st, { copy: true });
+      expect(diffPath({ ...end, savedAt: 0 }, { ...e, savedAt: 0 }), `save on day ${s}: the whole city on day 91`).toBe('');
+      expect(sha(e), `save on day ${s}: the city digest on day 91`).toBe(sha(end));
     }
   });
 
@@ -356,6 +361,40 @@ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick'
     runTo(v1.sim, 56);
     expect(diffPath(pass56, passOf(v1.st))).toBe('');
     expect(diffPath(out56, tourismOutputs(v1.st))).toBe('');
+  });
+
+  it('a save from before B3 (no pass, a v1 slice record) loaded on dom 10 or 28 continues, and is the uninterrupted game from its first tick on', { timeout: 120000 }, () => {
+    // (a static town: nothing changes between the game's venue pass and the load, so a load-time pass equals it)
+    const ref = town();
+    const saves = new Map<number, SerializedCity>();
+    const outs = new Map<number, ReturnType<typeof tourismOutputs>>();
+    while (ref.st.day < 91) {
+      ref.sim.advanceDay();
+      if (ref.st.day === 40 || ref.st.day === 58) saves.set(ref.st.day, serializeCity(ref.st, { copy: true }));
+      if (ref.st.day === 56 || ref.st.day === 60 || ref.st.day === 90) outs.set(ref.st.day, tourismOutputs(ref.st));
+    }
+    const end = serializeCity(ref.st, { copy: true });
+    for (const [s, ser] of saves) {
+      const c = structuredClone(ser);
+      const sd = c.data.systemData as Record<string, unknown>;
+      delete sd.tourismPass;
+      sd.tourismAcc = { v: 1, m: 2, done: 0b111, rooms: 999, hist: [] };
+      const g = load(c);
+      expect(passOf(g.st).ven).toBeInstanceOf(Float64Array);
+      while (g.st.day < 91) {
+        g.sim.advanceDay();
+        const o = outs.get(g.st.day);
+        if (!o) continue;
+        // (on day 56 the culture detail of the breakdown is still the one init's pass scored: what the last tick scored
+        // stays with a pass until the next tick)
+        const cur = tourismOutputs(g.st);
+        const skip = g.st.day === 56 ? { breakdown: [] } : {};
+        expect(diffPath({ ...o, ...skip }, { ...cur, ...skip }), `save on day ${s}: day ${g.st.day}`).toBe('');
+      }
+      const e = serializeCity(g.st, { copy: true });
+      expect(diffPath({ ...end, savedAt: 0 }, { ...e, savedAt: 0 }), `save on day ${s}: the whole city on day 91`).toBe('');
+      expect(sha(e), `save on day ${s}: the city digest on day 91`).toBe(sha(end));
+    }
   });
 
   it('a venue bulldozed between the pass and the tick leaves the totals and the tick\'s scores at once (never below 0)', { timeout: 120000 }, () => {
