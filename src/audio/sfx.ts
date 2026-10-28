@@ -12,6 +12,7 @@
  *   hover / tick ~ -46 · icon taps ~ -38 · buttons / tabs / toggles / panels ~ -34..-37 · game actions ~ -28..-31
  *   notifications ~ -29..-35 (routine fire bell -34) · rewards / milestones / fanfares ~ -24 · disaster alarms ~ -23..-25
  */
+import { oneShots, type OneShot } from './oneShot';
 
 export type SoundCategory = 'ui' | 'game' | 'event';
 
@@ -159,11 +160,18 @@ interface VP {
   r: () => number;
   k: number;
 }
-type Voice = (e: SfxEnv, t: number, dest: AudioNode, v: VP) => void;
+interface VoiceEnv extends SfxEnv { nodes: OneShot }
+
+type Voice = (e: VoiceEnv, t: number, dest: AudioNode, v: VP) => void;
 
 // ------------------------------------------------------------------ primitives
-function gainAt(e: SfxEnv, dest: AudioNode, v = 0): GainNode {
-  const g = e.ctx.createGain();
+function stop(e: VoiceEnv, source: AudioScheduledSourceNode, end: number): void {
+  source.stop(end);
+  e.nodes.source(source, end);
+}
+
+function gainAt(e: VoiceEnv, dest: AudioNode, v = 0): GainNode {
+  const g = e.nodes.gain();
   g.gain.value = v;
   g.connect(dest);
   return g;
@@ -177,7 +185,7 @@ function perc(g: GainNode, t: number, peak: number, attack: number, decay: numbe
   return t + attack + decay + 0.05;
 }
 
-function tone(e: SfxEnv, dest: AudioNode, type: OscillatorType, f0: number, t: number, dur: number, peak: number, f1?: number, attack = 0.005): OscillatorNode {
+function tone(e: VoiceEnv, dest: AudioNode, type: OscillatorType, f0: number, t: number, dur: number, peak: number, f1?: number, attack = 0.005): OscillatorNode {
   const o = e.ctx.createOscillator();
   o.type = type;
   o.frequency.setValueAtTime(f0, t);
@@ -186,17 +194,17 @@ function tone(e: SfxEnv, dest: AudioNode, type: OscillatorType, f0: number, t: n
   o.connect(g);
   const end = perc(g, t, peak, attack, dur);
   o.start(t);
-  o.stop(end);
+  stop(e, o, end);
   return o;
 }
 
-function noise(e: SfxEnv, dest: AudioNode, t: number, dur: number, peak: number, filter: BiquadFilterType, f0: number, f1?: number, q = 1, attack = 0.004, offset = Math.random() * 1.5): AudioBufferSourceNode {
+function noise(e: VoiceEnv, dest: AudioNode, t: number, dur: number, peak: number, filter: BiquadFilterType, f0: number, f1?: number, q = 1, attack = 0.004, offset = Math.random() * 1.5): AudioBufferSourceNode {
   const src = e.ctx.createBufferSource();
   src.buffer = e.noise;
   // looped: a random start offset plus a long envelope ran past the end of the shared 2 s buffer and stopped
   // mid-envelope (an audible cut in tornado / meteor / regionEnter / whoosh); white noise loops seamlessly
   src.loop = true;
-  const bq = e.ctx.createBiquadFilter();
+  const bq = e.nodes.filter();
   bq.type = filter;
   bq.Q.value = q;
   bq.frequency.setValueAtTime(f0, t);
@@ -205,15 +213,15 @@ function noise(e: SfxEnv, dest: AudioNode, t: number, dur: number, peak: number,
   src.connect(bq).connect(g);
   const end = perc(g, t, peak, attack, dur);
   src.start(t, offset);
-  src.stop(end);
+  stop(e, src, end);
   return src;
 }
 
 /** FM bell / tine */
-function bell(e: SfxEnv, dest: AudioNode, f: number, t: number, dur: number, peak: number, ratio = 3.5, index = 2.5): void {
+function bell(e: VoiceEnv, dest: AudioNode, f: number, t: number, dur: number, peak: number, ratio = 3.5, index = 2.5): void {
   const c = e.ctx.createOscillator();
   const m = e.ctx.createOscillator();
-  const mg = e.ctx.createGain();
+  const mg = e.nodes.gain();
   c.frequency.value = f;
   m.frequency.value = f * ratio;
   mg.gain.setValueAtTime(f * index, t);
@@ -224,19 +232,19 @@ function bell(e: SfxEnv, dest: AudioNode, f: number, t: number, dur: number, pea
   const end = perc(g, t, peak, 0.004, dur);
   c.start(t);
   m.start(t);
-  c.stop(end);
-  m.stop(end);
+  stop(e, c, end);
+  stop(e, m, end);
 }
 
 /** marimba-like mallet: sine fundamental + short 4th partial + knock */
-function mallet(e: SfxEnv, dest: AudioNode, f: number, t: number, dur: number, peak: number): void {
+function mallet(e: VoiceEnv, dest: AudioNode, f: number, t: number, dur: number, peak: number): void {
   tone(e, dest, 'sine', f, t, dur, peak, undefined, 0.002);
   tone(e, dest, 'sine', f * 3.99, t, dur * 0.18, peak * 0.22, undefined, 0.001);
   tone(e, dest, 'sine', f * 2, t, dur * 0.35, peak * 0.12, undefined, 0.002);
 }
 
-function lowpass(e: SfxEnv, dest: AudioNode, f: number, q = 0.7): BiquadFilterNode {
-  const lp = e.ctx.createBiquadFilter();
+function lowpass(e: VoiceEnv, dest: AudioNode, f: number, q = 0.7): BiquadFilterNode {
+  const lp = e.nodes.filter();
   lp.type = 'lowpass';
   lp.frequency.value = f;
   lp.Q.value = q;
@@ -662,7 +670,7 @@ const VOICES: Record<SoundName, Voice> = {
       g.gain.linearRampToValueAtTime(0.05, st + 0.25);
       g.gain.exponentialRampToValueAtTime(0.0001, st + 1.3);
       o.start(st);
-      o.stop(st + 1.35);
+      stop(e, o, st + 1.35);
     });
     bell(e, d, N(88) * p, t + 0.22, 1, 0.05, 2, 0.8);
     bell(e, e.wet, N(95) * p, t + 0.3, 1.1, 0.03, 2, 0.8);
@@ -678,7 +686,7 @@ const VOICES: Record<SoundName, Voice> = {
   alarm(e, t, d, { p }) {
     const o = e.ctx.createOscillator();
     o.type = 'sawtooth';
-    const lp = e.ctx.createBiquadFilter();
+    const lp = e.nodes.filter();
     lp.type = 'lowpass';
     lp.frequency.value = 2000;
     const g = gainAt(e, d);
@@ -694,7 +702,7 @@ const VOICES: Record<SoundName, Voice> = {
     g.gain.setValueAtTime(0.13, t + 2.3);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 2.7);
     o.start(t);
-    o.stop(t + 2.8);
+    stop(e, o, t + 2.8);
     const ws = gainAt(e, e.wet, 0.4);
     lp.connect(ws);
   },
@@ -733,7 +741,7 @@ const VOICES: Record<SoundName, Voice> = {
       g.gain.setValueAtTime(0.06, t + 1.9);
       g.gain.exponentialRampToValueAtTime(0.0001, t + 2.7);
       o.start(t);
-      o.stop(t + 2.8);
+      stop(e, o, t + 2.8);
     }
     lp.connect(gainAt(e, e.wet, 0.35));
     noise(e, d, t, 2.4, 0.12, 'bandpass', 250, 900, 0.8, 0.9, r() * 0.5);
@@ -746,7 +754,7 @@ const VOICES: Record<SoundName, Voice> = {
     o.frequency.value = 38;
     const lfo = e.ctx.createOscillator();
     lfo.frequency.value = 7;
-    const lg = e.ctx.createGain();
+    const lg = e.nodes.gain();
     lg.gain.value = 6;
     lfo.connect(lg).connect(o.frequency);
     const g = gainAt(e, d);
@@ -756,8 +764,8 @@ const VOICES: Record<SoundName, Voice> = {
     g.gain.exponentialRampToValueAtTime(0.0001, t + 2.2);
     o.start(t);
     lfo.start(t);
-    o.stop(t + 2.3);
-    lfo.stop(t + 2.3);
+    stop(e, o, t + 2.3);
+    stop(e, lfo, t + 2.3);
     const lp = lowpass(e, d, 1800);
     [0, 0.45].forEach((dt) => {
       tone(e, lp, 'triangle', N(69) * p, t + 0.3 + dt, 0.18, 0.16, undefined, 0.01);
@@ -778,7 +786,7 @@ const VOICES: Record<SoundName, Voice> = {
     g.gain.linearRampToValueAtTime(0.1, t + 0.8);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
     o.start(t);
-    o.stop(t + 0.95);
+    stop(e, o, t + 0.95);
     noise(e, d, t, 0.85, 0.05, 'bandpass', 3000, 600, 2, 0.5, r() * 1.5);
     const tb = t + 0.85;
     tone(e, d, 'sine', 70, tb, 0.8, 0.55, 28, 0.004);
@@ -788,8 +796,8 @@ const VOICES: Record<SoundName, Voice> = {
   },
 };
 
-function fanfare(e: SfxEnv, t: number, d: AudioNode, p: number, notes: number[], step: number, tail: number): void {
-  const lp = e.ctx.createBiquadFilter();
+function fanfare(e: VoiceEnv, t: number, d: AudioNode, p: number, notes: number[], step: number, tail: number): void {
+  const lp = e.nodes.filter();
   lp.type = 'lowpass';
   lp.frequency.setValueAtTime(1200, t);
   lp.frequency.linearRampToValueAtTime(3200, t + notes.length * step);
@@ -813,7 +821,7 @@ function fanfare(e: SfxEnv, t: number, d: AudioNode, p: number, notes: number[],
       g.gain.setValueAtTime(0.06, st + dur * 0.4);
       g.gain.exponentialRampToValueAtTime(0.0001, st + dur);
       o.start(st);
-      o.stop(st + dur + 0.05);
+      stop(e, o, st + dur + 0.05);
     }
     if (last) for (const c of [notes[0] + 12, notes[1] + 12]) bell(e, wet, N(c) * p, st, tail, 0.05, 2, 1);
   });
@@ -857,16 +865,21 @@ export function playVoice(env: SfxEnv, name: SoundName, dest: AudioNode, opts: P
   const p = (opts.pitch ?? 1) * (1 + jit);
   const k = Math.max(0, Math.min(1, opts.intensity ?? 0.5));
   const level = soundTrim(name) * Math.max(0, Math.min(2, opts.volume ?? 1));
-  const dry = ctx.createGain();
+  const nodes = oneShots(ctx).begin();
+  const dry = nodes.gain();
   dry.gain.value = level;
   const pan = opts.pan ? Math.max(-1, Math.min(1, opts.pan)) : 0;
   if (pan && typeof ctx.createStereoPanner === 'function') {
-    const sp = ctx.createStereoPanner();
+    const sp = nodes.panner();
     sp.pan.value = pan;
     dry.connect(sp).connect(dest);
   } else dry.connect(dest);
-  const wet = ctx.createGain();
+  const wet = nodes.gain();
   wet.gain.value = level;
   wet.connect(env.wet);
-  voice({ ...env, wet }, t, dry, { p, r, k });
+  try {
+    voice({ ...env, wet, nodes }, t, dry, { p, r, k });
+  } finally {
+    nodes.finish();
+  }
 }

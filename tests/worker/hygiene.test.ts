@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ROOT, importGraph, scan, scanFiles, sourceFiles } from './hygieneScan';
+import { ROOT, importGraph, scan, scanFiles, sourceFiles, staticImportGraph } from './hygieneScan';
 
 describe('S1 isolate hygiene', () => {
   it('sim, city persistence and node harnesses contain no detaching APIs', () => {
@@ -130,6 +130,11 @@ describe('worker migration hygiene gates', () => {
   it('W0.5: CityScene reads system views through the host', () => {
     expect(scanFiles(['src/game/CityScene.ts'], 'systems')).toEqual([]);
   });
+  it('FH-07a: CityScene reaches SimHost and demolition reads without statically loading actions', () => {
+    const graph = staticImportGraph('src/game/CityScene.ts');
+    expect(graph).toEqual(expect.arrayContaining(['src/game/CityScene.ts', 'src/worker/SimHost.ts', 'src/game/demolishRisk.ts']));
+    expect(graph).not.toContain('src/sim/actions.ts');
+  });
   it('W0.6: UI, game and render never write into the replica outside src/worker', () => {
     const files = [...uiAndGame(), ...sourceFiles('src/render')]
       .filter((p) => !p.startsWith('src/game/fallback/') && !DEMO_STATES.includes(p));
@@ -145,6 +150,14 @@ describe('worker migration hygiene gates', () => {
   });
   it('W0.6: SimCore import graph excludes bundle.ts, save/index.ts and recoveryLs.ts', async () => {
     await expectCleanGraph('src/worker/SimCore.ts');
+  });
+  it('W1.1b: the protocol inbox is worker-safe: no replica, loopback, IndexedDB or main-thread save module', async () => {
+    // W1.2's worker hosts it; its writes go through an injected store (R14's persistence 'main')
+    const graph = await importGraph('src/worker/protocolInbox.ts');
+    expect(graph).toContain('src/worker/protocolInbox.ts');
+    expect(graph.filter((p) => ['src/worker/replica.ts', 'src/worker/loopbackCore.ts', 'src/worker/LoopbackSimHost.ts',
+      'src/save/db.ts', 'src/save/recoveryIdb.ts', 'src/save/cities.ts', 'src/save/bundle.ts', 'src/save/index.ts',
+      'src/save/recoveryLs.ts'].includes(p))).toEqual([]);
   });
   it.skip('W1.2: simWorker import graph excludes bundle.ts, save/index.ts and recoveryLs.ts', async () => {
     await expectCleanGraph('src/worker/simWorker.ts');

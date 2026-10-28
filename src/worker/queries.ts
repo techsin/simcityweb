@@ -13,7 +13,7 @@ import type { EmergencySystem } from '../sim/infra/emergency';
 import type { ServicesSystem } from '../sim/infra/services';
 import type { TrafficSystem } from '../sim/infra/traffic';
 import { ferryPartnersFor, stopsNear } from '../sim/infra/transportFacilities';
-import { demolishRisks, sideDemolishRisks, type Removal } from '../game/demolishRisk';
+import { demolishRisks, sideDemolishRisks, type DemolishRefund, type Removal } from '../game/demolishRisk';
 import { upkeepHere } from '../game/tools/placement';
 import { countGarages } from '../ui/statsModel';
 import { inspectBuilding, inspectCell, inspectSignature, type InspectBuildingArgs, type InspectCellArgs } from './inspect';
@@ -45,8 +45,8 @@ export const QUERY_HANDLERS = {
     const inc = sim.getSystem<EmergencySystem>('emergency')?.report(sim, x, z);
     return inc ? structuredClone(inc) : null;
   },
-  demolishRisks: (sim: Simulation, { rect, cost, sandbox }: { rect: CellRect; cost: number; sandbox?: boolean }) => demolishRisks(sim.state, rect, cost, { sandbox }),
-  sideDemolishRisks: (sim: Simulation, { ids, fee, sandbox, add }: { ids: readonly number[]; fee: number; sandbox?: boolean; add?: Removal['add'] }) => sideDemolishRisks(sim.state, ids, fee, { sandbox, add }),
+  demolishRisks: (sim: Simulation, { rect, cost, ...opts }: DemolishRefund & { rect: CellRect; cost: number; sandbox?: boolean }) => demolishRisks(sim.state, rect, cost, opts),
+  sideDemolishRisks: (sim: Simulation, { ids, fee, ...opts }: DemolishRefund & { ids: readonly number[]; fee: number; sandbox?: boolean; add?: Removal['add'] }) => sideDemolishRisks(sim.state, ids, fee, opts),
   stopsNear: (sim: Simulation, { x, z, w, d }: PlacementArgs) => stopsNear(sim, x, z, w, d),
   ferryPartnersFor: (sim: Simulation, { x, z, w, d, rot }: PlacementArgs & { rot: number }) => ferryPartnersFor(sim, x, z, w, d, rot),
   openAdvice: (sim: Simulation, _args: Record<string, never>) => advice(openAdvice(sim)),
@@ -99,11 +99,25 @@ export function watchSignature<K extends QueryName>(sim: Simulation, name: K, ar
 }
 
 /** Exact mirrored state only; this works on a replica too, without serializing or touching sim caches. */
+/** one canonical quiet NaN per float width (0x7fc00000, 0x7ff8000000000000), for exactDigest */
+const NAN32 = new Uint8Array(new Float32Array([NaN]).buffer), NAN64 = new Uint8Array(new Float64Array([NaN]).buffer);
+
 export function exactDigest(st: CityState): number {
   let hash = 2166136261;
   const byte = (n: number) => { hash = Math.imul(hash ^ n, 16777619) >>> 0; };
   const str = (s: string) => { for (let i = 0; i < s.length; i++) { byte(s.charCodeAt(i) & 255); byte(s.charCodeAt(i) >>> 8); } byte(255); };
   const walk = (v: unknown): void => {
+    // NOTE-039: which NaN bits a float holds depends on the V8 tier that wrote it, so every NaN hashes as one canonical
+    // NaN; every other byte (-0 included) is hashed as stored
+    if (v instanceof Float32Array || v instanceof Float64Array) {
+      str(v.constructor.name);
+      const w = v.BYTES_PER_ELEMENT, raw = new Uint8Array(v.buffer, v.byteOffset, v.byteLength), nan = w === 4 ? NAN32 : NAN64;
+      for (let i = 0; i < v.length; i++) {
+        if (Number.isNaN(v[i])) for (let k = 0; k < w; k++) byte(nan[k]);
+        else for (let k = i * w, end = k + w; k < end; k++) byte(raw[k]);
+      }
+      return;
+    }
     if (ArrayBuffer.isView(v)) { str(v.constructor.name); for (const n of new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) byte(n); return; }
     if (v instanceof Set) { walk([...v].sort()); return; }
     if (Array.isArray(v)) { str('array'); for (const n of v) walk(n); str('end'); return; }
