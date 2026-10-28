@@ -58,6 +58,9 @@ export class BackgroundMute {
     this.clearCompletion();
     const t = this.ctx.currentTime;
     this.gain.cancelAndHoldAtTime(t);
+    // Anchor the ramp: after a set or a finished ramp, cancelAndHold adds no event, and the ramp would run from that
+    // older event (a step at once, or a cut to 0 after a setTarget) instead of fading from here.
+    this.gain.setValueAtTime(this.gain.value, t);
     this.gain.linearRampToValueAtTime(quiet ? 0 : this.volume, t + 0.5);
     if (quiet) {
       if (this.ctx.state === 'suspended') {

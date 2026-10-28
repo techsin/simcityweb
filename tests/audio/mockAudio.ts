@@ -1,10 +1,14 @@
 export class MockParam {
-  value: number;
+  /** the intrinsic value, where the automation starts */
+  base: number;
   automationRate = 'a-rate';
   events: [string, ...number[]][] = [];
-  constructor(value: number) { this.value = value; }
+  constructor(value: number, private clock?: () => number) { this.base = value; }
+  /** Like a browser: with automation scheduled, reading .value gives the computed value at the context's time. */
+  get value(): number { return this.clock && this.events.length ? this.valueAt(this.clock()) : this.base; }
+  set value(v: number) { this.base = v; }
   valueAt(t: number): number {
-    let value = this.value, at = 0;
+    let value = this.base, at = 0;
     let target: { value: number; tau: number } | null = null;
     const held = (time: number) => target ? target.value + (value - target.value) * Math.exp(-(time - at) / target.tau) : value;
     for (const [kind, v, time, tau] of this.events) {
@@ -20,8 +24,17 @@ export class MockParam {
     }
     return held(t);
   }
+  /** Like Chromium: a hold is added only inside a ramp still running at t. After a set, a finished ramp or a
+   *  setTarget nothing is added, so a later ramp runs from that older event unless the caller anchors it. */
   cancelAndHoldAtTime(t: number): this {
     const value = this.valueAt(t);
+    const next = this.events.find((e) => e[2] > t);
+    const ramping = next !== undefined && (next[0] === 'linear' || next[0] === 'exp') && this.events.some((e) => e[2] <= t);
+    if (!ramping) {
+      // an event at exactly t has already happened
+      this.events = this.events.filter((e) => e[2] <= t);
+      return this;
+    }
     this.cancelScheduledValues(t);
     return this.linearRampToValueAtTime(value, t);
   }
@@ -37,19 +50,19 @@ export class MockParam {
 
 export class MockNode extends EventTarget {
   connections = new Set<MockNode | MockParam>();
-  gain = new MockParam(1);
-  frequency = new MockParam(350);
-  detune = new MockParam(0);
-  Q = new MockParam(1);
-  pan = new MockParam(0);
-  playbackRate = new MockParam(1);
-  offset = new MockParam(1);
-  delayTime = new MockParam(0);
-  threshold = new MockParam(-24);
-  knee = new MockParam(30);
-  ratio = new MockParam(12);
-  attack = new MockParam(0.003);
-  release = new MockParam(0.25);
+  gain = new MockParam(1, () => this.context.currentTime);
+  frequency = new MockParam(350, () => this.context.currentTime);
+  detune = new MockParam(0, () => this.context.currentTime);
+  Q = new MockParam(1, () => this.context.currentTime);
+  pan = new MockParam(0, () => this.context.currentTime);
+  playbackRate = new MockParam(1, () => this.context.currentTime);
+  offset = new MockParam(1, () => this.context.currentTime);
+  delayTime = new MockParam(0, () => this.context.currentTime);
+  threshold = new MockParam(-24, () => this.context.currentTime);
+  knee = new MockParam(30, () => this.context.currentTime);
+  ratio = new MockParam(12, () => this.context.currentTime);
+  attack = new MockParam(0.003, () => this.context.currentTime);
+  release = new MockParam(0.25, () => this.context.currentTime);
   buffer: AudioBuffer | null = null;
   type = 'sine';
   loop = false;

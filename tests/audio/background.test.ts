@@ -57,6 +57,24 @@ describe('background audio', () => {
     expect(master.gain.valueAt(ctx.currentTime + 0.5)).toBeCloseTo(0.25);
   });
 
+  it.each([
+    ['a minute after the last set', false],
+    ['after a volume-slider change (setTarget)', true],
+  ])('fades from the current gain on hide %s, with no step or cut', (_case, slider) => {
+    const { ctx, master, background } = setup();
+    if (slider) {
+      ctx.currentTime = 10;
+      background.setVolume(0.5);
+    }
+    ctx.currentTime = 60;
+    const level = slider ? 0.5 : 0.64;
+    expect(master.gain.valueAt(60)).toBeCloseTo(level, 6);
+    background.setHidden(true);
+    expect(master.gain.valueAt(60)).toBeCloseTo(level, 6);
+    expect(master.gain.valueAt(60.25)).toBeCloseTo(level / 2, 6);
+    expect(master.gain.valueAt(60.5)).toBe(0);
+  });
+
   it('does nothing on visibility changes with the setting off', () => {
     const { ctx, master, background, suspend, resume } = setup();
     background.setEnabled(false);

@@ -224,7 +224,8 @@ describe('music deadlines', () => {
     vi.advanceTimersByTime(180000);
     const plays = started.mock.calls.map(([at, p]) => ({ at: at as number, end: p.endTime as number }));
     expect(plays.length).toBeGreaterThanOrEqual(3);
-    for (let i = 1; i < plays.length; i++) expect(plays[i].at - plays[i - 1].end).toBeCloseTo(rest, 6);
+    // the rest counts from the fade's start, XF_AUTO (5 s) before the song's end
+    for (let i = 1; i < plays.length; i++) expect(plays[i].at - (plays[i - 1].end - 5)).toBeCloseTo(rest, 6);
     expect(vi.getTimerCount()).toBe(1);
   });
 
@@ -235,7 +236,7 @@ describe('music deadlines', () => {
     vi.advanceTimersByTime(300000);
     const plays = started.mock.calls.map(([at, p]) => ({ at: at as number, end: p.endTime as number }));
     expect(plays.length).toBeGreaterThan(4);
-    const gaps = plays.slice(1).map((p, i) => p.at - plays[i].end);
+    const gaps = plays.slice(1).map((p, i) => p.at - (plays[i].end - 5));
     for (const gap of gaps) {
       expect(gap).toBeGreaterThanOrEqual(15);
       expect(gap).toBeLessThanOrEqual(40);

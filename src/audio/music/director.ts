@@ -567,14 +567,15 @@ export class MusicDirector {
         this.fail(p, e);
       }
     }
-    // Fade through the tail; city rests start at endTime (which includes the ring-out).
+    // Fade through the tail. A city rest counts from the fade's start: the ring-out is already quiet there, so the
+    // heard silence is the drawn rest (counted from endTime it ran about 5 s longer with the real songs).
     const c = this.cur;
     if (this.running && c && !c.fadingOut && now + la >= c.player.endTime - XF_AUTO) {
       const at = Math.max(now + 0.05, c.player.endTime - XF_AUTO);
       if (this.pauses()) {
         this.fadeOut(c, at, Math.max(0.01, c.player.endTime - at));
         this.cur = c;
-        this.restUntil = c.player.endTime + this.rng.range(REST_MIN, REST_MAX);
+        this.restUntil = at + this.rng.range(REST_MIN, REST_MAX);
       } else {
         this.fadeOut(c, at, XF_AUTO);
         this.begin(this.pick(), at, XF_MANUAL);
