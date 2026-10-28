@@ -418,16 +418,17 @@
 .onboard .ob-link:hover { color: var(--text); text-decoration: underline; }
 .onboard.complete { border-color: rgba(67, 209, 122, 0.45); }
 
-/* coach marks (onboarding highlights) */
-.tb-btn.coach::before, .speed button.coach::before {
+/* coach marks (onboarding highlights; .advice-pulse: an advice button's pulse, src/ui/adviceActions.ts — a class of its
+   own, so the onboarding card's coach updates leave it) */
+.tb-btn.coach::before, .tb-btn.advice-pulse::before, .speed button.coach::before {
   content: ''; position: absolute; inset: -3px; border-radius: 11px; border: 2px solid #7cd4ff; pointer-events: none;
   animation: coach 1.4s ease-out infinite;
 }
 .speed button { position: relative; }
 .speed button.coach::before { border-radius: 8px; }
-.tb-btn.coach { border-color: rgba(124, 212, 255, 0.65); background: rgba(63, 167, 255, 0.14); color: var(--text); }
-.tb-btn.coach .ico-wrap { color: #7cd4ff; }
-.tb-btn.coach::after { content: ''; position: absolute; top: 5px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: #7cd4ff; box-shadow: 0 0 0 2px rgba(18, 24, 32, 0.9); }
+.tb-btn.coach, .tb-btn.advice-pulse { border-color: rgba(124, 212, 255, 0.65); background: rgba(63, 167, 255, 0.14); color: var(--text); }
+.tb-btn.coach .ico-wrap, .tb-btn.advice-pulse .ico-wrap { color: #7cd4ff; }
+.tb-btn.coach::after, .tb-btn.advice-pulse::after { content: ''; position: absolute; top: 5px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: #7cd4ff; box-shadow: 0 0 0 2px rgba(18, 24, 32, 0.9); }
 .speed button.coach { color: #fff; background: rgba(63, 167, 255, 0.3); }
 @keyframes coach { 0% { opacity: 0.95; transform: scale(0.96); } 70% { opacity: 0; transform: scale(1.12); } 100% { opacity: 0; } }
 /* :where(.mp-ui) scopes the HUD's toast / chip / modal rules to the city HUD without raising their specificity: the

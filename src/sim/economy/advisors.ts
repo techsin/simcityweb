@@ -31,6 +31,12 @@
  * openAdvice(sim): the advice that holds right now (Advisors panel: open issues per advisor, highest priority first).
  * advisorIssues(st): the full, unthrottled list of the last monthly pass grouped by advisor (ADVICE_PER_MONTH = 2 only
  * limits what is announced; everything else still shows in the Advisors panel).
+ * Polish (POLISH_PLAN FH-03, LG-05): every advice post carries NewsItem.ref.advice (the rule id, or Advice.ref for a
+ * variant whose fix is another rule's), so toasts and Advisors cards find their button by id, never by the text
+ * (src/ui/adviceActions.ts). Below ZONE_WARN_POP residents "no room to grow" (zoneR / zoneC / zoneI) is an amber warning
+ * at most once per ZONE_WARN_DAYS. The day-28 zone scan also counts the free land: under BUILT_OUT_FREE of the map, with
+ * a family's demand at least 0.5, one 'builtOut' card names what can still be done (rezone the lowest-value blocks,
+ * connect to a neighbour with spare jobs; Advice.options) instead of the zone-more and unemployment texts.
  *
  * SIM_DEPTH_SPEC §F / WP5-4 rules (each with a map location): schools / health / playgrounds from the catchment needs
  * (unservedClusters), overcrowded schools / hospitals / police stations (facilityLoad), one fire rule (response gap
@@ -75,6 +81,7 @@ import { buildingPowered, buildingWatered } from './population';
 import { GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, TOURISM_INCOME_PER_VISITOR, WATER_REQUIRED_STAGE } from './tuning';
 import { buildingUpkeep } from './opex';
 import { getOrdinance, ordinanceAvailable, ordinanceEffect } from './ordinances';
+import type { RegionContext } from '../../region/regionEffects';
 
 const ADVICE_PER_MONTH = 2;
 /** no advice repeats sooner than this (days) */
@@ -101,6 +108,18 @@ interface Advice {
    *  unservedClusters / uncoveredHotspots cost O(cells) / O(buildings) each — most months every open rule is still in
    *  its cooldown and nobody asks (PERF) */
   where?: () => { x?: number; z?: number };
+  /** FH-03: the advice id the news post carries (NewsItem.ref.advice) and the buttons key on, when not the rule's own:
+   *  a variant whose fix is another rule's (zone rules: roadless land → 'noRoadAccess'). Cooldowns stay on `id` */
+  ref?: string;
+  /** LG-05: the options a card offers as buttons (src/ui/adviceActions.ts ids, each with its place), only the ones
+   *  that exist; the news post's button is its `ref` / `id` */
+  options?: AdviceOption[];
+}
+/** one button of an advice card (Advice.options) */
+export interface AdviceOption {
+  id: string;
+  x?: number;
+  z?: number;
 }
 /** fill in a lazily located advice's place (see Advice.where); returns the advice */
 function placed<T extends { x?: number; z?: number }>(a: T, where: (() => { x?: number; z?: number }) | undefined): T {
@@ -137,6 +156,19 @@ const CONFIRM_DAYS = 25;
 const GAP_MIN_TILES = 6;
 /** zoned tiles without any road access before 'noRoadAccess' speaks */
 const NO_ACCESS_MIN_TILES = 8;
+/** FH-03: below this population "no room to grow" (zoneR / zoneC / zoneI) is a warning — the first-hour stall a toast
+ *  with its zoning button must not let a newcomer miss — spoken at most once per ZONE_WARN_DAYS (the info it stays
+ *  above: every 90 days); both back off while it persists */
+export const ZONE_WARN_POP = 20000;
+export const ZONE_WARN_DAYS = 180;
+/** LG-05: free land (ZoneScan.free) under this share of the map, with a family's demand at least 0.5: built out */
+export const BUILT_OUT_FREE = 0.01;
+/** LG-05: the built-out card names this many rezoning candidates; a zone block of fewer tiles is a sliver, not one */
+const REZONE_CANDIDATES = 3;
+const REZONE_MIN_TILES = 8;
+/** a neighbour must leave more jobs than this open before the advisors suggest connecting to it (regionOpportunity,
+ *  the built-out card's option) */
+const REGION_SPARE_JOBS = 20000;
 /** a flavour headline never repeats within this many days (2 in-game years) */
 export const HEADLINE_REPEAT_DAYS = 720;
 
@@ -161,6 +193,9 @@ export interface AdvisorData {
   /** final fixes N4: per family ('R' / 'C' / 'I') a window in which ready lots wait while the family has demand yet does
    *  not grow at all — its first day and the lowest family capacity seen since (growthStalled after STALL_DAYS) */
   stall?: Record<string, { since: number; low: number }>;
+  /** FH-03: the zoned tiles per family (0 R, 1 C, 2 I) at the last month tick — more of a family zoned since then is
+   *  the advice followed: its zone rule's cooldown and back-off start over */
+  zoned?: [number, number, number];
 }
 /** the month tick's map scans (AdvisorData.scan; each optional: a scan saved by an older version lacks the newer ones and
  *  the month tick then takes it fresh) — zone blocks (day 28), facilities + the worst jam + the residents beyond fire
@@ -242,6 +277,8 @@ interface ZoneScan {
   /** the same per family (0 R, 1 C, 2 I) and the first tile of each (-1 = none) */
   noAccessFam: [number, number, number];
   noAccessFamAt: [number, number, number];
+  /** FH-03: zoned tiles per family (0 R, 1 C, 2 I), built on or not. Optional: scans saved before lack it */
+  zonedFam?: [number, number, number];
   /**
    * occupied growables (residents or jobs) without power / without the piped water they need, from the buildings' own
    * flags (what population reads), with their residents and jobs and the centre cell of the biggest one (-1 = none).
@@ -266,6 +303,9 @@ interface ZoneScan {
   rubbleLots?: [number, number, number];
   rubbleAt?: [number, number, number];
   rubbleZ?: number[];
+  /** LG-05: free land — unzoned tiles without a building, network, water or power line (land the player could still
+   *  zone). Optional: scans saved before LG-05 lack it (never built out until the next scan) */
+  free?: number;
 }
 
 /** growable lots in rubble (ZoneScan.rubbleLots / rubbleAt / rubbleZ): one pass over the buildings, a flag test each
@@ -463,7 +503,7 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
   const zone = st.zone, net = st.network, bld = st.building, powered = st.powered, watered = st.watered;
   const r: ZoneScan = {
     zoned: 0, front: 0, unpowered: 0, unpoweredAt: -1, needWater: 0, unwatered: 0, unwateredAt: -1, ready: 0, readyZones: 0, readyAt: -1, noAccess: 0, noAccessAt: -1,
-    noAccessFam: [0, 0, 0], noAccessFamAt: [-1, -1, -1], unpoweredLots: 0, unwateredLots: 0,
+    noAccessFam: [0, 0, 0], noAccessFamAt: [-1, -1, -1], zonedFam: [0, 0, 0], unpoweredLots: 0, unwateredLots: 0,
     host: new Array(DEV_TYPE_COUNT).fill(0), fit: new Array(DEV_TYPE_COUNT).fill(0), fitEmpty: new Array(DEV_TYPE_COUNT).fill(0), bestAt: new Array(DEV_TYPE_COUNT).fill(-1),
     emptyReady: [0, 0, 0], emptyReadyAt: [-1, -1, -1],
     lotOk: [0, 0, 0], lotOkAt: [-1, -1, -1], lotSmall: [0, 0, 0], lotSmallAt: [-1, -1, -1], lotSteep: [0, 0, 0], lotSteepAt: [-1, -1, -1],
@@ -476,11 +516,18 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
   const lotSmallZ = r.lotSmallZ!, lotSmallZAt = r.lotSmallZAt!;
   const bestDes = new Float32Array(DEV_TYPE_COUNT).fill(-Infinity);
   const isZ = (i: number) => zone[i] >= Zone.ResLow && zone[i] <= Zone.IndHigh;
+  const water = st.water, lines = st.powerLines;
   // per block: tiles per family (0 R, 1 C, 2 I) and the first tile of each
   const fam = [0, 0, 0], famAt = [-1, -1, -1];
+  let free = 0;
   visited.fill(0);
   for (let s = 0; s < C; s++) {
-    if (visited[s] || !isZ(s)) continue;
+    if (visited[s]) continue;
+    if (!isZ(s)) {
+      // LG-05: free land (the fill never visits an unzoned tile, so each is seen here once)
+      if (zone[s] === Zone.None && bld[s] < 0 && net[s] === Network.None && !water[s] && !lines[s]) free++;
+      continue;
+    }
     let sp = 0, cells = 0, access = false;
     fam[0] = fam[1] = fam[2] = 0;
     famAt[0] = famAt[1] = famAt[2] = -1;
@@ -529,6 +576,7 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
       if (i + N < C && !visited[i + N] && isZ(i + N)) { visited[i + N] = 1; stack[sp++] = i + N; }
     }
     r.zoned += cells;
+    for (let f = 0; f < 3; f++) r.zonedFam![f] += fam[f];
     if (!access) {
       r.noAccess += cells;
       if (r.noAccessAt < 0) r.noAccessAt = s;
@@ -558,7 +606,57 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
   }
   r.unpoweredLots = lotsP;
   r.unwateredLots = lotsW;
+  r.free = free;
   return r;
+}
+
+/** LG-05: an occupied zone block's centre (rounded), its mean land value and its main zone (the zone of most tiles) */
+interface ValueBlock { x: number; z: number; lv: number; zone: Zone }
+/**
+ * The occupied zone blocks (4-connected R / C / I zoned tiles, at least REZONE_MIN_TILES of them, holding a building)
+ * whose main zone `accept`s (something it can be rezoned to), with the lowest mean land value, lowest first, at most `max`
+ * (ties: the block found first): the built-out card's rezoning candidates. A pass of its own, taken only while the city is
+ * built out — the monthly zone scan keeps its cost
+ */
+function lowValueBlocks(st: CityState, visited: Uint8Array, stack: Int32Array, max: number, accept: (zone: Zone) => boolean): ValueBlock[] {
+  const N = st.size, C = st.cells, zone = st.zone, bld = st.building, lv = st.landValue;
+  const isZ = (i: number) => zone[i] >= Zone.ResLow && zone[i] <= Zone.IndHigh;
+  const out: ValueBlock[] = [];
+  const per = new Int32Array(Zone.IndHigh + 1);
+  visited.fill(0);
+  for (let s = 0; s < C; s++) {
+    if (visited[s] || !isZ(s)) continue;
+    let sp = 0, n = 0, sum = 0, sx = 0, sz = 0, occupied = false;
+    per.fill(0);
+    stack[sp++] = s;
+    visited[s] = 1;
+    while (sp > 0) {
+      const i = stack[--sp];
+      const x = i % N;
+      n++;
+      sum += lv[i];
+      sx += x;
+      sz += (i / N) | 0;
+      per[zone[i]]++;
+      if (bld[i] >= 0) occupied = true;
+      if (x > 0 && !visited[i - 1] && isZ(i - 1)) { visited[i - 1] = 1; stack[sp++] = i - 1; }
+      if (x < N - 1 && !visited[i + 1] && isZ(i + 1)) { visited[i + 1] = 1; stack[sp++] = i + 1; }
+      if (i >= N && !visited[i - N] && isZ(i - N)) { visited[i - N] = 1; stack[sp++] = i - N; }
+      if (i + N < C && !visited[i + N] && isZ(i + N)) { visited[i + N] = 1; stack[sp++] = i + N; }
+    }
+    if (!occupied || n < REZONE_MIN_TILES) continue;
+    let main = Zone.ResLow;
+    for (let zn = Zone.ResLow; zn <= Zone.IndHigh; zn++) if (per[zn] > per[main]) main = zn;
+    if (!accept(main)) continue;
+    const b = { x: Math.round(sx / n), z: Math.round(sz / n), lv: sum / n, zone: main };
+    let k = out.length;
+    while (k > 0 && out[k - 1].lv > b.lv) k--;
+    if (k < max) {
+      out.splice(k, 0, b);
+      if (out.length > max) out.pop();
+    }
+  }
+  return out;
 }
 
 /** any 4-neighbour tile around the footprint (no corners) passes `test` */
@@ -1068,6 +1166,80 @@ interface Scans {
 }
 const pctS = (v: number) => `${Math.round(v * 100)}%`;
 const EDGE_NAME: Record<string, string> = { n: 'north', s: 'south', e: 'east', w: 'west' };
+/** a founded neighbour with jobs to spare that the city does not reach well yet, and the middle tile of the shared edge
+ *  segment (where a highway would connect) */
+interface SpareJobs { name: string | null; edge: string; spare: number; x: number; z: number }
+/** the neighbour whose own workers leave the most jobs open (more than REGION_SPARE_JOBS), with an edge factor under 0.5;
+ *  undefined: none (regionOpportunity, and LG-05's "connect" option) */
+function spareJobsNeighbour(st: CityState): SpareJobs | undefined {
+  const n = regionInputs(st)?.neighbors.filter((x) => x.jobs - x.workers > REGION_SPARE_JOBS && x.edgeF < 0.5).sort((a, b) => b.jobs - b.workers - (a.jobs - a.workers))[0];
+  if (!n) return undefined;
+  // (the segment lives in the stored region context; regionInputs keeps the edge factor only)
+  const seg = (st.systemData.region as RegionContext | undefined)?.neighbors?.find((r) => r.tileKey === n.tileKey && r.edge === n.edge);
+  const N = st.size, a = seg ? Math.max(0, Math.min(N - 1, Math.floor((seg.from + seg.to) / 2))) : N >> 1;
+  const at = n.edge === 'n' ? { x: a, z: 0 } : n.edge === 's' ? { x: a, z: N - 1 } : n.edge === 'w' ? { x: 0, z: a } : { x: N - 1, z: a };
+  return { name: n.name, edge: n.edge, spare: n.jobs - n.workers, ...at };
+}
+/** "a or b", "a, b or c" */
+function orList(parts: readonly string[]): string {
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} or ${parts[parts.length - 1]}` : parts[0] ?? '';
+}
+const capital = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+/** LG-05: what a block can be rezoned to, per family with strong demand (0 R, 1 C, 2 I): another family's land, or its
+ *  own family denser */
+const REZONE_OTHER = ['housing', 'commercial land', 'industrial land'];
+const REZONE_DENSER = ['denser housing', 'denser shops and offices', 'denser industry'];
+/** LG-05: the targets of a block whose main zone is `zone` — never what it already is: its own family only denser, and
+ *  only below high density */
+function rezoneTargets(zone: Zone, strong: readonly boolean[]): string[] {
+  const own = zone <= Zone.ResHigh ? 0 : zone <= Zone.ComHigh ? 1 : 2;
+  const out: string[] = [];
+  for (let f = 0; f < 3; f++) {
+    if (!strong[f]) continue;
+    if (f !== own) out.push(REZONE_OTHER[f]);
+    else if (zoneDensity(zone) < 3) out.push(REZONE_DENSER[f]);
+  }
+  return out;
+}
+/**
+ * LG-05: the built-out card (Planning, priority 7) — what wants in, how little free land is left, and only the options that
+ * exist, each a button (Advice.options): rezone the lowest-value occupied blocks (lowValueBlocks; each block's targets in
+ * its own words: rezoneTargets), connect a highway to a neighbour with spare jobs (when jobs are what is wanted). Raising
+ * density near stations (LG-08), a Business Arcology (LG-04) and a sister city (LG-12) join the list as those items land.
+ */
+function builtOutAdvice(st: CityState, free: number, strong: readonly boolean[], blocks: readonly ValueBlock[], nb: SpareJobs | undefined): Advice {
+  const s = st.stats;
+  const fams = ['residential', 'commercial', 'industrial'].filter((_, f) => strong[f]);
+  const jobless = s.population > 2000 && s.unemployment > 0.06;
+  const lead = jobless ? `Unemployment is at ${Math.round(s.unemployment * 100)}% and ${andList(fams)} demand is strong` : `${capital(andList(fams))} demand is strong`;
+  const share = free / st.cells;
+  const land = free <= 0 ? 'no free land is left' : share < 0.001 ? 'less than 0.1% of the map is free land' : `only ${(share * 100).toFixed(1)}% of the map is free land`;
+  const said: string[] = [];
+  const options: AdviceOption[] = [];
+  if (blocks.length) {
+    // (blocks with the same targets named together, in the order found: lowest value first)
+    const groups: { at: string[]; to: string }[] = [];
+    for (const b of blocks) {
+      const to = orList(rezoneTargets(b.zone, strong)), at = `(${b.x}, ${b.z})`;
+      const g = groups.find((o) => o.to === to);
+      if (g) g.at.push(at);
+      else groups.push({ at: [at], to });
+    }
+    const what = `rezone the lowest-value ${blocks.length > 1 ? 'blocks' : 'block'}`;
+    said.push(groups.length === 1 ? `${what} (around ${andList(groups[0].at)}) to ${groups[0].to}`
+      : `${what} (${groups.map((g) => `around ${andList(g.at)} to ${g.to}`).join('; ')})`);
+    options.push({ id: 'rezone', x: blocks[0].x, z: blocks[0].z });
+  }
+  if (nb) {
+    said.push(`connect a highway to ${nb.name ?? 'our neighbour'} on the ${EDGE_NAME[nb.edge] ?? nb.edge} edge, which has ${int(nb.spare)} jobs to spare`);
+    options.push({ id: 'connect', x: nb.x, z: nb.z });
+  }
+  return {
+    id: 'builtOut', cooldown: 180, priority: 7, kind: 'warning', advisor: 'planning', ...(blocks.length ? { x: blocks[0].x, z: blocks[0].z } : {}),
+    text: `${lead}, but the city is built out: ${land}.${said.length ? ` ${capital(said.join(', or '))}.` : ''}`,
+    ...(options.length ? { options } : {}),
+  };
+}
 /** a need tier's unreached share (0 without need) */
 const unreachedShare = (n: NeedStat | undefined) => (n && n.need > 0 ? n.unreached / n.need : 0);
 /**
@@ -1337,13 +1509,10 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
     out.push({ id: 'lowAttractiveness', cooldown: 240, priority: 3, kind: 'info', advisor: 'planning',
       text: `Few people want to move here (attractiveness ${Math.round(s.attractiveness)}/100)${worst ? ` — the biggest drag is ${worst.label.toLowerCase()}` : ''}. Culture, parks, safety and clean air draw newcomers and tourists.` });
   }
-  const reg = regionInputs(st);
-  if (reg) {
-    const n = reg.neighbors.filter((x) => x.jobs - x.workers > 20000 && x.edgeF < 0.5).sort((a, b) => b.jobs - b.workers - (a.jobs - a.workers))[0];
-    if (n) {
-      out.push({ id: 'regionOpportunity', cooldown: 360, priority: 3, kind: 'info', advisor: 'planning',
-        text: `${n.name ?? 'Our neighbour'} has ${int(n.jobs - n.workers)} more jobs than workers. Connect a highway on the ${EDGE_NAME[n.edge] ?? n.edge} edge so our residents can commute there (more residential demand).` });
-    }
+  const nb = spareJobsNeighbour(st);
+  if (nb) {
+    out.push({ id: 'regionOpportunity', cooldown: 360, priority: 3, kind: 'info', advisor: 'planning',
+      text: `${nb.name ?? 'Our neighbour'} has ${int(nb.spare)} more jobs than workers. Connect a highway on the ${EDGE_NAME[nb.edge] ?? nb.edge} edge so our residents can commute there (more residential demand).` });
   }
 
   // ---------------- transit: bus fleet, parking
@@ -1406,6 +1575,16 @@ export interface OpenAdvice {
   priority: number;
   x?: number;
   z?: number;
+  /** Advice.ref / Advice.options (present only when the rule set them): the card's buttons */
+  ref?: string;
+  options?: AdviceOption[];
+}
+/** the OpenAdvice of a rule's advice (its place as found so far) */
+function openOf(a: Advice): OpenAdvice {
+  const o: OpenAdvice = { id: a.id, advisor: a.advisor, text: a.text, kind: a.kind, priority: a.priority, x: a.x, z: a.z };
+  if (a.ref) o.ref = a.ref;
+  if (a.options) o.options = a.options.map((p) => ({ ...p }));
+  return o;
 }
 
 export interface AdvisorsSystem extends SimSystem {
@@ -1460,10 +1639,14 @@ export const MONTH_SCAN_DAYS = [28, 29] as const;
 const LOCATE_TTL = 8;
 
 export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
-  /** flood-fill scratch for the monthly zone scan (re-sized with the map) */
+  /** flood-fill scratch for the monthly zone scan and LG-05's rezoning candidates (re-sized with the map) */
   let scratch = { visited: new Uint8Array(0), stack: new Int32Array(0), lots: new Int32Array(0) };
-  const zoneScan = (st: CityState, util: boolean): ZoneScan => {
+  const scratchFor = (st: CityState) => {
     if (scratch.visited.length !== st.cells) scratch = { visited: new Uint8Array(st.cells), stack: new Int32Array(st.cells), lots: new Int32Array(st.cells) };
+    return scratch;
+  };
+  const zoneScan = (st: CityState, util: boolean): ZoneScan => {
+    scratchFor(st);
     const r = scanZones(st, util, scratch.visited, scratch.stack, scratch.lots);
     if (util) scanOutages(st, rt, r);
     scanRubble(st, rt, r);
@@ -1863,11 +2046,43 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         unfit: 'High-tech industry wants to move in but needs clean air and educated workers — high-density industrial land near schools and colleges, away from smokestacks.',
       },
     };
+    // ---------------- LG-05: a built-out map. Free land (the zone scan's count) under BUILT_OUT_FREE of the map while a
+    // family's demand is at least 0.5: "zone more" (the rules below) and the unemployment rule's "zone more commercial
+    // and industrial land" cannot be followed, so one card names what can (scans saved before LG-05: never built out)
+    const full = scan.free !== undefined && scan.free < BUILT_OUT_FREE * st.cells;
+    const strong = full ? [famDemand(0, 2) >= 0.5, famDemand(3, 7) >= 0.5, famDemand(8, 11) >= 0.5] : [false, false, false];
+    const builtOut = strong[0] || strong[1] || strong[2];
+    if (builtOut) {
+      // (a neighbour's spare jobs help only when jobs are what is missing)
+      const jobs = strong[1] || strong[2] || (pop > 2000 && s.unemployment > 0.06);
+      const sc = scratchFor(st);
+      const blocks = lowValueBlocks(st, sc.visited, sc.stack, REZONE_CANDIDATES, (zn) => rezoneTargets(zn, strong).length > 0);
+      out.push(builtOutAdvice(st, scan.free!, strong, blocks, jobs ? spareJobsNeighbour(st) : undefined));
+    }
+    // FH-03: in a young town "no room to grow" is the first-hour stall — a warning (a toast with its zoning button), not a
+    // ticker line. Not for a family with no zoned land at all: that town is still being laid out (the onboarding's zoning
+    // steps), and a warning then would spend the cooldown before the real stall (scans saved before lack the counts)
+    const young = pop < ZONE_WARN_POP;
+    const zonedFam = scan.zonedFam;
+    // (the month tick: more of a family zoned since the last one is the advice followed — the rule's cooldown and back-off
+    // start over, so its next stall is news again)
+    if (mode === 'month' && zonedFam) {
+      const a1 = advisorData(st), last = a1.zoned;
+      if (last) {
+        for (let f = 0; f < 3; f++) {
+          if (!(zonedFam[f] > last[f])) continue;
+          delete d.cooldowns[ZONE_RULE_IDS[f]];
+          if (d.streak) delete d.streak[ZONE_RULE_IDS[f]];
+        }
+      }
+      a1.zoned = [zonedFam[0], zonedFam[1], zonedFam[2]];
+    }
     const zoneRule = (id: string, f: 0 | 1 | 2, a: number, b: number, picky: number, minRoom: number, zs: number[], what: string, lead: string, more: string) => {
-      if (!(famDemand(a, b) > 0.5) || room(zs) >= minRoom) return;
-      const base = { id, cooldown: 90, priority: 6, kind: 'info' as const, advisor: 'planning' };
+      if (builtOut || (young && zonedFam?.[f] === 0) || !(famDemand(a, b) > 0.5) || room(zs) >= minRoom) return;
+      const base = { id, cooldown: young ? ZONE_WARN_DAYS : 90, priority: 6, kind: young ? 'warning' as const : 'info' as const, advisor: 'planning' };
       const rl = roadless(f, what, lead);
-      if (rl) { out.push({ ...base, ...rl }); return; }
+      // (the fix is a road, not more land: its button is noRoadAccess's)
+      if (rl) { out.push({ ...base, ...rl, ref: 'noRoadAccess' }); return; }
       // (SF-2) rubble on the family's zones is room once cleared: name it before asking for more land. While the crews
       // are enacted it is on its way (quiet when it is enough); the rubble advice above says it when it is enough
       const rub = rubbleRoom(zs);
@@ -1887,8 +2102,9 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       // only the picky type wants in (the others' demand is weak): more land helps only where it fits (near the best
       // spot), else say what it needs
       if (ordDemand(a, b, picky) <= 0.25 && zoneOf(picky)) {
-        const t = PICKY_TEXT[picky];
-        out.push({ ...base, ...best(picky), text: fitAny(picky) ? t.room : t.unfit });
+        const t = PICKY_TEXT[picky], fit = fitAny(picky);
+        // (unfit: land value, not land, is the fix — the sub-type hint's advice, which has no zoning button)
+        out.push({ ...base, ...best(picky), text: fit ? t.room : t.unfit, ...(fit ? {} : { ref: 'zoneDev' + picky }) });
         return;
       }
       out.push({ ...base, text: more });
@@ -1979,11 +2195,12 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       }
     }
     // (WP6b labour headroom: jobs follow the workforce, so a few % unemployed already means the jobs lag — industry the
-    // city refused or has no land for)
-    if (pop > 2000 && s.unemployment > 0.06) {
+    // city refused or has no land for. LG-05: the built-out card names it; with almost no free land, rezone instead)
+    if (pop > 2000 && s.unemployment > 0.06 && !builtOut) {
       const dirty = Math.max(s.demand[DevType.ID], s.demand[DevType.IM]) > 0.3;
+      const fix = full ? 'There is almost no free land left: rezone low-value blocks to commercial or industrial land' : 'Zone more commercial and industrial land';
       out.push({ id: 'unemployment', cooldown: 120, priority: s.unemployment > 0.1 ? 7 : 5, kind: 'warning', advisor: 'planning',
-        text: `Unemployment is at ${Math.round(s.unemployment * 100)}%. Zone more commercial and industrial land${dirty ? ' — factories want to come, if you accept their smoke' : ''}.` });
+        text: `Unemployment is at ${Math.round(s.unemployment * 100)}%. ${fix}${dirty ? ' — factories want to come, if you accept their smoke' : ''}.` });
     }
     const lab = d.labour;
     if (pop > 5000 && ((lab && lab.scale < 0.5 && s.unemployment < 0.03) || (rt.jobFill < 0.8 && rt.jobFill > 0))) {
@@ -2093,7 +2310,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       return gather(st, 'open')
         .filter((a) => !a.confirm || (seen[a.id] !== undefined && st.day - seen[a.id] >= CONFIRM_DAYS))
         .sort((a, b) => b.priority - a.priority)
-        .map((a) => placed({ id: a.id, advisor: a.advisor, text: a.text, kind: a.kind, priority: a.priority, x: a.x, z: a.z }, a.where));
+        .map((a) => placed(openOf(a), a.where));
     },
     daily(sim) {
       const st = sim.state;
@@ -2158,7 +2375,8 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         d.cooldowns[a.id] = st.day;
         streak[a.id] = (streak[a.id] ?? 0) + 1;
         placed(a, a.where);
-        sim.notify(a.text, a.kind === 'info' ? 'advisor' : a.kind, a.x, a.z, a.advisor);
+        // (FH-03: the post's id for its button — toasts look it up by ref, never by the text)
+        sim.notify(a.text, a.kind === 'info' ? 'advisor' : a.kind, a.x, a.z, a.advisor, { advice: a.ref ?? a.id });
         const posts = (advisorData(st).posts ??= []);
         posts.push({ day: st.day, id: a.id, text: a.text });
         if (posts.length > POSTS_KEPT) posts.splice(0, posts.length - POSTS_KEPT);
@@ -2168,7 +2386,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       const issues: OpenAdvice[] = [];
       for (const a of list) {
         if (a.confirm && st.day - seen[a.id] < CONFIRM_DAYS) continue;
-        const o: OpenAdvice = { id: a.id, advisor: a.advisor, text: a.text, kind: a.kind, priority: a.priority, x: a.x, z: a.z };
+        const o = openOf(a);
         if (a.where && a.x === undefined) pendingWhere.set(o, a.where);
         issues.push(o);
       }

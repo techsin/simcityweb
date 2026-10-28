@@ -5,6 +5,7 @@ import { escapeHtml, h } from './dom';
 import { icon } from './icons';
 import { dayLabel } from './format';
 import { newsMark, tickerItems } from './newsLog';
+import { newsAction } from './adviceActions';
 
 export const NEWS_META: Record<string, { color: string; icon: string; title: string }> = {
   info: { color: 'var(--accent)', icon: 'news', title: 'News' },
@@ -154,8 +155,11 @@ export class Toasts {
       if (!ctx.settings.toasts) return;
       if (n.kind === 'info') return;
       if (n.kind === 'advisor' && !/!|urgent|critical|warning/i.test(n.text)) return;
+      const cell = n.x !== undefined && n.z !== undefined ? { x: n.x, z: n.z } : undefined;
+      // (FH-03: an advice's button, found by NewsItem.ref — never by the text)
+      const act = newsAction(n);
       // silent: GameSounds plays the (rate-limited) news sound even when toasts are off
-      this.show(n.text, n.kind, n.x !== undefined && n.z !== undefined ? { x: n.x, z: n.z } : undefined, n.advisor, { silent: true });
+      this.show(n.text, n.kind, cell, n.advisor, { silent: true, action: act ? { hint: act.label, icon: act.icon, run: () => act.run(ctx, cell ?? null) } : undefined });
     });
   }
 

@@ -22,9 +22,11 @@ import { EXACT_FIELDS, PLAIN_KEYS, PRIMARY_LAYERS, SYSTEM_KEYS, type QueryName a
 export type { WatchPolicy } from './protocol';
 interface PlacementArgs { x: number; z: number; w: number; d: number }
 
-/** The public advisor functions resolve pendingWhere / placed; explicitly copy only their data fields. */
+/** The public advisor functions resolve pendingWhere / placed; explicitly copy only their data fields (FH-03 / LG-05: the
+ *  buttons' ref and options when a rule set them). */
 function advice(rows: OpenAdvice[]): OpenAdvice[] {
-  return rows.map(({ id, advisor, text, kind, priority, x, z }) => ({ id, advisor, text, kind, priority, x, z }));
+  return rows.map(({ id, advisor, text, kind, priority, x, z, ref, options }) => ({ id, advisor, text, kind, priority, x, z,
+    ...(ref ? { ref } : {}), ...(options ? { options: options.map((o) => ({ ...o })) } : {}) }));
 }
 
 /** W0.3b: keep the need raster on the sim side; only the existing marginal price crosses the query seam. */
