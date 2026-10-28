@@ -25,7 +25,8 @@ function officeTower(b: ModelBuilder, x: number, z: number, height: number, step
   // Every wall edge lies on the shared 1.5 m panel grid; office floors stay on the 4 m grid through setbacks.
   for (let i = 0; i < sections.length; i++) {
     const [rawY0, rawY1, half] = sections[i], y0 = Math.round(rawY0 / 4) * 4, y1 = Math.round(rawY1 / 4) * 4;
-    prismEdges(b, plan(x, z, half, cut), y0, y1, () => glass, P(0x858d8d, Surf.RoofFlat));
+    // (no cap: the steel coping drawn after the ribs caps the section with its flat roof)
+    prismEdges(b, plan(x, z, half, cut), y0, y1, () => glass, null);
     b.paint(steel, Surf.Metal);
     for (let side = 0; side < 4; side++) {
       b.push().translate(x, 0, z).rotateY(side * Math.PI / 2);
@@ -34,7 +35,8 @@ function officeTower(b: ModelBuilder, x: number, z: number, height: number, step
       b.pop();
     }
     for (const [px, pz] of plan(x, z, half, cut)) b.box(px - 0.22, y0, pz - 0.22, px + 0.22, y1, pz + 0.22, { top: null });
-    prismEdges(b, plan(x, z, half + 0.35, cut), y1 - 0.8, y1, () => P(steel, Surf.Metal), P(steel, Surf.Metal));
+    // Steel coping whose cap is the section's flat roof: one cap at y1, so the roof cannot z-fight a second one.
+    prismEdges(b, plan(x, z, half + 0.35, cut), y1 - 0.8, y1, () => P(steel, Surf.Metal), P(0x858d8d, Surf.RoofFlat));
     if (i > 0) {
       // Low planting beds on the exposed setback roof, with their tops marked as low foliage.
       b.paint(0x57764a, Surf.Foliage, 4, -1);
@@ -86,7 +88,7 @@ function worldTradeCenter(b: ModelBuilder, v: number, rng: RNG): void {
   b.paint(0x52704b, Surf.Foliage, 4, -1).box(-24, 12.2, -23, 24, 12.6, -21.8);
   b.paint(0xd0d2cc, Surf.Stone);
   for (let x = -24; x <= 24; x += 6) b.box(x - 0.22, 0.1, 16.5, x + 0.22, 11.6, 16.8);
-  b.paint(0xcbd0d2, Surf.Metal).box(-6, 6.4, 16.5, 6, 7, 21, { bottom: P(0x897e69, Surf.Emissive, 10) });
+  b.paint(0xcbd0d2, Surf.Metal).box(-6, 6.4, 16.5, 6, 7, 21, { bottom: P(0x897e69, Surf.Emissive, 10), nz: null });
   for (const x of [-5.5, 5.5]) b.paint(0xcbd0d2, Surf.Metal).box(x - 0.16, 0.1, 20, x + 0.16, 6.4, 20.32);
   if (v === 0) {
     officeTower(b, -15, -6, 336, false, true);

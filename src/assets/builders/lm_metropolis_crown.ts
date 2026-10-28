@@ -92,10 +92,13 @@ function metropolisCrown(b: ModelBuilder, v: number, rng: RNG): void {
     for (const [x, z] of poly) {
       b.beam([x * 1.012, y0, z * 1.012], [x * 1.012, y1 + 2.4, z * 1.012], 0.9);
     }
+    // The ribs stay 1.5 m clear of the chamfer corners (the piers stand there) and stop under the bronze band, so
+    // neither their caps nor their faces meet the band caps or the pier faces.
     b.paint(stone);
-    for (const s of [-1, 1]) for (const u of [-4.5, 4.5]) {
-      b.box(u - 0.4, y0, s * hz - 0.5, u + 0.4, y1, s * hz + 0.5);
-      b.box(s * h - 0.5, y0, u - 0.4, s * h + 0.5, y1, u + 0.4);
+    const ux = Math.min(4.5, h - cut - 1.5), uz = Math.min(4.5, hz - cut - 1.5);
+    for (const s of [-1, 1]) for (const k of [-1, 1]) {
+      b.box(k * ux - 0.4, y0, s * hz - 0.5, k * ux + 0.4, y1 - 2.0, s * hz + 0.5);
+      b.box(s * h - 0.5, y0, k * uz - 0.4, s * h + 0.5, y1 - 2.0, k * uz + 0.4);
     }
     prismEdges(b, chamfer(h + 0.6, hz + 0.6, cut), y1 - 2.0, y1 - 0.8, () => bronze, roof);
     prismEdges(b, chamfer(h + 0.3, hz + 0.3, cut), y1 - 0.8, y1, () => stone, roof);

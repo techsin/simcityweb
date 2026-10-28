@@ -67,7 +67,8 @@ function conservatory(b: ModelBuilder, x: number, z: number, rx: number, rz: num
 
 function botanicalDome(b: ModelBuilder, v: number, rng: RNG): void {
   const E = 32, frame = v === 0 ? 0xd0d5c8 : 0x73958a, pave = 0xcfc4ae;
-  b.paint(0x6e8a47, Surf.Foliage).slab(-E, -E, E, E, 0.08);
+  // lawn up to the street forecourt; the paving covers the rest of the lot (no shared lot-edge faces)
+  b.paint(0x6e8a47, Surf.Foliage).slab(-E, -E, E, 18.5, 0.08);
   b.paint(pave, Surf.Pavement).slab(-E, 18.5, E, E, 0.1);
   if (v === 0) {
     conservatory(b, 0, -6, 18, 18, 22, 24, 6, frame);

@@ -52,7 +52,7 @@ function millenniumTower(b: ModelBuilder, v: number, rng: RNG): void {
   for (let x = -21; x <= 21; x += 6) b.box(x - 0.18, 4, 21, x + 0.18, 12, 21.2);
   b.box(-8, 4.8, 20.8, 8, 5.4, 25.5, { bottom: silver });
   for (const x of [-7.5, 7.5]) b.box(x - 0.18, 0.1, 24.5, x + 0.18, 4.8, 24.85);
-  b.paint(0x344956, Surf.GlassPlain, 0).box(-5, 0.1, 21.01, 5, 4.8, 21.08);
+  b.paint(0x344956, Surf.GlassPlain, 0).box(-5, 0.1, 21.01, 5, 4.8, 21.08, { nz: null });
   b.paint(0x8ca3ab, Surf.Emissive, 10).box(-7.6, 4.85, 25.5, 7.6, 5.1, 25.56);
 
   // All main facade edges follow 1.5 m curtain panels; setbacks and floor bases follow the 4 m floor grid.
@@ -70,8 +70,8 @@ function millenniumTower(b: ModelBuilder, v: number, rng: RNG): void {
     // Paired fins give the broad faces a vertical rhythm without modelling every window.
     for (const s of [-1, 1]) for (const side of [-1, 1]) {
       const ux = side * Math.min(6, h - cut - 1.5), uz = side * Math.min(6, hz - cut - 1.5);
-      b.box(ux - 0.16, y0, s * hz - 0.3, ux + 0.16, y1, s * hz + 0.3);
-      b.box(s * h - 0.3, y0, uz - 0.16, s * h + 0.3, y1, uz + 0.16);
+      b.box(ux - 0.16, y0, s * hz - 0.3, ux + 0.16, y1, s * hz + 0.3, { top: null });
+      b.box(s * h - 0.3, y0, uz - 0.16, s * h + 0.3, y1, uz + 0.16, { top: null });
     }
     prismEdges(b, chamfer(h + 0.45, hz + 0.45, cut), y1 - 1.2, y1, () => silver, roof);
     if (ti < tiers.length - 1) {

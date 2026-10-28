@@ -39,7 +39,8 @@ function stockExchange(b: ModelBuilder, v: number, rng: RNG): void {
   b.paint(0xa39c8e, Surf.Stone).box(-20, 0.1, -20, 20, 2, 10.4);
   // Tall civic windows light the trading floor; the office tiers use the tower window conventions.
   b.paint(lit).box(-19.2, 2, -19.2, 19.2, 8, 9.6, { top: null });
-  b.paint(stone, Surf.WallWindows, 7, 8).box(-19.2, 8, -19.2, 19.2, 16, 9.6, { pz: lit, top: P(0x6e7571, Surf.RoofFlat) });
+  // (the cornice box's cap is the hall roof: the hall box has no cap of its own under it)
+  b.paint(stone, Surf.WallWindows, 7, 8).box(-19.2, 8, -19.2, 19.2, 16, 9.6, { pz: lit, top: null });
   b.paint(edge).box(-19.7, 16, -19.7, 19.7, 17, 10.1);
   for (const s of [-1, 1]) {
     b.paint(edge);
@@ -48,7 +49,7 @@ function stockExchange(b: ModelBuilder, v: number, rng: RNG): void {
     b.paint(0x688482, Surf.GlassPlain, 2).box(s * 16 - 1.6, 17, -15, s * 16 + 1.6, 19, 2);
     b.paint(bronze, Surf.Metal, 3).hipRoof(s * 16, -6.5, 3.6, 17.4, 19, 1, 0.1);
   }
-  b.paint(lit).box(-17.6, 0.1, 9.6, 17.6, 2, 15.6);
+  b.paint(lit).box(-17.6, 0.1, 10.4, 17.6, 2, 15.6, { nz: null });
   for (let i = 0; i < 7; i++) b.paint(trim, Surf.Stone).box(-13, 0.1, 15.6 + i * 0.7, 13, 2 - i * 0.27, 16.3 + i * 0.7, { nz: null });
   for (const x of [-9.6, 0, 9.6]) {
     const arch = roundArch(x, 4.4, 8.8, 8, 2);
@@ -78,15 +79,18 @@ function stockExchange(b: ModelBuilder, v: number, rng: RNG): void {
     ? [[12.8, -19.2, 3.2, 17, 44], [9.6, -16, 0, 44, 60], [6.4, -12.8, -3.2, 60, 68]]
     : [[12, -18, 3, 17, 48], [9, -15, 0, 48, 68], [6, -12, -3, 68, 80]];
   const wall = v === 0 ? P(0xc5c0b0, Surf.WallWindows, 2, 4) : P(0x7f8c81, Surf.GlassCurtain, 2, 4);
+  const roof = P(0x69736b, Surf.RoofFlat);
   for (const [hw, z0, z1, y0, y1] of tiers) {
-    b.paint(wall).box(-hw, Math.max(20, y0), z0, hw, y1, z1, { top: P(0x69736b, Surf.RoofFlat) });
+    // The cornice box's cap is the setback roof. The tier box and its piers end inside the cornice without caps
+    // of their own, so no two faces of different paint share the roof plane (they z-fought when both capped y1).
+    b.paint(wall).box(-hw, Math.max(20, y0), z0, hw, y1, z1, { top: null });
     if (y0 < 20) b.paint(lit).box(-hw, y0, z0, hw, 20, z1);
     b.paint(v === 0 ? trim : bronze, v === 0 ? Surf.Stone : Surf.Metal);
-    b.box(-hw - 0.35, y1 - 0.6, z0 - 0.35, hw + 0.35, y1, z1 + 0.35);
+    b.box(-hw - 0.35, y1 - 0.6, z0 - 0.35, hw + 0.35, y1, z1 + 0.35, { top: roof });
     for (const x of [-hw, 0, hw]) {
-      for (const z of [z0, z1]) b.box(x - 0.18, y0, z - 0.18, x + 0.18, y1, z + 0.18);
+      for (const z of [z0, z1]) b.box(x - 0.18, y0, z - 0.18, x + 0.18, y1, z + 0.18, { top: null });
     }
-    for (const x of [-hw, hw]) b.box(x - 0.18, y0, (z0 + z1) / 2 - 0.18, x + 0.18, y1, (z0 + z1) / 2 + 0.18);
+    for (const x of [-hw, hw]) b.box(x - 0.18, y0, (z0 + z1) / 2 - 0.18, x + 0.18, y1, (z0 + z1) / 2 + 0.18, { top: null });
     // Small night-only crown bands, separate from the procedurally lit windows.
     b.paint(0xa99f7b, Surf.Emissive, 10).box(-hw - 0.36, y1 - 0.85, z0 - 0.36, hw + 0.36, y1 - 0.65, z1 + 0.36, { top: null });
   }

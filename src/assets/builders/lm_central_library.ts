@@ -37,10 +37,10 @@ function centralLibrary(b: ModelBuilder, v: number, rng: RNG): void {
     b.paint(0xb9aa92, Surf.Stone).box(x - 4.9, 8, -19.3, x + 4.9, 8.35, 9.7);
     // Raised skylights cap the wing ridges.
     b.paint(roof, Surf.Metal, 3).box(x - 1.2, wingH + 2.6, -12, x + 1.2, wingH + 3.8, 1.6);
-    b.paint(0x76908d, Surf.GlassPlain, 2).box(x - 1.2, wingH + 3.8, -12, x + 1.2, wingH + 5.0, 1.6);
+    b.paint(0x76908d, Surf.GlassPlain, 2).box(x - 1.2, wingH + 3.8, -12, x + 1.2, wingH + 5.0, 1.6, { top: null });
     b.paint(roof, Surf.Metal, 3).box(x - 1.4, wingH + 5.0, -12.2, x + 1.4, wingH + 5.3, 1.8);
     for (const z of [-12, -8.6, -5.2, -1.8, 1.6]) {
-      b.paint(trim, Surf.Metal).box(x - 1.25, wingH + 3.8, z - 0.06, x + 1.25, wingH + 5.0, z + 0.06);
+      b.paint(trim, Surf.Metal).box(x - 1.25, wingH + 3.8, z - 0.06, x + 1.25, wingH + 5.0, z + 0.06, { top: null });
     }
   }
   b.paint(stone, Surf.WallWindows, 7, 4).box(-9.6, 4, -19.2, 9.6, wingH, -9.6, { top: P(roof, Surf.RoofFlat) });
@@ -50,7 +50,7 @@ function centralLibrary(b: ModelBuilder, v: number, rng: RNG): void {
   b.paint(stone, Surf.WallWindows, 7, 5).box(-9.6, 5, -9.6, 9.6, 20, 9.6, { pz: lit, top: P(roof, Surf.RoofFlat) });
   b.paint(lit).box(-9.6, 2.4, -9.6, 9.6, 5, 9.6);
   b.box(-10, 20, -10, 10, 20.8, 10);
-  b.paint(0xb9ac95, Surf.Stone).box(-10.8, 0.1, 9.6, 10.8, 2.4, 15.8);
+  b.paint(0xb9ac95, Surf.Stone).box(-10.8, 0.1, 10.2, 10.8, 2.4, 15.8, { nz: null });
   for (let i = 0; i < 8; i++) {
     const z = 15.8 + i * 0.6;
     b.paint(trim, Surf.Stone).box(-10.8, 0.1, z, 10.8, 2.4 - i * 0.28, z + 0.6, { nz: null });

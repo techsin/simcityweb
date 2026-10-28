@@ -32,6 +32,12 @@ function stationClock(b: ModelBuilder, y: number, z: number, r: number): void {
 function trainShed(b: ModelBuilder, cx: number, r: number, rise: number, roof: number): void {
   const seg = 16, y0 = 10.8;
   const at = (u: number, z: number, lift = 0): V3 => [cx - Math.cos(u * Math.PI) * r, y0 + Math.sin(u * Math.PI) * rise + lift, z];
+  /** point `d` m off the vault glass along its outward normal (a y lift alone runs along the glass at the feet) */
+  const off = (u: number, z: number, d: number): V3 => {
+    const nx = -Math.cos(u * Math.PI) * rise, ny = Math.sin(u * Math.PI) * r, l = Math.hypot(nx, ny);
+    const p = at(u, z);
+    return [p[0] + (nx / l) * d, p[1] + (ny / l) * d, z];
+  };
   // Pavilion glass carries a quiet warm concourse glow at night, including the roof.
   b.paint(0x829e9d, Surf.GlassPlain, 2);
   surface(b, (u, v) => at(u, -22 + v * 19), seg, 1, [cx, 5, -12]);
@@ -47,7 +53,7 @@ function trainShed(b: ModelBuilder, cx: number, r: number, rise: number, roof: n
   // Solid lower roof strips give each vault a legible edge in the oblique city view.
   for (const lo of [0, 0.875]) {
     b.paint(roof, Surf.Metal, 3);
-    surface(b, (u, v) => at(lo + u * 0.125, -22 + v * 19, 0.04), 2, 1, [cx, 5, -12]);
+    surface(b, (u, v) => off(lo + u * 0.125, -22 + v * 19, 0.05), 2, 1, [cx, 5, -12]);
   }
 }
 
@@ -56,7 +62,7 @@ function grandCentral(b: ModelBuilder, v: number, rng: RNG): void {
   const roof = v === 0 ? 0x4e655c : 0x546e7a, pave = 0xc3bdae;
   const lit = P(stone, Surf.Stone, 1, 28), edge = P(trim, Surf.Stone, 1, 28);
   b.paint(pave, Surf.Pavement).slab(-32, -24, 32, 24, 0.1);
-  b.paint(0x706d65, Surf.Pavement).slab(-24.5, -24, 24.5, -3, 0.16);
+  b.paint(0x706d65, Surf.Pavement).slab(-24.5, -24, 24.5, -3, 0.06, 0.1);
   const tracks = v === 0 ? [-16, 0, 16] : [-18, -6, 6, 18];
   const platforms = v === 0 ? [-8, 8] : [-12, 0, 12];
   for (const x of tracks) {
@@ -68,8 +74,8 @@ function grandCentral(b: ModelBuilder, v: number, rng: RNG): void {
   for (const x of platforms) {
     b.paint(0xb9b7ad, Surf.Pavement).box(x - 2.2, 0.16, -23.4, x + 2.2, 0.85, -3);
     b.paint(0xd2b75a, Surf.Plain);
-    rect(b, x - 2.1, -23.2, x - 1.85, -3.1, 0.86);
-    rect(b, x + 1.85, -23.2, x + 2.1, -3.1, 0.86);
+    rect(b, x - 2.1, -23.2, x - 1.85, -3.1, 0.87);
+    rect(b, x + 1.85, -23.2, x + 2.1, -3.1, 0.87);
     b.paint(0x384f59, Surf.Metal).box(x - 0.9, 3.8, -19, x + 0.9, 4.5, -18.8);
     b.box(x - 0.05, 0.85, -18.95, x + 0.05, 3.8, -18.85);
   }
@@ -80,10 +86,10 @@ function grandCentral(b: ModelBuilder, v: number, rng: RNG): void {
   b.paint(0x333a3a, Surf.Metal);
   for (const z of [-18.5, -8.3]) b.box(tx - 1.1, 0.32, z - 0.9, tx + 1.1, 0.75, z + 0.9);
   b.paint(0xa8b0b1, Surf.Metal).box(tx - 1.35, 0.65, -20.8, tx + 1.35, 3.5, -6);
-  b.paint(0x35566d, Surf.Metal).box(tx - 1.4, 1.3, -20.8, tx + 1.4, 1.75, -6);
+  b.paint(0x35566d, Surf.Metal).box(tx - 1.4, 1.3, -20.84, tx + 1.4, 1.75, -5.96);
   b.paint(0x253740, Surf.GlassPlain, 1).box(tx - 1.37, 2, -20.84, tx + 1.37, 3.05, -5.96, { top: null });
   b.paint(0xcbd0cd, Surf.Metal);
-  for (let z = -20; z < -6; z += 2) b.box(tx - 1.4, 1.75, z - 0.08, tx + 1.4, 3.5, z + 0.08);
+  for (let z = -20; z < -6; z += 2) b.box(tx - 1.4, 1.75, z - 0.08, tx + 1.4, 3.45, z + 0.08);
   // Main concourse and taller corner pavilions; front arches face the street (+Z).
   b.paint(lit).box(-28.8, 0.1, -3.2, 28.8, 1.2, 13.6);
   b.box(-22.4, 1.2, -3.2, 22.4, 20.8, 12.8, { top: P(roof, Surf.RoofFlat) });
