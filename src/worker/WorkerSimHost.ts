@@ -159,6 +159,8 @@ export function bootWorkerSimHost(source: SerializedSource, opts: WorkerSimHostO
   return booted.then(async (host) => {
     try {
       const [Actions, Controller] = await modules;
+      // the city's signal, or a crash, closed it while the modules loaded
+      if (host.isDisposed) throw new Error('Simulation host is disposed');
       if (Actions) host.useOptimisticActions(Actions);
       // nothing is posted before the caller has the host, so no reservation predates the controller
       if (Controller) host.installActions((h) => new Controller(h));
@@ -190,6 +192,8 @@ export class WorkerSimHost extends PacketSimHost {
     link.retarget({ receive: (m) => this.receive(m), fail: (e) => this.crash(e), ping: () => this.ping() });
     this.connect((m) => link.post(m as WorkerInput)); // the host never posts init
   }
+
+  get isDisposed(): boolean { return this.closed; }
 
   /** Deterministic mode (§2.9; hosts.test, the protector): whole headless days as separate worker units, live flag off.
    *  Resolves to the day reached, once the replica has applied them. */
