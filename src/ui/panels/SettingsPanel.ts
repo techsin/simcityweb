@@ -1,7 +1,7 @@
 /** Settings: graphics quality, time of day, camera, interface, audio, gameplay. Persisted via ctx.applySettings. */
 import type { QualityLevel } from '../../render/contracts';
 import type { GameContext } from '../../game/context';
-import type { EmergencyPolicy, GameSettings, NewYearMode } from '../../game/settings';
+import { UI_SCALE, type EmergencyPolicy, type GameSettings, type NewYearMode } from '../../game/settings';
 import { Panel } from '../Panel';
 import { h, segmented, setSlider, setText, setToggle, slider, toggle } from '../dom';
 import { asMusicAudio, MusicPlayer } from '../MusicPlayer';
@@ -93,7 +93,7 @@ export class SettingsPanel extends Panel {
       this.row('Edge scrolling', 'Move the camera when the mouse touches the screen edge', this.sw('edgeScroll')),
       this.row('Show grid while building', null, this.sw('showGrid')),
       sec('interface', 'Interface'),
-      this.row('UI scale', 'On top of automatic resolution scaling', this.range('uiScale', 0.7, 1.5, 0.05, pctf)),
+      this.row('UI scale', 'On top of automatic resolution scaling', this.range('uiScale', UI_SCALE.min, UI_SCALE.max, UI_SCALE.step, pctf)),
       this.row('Notifications', 'Pop-up toasts for important events', this.sw('toasts')),
       this.row('Show FPS', null, this.sw('showFps')),
       sec('audio', 'Audio & music'),
