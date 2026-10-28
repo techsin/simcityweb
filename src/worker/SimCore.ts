@@ -14,6 +14,15 @@ import { AlertQueue, LIVE_COOLDOWN_MS, LIVE_IDLE, followingDispatch, pendingCoun
 import type { EmergencyEvent } from '../sim/Simulation';
 import type { Incident } from '../sim/infra/emergency';
 import type { PolicySnapshot, PolicyView, SimSettings } from './SimHost';
+// W0.6: authoritative save copies and IDB only; browser recovery composition stays in LocalSimHost.
+import { createCityRecord, putCityRecord, type CityRecord } from '../save/cities';
+import { openKV } from '../save/db';
+import { cityFingerprint } from '../save/fingerprint';
+import { clearRecoveryAfterSave } from '../save/recoveryIdb';
+import { summarizeCity } from '../region/citySummary';
+import type { RegionCitySummary } from '../region/types';
+
+export interface CitySaveCopy { record: CityRecord; fp: string; summary: RegionCitySummary }
 
 /** The page's flags, passed at init (WORKER_DESIGN §1). */
 export interface SimFlags {
@@ -98,6 +107,19 @@ export class SimCore {
 
   querySignature<K extends QueryName>(name: K, args: QueryArgs<K>, when: WatchPolicy, commands: number): string {
     return `${this.booted}:${watchSignature(this.sim, name, args, when, commands)}`;
+  }
+
+  // W0.6: all values describing a save are captured in the same synchronous unit.
+  copySave(regionId: string, tileKey: string): CitySaveCopy {
+    if (this.disposed) throw new Error('Simulation core is disposed');
+    const st = this.sim.state;
+    return { record: createCityRecord(regionId, tileKey, st), fp: cityFingerprint(st), summary: summarizeCity(st) };
+  }
+
+  async putSave(copy: CitySaveCopy): Promise<boolean> {
+    const kv = await openKV(), rec = copy.record;
+    await putCityRecord(kv, rec);
+    return clearRecoveryAfterSave(kv, rec.regionId, rec.tileKey, rec.savedAt).catch(() => false);
   }
 
   /** Commands run synchronously between local ticks, through the same authoritative actions as before. */
