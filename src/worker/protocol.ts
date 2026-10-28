@@ -54,7 +54,7 @@ export type M2W =
 export type W2M =
   | { t: 'hello'; v: number }
   | { t: 'boot'; phase: 'idb' | 'deserialize' | 'wasm' | 'systems' | 'journal' | 'snapshot'; pct: number }
-  | { t: 'ready'; snapshot: SerializedCity; streams: Streams; policy: PolicyState; clock: Clock; savedAt: number; cmd: number; journal?: Journal }
+  | { t: 'ready'; snapshot: SerializedCity; streams: Streams; policy: PolicyState; clock: Clock; savedAt: number; cmd: number; journal?: Journal; changes?: number }
   | { t: 'pkt'; p: Packet }
   | { t: 'fatal'; message: string; stack?: string };
 export type Ready = Extract<W2M, { t: 'ready' }>;
@@ -125,6 +125,8 @@ export interface Packet extends Streams {
   rasters?: RasterPatch[]; blds?: Float64Array; plain?: PlainPatch; policy?: PolicyState;
   watch?: WatchValue[]; replies?: Reply[]; acks?: unknown[];
   pong?: number; stats?: WorkerStats; digest?: number;
+  /** the worker's change-event count at this packet (W1.1b): main mirrors it, so dirty tracking survives a resync */
+  changes?: number;
 }
 
 export const REC_FIELDS = ['id', 'x', 'z', 'w', 'd', 'rot', 'variant', 'pop', 'jobs', 'capacity', 'wealth', 'built', 'age',

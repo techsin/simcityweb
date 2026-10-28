@@ -53,6 +53,8 @@ type WatchRequest = Extract<M2W, { t: 'watch' }>;
 interface CoreWatch {
   request: WatchRequest; at: number;
   cache: Map<string, { signature: string; at: number }>;
+  /** dispatchOptions: the command seq of its last run (a dispatch command bypasses the cap, as LocalWatch) */
+  cmd?: number;
 }
 
 /** W1.1b: FIFO handlers shared with a worker inbox; scheduling remains the transport's responsibility. */
@@ -115,11 +117,13 @@ export class ProtocolInbox {
     for (const w of this.watches.values()) {
       const m = w.request, key = queryKey(m.args), cached = w.cache.get(key);
       const interval = m.name === 'inspectBuilding' || m.name === 'inspectCell' ? 1000 : 200;
-      if (now - w.at < 200 || (cached && now - cached.at < interval)) continue;
+      // as LocalWatch (W0.3b, EM-1): argument changes share the cap; a dispatch command bypasses it for dispatchOptions
+      const epoch = m.name === 'dispatchOptions' ? this.cmd : undefined;
+      if (epoch === w.cmd && (now - w.at < 200 || (cached && now - cached.at < interval))) continue;
       const args = m.args as QueryArgs<QueryName>;
       const signature = this.core.querySignature(m.name, args, m.when, this.cmd);
-      if (cached?.signature === signature) continue;
-      w.at = now;
+      if (cached?.signature === signature) { w.cmd = epoch; continue; }
+      w.at = now; w.cmd = epoch;
       try { this.recorder.watch({ id: m.id, key, cmd: this.cmd, value: copyOwned(this.core.runQuery(m.name, args)) }); }
       catch (e) {
         this.recorder.watch({ id: m.id, key, cmd: this.cmd, error: String(e) });
@@ -227,6 +231,7 @@ export class LoopbackCore {
   private ready(): Ready {
     const ready = this.recorder.ready(this.inbox.cmd, this.live), p = this.opts.persistence;
     if (p) ready.savedAt = getRecoveryBase(p.regionId, p.tileKey)?.savedAt ?? 0;
+    ready.changes = this.inbox.changes;
     return ready;
   }
   get state(): CityState { return this.replica.state; }
@@ -275,6 +280,7 @@ export class LoopbackCore {
     const packet = this.recorder.flush({ live: this.live, force, rollingCount });
     this.timing.flushMs += performance.now() - start;
     if (!packet) return null;
+    packet.changes = this.inbox.changes;
     const message = this.deliver({ t: 'pkt', p: packet });
     return message.t === 'pkt' ? message.p : null;
   }

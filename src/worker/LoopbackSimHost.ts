@@ -394,6 +394,8 @@ export class PacketSimHost implements SimHost {
         this.requests.clear(); this.queries.clear();
       }
       this.hasReady = true;
+      // the worker's count: events in packets dropped by a resync must not leave dirty tracking behind for good
+      if (message.changes !== undefined) this.changes = message.changes;
       this.replica.adopt(message); this.readiness.resolve(undefined); return;
     }
     if (message.t !== 'pkt') return;
@@ -401,7 +403,8 @@ export class PacketSimHost implements SimHost {
     if (message.p.clock.day < this.replica.clock.day) this.lastTime = message.p.clock.day;
     this.receivedAt = this.now();
     if (this.replica.apply(message.p)) {
-      this.changes += message.p.log.filter((e) => CHANGE_EVENTS.some((name) => EVENT_TYPES[name as keyof typeof EVENT_TYPES] === e[0])).length;
+      // the worker's count when the packet carries it (save and snapshot acks carry the same counter); else the log's
+      this.changes = message.p.changes ?? this.changes + message.p.log.filter((e) => CHANGE_EVENTS.some((name) => EVENT_TYPES[name as keyof typeof EVENT_TYPES] === e[0])).length;
       this.publishPolicy(); this.options.onPacket?.(message.p);
     }
     this.packet = null;

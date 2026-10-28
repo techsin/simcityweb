@@ -131,6 +131,26 @@ describe('LoopbackSimHost packets', () => {
     } finally { off(); await host.dispose(); }
   });
 
+  it('re-runs a dispatchOptions watch on a command inside the 200 ms cap, as LocalWatch (EM-1)', async () => {
+    const st = newState(64); roadLine(st, 2, 20, 62, 20);
+    const clinic = place(st, 't_clinic', 8, 19), home = place(st, 't_r2', 50, 21, { pop: 60 });
+    // A frozen clock: every refresh below falls inside the cap, so only the command epoch can re-run the watch.
+    const host = new LoopbackSimHost(st, { initialSpeed: 0, now: () => 0 });
+    await host.start();
+    try {
+      const sim = host.harness.core.sim, em = emergencyOf(sim)!;
+      const id = em.spawn(sim, 'medical', home.x, home.z, { buildingId: home.id, major: true });
+      const w = host.watch('dispatchOptions', { incidentId: id }, 'change');
+      await host.drain();
+      const before = em.dispatchOptions(sim, id);
+      expect(w.value).toEqual(before);
+      const ticket = host.post('dispatch', [id, clinic.id, 1]);
+      await host.drain(); expect((await ticket.done).ok).toBe(true);
+      expect(em.dispatchOptions(sim, id)).not.toEqual(before);
+      expect(w.value).toEqual(em.dispatchOptions(sim, id));
+    } finally { await host.dispose(); }
+  });
+
   it('captures save and snapshot watermarks before later FIFO commands, and never serializes the replica', async () => {
     setKV(new MemoryKV());
     const host = new LoopbackSimHost(newState(32), { persistence: { regionId: 'r', tileKey: 't' } });
@@ -188,6 +208,34 @@ describe('LoopbackSimHost packets', () => {
       expect(read.value).toBeUndefined(); expect(core.core.isDisposed).toBe(true);
       expect(() => host.post('setSpeed', [1, 'keyboard'])).toThrow(/disposed/);
       expect(host.state.buildings.size).toBe(0);
+    } finally { await host.dispose(); }
+  });
+
+  it('mirrors the worker change count, so a resync that drops a packet in flight leaves no phantom dirty state', async () => {
+    setKV(new MemoryKV());
+    // A packet waits up to 1000 transport ticks and none pass below: the flushed change is in flight at the resync.
+    const host = new LoopbackSimHost(newState(32), {
+      initialSpeed: 0, persistence: { regionId: 'r', tileKey: 't' }, loopback: { lag: { seed: 3, packetTicks: 1000 } },
+    });
+    await host.start();
+    const core = host.harness;
+    try {
+      await host.drain();
+      const before = host.changes;
+      expect(before).toBe(core.inbox.changes);
+      core.primary.trees[2] = 3; core.core.sim.events.emit('treesChanged', { x0: 2, z0: 0, x1: 3, z1: 1 });
+      expect(core.flush(true)?.changes).toBe(before + 1);
+      expect(host.changes).toBe(before);
+      core.resync();
+      expect(host.changes).toBe(before + 1);
+      // later packets carry the absolute count, so nothing is counted twice
+      core.primary.trees[3] = 3; core.core.sim.events.emit('treesChanged', { x0: 3, z0: 0, x1: 4, z1: 1 });
+      core.flush(true); await host.drain();
+      expect(host.changes).toBe(before + 2);
+      // main.ts marks the city clean when the save ack's count equals the host's
+      const saved = host.save('manual');
+      await host.drain();
+      expect((await saved).changes).toBe(host.changes);
     } finally { await host.dispose(); }
   });
 });
