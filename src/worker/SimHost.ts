@@ -344,7 +344,7 @@ export class LocalSimHost implements SimHost {
   });
 
   constructor(state: CityState, opts: LocalSimHostOptions = {}) {
-    this.core = new SimCore(state, opts.errors, opts.flags);
+    this.core = new SimCore(state, opts.errors, opts.flags, opts.now);
     this.rctx = opts.rctx ?? null;
     this.queryClock = opts.now ?? (() => performance.now());
     this.views = localViews(this.sim);

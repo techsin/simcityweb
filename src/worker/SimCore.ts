@@ -53,11 +53,13 @@ export class SimCore {
   private abort = new AbortController();
   readonly livePolicy: LivePolicy;
 
-  constructor(state: CityState, errors?: SimErrors, flags: SimFlags = { simwasm: null }) {
+  /** `clock`: the real-time milliseconds the live policy's alert close delays count in (the host's clock, so a
+   *  deterministic harness stays deterministic); performance.now by default. */
+  constructor(state: CityState, errors?: SimErrors, flags: SimFlags = { simwasm: null }, clock?: () => number) {
     this.sim = new Simulation(state, []);
     this.guard = { errors: errors ?? null };
     this.flags = flags;
-    this.livePolicy = new LivePolicy(this.sim, this.abort.signal);
+    this.livePolicy = new LivePolicy(this.sim, this.abort.signal, clock);
   }
 
   get isDisposed(): boolean { return this.disposed; }
@@ -239,7 +241,7 @@ export class LivePolicy {
   private attached = false;
   private flushQueued = false;
 
-  constructor(private sim: Simulation, private signal: AbortSignal) {
+  constructor(private sim: Simulation, private signal: AbortSignal, private clock: () => number = () => performance.now()) {
     const self = this;
     this.view = {
       get alerts() { return self.snapshot.alerts; },
@@ -366,7 +368,7 @@ export class LivePolicy {
       if (unbanneredPrompt(inc, this.alerts, this.dismissed, (i) => this.send(em, i))) this.incoming.add(inc.id);
     }
     this.flush();
-    const now = this.sim.simTime(), nowMs = performance.now();
+    const now = this.sim.simTime(), nowMs = this.clock();
     for (const [id, alert] of this.alerts) {
       const inc = em?.incident(id);
       const waiting = inc && (inc.state === 'uncovered' || inc.state === 'queued');

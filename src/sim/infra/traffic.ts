@@ -1513,18 +1513,23 @@ export class TrafficSystem implements SimSystem {
   ferryRidersAt(id: number): number {
     return this.ferryRidersBy.get(id) ?? 0;
   }
-  /** plop preview: partners a ferry terminal at (x, z, w, d, rot) would link to */
-  ferryPartnersFor(st: CityState, x: number, z: number, w: number, d: number, rot: number): FerryPartner[] {
-    this.refreshAttach(st);
+  /**
+   * plop preview: partners a ferry terminal at (x, z, w, d, rot) would link to. `refresh: false` (queries and previews)
+   * reads the last refresh's terminals: a read must not move when this system recomputes its attachments, or the
+   * simulation's own later passes would depend on when the player looked (W1.1b querySideEffects)
+   */
+  ferryPartnersFor(st: CityState, x: number, z: number, w: number, d: number, rot: number, refresh = true): FerryPartner[] {
+    if (refresh) this.refreshAttach(st);
     return ferryPartnersAt(st, this.ferryTerms, x, z, w, d, rot);
   }
   /**
    * attached stops within r cells (+ half the footprint) of a footprint (garage preview), nearest first; ride = a
    * transit path from the stop rides a vehicle in the last assignment (false: its riders walk to jobs beside it — a
-   * garage there is parking only, no park & ride; undefined: not assessed yet)
+   * garage there is parking only, no park & ride; undefined: not assessed yet). `refresh: false` (queries and previews):
+   * the attachments of the last refresh, as ferryPartnersFor
    */
-  stopsNear(st: CityState, x: number, z: number, w: number, d: number, r = PR_STOP_RADIUS): { id: number; mode: number; dist: number; ride?: boolean }[] {
-    this.refreshAttach(st);
+  stopsNear(st: CityState, x: number, z: number, w: number, d: number, r = PR_STOP_RADIUS, refresh = true): { id: number; mode: number; dist: number; ride?: boolean }[] {
+    if (refresh) this.refreshAttach(st);
     const cx = x + (w >> 1), cz = z + (d >> 1), R = r + (Math.max(w, d) >> 1);
     const out: { id: number; mode: number; dist: number; ride?: boolean }[] = [];
     // stops of the last assignment (a stop placed since shows after the next one; previews run on every mouse move)
