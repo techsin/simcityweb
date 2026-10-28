@@ -162,5 +162,10 @@ describe('worker migration hygiene gates', () => {
   });
   it('W1.2: simWorker import graph excludes bundle.ts, save/index.ts and recoveryLs.ts', async () => {
     await expectCleanGraph('src/worker/simWorker.ts');
+    // nor any of the page's side: R14's persistence 'main' hands records and snapshots to the host that stores them
+    const graph = await importGraph('src/worker/simWorker.ts');
+    expect(graph).toContain('src/worker/protocolInbox.ts');
+    expect(graph.filter((p) => ['src/worker/replica.ts', 'src/worker/loopbackCore.ts', 'src/worker/LoopbackSimHost.ts',
+      'src/worker/WorkerSimHost.ts', 'src/worker/SimHost.ts'].includes(p))).toEqual([]);
   });
 });
