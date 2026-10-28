@@ -168,7 +168,7 @@ export class RectTool extends Tool {
     }
     const c = { x: p.hit.x, z: p.hit.z };
     const rect = this.start ? rectFrom(this.start, c) : this.hoverRect(c);
-    const key = `${rect.x0},${rect.z0},${rect.x1},${rect.z1},${!!this.start}${this.mode.kind === 'bulldoze' ? `,${this.ctx.state.day}` : ''}`;
+    const key = `${rect.x0},${rect.z0},${rect.x1},${rect.z1},${!!this.start},${this.ctx.host.pending?.revision ?? 0}${this.mode.kind === 'bulldoze' ? `,${this.ctx.state.day}` : ''}`;
     if (key !== this.lastKey) {
       this.lastKey = key;
       this.lastRect = rect;
