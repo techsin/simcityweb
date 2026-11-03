@@ -3,7 +3,7 @@
  * (T038). Node only, CPU work: `collectLaunchSites` reads plain state, building definitions and the renderer's visuals.
  *
  *   npx tsx tools/bench/fireworksSites.ts [--fixtures DIR] [--base TREE] [--city dense1m|bot256|FILE]...
- *       [--rounds 30] [--reps 20] [--cold 5] [--year] [--json FILE]
+ *       [--rounds 30] [--reps 20] [--cold 5] [--year] [--view] [--json FILE]
  *
  * --base TREE  a checkout of the base (e.g. a clean export of dev): its own collectLaunchSites is "before". Without it,
  *              "before" is this tree's collectLaunchSites (the same full scan; T038 only split off its tail).
@@ -17,6 +17,9 @@
  * --year       runs the simulation to the next New Year with the index kept from the sim's building events (and a
  *              visual map kept the way BuildingRenderer keeps it), comparing the index with both full scans at every
  *              month boundary and at the 'year' event.
+ * --view       the same New Year through the production wiring: a CityObjectsView (real BuildingRenderer visuals)
+ *              subscribed to the sim's events; its launchSites() against collectLaunchSites(launchSiteSource()) at
+ *              load, at every month boundary and at the 'year' event.
  * Visuals are deterministic stand-ins (tests/render/fireworksHarness.ts), held in a Map like BuildingRenderer's.
  */
 import { spawnSync } from 'node:child_process';
@@ -209,6 +212,40 @@ async function year(spec: string, before: Collect) {
     checks: checks.length, allIdentical: checks.every((c) => c.identical), yearCheck: checks.find((c) => c.event === 'year') ?? null };
 }
 
+/** --view: the production wiring (CityObjectsView, its real BuildingRenderer visuals) through the next New Year */
+async function view(spec: string) {
+  const { st } = await loadCity(cityFile(spec), FIX);
+  const THREE = await import('three');
+  const { createSystems } = await import('../../src/sim/systems/index');
+  const { CityObjectsView } = await import('../../src/render/city/CityObjectsView');
+  const sim = new Simulation(st, createSystems());
+  const t0 = performance.now();
+  const v = new CityObjectsView(st, sim.events, {
+    scene: new THREE.Scene(), camera: new THREE.PerspectiveCamera(), renderer: {} as never, canvas: {} as never, getState: () => sim.state,
+  });
+  const buildSeconds = r3((performance.now() - t0) / 1000);
+  const fw = v as unknown as { launchSites(): LaunchSite[]; launchSiteSource(): SiteSource };
+  const ev = { added: 0, changed: 0, removed: 0 };
+  const checks: { day: number; event: string; sites: number; identical: boolean }[] = [];
+  const check = (event: string) => {
+    const s = fw.launchSites();
+    checks.push({ day: st.day, event, sites: s.length, identical: sameSites(s, collectLaunchSites(fw.launchSiteSource())) });
+  };
+  const offs = [
+    sim.events.on('buildingAdded', () => { ev.added++; }), sim.events.on('buildingChanged', () => { ev.changed++; }),
+    sim.events.on('buildingRemoved', () => { ev.removed++; }),
+    sim.events.on('month', () => check('month')), sim.events.on('year', () => check('year')),
+  ];
+  check('load');
+  const startDay = st.day;
+  let guard = 0;
+  while (!checks.some((c) => c.event === 'year') && guard++ < 400) sim.advanceDay();
+  for (const off of offs) off();
+  v.dispose();
+  return { city: spec, buildings: st.buildings.size, viewBuildSeconds: buildSeconds, startDay, endDay: st.day, events: ev,
+    checks: checks.length, allIdentical: checks.every((c) => c.identical), yearCheck: checks.find((c) => c.event === 'year') ?? null };
+}
+
 async function main() {
   const { collect: before, label } = await loadBefore();
   if (CHILD) { await child(CITIES[0], CHILD, before); return; }
@@ -221,6 +258,7 @@ async function main() {
     const res: Record<string, unknown> = { warm: w };
     if (COLD > 0) { const c = cold(spec); console.log(JSON.stringify(c)); res.cold = c; }
     if (args.includes('--year')) { const y = await year(spec, before); console.log(JSON.stringify(y)); res.year = y; }
+    if (args.includes('--view')) { const y = await view(spec); console.log(JSON.stringify(y)); res.view = y; }
     out[spec] = res;
   }
   (out.meta as Record<string, unknown>).loadAfter = loadavg().map((x) => r3(x));
