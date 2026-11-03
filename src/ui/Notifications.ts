@@ -264,11 +264,16 @@ export class Toasts {
     }, { signal: this.ctx.signal });
     timer = arm(kill, ttl);
     this.live.set(key, entry);
+    if (answers) t.classList.add('question');
     this.el.prepend(t);
-    // at most 4 visible (3 on short screens, e.g. 1280×720: CityScene sets .short on the UI root)
+    // at most 4 visible (3 on short screens, e.g. 1280×720: CityScene sets .short on the UI root); the oldest goes first,
+    // but a question waits for its answer (or its own expiry): news must not push it out before it can be read
     const max = this.ctx.root.classList.contains('short') ? Math.min(3, Toasts.MAX) : Toasts.MAX;
     while (this.el.children.length > max) {
-      const last = this.el.lastElementChild as HTMLElement;
+      const kids = this.el.children;
+      let last: HTMLElement | null = null;
+      for (let k = kids.length - 1; k >= 0 && !last; k--) if (!kids[k].classList.contains('question')) last = kids[k] as HTMLElement;
+      if (!last) break;
       for (const [k, v] of this.live) if (v.el === last) this.live.delete(k);
       last.remove();
     }

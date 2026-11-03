@@ -143,6 +143,20 @@ describe('FH-21: one offer to switch a slow city to Medium', () => {
     expect(run).toHaveBeenCalledTimes(1);
     expect(t.classList.contains('out')).toBe(true);
   });
+
+  it('news toasts never push a question out (a busy city filled the stack within a second)', () => {
+    const root = new FEl('div');
+    root.classList.add('short');
+    const ctx = { signal: new AbortController().signal, sim: { events: { on: () => () => {} } }, settings: { toasts: true }, mods: {}, root, sound() {}, focusCell: vi.fn() } as unknown as GameContext;
+    vi.stubGlobal('window', { setTimeout: () => 1 });
+    const toasts = new Toasts(ctx, root as unknown as HTMLElement);
+    toasts.show('Question?', 'warning', undefined, 'Graphics', { buttons: [{ label: 'Yes', run() {} }] });
+    for (let k = 0; k < 6; k++) toasts.show(`News ${k}`, 'good');
+    const el = toasts.el as unknown as FEl;
+    expect(el.children).toHaveLength(3);
+    expect(el.querySelectorAll('.toast.question')).toHaveLength(1);
+    expect(el.children.map((c) => textOf(c.querySelector('.t-text')!))).toEqual(['News 5', 'News 4', 'Question?']);
+  });
 });
 
 // ------------------------------------------------------------------ a lost graphics context
