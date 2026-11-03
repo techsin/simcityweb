@@ -198,8 +198,8 @@ describe('final fixes V5: the monthly resident survey is gathered in daily slice
   });
 
   it('tourism: the hotel rooms and historic sites gathered in daily slices equal one full pass', { timeout: 120000 }, () => {
-    // two copies of a steady city (only the tourism system runs); B loses its slices on day 59, so its day-60 month
-    // tick takes the full pass
+    // two copies of a steady city (only the tourism system runs); the slices' window ends on the venue pass's day (B3:
+    // TOURISM_DAY 26): B loses its slices on day 55, so its day-56 pass takes the full pass
     const make = () => {
       const t = town();
       const hdef = getDef('com_hotel.cs1.5')!;
@@ -217,21 +217,30 @@ describe('final fixes V5: the monthly resident survey is gathered in daily slice
       return { ...t, solo };
     };
     const A = make(), B = make();
-    runTo(A.solo, 60);
-    runTo(B.solo, 59);
+    runTo(A.solo, 56);
+    runTo(B.solo, 55);
     delete B.st.systemData.tourismAcc;
-    runTo(B.solo, 60);
+    runTo(B.solo, 56);
     expect(A.st.stats.hotelRooms).toBe(Math.round(1.5 * (150 + 151 + 152 + 153 + 154 + 155)));
     expect(B.st.stats.hotelRooms).toBe(A.st.stats.hotelRooms);
+    // (the historic sites in ascending id either way: the same sums and splats, bit for bit)
     const dA = econData(A.st), dB = econData(B.st);
     expect(dA.touristsGross).toBeGreaterThan(0);
-    expect(dB.touristsGross).toBeCloseTo(dA.touristsGross ?? 0, 9);
-    expect(dB.tourists).toBeCloseTo(dA.tourists, 9);
+    expect(dB.touristsGross).toBe(dA.touristsGross);
+    expect(dB.tourists).toBe(dA.tourists);
     // the visitor raster around a historic home matches too
     const i = (A.homes[30].z + 1) * A.st.size + A.homes[30].x + 1;
     expect(A.st.visitors[i]).toBeGreaterThan(0);
-    expect(B.st.visitors[i]).toBeCloseTo(A.st.visitors[i], 6);
-    // the slices start over after the tick
-    expect((A.st.systemData.tourismAcc as { done: number }).done).toBe(0);
+    expect(B.st.visitors[i]).toBe(A.st.visitors[i]);
+    expect(Buffer.from(B.st.visitors.buffer).equals(Buffer.from(A.st.visitors.buffer))).toBe(true);
+    // the slices start over after the pass: the next window (days 57–86) is m 2
+    const acc = A.st.systemData.tourismAcc as { m: number; done: number };
+    expect(acc.done).toBe(0);
+    expect(acc.m).toBe(2);
+    // the month tick (day 60) scores the pass: the same attractiveness in both
+    runTo(A.solo, 60);
+    runTo(B.solo, 60);
+    expect(econData(B.st).attractiveness).toBe(econData(A.st).attractiveness);
+    expect(econData(B.st).tourists).toBe(econData(A.st).tourists);
   });
 });
