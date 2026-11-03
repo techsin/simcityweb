@@ -36,9 +36,9 @@ export interface SaveAck {
 }
 export interface SnapshotAck extends WriteResult, RecoverySnapshot { cmd: number; fp: string; changes: number }
 export interface CityPersistence { regionId: string; tileKey: string; regionName?: string }
-// W1.1b: the local host keeps recovery=null; T032 attaches the mirror to its packet/command paths.
-export type { RecoveryMirror } from './recoveryMirror';
-import type { RecoveryMirror } from './recoveryMirror';
+/** The page's synchronous unload write: all the app needs. The local host writes snapshots synchronously and has
+ *  none; packet hosts write their journal mirror (src/worker/recoveryMirror.ts, T033) through it. */
+export interface RecoveryMirror { writeNow(why: SnapshotWhy | 'crash'): void }
 
 export type { QueryName, QueryArgs, QueryResult, WatchPolicy } from './queries';
 

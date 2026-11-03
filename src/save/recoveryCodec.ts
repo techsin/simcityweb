@@ -20,10 +20,8 @@ export const JOURNAL_OPS: Readonly<Record<JournalOp, true>> = {
 };
 export function isJournalOp(op: string): op is JournalOp { return Object.hasOwn(JOURNAL_OPS, op); }
 
-/** This base predates FH-07a's refund fields: keep the bulldoze ack's signed net charge. */
-export interface RecoveryJournal extends Journal {
-  ops: (Journal['ops'][number] & { cost?: number })[];
-}
+/** The journal as stored and replayed; bulldoze entries carry their ack's charge (FH-07a). */
+export type RecoveryJournal = Journal;
 
 /** Metadata only; the page never needs the serialized city to bind its journal. */
 export interface JournalBase extends RecoveryCity { savedAt: number; snapshot?: RecoveryMarker }
@@ -39,7 +37,8 @@ export function journalMatches(journal: RecoveryJournal, base: JournalBase): boo
   let seq = journal.fromCmd;
   for (const entry of journal.ops) {
     if (!entry || !Number.isSafeInteger(entry.seq) || entry.seq <= seq || !isJournalOp(entry.op) || !Array.isArray(entry.args)
-      || (entry.cost !== undefined && (entry.op !== 'bulldoze' || !Number.isFinite(entry.cost)))) return false;
+      || ((entry.cost !== undefined || entry.refund !== undefined) && (entry.op !== 'bulldoze' || !Number.isFinite(entry.cost)
+        || (entry.refund !== undefined && !Number.isFinite(entry.refund))))) return false;
     seq = entry.seq;
   }
   return true;

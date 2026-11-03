@@ -27,11 +27,14 @@ export async function readRecoveryJournal(kv: KV, base: JournalBase): Promise<Re
   return null;
 }
 
-/** Adopt an unload copy only after its loaded record/snapshot has been identified. */
-export async function adoptRecoveryJournal(kv: KV, journal: RecoveryJournal, base: JournalBase): Promise<void> {
-  if (!journalMatches(journal, base)) return;
-  const current = await readRecoveryJournal(kv, base);
-  if (!current || current.at <= journal.at) await storeJournalIdb(kv, journal);
+/** Adopt an unload copy only after its loaded record/snapshot has been identified. A newer IndexedDB copy stays, even
+ *  one bound to another base: it is the later write. */
+export async function adoptRecoveryJournal(kv: KV, journal: RecoveryJournal, base: JournalBase): Promise<boolean> {
+  if (!journalMatches(journal, base)) return false;
+  const current = await kv.get<RecoveryJournal>('recovery', recKey(base) + '#journal');
+  if (current && current.at > journal.at) return false;
+  await storeJournalIdb(kv, journal);
+  return true;
 }
 
 export async function peekRecoveryMarker(kv: KV, city: RecoveryCity): Promise<RecoveryMarker | null> {

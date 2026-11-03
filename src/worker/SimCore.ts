@@ -21,7 +21,7 @@ import { cityFingerprint } from '../save/fingerprint';
 import { clearRecoveryAfterSave } from '../save/recoveryIdb';
 import { summarizeCity } from '../region/citySummary';
 import type { RegionCitySummary } from '../region/types';
-// W1.1b: authoritative recovery only. The page-side mirror and localStorage stay out of this graph.
+// W1.1b (T033): authoritative recovery only. The page-side mirror and localStorage stay out of this graph.
 import { getRecoveryBase } from '../save/cities';
 import {
   buildRecoverySnapshot, JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, journalMatches,
@@ -132,14 +132,16 @@ export class SimCore {
     return clearRecoveryAfterSave(kv, rec.regionId, rec.tileKey, rec.savedAt).catch(() => false);
   }
 
-  // W1.1b: the loopback/worker owner cuts the bytes and command watermark in one synchronous unit.
-  copyRecoverySnapshot(regionId: string, tileKey: string, info: SnapshotInfo, at = Date.now()): RecoverySnapshot {
+  /** W1.1b (T033): the payload is encoded to the budget left after the journal's reserve (§4.3). The owner cuts the
+   *  bytes and its command watermark in one synchronous unit; `base` is the save still being written, if any. */
+  copyRecoverySnapshot(regionId: string, tileKey: string, info: SnapshotInfo, base = getRecoveryBase(regionId, tileKey),
+    at = Date.now()): RecoverySnapshot {
     if (this.disposed) throw new Error('Simulation core is disposed');
-    return buildRecoverySnapshot(regionId, tileKey, this.sim.state, getRecoveryBase(regionId, tileKey),
-      { ...info, at }, LS_BUDGET_BYTES - JOURNAL_RESERVE_BYTES);
+    return buildRecoverySnapshot(regionId, tileKey, this.sim.state, base, { ...info, at }, LS_BUDGET_BYTES - JOURNAL_RESERVE_BYTES);
   }
 
-  /** After boot/init, before ticking. The caller supplies the identity of the save/snapshot it actually loaded. */
+  /** §4.3: after init, before the first tick, each command at the base's day; one that now fails is dropped. The
+   *  caller names the save (and snapshot) it loaded; a journal bound to another base replays nothing (null). */
   replayRecoveryJournal(journal: RecoveryJournal, base: JournalBase): { applied: number[]; failed: number[] } | null {
     if (this.disposed) throw new Error('Simulation core is disposed');
     if (!journalMatches(journal, base)) return null;
@@ -150,16 +152,23 @@ export class SimCore {
         const result = this.applyCommand({ op: entry.op, args: structuredClone(entry.args) } as Command, this.actions);
         if (result === false || (result && typeof result === 'object' && !result.ok)) { failed.push(entry.seq); continue; }
         if (entry.op === 'bulldoze' && entry.cost !== undefined && result && typeof result === 'object' && 'cost' in result) {
-          // FH-07a is not in this base. Preserve its signed net charge, never a fresh wall-clock refund decision.
-          const adjustment = result.cost - entry.cost, st = this.sim.state;
-          if (!st.config.sandbox && st.config.difficulty !== 'sandbox') st.funds += adjustment;
-          if (adjustment > 0) st.budget.curIncome['oneoff:refund'] = (st.budget.curIncome['oneoff:refund'] ?? 0) + adjustment;
-          else if (adjustment < 0) st.budget.curExpense['oneoff:demolition'] = (st.budget.curExpense['oneoff:demolition'] ?? 0) - adjustment;
+          this.keepCharge(entry.cost, entry.refund, result.cost, result.refund);
         }
         applied.push(entry.seq);
       } catch { failed.push(entry.seq); }
     }
     return { applied, failed };
+  }
+
+  /** FH-07a: the journal records the refund that was charged, not the rule. A replay at the base's day would re-date
+   *  it (a day-20 bulldoze becomes a same-day one), so both budget lines and the funds move to the ack's amounts. */
+  private keepCharge(cost: number, refund: number | undefined, replayCost: number, replayRefund = 0): void {
+    const st = this.sim.state, b = st.budget;
+    const charged = refund ?? replayRefund;
+    const refundDelta = charged - replayRefund, feeDelta = (cost + charged) - (replayCost + replayRefund);
+    if (refundDelta) b.curIncome['oneoff:refund'] = (b.curIncome['oneoff:refund'] ?? 0) + refundDelta;
+    if (feeDelta) b.curExpense['oneoff:demolition'] = (b.curExpense['oneoff:demolition'] ?? 0) + feeDelta;
+    if (!st.config.sandbox && st.config.difficulty !== 'sandbox') st.funds -= cost - replayCost;
   }
 
   /** Commands run synchronously between local ticks, through the same authoritative actions as before. */
