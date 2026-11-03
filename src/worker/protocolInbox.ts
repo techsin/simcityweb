@@ -4,7 +4,7 @@
 import { FallbackActions } from '../game/fallback/FallbackActions';
 import type { CityRecord } from '../save/cities';
 import { CHANGE_EVENTS, cityFingerprint } from '../save/fingerprint';
-import { buildRecoverySnapshot, LS_BUDGET_BYTES, type RecoverySnapshot } from '../save/recoveryCodec';
+import type { RecoverySnapshot } from '../save/recoveryCodec';
 import type { CitySaveCopy, SimCore } from './SimCore';
 import type { ChangeRecorder } from './recorder';
 import { copyOwned, errorText, type M2W, type Packet, type Reply } from './protocol';
@@ -161,11 +161,12 @@ export class ProtocolInbox {
     if (!p || !store) { this.recorder.reply({ t: 'snapped', id: m.id, cmd, ok: false }); this.opts.flush(); return; }
     const failed = (e: unknown): Reply => ({ t: 'snapped', id: m.id, cmd, ok: false, error: errorText(e) });
     const start = performance.now(), st = this.core.sim.state, changes = this.changes;
+    // T033: encoded to the budget left after the journal's reserve, through the shared codec constant
     const built = this.attempt(() => ({
-      snapshot: buildRecoverySnapshot(p.regionId, p.tileKey, st, this.pendingBase ?? store.recoveryBase(p.regionId, p.tileKey), {
+      snapshot: this.core.copyRecoverySnapshot(p.regionId, p.tileKey, {
         cityName: st.config.name, regionName: p.regionName, population: st.stats.population, funds: st.funds,
-        why: m.why, lean: m.why === 'periodic', at: Date.now(),
-      }, LS_BUDGET_BYTES - 128 * 1024), // W0.6's journal reserve, without importing the localStorage module.
+        why: m.why, lean: m.why === 'periodic',
+      }, this.pendingBase ?? store.recoveryBase(p.regionId, p.tileKey)),
       fp: cityFingerprint(st),
     }), failed);
     if (!built) return;

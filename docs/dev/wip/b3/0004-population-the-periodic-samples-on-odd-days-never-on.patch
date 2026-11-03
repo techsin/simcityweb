@@ -1,8 +1,8 @@
 From 0a949fc7352d2a94192781a37cf8cd1d18bb95b9 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 22:30:17 +0000
-Subject: [PATCH 4/4] population: the periodic samples on odd days, never on a
- month tick (B3 P3)
+Subject: [PATCH 04/13] population: the periodic samples on odd days, never on
+ a month tick (B3 P3)
 
 The employment sample (every OCC_PERIOD = 4 days) and the demographics
 sample (every DEMO_AGG_DAYS = 32) ran on phase 0: the employment sample

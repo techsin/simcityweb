@@ -14,10 +14,14 @@ import type { RecoveryMirror, SnapshotAck, SnapshotWhy } from './SimHost';
 import { PROTOCOL_VERSION, assertOwnedBuffers, errorText, type Ready, type Reply, type SimSettings, type W2M } from './protocol';
 import { ACK_WINDOW, WorkerLiveness, type SerializedSource, type WorkerInput, type WorkerOutput, type WorkerPort } from './workerProtocol';
 
+/** A save or snapshot reply no caller waits for any more */
+const NO_WAIT: Settle = { resolve: () => {}, reject: () => {} };
+
 /** The worker failed: a fatal message, onerror / messageerror, a boot timeout, or 10 visible seconds without a packet. */
 export class HostCrashed extends Error { override name = 'HostCrashed'; }
 
-export interface WorkerSimHostOptions extends Omit<PacketHostOptions, 'persistence'> {
+/** No `journal`: W1.2 has none (R14); T039 (W1.3) brings the journal and its boot replay to the worker. */
+export interface WorkerSimHostOptions extends Omit<PacketHostOptions, 'persistence' | 'journal'> {
   /** the region screen's pre-spawned browserSimWorker() (§4.1); a fresh one by default; a node port in tests */
   port?: WorkerPort;
   kv?: KV;
@@ -185,7 +189,9 @@ export class WorkerSimHost extends PacketSimHost {
   /** Built by bootWorkerSimHost from the worker's real Ready. */
   constructor(ready: Ready, link: WorkerLink, source: SerializedSource, opts: WorkerSimHostOptions = {}) {
     const snapshots = new SnapshotMirror(source.savedAt);
-    super('worker', ready, { ...opts, recovery: opts.recovery ?? snapshots,
+    // R14: no journal in W1.2. T033's page journal stays off: the worker replays none at boot, and its unload write
+    // (a journal-only slot) would replace the snapshot this host's SnapshotMirror keeps in localStorage
+    super('worker', ready, { ...opts, journal: false, recovery: opts.recovery ?? snapshots,
       persistence: { regionId: source.regionId, tileKey: source.tileKey, regionName: opts.regionName } }, true);
     this.link = link; this.kv = opts.kv ?? null; this.snapshots = snapshots; this.onCrashed = opts.onCrash;
     if (this.closed) { void link.close(); return; }
@@ -236,8 +242,10 @@ export class WorkerSimHost extends PacketSimHost {
     this.send({ t: 'ping', n: ++this.pings });
   }
 
-  /** R14: the worker's save record and its snapshots are stored here, in reply order, before their replies settle. */
-  protected override settle(reply: Extract<Reply, { t: 'saved' | 'snapped' }>, wait: Settle): void {
+  /** R14: the worker's save record and its snapshots are stored here, in reply order, before their replies settle; also
+   *  when no caller waits any more (T033), since the worker counts on main's put either way. */
+  protected override settle(reply: Extract<Reply, { t: 'saved' | 'snapped' }>, waiting: Settle | undefined): void {
+    const wait = waiting ?? NO_WAIT;
     if (reply.t === 'saved' && reply.ok && reply.record) this.storeSave(reply, reply.record, wait);
     else if (reply.t === 'snapped' && reply.ok !== false) this.storeSnapshot(reply, wait);
     else super.settle(reply, wait);
@@ -280,8 +288,8 @@ export class WorkerSimHost extends PacketSimHost {
   private crash(error: unknown): void {
     if (this.closed) return;
     const crashed = error instanceof HostCrashed ? error : Object.assign(new HostCrashed(errorText(error)), { cause: error });
-    // the snapshot first, while the host is open (SnapshotWhy has no 'crash'; T033's mirror takes one)
-    try { this.recovery?.writeNow('exit'); } catch (e) { this.report('recovery', e); }
+    // the snapshot first, while the host is open (§4.4)
+    try { this.recovery?.writeNow('crash'); } catch (e) { this.report('recovery', e); }
     const onCrashed = this.onCrashed;
     this.fail(crashed);
     void this.dispose();
@@ -308,7 +316,7 @@ class SnapshotMirror implements RecoveryMirror {
   snapped(marker: RecoveryMarker, payload: Uint8Array): void {
     if (marker.baseSavedAt === this.savedAt && marker.at > (this.last?.marker.at ?? -Infinity)) this.last = { marker, payload };
   }
-  writeNow(why: SnapshotWhy): void {
+  writeNow(why: SnapshotWhy | 'crash'): void {
     if (this.last) storeRecoveryLs({ ...this.last.marker, why }, this.last.payload);
   }
 }

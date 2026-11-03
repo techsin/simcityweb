@@ -21,6 +21,12 @@ import { cityFingerprint } from '../save/fingerprint';
 import { clearRecoveryAfterSave } from '../save/recoveryIdb';
 import { summarizeCity } from '../region/citySummary';
 import type { RegionCitySummary } from '../region/types';
+// W1.1b (T033): authoritative recovery only. The page-side mirror and localStorage stay out of this graph.
+import { getRecoveryBase } from '../save/cities';
+import {
+  buildRecoverySnapshot, JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, journalMatches,
+  type JournalBase, type RecoveryJournal, type RecoverySnapshot, type SnapshotInfo,
+} from '../save/recoveryCodec';
 
 export interface CitySaveCopy { record: CityRecord; fp: string; summary: RegionCitySummary }
 
@@ -124,6 +130,46 @@ export class SimCore {
     const kv = await openKV(), rec = copy.record;
     await putCityRecord(kv, rec);
     return clearRecoveryAfterSave(kv, rec.regionId, rec.tileKey, rec.savedAt).catch(() => false);
+  }
+
+  /** W1.1b (T033): the payload is encoded to the budget left after the journal's reserve (§4.3). The owner cuts the
+   *  bytes and its command watermark in one synchronous unit; `base` is the save still being written, if any. */
+  copyRecoverySnapshot(regionId: string, tileKey: string, info: SnapshotInfo, base = getRecoveryBase(regionId, tileKey),
+    at = Date.now()): RecoverySnapshot {
+    if (this.disposed) throw new Error('Simulation core is disposed');
+    return buildRecoverySnapshot(regionId, tileKey, this.sim.state, base, { ...info, at }, LS_BUDGET_BYTES - JOURNAL_RESERVE_BYTES);
+  }
+
+  /** §4.3: after init, before the first tick, each command at the base's day; one that now fails is dropped. The
+   *  caller names the save (and snapshot) it loaded; a journal bound to another base replays nothing (null). */
+  replayRecoveryJournal(journal: RecoveryJournal, base: JournalBase): { applied: number[]; failed: number[] } | null {
+    if (this.disposed) throw new Error('Simulation core is disposed');
+    if (!journalMatches(journal, base)) return null;
+    if (!this.booted || !this.actions) throw new Error('Recovery replay requires initialized CityActions');
+    const applied: number[] = [], failed: number[] = [];
+    for (const entry of journal.ops) {
+      try {
+        const result = this.applyCommand({ op: entry.op, args: structuredClone(entry.args) } as Command, this.actions);
+        if (result === false || (result && typeof result === 'object' && !result.ok)) { failed.push(entry.seq); continue; }
+        if (entry.op === 'bulldoze' && entry.cost !== undefined && result && typeof result === 'object' && 'cost' in result) {
+          this.keepCharge(entry.cost, entry.refund, result.cost, result.refund);
+        }
+        applied.push(entry.seq);
+      } catch { failed.push(entry.seq); }
+    }
+    return { applied, failed };
+  }
+
+  /** FH-07a: the journal records the refund that was charged, not the rule. A replay at the base's day would re-date
+   *  it (a day-20 bulldoze becomes a same-day one), so both budget lines and the funds move to the ack's amounts. */
+  private keepCharge(cost: number, refund: number | undefined, replayCost: number, replayRefund = 0): void {
+    const st = this.sim.state, b = st.budget, line = (to: Record<string, number>, key: string, d: number) => { if (d) to[key] = (to[key] ?? 0) + d; };
+    if (refund !== undefined) {
+      line(b.curIncome, 'oneoff:refund', refund - replayRefund);
+      line(b.curExpense, 'oneoff:demolition', (cost + refund) - (replayCost + replayRefund));
+    } else if (replayCost > cost) line(b.curIncome, 'oneoff:refund', replayCost - cost); // only the net charge is known
+    else line(b.curExpense, 'oneoff:demolition', cost - replayCost);
+    if (!st.config.sandbox && st.config.difficulty !== 'sandbox') st.funds -= cost - replayCost;
   }
 
   /** Commands run synchronously between local ticks, through the same authoritative actions as before. */

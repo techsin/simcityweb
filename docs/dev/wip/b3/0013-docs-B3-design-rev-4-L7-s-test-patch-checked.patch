@@ -1,0 +1,26 @@
+From a4873d1cbec5026698662ffb28e541f86dc7596c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 05:23:08 +0000
+Subject: [PATCH 13/13] docs: B3 design rev 4 - L7's test patch, checked
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KT9tXthEhyzExdUuGEecAJ
+---
+ docs/dev/B3_DESIGN.md | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/docs/dev/B3_DESIGN.md b/docs/dev/B3_DESIGN.md
+index cd87bf5..e40d46b 100644
+--- a/docs/dev/B3_DESIGN.md
++++ b/docs/dev/B3_DESIGN.md
+@@ -891,4 +891,6 @@ Judge (gameplay R4, the statistic the lead is asked to approve):
+   test 2's town the approval terms right after a load then equal the uninterrupted game's on all 30 saves (29 of 30
+   differ without it, in the base and in B3), and the whole city on day 91 still does (`approval/out_*.txt`). The other
+   terms are recomputed from a full survey at load as before; keeping them too would need the survey's coverage, which
+-  approval does not save.
++  approval does not save. `approval-resumed-tourism-test.patch` makes test 2 compare the approval terms right after
++  each load too: on a copy of cf6af9a it fails without the approval patch (day 31) and passes with it, as do
++  tests/sim/approval.test.ts and tests/save (tsc clean, 69 tests; `approval/l7_*.log`).
+-- 
+2.43.0
+
