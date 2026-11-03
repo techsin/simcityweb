@@ -158,6 +158,8 @@ function diffPath(a: unknown, b: unknown, path = ''): string {
   }
   return '';
 }
+/** approval's terms and raw value (the TopBar's "heading for" tooltip), which a resumed init recomputes */
+const approvalOf = (st: CityState) => { const d = econData(st); return structuredClone({ terms: d.approvalTerms, raw: d.approvalRaw }); };
 /** what the player sees of tourism right now (venues, summary, breakdown, raster) */
 const tourismView = (st: CityState, ids: readonly number[]) => ({
   venues: ids.map((id) => venueVisits(st, id)), summary: tourismSummary(st), breakdown: attractivenessBreakdown(st), visitors: st.visitors.slice(),
@@ -239,6 +241,7 @@ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick'
     const saves = new Map<number, SerializedCity>();
     const views = new Map<number, ReturnType<typeof tourismView>>();
     const outs = new Map<number, ReturnType<typeof tourismOutputs>>();
+    const approvals = new Map<number, ReturnType<typeof approvalOf>>();
     while (ref.st.day < 91) {
       ref.sim.advanceDay();
       if (ref.st.day === 57) {
@@ -257,6 +260,7 @@ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick'
       if (ref.st.day >= 31 && ref.st.day <= 60) {
         saves.set(ref.st.day, serializeCity(ref.st, { copy: true }));
         views.set(ref.st.day, tourismView(ref.st, all));
+        approvals.set(ref.st.day, approvalOf(ref.st));
       }
       if (ref.st.day === 60) {
         // the new venue has no record until the pass of day 86: it earned its catalog income at this tick (factor 1)
@@ -271,6 +275,8 @@ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick'
     for (const [s, ser] of saves) {
       const g = load(ser);
       expect(diffPath(views.get(s), tourismView(g.st, all)), `save on day ${s}: right after the load`).toBe('');
+      // (L7: approval's resumed init keeps the tourism pride the last tick scored)
+      expect(diffPath(approvals.get(s), approvalOf(g.st)), `save on day ${s}: approval right after the load`).toBe('');
       while (g.st.day < 91) {
         g.sim.advanceDay();
         script(g.sim, g.A, ref.ids);
@@ -280,6 +286,22 @@ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick'
       const e = serializeCity(g.st, { copy: true });
       expect(diffPath({ ...end, savedAt: 0 }, { ...e, savedAt: 0 }), `save on day ${s}: the whole city on day 91`).toBe('');
       expect(sha(e), `save on day ${s}: the city digest on day 91`).toBe(sha(end));
+    }
+  });
+
+  it('approval: a load on dom 26–29 keeps the tourism pride the last tick scored, not the pass of day 26 (L7)', { timeout: 120000 }, () => {
+    // (no player actions: the tourists change only at the pass of day 56, four days before the tick that scores them)
+    const ref = town();
+    runTo(ref.sim, 55);
+    const tick = approvalOf(ref.st);
+    const tourists55 = econData(ref.st).tourists;
+    for (let s = 56; s <= 59; s++) {
+      ref.sim.advanceDay();
+      if (s === 56) expect(econData(ref.st).tourists, 'the pass of day 56 changes the tourists').not.toBe(tourists55);
+      // the uninterrupted game keeps what the tick of day 30 scored until the tick of day 60; so does a loaded one
+      expect(diffPath(tick, approvalOf(ref.st)), `day ${s}: the uninterrupted game`).toBe('');
+      const g = load(serializeCity(ref.st, { copy: true }));
+      expect(diffPath(tick, approvalOf(g.st)), `save on day ${s}: approval right after the load`).toBe('');
     }
   });
 
