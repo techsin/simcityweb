@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Emitter } from '../../src/core/events';
 import type { GameContext } from '../../src/game/context';
 import type { GameSettings } from '../../src/game/settings';
-import { MilestoneCard } from '../../src/ui/MilestoneCard';
+import { ALERT_CLEAR_DELAY_MS, MilestoneCard } from '../../src/ui/MilestoneCard';
 import { newState } from '../infra/cityGen';
 import { FEl, installFakeDom } from './fakeDom';
 
@@ -184,17 +184,62 @@ describe('milestone card', () => {
     t.cross(10000);
     expect(t.visible()).toBe(false);
     t.alerts(0);
+    expect(t.visible()).toBe(false);
+    vi.advanceTimersByTime(ALERT_CLEAR_DELAY_MS - 1);
+    t.ui.emit('uiTick', undefined);
+    expect(t.visible()).toBe(false);
+    vi.advanceTimersByTime(1);
+    t.ui.emit('uiTick', undefined);
     expect(t.visible()).toBe(true);
     vi.advanceTimersByTime(1000);
     t.alerts(2);
     expect(t.visible()).toBe(false);
     vi.advanceTimersByTime(10000);
     t.alerts(0);
+    expect(t.visible()).toBe(false);
+    vi.advanceTimersByTime(ALERT_CLEAR_DELAY_MS);
+    t.ui.emit('uiTick', undefined);
     expect(t.visible()).toBe(true);
     vi.advanceTimersByTime(2999);
     expect(t.visible()).toBe(true);
     vi.advanceTimersByTime(1);
     expect(t.visible()).toBe(false);
+  });
+
+  it('does not flash between incidents when alerts are empty for under fifty milliseconds', () => {
+    const t = setup();
+    t.alerts(1);
+    t.cross(10000);
+    t.alerts(0);
+    vi.advanceTimersByTime(49);
+    t.ui.emit('uiTick', undefined);
+    expect(t.visible()).toBe(false);
+    t.alerts(1);
+    vi.advanceTimersByTime(ALERT_CLEAR_DELAY_MS);
+    t.ui.emit('uiTick', undefined);
+    expect(t.visible()).toBe(false);
+    t.alerts(0);
+    vi.advanceTimersByTime(ALERT_CLEAR_DELAY_MS - 1);
+    t.ui.emit('uiTick', undefined);
+    expect(t.visible()).toBe(false);
+    vi.advanceTimersByTime(1);
+    t.ui.emit('uiTick', undefined);
+    expect(t.visible()).toBe(true);
+  });
+
+  it('remembers the empty-alert interval when an alert clears before a milestone arrives', () => {
+    const t = setup();
+    t.alerts(1);
+    t.alerts(0);
+    vi.advanceTimersByTime(49);
+    t.cross(10000);
+    expect(t.visible()).toBe(false);
+    vi.advanceTimersByTime(ALERT_CLEAR_DELAY_MS - 50);
+    t.ui.emit('uiTick', undefined);
+    expect(t.visible()).toBe(false);
+    vi.advanceTimersByTime(1);
+    t.ui.emit('uiTick', undefined);
+    expect(t.visible()).toBe(true);
   });
 
   it('resumes an interrupted card at most once using only its remaining visible time', () => {
