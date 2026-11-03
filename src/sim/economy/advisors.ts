@@ -2224,7 +2224,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     init(sim) {
       rt.attach(sim);
       const d = econData(sim.state);
-      if (!d.popMilestone) d.popMilestone = POP_MILESTONES.filter((m) => m <= sim.state.stats.population).pop() ?? 0;
+      d.popMilestone = Math.max(d.popMilestone, POP_MILESTONES.filter((m) => m <= sim.state.stats.population).pop() ?? 0);
       initialStageMilestone = STAGE_POP.filter((m) => m.pop <= sim.state.stats.population).pop()?.pop ?? 0;
       const a = sim.state.systemData.advisors as AdvisorData | undefined;
       if (a?.v === 1) a.stageMilestone ??= initialStageMilestone;

@@ -17,19 +17,20 @@ function setup(opts: { pop?: number; speed?: number; motion?: GameSettings['moti
   state.stats.population = opts.pop ?? 0;
   const events = new Emitter<Record<string, unknown>>();
   const host = { events, speed: opts.speed ?? 1, policy: { live: false } };
+  const ui = new Emitter<Record<string, unknown>>(), show = { busy: false };
   const settings = { motion: opts.motion ?? 'full' };
-  const ctx = { host, state, settings, signal: abort.signal } as unknown as GameContext;
+  const ctx = { host, state, settings, ui, signal: abort.signal } as unknown as GameContext;
   const root = new FEl('div'), rankUp = vi.fn();
-  const card = new MilestoneCard(ctx, root as unknown as HTMLElement, rankUp);
+  const card = new MilestoneCard(ctx, root as unknown as HTMLElement, rankUp, () => show.busy);
   const el = root.querySelector('.milestone-card')!;
   const title = () => el.querySelector('.milestone-title')!.textContent;
   const next = () => el.querySelector('.milestone-next')!.textContent;
   const visible = () => el.style.display !== 'none';
   const cross = (pop: number) => {
     state.stats.population = pop;
-    events.emit('news', { day: state.day, kind: 'good', text: `Queensbury reaches ${pop.toLocaleString('en-US')} residents!` });
+    events.emit('news', { day: state.day, kind: 'good', text: `${state.config.name} reaches ${pop.toLocaleString('en-US')} residents!` });
   };
-  return { state, abort, events, host, settings, root, card, el, rankUp, title, next, visible, cross };
+  return { state, abort, events, host, ui, show, settings, root, card, el, rankUp, title, next, visible, cross };
 }
 
 beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] }));
@@ -103,7 +104,7 @@ describe('milestone card', () => {
     vi.advanceTimersByTime(1000);
     t.host.speed = 3;
     t.cross(1000);
-    expect(t.title()).toContain('500 RESIDENTS');
+    expect(t.title()).toContain('1,000 RESIDENTS');
     vi.advanceTimersByTime(29000);
     expect(t.visible()).toBe(false);
     t.cross(2500);
@@ -119,6 +120,157 @@ describe('milestone card', () => {
     t.settings.motion = 'full';
     t.cross(1000);
     expect(t.el.classList.contains('reduced-motion')).toBe(false);
+  });
+
+  it('keeps a rank-up after the previous card closes, then shows it when the ultra budget allows', () => {
+    const t = setup({ speed: 3 });
+    t.cross(500);
+    vi.advanceTimersByTime(12000);
+    t.cross(1000);
+    t.cross(2500); // a later non-rank milestone must not replace the pending Village moment
+    expect(t.visible()).toBe(false);
+    vi.advanceTimersByTime(17999);
+    expect(t.visible()).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(t.visible()).toBe(true);
+    expect(t.title()).toContain('1,000 RESIDENTS');
+    vi.advanceTimersByTime(4000);
+    expect(t.visible()).toBe(false);
+  });
+
+  it('updates a visible ultra card for a rank without another entrance or extending its lifetime', () => {
+    const t = setup({ speed: 3 });
+    t.cross(500);
+    vi.advanceTimersByTime(1000);
+    t.cross(1000);
+    expect(t.title()).toContain('1,000 RESIDENTS');
+    vi.advanceTimersByTime(2999);
+    expect(t.visible()).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(t.visible()).toBe(false);
+  });
+
+  it('defers a milestone while New Year is busy and gives it four seconds once the show finishes', () => {
+    const t = setup();
+    t.show.busy = true;
+    t.cross(10000);
+    vi.advanceTimersByTime(60000);
+    t.ui.emit('uiTick', undefined);
+    expect(t.visible()).toBe(false);
+    t.show.busy = false;
+    t.ui.emit('uiTick', undefined);
+    expect(t.visible()).toBe(true);
+    vi.advanceTimersByTime(4000);
+    expect(t.visible()).toBe(false);
+  });
+
+  it('suspends a visible card when New Year begins, then resumes without covering its banner', () => {
+    const t = setup();
+    t.cross(10000);
+    t.show.busy = true;
+    t.ui.emit('uiTick', undefined);
+    expect(t.visible()).toBe(false);
+    t.show.busy = false;
+    t.ui.emit('uiTick', undefined);
+    expect(t.visible()).toBe(true);
+    expect(t.title()).toContain('10,000 RESIDENTS');
+  });
+
+  it('keeps card content clear of open centered and docked panels', () => {
+    const t = setup();
+    t.ui.emit('panel', { id: 'budget', open: true });
+    t.cross(10000);
+    expect(t.visible()).toBe(false);
+    t.ui.emit('panel', { id: 'advisors', open: true });
+    t.ui.emit('panel', { id: 'budget', open: false });
+    expect(t.visible()).toBe(false);
+    t.ui.emit('panel', { id: 'advisors', open: false });
+    expect(t.visible()).toBe(true);
+    t.ui.emit('panel', { id: 'budget', open: true });
+    expect(t.visible()).toBe(false);
+  });
+
+  it('also defers for a panel already in the DOM, without a new panel event', () => {
+    const t = setup(), panel = new FEl('div');
+    panel.className = 'panel';
+    t.root.appendChild(panel);
+    t.cross(10000);
+    expect(t.visible()).toBe(false);
+    panel.remove();
+    t.ui.emit('uiTick', undefined);
+    expect(t.visible()).toBe(true);
+  });
+
+  it('chooses next targets beyond both overshot population and the announced milestone', () => {
+    const t = setup();
+    t.state.stats.population = 12050;
+    t.events.emit('news', { kind: 'good', text: 'Queensbury reaches 10,000 residents!' });
+    expect(t.next()).toBe('Next: City at 25,000 residents');
+    t.events.emit('news', { kind: 'good', text: 'Queensbury reaches 1,250,000 residents!' });
+    expect(t.next()).toBe('Next: Megalopolis at 1,500,000 residents');
+  });
+
+  it('updates next targets when population overshoots during an already visible card', () => {
+    const t = setup();
+    t.cross(10000);
+    vi.advanceTimersByTime(1000);
+    t.state.stats.population = 12050;
+    t.ui.emit('uiTick', undefined);
+    expect(t.next()).toBe('Next: City at 25,000 residents');
+    vi.advanceTimersByTime(3000);
+    expect(t.visible()).toBe(false);
+  });
+
+  it('keeps a suspended non-rank moment at ultra until another entrance is allowed', () => {
+    const t = setup({ speed: 3 });
+    t.cross(500);
+    vi.advanceTimersByTime(100);
+    t.ui.emit('panel', { id: 'budget', open: true });
+    expect(t.visible()).toBe(false);
+    vi.advanceTimersByTime(100);
+    t.ui.emit('panel', { id: 'budget', open: false });
+    vi.advanceTimersByTime(29799);
+    expect(t.visible()).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(t.visible()).toBe(true);
+    expect(t.title()).toContain('500 RESIDENTS');
+    vi.advanceTimersByTime(4000);
+    expect(t.visible()).toBe(false);
+  });
+
+  it('uses the final mirrored population for every announcement in a multi-threshold packet', () => {
+    const t = setup();
+    t.state.stats.population = 125001;
+    for (const pop of [500, 1000, 2500, 5000, 10000, 25000, 50000, 100000]) {
+      t.events.emit('news', { kind: 'good', text: `Queensbury reaches ${pop.toLocaleString('en-US')} residents!` });
+      expect(t.next()).toBe('Next: Supertalls at 220,000 residents');
+    }
+  });
+
+  it('reads the announcement suffix even when the city name resembles another milestone', () => {
+    const t = setup();
+    t.state.config.name = 'Reaches 500 residents';
+    t.cross(1000);
+    expect(t.title()).toBe('REACHES 500 RESIDENTS · 1,000 RESIDENTS');
+    t.cross(10000);
+    expect(t.title()).toBe('REACHES 500 RESIDENTS · 10,000 RESIDENTS');
+  });
+
+  it('clears pending busy and ultra moments on reset and abort', () => {
+    const t = setup({ speed: 3 });
+    t.cross(500);
+    vi.advanceTimersByTime(5000);
+    t.cross(1000);
+    expect(vi.getTimerCount()).toBe(1);
+    t.events.emit('reset', undefined);
+    expect(vi.getTimerCount()).toBe(0);
+    t.show.busy = true;
+    t.cross(5000);
+    t.abort.abort();
+    t.show.busy = false;
+    t.ui.emit('uiTick', undefined);
+    expect(t.root.children).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('follows the system reduced-motion preference when each new card appears', () => {

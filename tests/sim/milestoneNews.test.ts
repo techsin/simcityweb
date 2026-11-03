@@ -4,7 +4,7 @@ import { defaultCityConfig } from '../../src/sim/config';
 import { Simulation } from '../../src/sim/Simulation';
 import { advisorData, advisorsSystem } from '../../src/sim/economy/advisors';
 import { rewardsSystem } from '../../src/sim/economy/rewards';
-import { EconRuntime } from '../../src/sim/economy/runtime';
+import { EconRuntime, econData } from '../../src/sim/economy/runtime';
 import { deserializeCity, serializeCity } from '../../src/save/serialize';
 
 function state(population = 0): CityState {
@@ -64,6 +64,22 @@ describe('milestone news', () => {
     resumed.population(12000);
     expect(stages(loaded)).toHaveLength(2);
     expect(stages(loaded)[1].text).toMatch(/high-rise buildings.*12,000 residents/);
+  });
+
+  it('loading a 1.51M old save silently advances its stored 1M population milestone', () => {
+    const st = state(1510000);
+    st.day = 1000;
+    econData(st).popMilestone = 1000000;
+    advisorData(st);
+    const loaded = deserializeCity(serializeCity(st, { copy: true }));
+    const c = city(loaded);
+    expect(econData(loaded).popMilestone).toBe(1500000);
+    expect(loaded.news).toHaveLength(0);
+    loaded.day++;
+    c.population(1510000);
+    c.population(1000000);
+    c.population(1510000);
+    expect(loaded.news).toHaveLength(0);
   });
 
   it('announces all five stages once when a growing city reaches them', () => {

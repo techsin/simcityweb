@@ -1,117 +1,102 @@
-# T053: milestone moments
+# T053: milestone moments — review round 1
 
-Worktree branch `local/T053-feel06-milestones`, base `fb1531f`. Changes remain uncommitted; no push or `.done` file.
+Branch `local/T053-feel06-milestones`, review base `0dfc703` (WIP plus dev `821a8d6`). These review fixes remain **uncommitted**; no push, merge, or `.done` file.
 
 ## Changes by file
 
-- `src/sim/economy/advisors.ts` (CONTENT only): population milestones through 1.25M/1.5M; one stage announcement at each `STAGE_POP` threshold (3k, 12k, 35k first towers, 90k skyscrapers, 220k supertalls). Optional `systemData.advisors.stageMilestone` survives drops/save-load and initializes silently from the loaded population. Saves without advisors keep their original first-headline scheduling. No added RNG draws.
-- `src/sim/economy/rewards.ts`: every reward news item carries `ref: { reward: r.id }`, including landmarks, infrastructure and deals.
-- `src/game/GameSounds.ts` (CONTENT only): all 14 milestones use `milestone`. Duplicate suppression is per threshold so distinct milestones in one Worker burst each sound. Existing pitch bands remain unchanged.
-- New `src/ui/MilestoneCard.ts` and `src/ui/milestone.css`: lower-third card, city/population heading, one next-stage/rank line, four real seconds, at most one card per 30 seconds at ultra, reduced motion without a slide. Event-driven through `ctx.host`, read-only mirrored state; reset/abort clear timers and listeners. Rank callback advances once per actual rank boundary and skips LIVE.
-- `src/game/CityScene.ts`: import and one CONTENT block immediately after NewYear. Connects the card to an optional `fireworks.startRankBurst` hook, skipped during NewYear/LIVE. The hook awaits its renderer owner; there are currently no rank fireworks.
-- New tests: `tests/sim/milestoneNews.test.ts`, `tests/game/milestoneSounds.test.ts`, `tests/game/milestoneCard.test.ts`.
-- **Outside named source/new-test files:** minimal `tests/game/gameSounds.test.ts` title/expectation adjustment: 2,500 now plays `milestone`, replacing the obsolete generic-`good` expectation. This report is the requested task artifact.
-- **Infra hunks:** none. **Cloud-held files edited:** none.
+- `src/sim/economy/advisors.ts`, CONTENT init: raise `popMilestone` to the larger of its stored value and the highest threshold already reached. A pre-T053 1.51M save with the old 1M marker now initializes to 1.5M silently; population drops never lower the marker. No RNG draws added.
+- `src/ui/MilestoneCard.ts`: defer during `NewYear.busy` and while any centered/docked panel is open. Suspend and preserve an interrupted card. At ultra, rank-ups update a visible card without another entrance or extending its original lifetime; hidden rank-ups wait until the 30-second budget permits another entrance. A later non-rank item cannot overwrite a pending rank. Deferred non-rank cards also survive interruptions.
+- The card chooses both future stage and future rank against `max(announced milestone, mirrored population)`. Active cards refresh this line on the existing UI tick, with text writes only when changed. Shared suffix parsing handles city names such as “Reaches 500 residents”.
+- `src/ui/milestone.css`: move to the upper-middle band, `top: 84px`, above toolbar flyouts. All new layout CSS stays here. Panel deferral avoids drawing over draggable panel bodies. Reduced motion still has no slide.
+- `src/game/GameSounds.ts`, CONTENT only: queue distinct milestone cues **180 ms** apart so AudioEngine's real 45 ms limiter voices every cue. Reset/dispose cancel queued cues. Existing pitch bands and ordinary-news budgeting stay unchanged.
+- **New source outside the original named files:** `src/game/milestones.ts` holds the one suffix-anchored parser and milestone list shared by sounds/card. GameSounds re-exports the list for compatibility.
+- `src/game/CityScene.ts`: import plus the existing CONTENT block only; wire NewYear busy state into the card and the objects view's rank fireworks.
+- **New source outside the original named files:** `src/ui/rankFireworks.ts` isolates the small render lifecycle/gating helper. Fireworks start at most once per rank, use tier intensity and a deterministic render seed, skip NewYear/LIVE, and cancel on reset/dispose or entry into LIVE. Cancellation checks rank ownership so it cannot clear a NewYear takeover.
+- `src/render/city/effects/Fireworks.ts` (**expressly authorized by review #8 after T038**): minimal `start({ rankBurst: true, intensity, duration })` option. For rank mode only, duration includes sparks/smoke and is clamped to 6–10 seconds; the scene requests **8 seconds**. A show-clock limit supports deterministic tests and a real-time watchdog enforces the cap at low FPS or a frozen time scale. NewYear's regular `start` clears rank mode/deadlines. Rank mode leaves NewYear's `isRunning` busy slot free while its own private director continues. Normal show defaults and incremental launch-site code are unchanged.
+- Tests: extend `tests/sim/milestoneNews.test.ts`, `tests/game/milestoneCard.test.ts`, `tests/game/milestoneSounds.test.ts`; add `tests/game/rankFireworks.test.ts`.
+- `src/sim/economy/rewards.ts`: no new review edit; the previously implemented `ref: { reward: id }` remains.
+- **Infra hunks:** none. **Still-held files edited:** none; NewYear, Notifications, Worker, panel, settings and save files are untouched.
 
-## Validation
+## Checks run
 
-- `npx tsc --noEmit`: passes.
-- `git diff --check`: passes.
-- Default quiet-gated Vitest startup failed while loading Vite config (`externalize-deps`, `spawn EPERM`). A native loader alone stopped at `ERR_UNKNOWN_FILE_EXTENSION` for `vite.config.ts`.
-- **Resolved for targeted checks:** a scratch-only `.mjs` config, native config loader and thread pool avoid config bundling. Every run still uses the quiet gate and one test file/worker at a time. All eight targeted files pass: **134 passed, 2 skipped**.
-- Full Vitest and browser/GPU checks were not run, per the lane rules. The lead must run the full suite and real Worker/GPU checks.
+`npx tsc --noEmit` and `git diff --check`: **pass**.
 
-| Test file | Result |
-|---|---:|
-| `tests/game/milestoneCard.test.ts` | 15 passed |
-| `tests/sim/milestoneNews.test.ts` | 9 passed |
-| `tests/game/milestoneSounds.test.ts` | 24 passed |
-| `tests/game/gameSounds.test.ts` | 7 passed |
-| `tests/sim/advisors.test.ts` | 12 passed |
-| `tests/sim/ranks.test.ts` | 48 passed |
-| `tests/worker/hygiene.test.ts` | 17 passed, 1 skipped |
-| `tests/worker/replicaSafe.test.ts` | 2 passed, 1 skipped |
+All tests ran through the quiet gate, one test file/process at a time, with `--maxWorkers=1`. The scratch native `.mjs` config/thread pool avoids this sandbox's default Vite config `spawn EPERM` failure. **11 files passed: 184 tests passed, 4 skipped.**
 
-Exact working test invocation (substitute one table filename for `<file>`):
+| File | Passed | Skipped |
+|---|---:|---:|
+| `tests/game/milestoneCard.test.ts` | 27 | 0 |
+| `tests/game/milestoneSounds.test.ts` | 28 | 0 |
+| `tests/sim/milestoneNews.test.ts` | 10 | 0 |
+| `tests/game/rankFireworks.test.ts` | 10 | 0 |
+| `tests/game/gameSounds.test.ts` | 7 | 0 |
+| `tests/game/newyear.test.ts` | 11 | 0 |
+| `tests/render/fireworks.test.ts` | 12 | 2 |
+| `tests/sim/advisors.test.ts` | 12 | 0 |
+| `tests/sim/ranks.test.ts` | 48 | 0 |
+| `tests/worker/hygiene.test.ts` | 17 | 1 |
+| `tests/worker/replicaSafe.test.ts` | 2 | 1 |
+
+Regressions include: silent old 1.51M saves; NewYear/panel deferral and interruption; visible and delayed ultra rank updates; overshoot, active overshoot and multiple thresholds in one packet; city-name parser collisions; queued sound cancellation. The sound test executes real `AudioEngine.play` and replaces only voice rendering: an unspaced burst voices 1 cue, the queue voices all 14. Renderer tests use real Fireworks without a GPU and cover 6/8/10-second cleanup, the wall-clock cap at low FPS, NewYear takeover, and the retained NewYear renderer reference.
+
+Exact working test invocation (one table filename for `<file>`):
 
 ```powershell
 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run <file> --maxWorkers=1 --configLoader native --config C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T053/scratch/vitest.config.mjs
 ```
 
-Scratch config: `export default { root: '<this worktree>', test: { pool: 'threads', maxWorkers: 1 } };`. It changes no source or assertions. Logs are in the supplied scratch folder.
-
-Tests prepared:
-
-- `milestoneNews.test.ts`: 35k towers exactly once, population drops, 300k old saves with/without advisors silently loading, save/load continuation, five thresholds once each, RNG state unchanged, unchanged first-headline schedule, 1.25M/1.5M, persistent reward/landmark refs.
-- `milestoneSounds.test.ts`: all 14 thresholds, duplicate/distinct burst handling, old pitches, ordinary good-news behavior.
-- `milestoneCard.test.ts`: four-second real-time lifetime, all thresholds, next-stage/rank/top-rank copy, ultra budget and speed switches, explicit/system reduced motion, abort/reset/reopen cleanup and silence, rank hooks/LIVE/recovering-city behavior, unrelated-news filtering.
-- Existing regressions to include: `tests/game/gameSounds.test.ts`, `tests/sim/advisors.test.ts`, `tests/sim/ranks.test.ts`, `tests/worker/hygiene.test.ts`, `tests/worker/replicaSafe.test.ts`.
+The full suite was **not rerun here**, per lane rules. The lead reports that the previous WIP passed 219 files / 2,193 tests before the dev merge.
 
 ## Bot gates and hashes
 
-`npx tsx` cannot run here: npm's offline cache lacks `tsx` (`ENOTCACHED`). Used the repository's documented Rolldown fallback instead. Diagnostics live in the task's supplied scratch directory, outside the repository: `bundle.mjs`, `check.ts`, the two captured base source files, bundled `base/check.mjs` and `branch/check.mjs`, and JSON results.
+Fresh review run: **128×15 seed 7 Medium = 192,899**, residents **[61124, 93804, 37971]**. All **15 full yearly hashes**, including news/advisors, match the prior T053 implementation. All 15 FH-03 hashes excluding news/advisors also match. Four reachable stage items occur once each (3k/12k/35k/90k); **zero repeats** after save/load plus 35 days.
 
-`check.ts` runs the same `SimBot`, `botSystems(false)` and parsed CLI defaults as `tools/simbot.ts`; samples yearly hashes and listens to the complete news stream (the city retains only 200 news items). It also serializes/deserializes the final city, initializes fresh systems and advances 35 more days to detect repeated stage items. It does not emit `.READY`/`.done` files. `Date.now` is pinned; hashes sort object keys and include typed-array bytes.
+Local `tsx` remains absent, so the run reused the repository's documented Rolldown fallback and the scratch `check.ts` harness. It uses the same SimBot, system factory, parsed defaults and CLI options. Output: `review1-128x15.json`; final excluded hash `545cc610cc2e54c32a61ccbcf644c4fcc52aa8662243f03f6995f499c9cc9485`.
 
-Two-process comparison: the base bundle replaces only the two changed simulation modules with the exact `git show fb1531f:<path>` contents, preserving original resolution paths. Everything else is this unchanged worktree's code. No other worktree/branch was opened or edited.
-
-Completed 128×15 seed-7 Medium:
-
-- Base and branch: **192,899**, residents **[61124, 93804, 37971]**.
-- All **15** yearly hashes excluding `news` and `systemData.advisors` match.
-- Full-state, news and advisors hashes change, as expected under FH-03. Final common excluded hash: `545cc610cc2e54c32a61ccbcf644c4fcc52aa8662243f03f6995f499c9cc9485`.
-- Branch emitted 3k/12k/35k/90k once each at days 320/847/1811/3379; 220k was not reached. **Zero repeated stage items** after save/load plus 35 days.
-
-Completed 256×60 seed-7 Medium:
-
-- **1,513,835** in 2060, residents **[412608, 738176, 363051]**.
-- **All five stage items exactly once**, at days **318 / 818 / 1764 / 3374 / 6123** for **3k / 12k / 35k / 90k / 220k** respectively.
-- **Zero repeated stage items** after final-city save/load plus 35 days.
-- Run time 132.7 seconds (diagnostic, not a performance gate). No separate 256×60 base comparison is claimed.
-
-**Late hash caveat:** the existing population announcement tracker lives at `systemData.economy.popMilestone`. The newly requested 1.25M and 1.5M milestones advance it beyond the base's 1M. Consequently, after 1.25M even FH-03 hashes excluding only `news` and `systemData.advisors` differ by that intended bookkeeping field. This is a plan/code mismatch, not a balance change; the lead must explicitly account for `systemData.economy.popMilestone` in any supplemental long-run hash comparison. The required 128×15 FH-03 comparison above needs no additional exclusion and passes all 15 checkpoints. No storage workaround or broader exclusion was silently applied.
-
-Exact requested CLI equivalents (run from this worktree; optional LG-10 flags remain off):
+Exact requested CLI equivalent (no LG-10 strategy flags):
 
 ```powershell
 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
-node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 256 --years 60 --seed 7
 ```
 
-Actual bundled gate commands, using these absolute paths:
+Actual commands, run from this worktree:
 
 ```powershell
 $quietGate = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs'
 $laneScratch = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T053/scratch'
-node "$laneScratch/bundle.mjs" branch
-node "$laneScratch/bundle.mjs" base
-node $quietGate node "$laneScratch/branch/check.mjs" --size 128 --years 15 --seed 7
-$env:T053_MODE = 'base'
-node $quietGate node "$laneScratch/base/check.mjs" --size 128 --years 15 --seed 7
-Remove-Item Env:T053_MODE
-node $quietGate node "$laneScratch/branch/check.mjs" --size 256 --years 60 --seed 7
+node "$laneScratch/bundle.mjs" review1
+$env:T053_MODE = 'review1'
+node $quietGate node "$laneScratch/review1/check.mjs" --size 128 --years 15 --seed 7
 ```
+
+The initial round's **256×60 s7** gate remains recorded, **not rerun during review**: population **1,513,835**, residents **[412608, 738176, 363051]**; all five stage items once at days **318 / 818 / 1764 / 3374 / 6123**, with none repeated after save/load plus 35 days. Its command equivalent is:
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 256 --years 60 --seed 7
+```
+
+The original comparison against fb1531f matched every 128×15 yearly hash after FH-03 exclusions; full/news/advisors hashes changed. Above 1.25M, the requested new milestones also advance `systemData.economy.popMilestone` beyond the old 1M cap, so that additional bookkeeping path must be identified in any long-run comparison. This review adds no balance change or RNG draw.
 
 ## Plan/code differences and owner requests
 
-1. **T038 / rank fireworks:** `src/render/city/effects/Fireworks.ts`, `Fireworks.start`, `directShow`, `active`: implement `startRankBurst({ population, intensity, duration, seed })` (the optional hook in CityScene), or provide its equivalent contract. Require **6–10 real seconds total visible lifetime**, including flight/finale/smoke, and isolated ownership/cancellation. Intensity already exists in `start`; duration is currently salvo-to-finale with a 14-second tail, so `start({duration: 6})` cannot meet the total-lifetime gate. Coordinate with cloud-held `src/game/NewYear.ts`, `NewYearCelebration.busy`/year handler/`celebrate`: starting the shared renderer after an earlier NewYear can make `busy` true and suppress the next NewYear. A rank timer must never clear a takeover NewYear. The callback already supplies tier intensity and a deterministic render seed, and skips NewYear/LIVE. No held renderer/NewYear changes made here.
-2. **META / Place it:** `src/ui/Notifications.ts`, Toasts' news handler: map **`n.ref?.reward`**, never news text, to a “Place it” action. Open Rewards and scroll to/highlight the matching reward id. Coordinate a minimal row-focus API in `src/ui/panels/ListPanels.ts` with its owner if needed (no existing scroll/highlight API). Reward ids now survive serialization and Worker news replay. This action and browser acceptance remain pending owner integration.
-3. **Worker metadata follow-up:** LG-01's pure `listMilestones` exists, but `src/worker/replicaSafe.ts`, `REPLICA_SAFE`, still lacks its planned audit entry. The helper reads only mirrored stats/unlocked/milestones; add it and its replica-safe test with the Worker owner. No held Worker file edited.
+- The review explicitly supersedes the original lower-third position: the card now uses an upper band and waits while panels are open. Rank updates within a visible ultra card retain its original four-second expiration; queued cards get four seconds when their entrance is allowed.
+- Fireworks' existing duration excluded long tails. The small authorized rank-mode option makes it a total duration, without changing normal NewYear show behavior. The old T038 rank-burst request is **resolved**.
+- **META request remains:** `src/ui/Notifications.ts`, Toasts' news handler: map `n.ref?.reward`, never text, to “Place it”; open Rewards and scroll to/highlight that reward id. Coordinate a row-focus API in `src/ui/panels/ListPanels.ts` if needed. No held file was edited.
+- LG-01's `listMilestones` audit entry remains absent from `src/worker/replicaSafe.ts`; this is unchanged owner metadata. The card now reads the mirrored population and pure CITY_RANKS/STAGE_POP tables directly.
+- The queue's commit/push/`.done` instruction remains superseded by the user's explicit leave-uncommitted rule.
 
-`popMilestone` actually lives under economy data, not advisors. Stage tracking stays in the optional advisors field to obey both file ownership and FH-03's excluded-hash contract. Old saves without advisors retain the original lazy schedule initialization.
+## Browser/GPU checklist for the lead
 
-The queue's push/commit/`.done` instruction conflicts with the user's explicit lane rules; followed the lane rules and left the work uncommitted.
+Prior QA supplied by the lead passed card duration **4.003 s**, one milestone cue (also loopback), ultra entrance gaps ≥30 seconds, stage once/save-load, 304k/652k silent loads and reduced motion. New layout/fireworks behavior needs fresh real-GPU QA:
 
-## Remaining checks for the lead
+- [ ] At 720p and 1080p, cross 10k with Zones/Rewards flyouts open: upper card stays clear and readable; four seconds, one cue.
+- [ ] Open/close centered Budget and docked Advisors: card waits or suspends, then appears clear of panel bodies.
+- [ ] Cross a milestone during NewYear; it waits until busy clears, with no Happy New Year banner overlap.
+- [ ] At ultra, Village updates a visible 500 card; if the 500 card already closed, Village appears at the next allowed entrance. No two entrances less than 30 seconds apart.
+- [ ] With a city name “Reaches 500 residents”, later cards and queued cues still identify the correct thresholds.
+- [ ] Old 1.51M save with a 1M marker: no catch-up news, sounds or card on first day/reopen.
+- [ ] Rank burst is visible by day, ends within 6–10 real seconds including smoke, respects NY/LIVE, never repeats a rank, and cannot suppress/cancel a NewYear takeover.
+- [ ] Recheck real Worker/loopback, reduced motion and card next-line overshoot. Assistive-technology spoken output remains unverified.
+- [ ] Lead's full Vitest run. META “Place it” browser check after its integration.
 
-- [x] Run the eight named targeted files: 134 passed, 2 skipped; typecheck and diff whitespace check pass.
-- [ ] Run full Vitest suite with the lead's normal configuration; optional rerun of the targeted files there.
-- [ ] Worker, real GPU: cross 10,000 at 1×; card reads the city/10,000, has the 12,000 next-stage line, lasts **4 ± 0.5 s**, and `milestone` plays once.
-- [ ] Worker, ultra: cross several thresholds; card start times stay at least **30 real seconds** apart, including a switch from 1×.
-- [ ] Reduced motion: system preference and explicit reduced motion show no slide; inspect lower-third layout at 720p and normal desktop sizes.
-- [ ] Cross 35,000: exactly one first-towers news item; dropping/recovering population does not repeat it. Load a 300k old save: no catch-up milestone/stage announcement.
-- [ ] After T038 integration: rank burst lasts **6–10 s total**, daytime is visible, and NewYear/LIVE suppress it without disrupting the NewYear show.
-- [ ] After META integration: reward/landmark “Place it” opens Rewards at the matching highlighted row; changing the news copy does not change routing.
-- [ ] Check status announcements with assistive technology (DOM attributes alone do not verify spoken output).
-
-No browser, GPU timing, full-suite run, cross-host end-to-end UI test, or Hard bot comparison is claimed.
+No browser/GPU run, full-suite rerun, or new Hard/256×60 bot run is claimed for this review.

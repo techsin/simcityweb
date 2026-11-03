@@ -28,6 +28,9 @@ import type { NewsItem } from '../sim/CityState';
 import type { EmergencyEvent, Simulation } from '../sim/Simulation';
 import type { WorldViewApi } from '../render/contracts';
 import type { SoundOpts } from './context';
+import { populationMilestone } from './milestones';
+
+export { POP_MILESTONES } from './milestones';
 
 export interface GameSoundsDeps {
   sim: Simulation;
@@ -37,8 +40,8 @@ export interface GameSoundsDeps {
   sandbox: () => boolean;
 }
 
-/** population milestones that get the celebratory sound */
-export const POP_MILESTONES = [500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 750000, 1000000, 1250000, 1500000];
+/** Real-time spacing keeps distinct milestone cues above AudioEngine's per-sound limiter. */
+const MILESTONE_GAP = 180;
 
 /** news kind -> sound, priority within a burst, per-kind minimum gap (ms), volume */
 const NEWS: Record<string, { name: string; prio: number; gap: number; vol?: number }> = {
@@ -74,6 +77,8 @@ export class GameSounds {
   /** sign of the last month's net (a flip is news: the budget tick may play sooner) */
   private lastSign = 0;
   private flushT: ReturnType<typeof setTimeout> | null = null;
+  private milestoneT: ReturnType<typeof setTimeout> | null = null;
+  private milestoneQueue: number[] = [];
   private fire: FireProbe | null = null;
   private v = new THREE.Vector3();
 
@@ -94,7 +99,11 @@ export class GameSounds {
         else if (this.constructing.delete(b.id)) this.onBuilt(b.x + b.w / 2, b.z + b.d / 2);
       }),
       ev.on('buildingRemoved', (b) => void this.constructing.delete(b.id)),
-      ev.on('reset', () => this.constructing.clear()),
+      ev.on('reset', () => {
+        this.constructing.clear();
+        this.clearMilestones();
+        for (const key of this.last.keys()) if (key.startsWith('milestone:')) this.last.delete(key);
+      }),
     );
   }
 
@@ -103,6 +112,7 @@ export class GameSounds {
     this.offs = [];
     if (this.flushT) clearTimeout(this.flushT);
     this.flushT = null;
+    this.clearMilestones();
   }
 
   private since(key: string): number {
@@ -142,13 +152,9 @@ export class GameSounds {
   private onNews(n: NewsItem): void {
     switch (n.kind) {
       case 'good': {
-        const m = /reaches ([\d,.]+) residents/i.exec(n.text);
-        const pop = m ? Number(m[1].replace(/[,.]/g, '')) : 0;
-        if (pop && POP_MILESTONES.includes(pop)) {
-          // bigger milestones sound a little brighter (up to +4 semitones at 250k+)
-          const semitones = pop >= 250000 ? 4 : pop >= 50000 ? 2 : 0;
-          if (this.ready('milestone:' + pop, 1500)) this.play('milestone', { pitch: Math.pow(2, semitones / 12) });
-        } else this.queueNews('good', n.text);
+        const pop = populationMilestone(n.text);
+        if (pop !== null) this.queueMilestone(pop);
+        else this.queueNews('good', n.text);
         return;
       }
       case 'warning':
@@ -182,6 +188,32 @@ export class GameSounds {
         return;
       }
     }
+  }
+
+  private queueMilestone(pop: number): void {
+    if (this.milestoneQueue.includes(pop) || !this.ready('milestone:' + pop, 1500)) return;
+    this.milestoneQueue.push(pop);
+    if (this.milestoneT !== null) return;
+    const delay = Math.max(0, MILESTONE_GAP - this.since('milestoneCue'));
+    if (delay) this.milestoneT = setTimeout(() => this.flushMilestone(), delay);
+    else this.flushMilestone();
+  }
+
+  private flushMilestone(): void {
+    this.milestoneT = null;
+    const pop = this.milestoneQueue.shift();
+    if (pop === undefined) return;
+    // Bigger milestones sound a little brighter (up to +4 semitones at 250k+).
+    const semitones = pop >= 250000 ? 4 : pop >= 50000 ? 2 : 0;
+    this.last.set('milestoneCue', performance.now());
+    this.play('milestone', { pitch: Math.pow(2, semitones / 12) });
+    if (this.milestoneQueue.length) this.milestoneT = setTimeout(() => this.flushMilestone(), MILESTONE_GAP);
+  }
+
+  private clearMilestones(): void {
+    if (this.milestoneT !== null) clearTimeout(this.milestoneT);
+    this.milestoneT = null;
+    this.milestoneQueue = [];
   }
 
   /** news sounds compete within a burst and share one budget (NEWS_GAP); repeated messages stay quiet (REPEAT_MS) */
