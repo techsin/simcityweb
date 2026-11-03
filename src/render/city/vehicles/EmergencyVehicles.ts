@@ -15,6 +15,7 @@ import * as THREE from 'three';
 import { CELL_SIZE } from '../../../core/constants';
 import type { CityState } from '../../../sim/CityState';
 import { INCIDENT_COLOR, vehiclePosition, type EmergencyVehicle, type Incident, type VehiclePos } from '../../../sim/infra/emergency';
+import { EMERG_DAYS_PER_MIN } from '../../../sim/infra/params';
 import { sharedUniforms } from '../../../assets/materials';
 import { DynamicBatch } from '../common/batch';
 import { getCityMaterial } from '../common/cityMaterial';
@@ -36,6 +37,91 @@ const PARK = 3.2;
 const RED = new THREE.Color(1, 0.12, 0.08);
 const BLUE = new THREE.Color(0.15, 0.35, 1);
 const AMBER = new THREE.Color(1, 0.62, 0.1);
+
+interface DrawnRoute {
+  path: number[]; times: number[]; size: number;
+  x: number[]; z: number[]; length: number[]; distance: number[];
+  hx: number[]; hz: number[]; speed: number[]; radius: number[];
+}
+const drawnRoutes = new WeakMap<number[], DrawnRoute>();
+
+function drawnRoute(v: EmergencyVehicle, N: number): DrawnRoute {
+  const old = drawnRoutes.get(v.path);
+  if (old && old.size === N && old.path.length === v.path.length && old.times.length === v.times.length) {
+    let same = true;
+    for (let j = 0; j < v.path.length; j++) if (old.path[j] !== v.path[j] || old.times[j] !== v.times[j]) { same = false; break; }
+    if (same) return old;
+  }
+  const g: DrawnRoute = { path: v.path.slice(), times: v.times.slice(), size: N, x: [], z: [], length: [], distance: [0], hx: [], hz: [], speed: [], radius: [0] };
+  for (const c of v.path) { g.x.push(c % N + 0.5); g.z.push(Math.floor(c / N) + 0.5); }
+  for (let j = 0; j < v.path.length - 1; j++) {
+    const dx = g.x[j + 1] - g.x[j], dz = g.z[j + 1] - g.z[j], len = Math.hypot(dx, dz);
+    g.length.push(len);
+    g.distance.push(g.distance[j] + len);
+    g.hx.push(len ? dx / len : 1); g.hz.push(len ? dz / len : 0);
+    g.speed.push(len / Math.max(1e-9, v.times[j + 1] - v.times[j]));
+  }
+  for (let j = 1; j < v.path.length - 1; j++) g.radius.push(Math.min(1, g.length[j - 1] / 2, g.length[j] / 2));
+  g.radius.push(0);
+  drawnRoutes.set(v.path, g);
+  return g;
+}
+
+/** Render-only world position: round one cell around turns and ease the final stop. The sim route is unchanged. */
+export function drawnVehiclePosition(v: EmergencyVehicle, t: number, N: number, out: VehiclePos = { x: 0, z: 0, hx: 1, hz: 0, moving: false }): VehiclePos {
+  if (v.path.length < 2 || (v.state !== 'outbound' && v.state !== 'onScene')) {
+    vehiclePosition(v, t, N, out);
+    const off = v.state === 'onScene' ? PARK : LANE;
+    out.x = out.x * CELL_SIZE - out.hz * off;
+    out.z = out.z * CELL_SIZE + out.hx * off;
+    return out;
+  }
+  const g = drawnRoute(v, N), n = g.x.length, tm = g.times;
+  const m = v.m0 + Math.max(0, (t - v.legStart) / EMERG_DAYS_PER_MIN);
+  const end = tm[n - 1], total = g.distance[n - 1];
+  const endW = Math.min(0.12, (tm[n - 1] - tm[n - 2]) / 2);
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (tm[mid] <= m) lo = mid; else hi = mid; }
+  let d = g.distance[lo] + Math.max(0, Math.min(1, (m - tm[lo]) / Math.max(1e-9, tm[lo + 1] - tm[lo]))) * g.length[lo];
+  // Integrating a linear speed blend preserves position and velocity at both edges of each turn window.
+  for (let j = lo; j <= lo + 1; j++) {
+    if (j <= 0 || j >= n - 1) continue;
+    const vin = g.speed[j - 1], vout = g.speed[j], w = g.radius[j] / Math.max(vin, vout);
+    if (w > 0 && Math.abs(m - tm[j]) < w) {
+      const u = m - (tm[j] - w);
+      d = g.distance[j] - vin * w + vin * u + (vout - vin) * u * u / (4 * w);
+      break;
+    }
+  }
+  if (endW > 0 && m >= end - endW) {
+    const speed = g.speed[n - 2], u = Math.min(m - (end - endW), 2 * endW);
+    d = total - speed * endW + speed * u - speed * u * u / (4 * endW);
+  }
+  d = Math.max(0, Math.min(total, d));
+  let j = 0;
+  while (j < n - 2 && g.distance[j + 1] <= d) j++;
+  const f = Math.max(0, Math.min(1, (d - g.distance[j]) / Math.max(1e-9, g.length[j])));
+  out.x = g.x[j] + (g.x[j + 1] - g.x[j]) * f;
+  out.z = g.z[j] + (g.z[j + 1] - g.z[j]) * f;
+  out.hx = g.hx[j]; out.hz = g.hz[j];
+  for (let k = j; k <= j + 1; k++) {
+    if (k <= 0 || k >= n - 1) continue;
+    const r = g.radius[k];
+    if (!(r > 0) || Math.abs(d - g.distance[k]) >= r) continue;
+    const u = (d - (g.distance[k] - r)) / (2 * r), a = 1 - u;
+    out.x = g.x[k] - a * a * r * g.hx[k - 1] + u * u * r * g.hx[k];
+    out.z = g.z[k] - a * a * r * g.hz[k - 1] + u * u * r * g.hz[k];
+    const hx = a * g.hx[k - 1] + u * g.hx[k], hz = a * g.hz[k - 1] + u * g.hz[k], len = Math.hypot(hx, hz) || 1;
+    out.hx = hx / len; out.hz = hz / len;
+    break;
+  }
+  const park = endW > 0 ? Math.max(0, Math.min(1, (m - (end - endW)) / (2 * endW))) : Number(m >= end);
+  const off = LANE + (PARK - LANE) * park * park * (3 - 2 * park);
+  out.x = out.x * CELL_SIZE - out.hz * off;
+  out.z = out.z * CELL_SIZE + out.hx * off;
+  out.moving = m > v.m0 && m < end + endW;
+  return out;
+}
 
 /** 64x64 radial falloff (additive glows) — no DOM needed */
 function radialTexture(): THREE.DataTexture {
@@ -67,6 +153,8 @@ export class EmergencyVehicles {
   private inst = new Map<number, { id: number; model: string; top: number }>();
   private seen = new Set<number>();
   private pos: VehiclePos = { x: 0, z: 0, hx: 1, hz: 0, moving: false };
+  private beforePos: VehiclePos = { x: 0, z: 0, hx: 1, hz: 0, moving: false };
+  private afterPos: VehiclePos = { x: 0, z: 0, hx: 1, hz: 0, moving: false };
   private m = new THREE.Matrix4();
   private q = new THREE.Quaternion();
   private p = new THREE.Vector3();
@@ -189,12 +277,8 @@ export class EmergencyVehicles {
         this.inst.set(v.id, e);
       }
       shown++;
-      const ps = vehiclePosition(v, t, N, this.pos);
-      const onScene = v.state === 'onScene' || (!ps.moving && v.state === 'outbound' && t >= v.arrive);
-      const off = onScene ? PARK : LANE;
-      // right-hand side of the heading
-      const wx = (ps.x + -ps.hz * (off / CELL_SIZE)) * CELL_SIZE;
-      const wz = (ps.z + ps.hx * (off / CELL_SIZE)) * CELL_SIZE;
+      const ps = drawnVehiclePosition(v, t, N, this.pos);
+      const wx = ps.x, wz = ps.z;
       const y = this.surf.y(wx, wz);
       const ang = Math.atan2(ps.hx, ps.hz);
       this.q.setFromAxisAngle(this.up, ang);
@@ -279,8 +363,8 @@ export class EmergencyVehicles {
     if (nb) { this.beams.instanceMatrix.needsUpdate = true; if (this.beams.instanceColor) this.beams.instanceColor.needsUpdate = true; }
   }
 
-  /** lead vehicle's rendered world position, read only from the emergency feed */
-  followPosition(vehicleId: number): { x: number; y: number; z: number; onScene: boolean } | null {
+  /** Rendered world position with a tangent-velocity camera lead; arrival always uses the current feed time. */
+  followPosition(vehicleId: number, aheadDays = 0): { x: number; y: number; z: number; onScene: boolean } | null {
     const feed = this.feed;
     if (!feed) return null;
     let list: readonly EmergencyVehicle[] = [];
@@ -293,11 +377,25 @@ export class EmergencyVehicles {
     }
     const v = list.find(v => v.id === vehicleId);
     if (!v || !v.path?.length || (v.state !== 'outbound' && v.state !== 'onScene')) return null;
-    const ps = vehiclePosition(v, t, this.state.size, this.pos);
-    const onScene = v.state === 'onScene' || (!ps.moving && t >= v.arrive);
-    const off = onScene ? PARK : LANE;
-    const x = (ps.x + -ps.hz * (off / CELL_SIZE)) * CELL_SIZE;
-    const z = (ps.z + ps.hx * (off / CELL_SIZE)) * CELL_SIZE;
+    const ps = drawnVehiclePosition(v, t, this.state.size, this.pos);
+    const onScene = v.state === 'onScene' || t >= v.arrive;
+    let x = ps.x, z = ps.z;
+    if (Number.isFinite(aheadDays) && aheadDays > 0) {
+      const h = Math.min(1e-4, aheadDays / 100);
+      const before = drawnVehiclePosition(v, t - h, this.state.size, this.beforePos);
+      const after = drawnVehiclePosition(v, t + h, this.state.size, this.afterPos);
+      x += (after.x - before.x) * aheadDays / (2 * h);
+      z += (after.z - before.z) * aheadDays / (2 * h);
+      if (v.path.length >= 2) {
+        const last = v.times.length - 1, endW = Math.min(0.12, (v.times[last] - v.times[last - 1]) / 2);
+        const stopAt = v.legStart + (v.times[last] - v.m0 + endW) * EMERG_DAYS_PER_MIN;
+        if (t >= stopAt - 2 * endW * EMERG_DAYS_PER_MIN) {
+          const parked = drawnVehiclePosition(v, stopAt, this.state.size, this.afterPos);
+          x = THREE.MathUtils.clamp(x, Math.min(ps.x, parked.x), Math.max(ps.x, parked.x));
+          z = THREE.MathUtils.clamp(z, Math.min(ps.z, parked.z), Math.max(ps.z, parked.z));
+        }
+      }
+    }
     return { x, y: this.surf.y(x, z), z, onScene };
   }
 

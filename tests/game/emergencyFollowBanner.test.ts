@@ -3,7 +3,7 @@ import { Emitter } from '../../src/core/events';
 import type { GameContext, UIEvents } from '../../src/game/context';
 import { DispatchTool } from '../../src/game/tools/DispatchTool';
 import type { CityEvents, EmergencyEvent } from '../../src/sim/Simulation';
-import { RESPONDER_MODEL, type EmergencyVehicle, type Incident } from '../../src/sim/infra/emergency';
+import { RESPONDER_MODEL, type EmergencyDispatchEvent, type EmergencyVehicle, type Incident } from '../../src/sim/infra/emergency';
 import { EMERG_DAYS_PER_MIN } from '../../src/sim/infra/params';
 import { EmergencyBanner } from '../../src/ui/EmergencyBanner';
 import type { ActOptions, Cause, Command } from '../../src/worker/SimHost';
@@ -42,7 +42,9 @@ function harness(initial = [incident()], fleet: EmergencyVehicle[] = []) {
     for (const v of units) { if (!fleet.some((q) => q.id === v.id)) fleet.push(v); if (!inc.units.includes(v.id)) inc.units.push(v.id); }
     if (type === 'dispatched' && units.some((v) => v.responder === 'fire')) inc.state = 'dispatched';
     cause = tag ? { seq, tag } : null;
-    events.emit('emergency', { type, id, kind: inc.kind, x: inc.x, z: inc.z, major: inc.major, manualPossible: inc.manualPossible });
+    const event: EmergencyDispatchEvent = { type, id, kind: inc.kind, x: inc.x, z: inc.z, major: inc.major, manualPossible: inc.manualPossible };
+    if (type === 'dispatched' && (tag instanceof DispatchTool || tag === banner)) event.sent = units.map((v) => v.id);
+    events.emit('emergency', event);
     cause = null;
   };
   const act = vi.fn((op: Command['op'], args: unknown[], opts?: ActOptions) => {
@@ -57,7 +59,7 @@ function harness(initial = [incident()], fleet: EmergencyVehicle[] = []) {
         active: true, layersReady: true, incidents: () => [...incidents.values()], incident: (id: number) => incidents.get(id),
         vehicles: () => fleet, stationName: () => 'Fire Station #1', stationList: () => [], stationFleet: () => null,
       },
-      watch: () => ({ value: [], version: 1, setArgs() {}, subscribe: () => () => {}, dispose() {} }),
+      watch: () => ({ value: [{ stationId: 10, name: 'Fire Station #1', responder: 'fire', free: 2, total: 2, etaMin: 1.1, etaDays: 1.1, inRange: false }], version: 1, setArgs() {}, subscribe: () => () => {}, dispose() {} }),
     },
     settings: { emergencyUncovered: 'live', emergencyAlerts: 'major', emergencyLiveSlowmo: 3 },
     panels: { open() {} }, sound() {}, toast() {}, focusCell() {}, showQuery() {},
@@ -109,12 +111,12 @@ describe('FEEL-09 emergency Follow banner', () => {
     expect(h.follow.start).toHaveBeenLastCalledWith(100);
   });
 
-  it('uses event-time incident units with two player commands and a mixed auto dispatch in one packet', () => {
+  it('uses emitted sent IDs with two player commands and a mixed auto dispatch in one packet', () => {
     const a = incident(1), b = incident(2), c = incident(3);
     const h = harness([a, b, c]);
     const support = vehicle(1, { responder: 'medical', arrive: 0.01 });
     const first = vehicle(2), second = vehicle(3, { incidentId: 2 }), auto = vehicle(4, { incidentId: 3 });
-    // The packet-final fleet arrives first; only each event's incident units identify its own newly assigned units.
+    // The packet-final fleet arrives first; each event's sent IDs identify only its command's units.
     h.fleet.push(support, first, second, auto);
     h.dispatch(1, [support], null, 'uncovered');
     h.dispatch(1, [first], new DispatchTool(h.ctx));
@@ -197,7 +199,7 @@ describe('FEEL-09 emergency Follow banner', () => {
     expect(h.follow.active()).toBeNull();
   });
 
-  it('seeds assigned unit ids when views become ready after a saved city loads', () => {
+  it('excludes saved units when the first dispatch follows lazy loading', () => {
     const h = harness([]);
     const auto = vehicle(1, { arrive: 0.01 });
     h.incidents.set(1, incident(1, { state: 'dispatched', units: [auto.id] }));
@@ -209,9 +211,9 @@ describe('FEEL-09 emergency Follow banner', () => {
     expect(h.follow.start).toHaveBeenLastCalledWith(manual.id);
   });
 
-  it('prunes ended and missing incident history, retaining the active chip through the on-scene grace', () => {
+  it('prunes ended and missing candidates, retaining the active chip through the on-scene grace', () => {
     const h = harness([]);
-    const tracking = h.banner as unknown as { dispatchUnits: Map<number, unknown>; followDispatches: Map<number, unknown> };
+    const tracking = h.banner as unknown as { followDispatches: Map<number, unknown> };
     for (let id = 1; id <= 40; id++) {
       h.incidents.set(id, incident(id));
       h.dispatch(id, [], null, 'new');
@@ -219,7 +221,6 @@ describe('FEEL-09 emergency Follow banner', () => {
       h.dispatch(id, [], null, 'resolved');
       h.incidents.delete(id);
     }
-    expect(tracking.dispatchUnits.size).toBe(0);
     expect(tracking.followDispatches.size).toBe(0);
     h.incidents.set(41, incident(41));
     const unit = vehicle(41, { incidentId: 41 });
@@ -229,11 +230,49 @@ describe('FEEL-09 emergency Follow banner', () => {
     h.banner.refreshFollow();
     expect(h.chip().textContent).toContain('on scene');
     h.incidents.clear(); h.fleet.length = 0; h.tick();
-    expect(tracking.dispatchUnits.size).toBe(0);
     expect(tracking.followDispatches.size).toBe(0);
     expect(h.chip().style.display).toBe('flex');
     expect(h.chip().textContent).toContain('Following Fire truck from Fire Station #1 · on scene');
     h.follow.stop(); h.banner.refreshFollow();
     expect(h.chip().style.display).toBe('none');
+  });
+
+  it.each(['Send nearest', 'DispatchTool'])('%s follows only the player truck after a silent automatic ambulance dispatch', async (path) => {
+    const h = harness([incident(1, { kind: 'industrial', need: { fire: 1, medical: 1 } })]);
+    const ambulance = vehicle(1, { responder: 'medical', arrive: 0.1 });
+    h.fleet.push(ambulance);
+    h.incidents.get(1)!.units.push(ambulance.id); // automatic supporting pass emits no event
+    if (path === 'Send nearest') {
+      h.root.querySelectorAll('button').find((b) => b.textContent.includes('Send nearest'))!.click();
+      await Promise.resolve();
+    } else h.dispatch(1, [vehicle(100)], new DispatchTool(h.ctx));
+    h.button().click();
+    expect(h.follow.start).toHaveBeenLastCalledWith(100);
+    expect(h.chip().textContent).toContain('Following Fire truck');
+  });
+
+  it('shows on scene at the extrapolated arrival before the next vehicle-state update', () => {
+    const h = harness();
+    const v = vehicle(1);
+    h.dispatch(1, [v], new DispatchTool(h.ctx));
+    h.button().click();
+    h.setTime(v.arrive - 0.1 * EMERG_DAYS_PER_MIN); h.tick();
+    expect(h.chip().textContent).toContain('0.1 min');
+    h.setTime(v.arrive); h.tick();
+    expect(v.state).toBe('outbound');
+    expect(h.chip().textContent).toContain('on scene');
+    expect(h.chip().textContent).not.toContain('0.0 min');
+  });
+
+  it('hides Follow while active and ignores a second click instead of restarting the camera', () => {
+    const h = harness();
+    h.dispatch(1, [vehicle(1)], new DispatchTool(h.ctx));
+    const button = h.button();
+    button.click();
+    expect(button.style.display).toBe('none');
+    button.click();
+    expect(h.follow.start).toHaveBeenCalledTimes(1);
+    h.follow.stop(); h.banner.refreshFollow();
+    expect(button.style.display).toBe('');
   });
 });

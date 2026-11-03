@@ -1107,7 +1107,11 @@ export class CityScene {
     const c = this.world.controls as Partial<Pick<CameraController, 'follow'>>;
     const vehicles = (this.objects as { emergency?: EmergencyVehicles }).emergency;
     if (!c.follow || !vehicles?.followPosition(id)) return;
-    c.follow(() => vehicles.followPosition(id), {
+    c.follow((aheadSeconds) => {
+      const secondsPerDay = this.host.secondsPerDay();
+      const aheadDays = this.host.speed > 0 && secondsPerDay > 0 ? aheadSeconds / secondsPerDay : 0;
+      return vehicles.followPosition(id, aheadDays);
+    }, {
       reducedMotion: resolveMotion(this.settings.motion) === 'reduced',
       onEnd: () => {
         this.followedVehicle = null;

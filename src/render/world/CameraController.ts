@@ -38,6 +38,7 @@ export interface CameraFollowPosition {
 
 const DEG = Math.PI / 180;
 const SNAP0 = Math.PI / 4; // default diagonal view (SC4-like)
+const FOLLOW_LAMBDA = 6;
 
 /** zoom-out limit for a map of `mapSize` m: ~2.2 × its extent (whole map in view at any yaw with a margin), never below
  *  1.5 km (tiny maps) nor above 7 km (the previous global limit, reached by 4 km maps) */
@@ -79,7 +80,7 @@ export class CameraController implements CameraControllerApi {
   private goalTilt = 52 * DEG;
   private groundY = 0;
   private flight: { start: THREE.Vector3; distance: number; peak: number; elapsed: number; duration: number } | null = null;
-  private followState: { source: () => CameraFollowPosition | null; onSceneUntil: number | null; onEnd?: () => void } | null = null;
+  private followState: { source: (aheadSeconds: number) => CameraFollowPosition | null; onSceneUntil: number | null; onEnd?: () => void } | null = null;
 
   // interaction
   private panning = false;
@@ -153,7 +154,8 @@ export class CameraController implements CameraControllerApi {
     return this.followState !== null;
   }
 
-  follow(source: () => CameraFollowPosition | null, opts?: { reducedMotion?: boolean; onEnd?: () => void }): void {
+  /** Source predicts the drawn position one damping time ahead; its onScene flag stays on the current clock. */
+  follow(source: (aheadSeconds: number) => CameraFollowPosition | null, opts?: { reducedMotion?: boolean; onEnd?: () => void }): void {
     this.stopFollowing();
     this.cancelFlight();
     this.followState = { source, onSceneUntil: null, onEnd: opts?.onEnd };
@@ -561,7 +563,7 @@ export class CameraController implements CameraControllerApi {
 
     const follow = this.followState;
     if (follow) {
-      const p = follow.source();
+      const p = follow.source(1 / FOLLOW_LAMBDA);
       const now = performance.now();
       if (p?.onScene && follow.onSceneUntil === null) follow.onSceneUntil = now + 2000;
       if (follow.onSceneUntil !== null ? now >= follow.onSceneUntil : !p) this.stopFollowing();
@@ -589,11 +591,11 @@ export class CameraController implements CameraControllerApi {
       if (t === 1) this.flight = null;
     } else {
       if (!this.panning) {
-        const lambda = this.following ? 6 : 10;
+        const lambda = this.following ? FOLLOW_LAMBDA : 10;
         this._target.x = damp(this._target.x, this.goalTarget.x, lambda, dt);
         this._target.z = damp(this._target.z, this.goalTarget.z, lambda, dt);
       }
-      this._distance = Math.exp(damp(Math.log(this._distance), Math.log(this.goalDistance), this.following ? 6 : 9, dt));
+      this._distance = Math.exp(damp(Math.log(this._distance), Math.log(this.goalDistance), this.following ? FOLLOW_LAMBDA : 9, dt));
     }
     this.yaw = damp(this.yaw, this.goalYaw, 9, dt);
     this.tilt = damp(this.tilt, this.goalTilt, 10, dt);

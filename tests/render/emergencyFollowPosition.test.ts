@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CELL_SIZE } from '../../src/core/constants';
-import { EmergencyVehicles, type EmergencyFeed } from '../../src/render/city/vehicles/EmergencyVehicles';
+import { drawnVehiclePosition, EmergencyVehicles, type EmergencyFeed } from '../../src/render/city/vehicles/EmergencyVehicles';
 import type { EmergencyVehicle } from '../../src/sim/infra/emergency';
 import { EMERG_DAYS_PER_MIN } from '../../src/sim/infra/params';
 
@@ -22,6 +22,8 @@ function renderer(list: EmergencyVehicle[], time: number) {
   const view = Object.assign(Object.create(EmergencyVehicles.prototype), {
     state: { size: N }, surf: { y }, feed,
     pos: { x: 0, z: 0, hx: 1, hz: 0, moving: false },
+    beforePos: { x: 0, z: 0, hx: 1, hz: 0, moving: false },
+    afterPos: { x: 0, z: 0, hx: 1, hz: 0, moving: false },
   }) as EmergencyVehicles;
   return { view, feed, y };
 }
@@ -48,16 +50,43 @@ describe('emergency follow position', () => {
     expect(p.onScene).toBe(false);
   });
 
-  it('parks and reports arrival on the extrapolated clock before the next feed update', () => {
+  it('leads with the drawn velocity but keeps on-scene tied to the current feed clock', () => {
+    const v = vehicle();
+    const { view, feed } = renderer([v], v.arrive - 0.5 * EMERG_DAYS_PER_MIN);
+    const drawn = view.followPosition(v.id)!, led = view.followPosition(v.id, 0.6 * EMERG_DAYS_PER_MIN)!;
+    expect(led.x).toBeCloseTo(drawn.x, 9);
+    expect(led.z).toBeCloseTo(drawn.z + 6 * CELL_SIZE, 7);
+    expect(led.onScene).toBe(false);
+    feed.time = () => v.arrive + 0.12 * EMERG_DAYS_PER_MIN;
+    expect(view.followPosition(v.id, 0.6 * EMERG_DAYS_PER_MIN)!.onScene).toBe(true);
+  });
+
+  it('eases into parking and reports arrival on the extrapolated clock before the next feed update', () => {
     const v = vehicle();
     const { view, feed } = renderer([v], v.arrive);
     const arrived = view.followPosition(v.id)!;
-    expect(arrived.x).toBeCloseTo(12.5 * CELL_SIZE - 3.2, 9);
-    expect(arrived.z).toBeCloseTo(14.5 * CELL_SIZE, 9);
+    expect(arrived.x).toBeCloseTo(12.5 * CELL_SIZE - (1.9 + 3.2) / 2, 9);
+    expect(arrived.z).toBeCloseTo((14.5 - 10 * 0.12 / 4) * CELL_SIZE, 9);
     expect(arrived.onScene).toBe(true);
     v.state = 'onScene';
-    feed.time = () => v.arrive + 1;
     expect(view.followPosition(v.id)).toEqual(arrived);
+    feed.time = () => v.arrive + 0.12 * EMERG_DAYS_PER_MIN;
+    const parked = view.followPosition(v.id)!;
+    expect(parked.x).toBeCloseTo(12.5 * CELL_SIZE - 3.2, 9);
+    expect(parked.z).toBeCloseTo(14.5 * CELL_SIZE, 9);
+    expect(parked.onScene).toBe(true);
+  });
+
+  it('keeps the route and clock read-only and rebuilds drawn geometry after an in-place replica update', () => {
+    const v = vehicle(), t = v.legStart + 0.5 * EMERG_DAYS_PER_MIN;
+    const before = structuredClone(v);
+    const first = { ...drawnVehiclePosition(v, t, N) };
+    expect(v).toEqual(before);
+    v.times[1] = 2;
+    v.times[2] = 4;
+    expect(drawnVehiclePosition(v, t, N).x).toBeLessThan(first.x);
+    v.path[1] = 4 * N + 16;
+    expect(drawnVehiclePosition(v, t, N).x).toBeGreaterThan(drawnVehiclePosition(vehicle({ times: [0, 2, 4] }), t, N).x);
   });
 
   it('follows the same id when feed ordering changes and stops when it leaves the incident', () => {

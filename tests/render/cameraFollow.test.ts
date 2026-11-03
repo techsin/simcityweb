@@ -58,9 +58,11 @@ describe('emergency camera follow (FEEL-09)', () => {
     position.x += 36;
     position.y = 8;
     position.z += 48;
-    c.follow(() => position);
+    const source = vi.fn(() => position);
+    c.follow(source);
     const e = Math.exp(-6 / 60);
     advance(c);
+    expect(source).toHaveBeenLastCalledWith(1 / 6);
     expect(c.target.x).toBeCloseTo(position.x - 36 * e, 10);
     expect(c.target.y).toBeCloseTo(position.y * (1 - e), 10);
     expect(c.target.z).toBeCloseTo(position.z - 48 * e, 10);
