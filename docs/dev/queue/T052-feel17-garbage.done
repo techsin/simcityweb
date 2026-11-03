@@ -1,0 +1,1 @@
+T052 done: local/T052-feel17-garbage. Every FEEL-17 Acceptance line passes on the real GPU after one review round (clearing 100 % by +54 days; stress +1.24-1.58 % of the main pass); tsc, vitest 219 files / 2,179 tests, bot identical (192,899). Report: docs/dev/reports/local-T052-feel17-garbage.md
