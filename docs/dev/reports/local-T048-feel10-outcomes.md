@@ -100,3 +100,27 @@ The full QA reports and the raw recordings are in the worker's scratch (`qa/T048
 - An independent Codex review found the restore-before-outcome ordering, the stale speed read and the reinforcement
   case.
 - A Claude QA agent did both real-GPU rounds. The worker ran the gates and wrote this report.
+
+## Cloud carry-over (Nov 3)
+
+Cloud verification of the desktop lane (chain desk2), on `cloud/t048`: the lane's `bd318e9` with dev merged.
+Machine: a 4-core cloud container, WebGL on SwiftShader, so the browser checks here test function and visuals, not GPU
+timings.
+
+### Gap list (required against done, written before the work)
+
+Read: the task file, NOTE-044, every NOTE naming T048 (NOTE-045, -046, -047, -048, -049), POLISH_PLAN FEEL-10 in
+full (Problem, Change, Files, Acceptance, Risk) and its §8.2 verifier checks, this report, the diff against dev, the
+four evidence images, and T061 (the cloud task that takes the lane's worker-host requests).
+
+| # | Required | State at `bd318e9` | Cloud action |
+|---|---|---|---|
+| 1 | Merged with dev | 23 dev commits behind (base `fb1531f`) | merge dev, resolve, tsc |
+| 2 | Gates here: tsc, the full vitest (with the hygiene test), the bot identical to dev's `residents [ 61124, 93804, 37971 ]` | run on the desktop only | rerun all three here; dev's bot from a clean export |
+| 3 | "No sim or worker file is touched" | claimed | confirm from the diff |
+| 4 | Unit tests: one "saved" and no second chime; "lost" on a failed alert; the rate limit; the duck depth 6 ± 1 dB (debug getter); the vignette class exactly while the LIVE pill shows | present in 5 new test files (46 tests) | rerun; confirm they fail without the lane |
+| 5 | Acceptance "the music bus is 6 ± 1 dB lower during LIVE (debug getter)" | passes, but the report's known limitation: `debugMusicBusGain` reads the gain nodes' `AudioParam.value`, which Chrome stops updating while the music input is silent (a song rest), so it read 0 dB in 1 of 13 LIVE episodes | **real gap in the acceptance instrument:** compute the getter from the duck envelopes (the report's own suggested fix), with a test that fails without it |
+| 6 | Browser: the Refinery-style dispatch, a failed alert, LIVE on and off with vignette screenshots | done on the real GPU (two QA rounds) | rerun functionally on SwiftShader, default host and `?simworker=loopback` |
+| 7 | Desktop WIP commits (`cb430ce`, `f73b320` are "wip" Codex-lane commits) | reviewed by the desktop | review line by line; check the `-snap` branch holds nothing newer |
+| 8 | NOTE-046 Q3: the EmergencyBanner hunk in its own commit | mixed into the two WIP commits | cannot be split without rewriting the lane's history; decision below |
+| 9 | The lane's requests (reinforcement provenance, the speedChanged order, the clock cap) | open | **not this lane's gaps:** NOTE-049 moves them to T061 |
