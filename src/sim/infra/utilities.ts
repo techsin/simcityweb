@@ -222,10 +222,8 @@ const UT_EST = 1;
  * --warm 300 --days 120, 3 runs each: each label's coefficients divided by the geometric mean of its median est / ms on
  * the two fixtures): uses chunks / 1.27, power sums / 1.95, power results / 1.21, water sums / 1.43, water results / 1.31,
  * finish / 1.49, plan / 1.38, label x 1.22, zoned x 1.37, snapshot x 1.18, the pass start 15 -> 25, the water brownout's
- * seeds 0.3 -> 1 µs per seed (+ 8), the flags' publish 2 -> 6, the pass end 40 -> 26; a second hold put the building
- * chunks at 1.24-1.55 x their measured cost on dense1m and 0.93-1.15 x on bot256 (utilities' median error +0.39 / -0.01),
- * so the six chunk kinds' coefficients were divided by 1.18 more (centring the two fixtures). None of them sizes a piece
- * (US, UT_PLAN_* do), so the refits moved no boundary.
+ * seeds 0.3 -> 1 µs per seed (+ 8), the flags' publish 2 -> 6, the pass end 40 -> 26. None of them sizes a piece (US,
+ * UT_PLAN_* do), so the refit moved no boundary.
  */
 const UT = {
   /** per piece (dispatch, cursors, ensureIds) */
@@ -236,22 +234,22 @@ const UT = {
   /** the sea mask (the masks' checksum) per cell; the treatment prefix scan per building */
   sea: 0.0015, scan: 0.016,
   /** the uses chunks per building / footprint cell; their publish (fixed) + per patched (added / removed) building */
-  usesB: 0.0161, usesF: 0.0114, usesPub: 4, patch: 0.08,
+  usesB: 0.019, usesF: 0.0134, usesPub: 4, patch: 0.08,
   /** the labels per unit (a cell scanned or a cell taken off the BFS queue); a label's publish (fixed) */
   label: 0.0085, labelPub: 2,
   /** power sums per building / footprint cell; their publish (fixed) + per component / plant / critical load */
-  sumB: 0.0065, sumF: 0.0013, sumPub: 4, sumComp: 0.004, sumPlant: 0.2, sumCrit: 0.05,
+  sumB: 0.0077, sumF: 0.0015, sumPub: 4, sumComp: 0.004, sumPlant: 0.2, sumCrit: 0.05,
   /** results: the cell loop per cell, per building / footprint cell, the zoned loop per cell, the layer copy per cell */
-  cells: 0.0025, resB: 0.0042, resF: 0.0055, zoned: 0.0036, copy: 0.0002,
+  cells: 0.0025, resB: 0.0049, resF: 0.0065, zoned: 0.0036, copy: 0.0002,
   /** brownout: the seeds per plant footprint cell, the BFS per queue cell */
   seed: 0.01, bfs: 0.027,
   /** water sums per building / footprint cell; their publish (fixed) + per component (tap quality) */
-  wsumB: 0.0071, wsumF: 0.0053, wsumPub: 4, wsumComp: 0.01,
+  wsumB: 0.0084, wsumF: 0.0063, wsumPub: 4, wsumComp: 0.01,
   /** water results per building / footprint cell; the water brownout's seeds per seed, its BFS per queue cell */
-  wresB: 0.0029, wresF: 0.0055, wseed: 1, wbfs: 0.085,
+  wresB: 0.0034, wresF: 0.0065, wseed: 1, wbfs: 0.085,
   /** the finish per building / footprint cell, the flags' publish per candidate, per event, the pass end (news,
    *  layerUpdated and its listeners) */
-  finB: 0.0082, finF: 0.0006, apply: 0.05, event: 0.4, end: 26,
+  finB: 0.0097, finF: 0.0007, apply: 0.05, event: 0.4, end: 26,
 } as const;
 /**
  * the chunk sizes, in estimated µs per unit (pieceUnits / cellUnits; kept apart from the estimates' UT coefficients, so a
