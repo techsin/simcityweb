@@ -157,8 +157,11 @@
 .hud-seg.approval { position: relative; }
 .appr-pop {
   position: absolute; top: calc(100% + 8px); right: -6px; width: 330px; padding: 10px 12px; display: none; z-index: 60; cursor: default;
-  pointer-events: none; font-size: 11.5px;
+  font-size: 11.5px;
 }
+/* FH-06: the card takes the pointer (its rows open their fixes); this strip bridges the 8 px gap so it stays open */
+.appr-pop::before { content: ''; position: absolute; left: 0; right: 0; top: -9px; height: 9px; }
+.approval.none .ico-wrap { color: var(--text-faint); }
 .hud-seg.approval:hover .appr-pop:not(.empty) { display: block; animation: panelIn 0.15s var(--ease); }
 .appr-pop .ap-h { font-size: 12.5px; margin-bottom: 6px; }
 .appr-pop .ap-r { display: grid; grid-template-columns: minmax(0, 1fr) 86px 40px; gap: 8px; align-items: center; padding: 1.5px 0; }
@@ -170,6 +173,11 @@
 .appr-pop .ap-r .t b { position: absolute; left: calc(50% - 0.5px); top: -2px; bottom: -2px; width: 1px; background: rgba(255, 255, 255, 0.28); }
 .appr-pop .ap-r .v { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
 .appr-pop .ap-f { margin-top: 6px; font-size: 10.5px; color: var(--text-faint); }
+.appr-pop .ap-r .d { grid-column: 1 / -1; margin: -1px 0 2px; font-size: 10.5px; line-height: 1.35; color: var(--text-faint); }
+.appr-pop .ap-r.fix { cursor: pointer; border-radius: 5px; margin: 0 -4px; padding: 1.5px 4px; }
+.appr-pop .ap-r.fix:hover { background: rgba(255, 255, 255, 0.07); }
+.appr-pop .ap-r.fix:hover .l { color: var(--text); }
+.appr-pop .ap-note { margin-top: 7px; font-size: 11px; line-height: 1.4; color: var(--text-dim); }
 
 /* inspector key / value rows: labels never wrap (a long response text wraps on the value side instead) */
 .ins-sec-b .kv { grid-template-columns: max-content minmax(0, 1fr); }

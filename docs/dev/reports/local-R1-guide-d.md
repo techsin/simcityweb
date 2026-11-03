@@ -65,3 +65,36 @@ Plan-vs-code differences:
 - [ ] Sliders: amber at 10%, red at 14%, not red at 13%. Check the demand factors, the keyboard steps and the
   1280 × 720 layout.
 - [ ] For the advisor owner: `taxHigh` fires at 11% and mentions approval.
+
+## Cloud carry-over (Nov 3)
+
+The desktop is unavailable (NOTE-044), so the cloud finishes this lane on `cloud/t037d`: `local/R1-guide-d` (`460d801`)
+with dev `923428d` merged in (clean, no conflicts; tsc clean after the merge).
+
+### Gap list (required against done, written before any new work)
+
+Read: the task file, NOTE-035/037/038/040/042/043/044 (every NOTE naming T037), POLISH_PLAN FH-06 and FH-09 in full
+with their Acceptance lists, §4.6 (E8), §6.2 rows 25-26, §7.2-§7.4 and §8.1, this report, and the lane's diff against
+dev (approval.ts, BudgetPanel.ts, three test files).
+
+| Plan item | Required | State at the desktop's stop |
+|---|---|---|
+| FH-06 change 1 | below 50 residents the HUD shows "—", with "Approval starts with your first residents" | **not done** (TopBar, deferred by the desktop) |
+| FH-06 change 2 | crime, tax and baseline row details | done (`approvalDetail` base / crime / tax; labels) |
+| FH-06 change 3 | clicking a row opens its fix: crime → Police view, tax → Budget · Taxes, air → Air view, services → Police, Fire or Health view, parks → Parks tab | **not done** (TopBar) |
+| FH-06 change 4 | under 10,000 residents the "New towns usually sit at 45–55%" footer, and faces smile ≥ 50 / meh ≥ 35 / frown < 35; today's thresholds from 10,000 | **not done** (TopBar) |
+| FH-06 risk | the usual-range sentence must stay true: derive it from the bot tables | **not done** |
+| FH-06 acceptance | "—" at 0 residents; unit tests for crime / tax / base; crime row click sets `ctx.overlay = Overlay.Police`; footer under 10k; 52 / 38 / 30 at 3,000 residents → smile / meh / frown | 1 of 5 (the unit tests) |
+| FH-09 hint | "9% is neutral … above 13% demand collapses … (+1.5) but less income" | done |
+| FH-09 rows | residential "approval heads 7 lower (reached over ~6 months)"; C and I "demand ×0.9" | done |
+| FH-09 sliders | amber above 9.5%, red from 13.5% | done |
+| FH-09 `taxHigh` | fires from 11%, with the approval cost in its text | **not done** (advisors.ts; the desktop left it to sub-lane (b), whose branch does not touch it) |
+| FH-09 acceptance | rows + hint at 11%; raw −7 ±15% after a month, shown 88% after 6; `warn` at 10, `bad` at 14 not 13; `taxHigh` at 11% mentions approval | 3 of 4 in unit tests; the `taxHigh` test missing |
+| Browser checklist | the six items in "Browser checklist (mine)" above | **none run** (the desktop's slot never came) |
+| Gates | tsc, full vitest, bot at 196,101 | green at the desktop's stop, before dev `923428d`; re-run here |
+| §8.1 verifier list | "at the end" of round 1, with META's items | not this sub-lane's: it runs once every GUIDE and META round-1 item is in |
+
+The desktop's saved work (one Codex commit, the review and the gate table) was verified line by line against the sim:
+the tax inversion in `approvalDetail` matches `update()`'s term (−3.5 a point above 9, +1.5 below, resident-weighted),
+"police remove up to 85%" matches `crime.ts` (`t.police = 0.85 × coverage`), the crime detail reads the mirrored
+`systemData.economy.resCrime` (replica-safe), and the panel's residential effect is approval.ts's formula.

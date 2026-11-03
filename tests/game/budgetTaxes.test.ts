@@ -112,6 +112,17 @@ describe('Budget tax effects (FH-09)', () => {
     expect(f.el.querySelectorAll('.tax-group')[0].querySelectorAll('.tax-row')[1].querySelector('input')).toBe(slider);
   });
 
+  it('showTab opens Taxes from another tab (FH-06: the approval card\'s tax row)', () => {
+    const f = fixture();
+    const tabs = f.el.querySelector('.tabs')!.querySelectorAll('button');
+    tabs[1].click(); // Services
+    expect(f.el.querySelectorAll('.tax-group')).toHaveLength(0);
+    f.panel.showTab('taxes');
+    expect(f.el.querySelectorAll('.tax-group')).toHaveLength(3);
+    expect(tabs[0].classList.contains('on')).toBe(true);
+    expect(tabs[1].classList.contains('on')).toBe(false);
+  });
+
   it('releases the forecast on close and keeps retained tax controls silent after city disposal', () => {
     const f = fixture(), first = f.watch.mock.results[0].value;
     f.panel.onClose();

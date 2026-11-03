@@ -152,6 +152,12 @@ export class BudgetPanel extends Panel {
     this.renderTab();
   }
 
+  /** show a tab (FH-06: the approval card's tax row opens Budget · Taxes); before the first open it is the tab it opens on */
+  showTab(t: 'taxes' | 'services' | 'ledger' | 'loans'): void {
+    this.tab = t;
+    if (this.content) this.renderTab();
+  }
+
   override onClose(): void {
     this.forecastWatch?.dispose();
     this.forecastWatch = null;
