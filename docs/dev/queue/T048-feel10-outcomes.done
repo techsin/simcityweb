@@ -1,0 +1,1 @@
+T048 done: local/T048-feel10-outcomes. Every FEEL-10 Acceptance line passes on the real GPU (default host and loopback) after one review round; tsc, vitest 221 files / 2,191 tests, bot identical (192,899). Two worker-host requests (reinforcement provenance, LoopbackSimHost speed ordering). Report: docs/dev/reports/local-T048-feel10-outcomes.md

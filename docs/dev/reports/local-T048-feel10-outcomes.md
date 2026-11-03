@@ -1,155 +1,102 @@
-# T048 — review round 1
+# T048 report: FEEL-10, emergency outcomes and LIVE mode that feel urgent (desktop, real GPU)
 
-Round-1 corrections are uncommitted on `local/T048-feel10-outcomes`, above WIP `cb430ce`. No commit, push, merge, `.done`, browser, benchmark, or other-worktree operation was performed. Reviewed the worker's `scratchpad/qa/T048/qa.md`; its GPU results apply to the WIP, not these new changes.
+**Verdict: done.** Every Acceptance line passes on the real GPU, on the default host and on `?simworker=loopback`,
+after one review round. The bot is identical, and no sim or worker file is touched.
 
-**Changes per file this round**
+Branch `local/T048-feel10-outcomes`:
+- base dev `fb1531f`;
+- `cb430ce`: the lane;
+- `f73b320`: review round 1.
 
-- `src/game/GameSounds.ts`: remembers ids actually seen in `host.policy.alerts`, including dismissed/expired banners. Only player responses or previously bannered incidents can sting; unseen failures/deaths/building losses never touch the 10-second budget. Exposes episode-scoped pending feedback for the restore toast. Uses the `speedChanged` payload rather than the late host mirror. LIVE now renews a 300 ms hold every 100 ms, then explicitly releases over 500 ms.
-- `src/ui/EmergencyBanner.ts`: restore is silent while one of that episode's player responses is dispatched/on scene, or a sting played under one second ago. Membership survives alert removal, clears at restore/reset/new LIVE/policy-setting changes, and excludes ignored alerts. Uses speed event payloads immediately and renders the outcome text/buttons before applying the 600 ms flash.
-- **Outside named files:** `src/audio/AudioEngine.ts` and `src/audio/ducking.ts`: add `releaseDuck(0.5)` and an independent renewable LIVE envelope. Event and LIVE envelopes combine at their quieter gain, with ramp intersections scheduled explicitly; releasing LIVE neither cancels a stronger event nor extends its deadline. Ordinary three-argument duck calls and SFX/ambience behavior retain their contract. This audio hunk is needed to release the longer hold promptly without lifting another event's duck.
-- **Outside named files:** `src/game/CityScene.ts`: one callback wiring line for the explicit LIVE release.
-- `tests/game/emergencyOutcomes.test.ts`: restore-before-resolution order; unseen outcomes leave budget available; previously bannered losses qualify; episode isolation, ignore-to-pause transitions, pending dispatches after alert removal, immediate outcome text, and recent-sting fallback.
-- `tests/game/emergencyLive.test.ts`: event-before-speed-mirror regression, 140–250 ms callback stalls, and explicit recovery, retaining stronger-duck coverage.
-- New `tests/game/emergencyOutcomePolicy.test.ts`: real LocalSimHost factory fire and real player dispatch; arrival → LIVE expiry while still on scene → resolution produces exactly one `saved`, no `good` chime.
-- New `tests/audio/emergencyDuckHold.test.ts`: hold stability, explicit release, stronger-event expiry/preservation, ramp intersections, and zero-length release.
-- **Infra hunks: none. Cloud-held files: none edited.** `sfx.ts`, `fx.css`, vignette strength, simulation/save data, balance, RNG, and the milestone hunk are unchanged this round.
+## What changed
 
-**Checked gates**
+- **src/game/GameSounds.ts:** the outcome stings.
+  - **"saved":** plays when an incident the player dispatched resolves with no losses.
+  - **"lost":** plays on a failure or losses, only for incidents the player responded to or that had a banner.
+    Unseen auto-answered outcomes stay silent and do not touch the rate limit.
+  - **The rate limit:** at most one sting per 10 s, on a real-time clock.
+  - **The LIVE duck:** −6 dB through AudioEngine.duck while LIVE shows, released 0.5 s after it ends. It follows the
+    speedChanged event's own value, so it works on hosts that replay the event before their speed mirror updates.
+- **src/audio/sfx.ts:** the two stings (0.8 s bright, and low).
+- **src/audio/AudioEngine.ts, src/audio/ducking.ts:** an independent LIVE duck with its own hold and release, so other
+  ducks keep their timing, and `debugMusicBusGain` for the acceptance.
+- **src/ui/EmergencyBanner.ts:** WORLD's round-2 hunk.
+  - The flash: green or red for 600 ms. The outcome line renders at once, so the flash and the text land together.
+  - The restore toast ("Emergencies handled — back to ultra speed") is silent while the episode's player-dispatched
+    incident is still dispatched or on scene, and when a sting just played.
+- **src/ui/fx.css** (new, WORLD's style file): the 3 % red edge vignette on `.mp-ui.emg-live`. It is steady with
+  reduced motion and pointer-transparent.
+- **src/game/CityScene.ts, src/game/context.ts:** one-line wiring each.
+- **Tests:**
+  - new: `tests/audio/emergencyStings.test.ts`, `tests/game/emergencyLive.test.ts`,
+    `tests/game/emergencyOutcomes.test.ts`, which restores before resolving, as the real game does;
+  - updated: the audio node-cost helper.
 
-`npx tsc --noEmit` and `git diff --check` pass. Ten targeted files run individually through the quiet gate: **121 passed, one existing W1.2 hygiene test skipped**.
+## Gates
 
-| Test file | Result |
-|---|---:|
-| `tests/game/emergencyOutcomes.test.ts` | 24 passed |
-| `tests/game/emergencyOutcomePolicy.test.ts` | 1 passed |
-| `tests/game/emergencyLive.test.ts` | 10 passed |
-| `tests/audio/emergencyDuckHold.test.ts` | 5 passed |
-| `tests/audio/ducking.test.ts` | 6 passed |
-| `tests/game/gameSounds.test.ts` | 7 passed |
-| `tests/game/emergencyBanner.test.ts` | 38 passed |
-| `tests/audio/emergencyStings.test.ts` | 6 passed |
-| `tests/audio/oneShot.test.ts` | 7 passed |
-| `tests/worker/hygiene.test.ts` | 17 passed, 1 skipped |
+| Gate | Result |
+|---|---|
+| tsc | clean |
+| Full vitest, with the fixtures (`f73b320`) | **221 files passed, 1 skipped; 2,191 tests passed, 7 skipped; 0 failing** |
+| The bot, 128x15 seed 7, with the action log | **identical to dev: residents [ 61124, 93804, 37971 ] = 192,899** |
 
-Used the existing scratch-only native config (`preserveSymlinks: true`, thread pool) because the normal config previously hit Vite's sandbox `spawn EPERM`. Every test was a separate, serial command:
+## Real-GPU QA
 
-```powershell
-$gate = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs'
-$scratch = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T048/scratch'
-node $gate npx vitest run <one test file above> --maxWorkers=1 --config "$scratch/vitest.config.mjs" --configLoader native
-```
+- Environment: RTX 5070 Ti (driver 610.47), ANGLE D3D11, headless Chromium 151, Windows 10 19045.
+- City: vet_s7_y21 (304k), plus a 101k city; real clicks, the game's own audio graph running.
+- Scenario: a 3x3 Smokestack Factory outside fire coverage, so Send nearest takes 3.98 min. The playtest's Refinery
+  took 3.9.
+- Done by an independent QA agent, in two rounds.
 
-Rebuilt the unchanged simbot through the installed rolldown Node API (`platform: 'node'`, ESM, `codeSplitting: false`) and reran the no-tsx fallback through the quiet gate:
+| # | Acceptance | Round 1 (`cb430ce`) | Round 2 (`f73b320`) |
+|---|---|---|---|
+| 1 | A player dispatch saved: exactly one "saved" sting, no second chime | **fail 5/5:** the restore toast chimed 34-258 ms before the sting (LIVE ends 0.75 days after arrival, before the fire is out) | **pass 9/9** (6 default host, including 0.7 s think time and stall runs; 3 loopback): "saved" once, the restore toast silent, the sting 15-253 ms after the restore |
+| 2 | A failed alert plays "lost"; red flash | pass | **pass:** red flashes 568-684 ms, green 567-607 ms (median 597) |
+| 3 | At most 1 sting per 10 s | pass, but unseen auto-answered deaths stung every 10-25 s and starved the player's own | **pass:** minimum gap 10.086 s over 61 stings. About 10 min at ultra on the 304k city: 37 stings, 0 unseen, 381 unseen outcomes with losses silent. On the 101k city: 9 stings, 0 unseen. 20 of 20 restore toasts silent |
+| 4 | The vignette exactly while the LIVE pill shows; music 6 ± 1 dB lower during LIVE | pass on the default host; **fail on loopback** (0 dB: no duck after an urgent pause) | **pass on both:** 0 mismatching frames in 130k; fade-out 504-578 ms; −6.00 dB in every LIVE segment, including all 4 on loopback; exactly −6.00 dB through injected 100-250 ms stalls |
+| 5 | Reduced motion: the vignette does not pulse | pass | pass |
+| – | The flash and the outcome text together | the text landed one UI tick late | **pass:** 161 flashes, 0 with stale text |
+| – | Errors | none | none beyond the existing shader-compile warnings |
 
-```powershell
-node $gate node "$scratch/simbot-r1.mjs" --size 128 --years 15 --seed 7 --quiet
-```
+Known limitations and notes, none blocking:
+- **`debugMusicBusGain` misreads while no music plays.**
+  - It reads the gain node's `AudioParam.value`, which Chrome stops updating while the node's input is silent, as
+    during the director's 15-40 s rests between songs. In 1 of 13 LIVE episodes it read 0 dB throughout.
+  - What you hear is right: a song starting during LIVE comes in at −6 dB within 500 ms.
+  - Suggested fix: compute the getter from the envelope state. It is a test aid only.
+- **A player's save can lose the 10 s slot to a simultaneous outcome.**
+  - Case: a bannered alert's "lost" played 10 ms before the player's own "saved".
+  - This is what the spec says; preferring the player's outcome within about 250 ms is optional.
+- **Stalls longer than the 300 ms hold lift the duck briefly:** −4.2 dB for under 100 ms after a 400 ms stall.
+- **The vignette is very subtle:** +1-2 red levels at the edges, visible only at ×20. It is the plan's 3 %; its
+  strength is the lead's call.
 
-Pass: **2015 residents `[61124, 93804, 37971]` = 192,899**, unchanged. Output: `$scratch/bot-128x15-s7-r1.txt`. The corresponding source command is `node $gate npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet`; `tsx` was unavailable/offline in the initial run, so it was not retried. No 256×60 gate is required. No separate Hard run or serialized-hash comparison was performed.
+## Requests
 
-**Plan/code differences and cloud requests**
+1. **Reinforcement provenance (src/worker, cloud).** Sending more units to an incident the city already answered
+   leaves `answered === 1`, so a lossless outcome stays silent. Today's cause tags carry only seq and tag.
+   - Add an optional `Cause.dispatchIncidentId` in `SimHost.ts`, filled by `LocalSimHost.act` for
+     `dispatch` / `dispatchBest` from `args[0]`.
+   - Keep it through `PacketSimHost.post` and the replica's cause hook until the ack (`LoopbackSimHost.ts`,
+     `replica.ts`).
+   - GameSounds then marks the player's involvement independently of `answered`. No sim, save or RNG change.
+2. **Host ordering (src/worker/LoopbackSimHost.ts:180).** The loopback host re-emits `speedChanged` before it updates
+   its speed mirror. This lane no longer depends on the order, but other handlers that re-read `host.speed` will see
+   the old value.
 
-- QA establishes that the real order is restore → outcome. The corrected test now matches it; a recent-sting-only guard was insufficient. The original unit test was ordered incorrectly.
-- LIVE's new renewable envelope uses the merged duck API's optional `{ renew: true }` route. Explicit release replaces the initial zero-hold/440 ms workaround; independent envelopes preserve concurrent sounds' release deadlines. No strength change to the 3% vignette, per the lead's design note.
-- **Review item 4 remains at current behavior, as permitted:** safe reinforcement provenance is unavailable. Cause exposes only seq/tag; GameSounds cannot subscribe to dispatch acknowledgements, which remain private to the issuing caller. A disaster command also causes automatic dispatch events. Do not infer player involvement from a non-null cause alone.
-- **Exact cloud request for item 4:** in `src/worker/SimHost.ts`, add optional `Cause.dispatchIncidentId?: number` and populate it in `LocalSimHost.act` while applying `dispatch`/`dispatchBest`, from `args[0]`. In `src/worker/LoopbackSimHost.ts`, retain that op/incident metadata alongside the posted sequence/tag in `PacketSimHost.post` and expose it through the replica cause hook until ack. In `src/worker/replica.ts`, extend `ReplicaCause` and the replay cause setup with the optional id. Omit the field for other ops, including `triggerDisaster`. GameSounds can then mark `dispatched && cause.dispatchIncidentId === e.id` independently of `answered`, without simulation/save/RNG changes. No worker file was edited here.
-- **Host ordering request:** `src/worker/LoopbackSimHost.ts`, `PacketSimHost`'s replica event/clock hooks around line 180: update `speedMirror` before re-emitting `speedChanged`, or explicitly document that payloads are authoritative during replay. Both lane handlers now consume the event payload, so they no longer depend on that ordering.
+## Evidence (`docs/dev/reports/local-T048/`)
 
-**Left for the lead / browser recheck list**
+- `r2-ev1-saved-flash.jpg`: the green flash on "Fire under control", with the silent restore toast;
+- `r2-ev2-lost-flash.jpg`: the red flash on a lost alert;
+- `r2-ev3-live-on.jpg`: LIVE with the vignette;
+- `ev6-vignette-diff-x20.jpg`: the vignette's strength, ×20;
+- `round2-aggregate.json`.
 
-- [ ] Full Vitest with normal config on the unrestricted machine. The reported 219-file/2,175-test pass was for WIP `cb430ce`; only targeted files were run for this revision.
-- [ ] Refinery dispatch on local and loopback/worker: restore first, then exactly one saved sting, no good chime; green flash and outcome text appear together.
-- [ ] Ultra with unseen automatic medical deaths: no lost stings; a following player's saved/failed-alert sting still gets its budget slot.
-- [ ] Failed bannered alert/resolved-with-losses: lost and red flash/text together; retain the 600 ms flash and 10-second gap.
-- [ ] Urgent pause → resume on loopback/worker: LIVE class and −6 dB duck engage on the speed event, without waiting for UI tick or another policy update.
-- [ ] Under main-thread stalls, verify the hold stays at −6 dB; pause/end LIVE without another sound and verify 500 ms recovery. Repeat with a deeper duck crossing LIVE end, and one expiring while LIVE continues.
-- [ ] Reconfirm unchanged reduced-motion and vignette/pill screenshot behavior. Vignette remains 3%, per the design note.
-- [ ] Speaker/headphone listening and real-GPU frame-cost check: not performed in this lane. No new GPU or audio measurements claimed from mock tests.
+The full QA reports and the raw recordings are in the worker's scratch (`qa/T048/qa.md`).
 
----
+## What came from Codex
 
-**Historical initial-implementation record (committed in cb430ce; superseded by the review-round notes above)**
-
-**Changes per file**
-
-- `src/game/GameSounds.ts`: host event-time outcomes, bright `saved` for a player response without losses, `lost` for failure/building losses/deaths, one shared 10-second sting budget, and a host-keyed recent-sting marker for the restore toast. Retains host incident references through local finalization; seeds them at construction, host readiness, and reset. LIVE music renewal follows policy and host speed; timers/listeners/cache release on abort/dispose. Milestone code untouched.
-- `src/audio/sfx.ts`: fixed-note 0.8-second `saved` and low `lost` voices, using existing pooled one-shot graphs. No random choices inside either voice.
-- `src/ui/EmergencyBanner.ts`: isolated WORLD changes for the silent restore option, 600 ms green/red flash, LIVE class alignment with pause/resume, CSS import, and cleanup. No docking or dispatch-policy changes.
-- New `src/ui/fx.css`: 3% red edge vignette, immediate entry, 500 ms opacity release, no pulse at any motion setting, pointer-transparent; outcome border/glow styles. The paused TopBar selector also suppresses the vignette while its pill is hidden.
-- **Outside named source files:** `src/audio/AudioEngine.ts`: effective pre-master dry music bus getter `debugMusicBusGain` (`null` before initialization); optional fourth duck argument `{ renew: true }` skips renewal while a deeper duck is active. Existing three-argument callers retain their behavior, and a finite 14 dB duck can expire during a longer LIVE episode.
-- **Outside named source files:** `src/game/CityScene.ts`: two small wiring hunks only: pass toast options through, and provide GameSounds with host/signal plus the optional audio duck callback.
-- **Outside named source files:** `src/game/context.ts`: optional fifth toast argument `{ silent?: boolean }`, forwarding the already-existing Toasts option. `Notifications.ts` untouched.
-- **Existing test helper exception:** `tests/audio/nodeCosts.ts`: two exhaustive cost entries required by the expanded `SoundName` union and existing one-shot tests.
-- New `tests/audio/emergencyStings.test.ts`, `tests/game/emergencyOutcomes.test.ts`, and `tests/game/emergencyLive.test.ts`: acceptance and regression coverage below.
-- **Infra hunks: none. Cloud-held files: none edited.** No simulation algorithms, save schemas, systemData keys, balance, or simulation RNG calls changed.
-
-**Checked gates**
-
-`npx tsc --noEmit` and `git diff --check` pass. Eight test files pass individually, **105 tests passed, one existing hygiene test skipped**:
-
-| Test file | Result |
-|---|---:|
-| `tests/audio/emergencyStings.test.ts` | 6 passed |
-| `tests/game/emergencyOutcomes.test.ts` | 16 passed |
-| `tests/game/emergencyLive.test.ts` | 8 passed |
-| `tests/game/gameSounds.test.ts` | 7 passed |
-| `tests/game/emergencyBanner.test.ts` | 38 passed |
-| `tests/audio/ducking.test.ts` | 6 passed |
-| `tests/audio/oneShot.test.ts` | 7 passed |
-| `tests/worker/hygiene.test.ts` | 17 passed, 1 skipped |
-
-The existing skip is the W1.2 simWorker import-graph gate. Banner fixtures emit Node's AbortSignal listener-count warnings; no test fails.
-
-The normal Vitest invocation failed before collecting tests: Vite's Windows `net use` realpath optimization throws sandbox `spawn EPERM`. Native loading of the repository's TypeScript config also failed with `ERR_UNKNOWN_FILE_EXTENSION`. Tests succeeded with a scratch-only native JavaScript config:
-
-```js
-export default { resolve: { preserveSymlinks: true }, test: { pool: 'threads' } };
-```
-
-Every test command used the quiet gate, one file/process at a time:
-
-```powershell
-$gate = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs'
-$scratch = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T048/scratch'
-node $gate npx vitest run <one test file above> --maxWorkers=1 --config "$scratch/vitest.config.mjs" --configLoader native
-```
-
-Outcome tests include one saved sting without a restore/news chime, failed alerts, final replay-record losses/deaths, the exact 10-second boundary, automatic-response silence (including command-caused automatic dispatch), abort/reset cleanup, real LocalSimHost finalization, and saved incidents restored during lazy startup. LIVE tests use the real AudioEngine duck API and debug getter: 20 seconds at 6 ± 1 dB lower, baseline again at 500 ms, pause/resume, late audio initialization, abort cleanup, and a stronger duck expiring while LIVE continues. CSS checks pin the shared pill selector and steady vignette; actual pixels remain a browser gate.
-
-**Bot gate**
-
-The requested command was attempted through the quiet gate:
-
-```powershell
-node $gate npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
-```
-
-It could not start: `tsx` is absent and npm's offline cache returned `ENOTCACHED`. Diagnostic: `$scratch/bot-128x15-s7.txt`.
-
-Used the documented no-tsx fallback: installed rolldown's Node API bundled the unchanged `tools/simbot.ts` to `$scratch/simbot.mjs` with platform `node`, ESM format, and dynamic imports inlined. The actual simulation command was:
-
-```powershell
-node $gate node "$scratch/simbot.mjs" --size 128 --years 15 --seed 7 --quiet
-```
-
-Pass, **2015 residents `[61124, 93804, 37971]` = 192,899**, matching the required baseline exactly. Output: `$scratch/bot-128x15-s7-bundled.txt`; simulation reported 14.1 seconds. No balance changes expected. No 256-tile/60-year runs are required by FEEL-10, and none were run. A separate before/after serialized-hash comparison and separate Hard bot were not run.
-
-**Plan/code differences and cloud request**
-
-- LocalSimHost's incident lookup is empty during terminal emission, although replicas expose the terminal record. Retained host-supplied objects plus the readiness seed cover both; no sim reach-in.
-- LIVE policy remains active during pause, while existing CSS hides the LIVE pill. Visual/audio urgency therefore follows `policy.live && host.speed !== 0`; the policy episode is unchanged. The class changes immediately; the vignette then has the requested 500 ms fade.
-- Duck's merged API includes a 60 ms attack. Renewable holds use zero hold plus a 440 ms release and renew every 50 ms; the final renewal totals 500 ms. A concurrent longer sound/stronger duck keeps its own envelope, so its audio can legitimately outlast the vignette.
-- **Provenance limit / request for cloud:** `Incident.answered === 2` identifies a player primary response. An extra manual unit added after an automatic primary response can leave `answered === 1`; `host.cause` currently supplies only seq/tag, and a disaster command can itself cause automatic dispatches. To recognize that extra manual response precisely, expose the causing command op: `src/worker/SimHost.ts` (`Cause`, `LocalSimHost.act`), `src/worker/LoopbackSimHost.ts` (`PacketSimHost.post`/replica hooks), and `src/worker/replica.ts` (`ReplicaCause`, emergency replay cause setup). Carry the posted `dispatch`/`dispatchBest` op alongside the existing main-side tag; it need not change simulation/save data or consume RNG. GameSounds can then identify those dispatches without falsely celebrating automatic disaster responses. Current classification covers the Refinery/player-primary acceptance case and loaded manual responses.
-
-**Left for the lead / browser checklist**
-
-- [ ] Run the full Vitest suite with the repository's normal config on the unrestricted machine, including the eventual W1.2 gate.
-- [ ] Worker host: replay the Refinery dispatch; hear exactly one bright saved sting, no restore/news chime; capture the green 600 ms outcome flash.
-- [ ] Worker host: let an alert fail; hear lost, confirm red 600 ms flash and loss text. Also test resolved-with-losses.
-- [ ] End several incidents inside 10 real seconds; confirm at most one outcome sting.
-- [ ] Toggle LIVE, pause/resume, and end LIVE. Capture vignette screenshots with the pill visible/hidden; confirm the 500 ms release and click-through behavior.
-- [ ] Repeat with reduced motion; vignette remains steady.
-- [ ] With no other duck active, compare `20 * Math.log10(audio.debugMusicBusGain / baseline)` during LIVE: -6 ± 1 dB, baseline again 500 ms after LIVE ends. Check New Year overlap returns to -6 while LIVE continues.
-- [ ] Listen on speakers/headphones for saved/lost contrast and mix level. New stings have no measured loudness trim yet; no audio-lab or real-GPU run was performed.
-
-No browser, full suite, benchmarks, or other worktree/branch operations were run.
+- The Codex lane wrote the implementation, the review-round fixes and the tests.
+- An independent Codex review found the restore-before-outcome ordering, the stale speed read and the reinforcement
+  case.
+- A Claude QA agent did both real-GPU rounds. The worker ran the gates and wrote this report.
