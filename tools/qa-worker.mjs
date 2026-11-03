@@ -127,6 +127,12 @@ async function continueFromTitle(page, base) {
   await cityUp(page);
   log('continue: city after', Date.now() - t0, 'ms');
 }
+/** an unexpected crash dialog during the normal steps: what the watchdog saw, then stop (the later steps need a city) */
+async function noCrash(page, step) {
+  if (!(await crashDialog(page))) return;
+  const diag = await page.evaluate(() => ({ long: window.__qaLong, life: (() => { const l = window.__metropolis.city?.host?.link?.life; return l ? { phase: l.phase, elapsed: l.elapsed } : null; })() }));
+  throw new Error(`the crash dialog opened during ${step}: ${JSON.stringify(diag)}`);
+}
 async function setSpeed(page, n) {
   await page.keyboard.press(`Digit${n}`);
 }
@@ -158,6 +164,14 @@ async function main() {
   };
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await ctx.addInitScript(lowQuality, QUALITY);
+  // main-thread long tasks (SwiftShader's blocking readbacks among them): the watchdog must not read them as a dead worker
+  await ctx.addInitScript(() => {
+    window.__qaLong = { n: 0, over1s: 0, max: 0 };
+    try {
+      new PerformanceObserver((l) => { for (const e of l.getEntries()) { const q = window.__qaLong; q.n++; if (e.duration > 1000) q.over1s++; q.max = Math.max(q.max, e.duration); } })
+        .observe({ type: 'longtask', buffered: true });
+    } catch { /* no longtask timing */ }
+  });
   const page = await ctx.newPage();
   let expectErrors = false;
   const errors = [], workers = [];
@@ -188,6 +202,8 @@ async function main() {
   await waitHost(page, (n) => { const h = window.__metropolis.city.host; let z = 0; for (const v of h.state.zone) if (v) z++; return z > n && (h.pending?.count ?? 0) === 0; }, before.zoned).catch(() => undefined);
   await page.keyboard.press('Escape');
   info = await hostInfo(page);
+  log('long tasks so far', await page.evaluate(() => window.__qaLong));
+  await noCrash(page, 'tools');
   check('tools: road and zone drags acked', info.roads > before.roads && info.zoned > before.zoned && info.pending === 0,
     JSON.stringify({ before: { roads: before.roads, zoned: before.zoned }, after: { roads: info.roads, zoned: info.zoned, pending: info.pending } }));
   await shot(page, '02-tools');
@@ -197,6 +213,7 @@ async function main() {
   const day0 = (await hostInfo(page)).day;
   await waitHost(page, (d) => window.__metropolis.city.host.state.day >= d + 40, day0, 120000).catch(() => undefined);
   info = await hostInfo(page);
+  await noCrash(page, 'play');
   check('play: days advance at speed 3', info.day >= day0 + 40 && info.speed === 3, JSON.stringify({ from: day0, to: info.day, speed: info.speed }));
 
   // ---- latency (measured, not gated): post to ack applied, on a running city
@@ -284,6 +301,7 @@ async function main() {
     return { d0, d1: h.state.day, ms: performance.now() - t0, disposed: !!h.isDisposed };
   });
   const crashedAfterFreeze = await crashDialog(page);
+  log('long tasks so far', await page.evaluate(() => window.__qaLong));
   check('freeze: no crash path, days advance within 1 s of resume', !crashedAfterFreeze && !resumed.disposed && resumed.d1 > resumed.d0, JSON.stringify({ ...resumed, crashDialog: crashedAfterFreeze }));
   await shot(page, '05-after-freeze');
   if (SOAK_MIN > 0) {

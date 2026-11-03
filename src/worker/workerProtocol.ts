@@ -36,8 +36,12 @@ export const ACK_WINDOW = 4;
 export const HELLO_TIMEOUT_MS = 10000;
 export const BOOT_TIMEOUT_MS = 20000;
 export const LIVENESS_TIMEOUT_MS = 10000;
+/** a gap between two of the page's own polls (every 250 ms) longer than this is a main-thread stall */
+export const STALL_MS = 1000;
 
-/** R11: only visible, unfrozen time counts; the page resets the count on its lifecycle events. */
+/** R11: only visible, unfrozen time counts; the page resets the count on its lifecycle events. A main-thread stall (a
+ *  long task: a blocking GPU readback, a debugger) holds back the worker's messages too, so the poll that follows one
+ *  gives no verdict: the packets queued behind it are read first, and a silent worker is caught at the next poll. */
 export class WorkerLiveness {
   private at: number;
   private elapsed = 0;
@@ -55,16 +59,18 @@ export class WorkerLiveness {
     this.at = this.now();
   }
   poll(): { ping: boolean; timeout: boolean } {
-    this.advance();
+    const stalled = this.advance() > STALL_MS;
     if (!this.visible || this.phase === 'loading') return { ping: false, timeout: false };
     const ping = this.phase === 'ready' && this.pingAt >= 1000;
     if (ping) this.pingAt = 0;
     const limit = this.phase === 'boot' ? BOOT_TIMEOUT_MS : this.phase === 'hello' ? HELLO_TIMEOUT_MS : LIVENESS_TIMEOUT_MS;
-    return { ping, timeout: this.elapsed >= limit };
+    return { ping, timeout: !stalled && this.elapsed >= limit };
   }
-  private advance(): void {
+  /** the time since the last poll or message */
+  private advance(): number {
     const now = this.now(), dt = Math.max(0, now - this.at); this.at = now;
     if (this.visible && this.phase !== 'loading') { this.elapsed += dt; this.pingAt += dt; }
+    return dt;
   }
 }
 

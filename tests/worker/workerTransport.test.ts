@@ -313,6 +313,13 @@ describe('boot (R11)', () => {
     life.reset(true); expect(life.poll().timeout).toBe(false);
     now += 9999; expect(life.poll().timeout).toBe(false);
     now++; expect(life.poll().timeout, '10 visible seconds without a packet').toBe(true);
+    // a main-thread stall (a long task) holds back the worker's packets as well: the poll after it is no verdict
+    life.received('pkt'); now += 30000;
+    expect(life.poll().timeout, 'the poll right after a 30 s stall').toBe(false);
+    life.received('pkt'); now += 250;
+    expect(life.poll().timeout, 'the packet queued behind the stall arrived').toBe(false);
+    now += 30000; expect(life.poll().timeout).toBe(false);
+    now += 250; expect(life.poll().timeout, 'nothing came after the stall: the next poll on time is the verdict').toBe(true);
   });
 });
 
