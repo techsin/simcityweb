@@ -12,11 +12,30 @@
   .lbl.bad { background: rgba(170,20,20,.8); }
   .lbl small { font-weight: 400; opacity: .8; }
   #info { padding: 6px 8px; }
+  #projects { padding: 6px 8px; }
+  #projects a { color: #b9d8ef; margin-right: 12px; }
 </style>
 </head>
 <body>
+<nav id="projects" aria-label="Mega-project model review">
+  Mega-projects:
+  <a href="?model=tr_express_metro,util_fusion_plant,lm_world_expo,lm_expo_tower,rw_space_center&amp;cols=3">Day</a>
+  <a href="?model=tr_express_metro,util_fusion_plant,lm_world_expo,lm_expo_tower,rw_space_center&amp;cols=3&amp;night=1">Night</a>
+  <a href="?model=tr_express_metro,util_fusion_plant,lm_world_expo,lm_expo_tower,rw_space_center&amp;cols=3&amp;month=0&amp;climate=temperate">Winter foliage</a>
+</nav>
 <div id="wrap"><canvas id="c"></canvas><div id="labels"></div></div>
 <div id="info"></div>
-<script type="module" src="/src/gallery/main.ts"></script>
+<script type="module">
+  import { setFoliageSeason } from '/src/assets/materials.ts';
+  import { setTreeSeason } from '/src/assets/builders/nat_season.ts';
+  const params = new URLSearchParams(location.search);
+  const month = Number(params.get('month'));
+  if (params.has('month') && Number.isFinite(month)) {
+    const climate = params.get('climate') ?? 'temperate';
+    setFoliageSeason(month, climate);
+    setTreeSeason(month, climate);
+  }
+  await import('/src/gallery/main.ts');
+</script>
 </body>
 </html>

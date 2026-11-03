@@ -1,5 +1,5 @@
 /** LG-03: the project mayor is opt-in; CONTENT definitions in these strategy tests are fixtures only. */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SimBot, USAGE, parseArgs, type BotOptions } from '../../tools/simbot';
 import { CATALOG, getDef, rebuildCatalogIndex } from '../../src/sim/catalog';
 import type { BuildingDef } from '../../src/sim/catalogTypes';
@@ -8,8 +8,19 @@ import { lPath, type Cell } from '../../src/sim/actions';
 import { Network } from '../../src/core/types';
 
 const added: BuildingDef[] = [];
+const productionProjects: { def: BuildingDef; index: number }[] = [];
+beforeEach(() => {
+  for (let index = CATALOG.length - 1; index >= 0; index--) {
+    const def = CATALOG[index];
+    if (def.buildMonths === undefined && !def.project) continue;
+    productionProjects.unshift({ def, index });
+    CATALOG.splice(index, 1);
+  }
+  rebuildCatalogIndex();
+});
 afterEach(() => {
   for (const def of added.splice(0)) CATALOG.splice(CATALOG.indexOf(def), 1);
+  for (const { def, index } of productionProjects.splice(0)) CATALOG.splice(index, 0, def);
   rebuildCatalogIndex();
   vi.restoreAllMocks();
 });

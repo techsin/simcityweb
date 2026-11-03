@@ -16,6 +16,7 @@ import { DISPATCH_SPEC } from './tools/DispatchTool';
 import type { Tool } from './tools/Tool';
 import { titleCase } from '../ui/format';
 import { ruinsFor, type RuinState } from '../ui/ruinState';
+import { BF } from '../sim/CityState';
 
 export interface ToolSpec {
   id: string;
@@ -80,9 +81,9 @@ export function ploppablesOf(cat: BuildingCategory): BuildingDef[] {
 export function defIcon(d: BuildingDef): string {
   const s = (d.id + ' ' + d.model + ' ' + d.name).toLowerCase();
   const rules: [RegExp, string][] = [
-    [/wind/, 'wind'], [/solar/, 'solar'], [/nuclear|coal|oil|gas_plant|gas plant|incinerat/, 'factory'], [/hydro|dam/, 'water'],
+    [/wind/, 'wind'], [/solar/, 'solar'], [/fusion|nuclear|coal|oil|gas_plant|gas plant|incinerat/, 'factory'], [/hydro|dam/, 'water'],
     [/water_tower|water tower/, 'waterTower'], [/pump|treatment|desalin/, 'water'], [/recycl/, 'recycle'], [/landfill|dump/, 'garbage'],
-    [/bus/, 'bus'], [/subway/, 'subway'], [/train|rail|freight/, 'train'], [/airport|air/, 'plane'], [/seaport|ferry|marina|port/, 'anchor'],
+    [/bus/, 'bus'], [/subway|express_metro|express metro/, 'subway'], [/train|rail|freight/, 'train'], [/airport|air/, 'plane'], [/seaport|ferry|marina|port/, 'anchor'],
     [/parking/, 'parking'], [/police|jail|prison/, 'police'], [/fire/, 'fire'], [/clinic|hospital|medical/, 'health'],
     [/school|college|university|library|museum/, 'education'], [/stadium|soccer|baseball|basketball|tennis|golf/, 'park'],
     [/zoo|garden|park|plaza|playground/, 'park'], [/casino/, 'star'], [/military|missile/, 'target'], [/toxic/, 'alert'],
@@ -115,6 +116,24 @@ function lockOf(ctx: GameContext, d: BuildingDef): ToolSpec['locked'] {
   return { hint, progress };
 }
 
+/** Project quality gates use exact mirrored stats and station records; placement remains a host preview. */
+function projectLockOf(ctx: GameContext, d: BuildingDef): ToolSpec['locked'] {
+  const gate = d.project;
+  if (!gate || ctx.sandbox()) return null;
+  const st = ctx.host.state;
+  if (st.stats.population < gate.population) return { hint: `Needs ${gate.population.toLocaleString('en-US')} residents`, progress: st.stats.population / gate.population };
+  if (gate.education !== undefined && st.stats.eq < gate.education) return { hint: `Needs EQ ${gate.education}`, progress: st.stats.eq / gate.education };
+  if (gate.attractiveness !== undefined && st.stats.attractiveness < gate.attractiveness) return { hint: `Needs attractiveness ${gate.attractiveness}`, progress: st.stats.attractiveness / gate.attractiveness };
+  if (gate.stations) {
+    let stations = 0;
+    for (const b of st.buildings.values()) {
+      if (b.def === 'tr_subway_station' && b.built >= 1 && !(b.flags & (BF.Constructing | BF.Burnt | BF.Abandoned))) stations++;
+    }
+    if (stations < gate.stations) return { hint: `Needs ${gate.stations} subway stations`, progress: stations / gate.stations };
+  }
+  return null;
+}
+
 /** why a one-per-city building cannot be placed: one stands ... */
 export const UNIQUE_BUILT_TEXT = 'Already built (one per city)';
 /** ... or its only one lies in ruins (the sim: "Only one X allowed — bulldoze its ruins first") */
@@ -143,7 +162,7 @@ export function plopSpec(ctx: GameContext, d: BuildingDef): ToolSpec {
     upkeep: d.upkeep,
     income: d.income,
     def: d,
-    locked: lockOf(ctx, d),
+    locked: lockOf(ctx, d) ?? projectLockOf(ctx, d),
     disabled: disabledOf(d, d.unique && (ctx.state.milestones[d.id] ?? 0) > 0 ? ruinsFor(ctx) : null),
     create: (c) => new PlopTool(c, d, icon),
   };
@@ -151,8 +170,14 @@ export function plopSpec(ctx: GameContext, d: BuildingDef): ToolSpec {
 
 function plopGroup(ctx: GameContext, label: string, icon: string, cats: BuildingCategory[], extra: ToolSpec[] = []): ToolGroup {
   const items = [...extra];
-  for (const c of cats) for (const d of ploppablesOf(c)) items.push(plopSpec(ctx, d));
+  for (const c of cats) for (const d of ploppablesOf(c)) if (!d.buildMonths) items.push(plopSpec(ctx, d));
   return { label, icon, items };
+}
+
+function projectGroup(ctx: GameContext): ToolGroup {
+  const defs = allDefs().filter((d) => !d.hidden && d.buildMonths && d.project)
+    .sort((a, b) => (a.cost ?? 0) - (b.cost ?? 0));
+  return { label: 'Mega-projects', icon: 'reward', items: defs.map((d) => plopSpec(ctx, d)) };
 }
 
 // ------------------------------------------------------------------------------------------------ static tools
@@ -299,7 +324,7 @@ export const CATEGORIES: ToolCategory[] = [
   },
   {
     id: 'landmarks', label: 'Rewards', icon: 'reward', color: '#e7b04a',
-    groups: (ctx) => [plopGroup(ctx, 'Landmarks', 'landmark', ['landmark']), plopGroup(ctx, 'Rewards & business deals', 'reward', ['reward'])],
+    groups: (ctx) => [plopGroup(ctx, 'Landmarks', 'landmark', ['landmark']), plopGroup(ctx, 'Rewards & business deals', 'reward', ['reward']), projectGroup(ctx)],
   },
   {
     id: 'terrain', label: 'Terrain', icon: 'terrain', color: '#c9a36a', hotkey: 'K',

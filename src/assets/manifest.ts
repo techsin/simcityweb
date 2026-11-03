@@ -151,6 +151,7 @@ export const MANIFEST: ManifestEntry[] = [
   E('util_recycling_center', 'utility', [3, 3], 1, [8, 14], 'Recycling center: sorting hall, colored bins, bale piles, trucks.'),
   E('util_landfill_tile', 'utility', [1, 1], 4, [1, 6], 'Landfill cell: dirt mound with garbage heaps (varied piles, some bulldozer). Tiles seamlessly with neighbours.'),
   E('util_power_pylon', 'utility', [1, 1], 1, [18, 26], 'Power line lattice pylon (placed along power lines). Arms along the X axis carry wires; renderer draws the wires.'),
+  E('util_fusion_plant', 'utility', [6, 6], 1, [48, 48], 'Fusion Power Plant: clean toroidal reactor hall, diagnostics lantern, turbine hall and transformer campus; no smoke or steam stacks.'),
 
   // ------------------------------------------------------------------ CIVIC / SERVICES
   E('civ_police_kiosk', 'civic', [1, 1], 1, [4, 6], 'Small police kiosk / substation with a parked cruiser.'),
@@ -212,6 +213,8 @@ export const MANIFEST: ManifestEntry[] = [
   pending('LG-02', E('lm_world_trade_center', 'landmark', [4, 4], 2, [390, 415], 'World Trade Center: ribbed silver twins or stepped teal office towers, broadcast mast, conference podium and globe plaza.')),
   pending('LG-02', E('lm_millennium_tower', 'landmark', [4, 4], 2, [530, 590], 'Millennium Tower: stepped glass skyscraper with panoramic sky decks, silver needle and reflecting-pool plaza.')),
   pending('LG-02', E('lm_metropolis_crown', 'landmark', [4, 4], 2, [600, 650], 'Metropolis Crown: fluted civic skyscraper with an open bronze coronet, sky hall and formal garden plaza.')),
+  E('lm_world_expo', 'landmark', [6, 6], 1, [95, 95], 'World Expo: four colorful pavilion halls, flag-lined promenade, reflecting pools and the permanent three-legged observation tower.'),
+  pending('LG-03', E('lm_expo_tower', 'landmark', [2, 2], 1, [95, 95], 'Expo Tower: permanent three-legged observation needle, glazed panoramic deck and night-lit crown; the fairground tower on its own plaza.')),
 
   // ------------------------------------------------------------------ REWARDS / BUSINESS DEALS
   E('rw_military_base', 'reward', [8, 8], 1, [5, 25], 'Military base: runway strip, hangars, barracks, radar dish, fences.'),
@@ -273,14 +276,13 @@ export const MANIFEST: ManifestEntry[] = [
   E('construction_site', 'prop', [1, 1], 3, [2, 25], 'Construction site dressing: dirt, fence, crane or scaffolding (overlay for buildings under construction; scaled to lot by renderer).'),
   E('rubble', 'prop', [1, 1], 4, [0.5, 3.5], 'Rubble / burnt debris of destroyed buildings, one 16 m cell (tile it over bigger lots): v0 charred brick, v1 concrete, v2 concrete + burnt car, v3 low debris field with a standing wall corner.'),
 
+  // ------------------------------------------------------------------ LG-03 PROJECTS
+  E('tr_express_metro', 'transport', [2, 2], 1, [12, 12], 'Express Metro: twin glazed subway entrances, night-lit M signs and a modern operations hall with a control lantern.'),
+  pending('LG-03', E('rw_space_center', 'reward', [8, 8], 1, [58.6, 58.6], 'Space Center: launch rocket and service gantry, assembly hall, mission control with tracking dish, fuel tanks and visitor parking.')),
+
   // ------------------------------------------------------------------ POLISH ROUND 2–3 STUBS
   // Building groups require catalog defs. Move each entry to its final group and remove its polish_stubs builder
   // when that content lands. Sizes are provisional except LG-04's 5x5 / 6x6 and in-place parks.
-  E('tr_express_metro', 'placeholder', [2, 2], 1, [8, 12], 'STUB LG-03: Express Metro project (transport).'),
-  E('util_fusion_plant', 'placeholder', [6, 6], 1, [40, 60], 'STUB LG-03: Fusion Power Plant (utility).'),
-  E('lm_world_expo', 'placeholder', [6, 6], 1, [20, 30], 'STUB LG-03: World Expo site (landmark).'),
-  E('lm_expo_tower', 'placeholder', [2, 2], 1, [80, 100], 'STUB LG-03: permanent Expo Tower (landmark).'),
-  E('rw_space_center', 'placeholder', [8, 8], 1, [40, 60], 'STUB LG-03: Space Center (reward).'),
   E('com_business_arcology', 'placeholder', [5, 5], 2, [90, 120], 'STUB LG-04: Business Arcology (commercial), two massing variants.'),
   E('res_arcology', 'placeholder', [6, 6], 2, [100, 140], 'STUB LG-04: Residential Arcology (residential), two massing variants.'),
   E('res_arcology_mixed', 'placeholder', [6, 6], 2, [120, 160], 'STUB LG-04: Arcology II, mixed (residential), two massing variants.'),
@@ -303,6 +305,7 @@ for (const e of MANIFEST) {
   if (e.id === 'park_zoo' || e.id === 'park_golf' || e.id === 'park_amusement') e.budget = 6000;
   if (e.id === 'park_stadium' || e.id === 'park_large') e.budget = 4500;
   if (e.id === 'tr_airport_large' || e.id === 'tr_airport_small' || e.id === 'tr_seaport') e.budget = 6000;
+  if (e.id === 'rw_space_center') e.budget = 8000;
   if (e.id === 'util_wind_turbine') e.overhang = 18;
   // growables get X-mirrored twins so streets don't look stamped (garage sides alternate, etc.)
   if (e.group === 'residential' || e.group === 'commercial' || e.group === 'industrial') {

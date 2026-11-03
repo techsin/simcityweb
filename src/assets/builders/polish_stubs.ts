@@ -42,12 +42,6 @@ function massing(size?: [number, number], level?: number): ModelBuildFn {
 
 const building = massing();
 export const models: ModelBuilders = {
-  // LG-03 projects, including the Expo's permanent tower.
-  tr_express_metro: building,
-  util_fusion_plant: building,
-  lm_world_expo: building,
-  lm_expo_tower: building,
-  rw_space_center: building,
   // LG-04 arcologies.
   com_business_arcology: building,
   res_arcology: building,

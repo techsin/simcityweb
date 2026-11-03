@@ -488,6 +488,17 @@ const PLOPPABLES: BuildingDef[] = [
   p({ id: 'tr_seaport', name: 'Container Seaport', category: 'transport', service: 'transit', cost: 60000, upkeep: 1800, income: 1500, jobs: 600, placement: 'shore', powerUse: 4, waterUse: 60,
     pollution: { noise: 0.5, air: 0.2, water: 0.3, radius: 12 }, landValue: { amount: -0.1, radius: 10 }, requires: 'seaport', stigma: { amount: 0.2, radius: 10 },
     description: 'Reward: rated for 3,000 trucks a day of freight from industry within reach by road. Massive industrial demand-cap boost, freight access and income that grow with use: 60 % while idle, full from 1,500 trucks a day. Front faces water.' }),
+
+  // ================================================================ MEGA-PROJECTS
+  p({ id: 'tr_express_metro', name: 'Express Metro', category: 'transport', service: 'transit', cost: 1500000, buildMonths: 18,
+    project: { kind: 'expressMetro', population: 300000, stations: 6 }, unique: true,
+    description: 'Mega-project (300,000 residents and 6 subway stations): §1.5M over 18 months. On opening, subway travel times fall by 30 %, the base wait falls to 2.5 minutes and station capacity rises by 50 % citywide.' }),
+  p({ id: 'util_fusion_plant', name: 'Fusion Power Plant', category: 'power', service: 'utilities', cost: 4000000, buildMonths: 30,
+    project: { kind: 'fusion', population: 750000, education: 120 }, unique: true, powerOut: 4000, jobs: 600, upkeep: 40000,
+    description: 'Mega-project (750,000 residents and EQ 120): §4.0M over 30 months. Produces 4,000 MW without smoke and provides 600 jobs once open; §40,000/month upkeep at full operation.' }),
+  p({ id: 'lm_world_expo', name: 'World Expo', category: 'landmark', cost: 3000000, buildMonths: 24,
+    project: { kind: 'expo', population: 800000, attractiveness: 70 }, unique: true,
+    description: 'Mega-project (800,000 residents and attractiveness 70): §3.0M over 24 months. On opening, a 12-month exhibition increases tourist draw by 50 % citywide. Once per city.' }),
 ];
 
 export const CATALOG: BuildingDef[] = [...GROWABLES, ...PLOPPABLES];

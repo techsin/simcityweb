@@ -20,6 +20,7 @@ import { models as lmBotanicalDome } from './lm_botanical_dome';
 import { models as lmWorldTradeCenter } from './lm_world_trade_center';
 import { models as lmMillenniumTower } from './lm_millennium_tower';
 import { models as lmMetropolisCrown } from './lm_metropolis_crown';
+import { models as megaprojects } from './megaprojects';
 /** late-game landmarks (POLISH_PLAN LG-02) */
 const lateLandmarks = [lmCentralLibrary, lmGrandCentral, lmStockExchange, lmBotanicalDome, lmWorldTradeCenter, lmMillenniumTower, lmMetropolisCrown];
 
@@ -27,6 +28,6 @@ let done = false;
 export function registerAllModels(): void {
   if (done) return;
   done = true;
-  for (const m of [residential, commercial, industrial, utility, civic, park, landmark, reward, transport, nature, vehicle, prop, ...lateLandmarks]) registerModels(m);
+  for (const m of [residential, commercial, industrial, utility, civic, park, landmark, reward, transport, nature, vehicle, prop, ...lateLandmarks, megaprojects]) registerModels(m);
   registerModels(polishStubs);
 }

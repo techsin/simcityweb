@@ -5,11 +5,10 @@ import { getModelGeometry, hasModel } from '../../src/assets/registry';
 import { CELL_SIZE } from '../../src/core/constants';
 import { Surf } from '../../src/core/types';
 
-const PROJECTS = ['tr_express_metro', 'util_fusion_plant', 'lm_world_expo', 'lm_expo_tower', 'rw_space_center'];
 const ARCOLOGIES = ['com_business_arcology', 'res_arcology', 'res_arcology_mixed'];
 const EXPANSIONS = ['facility_level_2', 'facility_level_3', 'park_small_level_2', 'park_small_level_3'];
 const HONOURS = ['park_eco_plaza', 'lm_firefighters_memorial', 'rw_honour_plaque'];
-const STUBS = [...PROJECTS, ...ARCOLOGIES, ...EXPANSIONS, ...HONOURS, 'civ_emergency_operations_center', 'garbage_pile', 'for_lease_sign'];
+const STUBS = [...ARCOLOGIES, ...EXPANSIONS, ...HONOURS, 'civ_emergency_operations_center', 'garbage_pile', 'for_lease_sign'];
 
 registerAllModels();
 
