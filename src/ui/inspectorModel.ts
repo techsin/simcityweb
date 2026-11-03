@@ -356,7 +356,9 @@ export function growthRows(gl: GrowthLimitsLike | null | undefined, stage?: numb
   // with a true minus, like every other sign in the inspector)
   for (const [k, v] of Object.entries(gl)) {
     if (['desStage', 'popStage', 'zoneStage', 'rejected', 'reason', 'downtownStage'].includes(k)) continue;
-    if (typeof v === 'number' && Number.isFinite(v)) {
+    if (k === 'downtown' && !gl.rejected && dts < lim0) {
+      rows.push({ label: 'Downtown', value: `Stage ${dts} max: not a tower site — a subway or train station within 6 tiles allows towers here` });
+    } else if (typeof v === 'number' && Number.isFinite(v)) {
       const t = Math.abs(v) < 10 ? Math.abs(v).toFixed(2) : String(Math.round(Math.abs(v)));
       rows.push({ label: labelOf(k), value: v < 0 && Number(t) !== 0 ? '−' + t : t });
     } else if (typeof v === 'string' && v.length < 80) rows.push({ label: labelOf(k), value: v });

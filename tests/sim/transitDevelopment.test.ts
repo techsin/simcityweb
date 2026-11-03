@@ -302,8 +302,8 @@ describe('transit development: commute approval', () => {
   it.each(['medium', 'hard'] as const)('fades commute pressure in with sampled residents on %s', (difficulty) => {
     const c = town(difficulty);
     const mid = (APPROVAL_TERMS.needsPop0 + APPROVAL_TERMS.needsPop1) / 2;
-    for (const [pop, expected] of [[0, 0], [1200, 0], [APPROVAL_TERMS.needsPop0, 0], [mid, -1.25],
-      [APPROVAL_TERMS.needsPop1, -2.5], [12000, -2.5]]) {
+    for (const [pop, expected] of [[0, 0], [1200, 0], [APPROVAL_TERMS.needsPop0, 0], [mid, -2.125],
+      [APPROVAL_TERMS.needsPop1, -4.25], [12000, -4.25]]) {
       c.a.pop = pop / 4;
       c.b.pop = pop * 3 / 4;
       // The survey, rather than the lagging displayed population, controls the grace period.
@@ -314,21 +314,21 @@ describe('transit development: commute approval', () => {
     }
   });
 
-  it('starts charging above the resident-weighted mean of 15 minutes in a full-size town', () => {
+  it('starts charging above the resident-weighted mean of 8 minutes in a full-size town', () => {
     const c = town();
-    expect(APPROVAL.commuteStart).toBe(15);
-    for (const [minutes, expected] of [[15, 0], [16, -0.25], [25, -2.5]]) {
-      // At mean 15, the 12/16-minute homes cost nothing; the threshold applies after averaging.
+    expect(APPROVAL.commuteStart).toBe(8);
+    for (const [minutes, expected] of [[8, 0], [9, -0.25], [25, -4.25]]) {
+      // At mean 8, the 5/9-minute homes cost nothing; the threshold applies after averaging.
       expect(c.month(minutes - 3, minutes + 1)).toBeCloseTo(expected, 12);
       expect(residentSurvey(c.st, c.rt).commute).toBe(minutes);
     }
-    expect(c.month(25)).toBeCloseTo(-2.5, 12); // a genuine measurement equal to the fallback is still charged
+    expect(c.month(25)).toBeCloseTo(-4.25, 12); // a genuine measurement equal to the fallback is still charged
   });
 
   it('keeps the measured cut-off penalty on Hard even when the city average is zero', () => {
     const c = town('hard');
     c.st.stats.avgCommute = 0;
-    expect(c.month(120)).toBeCloseTo(-26.25, 12);
+    expect(c.month(120)).toBeCloseTo(-28, 12);
     expect(residentSurvey(c.st, c.rt).commute).toBe(120);
     expect(c.st.stats.avgCommute).toBe(0);
   });

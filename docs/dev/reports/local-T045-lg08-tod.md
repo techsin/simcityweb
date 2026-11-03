@@ -1,17 +1,294 @@
 # T045 — LG-08 transit-oriented development
 
-Base `fb1531f`; branch `local/T045-lg08-tod`. The user committed the original implementation as WIP `731fffa`.
-The recovery changes described below — one approval assignment, the expanded test cases and this report — remain
-uncommitted. This lane has not committed, pushed, merged or written a `.done` file.
+Branch `local/T045-lg08-tod`; current merged base is `683d02b` via merge `b5577e5`. The user committed the original
+implementation as WIP `731fffa` and the recovery as `6e62a61`. Current round-2 changes remain uncommitted; no
+`.done` file is written. Historical evidence against `fb1531f` is retained below and is not the fresh gate matrix.
 
-**The specified 15-minute implementation is not acceptance-green.** Recovery restores the population floor,
-the 128×15 resident counts and the timing gate. Transit still costs only 0.0427106% of the 2040 population and
-6.47981% in 2060; station-area mean stage is 1.07158× the city average; the skip-transit commute term remains zero.
-The completed threshold-8/−0.25 proposal activates commute pressure and passes the 2060 transit-loss gate, but still
-misses the 2040 loss/stage gates and costs 1.2448% versus the retained-15 recovery base. The one −0.125-coefficient
-sensitivity trial failed the base-population floor and is rejected. Completed growth counters identify residential
-allowance/capacity filters and commercial footprint rejection; they do not support a blanket late empty-growth
-starvation claim. Production remains at 15/−0.25 plus grace.
+**The implementation fails NOTE-048's annual base-population rule on all three rows.** All nine fresh bot cases
+are complete. Peak annual population drift is **+1.34464%** on 128×15 s7, **+1.92675%** on 256×60 s7 and
+**−12.29426%** on 256×60 s11; the shared A/A envelopes are zero. The amended transit-loss, station tower-share
+and commute-activation gates pass, as does the same-strategy year-60 subway floor. Approval of start 8/−0.25 did
+not waive the annual rule. The approved constants remain fixed; no compensating growth or weaker cost is added.
+
+## Round 2: approved criteria and fresh evidence
+
+NOTE-048 also introduces the shared SIM A/A rule. All three flags-off rows — 128×15 s7 and 256×60 s7/s11 — must
+be compared with fresh dev in every year from year 10, within the maximum of the item's tolerance, 1% and that
+row's A/A envelope. Population, mean air at homes, approval and I-HT share are retained in the annual evidence.
+The report must investigate a same-direction shift above half the tolerance across all three rows, even if each
+row is individually inside its band. Final lane gates must be remeasured after B2 and T041 merge, using the shared
+envelope for that exact dev base.
+
+NOTE-048 approves start **8 minutes at −0.25**, retaining the existing new-town grace. Its 2040 loss target changes
+from 4% to **1%** because most individual bot commutes then are below 8.5 minutes: the sanctioned station/tower,
++0.04 appeal and commute mechanisms cannot reach 4% without strengthening unrelated balance and moving other
+lanes' bases. The amended 1% is above the original roughly 0.7% loss. Radius, appeal, catalog, demand, growth
+budget and lot fit remain unchanged. The 2060 loss target remains 10%; the skyline gate becomes tower share
+≥2×city, with the tower-capable-type mean stage diagnostic only.
+
+The authoritative fresh probe makes **no attachment/growth query during simulated days**. Monthly and annual
+observations read existing fields; the stage census runs only after the final day. Its normalized serialized-state
+hashes immediately before and after the final census are equal. Those hashes establish no immediate persisted
+mutation; final-only placement also ensures that cache changes cannot affect this run's later scheduling.
+
+| Fresh run, base `683d02b` | Population 2030 | 2040 | 2050 | 2060 | Final residents [$, $$, $$$] | System CPU ms/day |
+|---|---:|---:|---:|---:|---|---:|
+| Production, flags off | 554,269 | 889,302 | 1,278,055 | 1,520,331 | [425890, 734632, 359809] | 5.54806 |
+| Fresh dev, flags off | 550,399 | 885,236 | 1,265,741 | 1,513,835 | [412608, 738176, 363051] | 5.05394 |
+| Production 8/−0.25, `--subway` | 554,789 | 888,952 | 1,268,558 | 1,483,601 | [414550, 716757, 352294] | 5.374398148 |
+| Fresh dev, `--subway` | 551,849 | 885,499 | 1,271,081 | 1,491,542 | [416853, 724509, 350180] | 5.583472222 |
+| Production `--subway --skip transit` | 554,373 | 877,353 | 1,156,617 | 1,179,555 | [289184, 592462, 297909] | 5.231388889 |
+
+| Fresh flags-off row | Dev final population | Production final population | Endpoint drift | Signed largest annual drift | First year outside ±1% | Outside / checked years | Result |
+|---|---:|---:|---:|---|---:|---:|---|
+| 128×15 s7 | 192,899 | 193,844 | +0.48989% | +1.34464% in 2012 | 2012 | 1 / 6 | **FAIL** |
+| 256×60 s7 | 1,513,835 | 1,520,331 | +0.42911% | +1.92675% in 2010 | 2010 | 13 / 51 | **FAIL** |
+| 256×60 s11 | 1,427,340 | 1,261,054 | −11.65006% | −12.29426% in 2052 | 2010 | 18 / 51 | **FAIL** |
+
+| Flags-off s11 | 2030 | 2040 | 2050 | 2060 | Final residents [$, $$, $$$] | System CPU ms/day |
+|---|---:|---:|---:|---:|---|---:|
+| Production | 552,068 | 885,597 | 1,182,415 | 1,261,054 | [357957, 602952, 300145] | 5.11593 |
+| Fresh dev | 551,235 | 888,193 | 1,272,103 | 1,427,340 | [388629, 696075, 342636] | 4.29514 |
+
+Production subway artifact: `round2/final8neutral/production/s7-256-subway.json`; final SHA256
+`ea62f775b9c26f8e2bf022a2655192cd3567d411751534a18188b4d4e3411b61`. Its complete final hash equals the separate
+milestone-observer run, which also ended at 1,483,601. The earlier approved historical threshold-8 calibration
+ended at 1,503,592 with a different observer schedule; those values must not be mixed into a fresh paired
+population or timing comparison.
+The fresh dev subway final hash is `61ddc095373a49b89e2854c6fa520ed14c5325ab9df2916d71cdaef9324c26fe`.
+Production is **−0.5324%** versus this fresh same-strategy dev endpoint, passing the original year-60 population
+floor. That endpoint result does not establish compliance with the separate annual flags-off rule, which fails
+as shown above. The s11 flags-off final residents are production **[357957, 602952, 300145]** versus dev
+**[388629, 696075, 342636]**. Its production/dev final hashes are respectively
+`c32d49be830de57cfaeb9981e218b7393adb9e5c6e370f44c8339c3ac7353113` and
+`1f002f447e8f1eb822b2478f5204cf4f6edf86765ce948f991f608b9a89ed7eb`.
+The fresh skip-transit hash is `18d3320a3540c3d4820204f33bd15d62e9c192c63ff55d922194512588491625`, exactly equal
+to the historical threshold-8 skip run. All three fresh completed transit/dev/skip runs have identical normalized
+hashes before and after their final census.
+The fresh dev flags-off s7 final hash is `e44ee52a8dcb4942b542a6feee1dc462789556c06c30a891f17752f0bf570ac6`,
+matching this lane's historical flags-off dev hash. The fresh 128×15 pair ends at production
+**[66507, 90953, 36384] = 193,844** versus dev **[61124, 93804, 37971] = 192,899**. The artifacts are
+`round2/final8neutral/production/s7-128-base.json` and `dev/s7-128-base.json`; their hashes are respectively
+`dc0ca8e04309ea12a4d4c26f09a549dd14d5c467a39411e347a604e5510e92ba` and
+`fff071b3ed431644dda2f66fdfd32723afb162410f97e1b7723d026a3469f254`. The latter matches this lane's historical
+128 dev digest. These are this lane's hash encoding; no equality with T062's separately encoded digests is claimed.
+The completed production flags-off s7 artifact is `round2/final8neutral/production/s7-256-base.json`, hash
+`3312f6e931392147ab4ed05dddaa4885bf9d8cda7270167c943c7eb322b9b04d`.
+
+| Amended acceptance line | Fresh measurement/status |
+|---|---|
+| Transit loss ≥1% in 2040 | **(888,952 − 877,353) / 888,952 = 1.304794860% — PASS** |
+| Transit loss ≥10% in 2060 | **(1,483,601 − 1,179,555) / 1,483,601 = 20.493785054% — PASS** |
+| Subway year-60 population ≥0.99×dev | **0.994676× — PASS** |
+| Shared annual flags-off base rule | all three rows exceed the measured ±1% band — **FAIL** |
+| System ms/day rises by ≤3 | **−0.209074074 ms/day — PASS** in fresh same-strategy headless observation; strict G-MS same-city timing remains separate |
+| Near-centre stage-6+ share ≥2×city in 2060 | **(45/130) / (661/8,925) = 4.673862446× — PASS** |
+| Tower-capable DevType mean stage, diagnostic only | **near 4.851851852; city 4.136494433** |
+| Skip-transit commute term non-zero from 2030 | **31/31 annual and 361/361 monthly checkpoints negative; 0 zeros — PASS** |
+| Report the 128×15 seed-7 movement | **193,844**, residents **[66507, 90953, 36384]**: **+945 (+0.48989%)** versus dev |
+
+The share census counts each catalog growable once, including lower-stage buildings whose DevType lacks a tower
+definition. Distance is centre-to-centre Euclidean ≤6 from functional, connected train/subway stations. The
+separate diagnostic mean includes every growable of a DevType with at least one stage-6+ catalog definition,
+regardless of its present stage or density. These denominators implement NOTE-048 rather than silently changing
+the population counted by the share gate.
+Fresh dev's corresponding census is **4/72** near stations and **668/8,787** citywide. These are comparison
+observations; the amended acceptance gate applies to the production station-area concentration.
+
+### Annual base evidence and systematic shift
+
+The following diagnostics accompany the failed population gate. Peak values are the largest **absolute** annual
+production-minus-dev difference from 2010 onward; endpoint values retain their sign. Air uses `stats.avgAir`,
+approval uses points, and I-HT share differences use percentage points with agriculture excluded.
+
+| Flags-off row | Peak / endpoint population drift | Peak / endpoint air difference | Peak / endpoint approval difference | Peak / endpoint I-HT share difference |
+|---|---|---|---|---|
+| 128×15 s7 | 1.34464% / +0.48989% | 0.00260 / −0.00260 | 2.66124 / −2.66124 | 0 / 0 pp |
+| 256×60 s7 | 1.92675% / +0.42911% | 0.01728 / −0.00753 | 5.09422 / −1.10389 | 3.21824 / −3.11594 pp |
+| 256×60 s11 | 12.29426% / −11.65006% | 0.01695 / +0.00922 | 5.96307 / −4.46600 | 8.62901 / +5.52220 pp |
+
+The three endpoints do not all move in one direction. The shared-year check nevertheless triggers in **every
+year 2010–2013**: all three population shifts are positive and exceed half the 1% band. This requires investigation
+under NOTE-048 and is not dismissed because the endpoints later differ in sign.
+
+| Shared year | 128×15 s7 drift | 256×60 s7 drift | 256×60 s11 drift | All three >+0.5% |
+|---|---:|---:|---:|---|
+| 2010 | +0.64174% | +1.92675% | +1.18704% | yes |
+| 2011 | +0.72823% | +1.89994% | +1.20351% | yes |
+| 2012 | +1.34464% | +1.25653% | +2.08577% | yes |
+| 2013 | +0.51526% | +1.27272% | +1.28754% | yes |
+
+All six flags-off final censuses have **zero connected passenger stations**. The default bot's subway and late
+venue placement are opt-in; station permission/appeal is inactive on these rows. The changed commute threshold
+is active: in 2010 the production commute terms are **−0.18985 / −0.08310 / −0.19348** for the three rows, while
+all dev terms are zero. At the 128-row peak in 2012, both terms are zero, showing why a later population difference
+cannot be read as a linear response to that checkpoint's term. At s11's 2052 trough, production survey commute is
+**12.46019** versus dev **11.28720**, with commute terms **−1.11505 / 0**. Approval changes demand/allowance and
+subsequent existing seeded choices; no added RNG calls or default-bot strategy changes explain away the failure.
+
+Full annual values, raw jobs by type, population extrema, monthly counts and provenance are retained in scratch
+`round2/final8neutral/report/summary.json`, `summary.md` and `annualcomparison.csv`. The CSV contains all **108**
+year-pairs (6 + 51 + 51); it is the full-precision evidence behind the rounded tables here. No A/A slack applies.
+
+### Fresh annual skip-transit commute evidence
+
+All **361/361** monthly checkpoints from January 2030 through the closing January 2060 snapshot are negative,
+with no zeros. In 2030 the sliced survey ranges **8.92400–9.17003** and the term **−0.29251 to −0.23100**;
+the full 2030–2060 monthly term range is **−1.17279 to −0.23100**. The annual values below are direct checkpoint
+means, not the distribution of individual journeys cited in NOTE-048's 2040 amendment.
+
+| Year | Traffic average, minutes | Resident survey, minutes | Commute term |
+|---|---:|---:|---:|
+| 2030 | 8.86915 | 8.93755 | −0.23439 |
+| 2031 | 9.06154 | 9.06257 | −0.26564 |
+| 2032 | 9.51407 | 9.44068 | −0.36017 |
+| 2033 | 9.54403 | 9.59690 | −0.39922 |
+| 2034 | 9.71681 | 9.80049 | −0.45012 |
+| 2035 | 9.85049 | 9.79488 | −0.44872 |
+| 2036 | 10.07024 | 10.30990 | −0.57748 |
+| 2037 | 10.43037 | 10.41203 | −0.60301 |
+| 2038 | 10.56797 | 10.72205 | −0.68051 |
+| 2039 | 11.22998 | 11.12310 | −0.78077 |
+| 2040 | 11.19289 | 11.00891 | −0.75223 |
+| 2041 | 11.11249 | 11.03152 | −0.75788 |
+| 2042 | 11.32530 | 11.31196 | −0.82799 |
+| 2043 | 11.67747 | 11.77671 | −0.94418 |
+| 2044 | 11.65460 | 11.66356 | −0.91589 |
+| 2045 | 10.54526 | 11.55051 | −0.88763 |
+| 2046 | 11.93421 | 11.95902 | −0.98975 |
+| 2047 | 10.68276 | 11.58656 | −0.89664 |
+| 2048 | 11.86320 | 12.32366 | −1.08091 |
+| 2049 | 12.03264 | 11.78573 | −0.94643 |
+| 2050 | 11.49752 | 11.29888 | −0.82472 |
+| 2051 | 12.08231 | 11.61008 | −0.90252 |
+| 2052 | 11.54023 | 11.75200 | −0.93800 |
+| 2053 | 12.41964 | 12.08745 | −1.02186 |
+| 2054 | 12.52481 | 11.75668 | −0.93917 |
+| 2055 | 11.42366 | 11.54539 | −0.88635 |
+| 2056 | 11.96097 | 12.25782 | −1.06446 |
+| 2057 | 12.22024 | 12.36277 | −1.09069 |
+| 2058 | 11.63509 | 11.88032 | −0.97008 |
+| 2059 | 11.93211 | 12.07860 | −1.01965 |
+| 2060 | 12.03599 | 12.34299 | −1.08575 |
+
+### Why the historical calibration is separate
+
+All **84 imported production modules are byte-identical** between the historical approved start-8 capture and
+the fresh start-8 capture (`source-comparison.json` in scratch). The sim/core/save/bot and asset/manifest git diffs
+from `6e62a61` to current HEAD are also empty. The diagnostic call schedule changed: the historical probe queried
+station/growth state every year from 2020, while the first round-2 probe used milestones; the authoritative fresh
+probe uses only a final census.
+
+A pre-existing query/scheduler dependency explains why a cache read can affect future simulation work without an
+immediate CityState write. `TrafficSystem.stopAttached` calls `refreshAttach`, which clears `attachDirty`.
+`TrafficSystem.stepCost` adds `0.3 × size² / 65536` estimated milliseconds to PREP while that flag is dirty. The
+headless scheduler uses this estimate for budget admission, priority credit and next-day carry. An external query
+can therefore remove 0.3 estimated ms at size 256 (0.075 at 128) before scheduling. Terrain, transport and network
+edits set the flag again. This is a verified source-level mechanism; an exact first-divergence replay has not been
+performed. The identical fresh milestone/final-only outcome is recorded, without claiming all query schedules
+are neutral or attributing the historical difference to newly added RNG calls.
+
+**B2/cloud request, no local infra hunk:** in `src/sim/infra/traffic.ts`, `stopAttached`/`refreshAttach`/`stepCost`,
+separate attachment-query cache freshness from estimated scheduler work accounting. In
+`src/sim/infra/scheduler.ts`, preserve budget/credit/carry choices when a read-only attachment query occurs.
+Add a paired replay with identical edits and different query frequencies, checking subsequent state and scheduled
+work. A matching immediate serialized hash alone cannot detect this runtime-cache dependency. This lane changes
+neither file.
+
+The historical **1.2448%** threshold-8 cost relative to the recovered start-15 control remains the explicit evidence
+approved in NOTE-048. It is not a newly measured cost against the fresh 1,483,601 result: no fresh final-only
+start-15 counterfactual has yet been run. The historical rejected −0.125 sensitivity trial is retained below;
+there is no new tuning sweep.
+
+### Fresh commands and outstanding verification
+
+The absolute `$taskRoot`, `$taskScratch` and `$taskQuiet` variables are defined in the historical command section
+below. These are all **nine completed** authoritative commands; every bot process ran sequentially through the
+quiet gate:
+
+```powershell
+node $taskQuiet node "$taskScratch/round2-launch.mjs" --revision final8neutral --name production --size 256 --years 60 --seed 7 --subway --out "$taskScratch/round2/final8neutral/production/s7-256-subway.json"
+node $taskQuiet node "$taskScratch/round2-launch.mjs" --revision final8neutral --name dev --size 256 --years 60 --seed 7 --subway --out "$taskScratch/round2/final8neutral/dev/s7-256-subway.json"
+node $taskQuiet node "$taskScratch/round2-launch.mjs" --revision final8neutral --name production --size 256 --years 60 --seed 7 --subway --skip transit --out "$taskScratch/round2/final8neutral/production/s7-256-skip-transit.json"
+node $taskQuiet node "$taskScratch/round2-launch.mjs" --revision final8neutral --name production --size 256 --years 60 --seed 7 --out "$taskScratch/round2/final8neutral/production/s7-256-base.json"
+node $taskQuiet node "$taskScratch/round2-launch.mjs" --revision final8neutral --name dev --size 256 --years 60 --seed 7 --out "$taskScratch/round2/final8neutral/dev/s7-256-base.json"
+node $taskQuiet node "$taskScratch/round2-launch.mjs" --revision final8neutral --name production --size 128 --years 15 --seed 7 --out "$taskScratch/round2/final8neutral/production/s7-128-base.json"
+node $taskQuiet node "$taskScratch/round2-launch.mjs" --revision final8neutral --name dev --size 128 --years 15 --seed 7 --out "$taskScratch/round2/final8neutral/dev/s7-128-base.json"
+node $taskQuiet node "$taskScratch/round2-launch.mjs" --revision final8neutral --name production --size 256 --years 60 --seed 11 --out "$taskScratch/round2/final8neutral/production/s11-256-base.json"
+node $taskQuiet node "$taskScratch/round2-launch.mjs" --revision final8neutral --name dev --size 256 --years 60 --seed 11 --out "$taskScratch/round2/final8neutral/dev/s11-256-base.json"
+```
+
+Fresh dev is captured from an archive of `683d02b`; production is an immutable capture of the worktree. Neither
+uses a temporary production switch or changes another worktree. `npx tsx` remains unavailable in this environment;
+the launcher bundles unchanged SimBot entry points with installed rolldown. Each capture records all 84 imported
+source files, their hashes, bundle hash, source archive/PAX commit or worktree base, and simulation options.
+The equivalent ordinary simbot arguments below apply to **both source captures** for each paired base/subway
+configuration; skip transit applies to production only. They are equivalences, not executed tsx commands or a
+request to switch this worktree:
+
+```powershell
+node $taskQuiet npx tsx "$taskRoot/tools/simbot.ts" --size 128 --years 15 --seed 7 --difficulty medium --terrain plains --water 0.2 --quiet
+node $taskQuiet npx tsx "$taskRoot/tools/simbot.ts" --size 256 --years 60 --seed 7 --difficulty medium --terrain plains --water 0.2 --quiet
+node $taskQuiet npx tsx "$taskRoot/tools/simbot.ts" --size 256 --years 60 --seed 11 --difficulty medium --terrain plains --water 0.2 --quiet
+node $taskQuiet npx tsx "$taskRoot/tools/simbot.ts" --size 256 --years 60 --seed 7 --difficulty medium --terrain plains --water 0.2 --quiet --subway
+node $taskQuiet npx tsx "$taskRoot/tools/simbot.ts" --size 256 --years 60 --seed 7 --difficulty medium --terrain plains --water 0.2 --quiet --subway --skip transit
+```
+
+Round-2 `npx tsc --noEmit` passes. Ordinary Vitest config loading failed with `spawn EPERM`, but the installed
+native loader and thread pool resolve that startup issue. Each file below was run separately through the quiet
+gate: **59 passed, 1 pre-existing skip, 0 failures across five files**.
+
+| Test file | Passed | Existing skipped |
+|---|---:|---:|
+| `tests/sim/transitDevelopment.test.ts` | 19 | 0 |
+| `tests/game/transitInspector.test.ts` | 2 | 0 |
+| `tests/game/inspectorModel.test.ts` | 11 | 0 |
+| `tests/game/inspectorNotes.test.ts` | 10 | 0 |
+| `tests/worker/hygiene.test.ts` | 17 | 1 |
+
+The existing hygiene skip is **“worker migration hygiene gates W1.2: simWorker import graph excludes bundle.ts,
+save/index.ts and recoveryLs.ts”**; T045 does not add or hide a skipped case.
+
+Actual commands:
+
+```powershell
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/sim/transitDevelopment.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/round2/transit-development-vitest.json"
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/game/transitInspector.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/round2/transit-inspector-vitest.json"
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/game/inspectorModel.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/round2/inspector-model-vitest.json"
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/game/inspectorNotes.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/round2/inspector-notes-vitest.json"
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/worker/hygiene.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/round2/worker-hygiene-vitest.json"
+```
+
+The filesystem audit (`round2/final8neutral/final-audit.json`) passes: all 84 current production modules still
+match the capture byte-for-byte; all nine runs have the expected options/day counts, one final census and equal
+before/after-census state hashes; all changed files/new tests are valid UTF-8 without BOM. No full suite, browser
+or GPU run is performed here. G-STEP estimated-step, G-AB abandonment and strict same-city G-MS checks remain for
+the lead; evolving-city bot CPU alone does not establish them. The earlier scratch assertion adapters also passed
+19 sim + 2 inspector cases, but the real Vitest results above supersede that fallback for validation.
+
+The completed [shared A/A report at T062 commit
+`3833c8d2379d3350663e624fe30be7867c559310`](https://github.com/techsin/simcityweb/blob/3833c8d2379d3350663e624fe30be7867c559310/docs/dev/reports/sim-aa-envelope.md)
+is now available from both cached T062 refs and has been read in full. It measures underlying commit
+`0df76bce1a663ee44957cf47cfecdb8b18eed187`, a queue-only commit atop `9fcc2ec`; its task's `683d02b` label was stale.
+A read-only git diff from `683d02b` to that underlying commit is empty across `src/sim`, `src/core`, `src/assets`
+and `tools/simbot.ts`, proving compatibility of the simulation sources used for this comparison.
+
+| Shared A/A row | Population envelope | Air envelope | Approval envelope | I-HT share envelope | Base final population |
+|---|---:|---:|---:|---:|---:|
+| 128×15 s7 | 0 | 0 | 0 | 0 | 192,899 |
+| 256×60 s7 | 0 | 0 | 0 | 0 | 1,513,835 |
+| 256×60 s11 | 0 | 0 | 0 | 0 | 1,427,340 |
+
+All twelve absolute and relative envelopes are **exactly zero** over completed years 10 onward. The nudged run
+has exactly §1 more funds in every annual observation, so the perturbation was applied. This measured +§1 result
+does not estimate the noise of a larger perturbation. The current population band is therefore **±1% in every
+year from year 10**, and the zero envelope supplies no variant-target forgiveness. Final envelopes/gates still
+require remeasurement on the post-T041 base.
+
+For compatibility with the shared report, I-HT share is `jobsByDev[11] / sum(jobsByDev[9..11])`, excluding
+agriculture, or zero with no such industrial jobs. The fresh probe retains raw `jobsByDev`; its convenience
+`ihtShare` field includes agriculture. The comparison reader recomputes the canonical share from those raw job
+arrays and does not use the convenience field; no simulation rerun was needed for this diagnostic correction.
 
 ## Changes and ownership
 
@@ -25,8 +302,9 @@ starvation claim. Production remains at 15/−0.25 plus grace.
   for zoned and unzoned evaluation. The breakdown registers `station` / “Near a station”. Overlaps do not stack;
   other DevTypes retain their weights. The existing 33 weighted inputs remain, with the flat bonus as an auxiliary
   input.
-- `src/sim/economy/tuning.ts`: `TOD` constants beside downtown tuning; `APPROVAL.commuteStart = 15`, retaining
-  the existing −0.25-per-minute coefficient. These three files are unchanged from WIP `731fffa` during recovery.
+- `src/sim/economy/tuning.ts`: `TOD` constants beside downtown tuning; NOTE-048's approved
+  `APPROVAL.commuteStart = 8`, retaining the existing −0.25-per-minute coefficient. Recovery previously used 15;
+  radius/appeal and the other constants are unchanged.
 - **Outside the task's named production files:** `src/sim/economy/approval.ts`, `approvalSystem`'s update. The WIP
   replaced the literal threshold with `APPROVAL.commuteStart` and made an empty resident survey cost zero. Recovery
   adds one assignment, `T.commute *= fadeIn`, immediately after the existing surveyed-resident 2k→8k smoothstep.
@@ -37,14 +315,26 @@ starvation claim. Production remains at 15/−0.25 plus grace.
   same-centre mode changes, cache reuse, excluded modes/missing traffic, save reconstruction, query/RNG side effects,
   tower caps, all affected DevTypes, pre-clamp appeal, Medium/Hard commute grace, the resident-weighted threshold
   and genuine measured 25/120-minute journeys.
+- **Inspector hunk, newly authorized by NOTE-048:** `src/ui/inspectorModel.ts`, `growthRows`, now belongs to T045;
+  its isolated hint change and `tests/game/transitInspector.test.ts` are complete. The test covers the packet-host
+  fresh-query path as well as the row text; no new query or Worker field is introduced. Retained-watch invalidation
+  after a remote command while paused is a separate pre-existing Worker limitation, requested below.
+- `docs/dev/POLISH_BACKLOG.md`: a CONTENT/SIM follow-up for the R$ station-area permission/realization gap,
+  without changing catalog, demand, allowance or fit mechanics in LG-08. Grand Central remains LG-02.
 - This report is the requested artifact. Diagnostic launchers, immutable bundles, source snapshots and output
   remain in the user-designated scratch folder.
 
-**Infra hunks: none. No B2 hold. No cloud-held edits.** No new persisted keys/settings and no added RNG calls. Old saves
+**Infra hunks: none. No B2 hunk hold; the query/scheduler request above is for its owner.** The inspector hunk is
+explicitly reassigned by NOTE-048; no other cloud-held file is changed. No new persisted keys/settings or added RNG calls. Old saves
 reconstruct the derived station mask. The station rules and commute threshold intentionally change balance on all
 difficulties; this report does not claim Medium/Hard state identity after an intentional balance change.
 
-## Recovery evidence
+## Historical Round 1 recovery evidence
+
+Everything from this section through the historical command log records the earlier `fb1531f` calibration with
+yearly stage queries. “Current” in those historical tables means the then-current start-15 recovery, not the
+approved round-2 production threshold. These results explain the approved decision and rejected alternative;
+the fresh matrix above governs the current gates.
 
 Three independent ablations kept the other two features off. Every run is 256×60, seed 7, with `--subway`.
 Station masks remain available even when station tower eligibility is disabled.
@@ -88,7 +378,7 @@ The digest uses `serializeCity(copy: true)`, `savedAt = 0`, sorted object keys a
 in separate simulation processes. This establishes equality of their persisted final city; it does not claim that
 every intermediate state was hashed or that either final city equals dev's full saved state.
 
-## Current gate matrix
+## Historical Round 1 gate matrix
 
 These are fresh runs of the current 15-minute-plus-grace implementation. The flags-off run also matches the
 recorded b3 population counts; no fresh dev flags-off full-state comparison was performed.
@@ -270,10 +560,10 @@ through January 2060. In 2030 the resident survey ranges **8.32415–8.45724** m
 2030 survey is **10.17102**, higher than skip transit. Threshold 15 cannot activate on these values. Thresholds
 10 and 9.5 would not activate the recovered 2030 skip-transit case either.
 
-## Completed threshold-8 proposal, original coefficient
+## Historical threshold-8 proposal, original coefficient
 
-This is a scratch-only proposal: full TOD, existing 2k→8k grace, start **8 minutes**, coefficient **−0.25**.
-Production remains at start 15. Eight is the nearest whole-minute start below the recovered skip-transit 2030
+This was a scratch-only proposal, subsequently approved by NOTE-048: full TOD, existing 2k→8k grace, start
+**8 minutes**, coefficient **−0.25**. Production was then at start 15. Eight is the nearest whole-minute start below the recovered skip-transit 2030
 survey mean 8.32415; this is not a claim of a globally minimal balance change.
 
 | Year | Proposal `--subway` population | Proposal skip population | Skip commute approval term |
@@ -327,10 +617,11 @@ skip-transit run was performed because the base already failed. No additional we
 used to chase another seeded path.
 
 The paired start-8/−0.25 rows remain the measured alternative: their base is within 1% of fresh dev, but they cost
-1.2448% versus the recovered start-15 base. There is **no validated zero-movement solution**. Neither trial changes
-production. The actual growth-counter run is complete, as reported above.
+1.2448% versus the recovered start-15 base. There was **no validated zero-movement solution**. NOTE-048 approved
+the original-coefficient proposal and its stated cost; the half-coefficient trial remains rejected. The historical
+growth-counter run is complete above.
 
-## Validation and remaining checks
+## Historical validation and remaining checks
 
 - `npx tsc --noEmit`: passed after the recovery change.
 - `git diff --check`: passed. The four production files match the frozen tested candidate after line-ending
@@ -351,7 +642,7 @@ production. The actual growth-counter run is complete, as reported above.
   is claimed. The counter-only diagnostic completed with matching final state and all-month commute capture;
   the half-coefficient trial failed and was stopped before a skip-transit run.
 
-## Reproduction and actual bot commands
+## Historical reproduction and actual bot commands
 
 All bot runs were sequential and quiet-gated. `npx tsx` is unavailable (`ENOTCACHED`, restricted network), so installed
 rolldown bundled unchanged `SimBot`, `parseArgs`, `botSystems` and diagnostics into immutable scratch Node ESM.
@@ -428,37 +719,49 @@ node $taskQuiet node "$taskScratch/growth-counter-launch.mjs" --variant wip-fade
 3. Grand Central has an asset but no simulation catalog/reward definition with passenger attachment roles.
    **CONTENT/SIM request:** its final LG-02 definition should use model `lm_grand_central` and the intended
    train/subway connectivity semantics. The 8-tile hook exists; real Grand Central connectivity remains unverified.
-4. The plan's historical 1.547M row is stale. Current b3 flags-off reference is 1,513,835; fresh pre-edit
-   same-strategy dev subway result is 1,491,542. Both comparisons are stated above.
-5. **GUIDE/cloud-held request:** `src/ui/inspectorModel.ts`, `growthRows`: add “Stage 5 max: not a tower site — a
-   subway or train station within 6 tiles allows towers here” as a dedicated row when the downtown cap binds;
-   the generic string path skips text of 80+ characters. When `stationTower` is true, attribute eligibility to
-   the station. Existing inspection queries carry the boolean; no Worker row is requested.
+4. Historical plan/b3 rows are context only. Current acceptance uses fresh `683d02b` pairs and NOTE-048's shared
+   annual/A/A rule, followed by final remeasurement after B2/T041. The 2040 threshold is now 1%, and the 2060
+   stage-6+ share threshold is 2×city. NOTE-048's reason for the 2040 amendment is that most individual 2040 bot
+   commutes are below 8.5 minutes; this is not a claim that a newly measured population mean is below 8.5.
+5. **Inspector ownership reassigned:** NOTE-048 authorizes T045's isolated `src/ui/inspectorModel.ts`,
+   `growthRows` hunk. The long downtown-cap hint needs a dedicated row because the generic path skips text of
+   80+ characters. Station eligibility is already carried by the inspection query; no Worker row is requested.
 6. **GUIDE request:** `src/ui/panels/StatsPanel.ts`, its update near `commuteModes(s.commuteByMode)`: add “Riders
    save N minutes compared with driving” using mirrored `ctx.state.stats.commuteByMode.transitSaved`. Existing
    `statsModel.commuteModes` already supplies equivalent `modeNote` text. Keep negative savings truthful as slower
-   trips. No new counter or Worker query is needed. No UI/cloud-held file was changed here.
+   trips. No new counter or Worker query is needed. NOTE-048 defers this Stats line to PB-COMMUTE; it is not
+   implemented by T045. The inspector exception above does not transfer other UI ownership.
+7. **B2/cloud request:** the attachment query/scheduler dependency is detailed in the round-2 section. This lane
+   makes no infra changes and requests owner-side query-frequency replay coverage.
+8. **Worker/cloud request:** in `src/worker/queries.ts`, `watchSignature`'s early inspector branch returns
+   `inspectSignature(...)` without the command epoch. A retained inspector watch can therefore stay stale while
+   paused after a remote transport edit, although a fresh packet-host query returns the correct eligibility/hint.
+   The minimal proposed owner change is
+   ``return `${inspectSignature(sim, args as InspectBuildingArgs | InspectCellArgs)}:${commands}`;``
+   in that branch, preserving the existing 1 Hz cap. Add a packet-watch regression that retains the inspector,
+   cuts/reconnects the station line via a remote command while paused, and observes the updated hint. This is an
+   existing signature change beyond additive query-entry authorization, so T045 does not edit Worker files.
 
 ## Decisions for the lead
 
-- **Commute start and coefficient:** keep the specified production 15/−0.25 plus grace, or authorize a measured
-  proposal. Recovered skip commute is below 8.46 minutes in 2030, so starts 15, 10 and 9.5 do not meet the
-  non-zero gate on that path. The paired start-8/−0.25 alternative meets it and its base is within 1% of fresh dev,
-  but it costs 1.2448% versus the recovered base. The single start-8/−0.125 sensitivity trial failed the base floor
-  and is rejected; it has no skip run. No validated zero-movement solution exists, and further weaker-slope trials
-  are not proposed as a way to select a favorable seeded outcome.
-- **Population-loss targets:** current production misses both 4%/10%; start 8/−0.25 passes 2060 but still misses
-  2040 at 1.306238%. Decide whether these targets or the allowed transit mechanism should change; do not silently
-  strengthen radius, appeal or unrelated balance to manufacture a pass.
-- **Stage target and denominator:** current production reaches 1.07158×; the completed proposal reaches
-  1.13964×. Thirteen of 73 nearby buildings are CS$ with no tower definition, while the largest actual conversion
-  gap is R$. Actual counters identify residential demand/allowance/capacity filtering before tower selection and
-  mainly commercial physical-fit failures afterwards. There is no station tower quota to remove: permission is
-  already granted, and original downtown rights remain. Changing catalog content, demand, growth budgets or fit
-  balance would go beyond the stated TOD constants and requires an explicit design decision. Distinguish the
-  existing all-growable denominator from any proposed eligible-type denominator.
-- **Completion gates and owner work:** full Vitest/browser checks remain, as do GUIDE's two display requests
-  and Grand Central's future definition. Keep the unresolved acceptance status visible; no `.done` is written.
+- **Approved amendments:** NOTE-048 settles start 8/−0.25 with existing grace, 2040 loss ≥1%, and the stage-6+
+  share ≥2×city. Keep radius/appeal and unrelated balance fixed. The historical 1.2448% cost and rejected −0.125
+  sensitivity remain visible; no fresh start-15 paired cost is claimed.
+- **Acceptance is FAIL under the shared annual rule:** all nine bot cases are complete, and all three flags-off
+  rows fail the measured ±1% annual band. Peak drifts are +1.34464%, +1.92675% and −12.29426%; s11 ends
+  −11.65006%. Zero A/A envelopes do not excuse the misses. All three rows also shift upward by >0.5% in each
+  shared year 2010–2013. The lead must resolve this conflict with the approved start-8 mechanism; its historical
+  endpoint approval does not waive the annual rule. T045 keeps the specified cost and makes no compensating
+  residential growth, free approval, default-bot strategy or other balance change. Final merge gates/envelopes
+  must still be remeasured after B2/T041 on that exact base.
+- **Permission/realization follow-up:** the requested CONTENT/SIM backlog entry is present. No local quota exists
+  to remove: near-station permission already retains all original downtown rights. Catalog, demand, growth
+  allowance or footprint changes require their own later balance lane; historical counters are evidence, not
+  authority to extend LG-08's scope.
+- **Owner work and remaining checks:** route the concrete attachment-query/scheduler request to B2, keep the
+  Stats line with PB-COMMUTE and Grand Central with LG-02, and run the remaining full Vitest/browser/GPU checks.
+  Route retained-inspector watch invalidation to the Worker owner. The inspector payload/text hunk is isolated
+  and authorized here; retained-watch reactivity is not claimed to pass. No `.done` is written.
 
 ## Browser checklist for the lead
 
@@ -468,11 +771,14 @@ node $taskQuiet node "$taskScratch/growth-counter-launch.mjs" --variant wip-fade
   its partner, or burning/abandoning a station removes eligibility; rebuilding restores it.
 - [ ] R$$, CO$$ and CO$$$ Why? views show “Near a station” at +4 points. Other types and overlapping catchments
   receive no extra bonus.
-- [ ] Above the new-town grace range, a resident-weighted commute over 15 minutes shows a negative monthly
+- [ ] Above the new-town grace range, a resident-weighted commute over 8 minutes shows a negative monthly
   approval term. A hamlet's term fades over 2k→8k sampled residents; an empty city costs zero. Genuine cut-off
   journeys remain penalized, including when the reported traffic average is zero.
 - [ ] Save/load an existing city; station effects reconstruct and play continues in local and Worker modes.
-- [ ] After GUIDE's owner changes, verify the station/downtown inspector hint and Transit minutes-saved line.
+- [ ] Verify the isolated station/downtown inspector hint. Check the Transit minutes-saved line after PB-COMMUTE.
+- [ ] Keep an inspector open while paused; remotely cut/reconnect the station line and verify the hint updates
+  within the existing watch cap after the Worker owner fixes command-epoch invalidation. A fresh query alone
+  does not pass this retained-watch check.
 - [ ] After LG-02 supplies Grand Central's connected definition, verify its 8-tile radius.
-- [ ] Inspect station-area skyline variety/concentration and rerun unresolved numerical gates after the lead's
-  design decision. Browser inspection alone does not establish the 1.5× stage gate.
+- [ ] Inspect station-area skyline variety/concentration. Browser inspection alone does not establish NOTE-048's
+  numerical stage-6+ share gate; use the final census and fresh paired bot evidence.

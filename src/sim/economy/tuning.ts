@@ -706,7 +706,7 @@ export const APPROVAL = {
   pollution: -25,
   crime: -30,
   commute: -0.25, // per minute above commuteStart
-  commuteStart: 15,
+  commuteStart: 8,
   unemployment: -50, // × (unemployment − 0.08)
   parks: 8, // × (park coverage at homes − 0.2)
   strike: -8,
