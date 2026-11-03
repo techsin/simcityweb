@@ -15,12 +15,12 @@ import type { SampleRoute } from '../sim/infra/traffic';
 export const PROTOCOL_VERSION = 1;
 export type CommandOp = 'zone' | 'dezone' | 'bulldoze' | 'buildNetwork' | 'buildPowerLine' | 'buildSubway' | 'plop'
   | 'terraform' | 'plantTrees' | 'setTax' | 'setFunding' | 'setHistoric' | 'setOrdinance' | 'takeLoan' | 'repayLoan'
-  | 'setSpeed' | 'resume' | 'dispatch' | 'dispatchBest' | 'dismissAlert' | 'triggerDisaster' | 'setCamera' | 'setSettings' | 'holdCalendar'
+  | 'setSpeed' | 'resume' | 'dispatch' | 'dispatchBest' | 'dismissAlert' | 'triggerDisaster' | 'setCamera' | 'setSettings' | 'holdCalendar' | 'setOnboarding'
   | 'debug.runDays' | 'debug.verify' | 'debug.setStepBudget' | 'debug.setTrafficMinCycle';
 export type QueryName = 'inspectBuilding' | 'inspectCell' | 'dispatchOptions' | 'routePreview' | 'emergencyReport'
   | 'demolishRisks' | 'sideDemolishRisks' | 'stopsNear' | 'ferryPartnersFor' | 'openAdvice' | 'advisorIssues'
   | 'capHints' | 'tourismSummary' | 'attractivenessBreakdown' | 'unservedClusters' | 'computeMonthlyBudget' | 'garageStates' | 'verify'
-  | 'upkeepContext';
+  | 'upkeepContext' | 'guideFacts';
 // These wire policies are completed by the W0 query / persistence lanes; no handlers live here.
 export type WatchPolicy = 'daily' | 'monthly' | 'change';
 export type SaveReason = 'manual' | 'autosave' | 'hidden' | 'exit';
@@ -95,7 +95,7 @@ export interface TrafficStream { routes?: SampleRoute[]; trucks?: { idx: Uint32A
 export interface Streams { emergency?: EmergencyStream; traffic?: TrafficStream; disasters?: ActiveDisaster[] }
 export interface WorkerStats { busy: number; msPerDay: number; units: Record<string, number>; queue: number }
 export const PLAIN_KEYS = ['funds', 'nextBuildingId', 'stats', 'budget', 'milestones', 'neighborConnections'] as const;
-export const SYSTEM_KEYS = ['economy', 'infraVersion', 'infraLayers', 'advisors', 'regionJobs', 'regionWorkers'] as const;
+export const SYSTEM_KEYS = ['economy', 'infraVersion', 'infraLayers', 'advisors', 'regionJobs', 'regionWorkers', 'onboarding'] as const;
 export type PlainPatch = Partial<Pick<CityState, typeof PLAIN_KEYS[number]>> & {
   unlocked?: string[]; announced?: string[];
   historyTail?: Partial<HistorySeries>;

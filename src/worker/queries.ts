@@ -1,12 +1,13 @@
 /** Headless query handlers and their watch invalidation policies (WORKER_DESIGN §2.8). */
 import type { CellRect } from '../core/events';
-import type { NeedTier, CityState } from '../sim/CityState';
+import { BF, type Building, type NeedTier, type CityState } from '../sim/CityState';
 import { getDef } from '../sim/catalog';
 import type { Simulation } from '../sim/Simulation';
 import { advisorIssues, advisorIssuesReady, openAdvice, type OpenAdvice } from '../sim/economy/advisors';
 import { computeMonthlyBudget } from '../sim/economy/budget';
 import { capHints } from '../sim/economy/demand';
 import { opexTierOf } from '../sim/economy/opex';
+import { lotCell } from '../sim/economy/factors';
 import { attractivenessBreakdown, tourismSummary } from '../sim/economy/tourism';
 import { unservedClusters } from '../sim/infra/catchments';
 import type { EmergencySystem } from '../sim/infra/emergency';
@@ -35,8 +36,85 @@ function upkeepContext(sim: Simulation, { defId, x, z, w, d }: PlacementArgs & {
   return { here: def ? upkeepHere(sim.state, def, x, z, w, d, need) : null };
 }
 
+/** Only the three coverage totals cross the seam; normal-view replicas need no coverage-layer subscription. */
+export interface GuideFacts { policeAtHomes: number; fireCovered: number; fuelCovered: boolean }
+interface GuideLot { b: Building; def: string; cell: number; residential: boolean; fuel: boolean }
+interface GuideCache {
+  state: CityState; revision: number; computed: string; value: GuideFacts;
+  lots: GuideLot[]; index: Map<number, number>;
+}
+const guideCaches = new WeakMap<Simulation, GuideCache>();
+
+function guideCache(sim: Simulation): GuideCache {
+  let cache = guideCaches.get(sim);
+  if (cache) return cache;
+  const c: GuideCache = { state: sim.state, revision: 0, computed: '',
+    value: { policeAtHomes: 0, fireCovered: 0, fuelCovered: false }, lots: [], index: new Map() };
+  const put = (b: Building) => {
+    const index = c.index.get(b.id), old = index === undefined ? undefined : c.lots[index];
+    const cell = lotCell(b, c.state.size);
+    if (old?.b === b && old.def === b.def && old.cell === cell) { c.revision++; return; }
+    const def = old?.def === b.def ? undefined : getDef(b.def);
+    const lot: GuideLot = { b, def: b.def, cell,
+      residential: old?.def === b.def ? old.residential : def?.category === 'growable' && def.devType !== undefined && def.devType <= 2,
+      fuel: old?.def === b.def ? old.fuel : !!def && (def.powerOut ?? 0) > 0 && (def.pollution?.air ?? 0) > 0 };
+    if (index === undefined) { c.index.set(b.id, c.lots.length); c.lots.push(lot); }
+    else c.lots[index] = lot;
+    c.revision++;
+  };
+  const reset = () => {
+    c.state = sim.state; c.lots.length = 0; c.index.clear(); c.revision++;
+    for (const b of c.state.buildings.values()) put(b);
+  };
+  reset();
+  sim.events.on('buildingAdded', put);
+  sim.events.on('buildingChanged', put);
+  sim.events.on('buildingRemoved', (b) => {
+    const index = c.index.get(b.id);
+    if (index === undefined) return;
+    const last = c.lots.pop()!;
+    if (index < c.lots.length) { c.lots[index] = last; c.index.set(last.b.id, index); }
+    c.index.delete(b.id); c.revision++;
+  });
+  const invalidate = () => { c.revision++; };
+  sim.events.on('networkChanged', invalidate);
+  sim.events.on('zoneChanged', invalidate);
+  sim.events.on('terrainChanged', invalidate);
+  // Population bands can change resident weights without a buildingChanged event.
+  sim.events.on('day', invalidate);
+  sim.events.on('layerUpdated', (layer) => { if (layer === 'services' || layer === 'emergency') invalidate(); });
+  sim.events.on('reset', reset);
+  guideCaches.set(sim, c);
+  return c;
+}
+
+function guideSignature(sim: Simulation): string {
+  const c = guideCache(sim), em = sim.getSystem<EmergencySystem>('emergency');
+  return `${c.revision}:${!!em?.active}:${!!em?.layersReady}`;
+}
+
+function guideFacts(sim: Simulation, _args: Record<string, never>): GuideFacts {
+  const c = guideCache(sim), signature = guideSignature(sim);
+  if (c.computed !== signature) {
+    const st = sim.state, em = sim.getSystem<EmergencySystem>('emergency'), fireReady = em?.active && em.layersReady;
+    let residents = 0, police = 0, buildings = 0, covered = 0, fuelCovered = true;
+    for (let i = 0; i < c.lots.length; i++) {
+      const { b, cell, residential, fuel } = c.lots[i];
+      if (b.flags & BF.Burnt) continue;
+      if (residential && b.pop > 0) { residents += b.pop; police += st.policeCov[cell] * b.pop; }
+      const fire = !!fireReady && st.respFire[cell] >= 0;
+      buildings++; if (fire) covered++;
+      if (fuel && !fire) fuelCovered = false;
+    }
+    c.value = { policeAtHomes: residents ? police / residents : 0, fireCovered: buildings ? covered / buildings : 0, fuelCovered };
+    c.computed = signature;
+  }
+  return { ...c.value };
+}
+
 export const QUERY_HANDLERS = {
   upkeepContext,
+  guideFacts,
   inspectBuilding,
   inspectCell,
   dispatchOptions: (sim: Simulation, { incidentId }: { incidentId: number }) => sim.getSystem<EmergencySystem>('emergency')?.dispatchOptions(sim, incidentId) ?? [],
@@ -80,6 +158,7 @@ export function queryKey(value: unknown): string {
 
 export function watchSignature<K extends QueryName>(sim: Simulation, name: K, args: QueryArgs<K>, when: WatchPolicy, commands: number): string {
   if (name === 'inspectBuilding' || name === 'inspectCell') return inspectSignature(sim, args as InspectBuildingArgs | InspectCellArgs);
+  if (name === 'guideFacts') return guideSignature(sim);
   const st = sim.state;
   const policy = String(when === 'monthly' ? st.monthIndex : when === 'daily' ? st.day : `${st.day}:${commands}`);
   // W0.3b: constant-time inputs; returns while advancing and paused commands both change availability.
@@ -129,6 +208,6 @@ export function exactDigest(st: CityState): number {
   for (const b of [...st.buildings.values()].sort((a, b) => a.id - b.id)) { walk(b.id); for (const k of EXACT_FIELDS) walk(b[k]); }
   for (const k of PLAIN_KEYS) walk(st[k]);
   walk(st.unlocked); walk(st.announced); walk(st.history); walk(st.news);
-  for (const k of SYSTEM_KEYS) walk(st.systemData[k]);
+  for (const k of SYSTEM_KEYS) if (k !== 'onboarding' || st.systemData[k] !== undefined) walk(st.systemData[k]);
   return hash;
 }

@@ -1,5 +1,6 @@
 /** The main-thread simulation seam, including commands, queries, views and persistence. */
 import type { CellRect, Emitter } from '../core/events';
+import type { GuideProgress } from '../core/onboarding';
 import type { DevType, Network, Zone } from '../core/types';
 import { ActionsProxy } from '../game/ActionsProxy';
 import type { SavedCamera } from '../game/cameraStart';
@@ -193,6 +194,10 @@ interface Commands {
  *  worker's clock, so the hold is a command: idempotent, released on midnight, cancel and dispose. */
 interface Commands {
   holdCalendar(on: boolean): void;
+}
+/** FH-22: UI snapshots are validated and copied by the authoritative host. */
+interface Commands {
+  setOnboarding(progress: GuideProgress): boolean;
 }
 export type CommandOp = keyof Commands;
 export type CommandArgs<K extends CommandOp> = Parameters<Commands[K]>;

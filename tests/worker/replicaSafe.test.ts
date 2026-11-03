@@ -17,6 +17,7 @@ import { SeededLag } from '../../src/worker/lag';
 import { viewLayers, workerRaster } from '../../src/worker/recorder';
 import { exactDigest } from '../../src/worker/queries';
 import { REPLICA_SAFE } from '../../src/worker/replicaSafe';
+import type { Reply } from '../../src/worker/protocol';
 import { grownFixture, loadFixture } from '../../tools/bench/worker/fixtures';
 import { newState, stressCity } from '../infra/cityGen';
 
@@ -51,8 +52,9 @@ describe('REPLICA_SAFE', () => {
   for (const [name, create, present] of [
     ['generated 128²', () => stressCity(128).st, true],
     ['grown fixture', () => loadFixture(grownFixture()), existsSync(grownFixture())],
-  ] as const) it.skipIf(!present)(`${name}: all reads and random previews agree at ten checkpoints across 120 days`, { timeout: 300000 }, () => {
-    const loop = new LoopbackCore(create()), seen = new Set<string>();
+  ] as const) it.skipIf(!present)(`${name}: all reads and random previews agree at ten checkpoints across 120 days`, { timeout: 300000 }, async () => {
+    let guideReply: Reply | undefined;
+    const loop = new LoopbackCore(create(), { replica: { reply: (r) => { if (r.t === 'qres' && r.id === 1) guideReply = r; } } }), seen = new Set<string>();
     const rng = new SeededLag({ seed: 32 });
     const compare = (name: typeof REPLICA_SAFE[number], fn: (st: CityState) => unknown, detail = '') => {
       seen.add(name);
@@ -73,6 +75,10 @@ describe('REPLICA_SAFE', () => {
         }
         for (const [overlay, variant] of views) { loop.setView({ overlay, variant, panels: [], focus: [] }); loop.flush(true); }
         const before = exactDigest(loop.state), liveBefore = exactDigest(loop.primary), simRng = loop.core.sim.rng.state;
+        // guideFacts is safe through the aggregate seam, without synchronising its input coverage arrays.
+        const guide = loop.core.runQuery('guideFacts', {});
+        loop.post({ t: 'query', id: 1, name: 'guideFacts', args: {} }); await loop.drain();
+        expect(guideReply).toMatchObject({ t: 'qres', id: 1, ok: true, value: guide }); seen.add('guideFacts');
         compare('listRewards', listRewards); compare('listOrdinances', listOrdinances);
         compare('maxLoanAmount', maxLoanAmount);
         // approvalBreakdown is not replica-safe: its detail lines read approval.ts's survey WeakMap, which only the

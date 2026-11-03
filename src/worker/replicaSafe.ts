@@ -4,11 +4,13 @@
  * outages, Easy's crime grace) read approval.ts's survey WeakMap, which only the authoritative residentSurvey fills.
  * Until the survey figures travel in the economy plain data or a query, the approval popover shows no detail lines
  * on a replica (a W1.1b follow-up).
+ * guideFacts is delivered by its aggregate query/watch; its input layers need no replica subscription.
  */
 export const REPLICA_SAFE = [
   'listRewards', 'listOrdinances', 'loanOffer', 'maxLoanAmount', 'regionTerms',
   'serviceEffectiveness', 'onStrike', 'demandInfo', 'emptyZoneStatus', 'utilityReaches', 'infraFlags',
   'windVector', 'overlayLayer', 'overlayReadout', 'cityFingerprint',
+  'guideFacts',
   'zone', 'dezone', 'bulldoze', 'buildNetwork', 'buildPowerLine', 'buildSubway', 'plop', 'terraform', 'plantTrees',
   'setOrdinance', 'takeLoan', 'repayLoan',
 ] as const;

@@ -127,6 +127,7 @@ async function run(reads: boolean, loopback = false, grown = false) {
         for (const tier of NEED_TIERS) await read('unservedClusters', { tier });
         await read('computeMonthlyBudget', {});
         await read('garageStates', {});
+        await read('guideFacts', {});
         await read('verify', {});
         expect(hash(st), `queries changed state on day ${day + 1}`).toBe(before);
         expect(sim.rng.state).toBe(beforeRng);

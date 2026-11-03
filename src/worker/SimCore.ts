@@ -1,5 +1,6 @@
 /** The headless simulation shared by hosts: region effects, guarded systems and authoritative actions. */
 import { trackRegionEffects, type RegionContext } from '../region/regionEffects';
+import { copyOnboardingProgress } from '../core/onboarding';
 import type { CityActionsApi } from '../sim/actions';
 import { BF, type CityState } from '../sim/CityState';
 import type { DisastersSystem, DisasterKind } from '../sim/infra/disasters';
@@ -226,6 +227,12 @@ export class SimCore {
         return sim.getSystem<DisastersSystem>('disasters')?.trigger(sim, kind as DisasterKind, x, z) ?? false;
       }
       case 'setCamera': st.systemData.camera = cmd.args[0]; return;
+      case 'setOnboarding': {
+        const progress = copyOnboardingProgress(cmd.args[0]);
+        if (!progress) return false;
+        st.systemData.onboarding = progress;
+        return true;
+      }
       // W0.4: only the policy owner changes dismissals and simulation settings.
       case 'dismissAlert': this.livePolicy.dismiss(cmd.args[0]); return;
       case 'setSettings': this.livePolicy.setSettings(cmd.args[0]); return;
