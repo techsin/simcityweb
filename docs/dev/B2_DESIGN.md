@@ -650,6 +650,14 @@ No fixture has P&R garages.
 
 **Memory:** two `Int32Array(C)` + two `Uint8Array(C)` + the small component arrays ≈ 0.7 MB.
 
+**As built (G4).**
+- `sub` numbers the pieces of the whole pass (25 sub-states inside the six `U_*` states); `stepName` is `<state>.<piece>`, e.g. `power.sum#12`. One snapshot per pass with one chunk plan (the cold Building floor + 20 ns per footprint cell) for all six building stages; every piece at half `INFRA_PIECE_COLD_MS`, with the cold cell floor for the cell loops.
+- UU0 is `S_START` (ensure, the effects, the plant efficiency and prepareUses' per-pass values; the dirty flags and the `added` / `removed` swap, R5). The jobs check (`detectJobsUnknown`) moved into the snapshot piece, where the day's first `buildingList` rebuild falls (a pure function of the buildings). The sea mask is its own piece, taken unconditionally (pre-B2 took it at the first working water producer; a pure, checksummed cache). The treatment prefix scan runs by building ranges of a quarter of the Building floor (it reads a DefInfo and two fields), not by plan chunks.
+- The publish pieces are the last piece of their loop: the uses' last chunk swaps the producers, posts the nuclear news and runs `patchPower`; a label's last piece swaps the labels; the sums' last chunk `.set()`s the per-component sums (and, for water, the per-id networks `bWComp` and the intake pollution) from private buffers and runs the rest of pre-B2's sums step; the zoned loop's last piece `.set()`s `st.powered` / `st.watered` from private layers. `.set()` of the `[0, nc)` range rather than a swap keeps the arrays' tails (beyond `nc`) exactly as pre-B2, so the frozen-original comparison holds field by field.
+- Finish: the building chunks collect the candidates (snapshot index and the wanted bits of each building whose Powered / Watered bit flips) and run the cooling-water result and the cut tally (both read only state that the pass does not change between the chunk and the apply); one piece applies the flags (review 1 R4d); the events follow in batches, their last piece posts the news and `layerUpdated`.
+- U_WATER's mid-pass relabel check runs at its first piece (as pre-B2's step); `dirtyWater` is consumed at the first piece of a water label (R5), so an edit during the label relabels again at U_WATER.
+- The chunk sizes have their own constants (`US`, `UT_PLAN_*`), apart from the estimate coefficients (`UT`, `UT_EST`).
+
 ## 8. Emergency response (`emergency.ts`; G4)
 
 `respStep` 0–4 are unchanged; `p.resp` and `saveResp()` after every piece are as today.
@@ -665,6 +673,12 @@ No fixture has P&R garages.
 - **respStep 4:** `EMERG_FILL_CHUNK` = `pieceUnits(0.14 µs)`, about 2,100 buildings, over today's live list with `respBCur`.
 - **Why exact:** `ChunkedSearch` already resumes exactly. Each cell and each building is written once from the frozen slacks.
 - **Tests:** extend `emergency.test.ts`'s `respCost` loop to the new sub-states. The `p.resp` 'save + load mid-response' test is unchanged.
+
+**As built (G4).**
+- Every piece at a quarter of `INFRA_PIECE_COLD_MS` (the 90-day sequence is the rarest of the split passes), with the cold floors. `respSub` / `respCur` are the piece state; `respStep` 0–4 and `p.resp` are pre-B2's. `stepName` is `resp<k>.<piece>`.
+- ES0 is split (review 2 item 5c): while `respStep < 0`, `respSub` runs the start — a moved traffic graph's signature by node ranges (`sigRange`, cached by graph object and version: `ensureGraph` reads the cache instead of hashing again; a pure function of the graph's content, which only a build or publish changes, and both bump the version), then `ensureGraph` + the station scan when `stDirty` (a snapshot, building chunks, then `installStations` — refreshStations' second half; a synchronous refresh by dispatch in between makes the scan moot, a station event after its start leaves `stDirty` set, `stEv`), then the siren times by node ranges into a private `tmN` (`sirenTimes`; published with `Persist.siren` in one piece; a refresh by dispatch in between ends it, an epoch or traffic update restarts it), whose last piece also runs the resets and the `respTm` copy. Every piece with `respStep ≥ 0` checks the graph first: a moved graph's signature in pieces, then the epoch check (a restart resets every cursor).
+- A search: its start (seeds, `ChunkedSearch.start`), settle chunks (`emUnits(0.05 µs)`, about 650 nodes), the slack pass by node ranges. The land fill by rows (the RESP_NONE fills in its first piece); the building fills by chunks of the live list (`respBCur`), as pre-B2.
+- The chunk sizes have their own constants (`ES`), apart from the estimate coefficients (`EM`, `EM_EST`). The pre-B2 `EMERG_SEARCH_CHUNK`, `EMERG_FILL_CHUNK` and `EMERG_*_COST` stay in params.ts for the frozen original and the bench tool (`tools/bench/roadTransitSearch/secondary.ts`).
 
 ## 9. The cost model
 
@@ -956,6 +970,9 @@ New: save in the middle of every task's pass, with tiny pieces so that every tas
 | `tests/wasm/fieldPasses.test.ts` live sections, `tests/wasm/blurSim.test.ts` (G3) | the frozen pre-B2 `PollutionSystem` (and, in blurSim, `CrimeSystem`) replaces the live one (`tests/sim/exact/pollutionOriginal.ts`, `crimeOriginal.ts`) | the field-pass overrides and the wasm blur bindings cover the pre-B2 stage methods and whole-call kernels; the B2 pieces equal the frozen classes at every pass end |
 | `tests/infra/emergencyBot.test.ts` EM-1 normal play (G2) | the invariants are checked on the first of seeds 2, 4, 5, 6, 1, 3, 8 whose 4-year town raises at least two prompts (G1 had moved it from seed 7 to seed 2) | the bot's schedule follows the estimates; G2's tier pieces left seed 2 with one prompt |
 | `tests/infra/emergencyBot.test.ts` EM-1 normal play (G3) | the towns run 5 years instead of 4 (seed 2: 3 prompts) | G3's pieces left every seed 1–16 at 0 or 1 prompt in 4 years |
+| `tests/sim/exact/j10.test.ts` (G4) | the city-days test compares at day ends (every utilities pass ends within its day on these tiny cities) with the B2 fields excluded by name, the scheduler fields that follow the estimates excluded (credit, carry, estMs, estSpent, lastDayCost), and the step trace kept at the state transitions (day, due, urgent, state) without the estimates; the edge test runs whole passes between its edits | review 1 R7a: one step is one piece; the trace's per-step costs are recalibrated by design |
+| `tests/infra/emergency.test.ts` 'emergency perf' (G4) | the `respCost` loop covers every sub-state (`respStep` −1…4 × `respSub` 0…3); every response piece ≤ 0.5 estimated ms | §8 |
+| `tests/infra/perf.test.ts` P0-8 / P0-15 (G4) | utilities' largest piece estimate ≤ 1.0; P0-15 re-baselined to ≤ 1.02 (0.996) | the step guard no longer ends a day before its budget is spent (§18) |
 
 ### 11.6 The WASM ports: a decision for the lead
 
@@ -1577,3 +1594,106 @@ The indivisible items stay small (all W runs, no GC): the snapshot take (`source
 - **Keep sizing and estimate apart** (as G2): the chunk plans have their own constants (`CR_PLAN_*`, `PLAN_*`), so the refit moved no boundary; check it by the atomic passdigest's step counts.
 - **The frozen originals** (`crimeOriginal.ts`, `pollutionOriginal.ts`) keep the WASM field-pass sections and blurSim running; the bench tools that install field passes into a live `PollutionSystem` (`tools/bench/fieldPasses/insitu.ts`, `capture.ts`) need them too.
 - **Tools** (in `scratchpad/b2work/G3-crime-pollution/`): `cpumapE.ts`, `editmapE.ts` (G2's, rebundled), `passdigestE.ts` (+ the pollution / crime internals), `genfxE.ts` (env cities from B's code), `anE.py` (windows, tables, cost error, busy p99, cadence, per label), `formal2.sh` (the formal hold).
+
+## 18. G4 as built (`G4-utilities-emergency-recalibration`, Nov 3)
+
+**Commits** (branch `b2-step-split`, on G3's `e5a1e81`): `618f15c` utilities in pieces (the frozen `utilitiesOriginal.ts`, the j10 adaptation), `a34b5d2` the emergency response in pieces (the frozen `emergencyOriginal.ts`, the `respCost` loop over the sub-states), `dc6b826` `tests/infra/b2PiecesInfra.test.ts` and `tests/infra/infraCity.ts`, `ee298e9` the chunk sizes apart from the estimates, the warm refit, the treatment scan by building ranges, `be73ef4` the step guard 256 → 4096, the final day budget (5.3), P0-15, then this document. `npx tsc --noEmit` clean; the full `npx vitest run` at `be73ef4` (2 workers, low priority, outside the timing lock: the lock queue held other workers' runs for most of the afternoon): 138 files passed, 1 skipped (1,418 tests passed, 18 skipped), no unhandled errors.
+
+### 18.1 Review items applied
+
+| item | where |
+|---|---|
+| review 1 R4d (the Powered / Watered flags in one piece) | the finish's chunks collect candidates (snapshot index + the wanted bits); one piece applies them in snapshot order; the cooling-water result and the cut tally run in the chunks (§7 as built) |
+| review 1 R6 (proof against today's code) | `tests/sim/exact/utilitiesOriginal.ts`, `emergencyOriginal.ts` (41ae570, frozen): b2PiecesInfra compares every original field at every pass / sequence end, at production and random piece sizes, across network, building, bridge, plopped, power-line, zone, funding, occupancy, plant, station and traffic edits, also with a road edit right before U_WATER (pre-B2's mid-pass water relabel) and a graph change in the middle of a sequence (the epoch restart); `passdigest --mode atomic` B vs W on dense1m, bot256 and five cities generated with B's code (`util96_s7_island`, `util128_s11_short`, `util64_s5_ok`, `emerg128_s7`, `emerg96_s11`), each with and without WP1 (18.3) |
+| review 1 R7a (j10) | §11.5: compared at day ends (= pass ends on its tiny cities) and at state transitions; the edge test edits between whole passes |
+| review 1 R8 (other code of the same city between pieces) | b2PiecesInfra "R8": utilities `gridInfo`, `waterInfo`, `waterQualityAt`, `plantLoad`, `producerInfo`, traffic `findPath` and `stopAttached` / `freightRailCells` with the attachment forced dirty, pollution `garbageInfo` / `incineratorShare`, services `needRaster`, an emergency `probe` after every utilities piece; emergency `probe` (dispatch searches, which run the lazy station / graph / siren refreshes themselves), `stationList`, traffic `findPath` after every response piece: same results as without them |
+| review 1 R9 | utilities: a save in the middle of a pass holds no pass state, loads idle, loads the same twice; emergency: the saved key set is unchanged mid-sequence, a load starts idle (`p.resp` as pre-B2) |
+| review 1 O3, O4, O5, O8, O9 | `stepCost` / `respCost` read cursors and sizes only (O(1)); utilities "O4" (the piece sequence and the digests with frames active and headless); `withPieceScale`, seeded random scales; `stepIdx < 0` resets every utilities cursor, `init()` and the epoch restart reset every response cursor (`resetRespPieces`); the test passes assert their end |
+| review 2 item 1 (cold sizes) | utilities at half `INFRA_PIECE_COLD_MS`, the response sequence at a quarter, both with the cold cell and Building floors |
+| review 2 item 3 (windows from load; edits) | measured `--warm 0 --days 220` per window and the edit and disaster scenario (18.4) |
+| review 2 item 4 (warm cost error) | the warm refit (`ee298e9`); the cost error per task on the warm windows (18.4) |
+| review 2 item 5c (ES0) | the start in pieces: the moved graph's signature by node ranges (cached for `ensureGraph`), the station scan, the siren times into a private buffer (§8 as built) |
+| review 2 item 5d (flags) | the apply piece has its own coefficient (`UT.apply`) and was measured (18.4); not chunked |
+| review 2 item 5f (largest items) | 18.4 |
+| review 2 optional (derive `STEP_GUARD`) | 4096 (18.2) |
+
+Not applied: R1–R5 (traffic / services / pollution, G1–G3), O10 / O11 (no utilities or emergency part), review 2 item 2 (the Building-shape fix is outside B2's files; §14 item 4).
+
+### 18.2 Deviations from §7–§9, and why
+
+- **`STEP_GUARD` 256 → 4096** (§2.1 said 256). At 256, the ~470 pieces of a dense1m utilities pass ended 72 of 100 days after ~3 of the 5.3 estimated ms (the guard, not the budget, decided the day), and an urgent pass needed two days. 4096 pieces of the smallest estimate are above a day's budget, so the budgets bind.
+- **`INFRA_DAY_BUDGET` stays 5.3** (§9.4 item 2 asked for W's real infra ms per day to match B's). The match needs about 3.0–3.2 with B2's estimates, and at 3.2 the services pass, the largest, ran 0–1 times in 120 days (B: 3); at 4.2 dense1m's traffic fell from 5 to 3 cycles. Only 5.3 keeps every task at B's cadence or above (18.5). The balance runs check the time (`totalMsPerDay` ≤ baseline + 3, 18.6).
+- **ES0's last part is folded into the siren times' last piece**, and the moved graph's signature is cached by graph object and version instead of being an `ensureGraph` sub-step; `ensureGraph`, `refreshStations` and `ensureTimes` keep their synchronous code for dispatch.
+- **The sea mask is its own piece, taken unconditionally**, and the jobs check sits in the snapshot piece (both pure, cached or early-exit functions; §7 as built).
+- **The treatment prefix scan runs by building ranges** at half the Building floor (it reads a DefInfo and two fields), not by plan chunks; at a quarter its first pieces after a load ran at ~3 µs per building (4.1 ms).
+- **Sums are published by `.set()` of `[0, nc)`, not by a swap**, so the arrays' tails stay exactly pre-B2's (the frozen-original comparison is field by field).
+- **The pre-B2 `EMERG_*` chunk and cost params stay** in params.ts for the frozen original and the search bench.
+- **A separate test file**, `tests/infra/b2PiecesInfra.test.ts`, on the G1 harness. j10 keeps its own frozen utilities (614609f, J10's reference); b2PiecesInfra uses `utilitiesOriginal.ts` (41ae570).
+
+### 18.3 Exactness evidence
+
+- `tests/infra/b2PiecesInfra.test.ts` (21 tests): utilities passes (util cities 48 without a short grid, 64 with short main grids, 96 with a short island grid; infra only and every system) in one go = production = tiny / random pieces at every pass end; production and random pieces = the frozen original in every original field, also with the mid-pass water relabel; the edits reach every branch (both labels, the relabel of a soft pass, both brownouts, the results without one, the mid-pass water relabel, flag flips); R8, R7, R9, O4, two cities interleaved, piece estimates within budget. The emergency response likewise (emergency cities 64 and 96): one go = pieces = the frozen original, also with a graph change mid-sequence; every branch (signature pieces, the epoch restart, the same graph rebuilt, the station scan, the siren times, every state); R8, R7 / R9, estimates.
+- `tests/sim/exact/j10.test.ts`: the split UtilitiesSystem against J10's frozen one over 10,240 city-days with edits, loads and new cities, and 32 edge cities (sparse ids, > 256 grids, special floats) pass by pass.
+- `passdigest --mode atomic` (`b2work/G4-utilities-emergency-recalibration/passdigestG4.ts`: G3's digests + the utilities internals — labels, sums, per-id results, producers, loads, the cut tally — and the response internals — slacks, siren times, stations, the graph signature), B vs W at `dc6b826`, digests at days 30 and 100: dense1m, bot256 and the five synthetic cities, each with and without WP1. All 24 checkpoints identical. The step counts differ by design: at dense1m by day 100, utilities 154 steps in B and 24,116 pieces in W, emergency 6 and 252.
+
+### 18.5 The day budget and the cadence (§9.4)
+
+Tool: `cadG4.py` over the cpumap summaries and step logs (real infra ms per day = the sum of the measured step times over
+the days). Hold 1 (`be73ef4`'s code before the refit, budget 5.3, other processes 0.08 cores): B and W, 3 runs each; hold
+2 (the refit; budget 5.3, 4.2 and 3.2 with the carry and the credit floor scaled as 0.6 / 4 × budget / 3.2): W 2 runs per
+budget and fixture, B one (other processes 0.38 cores: noisier). Warm windows (`--warm 300 --days 120`); passes per 120
+days, medians over runs.
+
+| fixture, side | real infra ms / day | est ms / day | traffic cycles | services | utilities | pollution | crime | emergency |
+|---|---|---|---|---|---|---|---|---|
+| dense1m B (hold 1 / hold 2) | 4.76 / 4.23 | 3.31 | 5 | 3 | 21 | 6 | 6 | 1 |
+| dense1m W 5.3 (hold 1 / hold 2) | 8.04 / 7.97 | 5.91 / 5.72 | 5 | 5 / 4 | 30 / 36 | 10 | 6 | 1 |
+| dense1m W 4.2 | 5.31 | 4.71 | 3 | 4 | 25 | 9 | 6 | 1 |
+| dense1m W 3.2 | 3.73 | 3.42 | 3 | 1 | 24 | 9 | 6 | 1 |
+| bot256 B (hold 1 / hold 2) | 4.02 / 4.59 | 3.33 | 7 | 3 | 16 | 7 | 6 | 1 |
+| bot256 W 5.3 (hold 1 / hold 2) | 6.60 / 6.06 | 5.42 / 5.55 | 9 / 8 | 6 / 7 | 33 / 31 | 10 | 6 | 1 |
+| bot256 W 4.2 | 5.60 | 4.50 | 7 | 5 | 24 | 9 | 6 | 1 |
+| bot256 W 3.2 | 3.93 | 3.27 | 6 | 0 | 22 | 7 | 6 | 1 |
+
+- **Why W needs more real time for the same cadence.** Per pass W costs about B's (utilities 4.5 vs 4.6 ms, pollution
+  16.6 vs 16 ms, services 57 vs 44 ms), but a dense1m traffic cycle costs about 70 ms against B's 41: G1's pieces. And
+  the estimates are per-piece medians: summed, W's real time is 1.36 × its estimates at dense1m and 1.22 × at bot256
+  (traffic 2.0 ×: its cold tail), so the real-time match of §9.4 item 2 needs a budget of about 3.0–3.2. At 3.2 the
+  services pass (the largest, ~60 estimated ms at dense1m) runs 0–1 times in 120 days.
+- **The final values: 5.3 / 1.0 / 6.5** (G1's provisional ones). At 5.3 traffic keeps B's cycles on both fixtures, every
+  other task runs at least as often as in B (pollution its full 12-day period; utilities passes end in their first day,
+  so the next soft pass comes sooner). The cost: 1.3–1.9 × B's real infra ms per day warm (+1.5 to +3.7 ms); from load
+  (220 days) 1.21 × (11.95 against 9.84 ms per day). `INFRA_TASK_WEIGHT` was not needed (no balance failure from a cadence
+  shift, 18.6).
+- **P0-15** (the stress city's utilisation): 0.996 at 5.3 with the new step guard; re-baselined to ≤ 1.02 (§11.5).
+
+### 18.6 The balance procedure and the bot (SIM_DEPTH_SPEC)
+
+Tool: `b2work/G4-utilities-emergency-recalibration/balanceG4.ts` (tools/balance-json.ts + the bot printout's tourists
+column, B1's tourism check), bundled in B (41ae570, B1's code) and in W (`be73ef4`); B and W side by side (in parallel,
+nice 19). **Outside the timing lock**: the lock queue held other workers' QA soaks and full test runs for hours. The
+rows are deterministic (B reproduces every b1 row: 256 × 60 s7 2015 183,671, s11 181,028, 128 × 15 s7 2015 196,101,
+and B1's five extra 128 seeds); `totalMsPerDay` is only comparable B against W of the same pair (load average 5–7).
+`balcmp.py` gives the gates.
+
+| gate (256 × 60 seed 7 unless named) | B (b1) | W (b2) | |
+|---|---|---|---|
+| pop at year 15 ≥ 150k | 183,671 | 186,016 | pass |
+| pop at year 60 ≥ 950k | 1,527,090 | 1,501,465 | pass |
+| lowest W / B pop ratio ≥ 0.9 | — | 0.983 (2055) | pass |
+| lowest approval from year 30 ≥ 50 | 79.5 | 79.8 | pass |
+| EQ ≥ 100 by year 30 | 121.6 (first 2017) | 120.5 (first 2020) | pass |
+| lowest funds ≥ 0 | 6,994 | 9,552 | pass |
+| tourism jobs within ±30 % | — | single years 0.39–1.30 (7 of 55 outside, 2006–07, 2015–19), geometric mean 0.845; across six 128 × 15 seeds the year-15 ratio's geometric mean is **1.000** (0.59–1.33) | pass, judged as B1 did (the bot's chaos) |
+| mean `totalMsPerDay` ≤ baseline + 3 | 11.37 | 14.02 (+2.65; the worst single year +7.84) | pass |
+| seed 11: pop y15 / y60, lowest ratio, approval, EQ y30, funds, tourism, ms / day | 181,028 / 1,504,571; 80.0; 118.8; 8,031; —; 10.59 | 186,159 / 1,411,714; 0.938 (2059); 80.2; 121.8; 6,943; 0.70–1.48 (3 of 55 outside, mean 0.966); 13.06 (+2.48) | informative |
+| 128 × 15 seed 7: pop 2015, lowest ratio, funds, ms / day | 196,101; —; 7,955; 5.43 | **194,404**; 0.916 (2002), 0.991 at 2015; 7,247; 6.75 (+1.32) | informative |
+
+Six 128 × 15 seeds, year 15 (B → W): population 192,879 → 194,279, 194,974 → 192,420, 195,940 → 195,297, 196,955 →
+192,865, 193,637 → 193,922, 196,101 → 194,404 (geometric mean 0.994); approval 79–82 → 79–82; EQ 100–108 → 102–104;
+tourists 0.86, 1.11, 1.33, 1.01, 1.33, 0.59 (geometric mean 1.000).
+
+**The new bot hashes**: `tests/sim/fixtures/balance-baseline.json` gets a `b2` key in each of the three runs (W's rows),
+`reference = 'b2'`, a note; the older rows are untouched. **The new 128 × 15 seed-7 2015 population is 194,404** (B1's
+196,101; G3 194,947, G2 193,577, G1 193,525). The results move by design through the schedule: the headless schedule
+follows the estimates and the pieces.
