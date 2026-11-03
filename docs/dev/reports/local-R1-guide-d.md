@@ -172,14 +172,14 @@ three residential rates) and let the sim alone run on, no bot actions:
 After six months the two cities have drifted apart (B grows a little slower), so the raw gap itself moves (5.6-7.5);
 the shown approval covers 85-90% of it, against the EMA's 88.2%.
 
-### Gates (cloud, Nov 3; branch `cloud/t037d` at `613735e` for the suite and the bot)
+### Gates (cloud, Nov 3; branch `cloud/t037d`; the bot at `613735e`, the last commit that touches src/)
 
 | Gate | Result |
 |---|---|
 | `npx tsc --noEmit` (sem) | clean after the dev merge, and clean at `613735e` |
 | Targeted tests (approvalHud, taxHighAdvice, budgetTaxes, topBarFrame, uiStacking, panelsAdvisors, advisors, approvalGuide, difficultyRules, panelCommands, panelsMisc) | 11 files, 119 tests passed (120 with the replica test added in `9765ad1`) |
 | Each new test with its fix reverted | taxHighAdvice 2 of 2 fail (advisors.ts reverted); approvalHud 5 of 9 fail with TopBar.ts reverted and 9 of 9 with the module removed; the `showTab` case fails with BudgetPanel.ts reverted |
-| Full `npx vitest run --configLoader runner` (lock, with the bench fixtures, so the grown-fixture cases run) | **206 files passed, 1 skipped; 2,043 tests passed, 4 skipped**, 450 s |
+| Full `npx vitest run --configLoader runner` (lock, with the bench fixtures, so the grown-fixture cases run) | at `613735e`: **206 files passed, 1 skipped; 2,043 tests passed, 4 skipped**, 450 s. At `99b79d0` (with the replica test): **206 files passed, 1 skipped; 2,044 passed, 4 skipped**, 500 s |
 | The 128 × 15 seed-7 bot (lock), against dev `923428d` run from a clean export in `co/t037d-devbase` | **identical**: `residents [ 59288, 95301, 41512 ]` = **196,101**, the year table, the last 25 log lines and the last 12 news all match; only the two timing columns differ |
 | FH-09 on grown cities (A/B above) | raw −6.97 / −7.01 / −7.03 after a month (±15% allows 5.95-8.05); shown 85-90% of the raw gap after six |
 
