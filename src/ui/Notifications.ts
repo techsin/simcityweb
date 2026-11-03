@@ -101,8 +101,8 @@ interface TickerShown {
 
 /**
  * The news ticker (FEEL-01): one item at a time, the newest first.
- * - A new item enters from the right at once (a rotation item gives way). It holds HOLD_S if it fits; otherwise it rests
- *   LEAD_S, scrolls through once at SCROLL_PX_S until its end is in view, and rests TAIL_S.
+ * - A new item enters from the right at once (a short ease-out slide; a rotation item gives way). It holds HOLD_S if it
+ *   fits; otherwise it rests LEAD_S, scrolls through once at SCROLL_PX_S until its end is in view, and rests TAIL_S.
  * - Bursts queue: HOLD_S for the first, then BURST_S each (a long item's rests halve). At most QUEUE_MAX wait; past that
  *   the oldest waiting one gives way, and so does routine news (`tickerRoutine`) that waited STALE_S with more behind
  *   it. Everything stays in the news feed.
@@ -118,8 +118,11 @@ export class NewsTicker {
   static HOLD_S = 5;
   /** seconds each queued item of a burst holds after the first */
   static BURST_S = 3;
-  /** seconds an item takes to enter from the right */
+  /** seconds an item takes to enter from the right, and how far right of its place it starts (css px; at most the
+   *  view's width). Not from beyond the view's edge: its first frame would show an empty ticker, for a whole second on
+   *  a slow machine */
   static ENTER_S = 0.5;
+  static ENTER_PX = 120;
   /** a long item rests this long at its start before it scrolls, and this long at its end (half that in a burst) */
   static LEAD_S = 1;
   static TAIL_S = 1;
@@ -360,7 +363,7 @@ export class NewsTicker {
     let x = 0;
     if (c.t < S.ENTER_S) {
       const k = 1 - c.t / S.ENTER_S;
-      x = this.viewW * k * k * k;
+      x = Math.min(this.viewW, S.ENTER_PX) * k * k * k;
     } else {
       const over = this.overflow();
       if (over > 0) x = -Math.min(over, Math.max(0, c.t - S.ENTER_S - this.rest(c) * S.LEAD_S) * S.SCROLL_PX_S);

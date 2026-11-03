@@ -302,8 +302,9 @@ describe('FEEL-01: the timeline', () => {
     t.run(6);
     t.notify(LONG, 'good');
     t.run(1 / 60);
-    // it starts at the view's right edge (just outside) and slides left
-    expect(t.x()).toBeGreaterThan(VIEW_W * 0.9);
+    // it starts ENTER_PX right of its place (its head already in view) and slides left
+    expect(t.x()).toBeGreaterThan(NewsTicker.ENTER_PX * 0.9);
+    expect(t.span().from).toBeLessThan(VIEW_W - FADE_R);
     t.run(NewsTicker.ENTER_S);
     expect(t.x()).toBe(0);
     const over = geometry(t.track).width - (VIEW_W - FADE_R);

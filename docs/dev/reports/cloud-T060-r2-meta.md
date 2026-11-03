@@ -39,7 +39,7 @@ time, the newest first:
 
 | | behaviour | constant |
 |---|---|---|
-| entry | a new item enters from the right at once (a 0.5 s ease-out slide from the view's right edge to rest); an idle rotation item gives way to it | `ENTER_S` 0.5 |
+| entry | a new item enters from the right at once (a 0.5 s ease-out slide from 120 px right of its place); an idle rotation item gives way to it | `ENTER_S` 0.5, `ENTER_PX` 120 |
 | fits | it holds 5 s | `HOLD_S` 5 |
 | too long | it rests 1 s, scrolls through once at 60 px/s until its end is in view, rests 1 s (at least the 5 s slot) | `LEAD_S`, `TAIL_S` 1, `SCROLL_PX_S` 60 |
 | bursts | they queue in arrival order: 5 s for the first, then 3 s each (a long item's rests halve) | `BURST_S` 3 |
@@ -127,8 +127,9 @@ can show (38-95 items in under a minute); it is reported, not gated (decision D3
 
 - **D1 · "Enters from the right" is a 0.5 s slide, not a 60 px/s crawl.** The first acceptance item (the first 20
   characters inside `.tk-view` within 1 s) rules out an entry at the scroll speed: the text starts ~62 px in, so 20
-  characters (~128 px) at 60 px/s take ~3 s. The item slides in from the view's right edge (ease-out) in 0.5 s and
-  rests; only a long one scrolls, at 60 px/s.
+  characters (~128 px) at 60 px/s take ~3 s. The item slides in (ease-out, 0.5 s) from 120 px right of its place and
+  rests; only a long one scrolls, at 60 px/s. Not from beyond the view's right edge: that first frame shows an empty
+  ticker, which on SwiftShader's frame a second lasted a second (run 1's `f01-06-gazette.png`).
 - **D2 · Rests for a long item** (the plan names none): 1 s before it scrolls and 1 s at its end, so its start and
   its end can each be read; halved for a queued item of a burst. A long item takes at least the 5 s slot.
 - **D3 · "10 consecutive headlines" is read at the game's own pace at 1× and 2×** (flavour headlines come 40-100 days
