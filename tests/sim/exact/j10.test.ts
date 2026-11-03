@@ -142,9 +142,15 @@ function arm(st: CityState, original: boolean) {
   for (const system of sim.systems) system.init?.(sim);
   const trace = () => {
     const task = schedulerOf(sim).tasks[0], step = task.step;
+    // B2 (docs/dev/B2_DESIGN.md §11.5, review 1 R7a): one scheduler step runs one piece of the split pass, and the piece
+    // estimates are recalibrated by design, so the trace keeps the pre-B2 step boundaries — the state transitions (a new
+    // pass or another U_* state), with the day, due and urgent — not the pieces or their costs
+    let last = -2;
     task.step = (s) => {
-      steps.push([s.state.day, task.cost(s), task.due(s), task.urgent(s), fields(util).stepIdx]);
+      const idx = fields(util).stepIdx as number;
+      if (idx < 0 || idx !== last) steps.push([s.state.day, task.due(s), task.urgent(s), idx]);
       step(s);
+      last = fields(util).stepIdx as number;
     };
   };
   trace();
@@ -152,13 +158,24 @@ function arm(st: CityState, original: boolean) {
 }
 type Arm = ReturnType<typeof arm>;
 
+/** B2 (G4): the split UtilitiesSystem's own fields (pieces, cursors, private buffers) — every other field must equal the
+ *  frozen original's at a pass end; the original has no field the split class lacks */
+function b2Fields(a: Arm, b: Arm): string[] {
+  expect(Object.keys(b.util).filter((k) => !(k in a.util))).toEqual([]);
+  return Object.keys(a.util).filter((k) => !(k in b.util));
+}
+/** scheduler fields that follow the step estimates (recalibrated by design in B2): the fairness credit, the carried
+ *  budget and the estimated spend */
+const SCHED_EST = ['tasks', 'credit', 'carry', 'estMs', 'estSpent', 'lastDayCost'];
+
 function compare(a: Arm, b: Arm, label: string): void {
   exact(a.sim.state, b.sim.state, `${label}.state`);
   exact(fields(a.rt, ['sim', 'subscribedTo', 'initializedFor', 'unsub']), fields(b.rt, ['sim', 'subscribedTo', 'initializedFor', 'unsub']), `${label}.runtime`);
-  exact(fields(a.util, ['simRef', 'unsub', 'useInfo']), fields(b.util, ['simRef', 'unsub', 'useInfo']), `${label}.utilities`);
-  exact(fields(schedulerOf(a.sim), ['tasks']), fields(schedulerOf(b.sim), ['tasks']), `${label}.scheduler`);
+  const omit = ['simRef', 'unsub', 'useInfo'];
+  exact(fields(a.util, [...omit, ...b2Fields(a, b)]), fields(b.util, omit), `${label}.utilities`);
+  exact(fields(schedulerOf(a.sim), SCHED_EST), fields(schedulerOf(b.sim), SCHED_EST), `${label}.scheduler`);
   const ta = schedulerOf(a.sim).tasks[0], tb = schedulerOf(b.sim).tasks[0];
-  exact([ta.cost(a.sim), ta.due(a.sim), ta.urgent(a.sim)], [tb.cost(b.sim), tb.due(b.sim), tb.urgent(b.sim)], `${label}.nextStep`);
+  exact([ta.due(a.sim), ta.urgent(a.sim)], [tb.due(b.sim), tb.urgent(b.sim)], `${label}.nextStep`);
   exact(a.steps, b.steps, `${label}.steps`);
   exact(a.events, b.events, `${label}.events`);
   a.events.length = b.events.length = a.steps.length = b.steps.length = 0;
@@ -272,7 +289,10 @@ describe('J10 exact lookup reuse', () => {
     }
   });
 
-  it('matches utilities steps with sparse ids, disconnected grids, special floats and edits between steps', () => {
+  // B2 (G4, review 1 R7a): one step() is one piece of the split pass now, so the edits fall between whole passes (the
+  // pre-B2 test edited between the steps of a pass: B2 changes interrupted passes by design, R12); every pass runs
+  // uninterrupted in both arms and is compared at its end
+  it('matches utilities passes with sparse ids, disconnected grids, special floats and edits between passes', () => {
     const rng = new RNG('J10 utilities edges');
     for (let c = 0; c < 32; c++) {
       const st = city(c % 2 ? 33 : 9, c + 100, 0);
@@ -293,8 +313,11 @@ describe('J10 exact lookup reuse', () => {
         a.sim.state.day++; b.sim.state.day++;
         edit(a.sim, c * 100 + step, step); edit(b.sim, c * 100 + step, step);
         if (step === 4) clearInfoCache();
-        a.util.step(a.sim); b.util.step(b.sim);
-        compare(a, b, `edge ${c} step ${step}`);
+        for (const x of [a, b]) {
+          let k = 0;
+          do { x.util.step(x.sim); if (++k > 1e6) throw new Error('utilities pass did not end'); } while ((fields(x.util).stepIdx as number) >= 0);
+        }
+        compare(a, b, `edge ${c} pass ${step}`);
         for (let i = -1; i <= st.cells; i++) exact(a.util.waterQualityAt(a.sim, i), b.util.waterQualityAt(b.sim, i), `water ${i}`);
       }
     }
