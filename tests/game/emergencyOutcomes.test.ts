@@ -1,7 +1,7 @@
 /** Emergency outcome feedback uses the host's records, including local finalization and replay-time replacements. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Emitter } from '../../src/core/events';
-import { GameSounds, emergencyStingJustPlayed } from '../../src/game/GameSounds';
+import { GameSounds, emergencyStingJustPlayed, emergencyStingPending } from '../../src/game/GameSounds';
 import type { GameContext, UIEvents } from '../../src/game/context';
 import type { CityEvents, EmergencyEvent, Simulation } from '../../src/sim/Simulation';
 import { emergencyOf, type Incident } from '../../src/sim/infra/emergency';
@@ -72,7 +72,9 @@ function fixture(initial: Incident[] = [], ready: Promise<void> = Promise.resolv
   const offer = (inc: Incident) => {
     live.set(inc.id, inc);
     emit('new', inc);
-    policy({ alerts: [...live.keys()].map((id) => ({ id, wasPossible: true })), live: false });
+    const ids = new Set(current.alerts.map((alert) => alert.id));
+    ids.add(inc.id);
+    policy({ alerts: [...ids].map((id) => ({ id, wasPossible: true })), live: true });
   };
   const end = (inc: Incident, type: 'resolved' | 'failed' = 'resolved') => {
     inc.state = type;
@@ -83,7 +85,7 @@ function fixture(initial: Incident[] = [], ready: Promise<void> = Promise.resolv
   const row = () => root.querySelector('.emg-banner')!;
   const restore = () => policy({ alerts: current.alerts, live: false, toast: { text: 'Emergencies handled — back to ultra speed', kind: 'good' } });
   cleanups.push(() => { abort.abort(); sounds.dispose(); banner.dispose(); });
-  return { host, sim, events, ui, live, abort, root, plays, sound, toast, sounds, banner, policy, emit, offer, end, row, restore };
+  return { host, sim, events, ui, ctx, live, abort, root, plays, sound, toast, sounds, banner, policy, emit, offer, end, row, restore };
 }
 
 describe('emergency outcome feedback', () => {
@@ -96,13 +98,16 @@ describe('emergency outcome feedback', () => {
   });
 
   it('plays one saved sting for a player dispatch, silences the restore toast and following outcome news, and flashes for 600 ms', () => {
-    const f = fixture(), inc = incident(1, { answered: 2 });
+    const f = fixture(), inc = incident(1, { answered: 2, state: 'onScene' });
     f.offer(inc);
+    f.restore();
+    expect(f.toast).toHaveBeenCalledWith('Emergencies handled — back to ultra speed', 'good', undefined, 'Emergency', { silent: true });
+    expect(f.plays).toEqual([]);
+    vi.advanceTimersByTime(250);
     f.end(inc);
     expect(f.plays).toEqual(['saved']);
     expect(f.row().classList.contains('emg-saved')).toBe(true);
-    f.restore();
-    expect(f.toast).toHaveBeenCalledWith('Emergencies handled — back to ultra speed', 'good', undefined, 'Emergency', { silent: true });
+    expect(f.row().textContent).toContain('Industrial accident under control');
     f.events.emit('news', { day: 1, kind: 'good', text: 'Refinery is under control — thanks to your dispatch.' });
     vi.advanceTimersByTime(599);
     expect(f.plays).toEqual(['saved']);
@@ -115,7 +120,6 @@ describe('emergency outcome feedback', () => {
     const f = fixture(), inc = incident();
     f.offer(inc);
     f.end(inc, 'failed');
-    f.ui.emit('uiTick', undefined);
     expect(f.plays).toEqual(['lost']);
     expect(f.row().classList.contains('emg-lost')).toBe(true);
     expect(f.row().textContent).toContain('No fire truck was sent in time');
@@ -136,7 +140,6 @@ describe('emergency outcome feedback', () => {
     f.live.set(inc.id, terminal);
     f.emit('resolved', terminal);
     f.live.delete(inc.id);
-    f.ui.emit('uiTick', undefined);
     expect(f.plays).toEqual(['lost']);
     expect(f.row().classList.contains('emg-lost')).toBe(true);
     expect(f.row().classList.contains('emg-saved')).toBe(false);
@@ -164,6 +167,80 @@ describe('emergency outcome feedback', () => {
     f.end(inc);
     expect(f.plays).toEqual([]);
     expect(emergencyStingJustPlayed(f.host)).toBe(false);
+  });
+
+  it.each([
+    { type: 'failed' as const, lost: 0, deaths: 0 },
+    { type: 'resolved' as const, lost: 0, deaths: 1 },
+    { type: 'resolved' as const, lost: 1, deaths: 0 },
+  ])('ignores an unseen automatic $type with $lost losses and $deaths deaths without spending the sting budget', ({ type, lost, deaths }) => {
+    const auto = incident(1, { answered: 1, state: 'onScene', lost, deaths }), f = fixture([auto]);
+    f.end(auto, type);
+    expect(f.plays).toEqual([]);
+    expect(emergencyStingJustPlayed(f.host)).toBe(false);
+    const player = incident(2, { answered: 2 });
+    f.offer(player); f.end(player);
+    expect(f.plays).toEqual(['saved']);
+    vi.advanceTimersByTime(9999);
+    const unseen = incident(3, { answered: 1, deaths: 1 });
+    f.live.set(unseen.id, unseen); f.emit('new', unseen); f.end(unseen, type);
+    vi.advanceTimersByTime(1);
+    const alert = incident(4);
+    f.offer(alert); f.end(alert, 'failed');
+    expect(f.plays).toEqual(['saved', 'lost']);
+  });
+
+  it('remembers a bannered incident after its alert disappears and its response is automatic', () => {
+    const f = fixture(), inc = incident(1, { answered: 1, deaths: 1 });
+    f.offer(inc);
+    f.policy({ alerts: [], live: false });
+    f.end(inc);
+    expect(f.plays).toEqual(['lost']);
+  });
+
+  it('does not silence another episode because an unrelated player response is still on scene', () => {
+    const old = incident(1, { answered: 2, state: 'onScene' }), f = fixture([old]);
+    const alert = incident(2);
+    f.offer(alert);
+    f.policy({ alerts: [{ id: alert.id, wasPossible: true }], live: true });
+    f.policy({ alerts: [], live: false, toast: { text: 'Emergency over', kind: 'info' } });
+    expect(f.toast).toHaveBeenLastCalledWith('Emergency over', 'info', undefined, 'Emergency', { silent: false });
+    expect(emergencyStingPending(f.host, new Set([old.id]))).toBe(true);
+  });
+
+  it('keeps an episode dispatch pending even when the restore snapshot no longer lists its alert', () => {
+    const f = fixture(), inc = incident(1, { answered: 2, state: 'dispatched' });
+    f.offer(inc);
+    f.policy({ alerts: [{ id: inc.id, wasPossible: true }], live: true });
+    f.policy({ alerts: [], live: false, toast: { text: 'Emergencies handled', kind: 'good' } });
+    expect(f.toast).toHaveBeenLastCalledWith('Emergencies handled', 'good', undefined, 'Emergency', { silent: true });
+    expect(f.plays).toEqual([]);
+    f.end(inc);
+    expect(f.plays).toEqual(['saved']);
+  });
+
+  it('does not carry ignored dispatches into a new pause episode', () => {
+    const old = incident(1), f = fixture([old]);
+    f.ctx.settings.emergencyUncovered = 'ignore';
+    f.ui.emit('settings', f.ctx.settings);
+    f.policy({ alerts: [{ id: old.id, wasPossible: true }], live: false, warn: true });
+    old.answered = 2; old.state = 'onScene';
+    f.ctx.settings.emergencyUncovered = 'pause';
+    f.ui.emit('settings', f.ctx.settings);
+    const alert = incident(2);
+    f.live.set(alert.id, alert); f.emit('new', alert);
+    f.policy({ alerts: [{ id: old.id, wasPossible: true }, { id: alert.id, wasPossible: true }], live: false, warn: true });
+    f.policy({ alerts: [{ id: old.id, wasPossible: true }], live: false, toast: { text: 'Emergency over', kind: 'info' } });
+    expect(f.toast).toHaveBeenLastCalledWith('Emergency over', 'info', undefined, 'Emergency', { silent: false });
+  });
+
+  it('still silences a restore delivered just after resolution', () => {
+    const f = fixture(), inc = incident(1, { answered: 2 });
+    f.offer(inc); f.end(inc);
+    vi.advanceTimersByTime(999);
+    f.restore();
+    expect(f.plays).toEqual(['saved']);
+    expect(f.toast).toHaveBeenLastCalledWith(expect.any(String), 'good', undefined, 'Emergency', { silent: true });
   });
 
   it('recognizes a cause-tagged primary player dispatch after its command cause has ended', () => {
@@ -260,7 +337,7 @@ describe('emergency outcome feedback', () => {
     expect(f.toast).not.toHaveBeenCalled();
   });
 
-  it('handles a real LocalSimHost failure after its incident lookup has already been removed', async () => {
+  it('leaves an unseen real LocalSimHost failure quiet after its incident lookup has been removed', async () => {
     const st = newState(32), host = new LocalSimHost(st), abort = new AbortController();
     await host.start();
     const plays: string[] = [];
@@ -277,7 +354,7 @@ describe('emergency outcome feedback', () => {
       em.dailyWork(host.sim);
       expect(absentDuringOutcome).toBe(true);
       expect(host.emergency.incident(id)).toBeUndefined();
-      expect(plays.filter((name) => name === 'saved' || name === 'lost')).toEqual(['lost']);
+      expect(plays.filter((name) => name === 'saved' || name === 'lost')).toEqual([]);
     } finally {
       off(); abort.abort(); sounds.dispose(); await host.dispose();
     }

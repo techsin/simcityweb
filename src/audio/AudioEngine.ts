@@ -19,6 +19,7 @@
  *                                        shuffle (get/set), setShuffle, isEnabled / setEnabled(id, on), onChange(cb)
  *   audio.setMuted(on) / muted
  *   audio.duck(db, hold, release)        music reduction in dB; hold / release in seconds (60 ms attack)
+ *   audio.releaseDuck(release)          release only the renewable LIVE duck (default 0.5 s)
  *   audio.setMusicPauses(on) / setMuteInBackground(on)   game settings, default on
  * Volumes, music toggle, shuffle, the enabled-track set and the UI / hover / now-playing toggles persist in
  * localStorage ('metropolis.audio').
@@ -384,10 +385,14 @@ export class AudioEngine {
   }
 
   // ------------------------------------------------------------------ music
-  /** Duck only music (dry + reverb send), bypassing the SFX cooldown. Renewals leave a deeper duck's deadline intact. */
+  /** Duck only music (dry + reverb send), bypassing the SFX cooldown. LIVE renewals have an independent envelope. */
   duck(db: number, hold: number, release = 0.6, opts?: { renew?: boolean }): void {
-    if (opts?.renew && this.ducking && this.ducking.music.gain.value < 10 ** (-db / 20) - 1e-6) return;
-    this.ducking?.duck(db, hold, release);
+    this.ducking?.duck(db, hold, release, opts);
+  }
+
+  /** End the renewable LIVE duck without shortening an event's stronger duck. */
+  releaseDuck(release = 0.5): void {
+    this.ducking?.releaseDuck(release);
   }
 
   /** Dev / acceptance: effective dry music bus gain, including ducking, before the master gain. */

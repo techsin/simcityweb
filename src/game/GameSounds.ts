@@ -29,7 +29,7 @@ import { CELL_SIZE } from '../core/constants';
 import type { NewsItem } from '../sim/CityState';
 import type { EmergencyEvent, Simulation } from '../sim/Simulation';
 import type { Incident } from '../sim/infra/emergency';
-import type { SimHost } from '../worker/SimHost';
+import type { PolicySnapshot, SimHost } from '../worker/SimHost';
 import type { WorldViewApi } from '../render/contracts';
 import type { SoundOpts } from './context';
 
@@ -38,6 +38,7 @@ export interface GameSoundsDeps {
   host?: SimHost;
   signal?: AbortSignal;
   duck?: (db: number, hold: number, release: number) => void;
+  releaseDuck?: (release: number) => void;
   sound: (name: string, opts?: SoundOpts) => void;
   world: () => WorldViewApi;
   /** sandbox / unlimited money: no budget ticks */
@@ -65,13 +66,26 @@ const REPEAT_MS = 180000;
 /** advisor messages the toasts show (src/ui/Notifications.ts); the rest are ticker-only tips */
 const URGENT = /!|urgent|critical|warning/i;
 const OUTCOME_GAP = 10000;
-/** Renew before duck's 60 ms attack ends; its final attack + release total 500 ms. */
-const LIVE_DUCK_MS = 50, LIVE_DUCK_RELEASE = 0.5 - 0.06;
+/** The hold covers delayed main-thread callbacks; LIVE ends with an explicit release. */
+const LIVE_DUCK_MS = 100, LIVE_DUCK_HOLD = 0.3, LIVE_DUCK_RELEASE = 0.5;
 const outcomeAt = new WeakMap<SimHost, number>();
+const outcomeState = new WeakMap<SimHost, { incidents: Map<number, Incident>; playerDispatches: Set<number> }>();
 
 /** The outcome voice already supplies the restore toast's feedback, including delayed policy delivery. */
 export function emergencyStingJustPlayed(host: SimHost): boolean {
   return performance.now() - (outcomeAt.get(host) ?? -1e9) < 1000;
+}
+
+/** LIVE can restore speed before the dispatched units have finished their work. */
+export function emergencyStingPending(host: SimHost, episodeIds: ReadonlySet<number>): boolean {
+  if (emergencyStingJustPlayed(host)) return true;
+  const state = outcomeState.get(host);
+  if (!state) return false;
+  for (const id of episodeIds) {
+    const inc = host.emergency.incident(id) ?? state.incidents.get(id);
+    if (inc && (inc.state === 'dispatched' || inc.state === 'onScene') && (inc.answered === 2 || state.playerDispatches.has(id))) return true;
+  }
+  return false;
 }
 
 interface FireProbe {
@@ -93,6 +107,7 @@ export class GameSounds {
   private fire: FireProbe | null = null;
   private incidents = new Map<number, Incident>();
   private playerDispatches = new Set<number>();
+  private alerted = new Set<number>();
   private liveDuckT: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
   private v = new THREE.Vector3();
@@ -118,14 +133,16 @@ export class GameSounds {
         this.constructing.clear();
         this.incidents.clear();
         this.playerDispatches.clear();
+        this.alerted.clear();
         this.seedIncidents();
         if (d.host) outcomeAt.delete(d.host);
       }),
     );
+    if (d.host) outcomeState.set(d.host, { incidents: this.incidents, playerDispatches: this.playerDispatches });
     this.seedIncidents();
     void d.host?.ready?.then(() => { if (!this.disposed) this.seedIncidents(); }, () => {});
     if (d.host && d.signal) {
-      this.offs.push(d.host.policy.subscribe(() => this.syncLive(), d.signal), ev.on('speedChanged', () => this.syncLive()));
+      this.offs.push(d.host.policy.subscribe((policy) => { this.trackAlerts(policy); this.syncLive(); }, d.signal), ev.on('speedChanged', (speed) => this.syncLive(speed)));
       this.syncLive();
     }
     if (d.signal) {
@@ -146,7 +163,8 @@ export class GameSounds {
     this.stopLiveDuck();
     this.incidents.clear();
     this.playerDispatches.clear();
-    if (this.d.host) outcomeAt.delete(this.d.host);
+    this.alerted.clear();
+    if (this.d.host) { outcomeAt.delete(this.d.host); outcomeState.delete(this.d.host); }
   }
 
   private since(key: string): number {
@@ -154,7 +172,16 @@ export class GameSounds {
   }
 
   private seedIncidents(): void {
-    if (this.d.host) for (const inc of this.d.host.emergency.incidents()) this.incidents.set(inc.id, inc);
+    if (!this.d.host) return;
+    for (const inc of this.d.host.emergency.incidents()) this.incidents.set(inc.id, inc);
+    this.trackAlerts(this.d.host.policy);
+  }
+
+  private trackAlerts(policy: PolicySnapshot): void {
+    for (const { id } of policy.alerts) {
+      const inc = this.d.host?.emergency.incident(id) ?? this.incidents.get(id);
+      if (inc && inc.state !== 'resolved' && inc.state !== 'failed') this.alerted.add(id);
+    }
   }
 
   /** true (and marks it) when `key` has not fired within `ms` */
@@ -300,9 +327,10 @@ export class GameSounds {
     if (e.type === 'resolved' || e.type === 'failed') {
       const lost = e.type === 'failed' || !!inc && (inc.lost > 0 || inc.deaths > 0);
       const player = inc?.answered === 2 || this.playerDispatches.has(e.id);
+      const alerted = this.alerted.delete(e.id);
       this.incidents.delete(e.id);
       this.playerDispatches.delete(e.id);
-      if ((lost || player && !!inc) && this.ready('emergencyOutcome', OUTCOME_GAP)) {
+      if ((player || alerted) && (lost || player && !!inc) && this.ready('emergencyOutcome', OUTCOME_GAP)) {
         this.play(lost ? 'lost' : 'saved', { pan: this.screenOf(e.x, e.z)?.pan ?? 0 });
         if (host) outcomeAt.set(host, performance.now());
       }
@@ -319,11 +347,11 @@ export class GameSounds {
   }
 
   /** The LIVE pill is hidden during a pause, even though the policy episode remains active. */
-  private syncLive(): void {
+  private syncLive(speed = this.d.host?.speed): void {
     const host = this.d.host;
-    if (!host?.policy.live || host.speed === 0) { this.stopLiveDuck(); return; }
+    if (!host?.policy.live || speed === 0) { this.stopLiveDuck(); return; }
     if (this.liveDuckT !== null || !this.d.duck) return;
-    const renew = () => this.d.duck?.(6, 0, LIVE_DUCK_RELEASE);
+    const renew = () => this.d.duck?.(6, LIVE_DUCK_HOLD, LIVE_DUCK_RELEASE);
     renew();
     this.liveDuckT = setInterval(renew, LIVE_DUCK_MS);
   }
@@ -332,7 +360,7 @@ export class GameSounds {
     if (this.liveDuckT === null) return;
     clearInterval(this.liveDuckT);
     this.liveDuckT = null;
-    this.d.duck?.(6, 0, LIVE_DUCK_RELEASE);
+    this.d.releaseDuck?.(LIVE_DUCK_RELEASE);
   }
 
   private reward(): void {

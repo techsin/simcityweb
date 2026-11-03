@@ -52,7 +52,7 @@
 import './emergency.css';
 import './fx.css';
 import type { GameContext } from '../game/context';
-import { emergencyStingJustPlayed } from '../game/GameSounds';
+import { emergencyStingPending } from '../game/GameSounds';
 import { MAX_BANNERS, sendDays } from '../game/emergencyPolicy';
 import type { EmergencyView, PolicySnapshot } from '../worker/SimHost';
 import { DispatchOptionsWatches } from './dispatchOptions';
@@ -470,6 +470,9 @@ export class EmergencyBanner {
    *  flyoutTop): a switch to a shorter tab keeps the bound of the tallest — the stack does not re-dock with every tab */
   private flyHigh = 0;
   private flashes = new Set<ReturnType<typeof setTimeout>>();
+  private episodeIds = new Set<number>();
+  private episodeLive = false;
+  private episodePolicy: string | undefined;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.options = new DispatchOptionsWatches(ctx.host, ctx.signal);
@@ -556,7 +559,7 @@ export class EmergencyBanner {
     const off = ctx.host.events.on('emergency', (e) => this.onEvent(e));
     const offReset = ctx.host.events.on('reset', () => this.reset());
     const offTick = ctx.ui.on('uiTick', () => this.tick());
-    const offSpeed = ctx.host.events.on('speedChanged', () => this.renderLive(ctx.host.policy));
+    const offSpeed = ctx.host.events.on('speedChanged', (speed) => this.renderLive(ctx.host.policy, speed));
     const offPolicy = ctx.host.policy.subscribe((policy) => this.renderPolicy(policy, true), ctx.signal);
     const offSettings = ctx.ui.on('settings', () => this.sendSettings());
     this.sendSettings();
@@ -625,12 +628,14 @@ export class EmergencyBanner {
   /** The LIVE badge follows the authoritative policy, even while the sim is paused. */
   get liveActive(): boolean { return this.ctx.host.policy.live; }
 
-  private renderLive(policy: PolicySnapshot): void {
-    toggleClass(this.ctx.root, 'emg-live', policy.live && this.ctx.host.speed !== 0);
+  private renderLive(policy: PolicySnapshot, speed = this.ctx.host.speed): void {
+    toggleClass(this.ctx.root, 'emg-live', policy.live && speed !== 0);
   }
 
   private reset(): void {
     this.clearFlashes();
+    this.episodeIds.clear();
+    this.episodeLive = false;
     this.options.dispose();
     for (const b of this.banners.values()) b.el.remove();
     this.banners.clear();
@@ -640,6 +645,12 @@ export class EmergencyBanner {
   /** Policy snapshots contain no incident objects; the emergency view supplies their display data. */
   private renderPolicy(policy: PolicySnapshot, feedback = false): void {
     const em = this.ctx.host.emergency;
+    if (policy.live && !this.episodeLive) this.episodeIds.clear();
+    if (policy.live || feedback && policy.warn && this.episodePolicy !== 'ignore') for (const { id } of policy.alerts) {
+      const inc = em.incident(id);
+      if (policy.live || inc?.state === 'uncovered' || inc?.state === 'queued') this.episodeIds.add(id);
+    }
+    this.episodeLive = policy.live;
     const ids = new Set(policy.alerts.map((a) => a.id));
     for (const id of this.banners.keys()) if (!ids.has(id)) this.removeBanner(id);
     for (const alert of policy.alerts) {
@@ -652,12 +663,17 @@ export class EmergencyBanner {
     }
     this.renderLive(policy);
     if (feedback && policy.warn) this.ctx.sound('warning');
-    if (feedback && policy.toast) this.ctx.toast(policy.toast.text, policy.toast.kind, undefined, 'Emergency', { silent: emergencyStingJustPlayed(this.ctx.host) });
+    if (feedback && policy.toast) {
+      this.ctx.toast(policy.toast.text, policy.toast.kind, undefined, 'Emergency', { silent: emergencyStingPending(this.ctx.host, this.episodeIds) });
+      this.episodeIds.clear();
+    }
   }
 
   /** Only the three simulation settings cross the host seam. */
   private sendSettings(): void {
     const s = this.ctx.settings;
+    const policy = s.emergencyUncovered ?? 'live';
+    if (policy !== this.episodePolicy) { this.episodeIds.clear(); this.episodeLive = false; this.episodePolicy = policy; }
     this.ctx.host.act('setSettings', [{
       emergencyUncovered: s.emergencyUncovered ?? 'live', emergencyLiveSlowmo: s.emergencyLiveSlowmo ?? 3,
       emergencyAlerts: s.emergencyAlerts ?? 'major',
@@ -677,6 +693,7 @@ export class EmergencyBanner {
         b.inc = this.ctx.host.emergency.incident(e.id) ?? b.inc;
         const losses = lossText(b.inc);
         b.outcome = (e.type === 'failed' ? failText(b.inc, !!b.wasPossible) : `${INCIDENT_LABEL[e.kind]} under control`) + (losses ? ` — ${losses}` : '');
+        this.ended(b, this.ctx.host.simTime());
         const flash = e.type === 'failed' || b.inc.lost > 0 || b.inc.deaths > 0 ? 'emg-lost' : 'emg-saved';
         b.el.classList.add(flash);
         const timer = setTimeout(() => { b.el.classList.remove(flash); this.flashes.delete(timer); }, 600);
