@@ -173,13 +173,14 @@ export class CityObjectsView implements CityObjectsViewApi {
       ev.on('networkChanged', (r) => {
         const d = this.net.update(r);
         this.roads.markDirty(expand(d, 1, N()));
+        this.props.invalidateGarbage(r);
         this.vehicles.invalidate();
       }),
       ev.on('terrainChanged', (r) => {
         const d = this.net.update(expand(r, 1, N()));
         this.roads.markDirty(expand(d, 1, N()));
         this.buildings.terrainChanged(r.x0 - 1, r.z0 - 1, r.x1 + 1, r.z1 + 1);
-        this.props.invalidateGarbage();
+        this.props.invalidateGarbage(r);
         this.powerDirty = true;
         this.subwayDirty = true;
       }),
@@ -241,8 +242,8 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.subwayDirty = true;
     this.flushPower();
     this.buildings.rebuildAll();
-    this.props.resetGarbage(this.state.buildings.values(), this.state.day);
-    this.props.updateGarbage(this.state.day, this.ctx.camera.position, this.surf);
+    this.props.resetGarbage(this.state.buildings.values(), this.state.day, this.state);
+    this.props.updateGarbage(this.state.day, this.ctx.camera, this.surf);
     this.effects.update();
     this.vehicles.clear();
     this.vehicles.refreshSpawn();
@@ -306,7 +307,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     lap('roads');
     this.props.update();
     this.props.updateLod(cam.position);
-    this.props.updateGarbage(this.state.day, cam.position, this.surf);
+    this.props.updateGarbage(this.state.day, cam, this.surf);
     this.props.updateNight(sharedUniforms.uNight.value);
     lap('props');
     this.buildings.update(dt);

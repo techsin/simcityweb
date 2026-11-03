@@ -136,7 +136,7 @@ describe('kerbside garbage', () => {
     expect([...targets].sort()).toEqual([1, 2, 3, 4]);
   });
 
-  it('clears monotonically over one to two months after collection returns', () => {
+  it('clears monotonically over eight to twenty days after the mirrored flag clears', () => {
     const props = renderer();
     for (let id = 1; id <= 32; id++) {
       const b = building(id);
@@ -150,8 +150,8 @@ describe('kerbside garbage', () => {
         if (props.garbage.count === 0 && cleared < 0) cleared = day - 100;
         previous = props.garbage.count;
       }
-      expect(cleared, `id ${id}`).toBeGreaterThanOrEqual(DAYS_PER_MONTH);
-      expect(cleared, `id ${id}`).toBeLessThanOrEqual(2 * DAYS_PER_MONTH);
+      expect(cleared, `id ${id}`).toBeGreaterThanOrEqual(8);
+      expect(cleared, `id ${id}`).toBeLessThanOrEqual(20);
       expect(props.garbage.count).toBe(0);
       expect(props.garbage.visible).toBe(false);
     }
@@ -269,7 +269,7 @@ describe('kerbside garbage', () => {
     expect(surf.terrain).toHaveBeenCalledTimes(calls);
     expect(props.garbage.instanceMatrix.version).toBe(version);
     props.updateGarbage(1, camera, surf);
-    expect(surf.terrain.mock.calls.length).toBeGreaterThan(calls);
+    expect(surf.terrain).toHaveBeenCalledTimes(calls);
     props.garbageBuildingChanged({ ...b, baseY: 10 }, 1);
     props.updateGarbage(1, camera, surf);
     expect(positions(props)[0].y).toBeCloseTo(10.08, 5);
