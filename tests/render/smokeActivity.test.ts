@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerAllModels } from '../../src/assets/builders';
 import { CELL_SIZE } from '../../src/core/constants';
-import { BuildingRenderer, type BuildingVisual } from '../../src/render/city/buildings/BuildingRenderer';
+import { BuildingRenderer, type BudgetedWork, type BuildingVisual } from '../../src/render/city/buildings/BuildingRenderer';
 import { TileCuller } from '../../src/render/city/common/batch';
 import { Effects } from '../../src/render/city/effects/Effects';
 import { BF, type Building } from '../../src/sim/CityState';
@@ -41,6 +41,8 @@ function town() {
 }
 
 type ActivityInternals = {
+  activityWork: BudgetedWork;
+  budgetedWorks: BudgetedWork[];
   activityOf(b: Building): number;
   activityScan: Iterator<unknown> | null;
   activityBuildings: Set<unknown>;
@@ -160,7 +162,7 @@ describe('BuildingVisual output activity', () => {
     expect(reads.mock.calls.filter(([b]) => b.id < 20).map(([b]) => b.id)).toEqual([1]);
   });
 
-  it('admits queued geometry before an indivisible output refresh can overrun the deadline', () => {
+  it('gives queued geometry the initial turn before an indivisible output refresh overruns the deadline', () => {
     const { state, br, add } = town();
     const factory = add(1);
     br.update(0);
@@ -182,6 +184,49 @@ describe('BuildingVisual output activity', () => {
     expect(br.getVisual(1)!.activity).toBe(0.5);
     expect(br.pendingBuilds).toBe(0);
     expect(now).toBe(3.25);
+  });
+
+  it('registers activity with the shared hook and charges it and queued builds to one deadline', () => {
+    const { state, br, add } = town();
+    const first = add(1), second = add(2);
+    br.update(0);
+    const internal = inside(br), work = internal.activityWork;
+    expect(internal.budgetedWorks).toContain(work);
+    let now = 0;
+    const order: string[] = [];
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const activity = internal.activityOf.bind(br), build = internal.build.bind(br);
+    const reads = vi.spyOn(internal, 'activityOf').mockImplementation((b) => {
+      if (b.id < 20) { order.push(`activity:${b.id}`); now += 0.75; }
+      return activity(b);
+    });
+    vi.spyOn(internal, 'build').mockImplementation((bi) => {
+      order.push('geometry');
+      build(bi);
+      now += 0.75;
+    });
+    const steps = vi.spyOn(work, 'step');
+    first.jobs = second.jobs = 170;
+    state.day = 30;
+    expect(work.pending()).toBe(true);
+    expect(reads).not.toHaveBeenCalled();
+    for (const id of [20, 21]) br.add({ ...first, id, def: 'res_cottage' });
+    br.update(0);
+    expect(order).toEqual(['geometry', 'activity:1', 'geometry']);
+    expect(steps).toHaveBeenCalledTimes(1);
+    expect(now).toBe(2.25);
+    expect(br.pendingBuilds).toBe(0);
+    expect(work.pending()).toBe(true);
+    br.update(0);
+    expect(order).toEqual(['geometry', 'activity:1', 'geometry', 'activity:2']);
+    expect(now).toBe(3);
+    expect(work.pending()).toBe(false);
+    expect([1, 2].map((id) => br.getVisual(id)!.activity)).toEqual([0.5, 0.5]);
+    const clear = vi.spyOn(work, 'clear');
+    br.clear();
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(work.pending()).toBe(false);
+    expect(internal.budgetedWorks).toContain(work);
   });
 
   it('retains the old visual while a structural change waits, and cancels stale activity on id reuse', () => {

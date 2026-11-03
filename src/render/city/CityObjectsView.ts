@@ -140,12 +140,12 @@ export class CityObjectsView implements CityObjectsViewApi {
       fill: () => fill,
     });
     this.buildings = new BuildingRenderer(state, this.culler);
-    this.buildings.plantLoad = ctx.getPlantLoad ?? null;
     this.buildings.onVisual = (v, id) => {
       this.effects.onBuilding(v, id);
       if (id === this.buildings.selected) this.previews.setSelection(v);
       this.launchSiteIndex?.visualChanged(id, v, CELL_SIZE);
     };
+    this.buildings.plantLoad = ctx.getPlantLoad ?? null;
     this.vehicles = new VehicleRenderer(state, this.net, this.surf, this.culler, this.quality);
     this.vehicles.signalized = this.roads.signalized;
     this.vehicles.getRoutes = ctx.getTrafficRoutes ?? null;

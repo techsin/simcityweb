@@ -194,8 +194,6 @@ function findStacks(geo: THREE.BufferGeometry, key: string): V3[] {
 
 export interface Emit { x: number; y: number; z: number; kind: number; size: number; count: number; life: number; }
 
-interface PlumeState { key: string; step: number; month: number; count: number; }
-
 /**
  * Plume drift shared by every Effects instance (WP5): the simulation's prevailing wind (src/sim/infra/wind.ts
  * windVector, the same vector pollution.ts drifts smoke with and the Air legend's arrow shows). Default until the game
@@ -209,6 +207,8 @@ export function setEffectsWind(x: number, z: number): void {
   if (!Number.isFinite(x) || !Number.isFinite(z)) return;
   WIND.value.set(x * WIND_SPEED, 0, z * WIND_SPEED);
 }
+
+interface PlumeState { key: string; step: number; month: number; count: number; }
 
 export class Effects {
   readonly smoke: THREE.Mesh;

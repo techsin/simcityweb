@@ -1,6 +1,98 @@
 # T051: smoke that reads output
 
-Implemented on the supplied T040 base. Changes are uncommitted; no push or `.done` file, per the lane instructions.
+Round 1 is committed as `745fa6e`. This round starts at merge `a0590b5`, including T040's `6bf60ee` hook.
+Round-2 changes are uncommitted; no push or `.done` file.
+
+## Round 2: shared budget hook
+
+- `src/render/city/buildings/BuildingRenderer.ts`: registers `activityWork` from a field initializer beside the
+  activity fields. Its cheap `pending()` performs the month comparison and creates a monthly iterator only when
+  output buildings exist; it does not enumerate buildings or compute activity. `step()` consumes at most one
+  candidate. Consumed unchanged/skipped entries report progress; an exhausted/absent iterator reports false.
+  The event-driven changed set remains. All four activity reset assignments now live in the work's `clear()`.
+  Restored the `addBudgetedWork` declaration that the merge conflict had removed.
+- `drainBuilds()`, `clear()` and `dispose()` are byte-identical to `6bf60ee`. The registration method,
+  `stepBudgetedWork()` and `drainBudgetedWork()` also match that commit exactly. No hook-policy edits were made.
+  Geometry and activity now follow the hook's alternating turns across frames, rather than round 1's geometry
+  priority on every frame. The first turn after construction/clear remains geometry-first. This is the requested
+  scheduling change; unavailable plant loads, activity arithmetic, plume steps and emitter rate limiting are unchanged.
+- `src/render/city/CityObjectsView.ts` (**outside the original task's two named source files, explicitly requested
+  this round**): moved the existing plant-load assignment after the `onVisual` block, before initial rebuild.
+- `src/render/city/effects/Effects.ts`: moved `PlumeState` beside the plume-owning Effects class, away from `Emit`.
+  No effect behavior changed.
+- `tests/render/smokeActivity.test.ts`: adds one hook/deadline integration case. Two 0.75 ms geometry builds and
+  one 0.75 ms activity unit occupy the first frame (**2.25 ms**); the other activity unit finishes next frame.
+  The case also verifies registration, cheap pending checks, and clear-through-hook with registration retained.
+  The earlier geometry-first test is now named for the initial turn; its assertions remain unchanged.
+- This report. **No infra, worker, simulation, save, RNG or other source hunks.** T040's two test files are untouched.
+
+### Round-2 verification and remaining test-fixture blocker
+
+TypeScript passed through the quiet gate:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsc --noEmit
+```
+
+Every requested test file ran separately and sequentially with the existing native-config/thread-pool workaround:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types node_modules/vitest/vitest.mjs run <file> --maxWorkers=1 --configLoader native --pool threads
+```
+
+| Test file | Round-2 result |
+|---|---|
+| `tests/render/smokeActivity.test.ts` | 16 passed |
+| `tests/render/smokePlumes.test.ts` | 17 passed |
+| `tests/render/smokeView.test.ts` | 4 passed |
+| `tests/render/buildingWork.test.ts` | 9 passed, **2 failed** (fixture assumption below) |
+| `tests/render/buildingBudget.test.ts` | 22 passed, unchanged |
+| `tests/render/lod.test.ts` | 35 passed, unchanged |
+| `tests/worker/hygiene.test.ts` | 17 passed, 1 skipped |
+
+Total: **120 passed, 2 failed, 1 skipped**. `git diff --check` and method-text comparison against `6bf60ee` pass.
+
+**The unchanged buildingWork gate is not green.** Its first parameterized case, “preserves build order, frame counts
+and clock checks with no registered work” (0.65 ms and 3.25 ms entries), constructs a normal renderer. Required
+field-initializer registration means that renderer now has an idle activity work. The unchanged hook selects
+`drainBudgetedWork()` by registration count, even when every work is idle. An empty drain therefore reads the clock
+once, while the old unregistered drain reads it zero times. At line 112, the cases expect 29/26 reads but see 30/27.
+The other nine hook cases pass; the activity adapter and actual geometry/LOD cases pass.
+
+Exact lead request: in `tests/render/buildingWork.test.ts`'s first parameterized compatibility case only, make its
+two fixtures actually have no registered work by emptying their private `budgetedWorks` arrays before the clock
+is installed. Keep all assertions and the other nine cases unchanged. This isolates the scenario the test names;
+it does not change production scheduling. I have left that file untouched per the instruction and asked whether
+the lead will apply the fixture change or authorize it here. No hook workaround was added.
+
+Round-2 bot passed again: exit 0, Medium/plains, 2015 residents
+**[61124, 93804, 37971] = 192,899**, identical to the baseline. The command reused round 1's scratch-only
+resolver because `tsx` is unavailable in this offline environment:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --no-warnings --experimental-transform-types --experimental-loader file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T051/scratch/resolve-ts.mjs tools/simbot.ts --size 128 --years 15 --seed 7
+```
+
+Output: the assigned T051 scratch directory's `simbot-128-y15-s7-round2-native.log`. No balance or simulation
+code changed. The prescribed `npx tsx` command and its original offline-cache failure are recorded below.
+
+### Round-2 handoff
+
+- Plant-load transport/caller wiring remains with the lead, as requested; the unavailable path is unchanged.
+  No new cloud-held-file request is added this round. The original exact request remains below.
+- The required unchanged `buildingWork` gate needs the fixture decision above. Full Vitest and browser/GPU checks
+  remain lead-owned; no browser, full suite, benchmark, Hard bot or 256x60 bot was run.
+- [ ] Resolve the no-registration compatibility fixture and rerun `buildingWork.test.ts`.
+- [ ] After plant-load wiring lands, verify 0/340 refinery = 0 particles and 15% coal <=40% of full particles
+  (uncapped variant 0 remains 10/36 = 27.78%).
+- [ ] In a growth burst across a month boundary, verify geometry and activity take alternating hook turns and
+  preserve T040's 2 ms deadline plus one indivisible unit; include the other lanes' work after merge.
+- [ ] Verify same-step plume updates avoid reconstruction, positive reconstruction stays monthly, and shutdown,
+  fire, construction, load/reset and LOW/HIGH behavior match the round-1 checklist below.
+
+## Round-1 report (historical verification before commit 745fa6e)
+
+Implemented on the supplied T040 base; the following records round 1's changes and checks.
 Read T040's report first, POLISH_PLAN FEEL-15 and sections 7.2–7.4 / 6.4–6.5, WORKER_DESIGN section 6 and its
 read-model/query sections, and the named renderer/effects code. No applicable AGENTS.md or CLAUDE.md was present.
 

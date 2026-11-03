@@ -936,6 +936,22 @@ export class BuildingRenderer {
   private activityChanged = new Set<BInst>();
   private activityScan: Iterator<BInst> | null = null;
   private activityMonth = -1;
+  private activityWork = this.addBudgetedWork({
+    pending: () => {
+      if (this.activityMonth !== this.state.monthIndex) {
+        this.activityMonth = this.state.monthIndex;
+        this.activityScan = this.activityBuildings.size ? this.activityBuildings.values() : null;
+      }
+      return this.activityChanged.size > 0 || this.activityScan !== null;
+    },
+    step: () => this.nextActivity(),
+    clear: () => {
+      this.activityBuildings.clear();
+      this.activityChanged.clear();
+      this.activityScan = null;
+      this.activityMonth = -1;
+    },
+  });
   /** UtilitiesView seam: null / negative load means the plant has no data yet. */
   plantLoad: ((id: number) => number | null) | null = null;
   private lastLodPixels = -1;
@@ -1633,10 +1649,6 @@ export class BuildingRenderer {
     this.buildQueue.clear();
     this.buildOrder.length = 0;
     this.buildAt = 0;
-    this.activityBuildings.clear();
-    this.activityChanged.clear();
-    this.activityScan = null;
-    this.activityMonth = -1;
     this.inst.clear();
     this.list.length = 0;
     this.lodWake.length = 0;
@@ -1778,6 +1790,12 @@ export class BuildingRenderer {
     this.buildQueue.add(bi);
   }
 
+  /** Register a lane's queue from its field initializer; the queue is retained across clear/rebuildAll. */
+  private addBudgetedWork<T extends BudgetedWork>(work: T): T {
+    this.budgetedWorks.push(work);
+    return work;
+  }
+
   private hasActivity(b: Building): boolean {
     const def = getDef(b.def), dev = def?.devType;
     return (def?.powerOut ?? 0) > 0 || (dev !== undefined && dev >= DevType.IA && dev <= DevType.IHT);
@@ -1794,22 +1812,24 @@ export class BuildingRenderer {
   }
 
   /** Staffing-only replica patches emit no buildingChanged; visit just the output buildings once each month. */
-  private nextActivity(): void {
+  private nextActivity(): boolean {
     let bi: BInst | undefined;
     if (this.activityChanged.size) {
       bi = this.activityChanged.values().next().value;
       this.activityChanged.delete(bi!);
     } else if (this.activityScan) {
       const next = this.activityScan.next();
-      if (next.done) this.activityScan = null;
+      if (next.done) { this.activityScan = null; return false; }
       else bi = next.value;
     }
-    if (!bi || bi.gone || bi.li < 0 || this.buildQueue.has(bi)) return;
+    if (!bi) return false;
+    if (bi.gone || bi.li < 0 || this.buildQueue.has(bi)) return true;
     const activity = this.activityOf(bi.b), month = this.state.monthIndex, v = bi.vis;
-    if (activity === v.activity && month === v.activityMonth) return;
+    if (activity === v.activity && month === v.activityMonth) return true;
     v.activity = activity;
     v.activityMonth = month;
     this.onVisual?.(v, bi.id);
+    return true;
   }
 
   /** swap a drawn entry in its list slot, or allocate a new one; only removal announces a null visual */
@@ -1872,32 +1892,22 @@ export class BuildingRenderer {
     order.length = 0;
   }
 
-  /** a frame admits geometry first, then output refreshes in the same budget; bulk paths explicitly take all */
+  /** a frame admits at least one building, then checks the clock between entries; bulk paths explicitly take all */
   private drainBuilds(all = false): void {
-    if (this.disposed) return;
-    if (this.activityMonth !== this.state.monthIndex) {
-      this.activityMonth = this.state.monthIndex;
-      this.activityScan = this.activityBuildings.values();
-    }
-    if (!this.buildQueue.size && !this.activityChanged.size && !this.activityScan) return;
+    if (this.budgetedWorks.length) { this.drainBudgetedWork(all); return; }
+    if (!this.buildQueue.size || this.disposed) return;
     const end = performance.now() + BUILD_BUDGET_MS;
     let done = 0;
-    while (this.buildQueue.size || this.activityChanged.size || this.activityScan) {
+    while (this.buildQueue.size) {
       if (done > 0 && !all && performance.now() >= end) break;
-      if (this.buildQueue.size) {
-        if (this.buildAt >= this.buildOrder.length) {
-          this.orderBuilds();
-          if (done > 0 && !all && performance.now() >= end) break;
-        }
-        const bi = this.buildOrder[this.buildAt++];
-        if (!this.buildQueue.has(bi)) continue; // cancelled, including a removed building whose id was reused
-        this.buildNow(bi);
-        done++;
+      if (this.buildAt >= this.buildOrder.length) {
+        this.orderBuilds();
+        if (done > 0 && !all && performance.now() >= end) break;
       }
-      if ((this.activityChanged.size || this.activityScan) && (done === 0 || all || performance.now() < end)) {
-        this.nextActivity();
-        done++;
-      }
+      const bi = this.buildOrder[this.buildAt++];
+      if (!this.buildQueue.has(bi)) continue; // cancelled, including a removed building whose id was reused
+      this.buildNow(bi);
+      done++;
     }
     if (!this.buildQueue.size) { this.buildOrder.length = 0; this.buildAt = 0; }
   }
@@ -2791,9 +2801,6 @@ export class BuildingRenderer {
     this.buildQueue.clear();
     this.buildOrder.length = 0;
     this.buildAt = 0;
-    this.activityBuildings.clear();
-    this.activityChanged.clear();
-    this.activityScan = null;
     this.proxies?.cancel(this); // (close-out c4: its waiting callbacks held this renderer and the city until answered)
     this.fadeLayer.dispose();
     this.batch.dispose();
