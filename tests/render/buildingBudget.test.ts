@@ -4,9 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { registerAllModels } from '../../src/assets/builders';
 import { lotTwigs, setLotTwigStrip } from '../../src/assets/builders/winterTwigs';
+import { MANIFEST_BY_ID } from '../../src/assets/manifest';
 import { CELL_SIZE } from '../../src/core/constants';
-import { BuildingRenderer, type BuildingVisual } from '../../src/render/city/buildings/BuildingRenderer';
-import { TileCuller } from '../../src/render/city/common/batch';
+import { BuildingRenderer, modelIdOf, type BuildingVisual } from '../../src/render/city/buildings/BuildingRenderer';
+import { TileCuller, warmTarget } from '../../src/render/city/common/batch';
 import { IF_SELECTED } from '../../src/render/city/common/cityMaterial';
 import { BF, type Building } from '../../src/sim/CityState';
 import { defaultCityConfig } from '../../src/sim/config';
@@ -17,10 +18,12 @@ registerAllModels();
 type BI = {
   id: number; b: Building; li: number; main: number; site: number; found: number; cells: number[];
   key: string; vis: BuildingVisual; geom: number; lod: number; flod: number; flags: number; anim: number; wakeGeom: number;
+  cy: number; radius: number;
 };
 type Internals = {
   inst: Map<number, BI>; list: BI[]; animating: Set<number>; lodWake: BI[]; evalWake: boolean;
-  buildOrder: BI[]; buildAt: number;
+  buildQueue: Set<BI>; buildOrder: BI[]; buildAt: number;
+  orderBuilds(): void;
   build(bi: BI): void;
   freeInstances(bi: BI): void;
   lodEval(bi: BI, c: THREE.Vector3, K: number, on: number, off: number): void;
@@ -299,6 +302,62 @@ describe('BuildingRenderer geometry work queue', () => {
     br.add(building(3, { x: 1, z: 15 }));
     drain(br);
     expect(timer.built).toEqual([2, 3, 1]);
+  });
+
+  it('preserves the original stable priority order across full and shorter waves', () => {
+    const { br } = town();
+    const internal = inside(br);
+    const cam = new THREE.PerspectiveCamera(20, 1, 1, 20000);
+    cam.position.set(256, 80, 600);
+    cam.lookAt(256, 0, 256);
+    cam.updateMatrixWorld();
+    for (const id of [1, 2, 3, 4]) br.add(building(id, id <= 2 ? { x: 15, z: 15 } : { x: 58, z: 56 }), false);
+    br.updateLod(cam, 720);
+    for (const id of [1, 2, 3, 4]) br.changed({ ...internal.inst.get(id)!.b, flags: BF.OnFire, x: 58, z: 56 });
+    const positions = [{ x: 15, z: 15 }, { x: 15, z: 15 }, { x: 1, z: 15 }, { x: 58, z: 56 }];
+    for (let id = 5; id <= 300; id++) br.add(building(id, positions[(id - 5) % positions.length]));
+    // Reference the former Map/tuple implementation, including stable insertion order for exact ties.
+    const originalOrder = () => {
+      const order = [...internal.buildQueue].slice(0, 256);
+      const fr = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+      const target = new THREE.Vector3(), sphere = new THREE.Sphere();
+      warmTarget(cam, target);
+      const priority = new Map<BI, [number, number]>();
+      for (const bi of order) {
+        const drawn = bi.li >= 0;
+        let x: number, z: number;
+        if (drawn) {
+          x = bi.vis.cx; z = bi.vis.cz;
+          sphere.center.set(x, bi.cy, z);
+          sphere.radius = Math.max(bi.radius, Math.hypot(bi.vis.sw, bi.vis.sd) / 2);
+        } else {
+          const b = bi.b, h = MANIFEST_BY_ID[modelIdOf(b)]?.height[1] ?? 12;
+          x = (b.x + b.w / 2) * CELL_SIZE; z = (b.z + b.d / 2) * CELL_SIZE;
+          sphere.center.set(x, b.baseY + h / 2, z);
+          sphere.radius = Math.hypot(b.w * CELL_SIZE, b.d * CELL_SIZE, h) / 2;
+        }
+        priority.set(bi, [fr.intersectsSphere(sphere) ? drawn ? 0 : 1 : 2, (x - target.x) ** 2 + (z - target.z) ** 2]);
+      }
+      order.sort((a, b) => { const p = priority.get(a)!, q = priority.get(b)!; return p[0] - q[0] || p[1] - q[1]; });
+      return { order, priority };
+    };
+    const checkWave = (length: number) => {
+      const expected = originalOrder();
+      internal.orderBuilds();
+      expect(internal.buildOrder).toHaveLength(length);
+      expect(internal.buildOrder.map((bi) => bi.id)).toEqual(expected.order.map((bi) => bi.id));
+      for (const bi of [...internal.buildOrder]) br.remove(bi.id);
+      return expected;
+    };
+    const first = checkWave(256);
+    expect([...new Set([...first.priority.values()].map(([rank]) => rank))].sort()).toEqual([0, 1, 2]);
+    expect(first.priority.get(first.order.find((bi) => bi.id === 1)!)).toEqual(first.priority.get(first.order.find((bi) => bi.id === 2)!));
+    expect(first.order.findIndex((bi) => bi.id === 1)).toBeLessThan(first.order.findIndex((bi) => bi.id === 2));
+    expect(first.order.findIndex((bi) => bi.id === 5)).toBeLessThan(first.order.findIndex((bi) => bi.id === 6));
+    checkWave(44);
+    for (let id = 301; id <= 317; id++) br.add(building(id, positions[id % positions.length]));
+    checkWave(17);
+    expect(br.pendingBuilds).toBe(0);
   });
 
   it('keeps queued lots out of visuals, LOD counts and animation until their build, and applies the latest state', () => {

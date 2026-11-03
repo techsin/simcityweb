@@ -911,6 +911,12 @@ export class BuildingRenderer {
   private buildQueue = new Set<BInst>();
   /** finite, view-prioritized wave: later events cannot keep older off-screen entries waiting forever */
   private buildOrder: BInst[] = [];
+  /** reusable priority keys / index sort; scratch references are released after ordering each wave */
+  private buildRank = new Uint8Array(BUILD_WAVE_SIZE);
+  private buildDistance = new Float64Array(BUILD_WAVE_SIZE);
+  private buildIndices: number[] = [];
+  private buildScratch: BInst[] = [];
+  private buildTarget = new THREE.Vector3();
   private buildAt = 0;
   private lastLodPixels = -1;
   private lastLodOn = -1;
@@ -1772,10 +1778,12 @@ export class BuildingRenderer {
     if (!cam) return; // before the first view: insertion order
     this.frOk = false;
     const fr = this.viewFrustum()!;
-    const target = new THREE.Vector3();
+    const target = this.buildTarget;
     warmTarget(cam, target);
-    const priority = new Map<BInst, [number, number]>();
-    for (const bi of order) {
+    const rank = this.buildRank, distance = this.buildDistance, indices = this.buildIndices;
+    indices.length = order.length;
+    for (let i = 0; i < order.length; i++) {
+      const bi = order[i];
       const drawn = bi.li >= 0;
       let x: number, z: number;
       if (drawn) {
@@ -1788,9 +1796,16 @@ export class BuildingRenderer {
         _sphere.center.set(x, b.baseY + h / 2, z);
         _sphere.radius = Math.hypot(b.w * CELL_SIZE, b.d * CELL_SIZE, h) / 2;
       }
-      priority.set(bi, [fr.intersectsSphere(_sphere) ? drawn ? 0 : 1 : 2, (x - target.x) ** 2 + (z - target.z) ** 2]);
+      rank[i] = fr.intersectsSphere(_sphere) ? drawn ? 0 : 1 : 2;
+      distance[i] = (x - target.x) ** 2 + (z - target.z) ** 2;
+      indices[i] = i;
     }
-    order.sort((a, b) => { const p = priority.get(a)!, q = priority.get(b)!; return p[0] - q[0] || p[1] - q[1]; });
+    indices.sort((a, b) => rank[a] - rank[b] || distance[a] - distance[b] || a - b);
+    const scratch = this.buildScratch;
+    for (let i = 0; i < order.length; i++) scratch[i] = order[indices[i]];
+    this.buildOrder = scratch;
+    this.buildScratch = order;
+    order.length = 0;
   }
 
   /** a frame admits at least one building, then checks the clock between entries; bulk paths explicitly take all */

@@ -1,7 +1,8 @@
 # T040: BuildingRenderer geometry budget
 
-Branch `local/T040-r2-buildings`, based on `fb1531f` plus the task commit and WIP `52a5063`. The round-1 review
-fixes are uncommitted; no push or `.done` file. Read POLISH_PLAN ownership sections 7.2-7.4 and D13,
+Branch `local/T040-r2-buildings`, now at merged base `b89dfd0`: WIPs `52a5063` / `0b6e2b1` plus dev `821a8d6`,
+including T038's incremental fireworks index. The round-2 review fixes are uncommitted; no push or `.done` file.
+Read POLISH_PLAN ownership sections 7.2-7.4 and D13,
 WORKER_DESIGN section 6 / R2, WASM_PLAN AC2,
 BuildingRenderer and its LOD helpers, and the consuming CityObjectsView paths before implementation.
 
@@ -14,11 +15,18 @@ BuildingRenderer and its LOD helpers, and the consuming CityObjectsView paths be
   Only removal sends `onVisual(null, id)`; it immediately frees any drawn pending change. Id reuse cancels the
   old object, and removal of an unbuilt add does not call batch removal. A small placement snapshot protects the
   drawn construction progress and lot proportions from mutations to the latest building record while waiting.
-- `tests/render/buildingBudget.test.ts`: 21 Node cases covering buffer equivalence, budget/progress, fairness,
+- `tests/render/buildingBudget.test.ts`: 22 Node cases covering buffer equivalence, budget/progress, fairness,
   priority, continuous drawing through a pending change, callbacks, exact old-instance frees and allocator
   accounting, pending removal/id reuse, old placement, completion/burnt pops, proxy wakes and synchronous paths.
-- This report is the task-named documentation file. No other source files changed. No infra hunks, no hunks in
-  shared files, and no cloud-held files changed. `lodBuilder.ts` and its message format are unchanged.
+  The new round-2 case compares exact ordering with the previous Map/tuple comparator across full and shorter waves.
+- `tests/render/fireworks.test.ts`: the existing wiring test now drives renderer frames between events and visual
+  reads. It compares the incremental index with the full scan before/after queued add, change-before-first-build,
+  drawn pending change and automatic visual swap, while retaining visual-only/removal/reset/rebuild/dispose checks.
+- `src/render/city/effects/Fireworks.ts`: only the requested `LaunchSiteIndex.update` comment changes. It describes
+  nullable queued-add visuals, retained pending-change visuals and catch-up through `onVisual -> visualChanged`.
+- This report is the task-named documentation file. No infra or shared-source hunks, and no CityObjectsView wiring
+  changes. The two fireworks-file hunks extend the original T040 ownership under the explicit round-2 request;
+  the previously cloud-held Fireworks file has only that comment edit. `lodBuilder.ts` and its message format are unchanged.
 
 `BUILD_BUDGET_MS = 2` sits next to `POP_TIME`. `update()` checks `performance.now()` between entries and always
 admits at least one entry if work is pending. An indivisible building can overshoot the deadline; a burst cannot
@@ -37,6 +45,13 @@ or camera API changes are needed. The first frame before any LOD camera is known
 is within each wave. Later arrivals cannot overtake the unfinished wave, so off-screen work cannot starve under
 a steady stream of near-camera events. The cap avoids sorting a whole city-scale queue in one frame. Deadline
 checks include priority preparation, including a check after preparing a later wave in the same frame.
+
+Round 2 removes the per-wave Map, per-entry tuple allocations and Map lookups in the sort comparator. Priority
+keys use reusable `Uint8Array` ranks and `Float64Array` distances; a reused index array sorts by rank, distance,
+then insertion index. Double precision and stable ties match the former comparator exactly. Two reusable entry
+arrays transfer the sorted references; temporary references are cleared before returning. The target vector is
+also reused. Wave size, admission order, budgets, geometry and visual callbacks are unchanged. No new timing
+claim is made for this optimization; the reference-order test covers 256-, 44- and 17-entry waves and all ranks/ties.
 
 `pendingBuilds` exposes the remaining queue size for capture/timing harnesses. `count` counts built entries:
 pending changes remain counted, while undrawn adds do not inflate building or proxy statistics. No simulation, host, save schema, balance,
@@ -71,7 +86,7 @@ drawn entries with a pending change. Only new pending adds have no drawn state.
 | CityObjectsView `pickRay`, hover/query picking | Continues receiving the old visual for pending changes; no invisible box for an unbuilt add. Live sim changes preserve the lot footprint (see caveat below). |
 | CityObjectsView `setSelected`, Previews selection | Pending changes keep their old selection mesh and can be selected normally; unbuilt adds wait for build. |
 | `onVisual` / `BuildingVisual`, Effects `onBuilding`, selected preview callback | A change emits only the new visual once at its swap. There is no null callback or emitter teardown during the wait. An unbuilt add announces nothing; removal of a drawn entry emits null. |
-| CityObjectsView fireworks `visualOf` | Receives the old visual for a pending change, null for an unbuilt add. Fireworks code is unchanged. |
+| CityObjectsView fireworks `visualOf` / T038 `LaunchSiteIndex` | Building events update the index with current building fields and an old/null visual. The index matches the full scan in that state; `onVisual -> visualChanged` updates it when the queued build/swap runs. Fireworks runtime logic and CityObjectsView wiring are unchanged. |
 | `add`, duplicate-id add, `remove`, `clear`, `rebuildAll` | Operates on object identity, cancels pending work, skips resources/list slots never allocated; clear/rebuild also releases wave references. |
 | `changed` | Replaces queued `b` and retains queue position and the old drawn state. With no pending rebuild, progress-only changes still update placement. |
 | `setSelected` | Updates color/LOD of the old drawn visual. Skips `li < 0`; build reads the selection. |
@@ -88,8 +103,8 @@ drawn entries with a pending change. Only new pending adds have no drawn state.
 
 ## Verification
 
-The worker reports WIP `52a5063` passed TypeScript, the full suite (217 files, 2,159 tests), and the bot (192,899).
-For this round-1 revision, all six targeted files below and TypeScript were rerun in this worktree, sequentially
+The worker reports WIP `52a5063` passed TypeScript, the full suite (217 files, 2,159 tests), and the bot (192,899),
+and merged base `b89dfd0` passed TypeScript. For round 2, all seven targeted files below and TypeScript were rerun in this worktree, sequentially
 through the quiet gate. No browser, full-suite rerun, benchmark, commit or other worktree was used. TypeScript
 and `git diff --check` are clean. Exact TypeScript command:
 
@@ -107,14 +122,18 @@ node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5
 
 | Test file | Result |
 |---|---|
-| `tests/render/buildingBudget.test.ts` | 21 passed |
+| `tests/render/buildingBudget.test.ts` | 22 passed |
+| `tests/render/fireworks.test.ts` | 12 passed, 2 skipped (large SIM_FIXTURES files unavailable) |
 | `tests/render/lod.test.ts` | 35 passed |
 | `tests/render/freshLoad.test.ts` | 12 passed |
 | `tests/render/rubbleKitLow.test.ts` | 2 passed |
 | `tests/render/cutShadows.test.ts` | 2 passed |
 | `tests/worker/hygiene.test.ts` | 17 passed, 1 skipped |
 
-Round-1 total: **89 passed, 1 skipped**. The seven new cases verify old main/site/foundation instances, key,
+Round-2 total: **102 passed, 3 skipped**. Only `fireworks.test.ts` imports `tests/render/fireworksHarness` under
+`tests/`; all its harness-based cases ran except the two optional large-fixture identity cases. No bench was run.
+The three requested core render files (`fireworks`, `lod`, `buildingBudget`) all pass. The round-1 total was
+89 passed, 1 skipped. Its seven new cases verify old main/site/foundation instances, key,
 visual and list-slot identity across every waiting frame; one atomic swap with exactly one positive callback;
 exact old-instance frees including rubble pieces; active instance counts and the ordered allocator free-list
 equal to the manual former synchronous free/build path after draining; immediate pending removal; safe id reuse
@@ -135,7 +154,7 @@ avoids allocating intermediate states. Pixel identity still requires the GPU scr
 
 ### Bot (prior verification, unchanged expectation)
 
-No bot was rerun for the round-1 render-only revision. The worker confirmed the required WIP result above;
+No bot was rerun for the round-1 or round-2 render-only revisions. The worker confirmed the required WIP result above;
 the original local run below also matched it. Expected residents remain **[61124, 93804, 37971] = 192,899**.
 
 The prescribed command was attempted:
@@ -155,7 +174,17 @@ Exit 0; Medium / plains; 2015 residents **[61124, 93804, 37971] = 192,899**, mat
 Full output: `C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T040/scratch/simbot-128-y15-s7-native.log`.
 No 256x60 bot, separate Hard run, or two-process yearly hash probe was run; no balance change is expected.
 
-## Real-GPU handoff (unmeasured)
+## Worker GPU smoke and remaining timing handoff
+
+The worker supplied these smoke results on the merged trees before the round-2 edits. They were not rerun locally:
+
+| Smoke check | Worker-reported result |
+|---|---|
+| Settled renderer identity | 0 differing buildings in every harness scenario after the queue drains |
+| Cold 200-building regrow | Before: 19.15 ms in one frame; queued path: at most 3.30 ms per frame |
+
+These are smoke results, not the >=8-repetition p50/p99/max tables, AC2's five-run frame gate, or pixel-diff
+screenshot pairs. The allocation optimization's timing still needs measurement in the worker's quiet slot.
 
 The following tables are placeholders for the worker's quiet-slot runs, not results. Building work's 2 ms
 deadline permits one indivisible build to overshoot; existing per-frame LOD evaluation, animations, proxy replies
@@ -193,10 +222,13 @@ Each AC2 arm needs p99 <= 33 ms and <= paused p99 + 4 ms, with no frame > 100 ms
   pick bounds until the swap; that API extension was not added to this renderer-only fix.
 - Raw global buffer-slot equality would conflict with prioritized allocation and skipped intermediate builds.
   The new equivalence tests compare the active bytes that draw each building. GPU pixel equality is outstanding.
-- No cloud-held file requests or infra hunks are needed. No changes outside the task-named source/test/report paths.
+- No cloud-held file requests or infra hunks are needed. The explicit round-2 request authorizes the Fireworks
+  comment and existing fireworks test outside the original building-helper ownership; those are the only such hunks.
 - The revised full Vitest suite is left to the lead as requested; the worker's full-suite result is for WIP
   `52a5063`. Real-GPU timing, screenshots, browser playability and old-save continuation were not verified here.
   No new bot or separate Hard run was made for this revision; no balance, simulation or RNG code changed.
+- The two skipped fireworks fixture-identity cases still need `SIM_FIXTURES` containing `bot256_s7_y60.metropolis`
+  and `dense1m_s7.metropolis`. The normal `fireworksHarness` stand-in cases and actual CityObjectsView wiring case passed.
 
 Browser checklist:
 
@@ -209,5 +241,7 @@ Browser checklist:
 - [ ] During abandonment/fire/completion/disaster waves, already drawn buildings remain visible and pickable with
   their old selection/effects until each swap; no blank frame or null emitter teardown. Visible changes are
   prioritized before new adds in the same wave. New adds stay undrawn until built; pending removal/id reuse leaves no ghost.
+- [ ] Start a fireworks show with queued adds and pending changes: launch sites catch up at visual swaps without
+  manual refresh; repeat after reset and quality switches, with LOW/HIGH screenshot pairs.
 - [ ] Load/reset an existing city and switch LOW/HIGH with work pending: buildings and rubble/foundations settle
   synchronously; continue an old save; confirm construction and completion pops start at actual build time.
