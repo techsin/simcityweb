@@ -1,84 +1,79 @@
-# T047 — FEEL-09, review round 1
+# T047 — FEEL-09, review round 2
 
-Review fixes on `local/T047-feel09-follow`, after WIP commits `aece5b4` (infra) and `1d287f2` (WORLD). These fixes are **uncommitted**. No push, merge or `.done` file.
+Round-2 fixes on `local/T047-feel09-follow`, based on `434e070` (the separate, already committed infra hunks are in `7e611c7`). These changes are **uncommitted**. No push, merge or `.done` file.
 
-The seven reported test failures are fixed. The targeted run passes **21 files, 286 tests, 1 skipped**; TypeScript passes. The 128×15 seed-7 bot remains **[61,124, 93,804, 37,971] = 192,899 in 2015**.
+N1 and N4 are fixed. TypeScript passes; targeted validation passes **13 files, 239 tests, 1 skipped**. The new 1080p projection sweep has **0 frames over 3 px**, maximum **2.118 px** after settling. New real-GPU QA remains with the lead.
 
-## Changes per file
+## Change per file
 
-- `src/ui/EmergencyBanner.ts`: selects Follow candidates exclusively from the manual dispatch event's `sent` IDs, still gated by `host.cause` and the banner/DispatchTool tag. Removed the stale incident-unit snapshots and lazy-boot seeding. Multiple batches within one command still select their earliest arrival, with ID tie-break. ETA changes to `on scene` when the extrapolated clock reaches arrival. Follow hides while its unit is active, and a second synthetic click cannot restart it. The production DOM structure is unchanged this round.
-- `src/render/city/vehicles/EmergencyVehicles.ts`: one shared `drawnVehiclePosition` helper supplies drawing and Follow. Quadratic corners span ±1 cell, limited to half each adjacent segment; the tangent supplies heading and continuous lane offset. Segment speeds blend through turns; the final stop and LANE→PARK offset ease over ±0.12 path-minute. Drawing, lights and glows share this position. Simulation routes and `vehiclePosition` stay unchanged. Cached render geometry detects in-place replica route/time updates.
-- `src/render/world/CameraController.ts`: requests a prediction horizon of `1 / λ` real seconds from its source, using the same λ = 6 as its damping. The two-second arrival timer still uses the source's current-time `onScene` flag.
-- `src/game/CityScene.ts`: converts that horizon through the current `host.secondsPerDay()` for the renderer feed; prediction is disabled while paused. No system read or mutation was added.
-- **Outside the named source files — isolated infra hunks:** `src/sim/infra/emergency.ts`: (1) optional `EmergencyDispatchEvent.sent` subtype next to the event types; (2) `dispatch()` collects IDs directly from `sendUnit`; (3) `afterDispatch()` forwards that batch in primary and supporting manual events; (4) `emit()` attaches it when supplied. Automatic events omit `sent`. These hunks remain apart for B2. Existing recorder/protocol cloning preserves the optional field; no Worker or `Simulation.ts` edit was needed.
-- Tests updated: `tests/game/emergencyFollowBanner.test.ts`, `tests/game/emergencyFollowScene.test.ts`, `tests/infra/emergencyFollowDispatch.test.ts`, `tests/render/cameraFollow.test.ts`, `tests/render/emergencyFollowPosition.test.ts`. New: `tests/render/emergencyDrawnMotion.test.ts`.
-- **Existing test outside the original task's file list:** `tests/game/uiStacking.test.ts`: one fixture line adds a hidden `followChip`. Its six affected cases bypass the constructor and call `dock()` on a mock; the missing field caused `undefined.style`. Assertions and production layout are unchanged.
+- `src/render/city/vehicles/EmergencyVehicles.ts`: caps right-turn rounding at filleted junctions using the mesher's live connected road widths, shared curb-fillet formula and actual truck geometry's inside half-width. The cap is approximately 0.87 cell for Roads and 0.52 for Streets; left turns and wider junctions retain their previous paths. Uniform two-arm bends retain arc behavior; mixed-width bends receive the filleted-junction cap. Drawing and Follow share the capped position and speed-blend window. Width reads use `RoadSurface.net.roadType`, including effective road types at rail crossings, with the mirrored network as fallback. In-place network edits are read live.
+- `src/ui/EmergencyBanner.ts`: resolution or failure of the followed incident immediately stops Follow and hides the chip, including during arrival grace. Cached incident identity covers a missing vehicle or replaced dispatch candidate; resolving another incident preserves Follow.
+- **Outside the named source files:** `src/render/city/common/netinfo.ts` adds the small `junctionFillet(halfWidth)` export. `src/render/city/roads/mesher.ts` imports it and replaces its existing formula with that call. The formula and road geometry are unchanged; the vehicle renderer shares the mesher's dimensions.
+- `tests/render/emergencyTurnClearance.test.ts` (new): full truck bounding-rectangle clearance against curb fillets; Road/Road, Road/Street in both approach orders, Street/Street, left/right turns, projected motion, live width edits, mixed-width two-arm bends and an actual `NetInfo` rail crossing.
+- `tests/game/emergencyFollowBanner.test.ts`: five new cases for resolution/failure during grace, unrelated resolution, a replaced candidate and a missing vehicle with a pruned candidate.
+- `docs/dev/reports/local-T047-feel09-follow.md`: this report.
 
-The Send nearest test now supplies an available dispatch option. Previously its empty fleet mock changed the label to `No free unit`, so searching for `Send nearest` returned undefined.
+**No `src/sim/infra/*` hunk this round.** No cloud-held file changed. `CameraController.ts` and `CityScene.ts` need no further change. No new RNG draws, simulation mutations, saved fields, balance changes or dispatch decisions.
 
-## Motion verification and plan differences
+## Motion verification and plan-versus-code differences
 
-**The central-box and 3 px rules apply after the approximately 0.3–0.5 s acquisition phase; the supplied real-GPU QA measured 317–583 ms.** The node test allows 0.6 s, covering that measured range, then measures every turn, speed change, arrival and grace frame.
+The radius cap keeps the entire inside side edge of the actual truck outside the fillet, including the closest point between the axles. Its limit comes from the connected junction half-width and shared fillet formula; the 1.9 m lane offset remains. The same radius shortens the continuous speed-blend window. No separate lane-offset animation or simulation route change is needed.
 
-The look-ahead uses the drawn position plus its tangent velocity × `1/λ`, rather than sampling a finite future point as the QA prototype did. Velocity comes from reusable samples of the same render helper. This removes the remaining acceleration lag. During the eased stop, prediction is clipped between the current drawn position and the parked endpoint, preventing endpoint overshoot. Arrival eligibility and the release timer use current time, not predicted time.
+Dense footprint sweeps sample the turn at intervals of at most 0.02 m. Minimum right-turn clearance is nonnegative (**+5.58e-8 m** at the closest sample, tangent within numerical precision); left turns have at least **1.100 m** clearance. Tests use the complete oriented rectangle's exact closest point to each fillet circle, rather than just wheel or corner samples.
 
-The deterministic projection test uses the real Three camera/controller at **1280×720, 38° FOV, 260 m, 50° tilt, 60 fps**, four yaws and normal/reduced motion. Each route contains four 90° turns and alternates the QA's 107 and 143 m/s speeds:
+Projection uses the real Three camera/controller without WebGL: **1920×1080, 38° FOV, 260 m, 50° tilt, 60 fps**, four yaws, left/right turns, 107→143 and 143→107 m/s approaches and four road-width combinations. All **64 combinations** stay within 3 px: maximum **2.117937 px**, no exceptions. The new sweep measures after one second of settling; every corner occurs several seconds later. Diagnostics: lane scratch `round2-turn-clearance.json`; set `T047_TURN_DIAGNOSTICS` to enable output. Existing corner/arrival and reduced-motion projection tests also pass.
 
-| First segment speed | Cases | Frames measured | Maximum step, including arrival | Frames >3 px | Maximum absolute NDC | Endpoint overshoot |
-|---|---:|---:|---:|---:|---:|---:|
-| 107 m/s | 8 | 14,008 | 1.056 px | 0 | 0.0167 | 0 m |
-| 143 m/s | 8 | 13,176 | 1.411 px | 0 | 0.0218 | 0 m |
+**The 3 px and central-30%-box rules are measured from the settled camera.** Supplied round-2 real-GPU QA measures convergence **683–917 ms after the Follow click**. The earlier 317–583 ms figure measures entry into the box, not settling; the previous report's 0.6 s allowance was too short. Node measurements do not establish Worker clock continuity or replace GPU verification.
 
-Diagnostics are in lane scratch `round1-motion.json`; set `T047_MOTION_DIAGNOSTICS` to an output path when running `emergencyDrawnMotion.test.ts` to reproduce them. These are node projection results, not new real-GPU measurements. Reduced motion still omits zoom animation and uses monotone damping; both motion modes pass the endpoint check.
-
-No RNG draws, saved fields, balance constants or dispatch decisions changed. Hard bit identity was not separately hash-tested; the Medium bot matches exactly, and the emergency reload tests pass.
+Reduced motion is unchanged: distance cuts to 260 m immediately; target tracking retains monotone λ = 6 damping without spring overshoot. The lead's round-2 QA verified both dispatch paths, auto-dispatch exclusion, chip/button behavior, input cancellation, two-second release and reduced/system motion on `434e070`.
 
 ## Gates and test names
 
-All files below ran separately through the quiet gate, with `--maxWorkers=1 --pool=threads`:
+Every Vitest file ran separately through the quiet gate with `--maxWorkers=1 --pool=threads`:
 
 | Directory | Files and passed test counts |
 |---|---|
-| `tests/game/` | `uiStacking.test.ts` 13; `emergencyFollowBanner.test.ts` 15; `emergencyFollowScene.test.ts` 7; `emergencyBanner.test.ts` 38; `emergencyPolicy.test.ts` 21; `dispatchBusy.test.ts` 3; `dispatchCommands.test.ts` 2; `cameraControls.test.ts` 65 |
-| `tests/render/` | `cameraFollow.test.ts` 24; `emergencyFollowPosition.test.ts` 7; `emergencyDrawnMotion.test.ts` 5 |
-| `tests/infra/` | `emergencyFollowDispatch.test.ts` 9; `emergencySupport.test.ts` 6; `emergency.test.ts` 25; `emergencyBurst.test.ts` 10; `emergencyReload.test.ts` 3; `emergencyNotes.test.ts` 9; `emergencyPlantGrace.test.ts` 3; `emergencyBot.test.ts` 2 |
+| `tests/game/` | `emergencyFollowBanner.test.ts` 20; `emergencyBanner.test.ts` 38; `emergencyPolicy.test.ts` 21; `uiStacking.test.ts` 13; `emergencyFollowScene.test.ts` 7; `cameraControls.test.ts` 65 |
+| `tests/render/` | `emergencyTurnClearance.test.ts` 11; `emergencyDrawnMotion.test.ts` 5; `emergencyFollowPosition.test.ts` 7; `cameraFollow.test.ts` 24 |
+| `tests/infra/` | `emergencyFollowDispatch.test.ts` 9 |
 | `tests/worker/` | `emergencyReads.test.ts` 2; `hygiene.test.ts` 17 passed, 1 skipped |
 
-`npx tsc --noEmit` and `git diff --check` pass. The full suite and new browser/GPU QA remain with the lead, per the worktree rules. No full suite, browser or benchmark was run here.
+`npx tsc --noEmit` and `git diff --check` pass. Logs: scratch `round2-<test-name>.log`. Vitest uses the existing scratch-only `vite-netuse-fallback.mjs` preload for the optional Windows `net use` probe's synchronous `spawn EPERM`; Vite then uses its existing realpath fallback. No repository code, dependency or assertion is patched by this workaround. The thread pool avoids restricted child-process pipes.
 
-The ordinary Vitest command still failed before collection: Vite's optional Windows `net use` probe throws synchronous `spawn EPERM`. A **scratch-only** preload, `vite-netuse-fallback.mjs`, reports that one failed probe through its existing error callback; Vite then uses its ordinary realpath fallback. It changes no repository file, dependency, game code or assertion. The thread pool avoids process-pipe restrictions. Per-file output is in scratch `round1-<test-name>.log`.
-
-Reproduction from this worktree:
+Reproduce from this worktree, one file at a time:
 
 ```powershell
 $lanes = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes'
 $quiet = "$lanes/quietrun.mjs"
 $scratch = "$lanes/T047/scratch"
 $env:NODE_OPTIONS = "--import=file:///$scratch/vite-netuse-fallback.mjs"
+$env:T047_TURN_DIAGNOSTICS = "$scratch/round2-turn-clearance.json"
+node $quiet npx vitest run tests/render/emergencyTurnClearance.test.ts --maxWorkers=1 --pool=threads
 node $quiet npx vitest run tests/game/emergencyFollowBanner.test.ts --maxWorkers=1 --pool=threads
-node $quiet npx vitest run tests/game/uiStacking.test.ts --maxWorkers=1 --pool=threads
-# Run each remaining file from the table with the same single-file command.
+# Repeat the single-file command for the remaining files in the table.
 ```
 
-The bot used the repo's documented Rolldown fallback for unavailable tsx, with unchanged size/year/seed arguments:
+The lead verified **222 files / 2,212 tests**, TypeScript and the unchanged bot on `434e070`. No new full-suite or bot run for this render/UI-only round. Current-tree full-suite and real-GPU gates remain with the lead. Exact standard bot command, if rerun:
 
 ```powershell
-node node_modules/rolldown/bin/cli.mjs tools/simbot.ts --platform node --format esm --dir "$scratch/round1-bot"
-node $quiet node "$scratch/round1-bot/simbot.js" --size 128 --years 15 --seed 7
+node $quiet npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
 ```
 
-Equivalent normal simbot invocation: `npx tsx tools/simbot.ts --size 128 --years 15 --seed 7`. The fallback run completed successfully and printed `residents [ 61124, 93804, 37971 ]`; log: scratch `round1-bot128y15s7.log`. No balance change or new expected population is requested.
+Required unchanged result: **residents [61124, 93804, 37971] = 192,899 in 2015**. No new balance result is expected. Medium/Hard continuation hashes were not separately rerun; no simulation behavior changed. No browser, full suite, benchmark or additional bot process ran here.
 
-## Requests and remaining browser checks
+## Cloud-owner requests and unverified items
 
-- **Simulation owner request, no edit here:** `src/sim/Simulation.ts`, `dayFraction` / `simTime`: preserve fractional progress while paused instead of returning zero. QA observed the truck and follow target jump back to the start of the sim day, with the ETA increasing. Please verify the same clock contract for the Worker feed.
-- **QueryTool note, no edit here:** a plain Query left click still calls `beginPan` on pointer-down and releases Follow. I would defer cancellation until the first actual drag movement, retaining click-to-inspect; that needs coordination with the shared QueryTool input hunk.
-- No cloud-held file was changed. No other cloud-held file request is needed.
+- **Worker clock:** `src/worker/LoopbackSimHost.ts:398–401`, `simTime()`: provide continuous presentation time across day boundaries while retaining packet reconciliation. QA observes the `day + 0.999` extrapolation cap stop the truck until the next packet, then leap about **4.7 m every sim day at LIVE**, producing **5.2–9.0 px** steps. This remains an independent exception to the Worker 3 px gate. No Worker edit here.
+- **Simulation clock:** `src/sim/Simulation.ts:145–150`, `dayFraction` / `simTime()`: preserve fractional progress while paused instead of returning zero. Pausing currently snaps the drawn truck and Follow back to the start of the day. No edit here.
+- **Query input:** `src/game/tools/QueryTool.ts:111–114`, pointer-down pan initiation: a plain left click calls `beginPan` and ends Follow. Defer cancellation until actual drag movement so click-to-inspect retains it; coordinate with the shared input owner. No edit here.
 
-The supplied WIP GPU QA already passed release timing, input cancellation, chip and reduced motion. Recheck the changed behavior on the real GPU/Worker:
+New GPU clearance and resolution behavior, current full-suite results and clock-owner fixes remain unverified here. The supplied QA's occasional far-acquisition rendering hitches were not investigated; they require the lead's GPU workflow.
 
-- [ ] Industrial accident: Send nearest and DispatchTool both follow only the player's truck, excluding the silently auto-sent ambulance.
-- [ ] After acquisition (317–583 ms previously measured), truck stays in the central 30%; every turn, speed change and arrival stays ≤3 px at 60 fps. Recheck both 1280×720 and the QA's 1920×1080 view.
-- [ ] Chip switches to `on scene` at extrapolated arrival; Follow is hidden while active and cannot restart on a second click.
-- [ ] Release remains two real seconds after on-scene arrival; drag, orbit, wheel and camera keys release in the same frame. Include Shift+right and touch, which the previous QA did not separately cover.
-- [ ] Normal/reduced/system motion, old saves, reset/exit and panels/toolbar docking remain correct. The pause snap and plain-left-click behavior remain the owner requests above.
+## Browser acceptance checklist for the lead
+
+- [ ] At LIVE, sweep right turns at Road/Road, Road/Street in both approach orders and Street/Street, with left turns as controls. The complete truck stays off the raised corner sidewalk and signal pole.
+- [ ] From the **settled camera (683–917 ms previously measured)**, the truck stays in the central 30% and every corner, speed change and arrival remains ≤3 px at 60 fps, at 720p and 1080p. Record loopback day-boundary failures separately under the clock request above.
+- [ ] Resolve the followed incident during its two-second arrival grace: Follow and chip end immediately, before the unit drives home. Resolving another incident does not interrupt Follow.
+- [ ] Industrial accident: Send nearest and DispatchTool each follow only the player's truck; the auto-sent ambulance never becomes lead. Auto-dispatch alone offers no Follow.
+- [ ] For an unresolved incident, release remains two real seconds after arrival. Drag, orbit, wheel, keys, Shift+right and touch release immediately; chip/hidden Follow button remain correct.
+- [ ] Normal/reduced/system motion, yaw/tilt, old saves, reset/exit and docking remain correct. Reduced motion cuts directly to 260 m. Pause snap and plain-left-click behavior remain owner requests.

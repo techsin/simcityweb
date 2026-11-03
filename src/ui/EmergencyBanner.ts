@@ -477,7 +477,7 @@ export class EmergencyBanner {
    *  flyoutTop): a switch to a shorter tab keeps the bound of the tallest — the stack does not re-dock with every tab */
   private flyHigh = 0;
   private followDispatches = new Map<number, { seq: number; vehicleId: number; arrive: number }>();
-  private activeFollow: { id: number; label: string } | null = null;
+  private activeFollow: { id: number; incidentId: number; label: string } | null = null;
   private followChip: HTMLDivElement;
   private followText: HTMLElement;
 
@@ -702,7 +702,11 @@ export class EmergencyBanner {
   private recordDispatch(e: EmergencyDispatchEvent): void {
     const inc = this.ctx.host.emergency.incident(e.id);
     if (e.type === 'resolved' || e.type === 'failed') {
+      const active = this.follow?.active();
+      const incidentId = active == null ? undefined : this.ctx.host.emergency.vehicles().find((v) => v.id === active)?.incidentId ?? (this.activeFollow?.id === active ? this.activeFollow.incidentId : undefined);
+      const following = active != null && (incidentId === e.id || incidentId === undefined && this.followDispatches.get(e.id)?.vehicleId === active);
       this.followDispatches.delete(e.id);
+      if (following) { this.follow?.stop(); this.refreshFollow(); }
       return;
     }
     if (!inc) return;
@@ -732,7 +736,7 @@ export class EmergencyBanner {
     const em = this.ctx.host.emergency;
     const v = id == null ? undefined : em.vehicles().find((q) => q.id === id);
     const now = this.ctx.host.simTime();
-    if (v) this.activeFollow = { id: v.id, label: `Following ${cap1(RESPONDER_UNIT[v.responder][0])} from ${em.stationName(v.stationId)} · ${v.state === 'outbound' && now < v.arrive ? emgTime(v.arrive - now) : 'on scene'}` };
+    if (v) this.activeFollow = { id: v.id, incidentId: v.incidentId, label: `Following ${cap1(RESPONDER_UNIT[v.responder][0])} from ${em.stationName(v.stationId)} · ${v.state === 'outbound' && now < v.arrive ? emgTime(v.arrive - now) : 'on scene'}` };
     else if (id == null || this.activeFollow?.id !== id) this.activeFollow = null;
     const display = this.activeFollow ? 'flex' : 'none';
     if (this.followChip.style.display !== display) { this.followChip.style.display = display; this.dockDirty = true; }

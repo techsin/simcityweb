@@ -19,6 +19,7 @@ import { EMERG_DAYS_PER_MIN } from '../../../sim/infra/params';
 import { sharedUniforms } from '../../../assets/materials';
 import { DynamicBatch } from '../common/batch';
 import { getCityMaterial } from '../common/cityMaterial';
+import { HALF_W, DX, DZ, junctionFillet, roadsConnect } from '../common/netinfo';
 import type { RoadSurface } from '../common/surface';
 import { vehicleGeometry } from './VehicleRenderer';
 
@@ -44,6 +45,7 @@ interface DrawnRoute {
   hx: number[]; hz: number[]; speed: number[]; radius: number[];
 }
 const drawnRoutes = new WeakMap<number[], DrawnRoute>();
+const rightWidths = new Map<string, number>();
 
 function drawnRoute(v: EmergencyVehicle, N: number): DrawnRoute {
   const old = drawnRoutes.get(v.path);
@@ -67,8 +69,33 @@ function drawnRoute(v: EmergencyVehicle, N: number): DrawnRoute {
   return g;
 }
 
+function turnRadius(g: DrawnRoute, k: number, model: string, network?: ArrayLike<number>): number {
+  const r = g.radius[k];
+  if (!network || !(r > 0) || g.hx[k - 1] * g.hz[k] - g.hz[k - 1] * g.hx[k] <= 0) return r;
+  const c = g.path[k], own = network[c], x = c % g.size, z = Math.floor(c / g.size);
+  let b = HALF_W[own] || 0, arms = 0;
+  for (let d = 0; d < 4; d++) {
+    const nx = x + DX[d], nz = z + DZ[d];
+    if (nx < 0 || nz < 0 || nx >= g.size || nz >= g.size) continue;
+    const t = network[nz * g.size + nx];
+    if (roadsConnect(own, t)) { b = Math.max(b, HALF_W[t]); arms++; }
+  }
+  // Uniform two-arm bends use the road mesher's arc; mixed-width bends use its filleted junction instead.
+  if (arms < 2 || (arms === 2 && b === HALF_W[own])) return r;
+  let width = rightWidths.get(model);
+  if (width === undefined) {
+    const geom = vehicleGeometry(model, 0);
+    if (!geom.boundingBox) geom.computeBoundingBox();
+    width = Math.max(0, -(geom.boundingBox?.min.x ?? 0));
+    rightWidths.set(model, width);
+  }
+  // Keep the whole inside side edge outside the curb's fillet, including its closest point between the axles.
+  const cap = 4 * (b + junctionFillet(b) * (1 - Math.SQRT1_2) - (LANE + width) * Math.SQRT1_2) / CELL_SIZE;
+  return Math.min(r, Math.max(0, cap));
+}
+
 /** Render-only world position: round one cell around turns and ease the final stop. The sim route is unchanged. */
-export function drawnVehiclePosition(v: EmergencyVehicle, t: number, N: number, out: VehiclePos = { x: 0, z: 0, hx: 1, hz: 0, moving: false }): VehiclePos {
+export function drawnVehiclePosition(v: EmergencyVehicle, t: number, N: number, out: VehiclePos = { x: 0, z: 0, hx: 1, hz: 0, moving: false }, network?: ArrayLike<number>): VehiclePos {
   if (v.path.length < 2 || (v.state !== 'outbound' && v.state !== 'onScene')) {
     vehiclePosition(v, t, N, out);
     const off = v.state === 'onScene' ? PARK : LANE;
@@ -86,7 +113,7 @@ export function drawnVehiclePosition(v: EmergencyVehicle, t: number, N: number, 
   // Integrating a linear speed blend preserves position and velocity at both edges of each turn window.
   for (let j = lo; j <= lo + 1; j++) {
     if (j <= 0 || j >= n - 1) continue;
-    const vin = g.speed[j - 1], vout = g.speed[j], w = g.radius[j] / Math.max(vin, vout);
+    const vin = g.speed[j - 1], vout = g.speed[j], w = turnRadius(g, j, v.model, network) / Math.max(vin, vout);
     if (w > 0 && Math.abs(m - tm[j]) < w) {
       const u = m - (tm[j] - w);
       d = g.distance[j] - vin * w + vin * u + (vout - vin) * u * u / (4 * w);
@@ -106,7 +133,7 @@ export function drawnVehiclePosition(v: EmergencyVehicle, t: number, N: number, 
   out.hx = g.hx[j]; out.hz = g.hz[j];
   for (let k = j; k <= j + 1; k++) {
     if (k <= 0 || k >= n - 1) continue;
-    const r = g.radius[k];
+    const r = turnRadius(g, k, v.model, network);
     if (!(r > 0) || Math.abs(d - g.distance[k]) >= r) continue;
     const u = (d - (g.distance[k] - r)) / (2 * r), a = 1 - u;
     out.x = g.x[k] - a * a * r * g.hx[k - 1] + u * u * r * g.hx[k];
@@ -277,7 +304,7 @@ export class EmergencyVehicles {
         this.inst.set(v.id, e);
       }
       shown++;
-      const ps = drawnVehiclePosition(v, t, N, this.pos);
+      const ps = drawnVehiclePosition(v, t, N, this.pos, this.surf.net?.roadType ?? this.state.network);
       const wx = ps.x, wz = ps.z;
       const y = this.surf.y(wx, wz);
       const ang = Math.atan2(ps.hx, ps.hz);
@@ -377,20 +404,21 @@ export class EmergencyVehicles {
     }
     const v = list.find(v => v.id === vehicleId);
     if (!v || !v.path?.length || (v.state !== 'outbound' && v.state !== 'onScene')) return null;
-    const ps = drawnVehiclePosition(v, t, this.state.size, this.pos);
+    const network = this.surf.net?.roadType ?? this.state.network;
+    const ps = drawnVehiclePosition(v, t, this.state.size, this.pos, network);
     const onScene = v.state === 'onScene' || t >= v.arrive;
     let x = ps.x, z = ps.z;
     if (Number.isFinite(aheadDays) && aheadDays > 0) {
       const h = Math.min(1e-4, aheadDays / 100);
-      const before = drawnVehiclePosition(v, t - h, this.state.size, this.beforePos);
-      const after = drawnVehiclePosition(v, t + h, this.state.size, this.afterPos);
+      const before = drawnVehiclePosition(v, t - h, this.state.size, this.beforePos, network);
+      const after = drawnVehiclePosition(v, t + h, this.state.size, this.afterPos, network);
       x += (after.x - before.x) * aheadDays / (2 * h);
       z += (after.z - before.z) * aheadDays / (2 * h);
       if (v.path.length >= 2) {
         const last = v.times.length - 1, endW = Math.min(0.12, (v.times[last] - v.times[last - 1]) / 2);
         const stopAt = v.legStart + (v.times[last] - v.m0 + endW) * EMERG_DAYS_PER_MIN;
         if (t >= stopAt - 2 * endW * EMERG_DAYS_PER_MIN) {
-          const parked = drawnVehiclePosition(v, stopAt, this.state.size, this.afterPos);
+          const parked = drawnVehiclePosition(v, stopAt, this.state.size, this.afterPos, network);
           x = THREE.MathUtils.clamp(x, Math.min(ps.x, parked.x), Math.max(ps.x, parked.x));
           z = THREE.MathUtils.clamp(z, Math.min(ps.z, parked.z), Math.max(ps.z, parked.z));
         }

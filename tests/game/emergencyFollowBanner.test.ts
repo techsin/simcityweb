@@ -264,6 +264,62 @@ describe('FEEL-09 emergency Follow banner', () => {
     expect(h.chip().textContent).not.toContain('0.0 min');
   });
 
+  it.each(['resolved', 'failed'] as const)('ends Follow immediately when the incident is %s during the arrival grace', (outcome) => {
+    const h = harness(), unit = vehicle(1);
+    h.dispatch(1, [unit], new DispatchTool(h.ctx));
+    h.button().click();
+    unit.state = 'onScene';
+    h.setTime(unit.arrive); h.banner.refreshFollow();
+    expect(h.chip().textContent).toContain('on scene');
+    unit.state = 'returning';
+    h.incidents.get(1)!.state = outcome;
+    h.dispatch(1, [], null, outcome);
+    expect(h.follow.stop).toHaveBeenCalledTimes(1);
+    expect(h.follow.active()).toBeNull();
+    expect(h.chip().style.display).toBe('none');
+    h.tick(); h.banner.refreshFollow();
+    expect(h.chip().style.display).toBe('none');
+    expect(h.button().style.display).toBe('none');
+  });
+
+  it('keeps following when a different incident resolves', () => {
+    const h = harness([incident(1), incident(2)]);
+    h.dispatch(1, [vehicle(1)], new DispatchTool(h.ctx));
+    h.button().click();
+    h.incidents.get(2)!.state = 'resolved';
+    h.dispatch(2, [], null, 'resolved');
+    expect(h.follow.stop).not.toHaveBeenCalled();
+    expect(h.follow.active()).toBe(1);
+    expect(h.chip().style.display).toBe('flex');
+  });
+
+  it('ends the active unit when a later command replaced its incident candidate', () => {
+    const h = harness(), tool = new DispatchTool(h.ctx);
+    h.dispatch(1, [vehicle(1)], tool);
+    h.button().click();
+    h.dispatch(1, [vehicle(2)], tool);
+    expect(h.follow.active()).toBe(1);
+    h.incidents.get(1)!.state = 'resolved';
+    h.dispatch(1, [], null, 'resolved');
+    expect(h.follow.active()).toBeNull();
+    expect(h.chip().style.display).toBe('none');
+  });
+
+  it('ends the retained chip on resolution even after its missing vehicle candidate was pruned', () => {
+    const h = harness();
+    h.dispatch(1, [vehicle(1)], new DispatchTool(h.ctx));
+    h.button().click();
+    h.fleet.length = 0; h.tick();
+    expect((h.banner as unknown as { followDispatches: Map<number, unknown> }).followDispatches.size).toBe(0);
+    expect(h.chip().style.display).toBe('flex');
+    h.incidents.get(1)!.state = 'resolved';
+    h.dispatch(1, [], null, 'resolved');
+    expect(h.follow.active()).toBeNull();
+    expect(h.chip().style.display).toBe('none');
+    h.tick();
+    expect(h.chip().style.display).toBe('none');
+  });
+
   it('hides Follow while active and ignores a second click instead of restarting the camera', () => {
     const h = harness();
     h.dispatch(1, [vehicle(1)], new DispatchTool(h.ctx));
