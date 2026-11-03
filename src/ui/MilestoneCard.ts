@@ -4,11 +4,11 @@ import type { GameContext } from '../game/context';
 import { POP_MILESTONES, populationMilestone } from '../game/milestones';
 import { resolveMotion } from '../game/settings';
 import type { NewsItem } from '../sim/CityState';
-import { CITY_RANKS, type CityRank } from '../sim/economy/rewards';
+import { CITY_RANKS, listMilestones, type CityRank } from '../sim/economy/rewards';
 import { STAGE_POP } from '../sim/economy/tuning';
 import { h, setText } from './dom';
 
-interface Moment { population: number; rankUp: boolean; deferred?: boolean }
+interface Moment { population: number; rankUp: boolean; remaining: number; interruptions: number; deferred?: boolean }
 
 export class MilestoneCard {
   private el = h('div', { class: 'milestone-card mp-glass', role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true', style: 'display:none' });
@@ -18,6 +18,7 @@ export class MilestoneCard {
   private wake: ReturnType<typeof setTimeout> | null = null;
   private pending: Moment | null = null;
   private active: Moment | null = null;
+  private expiresAt = 0;
   private panels = new Set<string>();
   private lastShown = -Infinity;
   private highest = 0;
@@ -34,6 +35,7 @@ export class MilestoneCard {
     this.offs.push(
       ctx.host.events.on('news', (n) => this.onNews(n)),
       ctx.host.events.on('reset', () => this.reset()),
+      ctx.host.policy.subscribe(() => this.present(), ctx.signal),
       ctx.ui.on('uiTick', () => this.present()),
       ctx.ui.on('panel', ({ id, open }) => {
         if (open) this.panels.add(id);
@@ -60,6 +62,7 @@ export class MilestoneCard {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
     this.active = null;
+    this.expiresAt = 0;
     this.el.style.display = 'none';
   }
 
@@ -82,6 +85,11 @@ export class MilestoneCard {
     const pop = populationMilestone(n.text);
     if (pop === null || pop <= this.highest) return;
     this.highest = pop;
+    if (this.pending && this.stale(this.pending)) {
+      this.pending = null;
+      this.clearWake();
+    }
+    if (this.active && this.stale(this.active)) this.hide();
     let rank = this.rank;
     while (rank + 1 < CITY_RANKS.length && CITY_RANKS[rank + 1].population <= pop) rank++;
     const rankUp = rank > this.rank && CITY_RANKS[rank].population === pop;
@@ -89,7 +97,7 @@ export class MilestoneCard {
       this.rank = rank;
       if (rankUp && !this.ctx.host.policy.live) this.onRankUp?.(CITY_RANKS[rank], rank / (CITY_RANKS.length - 1));
     }
-    this.enqueue({ population: pop, rankUp });
+    this.enqueue({ population: pop, rankUp, remaining: 4000, interruptions: 0 });
     this.present();
   }
 
@@ -97,12 +105,19 @@ export class MilestoneCard {
     if (!this.pending || (moment.rankUp || !this.pending.rankUp) && moment.population >= this.pending.population) this.pending = moment;
   }
 
+  private stale(moment: Moment): boolean {
+    return moment.interruptions > 0 && moment.population < this.highest;
+  }
+
   private present(): void {
     if (this.disposed || !this.pending && !this.active) return;
     // Panels can be dragged anywhere, so keep the moment until their contents are clear of it.
-    const blocked = this.isBusy() || this.panels.size > 0 || Array.from(this.parent.querySelectorAll('.panel')).some((p) => !p.classList.contains('closing'));
+    const blocked = this.ctx.host.policy.alerts.length > 0 || this.isBusy() || this.panels.size > 0 || Array.from(this.parent.querySelectorAll('.panel')).some((p) => !p.classList.contains('closing'));
     if (blocked) {
-      if (this.active) this.enqueue({ ...this.active, deferred: true });
+      if (this.active && this.active.interruptions === 0 && this.active.population === this.highest) {
+        const remaining = Math.max(0, this.expiresAt - performance.now());
+        if (remaining > 0) this.enqueue({ ...this.active, remaining, interruptions: 1, deferred: true });
+      }
       if (this.pending) this.pending.deferred = true;
       this.hide();
       this.clearWake();
@@ -113,11 +128,17 @@ export class MilestoneCard {
       if (this.active) this.paint(this.active.population);
       return;
     }
+    if (this.stale(moment)) {
+      this.pending = null;
+      this.clearWake();
+      return;
+    }
     const now = performance.now();
     const wait = 30_000 - (now - this.lastShown);
     if (this.ctx.host.speed >= 3 && wait > 0) {
       if (moment.rankUp && this.active) {
         // Update this card without another entrance or extending its original four-second lifetime.
+        moment.remaining = Math.max(0, this.expiresAt - now);
         this.active = moment;
         this.paint(moment.population);
         this.pending = null;
@@ -131,17 +152,20 @@ export class MilestoneCard {
     this.hide();
     this.lastShown = now;
     this.active = moment;
+    this.expiresAt = now + moment.remaining;
     this.paint(moment.population);
     this.el.style.display = '';
-    this.timer = setTimeout(() => this.hide(), 4000);
+    this.timer = setTimeout(() => this.hide(), moment.remaining);
   }
 
   private paint(pop: number): void {
     setText(this.title, `${this.ctx.state.config.name.toLocaleUpperCase('en-US')} · ${pop.toLocaleString('en-US')} RESIDENTS`);
     const reached = Math.max(pop, this.ctx.state.stats.population);
+    const stats = reached === this.ctx.state.stats.population ? this.ctx.state.stats : { ...this.ctx.state.stats, population: reached };
+    const milestones = listMilestones({ stats, unlocked: this.ctx.state.unlocked, milestones: this.ctx.state.milestones });
     const stage = STAGE_POP.find((s) => s.pop > reached);
-    const nextRank = CITY_RANKS.find((r) => r.population > reached);
-    const currentRank = CITY_RANKS.findLast((r) => r.population <= reached)!;
+    const nextRank = milestones.nextRank;
+    const currentRank = milestones.currentRank;
     const next = stage && (!nextRank || stage.pop < nextRank.population)
       ? `Next: ${stage.stage === 6 ? 'Towers' : stage.stage === 7 ? 'Skyscrapers' : stage.stage === 8 ? 'Supertalls' : 'Taller buildings'} at ${stage.pop.toLocaleString('en-US')} residents`
       : nextRank ? `Next: ${nextRank.name} at ${nextRank.population.toLocaleString('en-US')} residents`

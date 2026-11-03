@@ -1,5 +1,5 @@
 .milestone-card {
-  position: absolute; left: 50%; top: 84px; transform: translateX(-50%); z-index: 57;
+  position: absolute; left: 50%; top: 112px; transform: translateX(-50%); z-index: 54;
   width: max-content; max-width: calc(100% - 32px); box-sizing: border-box; padding: 18px 26px;
   border-color: rgba(255, 212, 107, 0.5); border-radius: 12px; text-align: center; pointer-events: none;
   animation: milestone-arrive 0.25s var(--ease);
