@@ -974,7 +974,24 @@ export class BuildingRenderer {
   private noRoadRevision = -1;
   /** Revisions coalesce while this iterator finishes: frequent deliveries cannot starve later buildings. */
   private noRoadWork: Iterator<BInst> | null = null;
-  private noRoadFirst = false;
+  private noRoadBudgetWork = this.addBudgetedWork({
+    pending: () => this.noRoadWork !== null,
+    step: () => this.nextNoRoad(),
+    clear: () => {
+      this.noRoadData.fill(0);
+      this.noRoadTex.needsUpdate = true;
+      this.noRoadWork = null;
+      this.noRoadRevision = -1;
+      if (this.disposed) {
+        this.noRoadTex.dispose();
+        if (noRoadUniforms.uBuildingNoRoadTex.value === this.noRoadTex) {
+          noRoadUniforms.uBuildingNoRoadTex.value = null;
+          noRoadUniforms.uBuildingNoRoadOn.value = 0;
+        }
+        _noRoadMat?.dispose();
+      }
+    },
+  });
   /** live adds / visual changes, keyed by object: building ids can be reused before a frame builds them */
   private buildQueue = new Set<BInst>();
   /** finite, view-prioritized wave: later events cannot keep older off-screen entries waiting forever */
@@ -1755,10 +1772,9 @@ export class BuildingRenderer {
   }
 
   clear(): void {
-    this.noRoadData.fill(0);
-    this.noRoadTex.needsUpdate = true;
-    this.noRoadWork = null;
-    this.noRoadRevision = -1;
+    for (const work of this.budgetedWorks) work.clear();
+    this.budgetedWorkAt = 0;
+    this.budgetedWorkTurn = false;
     for (const bi of this.inst.values()) { if (bi.li >= 0) this.freeInstances(bi); bi.gone = true; }
     this.buildQueue.clear();
     this.buildOrder.length = 0;
@@ -1968,18 +1984,14 @@ export class BuildingRenderer {
     order.length = 0;
   }
 
-  /** Geometry and model-tint entries alternate under one deadline; bulk paths explicitly take all. */
+  /** a frame admits at least one building, then checks the clock between entries; bulk paths explicitly take all */
   private drainBuilds(all = false): void {
-    if ((!this.buildQueue.size && !this.noRoadWork) || this.disposed) return;
+    if (this.budgetedWorks.length) { this.drainBudgetedWork(all); return; }
+    if (!this.buildQueue.size || this.disposed) return;
     const end = performance.now() + BUILD_BUDGET_MS;
     let done = 0;
-    while (this.buildQueue.size || this.noRoadWork) {
+    while (this.buildQueue.size) {
       if (done > 0 && !all && performance.now() >= end) break;
-      if (this.noRoadWork && (this.noRoadFirst || !this.buildQueue.size)) {
-        if (this.nextNoRoad()) done++;
-        this.noRoadFirst = false;
-        continue;
-      }
       if (this.buildAt >= this.buildOrder.length) {
         this.orderBuilds();
         if (done > 0 && !all && performance.now() >= end) break;
@@ -1987,7 +1999,6 @@ export class BuildingRenderer {
       const bi = this.buildOrder[this.buildAt++];
       if (!this.buildQueue.has(bi)) continue; // cancelled, including a removed building whose id was reused
       this.buildNow(bi);
-      this.noRoadFirst = true;
       done++;
     }
     if (!this.buildQueue.size) { this.buildOrder.length = 0; this.buildAt = 0; }
@@ -2883,13 +2894,6 @@ export class BuildingRenderer {
     this.proxies?.cancel(this); // (close-out c4: its waiting callbacks held this renderer and the city until answered)
     this.fadeLayer.dispose();
     this.batch.dispose();
-    this.noRoadWork = null;
-    this.noRoadTex.dispose();
-    if (noRoadUniforms.uBuildingNoRoadTex.value === this.noRoadTex) {
-      noRoadUniforms.uBuildingNoRoadTex.value = null;
-      noRoadUniforms.uBuildingNoRoadOn.value = 0;
-    }
-    _noRoadMat?.dispose();
     // (the module-level fade material: the renderer's dispose listener on it kept that renderer and the exited city
     // reachable; it stays cached and compiles again on next use)
     _fadeMat?.dispose();
