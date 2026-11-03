@@ -20,6 +20,8 @@ import { Network, Zone } from '../../src/core/types';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import { decodeBundle, encodeBundle } from '../../src/save/bundle';
 import { getDef } from '../../src/sim/catalog';
+import { applyCityDelta, encodeCityDelta } from '../../src/save/recoveryCodec';
+import { CONTINUITY_RECORDS } from '../../src/sim/persist';
 
 function canonical(v: unknown): unknown {
   if (ArrayBuffer.isView(v)) {
@@ -113,5 +115,28 @@ describe('T057: save / load continuity', () => {
     // (the IndexedDB path, a structured clone, holds the same city as the file)
     const st2 = deserializeCity(decodeBundle(saves.get(saveAt[0])!) as SerializedCity);
     expect(differing(digest(viaClone(st2)), digest(st2))).toEqual([]);
+  });
+
+  it('recovery snapshots leave the continuity records out when lean or over their budget, and still load', { timeout: 120_000 }, () => {
+    const bot = new SimBot({ size: 32, years: 1, seed: 3, difficulty: 'medium', terrain: 'flat', water: 0, quiet: true, noInfra: true }, economySystems());
+    bot.run(1);
+    const base = serializeCity(bot.st, { copy: true });
+    bot.sim.runDays(5);
+    const cur = serializeCity(bot.st, { copy: true });
+    const sd = (d: { data: Record<string, unknown> }) => d.data.systemData as Record<string, unknown>;
+    for (const k of CONTINUITY_RECORDS) expect(sd(cur)[k], k).toBeDefined();
+    const kept = (o: { budget?: number; lean?: boolean }) => {
+      const delta = encodeCityDelta(cur, base, 1, o);
+      const back = applyCityDelta(structuredClone(delta), base);
+      const st = deserializeCity(back);
+      new Simulation(st, economySystems()).runDays(2); // (a city restored without them rebuilds that state at load)
+      return CONTINUITY_RECORDS.filter((k) => sd(back)[k] !== undefined);
+    };
+    expect(kept({})).toEqual([...CONTINUITY_RECORDS]);
+    expect(kept({ budget: 1 << 30 })).toEqual([...CONTINUITY_RECORDS]);
+    expect(kept({ lean: true })).toEqual([]);
+    expect(kept({ budget: 1 })).toEqual([]);
+    // (the save itself is not changed)
+    for (const k of CONTINUITY_RECORDS) expect(sd(cur)[k], k).toBeDefined();
   });
 });

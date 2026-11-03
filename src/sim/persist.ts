@@ -24,3 +24,10 @@ export function runSaveHooks(state: object): void {
   const m = hooks.get(state);
   if (m) for (const fn of m.values()) fn();
 }
+
+/**
+ * The systemData records the economy systems' continuity state lives in (T057): written by save hooks or kept by the
+ * systems, read back by their init() on a loaded city. A save from before T057 has none of them, and a city loaded
+ * without them rebuilds that state at load, as it did before (recovery snapshots may leave them out: recoveryCodec).
+ */
+export const CONTINUITY_RECORDS: readonly string[] = ['econLists', 'lvRun', 'popRun', 'approvalRun', 'growthRun'];
