@@ -2461,6 +2461,166 @@ function topInsert(list: LaunchSite[], item: LaunchSite, key: (s: LaunchSite) =>
 const byWeight = (s: LaunchSite) => s.weight;
 const byHeight = (s: LaunchSite) => s.y;
 
+type SiteBuilding = SiteSource['buildings'] extends Iterable<infer B> ? B : never;
+type SiteVisual = ReturnType<SiteSource['visualOf']>;
+type SiteGroup = 0 | 1 | 2;
+export interface LaunchSiteBounds { x0: number; x1: number; z0: number; z1: number }
+interface IndexedSite extends LaunchSiteBounds {
+  rank: number;
+  def: string;
+  category: string | undefined;
+  group: SiteGroup;
+  site: LaunchSite | null;
+  ground: boolean;
+}
+const SITE_LIMITS = [MAX_PARK_SITES, MAX_LANDMARK_SITES, MAX_ROOF_SITES];
+const emptySiteBounds = (): LaunchSiteBounds => ({ x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity });
+const siteKey = (e: IndexedSite): number => e.site ? e.group === 2 ? e.site.y : e.site.weight : -Infinity;
+
+function insertIndexedSite(list: IndexedSite[], e: IndexedSite): void {
+  if (!e.site) return;
+  const key = siteKey(e), max = SITE_LIMITS[e.group];
+  let i = 0;
+  while (i < list.length && (siteKey(list[i]) > key || (siteKey(list[i]) === key && list[i].rank < e.rank))) i++;
+  if (i >= max) return;
+  list.splice(i, 0, e);
+  if (list.length > max) list.pop();
+}
+
+/** Building-event cache. Only the centre's live pop/jobs reduction and the waterfront scan run for every show. */
+export class LaunchSiteIndex {
+  private entries = new Map<number, IndexedSite>();
+  private nextRank = 0;
+  private best: IndexedSite[][] = [[], [], []];
+  private dirty = [false, false, false];
+  private bounds = emptySiteBounds();
+  private boundsDirty = false;
+
+  constructor(src: SiteSource) { this.rebuild(src); }
+
+  clear(): void {
+    this.entries.clear();
+    this.nextRank = 0;
+    for (const list of this.best) list.length = 0;
+    this.dirty.fill(false);
+    this.bounds = emptySiteBounds();
+    this.boundsDirty = false;
+  }
+
+  rebuild(src: SiteSource): void {
+    this.clear();
+    for (const b of src.buildings) this.update(b, src);
+  }
+
+  /** Added / changed, after the building renderer has applied the event. Existing ids keep their Map order. */
+  update(b: SiteBuilding, src: SiteSource): void {
+    const old = this.entries.get(b.id);
+    const e: IndexedSite = {
+      rank: old?.rank ?? this.nextRank++, def: b.def, category: src.defOf(b.def)?.category,
+      x0: b.x, x1: b.x + b.w, z0: b.z, z1: b.z + b.d, group: 2, site: null, ground: false,
+    };
+    this.setVisual(e, src.visualOf(b.id), src.cellSize);
+    this.put(b.id, e);
+  }
+
+  /** Also called for terrain-driven visual rebuilds, which need not emit buildingChanged. */
+  visualChanged(id: number, v: SiteVisual, cellSize: number): void {
+    const old = this.entries.get(id);
+    if (!old) return;
+    const e = { ...old };
+    this.setVisual(e, v, cellSize);
+    this.put(id, e);
+  }
+
+  remove(id: number): void {
+    const e = this.entries.get(id);
+    if (!e) return;
+    this.entries.delete(id);
+    if (this.best[e.group].includes(e)) this.dirty[e.group] = true;
+    if (this.atEdge(e)) this.boundsDirty = true;
+    this.refresh();
+  }
+
+  private setVisual(e: IndexedSite, v: SiteVisual, C: number): void {
+    const w = e.x1 - e.x0, d = e.z1 - e.z0;
+    const cx = v ? v.cx : (e.x0 + w / 2) * C, cz = v ? v.cz : (e.z0 + d / 2) * C;
+    e.site = null;
+    e.ground = false;
+    e.group = e.category === 'park' ? 0 : e.category === 'landmark' ? 1 : 2;
+    if (e.group === 0) {
+      const stadium = e.def.includes('stadium'), plaza = e.def.includes('plaza') || e.def.includes('square');
+      e.ground = !v;
+      e.site = { x: cx, y: v ? v.baseY : 0, z: cz, kind: stadium ? 'stadium' : plaza ? 'plaza' : 'park',
+        weight: stadium ? 3 : plaza ? 2 : 1.4 + Math.min(1, (w * d) / 16) };
+    } else if (e.group === 1) {
+      const off = (Math.max(w, d) / 2 + 1) * C * 0.7;
+      e.ground = true;
+      e.site = { x: cx + off, y: 0, z: cz + off, kind: 'landmark', weight: 2.2 + Math.min(0.5, (w * d) / 64) };
+    } else if (v && v.top - v.baseY > 45) {
+      e.site = { x: v.cx, y: v.top, z: v.cz, kind: 'roof', weight: 1.1 + Math.min(1.5, (v.top - v.baseY) / 150) };
+    }
+  }
+
+  private atEdge(e: LaunchSiteBounds): boolean {
+    const b = this.bounds;
+    return e.x0 === b.x0 || e.x1 === b.x1 || e.z0 === b.z0 || e.z1 === b.z1;
+  }
+
+  private extend(e: LaunchSiteBounds): void {
+    const b = this.bounds;
+    b.x0 = Math.min(b.x0, e.x0); b.x1 = Math.max(b.x1, e.x1);
+    b.z0 = Math.min(b.z0, e.z0); b.z1 = Math.max(b.z1, e.z1);
+  }
+
+  private put(id: number, e: IndexedSite): void {
+    const old = this.entries.get(id);
+    let kept = false;
+    if (old) {
+      if (this.atEdge(old) && (old.x0 !== e.x0 || old.x1 !== e.x1 || old.z0 !== e.z0 || old.z1 !== e.z1)) this.boundsDirty = true;
+      kept = this.best[old.group].includes(old);
+      if (kept && (old.group !== e.group || siteKey(old) !== siteKey(e))) {
+        this.dirty[old.group] = true;
+        kept = false;
+      }
+      // The kept lists hold this object; a position-only change needs no re-selection.
+      Object.assign(old, e);
+      e = old;
+    } else this.entries.set(id, e);
+    this.extend(e);
+    if (!kept && !this.dirty[e.group]) insertIndexedSite(this.best[e.group], e);
+    this.refresh();
+  }
+
+  private refresh(): void {
+    for (let g = 0; g < 3; g++) if (this.dirty[g]) {
+      const list = this.best[g];
+      list.length = 0;
+      for (const e of this.entries.values()) if (e.group === g) insertIndexedSite(list, e);
+      this.dirty[g] = false;
+    }
+    if (this.boundsDirty) {
+      this.bounds = emptySiteBounds();
+      for (const e of this.entries.values()) this.extend(e);
+      this.boundsDirty = false;
+    }
+  }
+
+  collect(src: SiteSource): LaunchSite[] {
+    const lists = this.best.map((list) => list.map((e) => {
+      const s = e.site!;
+      return { ...s, y: e.ground ? src.groundAt(s.x, s.z) : s.y };
+    }));
+    // pop/jobs also change silently. Preserve the full scan's arithmetic and Map iteration order exactly.
+    let cxs = 0, czs = 0, cw = 0;
+    const C = src.cellSize;
+    for (const b of src.buildings) {
+      const wgt = 1 + b.pop + b.jobs;
+      cxs += (b.x + b.w / 2) * C * wgt; czs += (b.z + b.d / 2) * C * wgt; cw += wgt;
+    }
+    return finishLaunchSites(src, lists[0], lists[1], lists[2], cxs, czs, cw, this.bounds);
+  }
+}
+
 /**
  * collect launch sites for a show: the city centre (snapped to a road / park / plaza), stadiums + the best parks /
  * plazas, landmarks, the tallest roofs and a few barges just off the city's waterfront. Keeps only the best few of
@@ -2502,7 +2662,12 @@ export function collectLaunchSites(src: SiteSource): LaunchSite[] {
       topInsert(roofs, { x: v.cx, y: v.top, z: v.cz, kind: 'roof', weight: 1.1 + Math.min(1.5, (v.top - v.baseY) / 150) }, byHeight, MAX_ROOF_SITES);
     }
   }
-  const N = src.size;
+  return finishLaunchSites(src, parks, landmarks, roofs, cxs, czs, cw, { x0, x1, z0, z1 });
+}
+
+function finishLaunchSites(src: SiteSource, parks: LaunchSite[], landmarks: LaunchSite[], roofs: LaunchSite[],
+  cxs: number, czs: number, cw: number, bounds: LaunchSiteBounds): LaunchSite[] {
+  const N = src.size, C = src.cellSize;
   const sites: LaunchSite[] = [];
   // the city centre (population / jobs centroid), moved onto the nearest road / park / plaza within 150 m
   if (cw > 0) {
@@ -2513,10 +2678,15 @@ export function collectLaunchSites(src: SiteSource): LaunchSite[] {
   } else {
     const c = (N / 2) * C;
     sites.push({ x: c, y: src.groundAt(c, c), z: c, kind: 'centre', weight: 2 });
-    x0 = N * 0.35; x1 = N * 0.65; z0 = N * 0.35; z1 = N * 0.65;
+    bounds = { x0: N * 0.35, x1: N * 0.65, z0: N * 0.35, z1: N * 0.65 };
   }
-  sites.push(...parks, ...landmarks, ...roofs);
-  // waterfront: barges 2..3 cells off the shore, within 5 cells of the city's buildings
+  sites.push(...parks, ...landmarks, ...roofs, ...collectWaterfrontSites(src, bounds));
+  return sites;
+}
+
+/** Barges 2..3 cells off the shore, within 5 cells of buildings. Exported separately for the quiet-slot timing. */
+export function collectWaterfrontSites(src: SiteSource, { x0, x1, z0, z1 }: LaunchSiteBounds): LaunchSite[] {
+  const N = src.size, C = src.cellSize, sites: LaunchSite[] = [];
   const pad = 5;
   const ax = Math.max(1, Math.floor(x0) - pad), bx = Math.min(N - 2, Math.ceil(x1) + pad);
   const az = Math.max(1, Math.floor(z0) - pad), bz = Math.min(N - 2, Math.ceil(z1) + pad);
