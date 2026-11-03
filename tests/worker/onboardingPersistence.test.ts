@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ONBOARDING_MAX_BYTES, type GuideProgress } from '../../src/core/onboarding';
 import { clearRecoveryBase, getCityRecord, loadCity, saveCity } from '../../src/save/cities';
 import { MemoryKV, setKV } from '../../src/save/db';
+import { cityFingerprint } from '../../src/save/fingerprint';
 import { deserializeCity, serializeCity } from '../../src/save/serialize';
 import { CityActions } from '../../src/sim/actions';
 import { Simulation } from '../../src/sim/Simulation';
@@ -48,6 +49,35 @@ async function settle(host: LocalSimHost | LoopbackSimHost): Promise<void> {
 
 describe('FH-22 setOnboarding', () => {
   for (const kind of ['local', 'packet'] as const) {
+    it(`${kind}: dirties a clean save only for valid changed progress`, async () => {
+      const host = await hostFor(kind), progress = g4();
+      let saving = host.save('manual'); await settle(host);
+      const empty = await saving;
+      expect(host.changes).toBe(empty.changes);
+      let ticket = host.act('setOnboarding', [progress]); await settle(host);
+      await expect(ticket.done).resolves.toBe(true);
+      expect(host.changes).toBe(empty.changes + 1);
+      expect(cityFingerprint(host.state)).toBe(empty.fp);
+      saving = host.save('manual'); await settle(host);
+      const clean = await saving;
+      expect(clean.changes).toBe(host.changes);
+      expect((await loadCity(city.regionId, city.tileKey))!.systemData.onboarding).toEqual(progress);
+      // Equivalent records remain clean even when a caller uses another property insertion order.
+      const identical = Object.fromEntries(Object.entries(structuredClone(progress)).reverse()) as unknown as GuideProgress;
+      ticket = host.act('setOnboarding', [identical]); await settle(host);
+      await expect(ticket.done).resolves.toBe(true);
+      expect(host.changes).toBe(clean.changes);
+      expect(cityFingerprint(host.state)).toBe(clean.fp);
+      ticket = host.act('setOnboarding', [{ ...progress, version: 2 } as unknown as GuideProgress]); await settle(host);
+      await expect(ticket.done).resolves.toBe(false);
+      expect(host.changes).toBe(clean.changes);
+      expect(host.state.systemData.onboarding).toEqual(progress);
+      ticket = host.act('setOnboarding', [{ ...progress, minimised: false }]); await settle(host);
+      await expect(ticket.done).resolves.toBe(true);
+      expect(host.changes).toBe(clean.changes + 1);
+      expect(cityFingerprint(host.state)).toBe(clean.fp);
+    });
+
     it(`${kind}: saves and reloads the complete G4 record and keeps caller, save and replica copies detached`, async () => {
       const state = newState(16); state.day = 150;
       const host = await hostFor(kind, state), progress = g4(), wanted = structuredClone(progress);

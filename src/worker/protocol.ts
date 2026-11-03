@@ -34,7 +34,7 @@ export interface ViewState { overlay: Overlay; variant: number; panels: string[]
 export type CitySource = { kind: 'idb'; regionId: string; tileKey: string }
   | { kind: 'serialized'; regionId: string; tileKey: string; savedAt: number; city: SerializedCity };
 export type JournalOp = Extract<CommandOp, 'zone' | 'dezone' | 'bulldoze' | 'buildNetwork' | 'buildPowerLine' | 'buildSubway'
-  | 'plop' | 'terraform' | 'plantTrees' | 'setTax' | 'setFunding' | 'setHistoric' | 'setOrdinance' | 'takeLoan' | 'repayLoan'>;
+  | 'plop' | 'terraform' | 'plantTrees' | 'setTax' | 'setFunding' | 'setHistoric' | 'setOrdinance' | 'takeLoan' | 'repayLoan' | 'setOnboarding'>;
 export interface Journal {
   v: 1; regionId: string; tileKey: string; at: number;
   base: { kind: 'save'; savedAt: number } | { kind: 'snapshot'; at: number; baseSavedAt: number };

@@ -16,7 +16,7 @@ export const JOURNAL_RESERVE_BYTES = 128 * 1024;
 export const JOURNAL_OPS: Readonly<Record<JournalOp, true>> = {
   zone: true, dezone: true, bulldoze: true, buildNetwork: true, buildPowerLine: true, buildSubway: true,
   plop: true, terraform: true, plantTrees: true, setTax: true, setFunding: true, setHistoric: true,
-  setOrdinance: true, takeLoan: true, repayLoan: true,
+  setOrdinance: true, takeLoan: true, repayLoan: true, setOnboarding: true,
 };
 export function isJournalOp(op: string): op is JournalOp { return Object.hasOwn(JOURNAL_OPS, op); }
 

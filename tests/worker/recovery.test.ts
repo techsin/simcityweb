@@ -14,6 +14,7 @@ import * as codec from '../../src/save/serialize';
 import { ReplicaSaveError } from '../../src/save/state';
 import { BF, type CityState } from '../../src/sim/CityState';
 import { CityActions, type ActionResult } from '../../src/sim/actions';
+import { newProgress } from '../../src/ui/guide/progress';
 import { LoopbackCore } from '../../src/worker/loopbackCore';
 import { LoopbackSimHost, type LoopbackSimHostOptions } from '../../src/worker/LoopbackSimHost';
 import { assertOwnedBuffers, cloneMessage, type M2W } from '../../src/worker/protocol';
@@ -128,6 +129,23 @@ describe('RecoveryMirror', () => {
     expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
   });
 
+  it('restores a progress-only edit from the written journal on a fresh core', async () => {
+    const f = await fixture(), record = getRecoveryBase(city.regionId, city.tileKey)!;
+    const progress = { ...newProgress(90), minimised: true }, rng = f.l.core.sim.rng.state;
+    expect(record.city.data.systemData).not.toHaveProperty('onboarding');
+    expect(f.post({ op: 'setOnboarding', args: [progress] })).toBe(true);
+    f.mirror.writeNow('pagehide');
+    const journal = readLsJournal()!;
+    expect(journal.ops).toEqual([{ seq: 1, op: 'setOnboarding', args: [progress] }]);
+    const restored = loop(codec.deserializeCity(record.city));
+    expect(restored.primary.systemData).not.toHaveProperty('onboarding');
+    expect(restored.core.replayRecoveryJournal(journal, record)).toEqual({ applied: [1], failed: [] });
+    expect(restored.primary.systemData.onboarding).toEqual(progress);
+    expect(codec.serializeCity(restored.primary, { copy: true })).toEqual(codec.serializeCity(f.l.primary, { copy: true }));
+    expect(restored.core.sim.rng.state).toBe(rng);
+    expect(restored.primary.day).toBe(0);
+  });
+
   it('drops snapshots from older saves, other cities, and older command watermarks', async () => {
     const f = await fixture(), old = await f.snapshot();
     now = 1200; await f.save();
@@ -227,10 +245,13 @@ describe('RecoveryMirror', () => {
       { op: 'bulldoze', args: [rect] }, { op: 'setHistoric', args: [id, true] },
       { op: 'setTax', args: [DevType.R1, 12] }, { op: 'setFunding', args: ['fire', 125] },
       { op: 'setOrdinance', args: ['nuclear_free_zone', true] }, { op: 'takeLoan', args: [10000] },
+      { op: 'setOnboarding', args: [newProgress(90)] },
     ];
     for (const cmd of commands) {
       const result = f.post(cmd);
-      if (result) expect(result, cmd.op).toMatchObject({ ok: true });
+      if (cmd.op === 'setOnboarding') expect(result, cmd.op).toBe(true);
+      else if (cmd.op === 'setTax' || cmd.op === 'setFunding' || cmd.op === 'setHistoric') expect(result, cmd.op).toBeUndefined();
+      else expect(result, cmd.op).toMatchObject({ ok: true });
     }
     const loan = f.l.primary.budget.loans[0];
     expect(f.post({ op: 'repayLoan', args: [0, { principal: loan.principal, monthsLeft: loan.monthsLeft }] })).toMatchObject({ ok: true });
