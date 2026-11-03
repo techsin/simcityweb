@@ -1,6 +1,7 @@
 # T036 step 3 — FEEL-02a: real-time budgets at every speed (New Year pacing, D17, and the toast budget)
 
-Branch `cloud/t036s3`, from dev `4432beb` (`origin/claude/beautiful-johnson-u2jqoz`).
+Branch `cloud/t036s3`, from dev `4432beb` (`origin/claude/beautiful-johnson-u2jqoz`); dev merged in twice since: `48991d7`
+(B3, which changes the bot reference by design) and `97f1a9c` (NOTE-045, docs only).
 
 ## Cloud carry-over (Nov 3)
 
@@ -11,7 +12,8 @@ holds FEEL-02a work (`local/R1-meta-start` and `local/R1-meta-schema` are ancest
 no T036 patch or journal. T027 (the camera keys on `e.code`) and T031 (NOTE-041's `holdCalendar` command, which
 NewYear.ts now calls through the host) are in dev, so step 3's dependency is met. Every item below starts from dev.
 
-Sources read: T036's task file (step 3), NOTE-035/037/038/040/042/043 (the ones that name T036), NOTE-044, NOTE-041
+Sources read: T036's task file (step 3), NOTE-035/037/038/040/042/043 (the ones that name T036), NOTE-044, NOTE-045
+(the desktop is back; the meta chain's step 3 stays with the cloud; FEEL-06 goes to the desktop's round 2), NOTE-041
 (holdCalendar), POLISH_PLAN §7.2-§7.5 and §8.1, FEEL-02a in full with its Acceptance, D17 (§11), critique point 3,
 Goal 8, PB-NEWYEAR's row, and FH-03's "FEEL-02a's toast budget queues this toast".
 
@@ -184,15 +186,15 @@ Fireworks' own show clock (it advances at most 0.1 s a frame), and part C stretc
 | A new quickstart city opens on 1 April 2000 (foundedDay 90), pacing Milestones by default | pass |
 | Settings › Gameplay: "New Year show", Milestones / Every year, Milestones on, right under "New Year celebration" | pass (`01-settings-row.png`) |
 | "Every year" applies to the city and is stored in `metropolis.settings.v1`; back to Milestones | pass (`02-settings-every-year.png`) |
-| The city's first New Year (2001): the full show as a milestone; cinematic: clock and camera taken, calendar held (`maxDaysPerFrame` 0), fanfare, the yearly toast; the countdown runs | pass (A, C1) |
-| The second New Year minutes later (2002, 1x): a burst (Fireworks 6 s, delay 0); the yearly toast silent, no fanfare | pass (A); C1: see below |
+| The city's first New Year (2001): the full show as a milestone; cinematic: clock and camera taken, calendar held (`maxDaysPerFrame` 0), fanfare, the yearly toast; the countdown runs | pass (A, C1, C1 rerun) |
+| The second New Year minutes later (2002, 1x): a burst (Fireworks 6 s, delay 0); the yearly toast silent, no fanfare | pass (A; C1 rerun: 41 s after the first show, its toast on screen, 1 fanfare in all) |
 | The burst: no camera, clock or calendar takeover, no countdown, the date runs on (Jan 2 → Jan 26, 2002); its last spark at 12.0 s of show time (the cap), the celebration over | pass (A: 119 frames over 475 real seconds; `05-burst-3s.png` rockets, no countdown; `06-after-burst.png` empty sky, the date on; `06b-burst-still-3.5s.png` a frozen burst 3.5 s in) |
-| The burst's yearly toast on screen, "Happy New Year 2002!" above 2001's | `21-burst-toast.png` (C) |
-| Ultra in the fresh city 92 s after the first full show: no show, the compact toast "2003 · no residents yet" on screen (title New Year, silent, 4.5 s) | `22-ultra-compact-toast-fresh.png` (C); C1: see below |
+| The burst's yearly toast on screen, "Happy New Year 2002!" above 2001's, the burst's rockets in the sky, no countdown | pass (C1 rerun; `shots-c1/21-burst-toast.png`) |
+| Ultra in the fresh city 89 s after the first full show: no show, the compact toast "2003 · no residents yet" on screen (title New Year, silent, 4.5 s), no fireworks, no fanfare | pass (C1 rerun; `shots-c1/22-ultra-compact-toast-fresh.png`) |
 | Ultra 700 s after the first full show (run A, slowed by SwiftShader): the full show, as the 10-minute rule says | pacer log (A); the run's check had expected the compact toast, and C1 checks it within 10 minutes |
 | The 101k save at ultra: the session's first New Year is the full fireworks-mode show (8 s), no clock or camera, fanfare and "Botville celebrates with 101,942 residents · ▲ 17.5% vs 2010." | pass (C2; `23-ultra-full-show-101k.png`) |
 | The next New Year at ultra: only the compact toast "2012 · 103,734 residents, up 18%", on screen, silent, no fireworks, no fanfare | pass (C2; `24-ultra-compact-toast-101k.png`) |
-| No page errors | pass (A, B, C) |
+| No page errors | pass (A, B, C, C1 rerun) |
 
 All screenshots are under `/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t036s3/`
 (`shots-ab/`, `shots-c/`, `shots-c1/`) and each was looked at. What they do not show: the countdown digit and the
@@ -203,3 +205,47 @@ Seen in passing, not FEEL-02a's: at well under 1 frame a second the cinematic's 
 real time) frees the calendar before the countdown's midnight, because the celebration's timer advances at most 1 s a
 frame; the date then reads Jan 2 during the countdown (`03-first-newyear-countdown.png`). Dev behaves the same; at a
 real frame rate it cannot happen.
+
+**Part C1, first run and rerun.** The first C1 run (17:34) failed its two later checks on one number only: it counted
+2 fanfares by the burst, where 1 is right (the pacer log, the silent burst toast, the compact toast and the
+screenshots were all as expected). The harness was then changed to record every call of the celebration's own `sound`
+with its stack, apart from the scene's `reward` plays. The rerun (18:21-18:25, `browser-c1.log`, 4 of 4) counts one
+celebration fanfare in all, from the first New Year's full show (`toastYear` ← `celebrate` ← `paced` ← `onYear`), and
+none at the burst or the ultra New Year. A second yearly fanfare can only come with a second yearly toast
+(`toastYear` plays it and shows the toast together), and the first run's `shots-c/22-…` shows one toast per year and
+no ×2 merge, so the first run's 2 is taken as a counting artefact of its harness; it did not recur.
+
+Seen in passing, also dev's: headless, the scene plays `reward` twice at a full show (99,456 and 99,457 ms): the
+fanfare, then the yearly toast's own `reward` chime, because the audio has not played (no user gesture) and the toast's
+"a sound just played" rule (`sinceLastPlay` < 150 ms) cannot see the fanfare. With running audio the toast stays quiet.
+A burst's and a compact toast are silent, and the rerun's scene log has no `reward` after the full show's.
+
+### Gates
+
+The lane's source has not changed since `692b799`: the commits after it are this report and dev's NOTE-045 merge
+(`git diff 692b799 HEAD -- . ':!docs'` is empty), so the gates run on `692b799` stand for the branch head.
+
+| Gate | Result |
+|---|---|
+| tsc (`npx tsc --noEmit`, sem) | exit 0, on the branch head (`0573d9e` + this report) |
+| Full vitest (lock), on `692b799` | 218 files passed, 2 skipped (220); 2177 tests passed, 8 skipped (2185); 509.8 s; exit 0 |
+| The lane's tests on the branch head | newYearPacing 19 + toastBudget 10 passed; pacingProbe's 4 skipped (no `PACING_SAVE`), as in the full run |
+| Each new test fails with its fix reverted (re-checked in this run, in a scratch worktree) | dev's NewYear.ts: 17 of 19 fail; only the 12 s cap removed: the real-Fireworks case fails (12.2 s > 12.05); only the size cap removed (`burstSize` 1): the size case fails; dev's Notifications.ts, TopBar.ts, CityScene.ts and context.ts: 8 of 10 toastBudget cases fail |
+| Bot 128x15 s7 (lock), lane on `692b799` | `residents [ 61124, 93804, 37971 ]` = 192,899 |
+| Bot 128x15 s7 (lock), dev from a clean export (`co/t036s3-devbase`, its src identical to dev `97f1a9c`'s) | `residents [ 61124, 93804, 37971 ]` = 192,899: identical. (The task's 196,101 predates B3, which changed the reference by design; NOTE-045.) |
+| FEEL-02a's Acceptance and §8.1 verifier 6: the pacing probes (lock), on `692b799` | 4 passed, 84 s: ultra 5 min 1 fanfare / 1 full show / 32 of 32 disaster toasts; 2x 10 min 1 full show, fireworks 18.6 %; 1x 10 min 1 full show, bursts 9.0 and 10.7 s; the toast cap: see the decisions |
+| Browser checks (lock) | A 10 of 11 and B 3 of 4, the two misses the checks' own (A's third New Year came 700 s after the first show, so the 10-minute rule rightly gave the full show; B compared the show length 7.999999999999999 with 8 exactly), both re-checked in C; C 4 of 6, its two misses one fanfare count, not reproduced; C1 rerun 4 of 4 |
+
+### This run (a resumed session)
+
+The first cloud session of this step stopped after part C's first run, with the report's gates and the `.done` line
+still to write. This session:
+- read git log and status in the worktree (all code committed at `692b799`; the report's gap list and results
+  uncommitted, now committed), checked that no process of this lane was left running, and merged dev's `97f1a9c`
+  (NOTE-045: the meta chain's step 3 stays with the cloud);
+- read the task, the NOTEs naming T036, NOTE-044, NOTE-045 and FEEL-02a in full again, and went over the lane's diff
+  against dev line by line (NewYear.ts, Notifications.ts, TopBar.ts, context.ts, CityScene.ts, SettingsPanel.ts and the
+  three test files); the gap list above stands;
+- reproduced part C1's sequence headless (a full show cancelled at once, a burst 48 s later: one fanfare), then reran
+  C1 in the browser with a stack on every celebration sound: 4 of 4;
+- re-checked that each new test fails with its fix reverted, ran tsc, and wrote the gates and the `.done` line.
