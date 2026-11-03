@@ -350,7 +350,7 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
     const pop = s.population;
     let tax = TAX_NEUTRAL;
     if (pop > 0) tax = (s.residents[0] * st.budget.taxRates[0] + s.residents[1] * st.budget.taxRates[1] + s.residents[2] * st.budget.taxRates[2]) / pop;
-    const taxTerm = tax > TAX_NEUTRAL ? APPROVAL.taxPerPoint * (tax - TAX_NEUTRAL) : APPROVAL.taxLowPerPoint * (TAX_NEUTRAL - tax);
+    const taxTerm = tax > TAX_NEUTRAL ? rules.taxPerPoint * (tax - TAX_NEUTRAL) : APPROVAL.taxLowPerPoint * (TAX_NEUTRAL - tax);
     let strikes = 0;
     for (const k in data.strikes) if (data.strikes[k] > 0) strikes++;
     const T: Record<string, number> = {};

@@ -576,18 +576,46 @@ export interface DifficultyRules {
   fadeCrime: boolean;
   fadeMonthlyEmergencies: boolean;
   defaultDisasters: boolean;
+  /** running costs per person served (the building's fixed upkeep is unchanged) */
+  opexMultiplier: number;
+  taxPerPoint: number;
+  disasterMultiplier: number;
+  manualDispatchWindowMultiplier: number;
+  /** consecutive negative-balance months before removal; null keeps the mayor in office */
+  bankruptRemovalMonths: number | null;
+  /** new borrowing closes after this many years from foundedDay; null leaves it open */
+  loanCutoffYears: number | null;
   /** the New City dialog's one-line description, shown after the difficulty's name (FH-11) */
   blurb: string;
 }
-/** FH-04: only Easy adds new-town grace; the other modes keep their original approval formulas. */
+/** FH-04's Easy grace and LG-09's Hard / Expert rules; Medium keeps its original formulas. */
 export const DIFFICULTY_RULES: Readonly<Record<Difficulty, DifficultyRules>> = {
   easy: {
     income: 1.2, fadeCrime: true, fadeMonthlyEmergencies: true, defaultDisasters: false,
+    opexMultiplier: 1, taxPerPoint: -3.5, disasterMultiplier: 1, manualDispatchWindowMultiplier: 1,
+    bankruptRemovalMonths: null, loanCutoffYears: null,
     blurb: '§250k, +20% taxes, forgiving first years · Recommended for your first city',
   },
-  medium: { income: 1.0, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true, blurb: '§100k, the intended balance' },
-  hard: { income: 0.85, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true, blurb: '§40k, −15% taxes, tight from day one' },
-  sandbox: { income: 1.0, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true, blurb: 'unlimited money, everything unlocked' },
+  medium: {
+    income: 1.0, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true,
+    opexMultiplier: 1, taxPerPoint: -3.5, disasterMultiplier: 1, manualDispatchWindowMultiplier: 1,
+    bankruptRemovalMonths: null, loanCutoffYears: null, blurb: '§100k, the intended balance',
+  },
+  hard: {
+    income: 0.85, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true,
+    opexMultiplier: 1.15, taxPerPoint: -4.5, disasterMultiplier: 1.5, manualDispatchWindowMultiplier: 1,
+    bankruptRemovalMonths: 12, loanCutoffYears: null, blurb: '§40k, −15% taxes, tight from day one',
+  },
+  sandbox: {
+    income: 1.0, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true,
+    opexMultiplier: 1, taxPerPoint: -3.5, disasterMultiplier: 1, manualDispatchWindowMultiplier: 1,
+    bankruptRemovalMonths: null, loanCutoffYears: null, blurb: 'unlimited money, everything unlocked',
+  },
+  expert: {
+    income: 0.85, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true,
+    opexMultiplier: 1.15, taxPerPoint: -4.5, disasterMultiplier: 3, manualDispatchWindowMultiplier: 0.75,
+    bankruptRemovalMonths: 12, loanCutoffYears: 5, blurb: '§40k, Hard rules, no new loans after year 5',
+  },
 };
 /** tornadoes, quakes and meteors strike only from this population (src/sim/infra/disasters.ts; the New City dialog's note) */
 export const DISASTER_MIN_POP = 2000;

@@ -26,6 +26,7 @@
 import type { SimSystem, Simulation } from '../Simulation';
 import { BF, type CityState, type NeedTier } from '../CityState';
 import { DEV_TYPE_LABELS, Network, Zone } from '../../core/types';
+import { DAYS_PER_MONTH } from '../../core/constants';
 import type { ServiceKind } from '../catalogTypes';
 import { getDef } from '../catalog';
 import {
@@ -212,10 +213,22 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
   return { income, expense, totalIncome: ti, totalExpense: te };
 }
 
+/** Optional, persistent ending inside the mirrored economy data; absent on older saves and other modes. */
+export interface MayorRemoval {
+  day: number;
+  bankruptSinceDay: number;
+  reason: 'bankruptcy';
+}
+
+/** Pure read for the removal screen, including a city entered after the ending news was posted. */
+export function mayorRemoval(st: CityState): MayorRemoval | undefined {
+  return (st.systemData.economy as { mayorRemoved?: MayorRemoval } | undefined)?.mayorRemoved;
+}
+
 export function budgetSystem(rt: EconRuntime): SimSystem {
   const settle = (sim: Simulation) => {
     const st = sim.state;
-    const data = econData(st);
+    const data = econData(st) as ReturnType<typeof econData> & { mayorRemoved?: MayorRemoval };
     if (!infraFlags(st).utilities) estimateUtilities(st, rt);
     const bd = computeMonthlyBudget(st, rt);
     // actual loan payments (amortization mutates loans)
@@ -239,7 +252,7 @@ export function budgetSystem(rt: EconRuntime): SimSystem {
     data.lastNet = ti - te;
     // ---- bankruptcy
     if (!sandbox && st.funds < 0) {
-      data.monthsNegative++;
+      data.monthsNegative = (data.monthsNegative ?? 0) + 1;
       const m = data.monthsNegative;
       if (BANKRUPT_WARN_MONTHS.includes(m)) {
         sim.notify(
@@ -251,6 +264,11 @@ export function budgetSystem(rt: EconRuntime): SimSystem {
       if (m >= BANKRUPT_MONTHS && !data.bankrupt) {
         data.bankrupt = true;
         sim.notify('The city is BANKRUPT. The council demands immediate action (taxes, cuts, loans).', 'disaster', undefined, undefined, 'finance');
+      }
+      const removalMonths = difficultyRules(st.config.difficulty).bankruptRemovalMonths;
+      if (removalMonths !== null && m >= removalMonths && !data.mayorRemoved) {
+        data.mayorRemoved = { day: st.day, bankruptSinceDay: st.day - m * DAYS_PER_MONTH, reason: 'bankruptcy' };
+        sim.notify('The council has removed you after 12 months in debt.', 'disaster', undefined, undefined, 'finance', { advice: 'mayorRemoved' });
       }
     } else {
       if (data.bankrupt && st.funds >= 0) sim.notify('We are out of debt. Bankruptcy averted!', 'good', undefined, undefined, 'finance');
