@@ -41,7 +41,7 @@ export interface InfraTask {
  * steps per scheduler run at most (urgent loop and normal loop each): a safety cap against a task that steps forever at
  * ~0 estimated cost; the budgets bind first. Pre-B2 64; B2 G1 256; B2 G4 4096 (design review 2, optional: derived from
  * the budgets and the smallest piece): at 256 the pieces of G4's utilities pass (~470 at dense1m, ~9 µs estimated on
- * average) hit the guard on 72 of 100 days with ~3 of INFRA_DAY_BUDGET's 5.3 estimated ms spent, and an urgent utilities
+ * average) hit the guard on 72 of 100 days with ~3 of the then INFRA_DAY_BUDGET 5.3 estimated ms spent, and an urgent utilities
  * pass needed two days. 4096 pieces of the smallest estimate (~1.5-2 µs) are 6-8 estimated ms, above a day's budget
  * (INFRA_DAY_BUDGET + INFRA_DAY_CARRY); the urgent loop's real pieces (a utilities pass, services' tier steps) stay far
  * below it.

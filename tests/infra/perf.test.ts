@@ -102,8 +102,9 @@ describe('infra perf (256x256 stress city)', () => {
     // day on this city (a cycle spans several days), so the share of the budget used no longer measures headroom (base
     // 41ae570: 0.869 with 2-3 ms steps; G1: 0.961). The per-task cadence (G4's table) is the headroom check instead.
     // G3: with crime's and pollution's pieces too (~0.01-0.13 estimated ms) a day is filled to within a few hundredths of
-    // a ms: 0.985 (G2: 0.98). G4 (the final budget 5.3; the step guard 256 -> 4096, which no longer ends a day of small
-    // utilities pieces before its budget is spent): 0.996 — every day is spent to within one piece, so the bound only
+    // a ms: 0.985 (G2: 0.98). G4 (the step guard 256 -> 4096, which no longer ends a day of small utilities pieces
+    // before its budget is spent): 0.996 at the budget 5.3, 0.994 at the final 4.6 — every day is spent to within one
+    // piece, so the bound only
     // guards against the budget being overrun (urgent work beyond it), not headroom (the cadence table, §18, is that).
     expect(util, 'stress-city scheduler utilisation').toBeLessThanOrEqual(1.02);
     // measured max per step <= 6 ms (CI slack); wall-clock on shared machines spikes (GC / load), so strict mode only
