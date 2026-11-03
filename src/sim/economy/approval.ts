@@ -359,7 +359,7 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
     T.services = APPROVAL.services * (data.resServices - 0.3);
     T.pollution = APPROVAL.pollution * data.resPollution;
     T.crime = APPROVAL.crime * data.resCrime;
-    T.commute = APPROVAL.commute * Math.max(0, data.resCommute - 30);
+    T.commute = w > 0 ? APPROVAL.commute * Math.max(0, data.resCommute - APPROVAL.commuteStart) : 0;
     T.unemployment = APPROVAL.unemployment * Math.max(0, s.unemployment - 0.08);
     T.parks = APPROVAL.parks * (data.resParks - 0.2);
     T.strikes = APPROVAL.strike * strikes;

@@ -9,6 +9,7 @@
  *  17-32 (WP6)     elementary / high school / college, playgrounds, green space, shops, stigma, prestige, campus,
  *                  visitors, skilled workforce (coarse education), trees, contaminated soil, rent (smoothstep of land
  *                  value: the poor are priced out of premium land), wealthy neighbours, parking pressure (WP6-2)
+ * Connected passenger stations also add a flat +0.04 for R$$ / CO$$ / CO$$$ (LG-08, shared station tower-lot mask).
  * Residential weights of elementary / high / college / play / green / health / noise / shops / transit / crime are
  * scaled per zone density by the household mix it brings (COHORT_TERM_MUL: WTZ, precomputed at module load).
  * The band and desirabilityBreakdown share fillRow (the inputs) and the weights: the formula exists once.
@@ -28,7 +29,7 @@ import { DEV_WEALTH, ZONE_DEVTYPES, devFamily } from '../catalog';
 import {
   COARSE, COHORT_BASE, COHORT_TERM_MUL, COVERAGE_FALLBACK, CUSTOMER_MIX, DESIR_ALL_SWEEPS, DESIR_REFRESH_DAYS, DESIR_TAX,
   DESIR_WEIGHTS, type DesirWeights, FREIGHT_BLOCKS, FREIGHT_REFRESH_DAYS, PARKING_TERMS, POP_NEAR_FULL, POP_NEAR_FULL_W,
-  SLOPE_P0, SLOPE_P1, TAX_NEUTRAL, TAX_SENS, TRAFFIC_BUSY,
+  SLOPE_P0, SLOPE_P1, TAX_NEUTRAL, TAX_SENS, TOD, TRAFFIC_BUSY,
 } from './tuning';
 import { type EconRuntime, type InfraFlags, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
@@ -37,6 +38,7 @@ import { advanceCommuteAvg, commuteMinutes, commuteRamp, garbageFade, rentLevel,
 import { profileShares } from './demographics';
 import { facilityUseFactor } from '../infra/facilities';
 import type { FactorTerm } from '../explain';
+import { initStationLots, stationTowerLots } from './growth';
 
 // ------------------------------------------------------------------------------------------------ terms
 export const T_LV = 0, T_AIR = 1, T_WATER = 2, T_GARB = 3, T_CRIME = 4, T_NOISE = 5, T_COMMUTE = 6, T_POLICE = 7, T_FIRE = 8,
@@ -50,13 +52,13 @@ const TERM_KEYS: readonly (keyof DesirWeights)[] = [
   'popNear', 'freight', 'slope', 'elem', 'high', 'college', 'play', 'green', 'shops', 'stigma', 'prestige', 'campus', 'visitors',
   'skill', 'trees', 'soil', 'rent', 'wealthy', 'parking',
 ];
-/** FactorTerm ids / labels of the terms (desirabilityBreakdown; WP5 inspector) */
-export const DESIR_TERM_IDS: readonly string[] = TERM_KEYS as readonly string[];
+/** FactorTerm ids / labels (the flat station bonus follows the NT weighted inputs). */
+export const DESIR_TERM_IDS: readonly string[] = [...TERM_KEYS, 'station'];
 export const DESIR_TERM_LABELS: readonly string[] = [
   'Land value', 'Air pollution', 'Water pollution', 'Uncollected garbage', 'Crime', 'Noise', 'Commute', 'Police', 'Fire protection',
   'Health care', 'Schools', 'Parks', 'Transit', 'Passing traffic', 'Customers nearby', 'Freight access', 'Slope',
   'Elementary school', 'High school', 'College', 'Playgrounds', 'Green space', 'Shops nearby', 'Stigma (NIMBY)', 'Prestige',
-  'Campus', 'Visitors', 'Skilled workforce', 'Trees', 'Contaminated soil', 'Rent', 'Wealthy neighbours', 'Parking pressure',
+  'Campus', 'Visitors', 'Skilled workforce', 'Trees', 'Contaminated soil', 'Rent', 'Wealthy neighbours', 'Parking pressure', 'Near a station',
 ];
 const DEV_ENUM = ['R1', 'R2', 'R3', 'CS1', 'CS2', 'CS3', 'CO2', 'CO3', 'IA', 'ID', 'IM', 'IHT'];
 
@@ -236,6 +238,7 @@ interface TermCtx {
   /** cached slope term / freight access per cell (band caches; null: computed live) */
   slope: Float32Array | null;
   frCell: Float32Array | null;
+  stationLots: Uint8Array;
   /** per coarse block: customers nearby per CS tier (3 per block) and the wealth-blind value */
   popCSB: Float64Array;
   popAllB: Float64Array;
@@ -247,9 +250,10 @@ function termCtx(st: CityState, rt: EconRuntime, out?: TermCtx): TermCtx {
   const cc = rt.cw * rt.cw;
   const c = out ?? {
     st, rt, inf, ramp: { avg: 0, good: 0, bad: 0, unreached: 0 }, gFade: 0, traffic: undefined, slope: null, frCell: null,
-    popCSB: new Float64Array(0), popAllB: new Float64Array(0),
+    stationLots: stationTowerLots(st), popCSB: new Float64Array(0), popAllB: new Float64Array(0),
   };
   c.st = st; c.rt = rt; c.inf = inf;
+  c.stationLots = stationTowerLots(st);
   commuteRamp(st, c.ramp);
   c.gFade = garbageFade(st);
   c.traffic = tr && typeof tr.freightAccess === 'function' ? tr : undefined;
@@ -273,9 +277,14 @@ function termCtx(st: CityState, rt: EconRuntime, out?: TermCtx): TermCtx {
   return c;
 }
 
-/** row stride of the term buffer: the NT terms, then customers nearby per CS tier (3) and the wealth-blind value */
-const NTX = NT + 4;
+/** row stride: NT weighted terms, customers per CS tier (3), wealth-blind customers, flat station bonus */
+const NTX = NT + 5;
 const X_POPCS = NT, X_POPALL = NT + 3;
+const X_STATION = NT + 4;
+
+function stationBonus(dev: number, near: number): number {
+  return near && (dev === DevType.R2 || dev === DevType.CO2 || dev === DevType.CO3) ? TOD.desirability : 0;
+}
 
 /**
  * Fill the terms of cells xa..xb-1 of row z: TT[(x - xa) * NTX + t] for the terms needs[x - xa] flags (null: cell
@@ -300,6 +309,7 @@ function fillRow(c: TermCtx, z: number, xa: number, xb: number, TT: Float64Array
     const need = needs[x - xa];
     if (!need) continue;
     const i = row + x, o = (x - xa) * NTX;
+    TT[o + X_STATION] = c.stationLots[i];
     const lv = lvL[i];
     TT[o + T_LV] = lv;
     if (need[T_AIR]) TT[o + T_AIR] = air[i];
@@ -385,7 +395,7 @@ function devRaw(TT: Float64Array, o: number, d: number, slot: number, shiftD: nu
   let s = BIAS[d] + shiftD + WTZ[k * NT] * (TT[o + T_LV] - LVREF[d]);
   const nz = NZ[k], w = WNZ[k];
   for (let q = 0; q < nz.length; q++) s += w[q] * TT[o + nz[q]];
-  return s;
+  return s + stationBonus(d, TT[o + X_STATION]);
 }
 
 /**
@@ -429,6 +439,7 @@ function runProg(P: ZoneProg, TT: Float64Array, o: number, shift: Float64Array, 
     let s2 = P.bias[2] + shift[d2] + P.wLv[2] * (lv - P.lvRef[2]);
     for (let q = 0, w = 0; q < n; q++, w += 3) { const v = TT[o + U[q]]; s0 += W[w] * v; s1 += W[w + 1] * v; s2 += W[w + 2] * v; }
     s0 += P.wPop[0] * TT[o + P.popAt[0]]; s1 += P.wPop[1] * TT[o + P.popAt[1]]; s2 += P.wPop[2] * TT[o + P.popAt[2]];
+    s0 += stationBonus(d0, TT[o + X_STATION]); s1 += stationBonus(d1, TT[o + X_STATION]); s2 += stationBonus(d2, TT[o + X_STATION]);
     des[d0][i] = s0 < -1 ? -1 : s0 > 1 ? 1 : s0;
     des[d1][i] = s1 < -1 ? -1 : s1 > 1 ? 1 : s1;
     des[d2][i] = s2 < -1 ? -1 : s2 > 1 ? 1 : s2;
@@ -440,6 +451,7 @@ function runProg(P: ZoneProg, TT: Float64Array, o: number, shift: Float64Array, 
     let s1 = P.bias[1] + shift[d1] + P.wLv[1] * (lv - P.lvRef[1]);
     for (let q = 0, w = 0; q < n; q++, w += 2) { const v = TT[o + U[q]]; s0 += W[w] * v; s1 += W[w + 1] * v; }
     s0 += P.wPop[0] * TT[o + P.popAt[0]]; s1 += P.wPop[1] * TT[o + P.popAt[1]];
+    s0 += stationBonus(d0, TT[o + X_STATION]); s1 += stationBonus(d1, TT[o + X_STATION]);
     des[d0][i] = s0 < -1 ? -1 : s0 > 1 ? 1 : s0;
     des[d1][i] = s1 < -1 ? -1 : s1 > 1 ? 1 : s1;
     return;
@@ -457,6 +469,8 @@ function runProg(P: ZoneProg, TT: Float64Array, o: number, shift: Float64Array, 
     }
     s0 += P.wPop[0] * TT[o + P.popAt[0]]; s1 += P.wPop[1] * TT[o + P.popAt[1]]; s2 += P.wPop[2] * TT[o + P.popAt[2]];
     s3 += P.wPop[3] * TT[o + P.popAt[3]]; s4 += P.wPop[4] * TT[o + P.popAt[4]];
+    s0 += stationBonus(d0, TT[o + X_STATION]); s1 += stationBonus(d1, TT[o + X_STATION]); s2 += stationBonus(d2, TT[o + X_STATION]);
+    s3 += stationBonus(d3, TT[o + X_STATION]); s4 += stationBonus(d4, TT[o + X_STATION]);
     des[d0][i] = s0 < -1 ? -1 : s0 > 1 ? 1 : s0;
     des[d1][i] = s1 < -1 ? -1 : s1 > 1 ? 1 : s1;
     des[d2][i] = s2 < -1 ? -1 : s2 > 1 ? 1 : s2;
@@ -469,6 +483,7 @@ function runProg(P: ZoneProg, TT: Float64Array, o: number, shift: Float64Array, 
     let s = P.bias[k] + shift[d] + P.wLv[k] * (lv - P.lvRef[k]);
     for (let q = 0; q < n; q++) s += W[q * P.nd + k] * TT[o + U[q]];
     s += P.wPop[k] * TT[o + P.popAt[k]];
+    s += stationBonus(d, TT[o + X_STATION]);
     des[d][i] = s < -1 ? -1 : s > 1 ? 1 : s;
   }
 }
@@ -552,6 +567,7 @@ export function desirabilitySystem(rt: EconRuntime): SimSystem {
     name: 'economy.desirability',
     init(sim) {
       rt.attach(sim);
+      initStationLots(sim);
       if (sub !== sim) {
         unsub?.();
         unsub = sim.events.on('terrainChanged', (r) => { terrain.push(r ?? { x0: 0, z0: 0, x1: sim.state.size, z1: sim.state.size }); });
@@ -700,5 +716,7 @@ export function desirabilityBreakdown(st: CityState, rt: EconRuntime | null, dev
     raw += val;
     terms.push({ id: DESIR_TERM_IDS[t], label: t === T_POP && dev === DevType.CS3 ? 'Rich customers nearby' : DESIR_TERM_LABELS[t], value: val, detail: termDetail(t, BT[t], c, i, dev, WTZ[o + t]) });
   }
+  const station = stationBonus(dev, BT[X_STATION]);
+  if (station) { terms.push({ id: DESIR_TERM_IDS[NT], label: DESIR_TERM_LABELS[NT], value: station, detail: 'A connected train or subway station allows towers here' }); raw += station; }
   return { terms, raw, value: v };
 }

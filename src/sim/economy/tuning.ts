@@ -315,6 +315,8 @@ export const DOWNTOWN_R1 = 0.3;
 export const DOWNTOWN_MIN = 0.12;
 /** at least this many CS / CO jobs before a commercial core exists (smaller towns: no downtown weighting) */
 export const DOWNTOWN_MIN_JOBS = 2000;
+/** Connected passenger stations allow towers and add a flat R$$ / CO desirability bonus (LG-08). */
+export const TOD = { stationRadius: 6, grandCentralRadius: 8, grandCentralModel: 'lm_grand_central', desirability: 0.04 };
 /**
  * DEEP BLOCKS: a new lot anchored on the road may extend its depth by up to INFILL_MAX_EXTRA rows of interior cells
  * (zoned, empty, no road next to them) behind the building (the frontage rule is kept: its front edge touches the road),
@@ -703,7 +705,8 @@ export const APPROVAL = {
   services: 18, // × (avg coverage at homes − 0.3)
   pollution: -25,
   crime: -30,
-  commute: -0.25, // per minute above 30
+  commute: -0.25, // per minute above commuteStart
+  commuteStart: 15,
   unemployment: -50, // × (unemployment − 0.08)
   parks: 8, // × (park coverage at homes − 0.2)
   strike: -8,

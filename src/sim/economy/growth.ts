@@ -32,12 +32,14 @@ import {
   GROWTH_OVERSHOOT_SLACK, GROWTH_RESPONSE, GROWTH_SIZE_DEMAND, HOTEL_PREF_MAX, INFILL_MAX_EXTRA, PICK_ALLOW_EXP, PICK_DES_EXP,
   REDEVELOP_CHECKS, REDEVELOP_MIN_AGE, REDEVELOP_MIN_GAIN, STAGE_DES_D0, STAGE_DES_D1, STAGE_POP, STAGE_PREF, SWAP_LOCK_DAYS,
   SWAP_MIN_AGE, SWAP_MIN_CAP, SWAP_MIN_DEMAND, SWAP_MIN_DES, SWAP_MIN_GAIN, SWAP_SCAN_DAYS, VARIANT_SPREAD, WATER_REQUIRED_STAGE,
-  ZONE_MAX_STAGE, isGrowZone,
+  TOD, ZONE_MAX_STAGE, isGrowZone,
 } from './tuning';
 import { type EconRuntime, econData, infraFlags } from './runtime';
 import { levelLot, lotAverageHeight, lotSlope, placeBuilding, removeBuilding } from './buildings';
 import { HOTEL_ROOMS_PER_JOB } from './tourism';
 import { lotCell } from './factors';
+import { Transit, centerCell, infoOf, isFunctional } from '../infra/common';
+import { TRAFFIC_OF_STATE } from '../infra/transit';
 
 const isRoadN = (n: number) => n >= Network.Street && n <= Network.Highway;
 const DX = [0, 1, 0, -1];
@@ -128,8 +130,94 @@ export function downtownWeight(st: CityState, x: number, z: number): number {
   return Math.max(DOWNTOWN_MIN, 1 - smoothstep(DOWNTOWN_R0, DOWNTOWN_R1, d));
 }
 
-/** true when the lot at (x, z) may carry a tower: its fixed position hash < the downtown weight (no rng draw) */
+// ------------------------------------------------------------------------------------------------ station lots
+interface StationSite { cell: number; radius: number; active: boolean; key: string }
+interface StationTraffic { readonly graphVersion?: number; stopAttached?: (id: number) => boolean }
+interface StationLots {
+  sites: Map<number, StationSite>;
+  traffic: object | undefined;
+  version: number;
+  dirty: boolean;
+  mask: Uint8Array;
+}
+const stationLots = new WeakMap<CityState, StationLots>();
+const stationBindings = new WeakSet<Simulation>();
+
+function stationSite(st: CityState, b: Building): StationSite | null {
+  const mode = infoOf(st, b).transit;
+  // LG-02 has an asset but no station def yet: its eventual model keeps the larger radius once traffic connects it.
+  const grand = getDef(b.def)?.model === TOD.grandCentralModel;
+  if (!grand && mode !== Transit.Train && mode !== Transit.Subway) return null;
+  return {
+    cell: centerCell(st, b), radius: grand ? TOD.grandCentralRadius : TOD.stationRadius, active: isFunctional(b),
+    key: `${b.def}:${b.x}:${b.z}:${b.w}:${b.d}`,
+  };
+}
+
+/** Pure distance rule: inclusive Euclidean radius from each connected station's centre cell; overlaps do not stack. */
+export function stationLotMask(size: number, stations: readonly { cell: number; radius: number }[]): Uint8Array {
+  const mask = new Uint8Array(size * size);
+  for (const s of stations) {
+    const cx = s.cell % size, cz = (s.cell - cx) / size, r = s.radius;
+    for (let z = Math.max(0, cz - r); z <= Math.min(size - 1, cz + r); z++) {
+      for (let x = Math.max(0, cx - r); x <= Math.min(size - 1, cx + r); x++) {
+        if ((x - cx) * (x - cx) + (z - cz) * (z - cz) <= r * r) mask[z * size + x] = 1;
+      }
+    }
+  }
+  return mask;
+}
+
+/** Bind once per sim; station edits can change attachment before the road graph rebuilds (or without rebuilding it). */
+export function initStationLots(sim: Simulation): void {
+  stationLots.delete(sim.state);
+  if (stationBindings.has(sim)) return;
+  stationBindings.add(sim);
+  const dirty = () => { const c = stationLots.get(sim.state); if (c) c.dirty = true; };
+  const changed = (b: Building) => {
+    const st = sim.state, c = stationLots.get(st);
+    if (!c) return;
+    const prev = c.sites.get(b.id), next = stationSite(st, b);
+    if (!next) { if (c.sites.delete(b.id)) c.dirty = true; return; }
+    if (prev && prev.key === next.key && prev.radius === next.radius && prev.active === next.active) return;
+    c.sites.set(b.id, next);
+    c.dirty = true;
+  };
+  sim.events.on('buildingAdded', changed);
+  sim.events.on('buildingChanged', changed);
+  sim.events.on('buildingRemoved', (b) => { const c = stationLots.get(sim.state); if (c?.sites.delete(b.id)) c.dirty = true; });
+  sim.events.on('networkChanged', dirty);
+  sim.events.on('subwayChanged', dirty);
+  sim.events.on('reset', () => { stationLots.delete(sim.state); });
+}
+
+/** Worker-side, read-only tower / desirability mask, cached per graph version and station/network edits. */
+export function stationTowerLots(st: CityState): Uint8Array {
+  let c = stationLots.get(st);
+  if (!c) {
+    const sites = new Map<number, StationSite>();
+    for (const b of st.buildings.values()) { const s = stationSite(st, b); if (s) sites.set(b.id, s); }
+    c = { sites, traffic: undefined, version: -1, dirty: true, mask: new Uint8Array(st.cells) };
+    stationLots.set(st, c);
+  }
+  const tr = TRAFFIC_OF_STATE.get(st) as StationTraffic | undefined;
+  const version = tr?.graphVersion ?? -1;
+  if (c.dirty || c.traffic !== tr || c.version !== version) {
+    const connected: StationSite[] = [];
+    if (typeof tr?.stopAttached === 'function') {
+      for (const [id, s] of c.sites) if (s.active && tr.stopAttached(id)) connected.push(s);
+    }
+    c.mask = stationLotMask(st.size, connected);
+    c.traffic = tr;
+    c.version = version;
+    c.dirty = false;
+  }
+  return c.mask;
+}
+
+/** true on a connected station's tower lots, or when the fixed position hash < downtown weight (no rng draw) */
 export function towerLot(st: CityState, x: number, z: number): boolean {
+  if (stationTowerLots(st)[z * st.size + x]) return true;
   const w = downtownWeight(st, x, z);
   return w >= 1 || hash2(x, z, 911) < w;
 }
@@ -877,6 +965,7 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     name: 'economy.growth',
     init(sim) {
       rt.attach(sim);
+      initStationLots(sim);
       if (sub !== sim) {
         unsub?.();
         // timers are keyed by building id: prune them with the building
@@ -991,8 +1080,10 @@ export type GrowthLimits = {
   zoneStage: number;
   rejected: boolean;
   reason?: string;
-  /** stage ≥ DOWNTOWN_STAGE is allowed here only on tower lots near the commercial core (see towerLot) */
+  /** stage ≥ DOWNTOWN_STAGE is allowed on downtown or connected-station tower lots (see towerLot) */
   downtown?: string;
+  /** station eligibility for the inspector query; boolean metadata is omitted by generic growth rows */
+  stationTower?: boolean;
   /** gentrification / filtering down: why the building may change hands (only when the swap will happen) */
   wealth?: string;
   /**
@@ -1045,6 +1136,7 @@ export function growthLimits(st: CityState, i: number, dev: number): GrowthLimit
   if (Math.min(desStage, popStage, zoneStage) >= DOWNTOWN_STAGE) {
     // (a building: the cell its redevelopment is judged at, lotCell — the tower-lot hash is per cell)
     const x = ci % N, z = (ci / N) | 0;
+    out.stationTower = stationTowerLots(st)[ci] === 1;
     const c = commercialCore(st);
     const w = downtownWeight(st, x, z);
     if (c) {
