@@ -1,5 +1,91 @@
 # T050: bulldozing and placement with weight
 
+## Round 2: use T040's shared work hook
+
+Round 1 is committed at `3ffd5b3`; T040's `6bf60ee` hook was merged at `93cb93c`. The round-2 changes below are
+uncommitted. No push, merge, commit or `.done` file was made in this round.
+
+- `src/render/city/buildings/BuildingRenderer.ts`: register `collapseWork` beside the collapse fields using
+  `addBudgetedWork`. `pending()` is a constant-time queue-index comparison. `step()` consumes one copy, returns true
+  even if a camera cut makes that consumed copy invisible, and resets the queue/index after its last entry. Its
+  `clear()` calls the existing, unchanged `clearCollapses()`. No new collapse animation or effect behavior changes.
+  T040 now determines the initial build-first order and alternation across frames, replacing round 1's local
+  copy-first ordering. The shared hook expresses all required collapse work without a priority or ordering extension.
+- Restored `drainBuilds()`, `clear()` and `dispose()` exactly from `6bf60ee`. A source-text comparison verified all
+  three methods byte-identical, along with `addBudgetedWork`, `stepBudgetedWork` and `drainBudgetedWork`. No other
+  hook code was changed.
+- `tests/render/weightBuildings.test.ts`: added a registered-work regression with controlled 0.75 ms unit costs.
+  It spies on `collapseWork.step()`, verifies build/copy/build then copy/build/copy across consecutive frames,
+  charges the combined work to one 2 ms deadline (2.25 ms including the final indivisible unit), and verifies queue
+  reset on drain. All seven round-1 building tests remain unchanged and pass.
+- This report records the new result. **No infra hunks, cloud-held edits, or other source/test edits outside the
+  named files.** `Effects.ts`, `CityObjectsView.ts`, `buildingWork.test.ts` and `buildingBudget.test.ts` are untouched.
+  The 0.35 s sink, 30-building merge threshold, 2,200 m cutoff and rolling four-per-second redevelopment limit remain
+  unchanged.
+
+### Round-2 gates
+
+TypeScript passed through the quiet gate:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsc --noEmit
+```
+
+Each requested Vitest file ran separately and sequentially through the same quiet gate, using the established
+native-config/thread-pool workaround for the sandbox's default-launch `spawn EPERM`:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types node_modules/vitest/vitest.mjs run <file> --maxWorkers=1 --configLoader native --pool threads
+```
+
+| Test file | Round-2 result |
+|---|---|
+| `tests/render/weightBuildings.test.ts` | 8 passed |
+| `tests/render/weightEffects.test.ts` | 9 passed |
+| `tests/render/weightWiring.test.ts` | 10 passed |
+| `tests/render/buildingWork.test.ts` | **9 passed, 2 failed** |
+| `tests/render/buildingBudget.test.ts` | 22 passed |
+| `tests/render/lod.test.ts` | 35 passed |
+| `tests/worker/hygiene.test.ts` | 17 passed, 1 skipped |
+
+Total: **110 passed, 2 failed, 1 skipped**. `git diff --check` passes. No browser, benchmark or full suite was run.
+The round-2 bot was not rerun for this render-only hook migration. The previous completed gate remains
+**2015 residents [61124, 93804, 37971] = 192,899**, expected unchanged. Exact prescribed and successful fallback
+simbot commands and the output path are retained in the round-1 bot section below. No simulation, balance or RNG
+code changed.
+
+### T040 fixture mismatch requiring the lead
+
+The unchanged `buildingWork.test.ts` fails only its two parameterized cases named
+`preserves build order, frame counts and clock checks with no registered work` (0.65 ms and 3.25 ms entries).
+At line 112 their empty-drain assertion expects no clock read. Mandatory field registration means an ordinary
+BuildingRenderer now has a registered collapse work, so the byte-identical T040 `drainBuilds()` takes
+`drainBudgetedWork()` even when the work is idle. That method reads `performance.now()` once before discovering no
+pending work. Observed read counts were **30 versus 29** and **27 versus 26**. Nonempty drains also have the
+registered path's additional deadline checks, so removing only the empty-drain assertion would not restore the
+intended unregistered-path comparison.
+
+**Exact request to T040's test owner:** in `tests/render/buildingWork.test.ts`, make the setup of these two
+unregistered-path compatibility cases explicitly remove built-in work registrations before comparing to
+`originalDrain` (for example, a `town` fixture option used only for the current/reference renderers in those cases).
+Keep the other nine cases testing the normal registered renderer. This preserves the tests' stated no-registered-work
+precondition as later lanes add required field registrations. I did not alter the hook or those tests to work
+around the mismatch. Mandatory registration, byte-identical hook methods and the current unchanged fixture cannot
+all satisfy those exact clock-read assertions.
+
+**Requests for cloud-held files: none.** The outstanding request is to T040's test owner. Full Vitest and real-GPU
+acceptance remain for the lead; a green full-suite claim is blocked by the fixture mismatch above.
+
+Round-2 browser checklist (not run locally):
+
+- [ ] A 2x2 house at 300 m still sinks over 0.35 s and shows dust for 1.5-2.5 s.
+- [ ] A 200-building drag still uses one merged cloud, at most 600 feedback particles and <4 ms added real-GPU cost;
+  verify the shared hook also drains pending geometry without starving collapse copies.
+- [ ] Verify the 2,200 m cutoff, at most four redevelopment effects per rolling second, the 1.2 s plop ring and ash.
+- [ ] Reset/dispose with both queued builds and copies pending; no stale copy after id reuse or quality changes.
+
+## Round 1 record
+
 Implemented on `local/T050-feel14-weight`, based on T040 `8ff4fd0`. Changes are uncommitted; no push or `.done` file,
 as instructed in the lane handoff. Read T040's report first, the task, POLISH_PLAN FEEL-14, sections 6.4 and 7.2-7.4,
 WORKER_DESIGN section 6/R2, and the three named source files in full. No repository or ancestor AGENTS.md/CLAUDE.md was found.

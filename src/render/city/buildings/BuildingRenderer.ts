@@ -995,6 +995,16 @@ export class BuildingRenderer {
   private collapseQueue: BuildingCollapse[] = [];
   private collapseAt = 0;
   private collapses: Collapse[] = [];
+  private collapseWork = this.addBudgetedWork({
+    pending: () => this.collapseAt < this.collapseQueue.length,
+    step: () => {
+      if (this.collapseAt >= this.collapseQueue.length) return false;
+      this.buildCollapse(this.collapseQueue[this.collapseAt++]);
+      if (this.collapseAt >= this.collapseQueue.length) { this.collapseQueue.length = 0; this.collapseAt = 0; }
+      return true;
+    },
+    clear: () => this.clearCollapses(),
+  });
   /** The live view position; detached feedback is skipped without a view. */
   feedbackCamera: THREE.Vector3 | null = null;
   private collapseTransform = new THREE.Matrix4();
@@ -1722,7 +1732,9 @@ export class BuildingRenderer {
   }
 
   clear(): void {
-    this.clearCollapses();
+    for (const work of this.budgetedWorks) work.clear();
+    this.budgetedWorkAt = 0;
+    this.budgetedWorkTurn = false;
     for (const bi of this.inst.values()) { if (bi.li >= 0) this.freeInstances(bi); bi.gone = true; }
     this.buildQueue.clear();
     this.buildOrder.length = 0;
@@ -1933,16 +1945,12 @@ export class BuildingRenderer {
 
   /** a frame admits at least one building, then checks the clock between entries; bulk paths explicitly take all */
   private drainBuilds(all = false): void {
-    if ((!this.buildQueue.size && this.collapseAt >= this.collapseQueue.length) || this.disposed) return;
+    if (this.budgetedWorks.length) { this.drainBudgetedWork(all); return; }
+    if (!this.buildQueue.size || this.disposed) return;
     const end = performance.now() + BUILD_BUDGET_MS;
     let done = 0;
-    while (this.buildQueue.size || this.collapseAt < this.collapseQueue.length) {
+    while (this.buildQueue.size) {
       if (done > 0 && !all && performance.now() >= end) break;
-      if (this.collapseAt < this.collapseQueue.length && (!this.buildQueue.size || (done & 1) === 0)) {
-        this.buildCollapse(this.collapseQueue[this.collapseAt++]);
-        done++;
-        continue;
-      }
       if (this.buildAt >= this.buildOrder.length) {
         this.orderBuilds();
         if (done > 0 && !all && performance.now() >= end) break;
@@ -1953,7 +1961,6 @@ export class BuildingRenderer {
       done++;
     }
     if (!this.buildQueue.size) { this.buildOrder.length = 0; this.buildAt = 0; }
-    if (this.collapseAt >= this.collapseQueue.length) { this.collapseQueue.length = 0; this.collapseAt = 0; }
   }
 
   /** Each work gets one attempt per rotation; a stalled/cancelled unit cannot block another queue. */
@@ -2836,7 +2843,9 @@ export class BuildingRenderer {
 
   dispose(): void {
     this.disposed = true;
-    this.clearCollapses();
+    for (const work of this.budgetedWorks) work.clear();
+    this.budgetedWorkAt = 0;
+    this.budgetedWorkTurn = false;
     this.buildQueue.clear();
     this.buildOrder.length = 0;
     this.buildAt = 0;
