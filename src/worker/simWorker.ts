@@ -145,8 +145,10 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
     }
     post({ t: 'boot', phase: 'systems', pct: 0.5 });
     const errors: [string, unknown, { key?: string; sim?: boolean } | undefined][] = [];
+    // until the Ready: its recorder.ready() starts the packet stream afresh, so earlier replies would be dropped
+    let readied = false;
     const c = core = new SimCore(st, { report: (title, e, details) => {
-      if (protocol) protocol.error(details?.key ?? title, title, e, details?.sim);
+      if (protocol && readied) protocol.error(details?.key ?? title, title, e, details?.sim);
       else errors.push([title, e, details]);
     } }, { simwasm: flag }, () => performance.now());
     c.sim.speed = m.initialSpeed;
@@ -192,7 +194,8 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
     }
     post({ t: 'boot', phase: 'snapshot', pct: 0.9 });
     ready([], carried);
-    // reported by systems' init before the inbox existed: they ride in the first packet
+    readied = true;
+    // reported by systems' init and the journal's replay before the Ready: they ride in the first packet
     for (const [title, e, details] of errors) protocol.error(details?.key ?? title, title, e, details?.sim);
   }
 

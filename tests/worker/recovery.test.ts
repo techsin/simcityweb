@@ -462,6 +462,18 @@ describe('RecoveryMirror through LoopbackSimHost (T033 carry-over)', () => {
     expect(peekRecoveryMarker()).toBeNull();
   });
 
+  it('W1.3: a replay that fails is reported to the page after the Ready, not dropped with the boot\'s replies', async () => {
+    const savedAt = await savedCity(), record = (await getCityRecord(kv, city.regionId, city.tileKey))!;
+    const journal: RecoveryJournal = { v: 1, ...city, at: savedAt + 1, base: { kind: 'save', savedAt }, fromCmd: 0, ops: [{ seq: 1, op: 'setTax', args: [DevType.R1, 14] }] };
+    const got: unknown[] = [];
+    // no CityActions: the replay cannot run, and says so
+    const l = new LoopbackCore(codec.deserializeCity(record.city), { modules: {}, journal: { journal, base: { ...city, savedAt } }, receive: (m) => got.push(m) });
+    loops.push(l);
+    l.flush(true);
+    const errors = got.flatMap((m) => (m as { t: string; p?: { replies?: { t: string; title?: string }[] } }).p?.replies ?? []).filter((r) => r.t === 'error');
+    expect(errors.map((r) => r.title)).toContain('Recovery journal could not be replayed');
+  });
+
   it('W1.3: a tax-only journal replayed at boot reads as unsaved (no change event comes with it)', async () => {
     const savedAt = await savedCity(); now = 1100;
     await storeJournalIdb(kv, { v: 1, ...city, at: 1050, base: { kind: 'save', savedAt }, fromCmd: 0, ops: [{ seq: 1, op: 'setTax', args: [DevType.R1, 14] }] });

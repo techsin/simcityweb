@@ -47,6 +47,8 @@ export class LoopbackCore {
   private elapsedMs = 0;
   private tick = 0;
   private disposed = false;
+  /** the first Ready went out: replies from here on reach the page */
+  private readied = false;
   private readonly live: boolean;
   readonly inbox: ProtocolInbox;
   private abort = new AbortController();
@@ -67,9 +69,10 @@ export class LoopbackCore {
     const bootErrors: Reply[] = [];
     this.core = new SimCore(state, { report: (title, e, details) => {
       if (!opts.receive) opts.errors?.report(title, e, details);
-      if (this.inbox) { this.inbox.error(details?.key ?? title, title, e, details?.sim); return; }
+      // W1.3: not before the Ready, whose recorder.ready() would drop them (the journal's replay reports here)
+      if (this.inbox && this.readied) { this.inbox.error(details?.key ?? title, title, e, details?.sim); return; }
       const reply: Reply = { t: 'error', cmd: 0, key: details?.key ?? title, title, message: errorText(e), stack: e instanceof Error ? e.stack : undefined, sim: details?.sim ?? false };
-      if (this.recorder) this.recorder.reply(reply); else bootErrors.push(reply);
+      if (this.recorder && this.readied) this.recorder.reply(reply); else bootErrors.push(reply);
     } }, opts.flags, () => this.now());
     this.core.sim.speed = opts.initialSpeed ?? 1;
     this.core.boot(opts.rctx ?? null, opts.modules ?? { createSystems, CityActions });
@@ -87,6 +90,7 @@ export class LoopbackCore {
     const ready = this.ready();
     if (carried) ready.journal = carried;
     this.deliver(ready);
+    this.readied = true;
     for (const reply of bootErrors) this.recorder.reply(reply);
     opts.signal?.addEventListener('abort', this.stop, { once: true });
     if (opts.signal?.aborted) this.dispose();

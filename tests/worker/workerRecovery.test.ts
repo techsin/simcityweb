@@ -149,8 +149,11 @@ describe('W1.3: the worker\'s own IndexedDB', () => {
     await send(first, 'setTax', [DevType.R1, 15]);
     await close(first);
     kv.failCities = 1;
-    const second = await boot();
+    const reports: string[] = [];
+    const second = await boot({ errors: { report: (title) => { reports.push(title); } } });
     expect(second.state.budget.taxRates[DevType.R1]).toBe(15);
+    await waitFor(() => reports.length > 0, 'the report, in the first packet after the Ready');
+    expect(reports).toContain('The recovered edits could not be saved');
     expect(second.changes, 'the city reads as unsaved').toBeGreaterThan(0);
     expect((await record()).savedAt).toBe(saved.savedAt);
     expect(await stored(KEY + '#journal'), 'still bound to the old save').toMatchObject({ base: { kind: 'save', savedAt: saved.savedAt } });
