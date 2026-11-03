@@ -181,8 +181,8 @@ function recordReviewSeries(st: CityState, h: HistorySeries): void {
     if (b.flags & BF.Noisy) noisy++;
   }
   const em = st.stats.emergency?.lastMonth;
-  // LG-05/T037b owns the producer; absent metadata deliberately keeps growth scoring.
-  const advisors = st.systemData.advisors as { builtOut?: boolean } | undefined;
+  // LG-05/T037b will publish land exhaustion, independent of its demand-gated advice; absent means growth scoring.
+  const advisors = st.systemData.advisors as { full?: boolean } | undefined;
   h.reviewSample.push(data?.approvalTerms && Number.isFinite(data.resCrime)
     && Number.isFinite(data.resServices) && Number.isFinite(data.resParks) ? 1 : 0);
   h.reviewTermsSample.push(data?.approvalTerms ? 1 : 0);
@@ -195,7 +195,7 @@ function recordReviewSeries(st: CityState, h: HistorySeries): void {
   h.emergencyAnswered.push(fin(em?.auto) + fin(em?.manual));
   h.emergencyFailed.push(fin(em?.failed));
   h.buildingsLost.push(fin(em?.buildingsLost));
-  h.builtOut.push(advisors?.builtOut === true ? 1 : 0);
+  h.builtOut.push(advisors?.full === true ? 1 : 0);
   for (const id of YEAR_REVIEW_TERMS) h[`approval_${id}`].push(fin(data?.approvalTerms?.[id]));
   recordReviewGoals(st);
 }
