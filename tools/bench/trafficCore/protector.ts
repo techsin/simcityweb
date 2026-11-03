@@ -8,8 +8,9 @@
  * transfer is free), and a detach of a buffer with two or more views, a DataView or a detach key invalidates it. A fair
  * A/B therefore keeps it intact in every arm (fixtures gunzipped with zlib in node, a pre-sized wasm memory that never
  * grows, no transfer lists) unless an arm invalidates it on purpose ('-inv' arms: the game's main thread on a V8 that
- * invalidates on any detach, where lodBuilder's postMessage transfer list of single-view buffers invalidates it;
- * Chromium 153 keeps the page's protector through those transfers).
+ * invalidates on any detach, where lodBuilder's postMessage transfer list of single-view buffers invalidates it).
+ * Chromium 153 keeps the page's protector through those transfers, and invalidateProtector() below detaches a buffer
+ * with no view, so there an '-inv' arm keeps it too, as the page does (its probe reports it).
  */
 
 /**
@@ -31,11 +32,10 @@ export function makeProtectorProbe(): (() => boolean) | null {
   }
 }
 
-/** detach an ArrayBuffer that has two TypedArray views: invalidates the protector of this isolate for good, in node 22's
- *  V8 (any detach does) and in Chromium 153's (a buffer with no view or one view would leave it intact there) */
+/** detach an ArrayBuffer with no view: invalidates the protector of this isolate for good where any detach does (node
+ *  22's V8); Chromium 153's V8 leaves it intact (a buffer with two or more views, a DataView or a detach key would not) */
 export function invalidateProtector(): void {
   const b = new ArrayBuffer(8) as ArrayBuffer & { transfer?: () => ArrayBuffer };
-  new Uint8Array(b); new Float32Array(b);
   if (typeof b.transfer === 'function') b.transfer();
   else structuredClone(b, { transfer: [b] });
 }
