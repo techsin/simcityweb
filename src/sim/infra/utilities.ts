@@ -256,10 +256,12 @@ const UT = {
 /**
  * the chunk sizes, in estimated µs per unit (pieceUnits / cellUnits; kept apart from the estimates' UT coefficients, so a
  * refit of the estimates never moves a piece boundary — traffic's TR_EST lesson): the plan per building, a label unit
- * (a cell scanned or dequeued), the cell loops (the cold cell floor), a brownout queue cell, an event, a work unit of
- * the sea mask's rebuild (cold code: about 1,300 units per piece; the checksum takes the cell floor)
+ * (a cell scanned or dequeued; cold code, about 1,860 units per piece: a full relabel comes every few weeks and its first
+ * pieces ran at 0.15-0.25 µs per unit, 1.3-2.4 ms at 9,300 units, before the JIT caught up), the cell loops (the cold
+ * cell floor), a brownout queue cell, an event, a work unit of the sea mask's rebuild (cold code: about 1,300 units per
+ * piece; the checksum takes the cell floor)
  */
-const US = { plan: 0.012, label: 0.007, cells: INFRA_CELL_SIZING_US, zoned: INFRA_CELL_SIZING_US, bfs: 0.027, wbfs: 0.085, event: 0.4, seaBuild: 0.05 } as const;
+const US = { plan: 0.012, label: 0.035, cells: INFRA_CELL_SIZING_US, zoned: INFRA_CELL_SIZING_US, bfs: 0.027, wbfs: 0.085, event: 0.4, seaBuild: 0.05 } as const;
 /** the chunk plan of the pass snapshot (every building stage walks it): the cold Building floor per building + 20 ns per
  *  footprint cell (the results' footprint writes; sizing only — the estimates use each stage's own coefficients) */
 const UT_PLAN_B = INFRA_BLD_SIZING_US, UT_PLAN_F = 0.02;
