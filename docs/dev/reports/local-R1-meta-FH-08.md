@@ -1,11 +1,120 @@
 # T036s5 / FH-08 — first emergency teaching
 
 Desktop implementation on `local/T036s5-fh08`, initially based on `821a8d6`, committed as WIP `d6d5421`, then
-review-round-1 fix `e5a234d`. The owner merged dev `683d02b` cleanly before round 2.
-**Round 2 is uncommitted. E1 is now wired through the local and packet hosts.** Direct source-level probes passed on
-both; Vitest remains blocked at startup in this sandbox. New Year suppression now uses the exposed full-show busy
-state and the shared toast queue, without editing NewYear.ts.
+review-round-1 fix `e5a234d` and round-2 integration `a3cd741`. The owner verified round 2 with tsc, the full Vitest
+suite (223 files / 2,257 tests), and the unchanged bot. **Round 3 below is uncommitted.**
 No `.done` file was changed, following the explicit instruction not to write done markers.
+
+## Review round 3 — GPU QA corrections
+
+Read the complete supplied `scratchpad/qa/FH08/qa.md`: `vet_s7_y21`, 304k residents, default LocalSimHost and
+`?simworker=loopback`, zero console errors. Previous QA lines 1–3 and 6–7 passed; line 4 was partial and line 5
+failed. The six corrections are kept in small policy/teaching/queue hunks for the pending FEEL-10 merge.
+
+1. **B1 — `src/game/emergencyPolicy.ts`; `tests/game/emergencyPolicy.test.ts`.** One selector condition now requires
+   `!alert.wasPossible` for E1b. A savable alert that later lapses cannot consume E1b; the new test then supplies a
+   never-savable alert and verifies E1b is still available. Existing E1b fixtures now correctly say never savable.
+2. **B2 — `src/ui/EmergencyBanner.ts`; `tests/game/emergencyTeaching.test.ts`.** `rememberTeachingResponse` retains
+   the first waiting fire's `deadline - start`, including while options are still loading. `teachFailure` passes
+   that window to `firstFailureReason`. A spreading-fire regression extends the deadline/cluster lifetime to
+   13 minutes but still reports the observed 5.2-minute building window alongside the real 6.9-minute ETA.
+3. **B3 — `src/ui/EmergencyBanner.ts`; both emergencyTeaching test files.** The banner retains its E3 lesson;
+   `removeBanner` hands it to separate `queueFailureTeaching` exactly once. The shared budget/deferral queue supplies
+   a fresh 12,000 ms lifetime and Fire/Police/Health-tab action after actual display. Tests cover the handoff,
+   New Year/budget deferral, exact visible lifetime and service action. FEEL-02a's toast-budget tests are unchanged.
+4. **B4 — `src/ui/EmergencyBanner.ts`; `src/ui/Notifications.ts` (minimal shared-queue hunk outside the original named
+   files); both emergencyTeaching test files.** Optional `isRelevant` / `onDrop` options check a toast when it can
+   actually display or merge. E2 requires the current policy's LIVE, host speed 1 and slowdown greater than 1.
+   A stale E2 drops without `onShow`, seen consumption or budget usage, and clears its pending guard so the next
+   slowdown can teach. Tests cover New Year, budget delay, merge rejection and subsequent retry.
+5. **N3 — `src/ui/EmergencyBanner.ts`; `tests/game/emergencyTeaching.test.ts`.** E3 adds timing without repeating
+   the existing “No fire truck was sent in time” outcome. Industrial teaching states its dispatch-window timing
+   without repeating the plant-fire outcome. Every E3 toast names the incident and place (for example, “Fire at
+   Harbor Refinery”), including after New Year and after banner removal.
+6. **N4 — `src/ui/EmergencyBanner.ts`; `tests/game/emergencyTeaching.test.ts`.** E3 eligibility requires an existing
+   incident banner at failure. A non-alerted medical failure leaves E3 unseen; a later bannered fire can teach it.
+   A lesson already captured from a qualifying banner can still appear after that banner expires during New Year.
+
+No `src/sim/infra/*` hunks. No worker, TopBar, NewYear, App-wiring, CSS or other production-file edits in round 3.
+The only production hunk outside the original owned files is Notifications' additive relevance/drop contract
+(four interface lines and two guarded checks), expressly needed for B4's actual-display check. No RNG draws,
+balance changes, save/systemData changes or dependencies. This report is the only documentation change.
+
+Round-3 checks:
+
+- **Passed:** quiet-gated `npx tsc --noEmit`; `git diff --check`; protected-file and unchanged toast-budget-test
+  diff review. All changes remain uncommitted.
+- **Passed direct source probes:** the new `fh08-round3-probe.mjs` imports the production policy, Banner and shared
+  Toasts. It verifies all six corrections, including a 70-second show, cached spreading-fire numbers, 12 seconds
+  after actual E3 display, service action, and stale E2 rejection/retry. The existing `fh08-host-probe.mjs` also
+  passes on actual LocalSimHost and packet loopback hosts after the policy change. These are diagnostics, not a
+  substitute for Vitest or real-GPU QA.
+- **Blocked before test execution:** all eight targeted files were attempted one at a time through the quiet gate.
+  Every command failed loading `vite.config.ts` with `spawn EPERM` in Vite's optional Windows `net use` real-path
+  subprocess. This sandbox still cannot start Vitest; no targeted-test pass is claimed for round 3.
+- **Left to the owner:** targeted/full Vitest rerun, hygiene execution, unchanged toast-budget execution and GPU
+  checks below. No browser, full suite, bot, Hard digest, GPU timing or old-save continuation run here.
+
+Exact targeted commands (run from this worktree):
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsc --noEmit
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/emergencyTeaching.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/emergencyPolicy.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/emergencyBanner.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/worker/policy.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/worker/emergencyTeachingHost.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/worker/hygiene.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/toastBudget.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/emergencyTeachingToasts.test.ts --maxWorkers=1
+```
+
+The new diagnostic command (loader and probe remain only in the supplied scratch folder):
+
+```text
+node --no-warnings --experimental-transform-types --import file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T036s5/scratch/fh08-host-loader.mjs C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T036s5/scratch/fh08-round3-probe.mjs
+```
+
+The diagnostic stubs CSS loading and DOM/timers only; it imports the changed production methods without changing
+repository code or dependencies. The earlier host-probe command is recorded in round 2 below.
+
+Bot acceptance remains **`[61124, 93804, 37971]` = 192,899 residents in 2015**, already verified by the owner at
+`a3cd741`. Round 3 does not rerun it: teaching defaults remain off and no simulation/balance code changed. The
+standard rerun, if desired, is:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
+```
+
+Plan-versus-code and pending cloud requests:
+
+- FH-08 E3 says “the first failed incident” and gives a non-spreading-fire example. Round-3 N4 narrows this to the
+  first failure with a banner, preserving the lesson for an incident the player was alerted to; the plan does not
+  explicitly require consuming E3 on an unbannered failure. B2 uses the original building window rather than the
+  eventual spreading cluster's lifetime. B3 adds reading time without changing the core's 2.5-second banner expiry.
+- **Pending B5, lead-owned:** in `src/worker/LoopbackSimHost.ts`, the constructor's `this.policy` view at lines
+  206–207 needs `get teaching() { return host.replica.policy.teaching; }`. The replica/subscription already carry
+  teaching, but the public getter does not. This protected file was read only and remains untouched.
+- **Pending TopBar split:** the extracted LIVE pill title in `src/ui/topbar/**` still needs: “Within station range
+  never slows. Outside it, LIVE slows your dispatch; your speed returns when help arrives. Settings → Gameplay.”
+- FEEL-10 / T048 merge remains for the owner. New banner work stays in teaching methods and retained teaching data;
+  no outcome-system refactor or merge was attempted.
+
+Real-GPU browser checklist, fresh profile, Medium / Disasters on or debug spawn, on default and packet hosts:
+
+- [ ] QA line 1: E1a pauses; correct loading/station/ETA copy; Send nearest dispatches and closes the card.
+- [ ] QA line 2: a never-savable fire shows E1b and its Fire-tab/Emergency-view actions.
+- [ ] QA line 3: an actual LIVE slowdown displays E2 once. A queued episode that ends during New Year displays
+      nothing afterward, leaves E2 unseen, and the next actual slowdown teaches it once.
+- [ ] QA line 4: a spreading fire retains its first building's window (for example 5.2 min vs ETA 6.9), states the
+      failure outcome once, and names its place in the deferred/continuation toast. On banner expiry the same E3
+      explanation remains readable for at least 12 seconds with a working Fire-tab action.
+- [ ] QA line 5: a second initially-savable fire that lapses behaves under T029's normal rules and never opens or
+      consumes E1b. A later never-savable fire can still teach E1b.
+- [ ] QA line 6: no teaching card/explanation/toast during any part of New Year; relevant deferred lessons display
+      once afterward with original numbers, service actions and full toast reading time.
+- [ ] QA line 7 / N4: Tips/seen flags/loading transitions still work; an early unbannered medical failure in a town
+      below 1,000 leaves E3 for the next bannered failure. City exit cancels queued lessons.
 
 ## Review round 2 — protocol activation and New Year
 
