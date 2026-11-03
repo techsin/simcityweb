@@ -1,4 +1,85 @@
-# T037ar — onboarding round 2
+# T037ar — onboarding round 3
+
+Round-3 base: 865e956, after round 2 was committed as 3f18111 / 30cc30d / 865e956. The user verified tsc and the unchanged **192,899** bot total; their full suite found the one guideFacts packet-test failure reproduced here.
+
+**Diagnosis: (a), services had not run yet.** Ordinary station edits wait for SERVICES_DIRTY_DAYS (2); scheduler.flush respects the task's due predicate and does not bypass that delay. This test uses design cadence, which calls advanceDay without system frames, so SERVICES_MIN_CYCLE_MS is inactive here. The live cap remains covered by the unchanged servicesTrigger tests. No defect was found in (b), services/emergency layer invalidation, or (c), canonical-lot resident weighting.
+
+## Round-3 findings and changes
+
+References below identify the reviewed test at 865e956.
+
+| File:line | Severity | Finding and fix |
+|---|---|---|
+| tests/worker/guideFacts.test.ts:90 | P2 test | settle advanced only one day after adding/removing stations. Use the exported dirty-day delay, observe genuine services layer completions, and check the authoritative canonical home's coverage against the subscribed packet watch. The first-day check explicitly proves no services completion and zero police coverage. Each completed pass is followed by one inbox refresh after its watch cap; a new watch version and exactly one subscriber notification are required. There is no per-frame polling. |
+| tests/worker/guideFacts.test.ts:111 | P2 test | The next assertion, exposed after fixing the delay, assumed an unsubscribed fire raster started negative. Overlay.None leaves that deferred replica raster at its initial zero value. Capture and compare its startup value instead. Police/fire aggregate assertions still require actual authoritative coverage and real removal updates. |
+
+The existing cache tests also pass: services/emergency completion invalidates the aggregate; unrelated traffic refreshes and unchanged frames do not recompute it; canonical fronts, resident weighting and fuel-plant coverage remain correct. No production source change is needed.
+
+| # | Round-3 change | File list |
+|---|---|---|
+| **1** | No new persistence change. Round-2 pending dirty/journal requests below remain open. | None. |
+| **2** | Fix the packet test's services timing and deferred-raster assumption; assert real completion, canonical source coverage and subscribed watch delivery after addition/removal. | tests/worker/guideFacts.test.ts |
+| **3** | No new coach change; TopBar split wiring remains deferred. | None. |
+| **4** | No new power UI change. | None. |
+| **5** | No new E11/toast change; existing toast-budget tests pass unchanged. | None. |
+| **6** | No new handoff change. | None. |
+
+Report-only update: docs/dev/reports/local-R1-guide-a.md. **No src/sim/infra/* hunk, production hunk, outside-ownership code hunk or cloud-held-file edit.** Changes remain uncommitted; no .done file was edited.
+
+## Round-3 verification
+
+**PASS:** npx tsc --noEmit; git diff --check; both changed files are UTF-8 without BOM. **PASS:** 20 targeted single-file runs, **339 passed / 3 existing skipped**, sequentially through the quiet gate:
+
+| Test file | Passed | Existing skips |
+|---|---:|---:|
+| tests/worker/guideFacts.test.ts | 3 | 0 |
+| tests/game/onboarding.test.ts | 49 | 0 |
+| tests/game/guideCopy.test.ts | 137 | 0 |
+| tests/game/guideTips.test.ts | 5 | 0 |
+| tests/game/guideWhy.test.ts | 5 | 0 |
+| tests/game/guideNewYear.test.ts | 3 | 0 |
+| tests/game/guidePowerUi.test.ts | 4 | 0 |
+| tests/game/guideToolbarCoach.test.ts | 1 | 0 |
+| tests/worker/onboardingPersistence.test.ts | 8 | 0 |
+| tests/worker/queries.test.ts | 14 | 0 |
+| tests/worker/querySideEffects.test.ts | 2 | 1 |
+| tests/worker/replicaSafe.test.ts | 2 | 1 |
+| tests/worker/hygiene.test.ts | 17 | 1 |
+| tests/game/toastBudget.test.ts | 10 | 0 |
+| tests/game/newYearPacing.test.ts | 19 | 0 |
+| tests/sim/servicesTrigger.test.ts | 24 | 0 |
+| tests/game/budgetPreview.test.ts | 10 | 0 |
+| tests/game/upkeepReads.test.ts | 21 | 0 |
+| tests/game/uiCardTip.test.ts | 2 | 0 |
+| tests/game/quakeShakePlop.test.ts | 3 | 0 |
+
+The skips are the two absent grown-fixture cases and the existing W1.2 simWorker import-graph skip. No new test was skipped. Some UI tests emitted AbortSignal MaxListenersExceededWarning; all their assertions passed.
+
+The default quietrun npx vitest command still failed before collection with Vite externalize-deps spawn EPERM. A native config loader avoids that startup path, but the default fork pool also cannot spawn here. All successful runs used Vitest's supported native loader/thread pool, with one worker and no config/dependency edits:
+
+~~~text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types node_modules/vitest/vitest.mjs run <single-file-from-table> --maxWorkers=1 --configLoader native --pool threads
+~~~
+
+The original police assertion failed under this runner before the fix; the final guideFacts run passed all three tests. Diagnostics: round3-test-results.json in the assigned T037ar/scratch folder. The unchanged query-side-effects test checks 120 daily hashes/RNG states with and without reads on Local and generated packet cities.
+
+**Plan versus code:** this was a test scheduling mismatch, plus an invalid assumption about an unsubscribed raster's sentinel. Query invalidation and lot weighting needed no amendment. **Cloud requests:** none added this round; the round-2 save-path requests and TopBar dependency below are unchanged.
+
+**Left for the lead / unverified:** full Vitest after this fix, the normal default fork runner, real-GPU/browser acceptance and the guide-only first city. No bot or new timing probe was run for this test-only change. The user's round-2 bot result remains the reference: residents **[61,124, 93,804, 37,971] = 192,899** in 2015; this round changes no simulation code or RNG draws. If rerun, the exact regression command is:
+
+~~~text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
+~~~
+
+Round-3 browser follow-up (the full FH-01/FH-02/FH-22 checklist and guide-follower numeric gates remain below):
+
+- [ ] In Overlay.None, add police/fire stations and let the real coverage passes finish; G3/G4 update without opening a coverage overlay.
+- [ ] Remove/rebuild the stations; coverage goals follow the completed layers, including after resync/reload.
+- [ ] At 1280×720, repeat the guide-only first city and the original FH-01/FH-02/FH-22 acceptance checklist. Easy reaches 2,500 by day 1,170, Medium by day 1,530, pre-Play spend is at most §15,000, and no first brownout occurs before day 1,530.
+
+---
+
+## Round-2 report (historical, committed as 3f18111 / 30cc30d / 865e956)
 
 Round-2 base: b5580ff (dev 683d02b merged), after the user verified round 1 at 3dd3446: tsc, 221 Vitest files / 2,224 tests, and bot 192,899. Those results apply to round 1, not these uncommitted changes.
 

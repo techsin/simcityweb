@@ -5,6 +5,7 @@ import { CityActions } from '../../src/sim/actions';
 import { BF } from '../../src/sim/CityState';
 import { lotCell } from '../../src/sim/economy/factors';
 import { schedulerOf } from '../../src/sim/infra/scheduler';
+import { SERVICES_DIRTY_DAYS } from '../../src/sim/infra/services';
 import { Simulation, type SimSystem } from '../../src/sim/Simulation';
 import { infraSystems } from '../../src/sim/systems/infra';
 import { LoopbackSimHost } from '../../src/worker/LoopbackSimHost';
@@ -80,18 +81,34 @@ describe('guideFacts', () => {
     let now = 0;
     const st = newState(64); st.funds = 1e7;
     roadLine(st, 0, 20, 63, 20, Network.Road);
-    place(st, 't_r2', 10, 21, { pop: 60, rot: 2 });
+    const home = place(st, 't_r2', 10, 21, { pop: 60, rot: 2 });
     place(st, 't_coal', 20, 18, { flags: BF.Plopped });
     const host = new LoopbackSimHost(st, { initialSpeed: 0, now: () => now,
       loopback: { cadence: 'design', modules: { CityActions, createSystems: infraSystems } } });
     const abort = new AbortController();
     await host.start();
     host.setView({ overlay: Overlay.None, variant: 0, panels: [], focus: [] });
+    const sim = host.harness.core.sim, at = lotCell(home, st.size), serviceDays: number[] = [];
+    const initialFire = host.state.respFire[at];
+    const off = sim.events.on('layerUpdated', (layer) => { if (layer === 'services') serviceDays.push(sim.state.day); });
+    abort.signal.addEventListener('abort', off, { once: true });
     const w = watchFor(host, 'guideFacts', {}, 'change', abort.signal);
-    const settle = async () => {
-      host.harness.runDays(1);
-      schedulerOf(host.harness.core.sim).flush(host.harness.core.sim);
+    const delivered = vi.fn();
+    w.subscribe(delivered, abort.signal);
+    const refresh = async () => {
       now += 250; host.harness.inbox.refresh(); await host.drain();
+    };
+    const settle = async (days: number) => {
+      const passes = serviceDays.length;
+      host.harness.runDays(days);
+      schedulerOf(sim).flush(sim);
+      expect(serviceDays).toHaveLength(passes + 1);
+      expect(serviceDays.at(-1)).toBe(sim.state.day);
+      const version = w.version;
+      delivered.mockClear();
+      await refresh();
+      expect(w.version).toBeGreaterThan(version);
+      expect(delivered).toHaveBeenCalledTimes(1);
     };
     const query = async () => { const result = host.query('guideFacts', {}); await host.drain(); return result; };
     try {
@@ -101,17 +118,27 @@ describe('guideFacts', () => {
       expect((await police.done).ok).toBe(true);
       const fire = host.act('plop', ['t_fire', 14, 19, 0]); await host.drain();
       expect((await fire.done).ok).toBe(true);
-      await settle();
+      // Design cadence has no live cap, but ordinary station edits still wait for the dirty-day delay.
+      host.harness.runDays(SERVICES_DIRTY_DAYS - 1);
+      schedulerOf(sim).flush(sim);
+      expect(serviceDays).toEqual([]);
+      expect(sim.state.policeCov[at]).toBe(0);
+      await refresh();
+      expect(w.value!.policeAtHomes).toBe(0);
+      await settle(1);
+      expect(sim.state.policeCov[at]).toBeGreaterThan(0.5);
+      expect(w.value!.policeAtHomes).toBe(sim.state.policeCov[at]);
       expect(w.value).toEqual(await query());
       expect(w.value!.policeAtHomes).toBeGreaterThan(0.5);
       expect(w.value!.fireCovered).toBe(1);
       expect(w.value!.fuelCovered).toBe(true);
       // These rasters are intentionally still the initial normal-view copies, not the source of the totals.
       expect(host.state.policeCov[host.state.idx(10, 21)]).toBe(0);
-      expect(host.state.respFire[host.state.idx(10, 21)]).toBeLessThan(0);
+      expect(host.state.respFire[at]).toBe(initialFire);
       const remove = host.act('bulldoze', [{ x0: 8, z0: 19, x1: 15, z1: 20 }]); await host.drain();
       expect((await remove.done).ok).toBe(true);
-      await settle();
+      await settle(SERVICES_DIRTY_DAYS);
+      expect(sim.state.policeCov[at]).toBe(0);
       expect(w.value).toEqual({ policeAtHomes: 0, fireCovered: 0, fuelCovered: false });
       expect(w.value).toEqual(await query());
     } finally { abort.abort('dispose'); await host.dispose(); }
