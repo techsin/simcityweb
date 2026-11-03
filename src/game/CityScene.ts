@@ -536,7 +536,7 @@ export class CityScene {
     this.storeCamera();
     void this.save(false);
     const restore = h('button', { class: 'btn primary', type: 'button' }, 'Restore');
-    const card = h('div', { class: 'ctx-lost mp-glass', role: 'alertdialog', style: 'position:absolute; left:50%; top:38%; transform:translate(-50%,-50%); z-index:60; max-width:360px; padding:18px 20px; text-align:center' },
+    const card = h('div', { class: 'ctx-lost mp-glass', role: 'alertdialog', style: 'position:absolute; left:50%; top:38%; transform:translate(-50%,-50%); z-index:60; max-width:360px; padding:18px 20px; text-align:center; pointer-events:auto' },
       h('div', { style: 'font-weight:700; font-size:16px; margin-bottom:6px' }, 'Graphics reset'),
       h('div', { style: 'opacity:0.8; margin-bottom:14px; line-height:1.45' }, 'The graphics card stopped drawing the city. The game is paused and your city is saved.'),
       restore,

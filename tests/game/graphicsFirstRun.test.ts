@@ -184,6 +184,8 @@ describe('FH-21: a lost graphics context', () => {
     const card = uiRoot.querySelector('.ctx-lost')!;
     expect(textOf(card)).toMatch(/^Graphics reset/);
     expect(card.querySelector('button')!.textContent).toBe('Restore');
+    // the HUD root passes pointer events through to the canvas: the card takes them back, or Restore cannot be clicked
+    expect(card.style.cssText).toContain('pointer-events:auto');
     // a second loss event while the card is up changes nothing
     proto.onContextLost.call(scene);
     expect(uiRoot.querySelectorAll('.ctx-lost')).toHaveLength(1);

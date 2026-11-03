@@ -212,8 +212,7 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
         'div',
         { class: 'nc-opts' },
         h('div', { class: 'nc-opt' }, disasters.el, h('div', { class: 'nc-note' }, guideCopy.phaseA.A3Disasters(DISASTER_MIN_POP))),
-        h('div', { class: 'nc-opt' }, guide.el, veteranSw.el),
-        h('div', { class: 'field nc-year' }, h('label', {}, 'Starting year'), yearInput),
+        h('div', { class: 'nc-opt' }, guide.el, veteranSw.el, h('div', { class: 'field nc-year' }, h('label', {}, 'Starting year'), yearInput)),
       ),
     );
     const body = h(
