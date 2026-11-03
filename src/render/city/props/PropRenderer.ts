@@ -21,11 +21,14 @@ import { getModelGeometry, hasModel } from '../../../assets/registry';
 import { MANIFEST_BY_ID } from '../../../assets/manifest';
 import { ModelBuilder } from '../../../assets/ModelBuilder';
 import { Surf } from '../../../core/types';
+import { CELL_SIZE, DAYS_PER_MONTH } from '../../../core/constants';
+import { BF, type Building } from '../../../sim/CityState';
 import { sharedUniforms } from '../../../assets/materials';
 import { DynamicBatch, type TileCuller } from '../common/batch';
 import { getCityMaterial } from '../common/cityMaterial';
 import type { PoolItem, PropItem } from '../roads/mesher';
 import { lampUniforms } from '../roads/roadMaterial';
+import type { RoadSurface } from '../common/surface';
 import { propLodGeometry } from './propLod';
 import { SEASONAL_TREES, seasonalVariant, treeSeason } from '../../../assets/builders/nat_season';
 
@@ -43,6 +46,54 @@ interface Group {
   big: number[];
   tiles: number[];
   pools: PoolItem[];
+}
+
+type GarbageBuilding = Pick<Building, 'id' | 'x' | 'z' | 'w' | 'd' | 'rot' | 'baseY'>;
+interface GarbageLot {
+  b: GarbageBuilding;
+  active: boolean;
+  from: number;
+  since: number;
+}
+
+/** Cosmetic hashes never consume the simulation RNG. */
+function garbageHash(id: number): number {
+  let h = Math.imul(id ^ 0x6d2b79f5, 0x5bd1e995);
+  h = Math.imul(h ^ (h >>> 13), 0x5bd1e995);
+  return (h ^ (h >>> 15)) >>> 0;
+}
+
+function garbageAmount(lot: GarbageLot, day: number): number {
+  const h = garbageHash(lot.b.id), target = lot.active ? 1 + h % 4 : 0;
+  const days = DAYS_PER_MONTH + (h >>> 8) % (DAYS_PER_MONTH + 1);
+  const t = Math.min(1, Math.max(0, (day - lot.since) / days));
+  return lot.from + (target - lot.from) * t;
+}
+
+function garbageCount(lot: GarbageLot, day: number): number {
+  const amount = garbageAmount(lot, day);
+  return lot.active ? Math.max(1, Math.floor(amount + 1e-9)) : Math.ceil(amount - 1e-9);
+}
+
+const GARBAGE_FX = [0, 1, 0, -1] as const;
+const GARBAGE_FZ = [1, 0, -1, 0] as const;
+
+/** Two shapes share one vertex stream: pad the shorter variant with degenerate triangles, not another draw. */
+function garbageGeometry(): THREE.BufferGeometry {
+  const bag = propGeometry('garbage_pile', 0), bin = propGeometry('garbage_pile', 1);
+  const n = Math.max(bag.getAttribute('position').count, bin.getAttribute('position').count);
+  const g = new THREE.BufferGeometry();
+  for (const [source, prefix] of [[bag, ''], [bin, 'garbage']] as const) {
+    for (const name of ['position', 'normal', 'color', 'surf']) {
+      if (prefix && name === 'surf') continue; // both variants use Plain
+      const a = source.getAttribute(name), data = new Float32Array(n * 3);
+      data.set(a.array);
+      if (name === 'normal') for (let k = a.count; k < n; k++) data[k * 3 + 1] = 1;
+      const key = prefix ? prefix + name[0].toUpperCase() + name.slice(1) : name;
+      g.setAttribute(key, new THREE.BufferAttribute(data, 3));
+    }
+  }
+  return g;
 }
 
 /** procedural stand-ins used when an asset builder has not registered the model (avoids magenta boxes) */
@@ -190,6 +241,13 @@ export class PropRenderer {
   readonly pylons: DynamicBatch;
   readonly pools: THREE.InstancedMesh;
   readonly glows: THREE.Mesh;
+  /** Kerbside bags / bins: one draw, no shadow passes, compacted to instances below 900 m. */
+  readonly garbage: THREE.InstancedMesh;
+  private garbageLots = new Map<number, GarbageLot>();
+  private garbageCap = 256;
+  private garbageDirty = true;
+  private garbageDay = -1;
+  private garbageAt = new THREE.Vector3(NaN, NaN, NaN);
   private glowGeo: THREE.InstancedBufferGeometry;
   private glowCap = 4096;
   private groups = new Map<string, Group>();
@@ -321,6 +379,121 @@ export class PropRenderer {
     this.glows.frustumCulled = false;
     this.glows.renderOrder = 4;
     this.glows.name = 'lampGlows';
+    const garbageMat = city.clone();
+    garbageMat.onBeforeCompile = (shader, renderer) => {
+      cityCompile.call(city, shader, renderer);
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+attribute float garbageVariant;
+attribute vec3 garbagePosition;
+attribute vec3 garbageNormal;
+attribute vec3 garbageColor;`)
+        .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\nobjectNormal = mix(normal, garbageNormal, garbageVariant);')
+        .replace('#include <color_vertex>', `#include <color_vertex>
+#ifdef USE_COLOR
+  vColor.xyz = mix(color, garbageColor, garbageVariant);
+#endif`)
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed = mix(position, garbagePosition, garbageVariant);')
+        .replace('vObjPos = position;', 'vObjPos = transformed;')
+        .replace('vObjNormal = normal;', 'vObjNormal = objectNormal;');
+    };
+    garbageMat.customProgramCacheKey = () => city.customProgramCacheKey() + '|garbage-v1';
+    this.garbage = this.makeGarbage(garbageGeometry(), garbageMat);
+    this.batch.mesh.add(this.garbage);
+  }
+
+  private makeGarbage(geometry: THREE.BufferGeometry, material: THREE.Material): THREE.InstancedMesh {
+    geometry.setAttribute('garbageVariant', new THREE.InstancedBufferAttribute(new Float32Array(this.garbageCap), 1).setUsage(THREE.DynamicDrawUsage));
+    const mesh = new THREE.InstancedMesh(geometry, material, this.garbageCap);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.count = 0;
+    mesh.visible = false;
+    mesh.frustumCulled = false; // CPU distance cut; shader-selected bin extends past the bag's bounds
+    mesh.receiveShadow = true;
+    mesh.name = 'garbage';
+    return mesh;
+  }
+
+  /** Event-time mirrored flags; keep our own transition state because replica records mutate in place. */
+  garbageBuildingChanged(b: Building, day: number): void {
+    const active = !!(b.flags & BF.NoGarbage), old = this.garbageLots.get(b.id);
+    if (!old && !active) return;
+    if (old) {
+      if (active !== old.active) {
+        old.from = Math.max(active ? 1 : 0, garbageCount(old, day));
+        old.since = day;
+        old.active = active;
+        this.garbageDirty = true;
+      }
+      const p = old.b;
+      if (p.x === b.x && p.z === b.z && p.w === b.w && p.d === b.d && p.rot === b.rot && p.baseY === b.baseY) return;
+    }
+    const pose = { id: b.id, x: b.x, z: b.z, w: b.w, d: b.d, rot: b.rot, baseY: b.baseY };
+    if (old) old.b = pose;
+    else this.garbageLots.set(b.id, { b: pose, active, from: 1, since: day });
+    this.garbageDirty = true;
+  }
+
+  removeGarbage(id: number): void {
+    if (this.garbageLots.delete(id)) this.garbageDirty = true;
+  }
+
+  /** A save has no cosmetic episode history: existing flagged lots start mature. No new save keys. */
+  resetGarbage(buildings: Iterable<Building>, day: number): void {
+    this.garbageLots.clear();
+    for (const b of buildings) {
+      this.garbageBuildingChanged(b, day);
+      const lot = this.garbageLots.get(b.id);
+      if (lot) lot.from = 1 + garbageHash(b.id) % 4;
+    }
+    this.garbageDirty = true;
+  }
+
+  invalidateGarbage(): void { this.garbageDirty = true; }
+
+  /** Repack only on day / pose / camera changes. Cleared lots leave the cosmetic cache after at most 60 days. */
+  updateGarbage(day: number, cam: THREE.Vector3, surf: Pick<RoadSurface, 'terrain'>): void {
+    if (!this.garbageDirty && day === this.garbageDay && this.garbageAt.equals(cam)) return;
+    this.garbageDirty = false;
+    this.garbageDay = day;
+    this.garbageAt.copy(cam);
+    const total = this.garbageLots.size * 4;
+    if (total > this.garbageCap) {
+      while (this.garbageCap < total) this.garbageCap *= 2;
+      const old = this.garbage, parent = old.parent;
+      const fresh = this.makeGarbage(old.geometry.clone(), old.material as THREE.Material);
+      if (parent) { parent.remove(old); parent.add(fresh); }
+      old.dispose();
+      old.geometry.dispose();
+      (this as { garbage: THREE.InstancedMesh }).garbage = fresh;
+    }
+    const mesh = this.garbage, variants = mesh.geometry.getAttribute('garbageVariant') as THREE.InstancedBufferAttribute;
+    let n = 0;
+    for (const [id, lot] of this.garbageLots) {
+      const count = garbageCount(lot, day);
+      if (!count) { if (!lot.active) this.garbageLots.delete(id); continue; }
+      const b = lot.b, h = garbageHash(id), yaw = b.rot * Math.PI / 2;
+      const fx = GARBAGE_FX[b.rot], fz = GARBAGE_FZ[b.rot];
+      const cx = (b.x + b.w / 2) * CELL_SIZE, cz = (b.z + b.d / 2) * CELL_SIZE;
+      const front = (b.rot & 1 ? b.w : b.d) * CELL_SIZE / 2 - 0.75;
+      const shift = ((h >>> 16) / 65536 - 0.5) * 3;
+      for (let k = 0; k < count; k++) {
+        const along = shift + (k - 1.5) * 1.25;
+        const x = cx + fx * front + fz * along, z = cz + fz * front - fx * along;
+        const y = Math.max(b.baseY, surf.terrain(x, z)) + 0.08;
+        const dx = x - cam.x, dy = y - cam.y, dz = z - cam.z;
+        if (dx * dx + dy * dy + dz * dz >= 900 * 900) continue;
+        const turn = yaw + (((h >>> (k * 4)) & 15) / 15 - 0.5) * 0.4;
+        this.q.setFromAxisAngle(this.up, turn);
+        this.m4.compose(this.v.set(x, y, z), this.q, this.s.set(1, 1, 1));
+        mesh.setMatrixAt(n, this.m4);
+        variants.setX(n++, (h >>> k) & 1);
+      }
+    }
+    mesh.count = n;
+    mesh.visible = n > 0;
+    mesh.instanceMatrix.needsUpdate = true;
+    variants.needsUpdate = true;
   }
 
   /** distance LOD for small props; call once per frame with the camera position (see the file comment) */
@@ -346,6 +519,8 @@ export class PropRenderer {
     }
     const m = this.propMat, city = getCityMaterial();
     m.envMapIntensity = city.envMapIntensity; m.roughness = city.roughness; m.metalness = city.metalness;
+    const gm = this.garbage.material as THREE.MeshStandardMaterial;
+    gm.envMapIntensity = city.envMapIntensity; gm.roughness = city.roughness; gm.metalness = city.metalness;
   }
 
   /**
@@ -742,11 +917,15 @@ export class PropRenderer {
   }
 
   get propCount(): number {
-    return this.batch.instanceCount + this.pylons.instanceCount;
+    return this.batch.instanceCount + this.pylons.instanceCount + this.garbage.count;
   }
 
   clear(): void {
     for (const k of [...this.groups.keys()]) this.setGroup(k, [], []);
+    this.garbageLots.clear();
+    this.garbage.count = 0;
+    this.garbage.visible = false;
+    this.garbageDirty = true;
   }
 
   dispose(): void {
@@ -757,5 +936,9 @@ export class PropRenderer {
     this.poolMat.dispose();
     this.glowGeo.dispose();
     (this.glows.material as THREE.Material).dispose();
+    this.garbageLots.clear();
+    this.garbage.dispose();
+    this.garbage.geometry.dispose();
+    (this.garbage.material as THREE.Material).dispose();
   }
 }
