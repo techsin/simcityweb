@@ -4,6 +4,8 @@
  * so commands, reads and pongs run at those boundaries. Persistence 'main' (R14): saves and snapshots go to the page,
  * and snapshots are deltas of the newest save the page has not refused.
  */
+// first: the worker isolate's protector probe predates every other module of the bundle (protectorProbe.ts)
+import { WORKER_ISOLATE_PROBE, makeProtectorProbe } from './protectorProbe';
 import { CityActions } from '../sim/actions';
 import { createSystems } from '../sim/systems';
 import type { DisastersSystem } from '../sim/infra/disasters';
@@ -14,7 +16,6 @@ import { initSimWasm, simWasmFlagSelects, simWasmStatus } from '../wasm/simWasm'
 import { SimCore, type CitySaveCopy, type SimModules } from './SimCore';
 import { ChangeRecorder } from './recorder';
 import { ProtocolInbox, type InboxStore } from './protocolInbox';
-import { makeProtectorProbe } from './protectorProbe';
 import { exactDigest } from './queries';
 import { PROTOCOL_VERSION, assertOwnedBuffers, errorText, type M2W, type Packet, type Reply } from './protocol';
 import { ACK_WINDOW, sourceRecord, type SerializedSource, type SimWorkerScope, type WorkerDebugReport, type WorkerInit, type WorkerInput, type WorkerOutput } from './workerProtocol';
@@ -85,8 +86,9 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
   const live = () => !init!.deterministic && !run;
 
   async function boot(m: WorkerInit): Promise<void> {
-    // first, before the city and the wasm loader: the probe sees only a detach that comes after it (needs natives syntax)
-    if (m.flags?.dev) protector = makeProtectorProbe();
+    // the probe sees only a detach that comes after it (natives syntax only): a browser worker's was made when the
+    // bundle began to evaluate; elsewhere it is made now, before the city and the wasm loader
+    if (m.flags?.dev) protector = WORKER_ISOLATE_PROBE ?? makeProtectorProbe();
     if (m.v !== PROTOCOL_VERSION) throw new Error(`Protocol version ${m.v}; this worker speaks ${PROTOCOL_VERSION}`);
     if (m.city?.kind !== 'serialized' || m.persistence !== 'main' || m.journal) throw new Error('W1.2 boots a serialized city with persistence main and no journal');
     init = m;

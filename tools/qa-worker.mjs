@@ -7,10 +7,14 @@
  *                            [--soak-min 0] [--simwasm <flag>]
  *
  * Chromium runs with --js-flags=--allow-natives-syntax and every page with &simdev=1, so the worker isolate makes its
- * protector probe first thing at boot (src/worker/protectorProbe.ts) and host.debugVerify() reads it. --simwasm wasm
+ * protector probe first thing (src/worker/protectorProbe.ts) and host.debugVerify() reads it. --simwasm wasm
  * adds &simwasm=wasm: the kernels then load in the worker (WASM_PLAN §7.8's worker mode), and boot checks they did.
  *
  * Steps, each logged PASS or FAIL (exit code 1 on any FAIL):
+ *   control   the probe's positive and negative controls in this browser, in a bare module worker under a Chrome trace of
+ *             V8.InvalidateProtector: the probe must deoptimize on a detach for its "intact" to mean anything. Where it
+ *             does not (Chromium 153: its V8 has no ArrayBufferDetaching protector; a protector it does have, ArraySpecies,
+ *             shows the technique works), each protector step checks that the worker made its probe and logs a NOTE
  *   boot      ?quickstart=1&simworker=1 reaches __ready on a worker host (the worker is its own script); the worker's
  *             protector probe is intact (§5.4); with --simwasm, blur runs on wasm in the worker and its memory never grew
  *   tools     through the real tools (pointer events on the canvas), each acked in the replica with nothing pending: a
@@ -78,12 +82,13 @@ const cleanup = async () => {
 };
 process.on('SIGINT', async () => { await cleanup(); process.exit(130); });
 process.on('SIGTERM', async () => { await cleanup(); process.exit(143); });
-const timer = setTimeout(async () => { log('QA TIMEOUT'); await cleanup(); process.exit(124); }, Number(process.env.QA_TIMEOUT_MS ?? 1800000));
+const timer = setTimeout(async () => { log('QA TIMEOUT'); await cleanup(); process.exit(124); }, Number(process.env.QA_TIMEOUT_MS ?? (90 + SOAK_MIN) * 60000));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function shot(page, name) {
   const f = path.join(OUT, `${name}.png`);
-  try { await page.screenshot({ path: f, timeout: 60000 }); log('shot', f); } catch (e) { log('shot failed', name, String(e).slice(0, 200)); }
+  // a 256² city on SwiftShader can take tens of seconds for the frame a screenshot waits for
+  try { await page.screenshot({ path: f, timeout: 180000 }); log('shot', f); } catch (e) { log('shot failed', name, String(e).slice(0, 200)); }
   return f;
 }
 
@@ -109,13 +114,67 @@ async function settleDialog(page) {
   }, null, { timeout: 30000, polling: 250 }).catch(() => log('the crash dialog was still animating after 30 s'));
   await sleep(500);
 }
+/**
+ * The probe's controls (risk 7), in a bare module worker: the probe made as src/worker/protectorProbe.ts makes it, read
+ * twice (negative control), then a buffer detached (positive control); beside it, a TurboFan function that depends on the
+ * ArraySpecies protector, which is then invalidated (the technique itself). Chrome's trace records V8.InvalidateProtector
+ * on the thread that invalidated one, so it shows which protectors this V8 has.
+ */
+const CONTROL_WORKER = `
+  const tf = new Function('f', 'return %ActiveTierIsTurbofan(f);');
+  let fin = null;
+  try { fin = new Function('%FinalizeOptimization();'); } catch { /* calls alone */ }
+  const warm = (f, a) => { for (let i = 0; i < 1 << 20 && !tf(f); i++) { f(a); if ((i & 1023) === 1023 && fin) fin(); } return tf(f); };
+  const ta = new Float32Array(64);
+  const probe = new Function('a', 'let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s;');
+  const made = warm(probe, ta);
+  for (let i = 0; i < 1000; i++) probe(ta);
+  const before = tf(probe);
+  const b = new ArrayBuffer(8); structuredClone(b, { transfer: [b] });
+  probe(ta);
+  const afterDetach = tf(probe);
+  const arr = [1, 2, 3, 4];
+  const mapper = new Function('a', 'return a.map((x) => x + 1).length;');
+  const mapperMade = warm(mapper, arr);
+  Object.defineProperty(Array.prototype, 'constructor', { value: function NotArray() {}, configurable: true, writable: true });
+  mapper(arr);
+  postMessage({ made, before, detached: b.byteLength === 0, afterDetach, mapperMade, mapperAfterSpecies: tf(mapper) });`;
+let control = { observable: false };
+async function protectorControl() {
+  const page = await browser.newPage();
+  try {
+    await page.route('http://qa-control.test/**', (route) => (new URL(route.request().url()).pathname === '/w.js'
+      ? route.fulfill({ contentType: 'text/javascript', body: CONTROL_WORKER })
+      : route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>protector control</title>' })));
+    await page.goto('http://qa-control.test/');
+    await browser.startTracing(page, { categories: ['v8', '__metadata'] });
+    const w = await page.evaluate(() => new Promise((ok) => {
+      const w = new Worker('/w.js', { type: 'module', name: 'protector-control' });
+      w.onmessage = (e) => { ok(e.data); w.terminate(); };
+      w.onerror = (e) => ok({ error: e.message || 'error event' });
+      setTimeout(() => ok({ error: 'timeout' }), 60000);
+    }));
+    const trace = JSON.parse((await browser.stopTracing()).toString());
+    const events = trace.traceEvents ?? trace, threads = new Map();
+    for (const e of events) if (e.ph === 'M' && e.name === 'thread_name') threads.set(`${e.pid}:${e.tid}`, e.args?.name);
+    const invalidated = events.filter((e) => e.name === 'V8.InvalidateProtector').map((e) => `${e.args?.['protector-name']} (${threads.get(`${e.pid}:${e.tid}`) ?? 'thread?'})`);
+    return { ...w, invalidated, technique: w.mapperMade === true && w.mapperAfterSpecies === false,
+      observable: w.made === true && w.before === true && w.detached === true && w.afterDetach === false };
+  } finally { await page.close(); }
+}
 /** the worker isolate's protector probe and kernels (debug.verify), and the page's own probe (reported only) */
 async function protector(page, when) {
   const r = await page.evaluate(async () => {
     const w = await window.__metropolis.city.host.debugVerify();
     return { ...w, page: window.__qaPageProbe ? window.__qaPageProbe() : null };
   }).catch((e) => ({ error: String(e) }));
-  check(`protector: the worker's probe intact ${when}`, r.protector === true, JSON.stringify(r));
+  if (control.observable) check(`protector: the worker's probe intact ${when}`, r.protector === true, JSON.stringify(r));
+  else {
+    // the control: a detach deoptimizes nothing in this V8, so the probe reads intact whatever ran. What is checked is
+    // that the worker isolate made its probe (natives syntax reached it, the dev flag did, and it took TurboFan code)
+    check(`protector: the worker made its probe ${when}`, r.protector === true || r.protector === false, JSON.stringify(r));
+    log('NOTE', `protector ${when}: not observable in this browser (the control: a detach does not deoptimize the probe), so ${JSON.stringify(r.protector)} is not evidence`);
+  }
   return r;
 }
 /** counts in the replica: what the tools change */
@@ -191,30 +250,50 @@ async function setSpeed(page, n) {
 
 /** §5.4: each command through the real tools (synthetic pointer events), checked by its effect in the replica */
 async function tools(page) {
+  // every command the tools post, with its ack (the FAIL lines show what the worker said)
+  await page.evaluate(() => {
+    const h = window.__metropolis.city.host, post = h.post.bind(h);
+    window.__qaAcks = [];
+    h.post = (op, args, o) => {
+      const t = post(op, args, o), e = { op, args: JSON.stringify(args).slice(0, 80) };
+      window.__qaAcks.push(e);
+      t.done.then((r) => { e.ok = r?.ok ?? true; if (r?.reason) e.reason = r.reason; if (r?.cost) e.cost = r.cost; }, (err) => { e.error = String(err).slice(0, 120); });
+      return t;
+    };
+  });
   const plan = await dragPlan(page);
   log('drag plan', plan);
   const [cx, cy] = [(plan.a[0] + plan.b[0]) / 2, plan.a[1] + 40];
   const step = async (name, tool, key, dir, act) => {
-    const before = await counts(page);
+    const before = await counts(page), from = await page.evaluate(() => window.__qaAcks.length);
     await selectTool(page, tool);
     await act();
     const ok = await settled(page, key, before[key], dir);
     await page.keyboard.press('Escape');
-    const after = await counts(page);
+    const after = await counts(page), acks = await page.evaluate((n) => window.__qaAcks.slice(n, n + 6), from);
     await noCrash(page, `tools: ${name}`);
-    check(`tools: ${name}`, ok && after.pending === 0, JSON.stringify({ [key]: [before[key], after[key]], pending: after.pending }));
+    check(`tools: ${name}`, ok && after.pending === 0, JSON.stringify({ [key]: [before[key], after[key]], pending: after.pending, acks }));
     return after;
   };
   await step('a road drag', 'net:2', 'roads', 1, () => drag(page, plan.a, plan.b));
   await step('a zone drag', 'zone:1', 'zoned', 1, () => drag(page, plan.z0, plan.z1));
   await step('a power line drag', 'power', 'power', 1, () => drag(page, [cx - 120, cy - 150], [cx + 120, cy - 150]));
   await step('a park plopped where its preview is ok', 'plop:park_small', 'parks', 1, async () => {
-    // the tool's own preview (PlopTool.res) on hover picks the spot: the plop is checked, not the search
-    for (const [dx, dy] of [[-60, 40], [-120, 60], [-160, 0], [0, 110], [-80, 120], [60, 130], [-200, 80], [120, -110], [-40, -90], [200, 40]]) {
-      await page.mouse.move(cx + dx, cy + dy, { steps: 3 });
-      await sleep(250);
-      if (await page.evaluate(() => window.__metropolis.city.scene.tools.current.res?.ok === true)) { log('plop spot', [dx, dy]); break; }
+    // the tool's own preview (PlopTool.res) on hover picks the spot: the plop is checked, not the search. Moves are
+    // coalesced into the next frame (seconds apart on SwiftShader), so each candidate waits until the preview was made
+    // for that very pointer; the candidates keep off the road, the zone, the power line and the brushes' ground
+    let found = null;
+    for (const [dx, dy] of [[-220, 40], [-200, 110], [-260, -20], [-180, 150], [-60, 150], [0, 160], [-240, -100], [-100, -100], [-300, 60], [60, 170]]) {
+      const [x, y] = [cx + dx, cy + dy];
+      await page.mouse.move(x, y, { steps: 3 });
+      const res = await page.waitForFunction(([px, py]) => {
+        const t = window.__metropolis.city.scene.tools.current, lp = t.lastPointer;
+        return lp && lp.clientX === px && lp.clientY === py && t.res ? { ok: t.res.ok, reason: t.res.reason ?? null } : null;
+      }, [x, y], { timeout: 60000, polling: 100 }).then((h) => h.jsonValue(), () => null);
+      if (res?.ok) { found = [dx, dy]; break; }
+      log('plop candidate', [dx, dy], res);
     }
+    log('plop spot', found);
     await page.mouse.down(); await sleep(120); await page.mouse.up();
   });
   await step('part of the zone dezoned', 'dezone', 'zoned', -1, () => drag(page, plan.z0, [plan.z0[0] + 60, plan.z0[1] + 30]));
@@ -264,7 +343,7 @@ async function heldBrush(page, cx, cy) {
     await sleep(300);
     await page.mouse.down();
     const t0 = Date.now();
-    while (Date.now() - t0 < 30000 && (tilt = await cellInfo(spot.cell)).firstCost < 2) await sleep(150);
+    while (Date.now() - t0 < 30000 && (tilt = await cellInfo(spot.cell)).firstCost < 1) await sleep(150);
     await page.mouse.up();
     await waitHost(page, () => (window.__metropolis.city.host.pending?.count ?? 0) === 0, null, 30000).catch(() => undefined);
     await sleep(1500);
@@ -286,11 +365,12 @@ async function heldBrush(page, cx, cy) {
     }
     return { funds: scene.host.state.funds };
   });
-  const t0 = Date.now();
+  const t0 = Date.now(), ackFrom = await page.evaluate(() => window.__qaAcks.length);
   await page.mouse.down();
-  // hold until an application was refused after applied ones: the brush reached flat
+  // hold until an application was refused after applied ones: the brush reached flat (one application per frame at
+  // most, and a 256² city on SwiftShader draws a frame every few seconds)
   const flat = await page.waitForFunction(() => { const t = window.__metropolis.city.scene.tools.current; return t.stroke?.spent > 0 && t.stroke?.failed; },
-    null, { timeout: 60000, polling: 100 }).then(() => true, () => false);
+    null, { timeout: 240000, polling: 200 }).then(() => true, () => false);
   const held = Date.now() - t0;
   await page.evaluate(() => { window.__qaUp = true; });
   await page.mouse.up();
@@ -303,7 +383,8 @@ async function heldBrush(page, cx, cy) {
   });
   await page.keyboard.press('Escape');
   for (let i = 0; i < 2; i++) await page.keyboard.press('BracketRight');
-  const detail = JSON.stringify({ spot, tip, heldMs: held, spent: before.funds - r.funds, ...r });
+  const applied = await page.evaluate((n) => { const a = window.__qaAcks.slice(n).filter((e) => e.op === 'terraform'); return { n: a.length, last: a.slice(-2) }; }, ackFrom);
+  const detail = JSON.stringify({ spot, tip, heldMs: held, spent: before.funds - r.funds, applications: applied, ...r });
   check('tools: a held level brush reaches flat: one release sound, no error, no toast', flat && r.release.length === 1 && r.release[0] === 'terraform' && r.toasts.length === 0 && r.pending === 0, detail);
 }
 
@@ -329,7 +410,12 @@ async function main() {
   log('server', base, DEV ? '(dev)' : '(production build)');
   // natives syntax: the protector probes (the worker's src/worker/protectorProbe.ts, the page's below); V8 flags reach
   // every isolate of the renderer, the worker's included
-  browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--allow-natives-syntax'] });
+  // --trace-protector-invalidation: V8 records each protector it invalidates (the control's Chrome trace reads them)
+  browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--allow-natives-syntax --trace-protector-invalidation'] });
+  log('browser', browser.version());
+  control = await protectorControl().catch((e) => ({ observable: false, error: String(e).slice(0, 200) }));
+  check('control: the probe technique works in this browser (TurboFan code that depends on a protector deoptimizes when it goes)', control.technique === true && control.made === true && control.before === true, JSON.stringify(control));
+  log(control.observable ? 'PASS' : 'NOTE', `control: a detach deoptimizes the probe (the worker's probe is evidence): ${control.observable}`, JSON.stringify({ invalidated: control.invalidated }));
 
   /** the simulation worker's script throws on load (other workers, such as the LOD builder's, are left alone) */
   const failingWorker = () => {
@@ -357,15 +443,12 @@ async function main() {
     try {
       const ta = new Float32Array(64);
       const probe = new Function('a', 'let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s;');
-      new Function('f', 'a', '%PrepareFunctionForOptimization(f); f(a); f(a); %OptimizeFunctionOnNextCall(f); f(a);')(probe, ta);
-      const status = new Function('f', 'return %GetOptimizationStatus(f);');
-      // as src/worker/protectorProbe.ts: only TurboFan code (bit 64) deoptimizes on a detach; warm Maglev code up
-      let s0 = status(probe);
-      for (let i = 0; i < 1 << 19 && !(s0 & 64); i++) { probe(ta); if ((i & 255) === 0) s0 = status(probe); }
-      s0 = status(probe);
-      if (!(s0 & 64)) return; // no probe: reported as null
+      // as src/worker/protectorProbe.ts: warmed up until TurboFan code takes the loop, which deoptimizes on a detach
+      const turbofan = new Function('f', 'return %ActiveTierIsTurbofan(f);'), finalize = new Function('%FinalizeOptimization();');
+      for (let i = 0; i < 1 << 20 && !turbofan(probe); i++) { probe(ta); if ((i & 1023) === 1023) finalize(); }
+      if (!turbofan(probe)) return; // no probe: reported as null
       let intact = true;
-      window.__qaPageProbe = () => { probe(ta); intact = intact && status(probe) === s0; return intact; };
+      window.__qaPageProbe = () => { probe(ta); intact = intact && turbofan(probe); return intact; };
       setInterval(() => window.__qaPageProbe(), 1000);
     } catch { /* no natives syntax */ }
   });
