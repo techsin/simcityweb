@@ -114,16 +114,20 @@ road-facing land a player could zone; the bot's patterns leave it.
 ## Cloud carry-over (Nov 3)
 
 The desktop was unavailable (NOTE-044), so the cloud finishes this lane on `cloud/t037b`: `local/R1-guide-b`
-(`ba37339`) with dev merged in four times:
+(`ba37339`) with dev merged in six times:
 - `67b567d` (dev `5b12abe`): advisors.ts and queries.ts merged without conflicts, T037d's `taxHigh` hunk and this
   lane's zone rules being separate;
 - `00b96cb` (dev `48991d7`: B3 and T036 step 2): no conflicts; B3 moves the advisors' month-boundary work, and
   `585bde4` adds a test that its day-29 prediction agrees with the tick after the player zones more (F3's reset);
 - `954306d` (dev `97f1a9c`, NOTE-045), `f077faf` (dev `fb1531f`, NOTE-046) and `5f634f6` (dev `90d1bad`, NOTE-047):
-  docs only, so src, tests and tools at the head are byte-identical to `954306d`, where the full gates ran.
+  docs only;
+- `533178a` (dev `821a8d6`: T038, merged with no conflicts): src/render, tests/render and a bench tool only, none of
+  this lane's files and nothing the bot runs (src/sim, src/worker, src/game, src/save, src/core and tools/simbot.ts are
+  byte-identical between dev `97f1a9c` and `821a8d6`). The full vitest and the lane's bot ran again at this head.
 
-tsc is clean at `67b567d`, `954306d`, `f077faf` and `5f634f6`. NOTE-045 to NOTE-047 keep T037b on the cloud (the desktop is back, but must not touch
-it); NOTE-047 moves T037a and T037e to the desktop, T037e to start once this lane is in dev.
+tsc is clean at `67b567d`, `954306d`, `f077faf`, `5f634f6` and `533178a`. NOTE-045 to NOTE-047 keep T037b on the
+cloud (the desktop is back, but must not touch it); NOTE-047 moves T037a and T037e to the desktop, T037e to start once
+this lane is in dev.
 
 ### Gap list (required against done, written before any new work)
 
@@ -207,7 +211,7 @@ the runs at `954306d`; the head's code is byte-identical to it).
 | LG-05 acceptance 1: on y55, regenerated, the card within a month, no zoneC / zoneI under 1 % | **not reached**: y55 has 8.10 % free land, so the card rightly does not fire (decision 3); the built-out behaviour itself is met on a built-out map (unit tests; browser C1-C7) |
 | LG-05 acceptance 2: on y15 it never fires | met (51.12 % free; no built-out issue after a month) |
 | LG-05 acceptance 3: each button opens the right tool or view (UI test) | met (`adviceActions.test.ts`, `rciGuide.test.ts`; browser C5, C7) |
-| LG-05 acceptance 4: the scan's cost unchanged | SCAN_COST_PLACEHOLDER |
+| LG-05 acceptance 4: the scan's cost unchanged | **met in substance** (decision 9): no new pass, one more test in the scan's existing unzoned-tile branch (plus F3's per-block family counts). The day-28 scan alone (`scratchpad/t037b/scanbench.mts`: `advisorsSystem.daily` on day 28, the scan forced fresh), median ms, lane / dev: bot256_s7_y60 2.497 / 2.502 and 2.483 / 2.484 (no change); dense1m_s7, eight alternating pairs, median ratio **1.05** (1.18, 1.01, 0.73, 1.02, 1.04, 1.07, 1.07, 1.06), about 0.1 ms on a 1.7-2.0 ms scan that runs once a month (`m3_scanbench.log`, `m4_scanbench2.log`) |
 | The badge's recount (UI thread, at most once a real second) | ROOM_COST_PLACEHOLDER |
 | Browser checklist (below) | **19 of 19 checks pass** (C0 is the setup), "Connect a highway" included |
 | §8.1's round-1 verifier list | not this sub-lane's: it runs once every GUIDE and META round-1 item is in |
@@ -239,13 +243,20 @@ same as now. Logs: `scratchpad/t037b/gates/m3_nc.log`, `m3_ncdev.log`; before B3
   services at homes −5.4, air pollution −3.6 to −4.7, and from year 7 unemployment −12.0 to −12.8.
 - **§8.1's newcomer target** (2,500 by year 3 on Easy, by year 4 on Medium) is lower than FH-03's 5,000; it is missed
   too, by little: 2,302 (Easy, year 3, −8 %) and 2,348 (Medium, year 4, −6 %).
-- **Why the town stops at about 2,200 (a monthly trace of the Medium run, `scratchpad/t037b/ncdiag.mts`):** the cue is
-  no longer what is missing. The residential room is 0 every month and zoneR posts every month through year 2.9. Then
-  jobs run out: the industrial room stays at 9 empty front lots all ten years while industrial demand is 0.5-0.8 (on
-  Medium the town has 0 industrial jobs at year 10), so zoneI never fires (its rule needs fewer than 8 lots) and the
-  newcomer never zones industry. Unemployment climbs from 0 % (year 2.4) to 12 % (year 3) and 20-25 % (years 3.75-4), and
-  residential demand falls under 0.5 from year 2.9, which ends the zoneR cue. The newcomer profile ignores the
-  unemployment warning ("Zone more commercial and industrial land"), which posts from year 2.8.
+- **Why the town stops at about 2,350** (a monthly trace of the Medium run's first five years at the final code,
+  `scratchpad/t037b/ncdiag.mts`, log `gates/m4_ncdiag.log`): the cue is no longer what is missing.
+  - Homes: the residential room is 0 every month and zoneR posts every month until year 3.1; the newcomer answers it.
+  - Industry: zoneI posts in years 0.17-0.25 and 1.08-1.17, while fewer than 8 industrial lots are empty. After that the
+    industrial room stays at 11-12 empty front lots for good, with industrial demand 0.5-0.8, so zoneI never fires
+    again (its rule needs fewer than 8 lots), and those lots never fill. The game's own `lotsSmallI` advice posts in
+    years 1.25-1.33 ("your empty industrial lots are odd tiles … too small for factories").
+  - Jobs: unemployment is 0 % until year 2.2, 5-8 % in years 2.3-3.0, 23.5 % at year 3.3 and 14-15 % from year 3.5 to 5.
+    At year 10 the town has 580 jobs (156 of them industrial) for 2,220 residents.
+  - Residential demand falls under 0.5 at year 3.1 (0.46, then 0.27-0.39), which ends the zoneR cue; population is
+    flat at about 2,350 from year 3.2.
+  - The unemployment warning ("Zone more commercial and industrial land") posts from year 3.0; the newcomer profile
+    ignores it.
+  - Approval on Medium falls with crime (crime at homes −12.0 at year 1 to −17.3 at year 10, the top term every year).
 
 ### LG-05 on the 256×60 seed-7 checkpoints, regenerated here
 
@@ -305,15 +316,17 @@ hangs just under the segment (`f9fd2a9`).
 
 ### Decisions (for the lead and the owner; conservative readings taken, nothing retuned)
 
-1. **FH-03's newcomer gate (5,000 by year 4 on Medium) stays not met: 2,192.** The cue now works (the newcomer zones on
-   it every month while it holds, 22× dev's year-4 town); what stops the town is jobs: its industrial patches never
-   fill (9 empty front lots, industrial demand 0.5-0.8, 0 industrial jobs on Medium), unemployment reaches 12-25 % and
-   residential demand drops under 0.5. This lane did not retune balance or the bot. Options:
-   - (a) take §8.1's newcomer target (2,500 by year 4 on Medium) as FH-03's too: missed by 12 % (2,192);
+1. **FH-03's newcomer gate (5,000 by year 4 on Medium) stays not met: 2,348** (dev 100; the desktop's pre-F3 run 283).
+   The cue now works: the newcomer zones homes on it every month while it holds. What stops the town is jobs: after
+   year 1.2 its industrial lots stay empty (11-12 empty front lots with industrial demand 0.5-0.8, and the game's
+   `lotsSmallI` advice says they are too small for factories), so zoneI stays silent, unemployment reaches 14-24 % from
+   year 3.3, and residential demand drops under 0.5, which ends the cue. This lane did not retune balance or the bot.
+   Options:
+   - (a) take §8.1's newcomer target (2,500 by year 4 on Medium) as FH-03's too: missed by 6 % (2,348);
    - (b) have the FH-10 profile also answer the unemployment warning (SIM lane, tools/simbot.ts): it already says
      "zone more commercial and industrial land", which is what the town needs;
-   - (c) find why the newcomer's 4×4 IndMed patches stay empty with industrial demand 0.5-0.8 (a lot-fit or utility
-     question for SIM; `scratchpad/t037b/ncdiag2.mts` reads the game's own lot explainer on them);
+   - (c) find why the newcomer's industrial lots stay empty with industrial demand 0.5-0.8 (a lot-fit question for SIM:
+     `lotsSmallI` posts on them; `scratchpad/t037b/ncdiag2.mts` reads the game's own lot explainer);
    - (d) a bigger patch per cue in the newcomer profile.
 2. **FH-04's inherited gate stays not met** (Easy approval 39.0-39.7 % in years 2-6, 29.3-30.3 % from year 7; year 6
    Easy / Medium = 2,284 / 2,324 = 0.98×). By D3 that brings in LG-09's extra Easy rules; the candidate terms are the
@@ -343,3 +356,7 @@ hangs just under the segment (`f9fd2a9`).
    toasts and the popover's built-out line once this is in dev, alongside T037a / T037e's browser checks (same panels);
    and decision 1's options (b)-(d), which are SIM / bot work (tools/simbot.ts, lot fit) suited to a Codex lane in
    round 2's SIM queue. Both are the lead's call; this lane did neither.
+9. **LG-05's "the scan's cost is unchanged"** is read as the plan words it, "one more counter in the existing pass":
+   there is no new pass, and the counter costs about 0.1 ms (+5 %) on dense1m's monthly scan and nothing measurable on
+   bot256's (the gates table). The lead may want the free count moved behind a cheaper test if a stricter reading is
+   meant; this lane left it in the scan, where the plan puts it.
