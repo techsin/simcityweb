@@ -1,6 +1,7 @@
-# B3: spreading the month-boundary work (design, rev 3: as built)
+# B3: spreading the month-boundary work (design, rev 5: as built, merged onto dev)
 
-Design for docs/WASM_PLAN.md row B3 and docs/WORKER_DESIGN.md §6 row S4. Base: a59f08f, branch `b3-month-spread`.
+Design for docs/WASM_PLAN.md row B3 and docs/WORKER_DESIGN.md §6 row S4. Base: a59f08f, branch `b3-month-spread`;
+rev 5: merged onto dev `44f39b1`, branch `cloud/b3`.
 It is built on the three B3 maps (tourism; population, EQ/HQ and advisors; the whole month day). The numbers below
 come from their runs on this machine: wall clock, idle-gated, interleaved B/W, base code.
 
@@ -130,6 +131,32 @@ dropped on its own), and this revision.
     0.980 and its attractiveness +0.02 points (`implementer-fix/tj/`). Seed 7's 0.764 is the low end of the chaos.
   - The other findings of verify-b (off-tick deopt days, max / p99, `totalMsPerDay`, tourism jobs in the young town, L4)
     need no B3 change; their readings are the lead's (§8).
+
+**Rev 5 (the cloud carry-over, Nov 3)** merges B3 onto dev and applies L7. Branch `cloud/b3`; the gap list, every
+gate and the evidence are in docs/dev/reports/cloud-B3.md.
+- **Merged onto dev `44f39b1`** (`422bdf0`: B1, W0–W1.1, T029, FH-04 and the J-fixes as merged). Dev's tourism.ts,
+  advisors.ts and population.ts equal `a59f08f`'s, so B3's code merged unchanged. This file (dev held rev 2) and
+  `balance-baseline.json` (B1's `b1` key next to B3's `b3`) conflicted; both sides were kept.
+- **L7 is in** (`1db0c5d`, approval.ts): a resumed init keeps the saved tourism term (finite), else computes it as
+  before. §7 gains a test: a static town saved on days 56–59 keeps the tick's approval terms and raw value right after
+  each load (it fails without the fix, on day 56); test 2 compares them right after each of its 30 loads too (it fails
+  without the fix on day 31, the base's removal case). The §4 and §10 L7 items are closed.
+- **The bot on dev changes by design, from T2 and P3 alone:** 128×15 seed 7 ends 2015 at 192,899
+  [61124, 93804, 37971], against dev's 196,101 [59288, 95301, 41512] (−1.6 %). Dev with every B3 file except T2's
+  tourism.ts (T1's instead) and P3's population.ts gives dev's output line for line; dev with only T2's and P3's files
+  gives B3's line for line. So A0, T1, A1 (after B1, §3.2 O9), the fix round and L7 change nothing on the bot.
+- **Digests on dev** (monthbench `--digest`, 120 days at design cadence, two processes each): dense1m `f341ae74…18be`,
+  bot256 `b3081164…d504`, equal in both processes (dev: `a93bb936…3571`, `f561f4e9…58aa`; the no-T2/P3 tree equals dev
+  on both).
+- **Timing on dev** (L0; W and dev interleaved, 5 runs a side at design cadence, 3 in frames): the worst warm month is
+  4.23 (dense1m design), 6.98 (bot256 design), 5.62 / 9.66 (dense1m frames: unit / month frame), against dev's 14.04,
+  13.79, 10.84 / 9.64. Dom 26 ≤ 3.8 and dom 29 ≤ 8.5 everywhere. **Dom 28 misses A0's gate at design cadence** in both
+  trees (W 16.2 / 10.3, dev 13.8 / 8.4; frames 5.8 / 6.5): a JIT lottery (one state's day 0.9–17.8 ms across runs), so L3.
+- **The balance procedure on dev passes** (256×60 seed 7: 1,513,835 at year 60, 0.991× b1, every year ≥ 0.978×; seed
+  11 ≥ 0.947×; approval, funds, EQ and `totalMsPerDay` against a same-session dev run all pass). The `b3` rows of
+  `balance-baseline.json` are re-recorded from the merged tree and `reference` is `b3`. Tourism jobs within ±30 % of dev:
+  41 of 46 years from year 15 on seed 7 and 43 of 46 on seed 11, the misses in opposite directions; six 128×15 seeds give a
+  summed W/B geometric mean of 1.074. Bot chaos, as §8 expected.
 
 ## 1. The decision
 
@@ -553,7 +580,8 @@ Measured (rev 3):
   the pass of day 26. In test 2's town (a removal on day 30) it differs right after 29 of the 30 loads, in the base and
   in B3 alike. It is display-only (`approvalBreakdown`, the TopBar's "heading for" tooltip; `stats.approval` is kept)
   and lasts until the next tick: in B3 the whole city on day 91 equals the uninterrupted game's from all 30 saves. The fix
-  belongs in `approval.ts` (L7: keep the saved tourism term on a resumed init; with it 0 of the 30 differ).
+  belongs in `approval.ts` (L7: keep the saved tourism term on a resumed init; with it 0 of the 30 differ). Rev 5:
+  applied (`1db0c5d`).
 - (Rev 4.) **The advisors' month scans do not depend on the order of `rt.plopped` / `rt.growables`** (swap-removes in a
   running game, Map order after a load): the facility scan lists its buildings in ascending id and takes the lowest
   unpowered civic id as `civicFirst`; the outage scan and the bus-stop place take the lowest id among equals. A game
@@ -752,6 +780,9 @@ documented in the code:
    `rt.growables` were reordered by swap-removes and its loaded copy give the same month scans and predicted places. The
    facility lists are in ascending id, `civicFirst` is the lowest, and the outage place is the lowest id of equally
    occupied homes. It fails on bed0ebf.
+15. (Rev 5, tests/sim/monthSpread.test.ts.) **Approval right after a load on dom 26–29** (L7): a static town saved on
+   days 56–59 keeps the approval terms and raw value its tick of day 30 scored, as the uninterrupted game does; test 2
+   compares them right after each of its loads as well. Both fail without the approval.ts fix.
 
 **Changed in rev 4:** `tests/infra/emergencyBot.test.ts`, EM-1 normal play. The towns 3, 7, 11 and 13 (6 years each) run
 in that order until 2 prompts were raised in all, and each town's prompts must hold (every counted one raised, at most
@@ -886,8 +917,8 @@ Judge (gameplay R4, the statistic the lead is asked to approve):
 - **L5, the autosave on the main-thread month frame.** 50–130 ms at 1M. This belongs to W1.3.
 - **L6, small items.** Demand's caps refresh on dom 0 (0.4–1.5 ms, demand.ts). The inspector's "(next month)" wording
   (facilities.ts).
-- **L7 (rev 4), approval's resumed init** (approval.ts; §4). On a resumed init keep the saved tourism pride instead of
-  recomputing it from today's tourists: `b3work/implementer-fix/approval/approval-resumed-tourism.patch`, 4 lines. In
+- **L7 (rev 4; rev 5: applied in `1db0c5d`), approval's resumed init** (approval.ts; §4). On a resumed init keep the
+  saved tourism pride instead of recomputing it from today's tourists: `b3work/implementer-fix/approval/approval-resumed-tourism.patch`, 4 lines. In
   test 2's town the approval terms right after a load then equal the uninterrupted game's on all 30 saves (29 of 30
   differ without it, in the base and in B3), and the whole city on day 91 still does (`approval/out_*.txt`). The other
   terms are recomputed from a full survey at load as before; keeping them too would need the survey's coverage, which
