@@ -5,9 +5,9 @@
  * options, else OpenAdvice.ref ?? id, for an Advisors card (src/ui/panels/AdvisorsPanel.ts). An id without an entry
  * offers no button. An action moves the camera to the advice's place first when it has one, then opens its tool or data
  * view; a tool pulses its toolbar category for a few seconds (the onboarding coach mark's look, PULSE_CLASS: a class of
- * its own, which the onboarding card's coach updates leave alone). emptyFrontTiles: the room a
- * family has left, for the "no room to grow" card's count (and FH-03's RCI "+ zone" badge once the TopBar is split:
- * demand above 0.5 with fewer than 12 such tiles — 8 for commercial and industrial, as the zone rules count).
+ * its own, which the onboarding card's coach updates leave alone). zoneRoom / emptyFrontTiles: the room a family has
+ * left, for the "no room to grow" card's count and FH-03's RCI "+ zone" badge (src/ui/topbar/rciGuide.ts: demand above
+ * 0.5 with fewer than 12 such tiles), and the free land of LG-05's built-out test.
  */
 import { Network, Overlay, Zone, isRoad } from '../core/types';
 import type { GameContext } from '../game/context';
@@ -136,21 +136,38 @@ export function issueButtons(o: Pick<OpenAdvice, 'id' | 'ref' | 'options' | 'x' 
   return out;
 }
 
+/** the layers zoneRoom reads (all mirrored to the replica: src/worker/protocol.ts PRIMARY_LAYERS) */
+type RoomLayers = Pick<CityState, 'size' | 'cells' | 'zone' | 'building' | 'network' | 'water' | 'powerLines'>;
+/** zoneRoom's counts: empty road-facing lots per family (0 R, 1 C, 2 I) and the free land */
+export interface ZoneRoom {
+  front: [number, number, number];
+  /** unzoned tiles with no building, network, water or power line: the advisors' ZoneScan.free (LG-05's built-out test) */
+  free: number;
+}
 /**
- * FH-03: the room a family (0 R, 1 C, 2 I) has left — empty zoned tiles facing a road, with no network, water or power
- * line on them: what growth counts as room (growth.ts rebuildCandidates; the advisors' zone rules read that count). One
- * pass over the mirrored layers
+ * FH-03 / LG-05: in one pass over the mirrored layers, the room each family (0 R, 1 C, 2 I) has left — empty zoned tiles
+ * facing a road, with no network, water or power line on them: what growth counts as room (growth.ts rebuildCandidates;
+ * the advisors' zone rules read that count) — and the free land the advisors' zone scan counts (advisors.ts scanZones)
  */
-export function emptyFrontTiles(st: Pick<CityState, 'size' | 'cells' | 'zone' | 'building' | 'network' | 'water' | 'powerLines'>, fam: number): number {
+export function zoneRoom(st: RoomLayers): ZoneRoom {
   const N = st.size, C = st.cells, zone = st.zone, bld = st.building, net = st.network, water = st.water, lines = st.powerLines;
-  const lo = fam === 0 ? Zone.ResLow : fam === 1 ? Zone.ComLow : Zone.IndAg, hi = lo + 2;
   const road = (i: number) => isRoad(net[i] as Network);
-  let n = 0;
+  const front: [number, number, number] = [0, 0, 0];
+  let free = 0;
   for (let i = 0; i < C; i++) {
+    if (bld[i] >= 0 || net[i] !== Network.None || water[i] || lines[i]) continue;
     const zn = zone[i];
-    if (zn < lo || zn > hi || bld[i] >= 0 || net[i] !== Network.None || water[i] || lines[i]) continue;
+    if (zn === Zone.None) { free++; continue; }
+    if (zn < Zone.ResLow || zn > Zone.IndHigh) continue;
     const x = i % N;
-    if ((x > 0 && road(i - 1)) || (x < N - 1 && road(i + 1)) || (i >= N && road(i - N)) || (i + N < C && road(i + N))) n++;
+    if ((x > 0 && road(i - 1)) || (x < N - 1 && road(i + 1)) || (i >= N && road(i - N)) || (i + N < C && road(i + N))) {
+      front[zn <= Zone.ResHigh ? 0 : zn <= Zone.ComHigh ? 1 : 2]++;
+    }
   }
-  return n;
+  return { front, free };
+}
+
+/** FH-03: the room a family (0 R, 1 C, 2 I) has left (zoneRoom's front count) */
+export function emptyFrontTiles(st: RoomLayers, fam: number): number {
+  return zoneRoom(st).front[fam] ?? 0;
 }

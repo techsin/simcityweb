@@ -2,13 +2,16 @@
 import { DEV_TYPE_LABELS, DevType } from '../core/types';
 import { watchFor, type WatchHandle, type QueryResult } from '../worker/SimHost';
 import type { GameContext } from '../game/context';
-import { clear, h, setText, toggleClass } from './dom';
+import { clear, escapeHtml, h, setText, toggleClass } from './dom';
 import { icon } from './icons';
 import { compact, dayLabel, hourLabel, money, moneySigned, num, signClass } from './format';
 import { approvalBreakdown } from '../sim/economy/approval';
 import { econData } from '../sim/economy/runtime';
 import type { PanelsApi } from '../game/context';
 import { NO_RESIDENTS_TEXT, approvalFix, approvalFixHint, approvalHud, newTownFooter } from './topbar/approvalGuide';
+import { ZONE_ADVICE, builtOutIssue, zoneBadge } from './topbar/rciGuide';
+import { adviceAction, issueButtons, zoneRoom, type ZoneRoom } from './adviceActions';
+import type { OpenAdvice } from '../sim/economy/advisors';
 
 export function sumValues(r: Record<string, number> | undefined): number {
   let s = 0;
@@ -48,6 +51,8 @@ const RCI_DEFS: { key: 'R' | 'C' | 'I'; color: string; devs: DevType[] }[] = [
 ];
 
 const FAMILY_NAMES: Record<string, string> = { R: 'Residential', C: 'Commercial', I: 'Industrial' };
+/** FH-03: the "+ zone" badge recounts the empty lots at most this often (real ms; the bar updates on every UI tick) */
+const ZONE_RECOUNT_MS = 1000;
 /** where to look for cap relief (toolbar category to open) */
 const CAP_TARGET: Record<string, { category: string; label: string; icon: string }> = {
   R: { category: 'parks', label: 'Parks', icon: 'park' },
@@ -125,6 +130,13 @@ export class TopBar {
   private capHintsEl!: HTMLElement;
   private capSig = '';
   private hintsWatch: WatchHandle<QueryResult<'capHints'>> | null = null;
+  /** FH-03: the RCI segment's "+ zone" badge, the family its click zones (-1: hidden) and the room counted last (the
+   *  layers recounted at most once a real second: zoneRoom is one pass over the map) */
+  private zoneBadgeEl!: HTMLElement;
+  private zoneFam = -1;
+  private zoneMemo: { st: unknown; at: number; room: ZoneRoom } | null = null;
+  /** LG-05: the advisors' open issues while the RCI popover is open (its built-out line) */
+  private issuesWatch: WatchHandle<QueryResult<'advisorIssues'>> | null = null;
   /** RCI popover: what the neighbour cities add to demand (econData.regionTerms, WP4-1) */
   private regionEl!: HTMLElement;
   private regionSig = '';
@@ -184,7 +196,13 @@ export class TopBar {
       rci.appendChild(h('div', { class: 'rci-col' }, bar, h('span', { class: 'rci-l', style: { color: d.color } }, d.key)));
     }
     this.rciPop = this.buildRciPop();
-    const rciSeg = h('div', { class: 'hud-seg click rci-seg', title: 'RCI demand — click for details' }, rci, h('span', { class: 'rci-capdot' }), this.rciPop);
+    // FH-03: "+ zone" while a family wants in and has almost no empty lots; a click zones it (not the popover)
+    this.zoneBadgeEl = h('button', { class: 'rci-zone', type: 'button', style: { display: 'none' } }, '+ zone');
+    this.zoneBadgeEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.zoneFam >= 0) adviceAction(ZONE_ADVICE[this.zoneFam])?.run(this.ctx, null);
+    }, { signal: this.ctx.signal });
+    const rciSeg = h('div', { class: 'hud-seg click rci-seg', title: 'RCI demand — click for details' }, rci, h('span', { class: 'rci-capdot' }), this.zoneBadgeEl, this.rciPop);
     this.rciSeg = rciSeg;
     rciSeg.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('.rci-pop')) return;
@@ -302,13 +320,17 @@ export class TopBar {
     );
   }
 
-  /** "what to build" cards in the RCI popover — how players discover the cap / reward loop */
+  /** "what to build" cards in the RCI popover — how players discover the cap / reward loop; LG-05: a built-out city's
+   *  advice first, with its buttons */
   private renderCapHints(): void {
     const hints = this.capHints();
-    const sig = hints.map((x) => x.family + x.devs.join('.') + x.hint).join('|');
+    const out = builtOutIssue(this.issuesWatch?.value);
+    const sig = (out ? `B|${out.text}|${(out.options ?? []).map((o) => `${o.id}@${o.x},${o.z}`).join('/')}|${out.x},${out.z}\n` : '')
+      + hints.map((x) => x.family + x.devs.join('.') + x.hint).join('|');
     if (sig === this.capSig) return;
     this.capSig = sig;
     clear(this.capHintsEl);
+    if (out) this.capHintsEl.appendChild(this.builtOutHint(out));
     for (const hnt of hints) {
       const fam = RCI_DEFS.find((f) => f.key === hnt.family)!;
       const go = h('button', { class: 'btn sm', html: icon(CAP_TARGET[hnt.family].icon, 13) + `<span>${CAP_TARGET[hnt.family].label}</span>` });
@@ -325,6 +347,43 @@ export class TopBar {
         ),
         go,
       ));
+    }
+  }
+
+  /** LG-05: the built-out advice as a cap hint: its text and one button per option (src/ui/adviceActions.ts) */
+  private builtOutHint(out: OpenAdvice): HTMLElement {
+    const acts = h('div', { class: 'ch-acts' });
+    for (const b of issueButtons(out)) {
+      const btn = h('button', { class: 'btn sm', title: b.action.tip, html: icon(b.action.icon, 13) + `<span>${escapeHtml(b.action.label)}</span>` });
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.setRci(false);
+        b.action.run(this.ctx, b.at);
+      }, { signal: this.ctx.signal });
+      acts.appendChild(btn);
+    }
+    return h('div', { class: 'cap-hint built-out', style: { '--fc': '#ffd46b' } as Record<string, string> },
+      h('span', { class: 'ch-ico', html: icon('alert', 14) }),
+      h('div', { class: 'ch-body' }, h('div', { class: 'ch-t' }, 'The city is built out'), h('div', { class: 'ch-d' }, out.text)),
+      acts,
+    );
+  }
+
+  /** FH-03: show or hide the "+ zone" badge for the bars' demand (`dem`, per DevType) */
+  private updateZoneBadge(dem: number[]): void {
+    const st = this.ctx.state, now = performance.now();
+    let m = this.zoneMemo;
+    if (!m || m.st !== st || !(now >= m.at && now - m.at < ZONE_RECOUNT_MS)) m = this.zoneMemo = { st, at: now, room: zoneRoom(st) };
+    const b = zoneBadge(m.room, st.cells, RCI_DEFS.map((fam) => familyDemand(dem, fam.devs)));
+    this.zoneFam = b.fam;
+    const display = b.fam >= 0 ? '' : 'none';
+    if (this.zoneBadgeEl.style.display !== display) this.zoneBadgeEl.style.display = display;
+    if (b.fam < 0) return;
+    if (this.zoneBadgeEl.title !== b.title) this.zoneBadgeEl.title = b.title;
+    const fam = RCI_DEFS[b.fam].key;
+    if (this.zoneBadgeEl.dataset.fam !== fam) {
+      this.zoneBadgeEl.dataset.fam = fam;
+      this.zoneBadgeEl.style.setProperty('--fc', RCI_DEFS[b.fam].color);
     }
   }
 
@@ -361,8 +420,13 @@ export class TopBar {
   private setRci(open: boolean): void {
     if (open !== this.rciOpen) this.ctx.sound(open ? 'flyout' : 'flyoutClose');
     this.rciOpen = open;
-    if (open) this.hintsWatch ??= watchFor(this.ctx.host, 'capHints', {}, 'daily', this.ctx.signal);
-    else { this.hintsWatch?.dispose(); this.hintsWatch = null; }
+    if (open) {
+      this.hintsWatch ??= watchFor(this.ctx.host, 'capHints', {}, 'daily', this.ctx.signal);
+      this.issuesWatch ??= watchFor(this.ctx.host, 'advisorIssues', {}, 'monthly', this.ctx.signal);
+    } else {
+      this.hintsWatch?.dispose(); this.hintsWatch = null;
+      this.issuesWatch?.dispose(); this.issuesWatch = null;
+    }
     toggleClass(this.rciPop, 'open', open);
     if (open) this.update();
   }
@@ -491,6 +555,7 @@ export class TopBar {
     const segTitle = capFams.length ? `RCI demand — ${capFams.map((f) => FAMILY_NAMES[f]).join(', ')} capped · click for details` : 'RCI demand — click for details';
     if (this.rciSeg.title !== segTitle) this.rciSeg.title = segTitle;
     this.announceCaps(capFams);
+    this.updateZoneBadge(dem);
     if (this.rciOpen) {
       for (const s of this.subBars) {
         const v = dem[s.dev] ?? 0;
