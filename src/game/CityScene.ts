@@ -297,7 +297,7 @@ export class CityScene {
       world: () => this.world,
       objects: () => this.objects,
       settings: () => this.settings,
-      toast: (text, kind, cell, title) => this.toasts.show(text, kind, cell, title),
+      toast: (text, kind, cell, title, opts) => this.toasts.show(text, kind, cell, title, opts),
       sound: (n) => this.sound(n),
       audio: () => this.mods.audio,
       overlayRoot: this.uiRoot,
