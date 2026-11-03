@@ -1,4 +1,76 @@
-# T028r: worker acceptance harness review and loopback enablement
+# T028 report: the worker-mode acceptance harness (desktop, real GPU)
+
+## Final results (NOTE-047 item 1)
+
+**Verdict: done for loopback mode.**
+- The harness runs every acceptance item of the task through the real tools on the real GPU, and all of them pass on
+  `?simworker=loopback`.
+- Worker mode skips with a clear line until T034 (W1.2) is in dev; the journal restore waits for T039 (W1.3).
+- The harness also found a real bug outside its own code: Worker plan step S0 (J0) had never landed. It is fixed
+  separately in T059.
+
+Branch `local/T028-qa-worker`, history:
+- `c703887`: the Oct 27 Codex lane, on `a2578da`;
+- `28a4862`: dev `821a8d6` merged in, cleanly;
+- the review rounds: `8ef8f7c`, `f22933f`, `abb8ed1`.
+
+### Environment
+
+RTX 5070 Ti (driver 610.47), ANGLE D3D11, Playwright's Chromium 141.0.7390.37 with the real GPU, Windows 10 19045. The
+harness builds its own production bundle (vite build + vite preview).
+
+The V8 flags for the protector probe are
+`--js-flags=--allow-natives-syntax --no-maglev --no-optimize-on-next-call-optimizes-to-maglev`, recorded in every run's
+JSON.
+
+### Runs on the real GPU (round 3, `abb8ed1`)
+
+| Run | Tree | Result |
+|---|---|---|
+| `--host loopback` | the harness + T059 (J0) | **53 passed, 0 failed, 3 skipped** (the skips: no error card in a healthy build; the W1.3 journal; the --break-ack-only check) |
+| `--host local --w1` | the harness + T059 | **51 passed, 0 failed, 5 skipped** |
+| `--host loopback` | the harness on dev (no J0) | 51 passed, **2 failed**: "protector at end" and "protector after freeze": the main protector is intact at boot, then invalidated after LOD activity |
+| `--host local --w1` | the harness on dev | 49 passed, **2 failed**: the same two protector checks |
+| `--host loopback --only freeze` (round 2) | dev | pass: frozen 15,012 ms, 0 frames while frozen, the sim advanced 48 ms after the page became visible |
+| `--break-ack zone` (round 2), loopback and local | dev | **the control works:** the temporary build withholds `zone.done`, and only that acknowledgement fails (exit 1 is expected) |
+| `--drop-ack dispatch` (round 2) | dev | fails only its dropped dispatch ack, as designed |
+| `--host worker` | dev | exit 3, 55 skipped: "worker host not in this build; requires T034 / W1.2 WorkerSimHost" |
+
+What the loopback run (+J0) covers:
+- **All 23 UI commands, with transported acknowledgements, through the real tools and panels:**
+  - speed: TopBar, keys 1/2/3, PauseMenu resume, Onboarding Play;
+  - zone and dezone, network, power line, subway, plop, bulldoze, the InfoPanel Demolish;
+  - trees, a held terraform brush that reaches flat (one release sound, no toast);
+  - tax, funding, loan and repay, an ordinance, settings, setHistoric;
+  - triggerDisaster, dismissAlert;
+  - dispatch through the banner and DispatchTool, and Send nearest.
+- **Ghosts:** two real strokes, exact then provisional, with both ghosts kept through the ack.
+- **Packet replies and cause tags:** each dispatch event carries its original seq and tag.
+- **The recovery mirror:** the App's pagehide wrote 7 whitelisted edits bound to the snapshot.
+- **Saves:** Ctrl+S's camera ticket and the manual save reply are acknowledged in order. Save → reload → Continue
+  preserves the day, funds, nextBuildingId, the camera, the layers and the player's edits.
+- **The region:** exit to the region and back to a playable city.
+- **The replica:** authoritative = replica = `3826532553`.
+- **Panels and views:** every Appendix A panel and a data view open and render.
+- **Health:** 0 console errors, 0 page exceptions, 0 crashes, and full cleanup.
+
+### The protector finding (J0, now T059)
+
+`src/render/city/buildings/lodBuilder.ts:138` posted the LOD job arrays with a transfer list from the main thread, so
+the first LOD job detached ArrayBuffers there and invalidated the main isolate's ArrayBuffer-detaching protector.
+- WORKER_DESIGN §6 row S0 asks for `w.postMessage(msg)` with no transfer list. It never landed.
+- T059 (`local/T059-s0-lod-transfer`) makes that change.
+- The A/B above shows the effect: on dev the main protector is intact at boot and invalidated by the end of the run;
+  with T059 it stays intact at boot, at the end and after the freeze, on both hosts.
+
+### Remaining for this task
+
+- Worker-mode acceptance, once T034 is in dev: rerun with `--host worker`. The checks are written and skip cleanly
+  today.
+- The close-page journal restore, once T039 (W1.3) lands.
+- The protector check passes on dev only after T059 merges. Until then, a dev run reports the J0 bug, correctly.
+
+Logs and JSON outputs are in the worker's scratch (`t028/r3/`, plus `t028/` for round 2 and `t028/round1/`).
 
 ## Review round 3 — f22933f
 

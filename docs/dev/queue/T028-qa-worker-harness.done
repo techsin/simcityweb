@@ -1,0 +1,1 @@
+T028 done for loopback mode (NOTE-047): local/T028-qa-worker. Every acceptance item passes on the real GPU with ?simworker=loopback (53/0/3, with T059's J0 fix; on dev alone the main-protector check correctly fails); the broken-ack controls behave; worker mode skips until T034, the journal restore waits for T039. Report: docs/dev/reports/local-T028-qa-worker.md
