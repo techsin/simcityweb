@@ -1,0 +1,1 @@
+T021 done: local/R1-terrain-rects. Gates green (tsc; vitest 218 files, 2,160 tests; bot identical, 192,899). Real GPU: refills median 0.010 ms per event frame (base 0.34-0.50), 47 of 48 frames under 0.15 ms, one edge frame 0.165-0.170 ms; the four terrain textures bit-identical to dev on the GPU. Report: docs/dev/reports/local-R1-terrain-rects.md
