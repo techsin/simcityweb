@@ -812,7 +812,7 @@ class App {
     const climate = q.get('climate') as Climate | null;
     if (climate) partial.climate = climate;
     const cfg = model.cityConfigFor(tile, partial);
-    if (diff) cfg.startFunds = ({ easy: 250_000, medium: 100_000, hard: 40_000, sandbox: 10_000_000 } as const)[diff] ?? cfg.startFunds;
+    if (diff) cfg.startFunds = ({ easy: 250_000, medium: 100_000, hard: 40_000, expert: 40_000, sandbox: 10_000_000 } as const)[diff] ?? cfg.startFunds;
     cfg.sandbox = cfg.difficulty === 'sandbox';
     drawPreview(model);
     await saveRegion(data);
