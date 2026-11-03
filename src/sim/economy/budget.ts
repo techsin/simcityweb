@@ -220,15 +220,21 @@ export interface MayorRemoval {
   reason: 'bankruptcy';
 }
 
+interface MayorTenureData {
+  /** LG-09 only: old saves start a fresh removal streak, independent of the debt warnings. */
+  mayorRemovalStreak?: number;
+  mayorRemoved?: MayorRemoval;
+}
+
 /** Pure read for the removal screen, including a city entered after the ending news was posted. */
 export function mayorRemoval(st: CityState): MayorRemoval | undefined {
-  return (st.systemData.economy as { mayorRemoved?: MayorRemoval } | undefined)?.mayorRemoved;
+  return (st.systemData.economy as MayorTenureData | undefined)?.mayorRemoved;
 }
 
 export function budgetSystem(rt: EconRuntime): SimSystem {
   const settle = (sim: Simulation) => {
     const st = sim.state;
-    const data = econData(st) as ReturnType<typeof econData> & { mayorRemoved?: MayorRemoval };
+    const data = econData(st) as ReturnType<typeof econData> & MayorTenureData;
     if (!infraFlags(st).utilities) estimateUtilities(st, rt);
     const bd = computeMonthlyBudget(st, rt);
     // actual loan payments (amortization mutates loans)
@@ -265,15 +271,21 @@ export function budgetSystem(rt: EconRuntime): SimSystem {
         data.bankrupt = true;
         sim.notify('The city is BANKRUPT. The council demands immediate action (taxes, cuts, loans).', 'disaster', undefined, undefined, 'finance');
       }
-      const removalMonths = difficultyRules(st.config.difficulty).bankruptRemovalMonths;
-      if (removalMonths !== null && m >= removalMonths && !data.mayorRemoved) {
-        data.mayorRemoved = { day: st.day, bankruptSinceDay: st.day - m * DAYS_PER_MONTH, reason: 'bankruptcy' };
-        sim.notify('The council has removed you after 12 months in debt.', 'disaster', undefined, undefined, 'finance', { advice: 'mayorRemoved' });
-      }
     } else {
       if (data.bankrupt && st.funds >= 0) sim.notify('We are out of debt. Bankruptcy averted!', 'good', undefined, undefined, 'finance');
       data.monthsNegative = 0;
       data.bankrupt = false;
+    }
+    const removalMonths = difficultyRules(st.config.difficulty).bankruptRemovalMonths;
+    if (removalMonths !== null) {
+      if (!sandbox && st.funds < 0) {
+        const streak = (data.mayorRemovalStreak ?? 0) + 1;
+        data.mayorRemovalStreak = streak;
+        if (streak >= removalMonths && !data.mayorRemoved) {
+          data.mayorRemoved = { day: st.day, bankruptSinceDay: st.day - streak * DAYS_PER_MONTH, reason: 'bankruptcy' };
+          sim.notify('The council has removed you after 12 months in debt.', 'disaster', undefined, undefined, 'finance', { advice: 'mayorRemoved' });
+        }
+      } else if (data.mayorRemovalStreak !== undefined) data.mayorRemovalStreak = 0;
     }
     // ---- strikes (funding below STRIKE_FUNDING)
     const services: ServiceKind[] = ['police', 'fire', 'health', 'education', 'transit'];

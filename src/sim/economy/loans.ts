@@ -35,6 +35,7 @@ export function loanRate(st: CityState): number {
 
 function borrowingClosed(st: CityState): boolean {
   const years = difficultyRules(st.config.difficulty).loanCutoffYears;
+  // Missing is a legacy day-zero founding; replicas must mirror the actual key rather than infer a later date.
   const foundedDay = st.systemData.foundedDay as number | undefined;
   return years !== null && st.day >= (foundedDay ?? 0) + years * MONTHS_PER_YEAR * DAYS_PER_MONTH;
 }

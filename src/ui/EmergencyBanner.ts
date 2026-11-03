@@ -776,6 +776,7 @@ export class EmergencyBanner {
     // the countdown is the player's window (an industrial accident: until its plant ignites). It stops once the window
     // has passed or a building is already lost — the loss shows instead, never "0.7 min left" next to "1 building lost"
     const left = dispatchWindowEnd(inc) - now;
+    const manualClosed = (inc.manualDispatchWindowMultiplier ?? 1) < 1 && now >= dispatchWindowEnd(inc) - 1e-6;
     const counting = waiting && left > 0 && inc.lost === 0;
     const loss = lossText(inc);
     setText(b.time, `${emgTime(now - inc.start)} ago${counting ? ` · ${windowText(inc, left)}` : loss ? ` · ${loss}` : ''}`);
@@ -786,22 +787,23 @@ export class EmergencyBanner {
     // refreshes changed fleets while paused, capped at 5 Hz. The texts change in place (EM-4).
     const watch = waiting ? this.options.get(inc.id) : null;
     const options = watch?.value;
-    if (watch && b.optsVersion !== watch.version) {
+    if (watch && (b.optsVersion !== watch.version || manualClosed !== b.choose.disabled)) {
       b.optsVersion = watch.version;
       const miss = missingResponders(em, inc);
-      const best = options?.find((o) => o.free > 0 && Number.isFinite(o.etaMin) && miss.includes(o.responder));
+      const best = manualClosed ? undefined : options?.find((o) => o.free > 0 && Number.isFinite(o.etaMin) && miss.includes(o.responder));
       if (b.send.disabled !== !best) b.send.disabled = !best;
       // warn when the fastest free unit cannot arrive before the deadline (same unit: emergency minutes) — never for an
       // industrial accident: a truck SENT before the ignition saves the plant, whenever it arrives (EM-5)
       const arriveLeft = inc.deadline - now;
       const late = !!best && inc.kind !== 'industrial' && best.etaDays > arriveLeft;
-      setText(b.sendLbl, best ? 'Send nearest' : options ? 'No free unit' : 'Loading…');
+      setText(b.sendLbl, manualClosed ? 'Window closed' : best ? 'Send nearest' : options ? 'No free unit' : 'Loading…');
       setText(b.sendEta, best ? `${minText(best.etaMin)}${late ? ' · too far?' : ''}` : '');
       const ed = best ? '' : 'none';
       if (b.sendEta.style.display !== ed) b.sendEta.style.display = ed;
-      const title = best ? `${best.name}: arrives in ${minText(best.etaMin)}${late ? ` — only ${emgTime(Math.max(0, arriveLeft))} left: probably too late, build a station closer` : ''}` : options ? 'Every station of this type is busy or cannot reach it' : 'Loading dispatch options…';
+      const title = manualClosed ? 'The manual dispatch window has closed' : best ? `${best.name}: arrives in ${minText(best.etaMin)}${late ? ` — only ${emgTime(Math.max(0, arriveLeft))} left: probably too late, build a station closer` : ''}` : options ? 'Every station of this type is busy or cannot reach it' : 'Loading dispatch options…';
       if (b.send.title !== title) b.send.title = title;
     }
+    if (b.choose.disabled !== manualClosed) b.choose.disabled = manualClosed;
     const vd = waiting ? '' : 'none';
     if (b.send.style.display !== vd) b.send.style.display = vd;
   }

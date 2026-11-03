@@ -485,8 +485,9 @@ function approvalDetail(st: CityState, id: string, T: Record<string, number>): s
     case 'crime': return `crime at homes ${pct(d?.resCrime ?? sv?.crime[3] ?? T.crime / APPROVAL.crime)} — low-wealth homes, uncollected garbage and low land value; police remove up to 85% where they patrol`;
     case 'tax': {
       // Describe the last monthly term, even if the sliders have moved since that report.
-      const rate = TAX_NEUTRAL + (T.tax < 0 ? T.tax / APPROVAL.taxPerPoint : -T.tax / APPROVAL.taxLowPerPoint);
-      return `homes are taxed ${Number(rate.toFixed(1))}% on average — each point above ${TAX_NEUTRAL}% costs ${-APPROVAL.taxPerPoint} approval; each point below adds ${APPROVAL.taxLowPerPoint}`;
+      const taxPerPoint = difficultyRules(st.config.difficulty).taxPerPoint;
+      const rate = TAX_NEUTRAL + (T.tax < 0 ? T.tax / taxPerPoint : -T.tax / APPROVAL.taxLowPerPoint);
+      return `homes are taxed ${Number(rate.toFixed(1))}% on average — each point above ${TAX_NEUTRAL}% costs ${-taxPerPoint} approval; each point below adds ${APPROVAL.taxLowPerPoint}`;
     }
     case 'tapWater': return `tap water ${pct(s.tapWater ?? 1)} clean${limit}`;
     case 'hq': return `HQ ${Math.round(s.hq)}`;

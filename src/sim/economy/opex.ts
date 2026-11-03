@@ -70,7 +70,10 @@ export function tierOperatingCosts(st: CityState, tiers?: ReadonlySet<NeedTier>)
   for (const t of Object.keys(OPEX_PER_SERVED) as NeedTier[]) {
     if (tiers && !tiers.has(t)) continue;
     const served = needs[t]?.served ?? 0;
-    if (served > 0) out[t] = served * OPEX_PER_SERVED[t] * difficultyRules(st.config.difficulty).opexMultiplier;
+    if (served > 0) {
+      out[t] = served * OPEX_PER_SERVED[t];
+      if (st.config.difficulty === 'hard' || st.config.difficulty === 'expert') out[t] *= difficultyRules(st.config.difficulty).opexMultiplier;
+    }
   }
   return out;
 }
@@ -94,13 +97,18 @@ export function expectedUpkeep(st: CityState | null, def: BuildingDef, people?: 
     const ns = (st.stats.needs as Partial<Record<NeedTier, { need?: number; served?: number }>> | undefined)?.[tier];
     if (ns && (ns.need ?? 0) > 0) n = Math.min(typical, Math.max(0.25 * typical, (ns.need ?? 0) - (ns.served ?? 0)));
   }
-  return (def.upkeep ?? 0) * OPEX_BUILDING_SHARE + n * OPEX_PER_SERVED[tier] * (st ? difficultyRules(st.config.difficulty).opexMultiplier : 1);
+  let running = n * OPEX_PER_SERVED[tier];
+  if (st && (st.config.difficulty === 'hard' || st.config.difficulty === 'expert')) running *= difficultyRules(st.config.difficulty).opexMultiplier;
+  return (def.upkeep ?? 0) * OPEX_BUILDING_SHARE + running;
 }
 
 /** the running-cost rate of a def (§ per person served per month) and its unit, or null (flat upkeep) */
 export function opexRateOf(def: BuildingDef | undefined, st: CityState | null = null): { tier: NeedTier; rate: number; unit: string } | null {
   const tier = opexTierOf(def);
-  return tier ? { tier, rate: OPEX_PER_SERVED[tier] * (st ? difficultyRules(st.config.difficulty).opexMultiplier : 1), unit: OPEX_UNIT[tier][0] } : null;
+  if (!tier) return null;
+  let rate = OPEX_PER_SERVED[tier];
+  if (st && (st.config.difficulty === 'hard' || st.config.difficulty === 'expert')) rate *= difficultyRules(st.config.difficulty).opexMultiplier;
+  return { tier, rate, unit: OPEX_UNIT[tier][0] };
 }
 
 export interface FacilityOpex {
@@ -130,7 +138,8 @@ export function facilityOpex(sim: Simulation, b: Building): FacilityOpex | null 
   const svc = def.service;
   const f = svc ? (st.budget.funding[svc] ?? 100) / 100 : 1;
   const building = (def.upkeep ?? 0) * OPEX_BUILDING_SHARE * f;
-  const rate = OPEX_PER_SERVED[tier] * difficultyRules(st.config.difficulty).opexMultiplier;
+  let rate = OPEX_PER_SERVED[tier];
+  if (st.config.difficulty === 'hard' || st.config.difficulty === 'expert') rate *= difficultyRules(st.config.difficulty).opexMultiplier;
   const own = facilityLoad(sim, b.id);
   const served = (st.stats.needs as Partial<Record<NeedTier, { served?: number }>> | undefined)?.[tier]?.served ?? 0;
   if (!own || !(own.served > 0) || !(served > 0) || (b.flags & BF.Burnt)) return { tier, building, running: 0, people: 0, total: served, rate };
