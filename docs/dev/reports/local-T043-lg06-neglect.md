@@ -1,182 +1,327 @@
-# local-T043-lg06-neglect: safety record, rebuilding costs and scars
+# local-T043-lg06-neglect: Review 1
 
-Branch `local/T043-lg06-neglect`, base `fb1531f` plus the committed task file. Status: **holds for B2; BALANCE GATES FAIL**. Changes remain uncommitted. No push, merge or `.done` file was made, following the explicit worktree instructions rather than the task footer.
+Branch `local/T043-lg06-neglect`, base `fb1531f` plus the task-file commit. Status: **holds for B2; BALANCE GATES FAIL**. The original WIP is preserved in `7c0e586` (infrastructure hunks, held for B2) and `7b1f376` (economy, tests and report). **Final runtime source remains that original WIP.** Review 1's rejected migration candidate and its new tests were archived to scratch and rolled back; only this report update remains uncommitted. No new commit, push, merge or `.done` file was made in Review 1.
 
-The mechanics are implemented, but this is not a balance sign-off. All three base endpoints exceed the allowed population movement, seed 11 neglect gains population and funds, and seed 11 base tourism exceeds 1.3. The exact native checks and two-process determinism check pass. Vitest could not start in this sandbox.
+Review 1 separates direct effects from the bot's later feedback, records the complete seed-11 WIP pair before calibration, and tests an explicit non-positive emergency migration factor. **Candidate B is rejected and NOT RECOMMENDED FOR MERGE.** Its 128×15 diagnostic fails the ±0.5% base requirement, and its 256×60 seed-7 attentive run regresses to 1,253,791 residents (−17.1778% versus dev). All four full candidate runs are complete and fail the combined acceptance requirements, as recorded below. Its runtime changes were not promoted; immutable scratch runs are unaffected by the source rollback. Final verification of the restored runtime and archived candidate is recorded separately in Checks.
+
+## Rejected migration candidate and choice
+
+The specified safety score remains unchanged:
+
+```text
+C = clamp(1 - 1.6 * crime, 0, 1)
+S = clamp(1 - 1.6 * crime - EM_REP * failed12 / (incidents12 + 30)
+          - 0.002 * deaths12 * 1000 / population, 0, 1)
+r = C > 0 ? 1 - 0.12 * clamp((C - S) / C, 0, 1) : 1
+```
+
+Empty-city deaths contribute zero, as before. In the rejected candidate, tourism retained the full safety score S while migration computed a separate, crime-only attractiveness A0 with the original per-weight summation order. It applied r immediately after the existing initial 0.88–1.12 clamp, keeping the 0.88 floor, then ran the unchanged unemployment rule, population fade and school adjustment. Its optional fifth `migrationFactor` argument defaulted to 1, and `MIG_SAFETY_MAX = 0.12` named the maximum new relative cut. These candidate APIs/constants are archived, not present in the retained runtime.
+
+The neutral point is the same city's crime-only safety C, not a fixed score above which a new bonus appears. At C = 0.8, S = 0.8 gives r = 1; S = 0.6 gives r = 0.97; S = 0 gives r = 0.88. At C = 0 the new factor is neutral because crime-only safety is already saturated at zero. At any crime level, zero emergency loss produces r = 1. Existing positive migration from other attractiveness terms is retained; the new emergency contribution never adds a bonus.
+
+The retained original WIP is already non-positive at identical inputs: it subtracts a nonnegative emergency deduction from safety, and its score weights and migration transforms are monotone. Higher final population therefore does not prove a positive mathematical emergency bonus. The Review-1 candidate made an emergency-only neutral point and maximum cut explicit, separated it from tourism and avoided counting emergency safety twice, but did not meet the balance requirements. That semantic distinction does not justify retaining the regression.
+
+Two bounded candidates were tried, with rebuilding and scars left at their specified values:
+
+| 128×15 s7 candidate | Attentive population | Funds | Approval | Largest absolute base yearly-row movement | Neglect population | Neglect funds | Neglect approval |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Fixed neutral 0.75 | 196,697 | §178,787 | 81.6570 | 6.73335% | 196,709 | §149,823 | 81.5744 |
+| Crime-only relative neutral, rejected | 196,169 | §157,521 | 78.4282258 | 6.75487% | 195,805 | §132,083 | 79.8907355 |
+
+The fixed candidate used `r = 1 + .12 * clamp((S - .75) / .75, -1, 0)`; 0.75 was a trial neutral near the control's measured median crime-only safety, 0.7516291 (median full safety 0.7515389). Its attentive endpoint moves about +1.9690% versus dev. It also penalizes a city with C = S < 0.75 despite no emergency loss. The relative candidate avoids that additional crime penalty; it was selected for implementation/testing on that invariant, not accepted for merge or because its endpoint passed. Its attentive 128 endpoint is +1.6952% versus dev; residents are `[62667, 94560, 38942]`. Its 128 neglect endpoint is −0.1856% versus its own attentive run, with §25,438 fewer funds. This 128 comparison is diagnostic; the task's ≥2% neglect target is on 256×60. The later severe full-size base regression supersedes any preference based on this small sample.
+
+No claim of impossibility follows from this small candidate set. The fixed rebuilding and scar effects already move some base yearly rows outside ±0.5% individually; other effects can interact or cancel them. Such cancellation has not been established as stable across both sizes and seeds. The round is bounded to the declared candidates rather than searching neutral points until one seed happens to pass.
+
+## Ablations before recentering
+
+All six 128×15 seed-7 runs use immutable scratch sources. Each isolated mode enables only the named direct mechanism; all WIP mechanics uses the original committed mapping. Migration and tourism have separate local score sets derived from one survey/pass. The control retains the original crime-only expression and weight-summing order. Its endpoint reproduces dev's 192,899 residents, funds §146,349 and resident triplet `[61124, 93804, 37971]`.
+
+| Mode | Population in 2015 | Change versus control | Funds | Approval | Largest absolute yearly-row movement |
+|---|---:|---:|---:|---:|---:|
+| Control | 192,899 | 0% | §146,349 | 81.3650 | 0% |
+| Migration safety only | 193,366 | +0.2421% | §225,461 | 81.3959 | 2.8454% |
+| Tourism safety only | 195,347 | +1.2691% | §191,210 | 80.2564 | 5.0231% |
+| Rebuilding only | 191,979 | −0.4769% | §204,789 | 81.0808 | 1.0982% |
+| Scars only | 196,593 | +1.9150% | §198,260 | 81.7901 | 7.5078% |
+| All original WIP mechanics | 195,379 | +1.2856% | §152,842 | 78.8665 | 7.2604% |
+
+The separate 128×15 control-neglect reference ends at 191,351 residents, §157,502 and approval 80.859834, versus attentive control's 192,899 / §146,349 / 81.3650. It uses the same control loader with only `--neglect` added.
+
+The effects are not additive. Rebuilding's endpoint is inside ±0.5%, but its year-6 row fails. Scars alone fails from year 1. The diagnostic `lg06Diag` and optional loss fields are additional serialized data, so these ablations are not claimed to have byte-identical full saves versus dev. They are controls for gameplay outputs and causal comparisons.
+
+The sourced findings are in scratch `review1/feedback-findings.md` and `review1/seed11-causal-analysis.md`, backed by the JSON's monthly before/after bot snapshots:
+
+- **Scars:** the simulation diverges before a bot purchase does. On day 240 the scar-only city has 2,006 people versus control's 1,975, crossing `ensureServices`' 2,000-person police threshold a month earlier. This is an observed purchase fork. Earlier changed school-need text is not a changed build choice.
+- **Rebuilding:** the first bill is §84 on day 120. Actions and population remain identical for five years. On day 2,010 the rebuild-only bot buys three bus stops while control buys four. Source and balances indicate that the §84 difference crosses the repeated `canSpend(2000)` reserve test; the exact intra-loop balances are inferred, not instrumented. Year 6 ends −1.0982%, then year 7 reverses to +0.9709%.
+- **Tourism:** its direct effect is lower tourism jobs on days 240/270/300. Population/buildings then diverge before the first changed actual zoning choice on day 390, when control also develops an industrial block. Tourism changes CS job targets, discrete growth and later bot geography. The trace does not identify the exact first daily lot choice responsible for the final gain.
+- **Seed 11:** attentive and neglect WIP runs match through 2003. On day 1,200 attentive base can buy a §12,000 prison; neglect misses the investment floor by §60.4 and buys a clinic, delaying the prison one month. On day 1,290 base has a §2,400 rebuild charge, monthly net −§432 and no actions, while neglect has no damage that month, net +§3,070 and develops housing plus a clinic. Later incidents are no longer paired calls. Neglect develops an industrial block on day 1,320 which base delays until day 2,100. Taxes, loan counts and nominal funding match across the inspected early fork.
+- **Seed-11 safety and tourism:** in 2006 safety is 0.512435 base versus 0.755357 neglect, but the latter's crime-only score is 0.755402. Almost all that gap is changed crime/layout, not an emergency-response reward. The base tourism ratio reaches 1.357834 in 2016 and 1.359295 in 2017 while its legacy denominator remains only 1,700/1,800 jobs; after the Convention Center raises the denominator to 3,300, the ratio falls. Lowering EM_REP cannot be presumed to correct a venue-mix/timing ratio overshoot. A smaller 1.30105 overshoot also occurs in 2022.
+
+The seed-11 neglected city is already +51.1953% ahead in 2006 and finishes +2.8271%; seed 7 lacks that early lead and finishes −14.0353%. Same initial seed does not keep later incidents or maps matched after the simulation and dispatch paths fork. Monthly net is the latest recurring monthly budget, not annual cashflow, and excludes oneoff investments.
+
+## Complete seed-11 WIP table captured before tuning
+
+Both 256×60 telemetry reruns reproduced the original WIP endpoints before any calibration. Source: scratch `review1/seed11-before-tuning.md`, with its JSON/CSV and `wip_256_s11_{base,neglect}.json`. All 60 yearly pairs have an explicit scored safety value; no total attractiveness value was substituted for safety. Failure shares are trailing-12-month failures/incidents. Tourism is the trailing mean of 12 monthly ratios of current tourism jobs to the legacy jobs formula.
+
+| Year | Base pop | Neglect pop | Neglect % | Base funds | Neglect funds | Base approval | Neglect approval | Base failed % | Neglect failed % | Base safety | Neglect safety | Base tourism 12m | Neglect tourism 12m |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2001 | 3749 | 3749 | 0 | 34402 | 34402 | 51.1192 | 51.1192 | 100 | 100 | 0.423648 | 0.423648 | 0.628969 | 0.628969 |
+| 2002 | 10335 | 10335 | 0 | 35326 | 35326 | 51.7186 | 51.7186 | 0 | 0 | 0.559534 | 0.559534 | 0.327988 | 0.327988 |
+| 2003 | 18265 | 18265 | 0 | 9595 | 9595 | 46.8594 | 46.8594 | 0 | 0 | 0.511525 | 0.511525 | 0.276385 | 0.276385 |
+| 2004 | 24920 | 26284 | 5.4735 | 7915 | 8908 | 44.4292 | 42.9357 | 4.3478 | 4.3478 | 0.42095 | 0.418413 | 0.27322 | 0.269376 |
+| 2005 | 27451 | 33589 | 22.3598 | 9876 | 27941 | 46.927 | 42.649 | 0 | 6.6667 | 0.483152 | 0.413237 | 0.279435 | 0.277724 |
+| 2006 | 29700 | 44905 | 51.1953 | 25391 | 38373 | 47.9562 | 55.04 | 0 | 0 | 0.512435 | 0.755357 | 0.289879 | 0.356534 |
+| 2007 | 38163 | 56983 | 49.3148 | 31904 | 45274 | 54.6486 | 58.3053 | 0 | 3.125 | 0.733588 | 0.713263 | 0.320895 | 0.439456 |
+| 2008 | 49638 | 70649 | 42.3285 | 40736 | 55899 | 57.4387 | 59.7422 | 0 | 3.2258 | 0.77894 | 0.745789 | 0.397907 | 0.512522 |
+| 2009 | 62135 | 83120 | 33.7732 | 49614 | 28373 | 61.6967 | 58.1883 | 0 | 5.2632 | 0.833435 | 0.640812 | 0.602208 | 0.550397 |
+| 2010 | 75391 | 96746 | 28.3257 | 43445 | 56682 | 67.8961 | 61.5653 | 0 | 1.9231 | 0.829248 | 0.699852 | 0.828454 | 0.561518 |
+| 2011 | 88124 | 110664 | 25.5776 | 24160 | 74533 | 66.9143 | 60.1939 | 0 | 3.3898 | 0.799653 | 0.630518 | 0.894676 | 0.723184 |
+| 2012 | 102011 | 127254 | 24.7454 | 60893 | 89261 | 65.4961 | 62.4474 | 0 | 1.3333 | 0.767561 | 0.758995 | 0.90661 | 0.822237 |
+| 2013 | 117074 | 143972 | 22.9752 | 80052 | 100798 | 65.8938 | 68.0683 | 0 | 1.2987 | 0.79227 | 0.760637 | 1.235787 | 0.849733 |
+| 2014 | 133511 | 161417 | 20.9016 | 97384 | 120196 | 69.9798 | 63.125 | 0 | 3.0928 | 0.801914 | 0.702829 | 1.286683 | 0.839503 |
+| 2015 | 150569 | 180642 | 19.9729 | 107233 | 136739 | 70.3499 | 71.5665 | 0 | 0 | 0.798164 | 0.802002 | 1.28033 | 0.967404 |
+| 2016 | 168284 | 199787 | 18.7201 | 123841 | 156561 | 70.6494 | 71.888 | 0 | 0 | 0.807399 | 0.80243 | 1.357834 | 0.904467 |
+| 2017 | 188205 | 219041 | 16.3843 | 142175 | 168395 | 72.0277 | 65.9441 | 0 | 3.6036 | 0.824101 | 0.68303 | 1.359295 | 0.905829 |
+| 2018 | 206668 | 239485 | 15.8791 | 157038 | 209730 | 70.9373 | 69.359 | 0.9615 | 1.5504 | 0.785639 | 0.751923 | 1.115428 | 1.015332 |
+| 2019 | 226127 | 261290 | 15.5501 | 173297 | 245197 | 71.3138 | 74.3626 | 0 | 0.641 | 0.80687 | 0.787804 | 1.003199 | 1.192764 |
+| 2020 | 246453 | 282953 | 14.8101 | 160534 | 234714 | 71.8341 | 73.0764 | 0 | 2.1429 | 0.810446 | 0.746839 | 0.995422 | 1.120811 |
+| 2021 | 268346 | 304950 | 13.6406 | 215849 | 287970 | 72.8275 | 70.4935 | 0 | 2.2599 | 0.817762 | 0.745668 | 1.160856 | 1.012713 |
+| 2022 | 291069 | 327851 | 12.6369 | 198232 | 570488 | 75.504 | 75.0714 | 0 | 0.4762 | 0.823373 | 0.809777 | 1.30105 | 0.906472 |
+| 2023 | 314194 | 351594 | 11.9035 | 216154 | 873000 | 75.8099 | 73.215 | 0.5376 | 1.0753 | 0.814564 | 0.789779 | 1.191391 | 0.952208 |
+| 2024 | 338060 | 375862 | 11.182 | 284466 | 1278618 | 76.9748 | 73.8887 | 0 | 0.9259 | 0.833753 | 0.795642 | 1.128596 | 0.980034 |
+| 2025 | 361752 | 400898 | 10.8212 | 549037 | 1755915 | 77.0924 | 73.9954 | 0 | 1.4218 | 0.837389 | 0.783021 | 0.944896 | 0.980948 |
+| 2026 | 387342 | 427796 | 10.444 | 866930 | 2315759 | 77.7193 | 71.6035 | 0 | 1.5625 | 0.842723 | 0.785568 | 0.997315 | 0.972281 |
+| 2027 | 412932 | 456432 | 10.5344 | 1276274 | 2819889 | 77.4005 | 76.8442 | 0.3922 | 0.8097 | 0.828717 | 0.822853 | 1.026226 | 0.987818 |
+| 2028 | 440096 | 486514 | 10.5472 | 1778354 | 2836928 | 77.8618 | 75.5197 | 0.4274 | 1.0526 | 0.832236 | 0.823192 | 1.029161 | 0.995207 |
+| 2029 | 468897 | 517363 | 10.3362 | 2237081 | 2756673 | 78.3025 | 78.7885 | 0.369 | 0.3401 | 0.84448 | 0.857459 | 1.038658 | 0.999312 |
+| 2030 | 498803 | 548820 | 10.0274 | 2876430 | 2937299 | 78.4558 | 82.5589 | 0 | 0 | 0.864515 | 0.887981 | 1.044787 | 1.021699 |
+| 2031 | 529604 | 580095 | 9.5337 | 3292701 | 3175807 | 80.2126 | 78.3248 | 0 | 0.9202 | 0.874274 | 0.862068 | 1.009601 | 1.028379 |
+| 2032 | 561959 | 611773 | 8.8643 | 3602145 | 3480726 | 81.767 | 81.58 | 0.2994 | 0.3003 | 0.876964 | 0.891807 | 1.009119 | 1.038461 |
+| 2033 | 593372 | 642971 | 8.3588 | 3985920 | 3843261 | 82.2829 | 82.3672 | 0 | 0.2747 | 0.899439 | 0.89667 | 1.021283 | 1.03753 |
+| 2034 | 625387 | 675918 | 8.08 | 4302872 | 4288881 | 83.0972 | 80.7381 | 0 | 0.565 | 0.902657 | 0.885522 | 1.028444 | 1.037651 |
+| 2035 | 656220 | 708765 | 8.0072 | 4568394 | 4596074 | 82.9651 | 81.1869 | 0 | 0.2439 | 0.901713 | 0.896485 | 1.031866 | 1.041797 |
+| 2036 | 689792 | 741576 | 7.5072 | 4902695 | 4844182 | 82.7791 | 77.6485 | 0 | 1.2407 | 0.901097 | 0.865954 | 1.030955 | 1.051843 |
+| 2037 | 723000 | 776221 | 7.3611 | 5282361 | 5087125 | 83.2351 | 80.7332 | 0 | 0 | 0.899867 | 0.910161 | 1.032138 | 1.052286 |
+| 2038 | 756051 | 808559 | 6.945 | 5709655 | 5419975 | 82.6403 | 79.0408 | 0 | 0.6536 | 0.89774 | 0.883466 | 1.037576 | 1.05602 |
+| 2039 | 790901 | 842805 | 6.5626 | 6158025 | 5782156 | 82.5878 | 78.6406 | 0 | 0.6494 | 0.894897 | 0.886467 | 1.048321 | 1.051643 |
+| 2040 | 826266 | 877037 | 6.1446 | 6650018 | 6175271 | 82.2234 | 77.0903 | 0 | 0.6186 | 0.892102 | 0.88694 | 1.051691 | 1.043782 |
+| 2041 | 862234 | 913095 | 5.8987 | 7194914 | 6638931 | 82.3138 | 77.8442 | 0 | 0.3839 | 0.894252 | 0.894625 | 1.054215 | 1.043154 |
+| 2042 | 896393 | 946918 | 5.6365 | 7639328 | 7154917 | 82.7484 | 80.8007 | 0 | 0.1698 | 0.893105 | 0.901488 | 1.052624 | 1.044284 |
+| 2043 | 934057 | 983258 | 5.2675 | 7913937 | 7689960 | 82.6709 | 75.8691 | 0 | 0.7181 | 0.891854 | 0.879985 | 1.056136 | 1.046771 |
+| 2044 | 970766 | 1023527 | 5.435 | 8256769 | 8222225 | 82.8699 | 78.1588 | 0 | 0.4785 | 0.889631 | 0.886035 | 1.054698 | 1.045111 |
+| 2045 | 1005417 | 1062917 | 5.719 | 8497056 | 8639032 | 82.2314 | 76.5359 | 0 | 0.4673 | 0.88787 | 0.882106 | 1.046236 | 1.056113 |
+| 2046 | 1043018 | 1097611 | 5.2341 | 8854847 | 9197299 | 82.1507 | 77.0846 | 0 | 0.3067 | 0.886069 | 0.88326 | 1.046423 | 1.055284 |
+| 2047 | 1082851 | 1146080 | 5.8391 | 9211285 | 9749458 | 81.2534 | 79.7843 | 0 | 0.1595 | 0.882686 | 0.891472 | 1.052612 | 1.050434 |
+| 2048 | 1121558 | 1188001 | 5.9242 | 9603411 | 10310360 | 81.6266 | 80.1386 | 0 | 0.1404 | 0.878106 | 0.889992 | 1.051755 | 1.05605 |
+| 2049 | 1155525 | 1227266 | 6.2085 | 9982820 | 10892679 | 80.7247 | 78.1754 | 0 | 0.8708 | 0.874088 | 0.859831 | 1.047431 | 1.047426 |
+| 2050 | 1196168 | 1268939 | 6.0837 | 10407616 | 11470545 | 80.838 | 77.3236 | 0.1425 | 0.3906 | 0.872323 | 0.874387 | 1.042407 | 1.047528 |
+| 2051 | 1234799 | 1301400 | 5.3937 | 10786498 | 12044778 | 81.0925 | 78.2767 | 0 | 0.5256 | 0.87516 | 0.865621 | 1.031393 | 1.044029 |
+| 2052 | 1280413 | 1347251 | 5.22 | 11175030 | 12612842 | 81.1961 | 78.5674 | 0 | 0.135 | 0.871648 | 0.878358 | 1.044202 | 1.037181 |
+| 2053 | 1320739 | 1396013 | 5.6994 | 11510241 | 13187606 | 80.1745 | 74.2129 | 0.1258 | 0.8838 | 0.862194 | 0.852746 | 1.044999 | 1.029858 |
+| 2054 | 1368175 | 1420520 | 3.8259 | 11829506 | 13798868 | 80.4373 | 76.6505 | 0 | 0.4751 | 0.861806 | 0.868271 | 1.044086 | 1.024504 |
+| 2055 | 1403017 | 1440746 | 2.6891 | 12174635 | 14394151 | 79.8925 | 74.0481 | 0.1214 | 1.3682 | 0.858631 | 0.833276 | 1.038744 | 1.029971 |
+| 2056 | 1421930 | 1463449 | 2.9199 | 12535673 | 14997379 | 80.1152 | 74.7617 | 0 | 0.4367 | 0.866187 | 0.867961 | 1.036335 | 1.03393 |
+| 2057 | 1448111 | 1494514 | 3.2044 | 12921307 | 15603814 | 80.3711 | 74.2728 | 0 | 0.8178 | 0.87248 | 0.852363 | 1.032767 | 1.036313 |
+| 2058 | 1461402 | 1510419 | 3.3541 | 13258473 | 16254650 | 80.1251 | 73.7672 | 0 | 0.8686 | 0.882551 | 0.849321 | 1.045223 | 1.030794 |
+| 2059 | 1474310 | 1521607 | 3.2081 | 13630618 | 16928180 | 80.3207 | 73.6495 | 0 | 0.5429 | 0.883336 | 0.860639 | 1.045248 | 1.027995 |
+| 2060 | 1494630 | 1536884 | 2.8271 | 13987823 | 17628691 | 81.1569 | 73.9821 | 0 | 0.4197 | 0.882337 | 0.865344 | 1.053485 | 1.035384 |
+
+## Gate record: original WIP and current candidate
+
+The fixture reference is the current `b3` set. Its endpoints are 192,899 (128×15 s7), 1,513,835 (256×60 s7) and 1,427,340 (256×60 s11). Older FH-04/LG-10 report rows predate B1/B3 and are context only. No fixture has been changed and no `polish` sign-off is claimed.
+
+The original WIP fails all three base population tolerances: 195,379 (+1.2856%), 1,550,356 (+2.4125%) and 1,494,630 (+4.7144%). Largest absolute yearly movements are 7.2604%, 4.0335% and 33.2794%. Original WIP neglect ends at 1,332,759 / §17,847,550 for s7 (−14.0353% population, −3.1061% funds versus WIP base) and 1,536,884 / §17,628,691 for s11 (+2.8271%, +26.0288%). Seed 7 passes the neglect population/funds comparisons; seed 11 fails both.
+
+| Retained WIP pair | Base population | Neglect population | Base funds | Neglect funds | Base approval | Neglect approval |
+|---|---:|---:|---:|---:|---:|---:|
+| 256×60 s7 | 1,550,356 | 1,332,759 | §18,419,687 | §17,847,550 | 79.4023 | 72.8761 |
+| 256×60 s11 | 1,494,630 | 1,536,884 | §13,987,823 | §17,628,691 | 81.1569 | 73.9821 |
+
+Original WIP base tourism monthly 12-month means from day 5,400 are 0.8996 (128 s7), 0.8741–1.2433 (256 s7), and 0.9007–1.3724 (256 s11); s11 fails 1.3. Maximum monthly rolling failure shares from the first year-10 sample, day 3,270, are 3.5088%, 3.2787% and 1.1494%, all below 5%.
+
+The approval source formula is unchanged. Original WIP year-60 attentive-minus-neglect approval costs are 6.5261 points (s7) and 7.1748 (s11), versus dev 4.3349 and 7.0115. The year-60 interpretation passes. Whole-run mean yearly costs move 3.9119→5.3077 (s7) and 4.9158→2.5124 (s11), so a whole-run-mean interpretation fails for s11; the plan does not specify that aggregation. Dev attentive approval uses the b3 fixture rounded to 0.01; its neglect references are full-precision source-snapshot runs. Dev neglect endpoints are 1,390,920 / §14,168,774 (s7) and 1,455,512 / §14,334,083 (s11).
+
+### Rejected relative-neutral candidate: final full gates
+
+Both full-size attentive candidate runs fail the ±0.5% base population tolerance. The 128×15 candidate also fails (+1.6952% at the endpoint; maximum yearly-row movement 6.75487%). Tourism and failure columns below use all monthly trailing-12-month samples from day 5,400 and day 3,270 respectively.
+
+| Attentive candidate | Population | Funds | Approval | Endpoint versus dev | Maximum absolute yearly-row movement | Tourism ratio range | Maximum rolling failed share | Gates |
+|---|---:|---:|---:|---:|---:|---|---:|---|
+| 256×60 s7 | 1,253,791 | §18,566,243 | 79.3623713 | −17.1778% | 17.3461% | 0.850829–1.171122 | 4.0816% | FAIL population; PASS tourism/failures |
+| 256×60 s11 | 1,448,015 | §14,175,786 | 78.6388265 | +1.4485% | 4.7352% | 0.944821–1.310941 | 3.3898% | FAIL population/tourism; PASS failures |
+
+Neglect also fails the required population comparison on both seeds; seed 11 gains funds as well.
+
+| Seed | Attentive population | Neglect population | Neglect population change | Attentive funds | Neglect funds | Funds change | Gates |
+|---|---:|---:|---:|---:|---:|---|---|
+| 7 | 1,253,791 | 1,500,039 | +19.6403% | §18,566,243 | §15,814,913 | −§2,751,330 (−14.8190%) | FAIL population; PASS funds |
+| 11 | 1,448,015 | 1,506,237 | +4.0208% | §14,175,786 | §15,188,722 | +§1,012,936 (+7.1455%) | FAIL population/funds |
+
+Neglect approval is 73.7986703 (s7) and 73.8797869 (s11). The approval formula remains unchanged, but the generated city paths change the measured cost. Candidate approval costs below are attentive minus neglect; dev comparisons use the same references described above.
+
+| Seed | Candidate year-60 cost | Dev year-60 cost | Year-60 gate | Candidate mean yearly cost | Dev mean yearly cost | Mean-cost gate |
+|---|---:|---:|---|---:|---:|---|
+| 7 | 5.5637010 | 4.3349422 | PASS | 2.9173152 | 3.9118813 | FAIL |
+| 11 | 4.7590396 | 7.0114981 | FAIL | 2.9496732 | 4.9157767 | FAIL |
+
+No declared candidate passed the combined gates. These are failed tested combinations, not proof that every possible mapping is mathematically infeasible. No further neutral points, constants or seeds were searched.
+
+The four immutable-scratch candidate runs are 256×60 s7/s11, each attentive and neglect. Final direct-production 128 verification is of the restored original WIP and is separate from these candidate results. Do not substitute original-WIP numbers for this section.
+
+Scratch `review1/candidate-s7-relative-base-analysis.md` records the rejected seed-7 candidate's late regime. The maximum direct helper cut in the inspected late window is only 0.14945%; applied migration-factor loss peaks at 0.001216, and the same-state target shortfall peaks near 1,610 residents (mean 215; final 11.56), versus a final population gap of 260,044. Late funds stay above §6.91M and monthly net above §30,770. Density actions end in early 2043; unemployment stays near 10% while jobs/map/redevelopment eligibility constrain later growth. This identifies the observed late bottleneck, not a unique cause or a decomposition of the historical population gap.
 
 ## Changes by file
 
-- `src/sim/economy/tourism.ts`: `emergencySafety` uses approval's existing rolling 12-month emergency counts, failures and deaths, with deaths normalized per 1,000 current residents. It replaces crime-only safety in the existing attractiveness scores. Those scores already feed tourism and the existing migration multiplier bounded by 0.88–1.12; there is no second safety multiplier. Optional `safetyMigrationLoss` lives in the already mirrored `systemData.economy`. The pure `emergencyMigrationImpact` helper exposes per-wealth multiplier loss and estimated current residential target loss. The tourism save/load output preservation also preserves this optional value.
-- `src/sim/economy/tuning.ts`: adds `REBUILD_SHARE = 0.15`, `EM_SCAR` (0.15, radius 3, 540 days), `EM_REP = 4`, the denominator offset 30 and the deaths coefficient 0.002. `EM_REP = 4` is provisional: the specification names the constant without assigning a value. It has not been calibrated to passing gates. All specified coefficients remain literal.
-- `src/sim/economy/budget.ts`: adds the `emergency:rebuild` expense and pure rebuilding-cost readers. Forecasts include the current month's accrued damage. Settlement charges the completed month after infrastructure rolls it to `lastMonth`, once, rounded to whole currency. Rolling annual readers use sums of the actual rounded monthly charges, including an unanswered-only subtotal. Difficulty income rules and funding sliders do not discount rebuilding; sandbox records the expense without reducing funds.
-- **`src/sim/CityState.ts` — OUTSIDE NAMED FILES, interface only:** adds optional `EmergencyMonth.unansweredDamage`, `rebuildCost` and `unansweredRebuildCost`. No constructor/default or runtime behavior is changed in this file. Optional fields allow old saved months to omit the new counters.
-- **`src/sim/infra/emergency.ts` — MINIMAL INFRA HUNKS, HOLD FOR B2:** listed separately below.
-- **`src/sim/infra/nimby.ts` — MINIMAL INFRA HUNKS, HOLD FOR B2:** listed separately below.
-- `tests/sim/neglectSafety.test.ts`: 11 cases covering the safety formula, purity, old fields, migration/next-pass tourism, target-loss exposure, rebuild rounding, rollover, difficulty/funding behavior and sandbox.
-- `tests/sim/neglectScars.test.ts`: 6 cases covering unanswered and late-answered losses, cost exposure, the rolling rounded-charge totals, scar strength/radius/expiry, mid-scar save/load and old saves.
-- `docs/dev/reports/local-T043-lg06-neglect.md`: this report.
+Only this report has a net Review-1 change. The source/test entries below describe the retained committed WIP; there are no new infrastructure, outside-ownership or cloud-held-file hunks in this round.
 
-`tools/simbot.ts` is unchanged. Its `--neglect` parser and daily early return already suppress manual dispatch correctly. The approval formula is unchanged. There are no new RNG calls.
+- `src/sim/economy/tourism.ts`: retained exactly as committed in the original WIP. Full safety feeds tourism and the existing attractiveness-based migration path. Optional `safetyMigrationLoss` in already mirrored `systemData.economy` compares actual migration with a same-city crime-only counterfactual; `emergencyMigrationImpact` exposes multiplier loss and current residential target loss, not arrivals. Save/load output preservation includes the optional loss. Review-1 candidate hunks were removed.
+- `src/sim/economy/tuning.ts`: retained exactly as committed: `REBUILD_SHARE = 0.15`; `EM_SCAR` = 0.15, radius 3, 540 days; `EM_REP = 4`, denominator offset 30 and deaths coefficient 0.002. EM_REP is provisional because the task names it without a value; it has not been calibrated to passing gates. The candidate-only `MIG_SAFETY_MAX` was removed. All specified coefficients remain literal.
+- `src/sim/economy/budget.ts`: `emergency:rebuild` expense and pure cost readers. Forecasts show current accrued damage; monthly settlement charges the completed month once after infrastructure rolls it to `lastMonth`. Annual readers sum actual rounded monthly charges, including an unanswered subtotal. Funding/difficulty do not discount rebuilding; sandbox records without reducing funds.
+- **`src/sim/CityState.ts` — OUTSIDE NAMED FILES, interface only:** optional `EmergencyMonth.unansweredDamage`, `rebuildCost` and `unansweredRebuildCost`; no constructor/default/runtime change here.
+- **`src/sim/infra/emergency.ts` and `nimby.ts` — MINIMAL INFRA HUNKS, HOLD FOR B2:** itemized below.
+- `tests/sim/neglectSafety.test.ts`: 11 safety, migration/tourism, target-loss, rebuild, rollover, difficulty/funding, sandbox and old-save cases.
+- `tests/sim/neglectScars.test.ts`: 6 unanswered/answered, rolling rounded costs, radius/strength/expiry, mid-scar save/load and old-save cases.
+- Candidate-only `tests/sim/neglectMigration.test.ts`: its 18 proposed cases were archived as scratch `review1/candidate-neglectMigration.test.ts`, then removed from the repository with the rejected API. Original committed tests are unchanged.
+- `docs/dev/reports/local-T043-lg06-neglect.md`: this coherent Review-1 record.
 
-## Every infrastructure hunk held for B2
+`tools/simbot.ts` is unchanged: `--neglect` already suppresses manual dispatch correctly. No new RNG calls, diagnostic production flags or unrelated refactors were added.
+
+### Every infrastructure hunk held for B2
 
 `src/sim/infra/emergency.ts`:
 
 1. Import the rebuild share and `addEmergencyScar`.
-2. Add optional `Incident.rebuildCost` for the existing plain incident stream and old-save compatibility.
-3. At monthly rollover, record rounded rebuilding cost and the rounded unanswered subtotal before storing the completed month.
-4. At a building's burn-down, add a scar only if `inc.answered === 0`; preserve the existing damage expression, record unanswered damage and accumulate the incident's rebuild cost.
-5. At riot damage, record unanswered damage and the incident rebuild cost alongside the existing damage total.
-6. In `sumMonths`, sum the three optional counters with zero fallbacks. The existing incident/failure/death window is reused, not replaced.
+2. Add optional `Incident.rebuildCost` to the existing plain incident/save shape.
+3. At monthly rollover, record rounded rebuilding cost and rounded unanswered subtotal before storing the month.
+4. At burn-down, add a scar only if `inc.answered === 0`; preserve the original damage arithmetic, record unanswered damage and accumulate the incident rebuild amount.
+5. At riot damage, record unanswered damage and incident rebuilding beside the existing damage total.
+6. In `sumMonths`, sum the three optional counters with zero fallbacks. Reuse the existing incident/failure/death window.
 
 `src/sim/infra/nimby.ts`:
 
 1. Import the building type and scar tuning.
-2. Add `EmergencyScar` and the append-only creation helper using optional `systemData.emergencyScars` (footprint plus absolute expiry day).
-3. In the existing rebuild, prune expired sources and splat active scars into stigma. The inverse saturation amount makes a lone scar's core exactly 0.15 under the existing `1 - exp(-x)` saturation. Existing falloff and radius handling are reused.
+2. Add `EmergencyScar` and its creation helper using optional `systemData.emergencyScars` (footprint and absolute expiry).
+3. In the existing rebuild, prune expired sources and splat active scars into stigma. Inverse saturation makes a lone core exactly 0.15 under the existing `1 - exp(-x)` rule; reuse existing falloff/radius handling.
 
-These are small independent hunks; no infrastructure code is moved or refactored. The scar source expires at 540 days. Its raster follows the existing NIMBY refresh cadence, which can lag source creation or expiry by up to about 30 game days. No synchronous full raster rebuild was added to a burn-down.
+No infrastructure code was moved or refactored. The source expires at 540 days; its raster follows the existing NIMBY refresh cadence and can lag creation/expiry by about 30 game days. No synchronous full raster rebuild was added to a burn-down.
 
-## Verification completed and blocked
+## Checks and reproducibility
 
-| Check | Result |
+The original WIP passed `npx tsc --noEmit`, whitespace/UTF-8-without-BOM checks and 10 native smoke assertions. Its authored Vitest files could not start because of `spawn EPERM`; they were not executed. Review 1's 18 candidate-specific formal cases were not executed and are now archived with the rejected API; they are not part of the retained runtime's test suite. Final runtime and archived-candidate checks are recorded here:
+
+| Final check | Result |
 |---|---|
-| `npx tsc --noEmit` | PASS |
-| Diff whitespace and UTF-8 without BOM | PASS; all 9 changed/new files checked |
-| `tests/sim/neglectSafety.test.ts` | Not executed: Vitest startup failed with `spawn EPERM`; 11 cases are authored |
-| `tests/sim/neglectScars.test.ts` | Not executed: same startup restriction; 6 cases are authored |
-| Native Node assertions, `neglect-smoke.mts` | PASS: 10 passed, 0 failed; details in `neglect-smoke.json` |
-| Two separate 128×15 seed-7 processes | PASS: all 15 yearly state hashes identical |
-| Full Vitest and individual regression/hygiene suites | Left for the lead; no full suite was attempted |
+| `git diff --check`; report UTF-8 without BOM; all 60 before-tuning reference rows present | PASS; `review1/report-static.json` records the text checks |
+| `npx tsc --noEmit` on restored runtime | PASS |
+| Archived candidate native checks, `migration-smoke.mts` through `candidate-production.mjs` | 6 passed, 0 failed: includes 4,800 exact-neutral, 726 bounded/monotone, 288 crime-neutral and 24,000 context comparisons |
+| Restored original WIP native checks, `neglect-smoke.mts` through `ts-resolve.mjs` | 10 passed, 0 failed |
+| One new restored-runtime 128×15 s7 process, through quiet gate | 195,379 residents `[63918, 93966, 37495]`, §152,842, approval 78.8664800472; all 15 yearly hashes match both prior original-WIP process files |
+| `tests/sim/neglectSafety.test.ts`, attempted this round through quiet gate | Startup failed loading Vite config: `externalize-deps` / `windowsSafeRealPathSync`, `spawn EPERM`; no cases ran |
+| `tests/sim/neglectScars.test.ts` | Prior-round startup `spawn EPERM`; not repeated after restoring its identical source/test block; no cases ran |
+| Archived candidate's 18 formal cases | Not executed; retained in scratch with the rejected API |
+| Full Vitest, affected regression/hygiene suites, browser and benchmarks | Not run; left for the lead under the supplied run restrictions |
 
-The 10 native assertions cover the exact safety formula and read purity; normalization/clamping/old stats; migration and next-pass visits; 15% rounding; single monthly settlement; difficulty/funding/sandbox behavior; old-save budget reads; 12-month expiry of counts and charges; unanswered scars with mid-scar save/load; and a late-answered loss without a scar or unanswered cost. These assertions are evidence separate from Vitest, not a claim that the new Vitest files ran.
+Exact commands and outputs are in scratch `review1/checks.json`; `review1/final-checks.json` records the hash comparisons and native results. The final worktree status contains only this modified report.
 
-The final repeated-run hash is `a6e96a4b4814701a9bdb3c5ebebdb0c9d87ad4446a40ff375b09bf5f28fb2c0a`. The driver hashes `serializeCity(..., { copy: true })` with sorted object keys, typed-array bytes and `savedAt = 0`. It records city/emergency RNG states without drawing from them.
+The original WIP's 10 native assertions covered exact safety/read purity, normalization/old stats, migration/next-pass tourism, rebuild rounding, single settlement, difficulty/funding/sandbox behavior, old budget fields, rolling-window expiry, mid-scar save/load and answered losses. These are separate evidence, not a claim that Vitest ran.
 
-Normal `npx tsx` was unavailable offline (`ENOTCACHED`). The fallback uses Node 22's TypeScript transform and a scratch-only extension resolver. A second loader reads snapshots of the five original simulation files from `HEAD`; it reproduces **all 15 dev 128×15 seed-7 rows**, including residents `[61124, 93804, 37971]` = **192,899** in 2015. The `CityState.ts` difference is interface-only and erased by the loader. No source file was reverted for these checks, and no other worktree was used.
+The original WIP's two prior separate 128×15 processes matched all 15 yearly hashes. Review 1 ran one new process after rollback, and every yearly hash again matches both `gate_128x15_s7_base.json` and `gate_128x15_s7_repeat.json`; there was no second new repeat this round. All three finish at `a6e96a4b4814701a9bdb3c5ebebdb0c9d87ad4446a40ff375b09bf5f28fb2c0a`. This verifies the retained WIP, not candidate B. The driver sorts object keys, hashes typed arrays as bytes, and sets serialized `savedAt = 0`. A source-snapshot run reproduced all 15 dev 128×15 rows. Snapshots preserve the original five simulation sources; the CityState interface change is erased by TypeScript transformation.
 
-All native bot processes ran through the supplied quiet gate, one at a time. Diagnostic loaders, drivers, original source snapshots and JSON output are in the user-provided scratch directory; they are not repository deliverables.
+Normal `npx tsx` was unavailable offline (`ENOTCACHED`). Actual bot executions use Node 22's TypeScript transform and a scratch extension resolver, through the supplied quiet gate, one process at a time. All trial modes, sources and loaders are scratch-only. Extra score evaluations and telemetry are excluded from performance claims; the diagnostics do not establish real-GPU or Worker frame costs.
 
-## Bot results
-
-The reference is the fixture's current `b3` set, not the older FH-04/LG-10 report rows. `b3` endpoints are 192,899 for 128×15 s7, 1,513,835 for 256×60 s7, and 1,427,340 for 256×60 s11. Medium, plains and water 0.2 are the unchanged bot defaults.
-
-### Base population tolerance: FAIL
-
-| Run | Dev population | Branch population | Endpoint change | Largest absolute yearly-row movement | Gate |
-|---|---:|---:|---:|---:|---|
-| 128×15 s7 | 192,899 | 195,379 | +1.2856% | 7.2604% | FAIL ±0.5% |
-| 256×60 s7 | 1,513,835 | 1,550,356 | +2.4125% | 4.0335% | FAIL ±0.5% |
-| 256×60 s11 | 1,427,340 | 1,494,630 | +4.7144% | 33.2794% | FAIL ±0.5% |
-
-Branch 128×15 residents are `[63918, 93966, 37495]`. Its endpoint funds are §152,842 and approval is 78.8665. These mechanics change balance by design; the permitted base tolerance is nevertheless missed.
-
-Two scratch-only 128×15 probes changed only `EM_REP`: 0 gave 195,792 (+1.4997% versus dev); 1 gave 196,044 (+1.6304%). Neither passed. They are not repository changes, do not prove the target infeasible, and are not presented as calibration of the current value 4.
-
-### Neglect population and funds: seed 7 PASS, seed 11 FAIL
-
-Comparisons here are against the branch's attentive base of the same size/seed.
-
-| Seed | Base population | Neglect population | Change | Base funds | Neglect funds | Change | Gates |
-|---|---:|---:|---:|---:|---:|---:|---|
-| 7 | 1,550,356 | 1,332,759 | −14.0353% | §18,419,687 | §17,847,550 | −3.1061% | PASS population ≤−2%, funds no higher |
-| 11 | 1,494,630 | 1,536,884 | +2.8271% | §13,987,823 | §17,628,691 | +26.0288% | FAIL both |
-
-### Approval cost and dev reference comparison
-
-The source approval formula is untouched. In branch seed 7, neglect's final total approval is 72.8761 versus 79.4023 (−6.5261 points), and its final emergency term is −8 versus −1.4. Mean yearly emergency terms are −4.9380 versus −1.0165 (−3.9215 points).
-
-In branch seed 11, neglect's final total approval is 73.9821 versus 81.1569 (−7.1748 points), and its final emergency term is −7.0069 versus −0.9. Mean yearly emergency terms are −4.0984 versus −0.7564 (−3.3420 points).
-
-Two completed source-snapshot runs supply the dev neglect references. The attentive dev approval comes from the `b3` fixture (rounded to 0.01 point); neglect approval is recorded at full precision. Older report numbers are not substituted for current dev.
-
-| Seed | Dev attentive/neglect final approval | Dev year-60 approval cost | Branch year-60 approval cost | Year-60 gate |
-|---|---|---:|---:|---|
-| 7 | 80.36 / 76.0251 | 4.3349 | 6.5261 | PASS, larger by 2.1912 points |
-| 11 | 81.36 / 74.3485 | 7.0115 | 7.1748 | PASS, larger by 0.1633 points |
-
-The whole-run mean of yearly attentive-minus-neglect approval is 3.9119 → 5.3077 points for seed 7, but 4.9158 → 2.5124 for seed 11. Thus the year-60 interpretation passes; a requirement that the average approval cost also be unchanged or larger would fail for seed 11. The plan does not specify that aggregation. Dev neglect endpoints are 1,390,920 / §14,168,774 (s7) and 1,455,512 / §14,334,083 (s11); their mean yearly emergency terms are −4.7449 and −4.7100.
-
-### Base tourism and failures
-
-Tourism is `econData(st).tourism / demandContext(st, rt).tourism`: current tourism jobs divided by the legacy jobs formula, sampled monthly and averaged over the last 12 samples. The table shows all monthly 12-month means from day 5,400 onward, plus the yearly endpoints. Failure shares use the rolling 12 monthly outcome buckets.
-
-| Base run | Tourism ratio at yearly rows from year 15 | All monthly means from end of year 15 | Largest yearly failure share from year 10 | Largest monthly rolling failure share from year 10 | Gates |
-|---|---|---|---:|---:|---|
-| 128×15 s7 | 0.8996 | 0.8996 | 3.4483% | 3.5088% | PASS tourism 0.7–1.3, failed ≤5% |
-| 256×60 s7 | 0.8788–1.2119 | 0.8741–1.2433 | 2.3669% | 3.2787% | PASS both |
-| 256×60 s11 | 0.9449–1.3593 | 0.9007–1.3724 | 0.9615% | 1.1494% | FAIL tourism; PASS failures |
-
-The refreshed monthly failure maxima start the stricter year-10 window at its first monthly sample, day 3,270. All three base runs remain below 5%.
-
-## Reproducible commands and output
-
-Run from `C:/Users/techsin/Desktop/projects/simcityweb-T043`. The exact equivalent simbot option sets used for the five gate runs and the repeat are:
+Run from `C:/Users/techsin/Desktop/projects/simcityweb-T043`. The exact equivalent simbot option sets are:
 
 ```text
 npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
+npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet --neglect
 npx tsx tools/simbot.ts --size 256 --years 60 --seed 7 --quiet
 npx tsx tools/simbot.ts --size 256 --years 60 --seed 7 --quiet --neglect
 npx tsx tools/simbot.ts --size 256 --years 60 --seed 11 --quiet
 npx tsx tools/simbot.ts --size 256 --years 60 --seed 11 --quiet --neglect
-npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
 ```
 
-Those are equivalent bot configurations, not a claim that unavailable `npx tsx` executed. The actual fallback commands are below. Run each command to completion before starting the next. The loader URL must use `file:///`; Node's loader argument rejects a plain `C:/` URL. `--experimental-transform-types` is needed for the existing TypeScript enums.
+The actual fallback commands below reproduce the declared scratch experiments. The loader argument requires a `file:///` URL and `--experimental-transform-types` for existing enums. Each command finishes before the next starts.
 
 ```powershell
 $S = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch'
+$R = "$S/review1"
 $Q = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs'
-node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-resolve.mjs" "$S/lg06-gates.mts" --size 128 --years 15 --seed 7 --quiet --hash --out "$S/gate_128x15_s7_base.json"
-node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-resolve.mjs" "$S/lg06-gates.mts" --size 256 --years 60 --seed 7 --quiet --out "$S/gate_256x60_s7_base.json"
-node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-resolve.mjs" "$S/lg06-gates.mts" --size 256 --years 60 --seed 7 --quiet --neglect --out "$S/gate_256x60_s7_neglect.json"
-node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-resolve.mjs" "$S/lg06-gates.mts" --size 256 --years 60 --seed 11 --quiet --out "$S/gate_256x60_s11_base.json"
-node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-resolve.mjs" "$S/lg06-gates.mts" --size 256 --years 60 --seed 11 --quiet --neglect --out "$S/gate_256x60_s11_neglect.json"
-node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-resolve.mjs" "$S/lg06-gates.mts" --size 128 --years 15 --seed 7 --quiet --hash --out "$S/gate_128x15_s7_repeat.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=control" "$R/review-gates.mts" --size 128 --years 15 --seed 7 --quiet --out "$R/ablation_128_s7_control.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=control" "$R/review-gates.mts" --size 128 --years 15 --seed 7 --quiet --neglect --out "$R/candidate_128_s7_control_neglect.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=migration" "$R/review-gates.mts" --size 128 --years 15 --seed 7 --quiet --out "$R/ablation_128_s7_migration.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=tourism" "$R/review-gates.mts" --size 128 --years 15 --seed 7 --quiet --out "$R/ablation_128_s7_tourism.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=rebuild" "$R/review-gates.mts" --size 128 --years 15 --seed 7 --quiet --out "$R/ablation_128_s7_rebuild.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=scars" "$R/review-gates.mts" --size 128 --years 15 --seed 7 --quiet --out "$R/ablation_128_s7_scars.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=wip" "$R/review-gates.mts" --size 128 --years 15 --seed 7 --quiet --out "$R/ablation_128_s7_wip.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=wip" "$R/review-gates.mts" --size 256 --years 60 --seed 11 --quiet --out "$R/wip_256_s11_base.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=wip" "$R/review-gates.mts" --size 256 --years 60 --seed 11 --quiet --neglect --out "$R/wip_256_s11_neglect.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=fixed" "$R/review-gates.mts" --size 128 --years 15 --seed 7 --quiet --out "$R/candidate_128_s7_fixed_base.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=fixed" "$R/review-gates.mts" --size 128 --years 15 --seed 7 --quiet --neglect --out "$R/candidate_128_s7_fixed_neglect.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=relative" "$R/review-gates.mts" --size 128 --years 15 --seed 7 --quiet --out "$R/candidate_128_s7_relative_base.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=relative" "$R/review-gates.mts" --size 128 --years 15 --seed 7 --quiet --neglect --out "$R/candidate_128_s7_relative_neglect.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=relative" "$R/review-gates.mts" --size 256 --years 60 --seed 7 --quiet --out "$R/candidate_256_s7_relative_base.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=relative" "$R/review-gates.mts" --size 256 --years 60 --seed 7 --quiet --neglect --out "$R/candidate_256_s7_relative_neglect.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=relative" "$R/review-gates.mts" --size 256 --years 60 --seed 11 --quiet --out "$R/candidate_256_s11_relative_base.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=relative" "$R/review-gates.mts" --size 256 --years 60 --seed 11 --quiet --neglect --out "$R/candidate_256_s11_relative_neglect.json"
+```
+
+Scratch `review1/modes.json` defines M/T/B/S switches; `generate.mjs` creates the six immutable ablation sources and `candidates.mjs` creates the two migration trials. These switches are not simbot options or production settings. `feedback-findings.md`, `seed11-causal-analysis.md`, `ablation-analysis.json` and `metrics.json` summarize the recorded JSON, with the inference limits stated above.
+
+Direct-production verification uses `ts-resolve.mjs` and `lg06-gates.mts`, not a trial mode, and verifies the restored original WIP. The single new final 128 run below was compared with both prior original process files; the hash flag records yearly hashes. No `final_128x15_s7_repeat.json` process was run this round. `ts-base.mjs` instead reads the preserved dev sources.
+
+```powershell
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-resolve.mjs" "$S/lg06-gates.mts" --size 128 --years 15 --seed 7 --quiet --hash --out "$R/final_128x15_s7_base.json"
 node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-base.mjs" "$S/lg06-gates.mts" --size 128 --years 15 --seed 7 --quiet --hash --out "$S/dev_128x15_s7_base.json"
-node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-base.mjs" "$S/lg06-gates.mts" --size 256 --years 60 --seed 7 --neglect --quiet --out "$S/dev_256x60_s7_neglect.json"
-node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-base.mjs" "$S/lg06-gates.mts" --size 256 --years 60 --seed 11 --neglect --quiet --out "$S/dev_256x60_s11_neglect.json"
-```
-
-The same driver and options with `ts-base.mjs` instead of `ts-resolve.mjs` read the scratch snapshots of the original source, producing `dev_128x15_s7_base.json` and the two `dev_256x60_s<seed>_neglect.json` references. Native smoke verification uses:
-
-```powershell
-node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-resolve.mjs" "$S/neglect-smoke.mts"
-```
-
-The authored Vitest files still need these allowed, gated invocations on the lead's environment:
-
-```powershell
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-base.mjs" "$S/lg06-gates.mts" --size 256 --years 60 --seed 7 --quiet --neglect --out "$S/dev_256x60_s7_neglect.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-base.mjs" "$S/lg06-gates.mts" --size 256 --years 60 --seed 11 --quiet --neglect --out "$S/dev_256x60_s11_neglect.json"
 node "$Q" npx vitest run tests/sim/neglectSafety.test.ts --maxWorkers=1
 node "$Q" npx vitest run tests/sim/neglectScars.test.ts --maxWorkers=1
 ```
 
+Exact candidate-production byte copies are preserved as scratch `review1/candidate-production-tourism.ts`, `candidate-production-tuning.ts` and `candidate-neglectMigration.test.ts`; copy hashes were checked before rollback. The scratch `candidate-production.mjs` loader redirects the original tourism/tuning module URLs to those archives, allowing candidate-specific native checks after restoring the runtime. It does not load a new production flag:
+
+```powershell
+node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/candidate-production.mjs" "$R/migration-smoke.mts"
+node --no-warnings --experimental-transform-types --experimental-loader "file:///$S/ts-resolve.mjs" "$S/neglect-smoke.mts"
+```
+
+Those two native verification commands were plain short Node probes, not quiet-gated bot runs. Every bot and Vitest attempt used the quiet gate as required.
+
 ## Plan/code differences and ownership requests
 
-- **Annual fewer-newcomers wording needs a definition.** Migration currently scales residential capacity targets, not an arrival ledger. `emergencyMigrationImpact` reports the same city's current target shortfall against crime-only safety, holding the other inputs fixed. It does not claim a causal count of actual arrivals, and repeated monthly target stocks are not added into an annual flow. The panel's exact “Y fewer newcomers this year” cannot be supplied honestly without a defined estimate or a new arrival-flow model. Route this wording/definition to the lead and META.
-- **The existing migration clamp supplies ±12%.** Safety now feeds that existing path through attractiveness. Adding a second multiplier would count safety twice and expand the total bound. This interpretation is explicit; it does not cure the failed balance gates.
-- **Current reference rows differ from plan context.** Older plan and LG-10 population/funds examples predate B1/B3. Comparisons above use `b3`; no fixture was changed and no `polish` sign-off is claimed.
-- **Scar timing:** the saved source expiry is exactly 18 months; the existing derived-raster refresh can lag it. Request B2 add a minimal scar-creation/next-expiry invalidation hook in `src/sim/infra/services.ts` (`due`/`prep` and NIMBY dirty handling). This file was not edited. Avoid a full synchronous raster rebuild on a burn-down.
-- **Budget UI, cloud-held:** in `src/ui/panels/BudgetPanel.ts`, add `emergency:rebuild` to the existing `GROUP_LABELS`/`SLIDER_GROUP` handling with the exact label **“Rebuilding after emergencies”** and appropriate grouping. The simulation budget line exists; the UI file was not edited.
-- **Emergencies panel, cloud-held:** in `src/ui/panels/EmergenciesPanel.ts` `renderStats`, read mirrored `stats.emergency.year.unansweredRebuildCost` (or `emergencyRebuildCosts(...).unansweredYear`). Use the target estimate only with wording agreed above; do not label it actual annual arrivals. Include that estimate in the render signature if it is displayed: the current signature covers emergency stats only. No live system read is needed.
-- **Banner, META's round-3 hunk:** in `src/ui/EmergencyBanner.ts` `onEvent`, append the formatted rebuild amount to the outcome after the existing `b.inc = ctx.host.emergency.incident(e.id) ?? b.inc` read. `b.inc.rebuildCost` carries the outcome's amount. `IncidentRecord` already aliases `Incident`, and incident encoding already structured-clones it, so the new optional field crosses the existing stream. Display rounding belongs with the currency formatter. The banner/lifecycle files were not edited.
-- **Worker audit, cloud-held:** add `emergencySafety`, `emergencyMigrationImpact` and `emergencyRebuildCosts` to `src/worker/replicaSafe.ts` and its parity/purity tests before UI adoption; include scalar `emergencyRebuildCost` if that catalog also lists scalar utilities. The helpers read mirrored data and return plain values. No worker file was edited.
-- **Optional source-position mirror, cloud-held:** if rendering/UI needs source footprints or remaining durations, add `emergencyScars` to `src/worker/protocol.ts` `SYSTEM_KEYS`. `systemData.economy.safetyMigrationLoss`, the emergency stats and the stigma raster already use existing mirrors. Mirroring the scar source list is not required just to render its stigma.
-- **Prestige view hook, render owner:** the existing `Overlay.Nimby` path reads `st.stigma` and shows prestige minus stigma. The scar splat is already in that raster. Source outlines, positions or expiry tooltips can use the optional mirrored list above. No render file was edited.
+- **Annual fewer-newcomers wording:** migration scales residential capacity targets, not arrivals. `emergencyMigrationImpact` reports current target loss versus the same city's crime-only migration; it does not sum target stocks into annual newcomers. META/lead must define an annual estimate or use honest current-target wording.
+- **Migration interpretation:** the retained runtime feeds full safety through existing attractiveness-based migration, bounded by the existing pre-context 0.88–1.12 clamp. The explicit separate non-positive factor was tested and rejected; its formulas, examples, sources and comparisons remain in this report/scratch for review. The existing final school adjustment can still produce values below 0.88.
+- **Current reference:** use b3, not older plan examples. No tolerances were weakened, baseline rows rewritten or rebuild/scar coefficients changed.
+- **B2 scar cadence request:** in `src/sim/infra/services.ts` `due`/`prep` and NIMBY dirty handling, add a minimal scar-creation/next-expiry invalidation hook. This file is untouched; avoid a synchronous full raster rebuild at burn-down.
+- **Cloud-held BudgetPanel:** in `src/ui/panels/BudgetPanel.ts`, add `emergency:rebuild` to `GROUP_LABELS`/`SLIDER_GROUP` handling with the exact label **“Rebuilding after emergencies”** and appropriate grouping.
+- **Cloud-held EmergenciesPanel:** in `renderStats`, read mirrored `stats.emergency.year.unansweredRebuildCost` or `emergencyRebuildCosts(...).unansweredYear`. Clarify target-estimate wording above, and include any displayed target estimate in the render signature (currently emergency stats only).
+- **META's banner hunk:** in `src/ui/EmergencyBanner.ts` `onEvent`, append formatted `b.inc.rebuildCost` after the existing `ctx.host.emergency.incident(e.id)` read. `IncidentRecord = Incident` and existing structured cloning already carry the optional field; no new live-system read is needed.
+- **Cloud-held Worker audit:** add `emergencySafety`, `emergencyMigrationImpact` and `emergencyRebuildCosts` to `src/worker/replicaSafe.ts` and parity/purity tests before UI adoption; include scalar `emergencyRebuildCost` if that catalog includes scalar utilities. The rejected `safetyMigrationMultiplier` is not a runtime API to mirror or audit.
+- **Optional source-position mirror:** add `emergencyScars` to `src/worker/protocol.ts` `SYSTEM_KEYS` only if a consumer needs footprints/remaining duration. Economy loss, emergency stats and the stigma raster already use existing mirrors; rendering stigma does not require the source list.
+- **Render Prestige hook:** the existing `Overlay.Nimby` path reads `st.stigma` and draws prestige minus stigma, so the scar splat is already available. Source outlines/expiry tooltips can use the optional mirror above.
 
-All cloud-held files remain untouched. The task footer's push/`.done` request is superseded by the user's explicit instruction to leave changes uncommitted.
+All cloud-held files remain untouched. Scar save/load preserves source footprints and absolute expiry; old saves omit new lists/counters safely, and historical saved months without rebuild counters are not added to annual paid totals.
 
-## Left for the lead
+## Decisions for the lead
 
-The balance misses need a lead decision or further balance work; the current results do not satisfy LG-06 acceptance. Run the authored tests, all individual affected regression/hygiene checks, and the full Vitest suite in an environment where Vitest can spawn. Actual Worker/Loopback UI behavior, browser rendering, GPU/performance checks and B2's integration are unverified. This lane did not run a browser, a benchmark or the full suite.
+This calibration round stops with the tested combinations failing. Production source has returned to the original WIP, whose gates also fail; candidate B is rejected despite its explicit neutral-point semantics. The evidence does not establish impossibility. The remaining choices are explicit:
+
+- Decide whether to retain the specified rebuilding/scar mechanics and authorize further balance work against the existing all-year ±0.5% base gate, or explicitly revise those mechanics or that tolerance. Neither was silently changed here.
+- Decide whether to authorize broader bot, jobs/map/redevelopment and tourism-ratio calibration. The observed affordability/layout forks and late bottleneck extend beyond a local `--neglect` dispatch bug; this lane did not change the bot strategy or tourism calibration to hide them.
+- Define whether “approval cost unchanged or larger” means the year-60 gap, the mean yearly gap or both. Candidate s7 passes only the first; candidate s11 passes neither.
+- Define the panel's annual “Y fewer newcomers” measure, or approve honest current residential-target wording. There is no modeled annual arrival ledger to expose directly.
+
+## Limitations and browser checks
+
+The formal tests, full Vitest, affected regression/hygiene checks, actual Worker/Loopback behavior, browser rendering, B2 integration and GPU/performance remain subject to the checks section and lead verification. No browser, benchmark or full suite was run by this lane. Monthly traces do not expose the precise first daily lot choice, effective demand-cap contribution or complete venue/hotel/access decomposition; causal inferences above are limited accordingly.
 
 Browser acceptance checklist:
 
-- [ ] In an attentive and an ignored-call city, inspect Safety, attractiveness, migration and the following tourism pass; check that the displayed effect agrees with the modeled target estimate.
-- [ ] Cause §56,000 monthly damage: the current forecast shows §8,400, rollover charges §8,400 once under the exact rebuilding label, and a following clean month adds no second charge.
-- [ ] Compare an unanswered burn-down with a late-answered burn-down: both incur rebuilding; only the unanswered loss creates a scar and unanswered subtotal.
-- [ ] Open Prestige/NIMBY and verify the scar's 0.15 core, radius-3 falloff and overlap behavior. Check creation/expiry update latency with the existing cadence and again after B2's hook.
-- [ ] Bulldoze or rebuild the burnt lot; the timed neighborhood scar remains until its source expiry.
-- [ ] Save halfway through a scar, reload and compare the exact source footprint/expiry and stigma after refresh. Continue through 18 months and verify expiry.
-- [ ] Load an older save with no scars/cost fields, advance months and confirm normal play, no historical-year rebilling, and zero fallbacks in the new UI rows.
-- [ ] Repeat the relevant readouts, costs, save/load and outcome checks with LocalSimHost and Loopback/Worker, using host reads and existing stream data.
+- [ ] Compare attentive/ignored-call safety, tourism attractiveness and the following venue pass; verify the retained safety deduction cannot increase migration at identical state/survey inputs. Check rejected-candidate neutral examples separately only if that design is revisited.
+- [ ] Cause §56,000 monthly damage: forecast §8,400, settle §8,400 once under the exact rebuilding label, then no second charge in a clean month.
+- [ ] Compare unanswered and late-answered burn-downs: both rebuild; only the unanswered loss creates a scar and unanswered subtotal.
+- [ ] Verify Prestige/NIMBY's 0.15 core, radius-3 falloff and overlap; inspect creation/expiry latency before and after B2's invalidation hook.
+- [ ] Bulldoze/rebuild the burnt lot; the timed scar remains until its source expiry.
+- [ ] Save midway through a scar, reload exact footprint/expiry, compare stigma after refresh, and continue through 18 months.
+- [ ] Load old saves without the new fields, advance months, confirm normal play/no historical-year rebilling/zero UI fallbacks.
+- [ ] Repeat relevant reads, costs, outcomes and save/load with LocalSimHost and Loopback/Worker through the host and existing streams.
