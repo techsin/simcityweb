@@ -13,10 +13,11 @@ import { FEl, installFakeDom } from './fakeDom';
 installFakeDom();
 const cleanups: (() => void)[] = [];
 
-function fixture(options: { initialize?: boolean; duck?: boolean; live?: boolean; speed?: number } = {}) {
+function fixture(options: { initialize?: boolean; duck?: boolean; live?: boolean; speed?: number; speedBeforeMirror?: boolean } = {}) {
   const mock = new MockContext(), epoch = Date.now();
+  let audioOffset = 0;
   mock.sampleRate = 8000;
-  Object.defineProperty(mock, 'currentTime', { get: () => (Date.now() - epoch) / 1000 });
+  Object.defineProperty(mock, 'currentTime', { get: () => (Date.now() - epoch + audioOffset) / 1000 });
   vi.stubGlobal('window', { AudioContext: function () { return mock; } });
   const audio = new AudioEngine();
   if (options.initialize !== false) expect(audio.init()).toBe(true);
@@ -41,6 +42,7 @@ function fixture(options: { initialize?: boolean; duck?: boolean; live?: boolean
   const gameSounds = new GameSounds({
     sim: { events } as never, host: seam, signal: abort.signal, sound,
     duck: options.duck === false ? undefined : (db, hold, release) => audio.duck(db, hold, release, { renew: true }),
+    releaseDuck: options.duck === false ? undefined : (release) => audio.releaseDuck(release),
     world: () => ({ camera: null }) as never, sandbox: () => true,
   });
   const root = new FEl('div');
@@ -55,10 +57,15 @@ function fixture(options: { initialize?: boolean; duck?: boolean; live?: boolean
     policy.live = value;
     for (const listener of [...listeners]) listener(policy);
   };
-  const speed = (value: number) => { host.speed = value; events.emit('speedChanged', value); };
+  const speed = (value: number) => {
+    if (options.speedBeforeMirror) events.emit('speedChanged', value);
+    host.speed = value;
+    if (!options.speedBeforeMirror) events.emit('speedChanged', value);
+  };
+  const stall = (ms: number) => { audioOffset += ms; };
   const dispose = () => { abort.abort(); gameSounds.dispose(); banner.dispose(); audio.stopMusic(); };
   cleanups.push(dispose);
-  return { audio, mock, abort, events, policy, listeners, root, live, speed, dispose };
+  return { audio, mock, abort, events, policy, listeners, root, live, speed, stall, dispose };
 }
 
 function reduction(audio: AudioEngine, baseline: number): number {
@@ -121,6 +128,55 @@ describe('emergency LIVE presentation', () => {
     expect(reduction(f.audio, baseline)).toBeCloseTo(-6, 1);
     f.live(false);
     expect(f.root.classList.contains('emg-live')).toBe(false);
+  });
+
+  it('uses speedChanged before the worker speed mirror updates, without a policy or UI tick', () => {
+    const f = fixture({ live: true, speed: 0, speedBeforeMirror: true }), baseline = f.audio.debugMusicBusGain!;
+    const duck = vi.spyOn(f.audio, 'duck'), release = vi.spyOn(f.audio, 'releaseDuck');
+    expect(f.root.classList.contains('emg-live')).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    f.speed(1);
+    expect(f.root.classList.contains('emg-live')).toBe(true);
+    expect(duck).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(100);
+    expect(reduction(f.audio, baseline)).toBeCloseTo(-6, 6);
+    f.speed(0);
+    expect(f.root.classList.contains('emg-live')).toBe(false);
+    expect(release).toHaveBeenCalledWith(0.5);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(500);
+    expect(f.audio.debugMusicBusGain).toBeCloseTo(baseline, 10);
+    const calls = duck.mock.calls.length;
+    f.speed(3);
+    expect(f.root.classList.contains('emg-live')).toBe(true);
+    expect(duck).toHaveBeenCalledTimes(calls + 1);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('holds the 6 dB duck through stalled callbacks and explicitly releases when LIVE ends', () => {
+    const f = fixture(), baseline = f.audio.debugMusicBusGain!;
+    const duck = vi.spyOn(f.audio, 'duck');
+    f.live(true);
+    vi.advanceTimersByTime(100);
+    expect(reduction(f.audio, baseline)).toBeCloseTo(-6, 6);
+    const calls = duck.mock.calls.length;
+    f.stall(140);
+    expect(duck).toHaveBeenCalledTimes(calls);
+    expect(reduction(f.audio, baseline)).toBeCloseTo(-6, 6);
+    f.stall(110);
+    expect(duck).toHaveBeenCalledTimes(calls);
+    expect(reduction(f.audio, baseline)).toBeCloseTo(-6, 6);
+    vi.advanceTimersByTime(100);
+    expect(duck).toHaveBeenCalledTimes(calls + 1);
+    expect(reduction(f.audio, baseline)).toBeCloseTo(-6, 6);
+    f.live(false);
+    expect(f.root.classList.contains('emg-live')).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(499);
+    expect(f.audio.debugMusicBusGain).toBeLessThan(baseline);
+    vi.advanceTimersByTime(1);
+    expect(f.audio.debugMusicBusGain).toBeCloseTo(baseline, 10);
   });
 
   it('keeps one renewal loop across repeated transitions and removes listeners and timers on abort', () => {

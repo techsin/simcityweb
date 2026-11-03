@@ -309,6 +309,7 @@ export class CityScene {
     this.gameSounds = new GameSounds({
       sim: this.sim, host: this.host, signal: this.abort.signal,
       duck: (db, hold, release) => (this.mods.audio as { duck?: import('../audio/AudioEngine').AudioEngine['duck'] } | undefined)?.duck?.(db, hold, release, { renew: true }),
+      releaseDuck: (release) => (this.mods.audio as { releaseDuck?: (release: number) => void } | undefined)?.releaseDuck?.(release),
       sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox(),
     });
     this.offUiSounds = installUiSounds(() => this.mods.audio as unknown as UiSoundAudio | undefined);
