@@ -3,7 +3,8 @@
  * W1.2's browser acceptance (docs/WORKER_DESIGN.md §5.4 and §6 row W1.2): a real simulation worker in Playwright's
  * Chromium, against the production build by default. One browser and one server, both stopped on any exit.
  *
- *   node tools/qa-worker.mjs [--dev] [--port 5535] [--out <dir>] [--size small] [--freeze-ms 15000]
+ *   node tools/qa-worker.mjs [--dev] [--port 5535] [--out <dir>] [--size small] [--quality low] [--freeze-ms 15000]
+ *                            [--soak-min 0]
  *
  * Steps, each logged PASS or FAIL (exit code 1 on any FAIL):
  *   boot      ?quickstart=1&simworker=1 reaches __ready on a worker host (the worker is its own script)
@@ -17,6 +18,7 @@
  *   crash     a fatal in the worker: the crash dialog; "Restart from autosave" boots a new worker from the save
  *   watchdog  a worker that stops posting: 10 visible seconds, the crash dialog; "Continue on the main thread"
  *   fallback  a worker script that fails to load: the city boots on the main thread, with one toast
+ *   soak      (--soak-min N) N minutes at speed 3 after the freeze: the worker stays alive and the days keep coming
  *   console   no console errors outside the steps that crash on purpose
  * Measured, not gated: boot time and action latency (post to ack applied, p50 / p95 / p99). Not covered here: the
  * protector probe in the page and the worker (S1's tests/perf/protector.test.ts runs the production loop under node),
@@ -38,6 +40,9 @@ const PORT = Number(opt('port', 5535));
 const OUT = path.resolve(opt('out', path.join(os.tmpdir(), 'qa-worker')));
 const SIZE = opt('size', 'small');
 const FREEZE_MS = Number(opt('freeze-ms', 15000));
+const SOAK_MIN = Number(opt('soak-min', 0));
+/** the app's graphics quality: SwiftShader draws 'high' at a frame every few seconds, and ticks follow rAF */
+const QUALITY = opt('quality', 'low');
 const READY_MS = 300000;
 
 fs.mkdirSync(OUT, { recursive: true });
@@ -148,7 +153,11 @@ async function main() {
   log('server', base, DEV ? '(dev)' : '(production build)');
   browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 
+  const lowQuality = (q) => {
+    try { const s = JSON.parse(localStorage.getItem('metropolis.settings') ?? '{}'); if (!s.quality || s.quality !== q) localStorage.setItem('metropolis.settings', JSON.stringify({ ...s, quality: q })); } catch { /* storage blocked */ }
+  };
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  await ctx.addInitScript(lowQuality, QUALITY);
   const page = await ctx.newPage();
   let expectErrors = false;
   const errors = [], workers = [];
@@ -164,6 +173,7 @@ async function main() {
   const bootMs = await enterCity(page, `${base}/?quickstart=1&size=${SIZE}&seed=7&simworker=1`, 'quickstart');
   let info = await hostInfo(page);
   check('boot: a worker host', info?.kind === 'worker' && workers.some((u) => /simWorker/.test(u)), JSON.stringify({ info, workers: workers.length, bootMs }));
+  check('boot: a new city starts paused (the scene\'s rule, applied to the booted host)', info?.speed === 0, `speed ${info?.speed}`);
   await shot(page, '01-boot');
 
   // ---- tools: a road, then a zone beside it, through the real tools
@@ -256,6 +266,7 @@ async function main() {
   check('load: the saved city on a new worker', info?.kind === 'worker' && info.roads === kept.roads && info.zoned === kept.zoned && info.day >= saveFrom.day,
     JSON.stringify({ saved: { day: kept.day, roads: kept.roads, zoned: kept.zoned }, loaded: info }));
   await shot(page, '04-loaded');
+  check('load: a saved city starts running', info?.speed === 1, `speed ${info?.speed}`);
   await setSpeed(page, 3);
   const loadDay = info.day;
   await waitHost(page, (d) => window.__metropolis.city.host.state.day >= d + 20, loadDay, 120000).catch(() => undefined);
@@ -275,6 +286,19 @@ async function main() {
   const crashedAfterFreeze = await crashDialog(page);
   check('freeze: no crash path, days advance within 1 s of resume', !crashedAfterFreeze && !resumed.disposed && resumed.d1 > resumed.d0, JSON.stringify({ ...resumed, crashDialog: crashedAfterFreeze }));
   await shot(page, '05-after-freeze');
+  if (SOAK_MIN > 0) {
+    await setSpeed(page, 3);
+    const samples = [], end = Date.now() + SOAK_MIN * 60000;
+    while (Date.now() < end) {
+      await sleep(Math.min(30000, Math.max(0, end - Date.now())));
+      const s = await page.evaluate(() => ({ day: window.__metropolis.city.host.state.day, disposed: !!window.__metropolis.city.host.isDisposed,
+        heapMB: Math.round((performance.memory?.usedJSHeapSize ?? 0) / 1048576) }));
+      samples.push({ t: Math.round((SOAK_MIN * 60000 - (end - Date.now())) / 1000), ...s }); log('soak', samples.at(-1));
+    }
+    const rising = samples.every((x, i) => i === 0 || x.day > samples[i - 1].day);
+    check(`soak: ${SOAK_MIN} min at speed 3, alive and advancing`, rising && !samples.some((x) => x.disposed) && !(await crashDialog(page)), JSON.stringify({ first: samples[0], last: samples.at(-1) }));
+    await shot(page, '05b-after-soak');
+  }
   check('console: no errors in normal play', errors.length === 0, errors.slice(0, 5).join(' | '));
 
   // ---- crash: a fatal in the worker, then Restart from autosave
@@ -311,6 +335,7 @@ async function main() {
 
   // ---- fallback: a worker script that fails to load
   const fctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  await fctx.addInitScript(lowQuality, QUALITY);
   await fctx.addInitScript(() => {
     const W = window.Worker;
     window.Worker = class extends W {

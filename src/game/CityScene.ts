@@ -187,7 +187,8 @@ export class CityScene {
     if (opts.host) {
       // booted paused, since only its Ready said whether the city is new: the local host's initial speed, as a command
       this.host = opts.host;
-      if (initialSpeed !== 0) this.host.setSpeed(initialSpeed ?? 1, 'initial');
+      // (a host that crashed since its Ready is closed: the App's crash dialog follows)
+      if (initialSpeed !== 0 && !opts.host.isDisposed) this.host.setSpeed(initialSpeed ?? 1, 'initial');
     } else {
       this.host = new Host(state, {
         rctx: opts.rctx, initialSpeed, errors: this.errors,

@@ -160,7 +160,8 @@ class ErrorSink implements SimErrors {
     else console.error('[sim]', title, err);
   }
 }
-interface WorkerBoot { host: WorkerSimHost; errors: ErrorSink }
+/** a booted worker host; `crashed` is set by a crash that came before its city was entered */
+interface WorkerBoot { host: WorkerSimHost; errors: ErrorSink; crashed: Error | null }
 /** outcome of a "Recover unsaved progress?" prompt ('later' = dismissed, snapshot kept; 'none' = nothing to offer) */
 type RecoverChoice = 'recovered' | 'discarded' | 'later' | 'failed' | 'none';
 
@@ -192,6 +193,8 @@ class App {
     ticker?: number;
     /** W1.2: the worker crashed; the crash dialog decides what follows (§4.4) */
     crashed?: boolean;
+    /** enterCity finished: a crash dialog may close this city (until then the crash waits, see WorkerBoot) */
+    entered?: boolean;
   } | null = null;
   /** W1.2: the next city's worker, spawned while the region screen shows (§4.1 step 1) */
   private spareWorker: Promise<WorkerPort | null> | null = null;
@@ -617,6 +620,9 @@ class App {
     await ld.hide();
     audio.play('cityReady');
     markReady();
+    if (this.city) this.city.entered = true;
+    // W1.2: the worker crashed while the city was being entered; the dialog opens now
+    if (worker?.crashed) void this.onWorkerCrash(worker.host, worker.crashed);
   }
 
   private currentState(): HostState | null {
@@ -812,21 +818,25 @@ class App {
    */
   private async bootWorker(model: RegionModel, tile: RegionTile, ld: LoadingScreen): Promise<WorkerBoot | null> {
     const errors = new ErrorSink();
-    let booted: WorkerSimHost | null = null;
+    let boot: WorkerBoot | null = null;
     try {
       const [[{ loadWorkerSimHost }, { pageSimWasmFlag }], port] = await Promise.all([workerModules(), this.takeSpareWorker()]);
-      ld.set('Starting the simulation…', 0.6);
-      booted = await loadWorkerSimHost(model.data.id, tile.key, {
+      ld.set('Starting the simulation…', 0.35);
+      const host = await loadWorkerSimHost(model.data.id, tile.key, {
         port, rctx: regionContext(model, tile), regionName: model.data.name, errors,
         // paused until the scene knows from the replica whether the city is new (CityScene applies the speed)
         initialSpeed: 0,
         flags: { simwasm: pageSimWasmFlag() },
-        onBoot: (phase, pct) => ld.set(BOOT_PHASES[phase] ?? 'Starting the simulation…', 0.6 + 0.3 * pct),
+        onBoot: (phase, pct) => ld.set(BOOT_PHASES[phase] ?? 'Starting the simulation…', 0.35 + 0.3 * pct),
+        // a boot failure rejects instead (the fallback below); a crash before the city is entered waits for it
         onCrash: (e, duringBoot) => {
-          if (!duringBoot && booted) void this.onWorkerCrash(booted, e);
+          if (duringBoot || !boot) return;
+          boot.crashed = e;
+          void this.onWorkerCrash(boot.host, e);
         },
       });
-      return { host: booted, errors };
+      boot = { host, errors, crashed: null };
+      return boot;
     } catch (e) {
       // a missing record is the local path's to report
       if ((e as Error)?.message === 'City record not found') return null;
@@ -840,7 +850,7 @@ class App {
    *  host already wrote its recovery snapshot; the player picks what follows. */
   private async onWorkerCrash(host: WorkerSimHost, error: Error): Promise<void> {
     const c = this.city, model = this.region;
-    if (!c || !model || c.host !== host || c.crashed) return;
+    if (!c || !model || c.host !== host || c.crashed || !c.entered) return;
     c.crashed = true;
     clearInterval(c.ticker);
     c.status?.set('error', c.lastSave);
@@ -852,6 +862,8 @@ class App {
     const ld = new LoadingScreen(this.root);
     ld.set('Restarting the simulation…', 0.2);
     await paint();
+    // a city still being entered or saved holds `busy` for a moment
+    for (let i = 0; this.busy && i < 600; i++) await new Promise((r) => setTimeout(r, 50));
     await this.closeCity(c);
     if (choice === 'local') this.workerOff = true;
     if (choice === 'recover') {

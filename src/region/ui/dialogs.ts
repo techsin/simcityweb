@@ -503,10 +503,12 @@ export function openSimCrashDialog(o: { cityName: string; message: string; recov
     const body = h(
       'div',
       { class: 'recover-body' },
-      h('p', {}, 'The simulation of ', h('b', {}, o.cityName), ' stopped. Nothing was saved after your last save.'),
+      h('p', {}, 'The simulation of ', h('b', {}, o.cityName), o.recoverable
+        ? ' stopped. Progress since the last save is not in it, but a recovery snapshot was kept on this device.'
+        : ' stopped. Progress since the last save is not in it.'),
       h('p', { class: 'rv-note' }, o.recoverable
-        ? 'Restart reloads the last save. Recover restores the recovery snapshot kept on this device. Continue on the main thread reloads the last save without the simulation worker.'
-        : 'Restart reloads the last save. Continue on the main thread reloads it without the simulation worker.'),
+        ? 'Restart reloads the last save. Recover replaces it with the snapshot first. Continue on the main thread reloads the last save without the simulation worker, for the rest of this visit.'
+        : 'Restart reloads the last save. Continue on the main thread reloads it without the simulation worker, for the rest of this visit.'),
       h('details', {}, h('summary', {}, 'Details'), h('pre', { class: 'rv-note' }, o.message)),
     );
     const restart = button('Restart from autosave', { icon: 'refresh', cls: 'lg primary', sound: 'confirm', onClick: pick('restart') });
