@@ -49,7 +49,7 @@ time, the newest first:
 | label | flavour headlines (`'info'` news from the `'news'` desk, `isGazette`) carry a "Gazette" tag | — |
 | date | "Mar 4" (the full date is the date's own tooltip): the year took ~34 px of a 389 px view | — |
 | hover | pauses everything: the hold, the scroll, the queue's clock; new items wait | — |
-| clock | real time (`performance.now()`, at most 0.5 s a frame): CityScene clamps the frame dt at 0.1 s, so on a slow machine the holds would have stretched | `MAX_STEP_S` 0.5 |
+| clock | real time (`performance.now()`, at most 1 s a frame): CityScene clamps the frame dt at 0.1 s, so on a slow machine the holds would have stretched | `MAX_STEP_S` 1 |
 | widths | the ResizeObserver (A1) reports the track's and the view's widths after layout; a frame reads no layout and writes `transform` only when it changes (nothing while an item rests) | — |
 | sync | new items are the ones after the last one seen (W0.5's `newsSeq` and `newsMark` still trigger it); a replaced log (a load, another city) or a revision with no new item starts over at the newest item, without queueing the old log (pushed items stay) | — |
 | `push(item)` | FEEL-22's API: a UI-made `TickerItem` (text, kind, optional day, x/z for a click that focuses the cell) shows next, after the news that came before it, once (it is not in the log) | — |
@@ -122,3 +122,38 @@ How the design got there (the same probes on earlier builds of this lane): the p
 the short date and halved burst rests fixed that one (max 12.2 s) but `bot256_s7_y60` still failed (1×: max 16.8 s;
 2×: 1 in a row, 4 never shown), which the stale rule and the routine-first cap fixed. Ultra posts more than one line
 can show (38-95 items in under a minute); it is reported, not gated (decision D3).
+
+### Decisions (the conservative reading, with the evidence; the lead's to confirm)
+
+- **D1 · "Enters from the right" is a 0.5 s slide, not a 60 px/s crawl.** The first acceptance item (the first 20
+  characters inside `.tk-view` within 1 s) rules out an entry at the scroll speed: the text starts ~62 px in, so 20
+  characters (~128 px) at 60 px/s take ~3 s. The item slides in from the view's right edge (ease-out) in 0.5 s and
+  rests; only a long one scrolls, at 60 px/s.
+- **D2 · Rests for a long item** (the plan names none): 1 s before it scrolls and 1 s at its end, so its start and
+  its end can each be read; halved for a queued item of a burst. A long item takes at least the 5 s slot.
+- **D3 · "10 consecutive headlines" is read at the game's own pace at 1× and 2×** (flavour headlines come 40-100 days
+  apart: 20-50 s at 1×, 8-20 s at 2×), with the city's other news between them, and gated there (unit tests and the
+  real-save probe, 10 of 10 on both saves). At ultra (2-5 s apart, among 0.7-1.9 news items a second) no one-line
+  ticker with the plan's 3 s / 60 px/s can show every item: it is reported (4 and 8 in a row), not gated. A burst of
+  10 at once cannot meet it either by the plan's own numbers (5 + 9 × 3 = 32 s).
+- **D4 · The ticker lets routine news go when it falls behind** (`STALE_S` 6 s, a routine-first queue cap of 8). The
+  plan says only "bursts queue"; without this a busy 250k city at 2× failed the acceptance (1 headline in a row, 4
+  never shown). Routine = the kinds that also show elsewhere: advisor tips and warnings (the Advisors panel), bad news
+  and disasters (FEEL-02a always shows them as toasts, and the emergency banner). Flavour headlines (the ticker is
+  their only place), good news and rewards never give way. Nothing leaves the news feed, and the rotation brings the
+  items back. A trade-off for the lead: the alternative is a ticker that runs minutes behind in a busy city.
+- **D5 · The date label is "Mar 4"** (the full date is its tooltip). The plan does not mention the date; the year took
+  ~34 px of a 389 px view at 1280×720. With D2's halved rests it is margin for the 15 s acceptance (the busy 2× case:
+  17.8 s with neither, 14.2 / 14.9 s with one, 11.8 s with both).
+- **D6 · Idle, the ticker rotates the newest 8 items** (the old marquee's 8), newest first, each held 5 s (or scrolled
+  once); the plan does not say what an idle ticker shows. A new item interrupts the rotation at once.
+- **D7 · FH-18's `src/ui`-wide text test stays FH-18's (GUIDE lane).** `AdvisorsPanel.ts:66` still says "connect it
+  with power lines", which FH-18 fixes; a `src/ui`-wide scan would fail on it today. This lane tests the ticker's tip
+  (the welcome items, and a scan of `Notifications.ts`) with FH-18's regular expression.
+- **D9 · The bot was not run.** Its import closure (tools/simbot.ts, 89 files, walked from the imports) holds no
+  `src/ui` file, and nothing under `src/sim`, `src/worker`, `src/game` or `src/save` changed: it is dev's by
+  construction (dev's reference: residents [ 61124, 93804, 37971 ] = 192,899).
+- **D10 · Two files outside the owns list, both new:** `tools/qa-ticker.mjs` (the browser checks, so a reviewer can
+  rerun them) and `tests/game/tickerProbe.test.ts` + `tests/game/tickerLayout.ts` (test helpers). No other lane's
+  file is touched; `Notifications.ts`'s hunks stay inside the ticker's old lines 26-124 (T058's question container in
+  `Toasts` merges around them).

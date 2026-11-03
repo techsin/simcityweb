@@ -133,7 +133,7 @@ export class NewsTicker {
   /** the view's right fade (hud.css `.tk-view` mask): an item fits when it ends before it */
   static FADE_R = 24;
   /** the longest real-time step one frame takes (a hidden tab resumes where it was) */
-  static MAX_STEP_S = 0.5;
+  static MAX_STEP_S = 1;
   readonly el: HTMLDivElement;
   private track: HTMLDivElement;
   private view: HTMLDivElement;

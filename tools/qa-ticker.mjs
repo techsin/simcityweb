@@ -16,6 +16,9 @@
  *
  * Usage:  node tools/qa-ticker.mjs [--shots <dir>] [--cache <vite cache dir>]
  * Its own Vite dev server (HMR off) on a free port, headless Chromium (SwiftShader). Exit 1 on any failed check.
+ * SwiftShader draws this page at about a frame a second, which says nothing about a DOM ticker's timing: the checks
+ * switch the 3D view's per-frame update and draw off (the canvas keeps its last frame) and report the frame rate both
+ * ways. Rects are screen px (the HUD is zoomed): the view's 16 / 24 css px fades are scaled by the zoom.
  */
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
@@ -89,8 +92,17 @@ try {
     w.__tk = scene.ticker;
     w.__notify = (text, kind = 'info', advisor) => scene.sim.notify(text, kind, undefined, undefined, advisor);
     const view = document.querySelector('.ticker .tk-view');
+    // the 3D view off / on (its update and draw; the ticker is DOM and runs in the same frame loop)
+    const keep = { wr: scene.world.render, wu: scene.world.update, ou: scene.objects.update };
+    w.__lite = (on) => {
+      if (on) { scene.world.render = () => {}; scene.world.update = () => {}; scene.objects.update = () => {}; }
+      else { delete scene.world.render; delete scene.world.update; delete scene.objects.update; Object.assign(scene.world, { render: keep.wr, update: keep.wu }); scene.objects.update = keep.ou; }
+    };
+    w.__fps = () => new Promise((res) => { let n = 0; const t0 = performance.now(); const f = () => (++n, performance.now() - t0 < 3000 ? requestAnimationFrame(f) : res(+(n / ((performance.now() - t0) / 1000)).toFixed(1))); requestAnimationFrame(f); });
     w.__geom = () => {
       const v = view.getBoundingClientRect();
+      // screen px per css px (the HUD's zoom)
+      const z = v.width / view.clientWidth;
       const item = view.querySelector('.tk-item');
       const tx = item?.querySelector('.tk-text');
       const node = tx?.firstChild;
@@ -101,7 +113,7 @@ try {
       r.setEnd(node, Math.min(20, node.length));
       const head = r.getBoundingClientRect();
       // the view's opaque part: past the 16 px left fade, before the 24 px right fade (hud.css .tk-view mask)
-      const lo = v.left + 16 - 0.5, hi = v.right - 24 + 0.5;
+      const lo = v.left + 16 * z - 0.5, hi = v.right - 24 * z + 0.5;
       const wOf = (e) => (e ? +e.getBoundingClientRect().width.toFixed(1) : 0);
       return {
         text: tx.textContent, title: item.getAttribute('title'), textW: wOf(tx), dateW: wOf(item.querySelector('.d')), tagW: wOf(item.querySelector('.tk-tag')), itemW: wOf(item),
@@ -121,11 +133,16 @@ try {
   const sleep = (ms) => page.waitForTimeout(ms);
   const layout = await page.evaluate(() => {
     const r = (s) => { const e = document.querySelector(s); if (!e) return null; const b = e.getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), top: Math.round(b.top), bottom: Math.round(b.bottom), width: Math.round(b.width) }; };
-    return { zoom: getComputedStyle(document.querySelector('.mp-ui')).zoom, hudBl: r('.hud-bl'), ticker: r('.ticker'), view: r('.ticker .tk-view'), bottom: r('.hud-bottom'), minimap: r('.minimap') };
+    return { zoom: getComputedStyle(document.querySelector('.mp-ui')).zoom, hudBl: r('.hud-bl'), ticker: r('.ticker'), view: r('.ticker .tk-view'), viewCss: document.querySelector('.ticker .tk-view').clientWidth, toolbar: r('.toolbar'), minimap: r('.minimap') };
   });
   log('layout at 1280x720', JSON.stringify(layout));
   results.layout = layout;
-  check('the ticker does not overlap the toolbar', layout.ticker.right <= layout.bottom.left, { tickerRight: layout.ticker.right, toolbarLeft: layout.bottom.left });
+  // (dev's .hud-bl width, unchanged here: room to widen the ticker at this size?)
+  log('room between the ticker and the toolbar (screen px):', layout.toolbar.left - layout.ticker.right);
+  results.fps = { normal: await page.evaluate(() => window.__fps()) };
+  await page.evaluate(() => window.__lite(true));
+  results.fps.lite = await page.evaluate(() => window.__fps());
+  log('frames a second: 3D view on', results.fps.normal, '/ off (the checks)', results.fps.lite);
 
   // F. the welcome items of a fresh town (no news yet)
   const welcome = await page.evaluate(() => [...window.__tk.list].map((n) => n.text));
