@@ -86,6 +86,12 @@ export class AudioDucking {
     this.syncMusic();
   }
 
+  /** The music duck both envelopes schedule at time t (1 = none). Chrome stops updating a GainNode's
+   *  AudioParam.value while its input is silent (a rest between songs), so a reading must not come from there. */
+  musicGainAt(t = this.ctx.currentTime): number {
+    return Math.min(this.musicEnvelope.valueAt(t), this.liveEnvelope.valueAt(t));
+  }
+
   private syncMusic(): void {
     const now = this.ctx.currentTime;
     const a = this.musicEnvelope, b = this.liveEnvelope;

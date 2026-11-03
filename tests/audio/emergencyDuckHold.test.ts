@@ -95,4 +95,24 @@ describe('LIVE music duck hold and release', () => {
     expect(valueAt(ducking.music.gain, 0.26)).toBe(1);
     expect(valueAt(ducking.reverb.gain, 0.3)).toBe(1);
   });
+
+  it('the debug getter reads the scheduled duck while no song plays and the gain nodes stop updating .value', () => {
+    const { audio, ctx, ducking } = engine();
+    const base = audio.debugMusicBusGain!;
+    // Chromium does not process a GainNode whose input is silent (a rest between songs), so its AudioParam.value
+    // stays where it was: freeze both music gains the getter could read.
+    const graph = audio as unknown as { buses: { music: GainNode } };
+    for (const p of [ducking.music.gain, graph.buses.music.gain]) {
+      const stale = p.value;
+      Object.defineProperty(p, 'value', { get: () => stale, configurable: true });
+    }
+    audio.duck(6, 0.3, 0.5, { renew: true });
+    ctx.currentTime = 0.2;
+    expect(20 * Math.log10(audio.debugMusicBusGain! / base)).toBeCloseTo(-6, 6);
+    audio.releaseDuck();
+    ctx.currentTime = 0.45;
+    expect(audio.debugMusicBusGain! / base).toBeCloseTo((10 ** (-6 / 20) + 1) / 2, 6);
+    ctx.currentTime = 0.7;
+    expect(audio.debugMusicBusGain).toBeCloseTo(base, 10);
+  });
 });

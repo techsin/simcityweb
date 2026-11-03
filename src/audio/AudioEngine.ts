@@ -395,9 +395,15 @@ export class AudioEngine {
     this.ducking?.releaseDuck(release);
   }
 
-  /** Dev / acceptance: effective dry music bus gain, including ducking, before the master gain. */
+  /** Dev / acceptance: effective dry music bus gain, including ducking, before the master gain. Computed from the
+   *  music volume and the duck envelopes, not from AudioParam.value, which goes stale while no song plays. */
   get debugMusicBusGain(): number | null {
-    return this.ctx && this.ducking ? this.buses.music.gain.value * this.ducking.music.gain.value : null;
+    return this.ctx && this.ducking ? this.musicBusLevel() * this.ducking.musicGainAt() : null;
+  }
+
+  /** The music bus volume applyVolumes sets (perceptual curve). */
+  private musicBusLevel(): number {
+    return this.prefs.music * this.prefs.music * 0.9;
   }
 
   /** The Settings panel persists these two flags in GameSettings. */
@@ -504,8 +510,8 @@ export class AudioEngine {
     // perceptual curve
     const curve = (v: number) => v * v;
     this.background?.setVolume(this.prefs.muted ? 0 : curve(this.prefs.master), immediate);
-    set(this.buses.music.gain, curve(this.prefs.music) * 0.9);
-    if (this.musicReverb) set(this.musicReverb.gain, curve(this.prefs.music) * 0.9);
+    set(this.buses.music.gain, this.musicBusLevel());
+    if (this.musicReverb) set(this.musicReverb.gain, this.musicBusLevel());
     set(this.buses.sfx.gain, curve(this.prefs.sfx));
     set(this.buses.ambience.gain, curve(this.prefs.ambience));
   }
