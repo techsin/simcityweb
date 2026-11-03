@@ -374,6 +374,37 @@ export class DemographicsCache {
   invalidate(): void {
     this.version++;
   }
+  /**
+   * T057: the records of the given buildings (16 words each, bit-exact; the access record's version as fresh 1 /
+   * stale 0) and their wf mirror, for the save (null when the cache holds none of them)
+   */
+  saveRecords(ids: Int32Array): { ids: Int32Array; rec: Int32Array; wf: Float32Array } | null {
+    const out = new Int32Array(ids.length * C_STRIDE), wf = new Float32Array(ids.length);
+    const i32 = this.i32, n = this.wf.length;
+    let k = 0;
+    const kept = new Int32Array(ids.length);
+    for (const id of ids) {
+      if (id < 0 || id >= n || i32[id * C_STRIDE + C_SEEN] === 0) continue;
+      const o = id * C_STRIDE, q = k * C_STRIDE;
+      for (let j = 0; j < C_STRIDE; j++) out[q + j] = i32[o + j];
+      out[q + C_VER] = i32[o + C_VER] === this.version ? 1 : 0;
+      wf[k] = this.wf[id];
+      kept[k++] = id;
+    }
+    return k ? { ids: kept.slice(0, k), rec: out.slice(0, k * C_STRIDE), wf: wf.slice(0, k) } : null;
+  }
+  /** T057: the saved records back (a loaded city; after sync() of every building): the fresh ones current */
+  restoreRecords(r: { ids: Int32Array; rec: Int32Array; wf: Float32Array }): void {
+    for (let k = 0; k < r.ids.length; k++) {
+      const id = r.ids[k];
+      if (id < 0) continue;
+      this.ensure(id);
+      const o = id * C_STRIDE, q = k * C_STRIDE;
+      for (let j = 0; j < C_STRIDE; j++) this.i32[o + j] = r.rec[q + j];
+      this.i32[o + C_VER] = r.rec[q + C_VER] === 1 ? this.version : 0;
+      this.wf[id] = r.wf[k];
+    }
+  }
   ensure(id: number): void {
     const n0 = this.wf.length;
     if (id < n0) return;

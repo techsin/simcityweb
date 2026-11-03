@@ -30,6 +30,7 @@ import { waterRequired } from './demographics';
 import { DAYS_PER_MONTH } from '../../core/constants';
 import type { FactorTerm } from '../explain';
 import type { CityState } from '../CityState';
+import { setSaveHook } from '../persist';
 
 export interface ResidentCoverage {
   police: number;
@@ -302,6 +303,14 @@ export function toxicDumpOperating(rt: EconRuntime): boolean {
 interface EmergencyApi { active?: boolean }
 interface DisastersApi { active?: readonly unknown[] }
 
+/**
+ * T057: what approval holds between two monthly updates beyond econData, written by a save hook into
+ * systemData.approvalRun: the month's fire / disaster counts, the coverage at homes of the last update (the advisors read
+ * it) and the cached resident survey of its day. With it, a loaded game keeps every term, the raw value and the coverage
+ * of the last update (the init would re-survey today's homes); a save without it loads as before (L7).
+ */
+interface ApprovalRun { v: 1; firesMonth: number; disasterMonth: boolean; coverage?: ResidentCoverage; survey?: ResidentSurvey }
+
 export function approvalSystem(rt: EconRuntime): SimSystem {
   let firesMonth = 0;
   let disasterMonth = false;
@@ -443,7 +452,22 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
       }
       firesMonth = 0;
       disasterMonth = false;
-      update(sim, true);
+      const st = sim.state;
+      const run = st.systemData.approvalRun as ApprovalRun | undefined;
+      if (st.day > 0 && run && run.v === 1 && Object.keys(econData(st).approvalTerms).length > 0) {
+        firesMonth = Number.isFinite(run.firesMonth) ? run.firesMonth : 0;
+        disasterMonth = run.disasterMonth === true;
+        if (run.coverage) coverage.set(st, structuredClone(run.coverage));
+        if (run.survey) surveys.set(st, structuredClone(run.survey));
+      } else update(sim, true);
+      setSaveHook(st, 'economy.approval', () => {
+        if (sim.state !== st) return;
+        const c = coverage.get(st), sv = surveys.get(st);
+        const r: ApprovalRun = { v: 1, firesMonth, disasterMonth };
+        if (c) r.coverage = structuredClone(c);
+        if (sv) r.survey = structuredClone(sv);
+        st.systemData.approvalRun = r;
+      });
     },
     monthly(sim) {
       update(sim, false);
