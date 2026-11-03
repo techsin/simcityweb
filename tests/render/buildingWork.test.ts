@@ -12,7 +12,7 @@ registerAllModels();
 
 type Entry = { id: number };
 type Internals = {
-  buildQueue: Set<Entry>; buildOrder: Entry[]; buildAt: number; disposed: boolean;
+  buildQueue: Set<Entry>; buildOrder: Entry[]; buildAt: number; disposed: boolean; budgetedWorks: BudgetedWork[];
   addBudgetedWork<T extends BudgetedWork>(work: T): T;
   orderBuilds(): void;
   buildNow(entry: Entry): void;
@@ -93,6 +93,8 @@ function originalDrain(br: BuildingRenderer, all = false) {
 describe('BuildingRenderer shared budget work', () => {
   for (const cost of [0.65, 3.25]) it(`preserves build order, frame counts and clock checks with no registered work (${cost} ms entries)`, () => {
     const current = town(), reference = town();
+    // later lanes (T049-T051) register their own work from fields: this case pins the empty registry
+    inside(current).budgetedWorks.length = 0;
     const run = (br: BuildingRenderer, drain: () => void) => {
       const timer = clocked(br, cost), frames: string[][] = [];
       for (let id = 1; id <= 12; id++) br.add(building(id));
@@ -115,6 +117,25 @@ describe('BuildingRenderer shared budget work', () => {
     const expected = run(reference, () => originalDrain(reference));
     const actual = run(current, () => inside(current).drainBuilds());
     expect(actual).toEqual(expected);
+  });
+
+  it('idle registered works leave build order and per-frame counts unchanged (the case once lanes register)', () => {
+    const idle = town(), reference = town();
+    inside(reference).budgetedWorks.length = 0;
+    const run = (br: BuildingRenderer, works: number) => {
+      const timer = clocked(br, 0.65), frames: string[][] = [];
+      for (let k = 0; k < works; k++) inside(br).addBudgetedWork(work(timer, `idle${k}`, 1, 0));
+      for (let id = 1; id <= 12; id++) br.add(building(id));
+      for (let frame = 0; br.pendingBuilds && frame < 30; frame++) {
+        const start = timer.trace.length;
+        inside(br).drainBuilds();
+        frames.push(timer.trace.slice(start));
+      }
+      expect(br.pendingBuilds).toBe(0);
+      return { frames, count: br.count };
+    };
+    const expected = run(reference, 0);
+    expect(run(idle, 3)).toEqual(expected);
   });
 
   it('registers and returns field work without running it before a frame', () => {
