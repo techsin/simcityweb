@@ -3,10 +3,16 @@
  *   openNewCityDialog({ region, tile }) -> Promise<CityConfigData | null>
  * Live 2D preview (shaded relief) regenerated on every change from a low-res CityState (64^2, < 10 ms) using the
  * same terrain generator as the real city (region sampler, or preset with logicalSize = real size).
+ * FH-11: each difficulty card carries its FH-04 blurb (difficultyRules); a profile's first city preselects Easy and
+ * Guided start, later dialogs the last choice (newCityPrefs.ts); Disasters follows the difficulty's default until the
+ * player sets it, with a note on when disasters start.
  */
 import type { Climate, Difficulty, TerrainPreset } from '../core/types';
 import { REGION_UNIT_CELLS } from '../core/constants';
 import { DIFFICULTY_FUNDS, defaultCityConfig, type CityConfigData } from '../sim/config';
+import { DISASTER_MIN_POP, difficultyRules } from '../sim/economy/tuning';
+import { guideCopy } from '../ui/guide/copy';
+import { newCityDefaults, rememberNewCity } from './newCityPrefs';
 import { CityState } from '../sim/CityState';
 import { generateTerrain, terrainStats, type TerrainOptions } from '../sim/terrainGen';
 import { audio } from '../audio';
@@ -16,7 +22,7 @@ import { TILE_SIZE_LABEL } from './types';
 import { drawCityMap } from './mapPreview';
 import { randomCityName, randomMayorName } from './names';
 import { Modal, segmented, slider, toggle } from './ui/modal';
-import { button, h, icon, formatMoney } from './ui/dom';
+import { button, h, icon } from './ui/dom';
 
 export interface NewCityDialogOptions {
   region?: RegionModel;
@@ -52,11 +58,21 @@ function forestWithDensity(region: RegionModel, tile: RegionTile, density: numbe
   return (u, v) => Math.min(1, f(u, v) * k + Math.max(0, density - 0.6) * 0.5);
 }
 
+/** a labelled switch (modal.ts's toggle) that can also be set from code */
+function toggleControl(label: string, checked: boolean, onChange: (v: boolean) => void): { el: HTMLElement; set(v: boolean): void } {
+  const el = toggle(label, checked, onChange);
+  const input = el.querySelector('input') as HTMLInputElement;
+  return { el, set: (v) => void (input.checked = v) };
+}
+
 export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityConfigData | null> {
   return new Promise((resolve) => {
     const size = o.tile ? o.tile.size * REGION_UNIT_CELLS : o.size ?? 128;
     const hasRegion = !!(o.region && o.tile);
-    const base = o.region && o.tile ? o.region.cityConfigFor(o.tile, o.defaults) : defaultCityConfig({ size, ...o.defaults });
+    const pick = newCityDefaults(!!o.region?.data.tiles.some((t) => t.city));
+    const startDifficulty = o.defaults?.difficulty ?? pick.difficulty;
+    const withDifficulty: Partial<CityConfigData> = { difficulty: startDifficulty, startFunds: DIFFICULTY_FUNDS[startDifficulty], sandbox: startDifficulty === 'sandbox', ...o.defaults };
+    const base = o.region && o.tile ? o.region.cityConfigFor(o.tile, withDifficulty) : defaultCityConfig({ size, ...withDifficulty });
     const cfg: CityConfigData = { ...base, name: o.defaults?.name ?? randomCityName(), mayor: o.defaults?.mayor ?? randomMayorName() };
     if (!hasRegion && cfg.terrain === 'region') cfg.terrain = 'hills';
     let customPreset: Exclude<TerrainPreset, 'region'> = cfg.terrain === 'region' ? 'hills' : cfg.terrain;
@@ -94,20 +110,34 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
     const diceName = button('', { icon: 'dice', cls: 'sq-btn', title: 'Random name', sound: 'shuffle', onClick: () => ((nameInput.value = cfg.name = randomCityName()), nameInput.focus()) });
     const diceMayor = button('', { icon: 'dice', cls: 'sq-btn', title: 'Random name', sound: 'shuffle', onClick: () => (mayorInput.value = cfg.mayor = randomMayorName()) });
 
+    // FH-11: the one-line descriptions come from FH-04's rules (they name the money, so no separate amount)
+    const blurb = (d: Difficulty) => { const b = difficultyRules(d).blurb; return b.charAt(0).toUpperCase() + b.slice(1); };
+    let disastersTouched = false;
     const diff = segmented<Difficulty>({
-      cols: 4,
-      items: [
-        { value: 'easy', title: 'Easy', sub: formatMoney(DIFFICULTY_FUNDS.easy) },
-        { value: 'medium', title: 'Medium', sub: formatMoney(DIFFICULTY_FUNDS.medium) },
-        { value: 'hard', title: 'Hard', sub: formatMoney(DIFFICULTY_FUNDS.hard) },
-        { value: 'sandbox', title: 'Sandbox', sub: 'Unlimited' },
-      ],
+      cols: 2,
+      items: (['easy', 'medium', 'hard', 'sandbox'] as const).map((d) => ({ value: d, title: d.charAt(0).toUpperCase() + d.slice(1), sub: blurb(d) })),
       value: cfg.difficulty,
       onChange: (v) => {
         cfg.difficulty = v;
         cfg.startFunds = DIFFICULTY_FUNDS[v];
         cfg.sandbox = v === 'sandbox';
+        // Easy unticks Disasters; the others tick it again, until the player sets the toggle themselves
+        if (!disastersTouched) disasters.set((cfg.disasters = difficultyRules(v).defaultDisasters));
       },
+    });
+    diff.el.classList.add('nc-diff');
+    const disasters = toggleControl('Disasters', cfg.disasters, (v) => {
+      disastersTouched = true;
+      cfg.disasters = v;
+    });
+    let guided = pick.guided, veteran = pick.veteran;
+    const guide = toggleControl('Guided start', guided, (v) => {
+      guided = v;
+      if (v && veteran) veteranSw.set((veteran = false));
+    });
+    const veteranSw = toggleControl('I\u2019ve played city builders before', veteran, (v) => {
+      veteran = v;
+      if (v && guided) guide.set((guided = false));
     });
 
     const hill = slider({ label: 'Hilliness', icon: 'mountain', value: cfg.hilliness, onInput: (v) => ((cfg.hilliness = v), redraw()) });
@@ -178,7 +208,13 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
       custom,
       trees.el,
       h('div', { class: 'field' }, h('label', {}, 'Climate'), climate.el),
-      h('div', { style: 'display:flex; align-items:center; gap: 22px; margin-top: 2px' }, toggle('Disasters', cfg.disasters, (v) => (cfg.disasters = v)), h('div', { class: 'field', style: 'margin:0; flex-direction:row; align-items:center; gap:10px' }, h('label', {}, 'Starting year'), yearInput)),
+      h(
+        'div',
+        { class: 'nc-opts' },
+        h('div', { class: 'nc-opt' }, disasters.el, h('div', { class: 'nc-note' }, guideCopy.phaseA.A3Disasters(DISASTER_MIN_POP))),
+        h('div', { class: 'nc-opt' }, guide.el, veteranSw.el),
+        h('div', { class: 'field nc-year' }, h('label', {}, 'Starting year'), yearInput),
+      ),
     );
     const body = h(
       'div',
@@ -200,6 +236,7 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
         cfg.mayor = mayorInput.value.trim() || randomMayorName();
         // city founded: short celebratory fanfare (plays over the loading screen)
         audio.play('found');
+        rememberNewCity({ difficulty: cfg.difficulty, guided, veteran });
         result = { ...cfg, size };
         m.close(true);
       },

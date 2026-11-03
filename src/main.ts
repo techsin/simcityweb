@@ -767,7 +767,7 @@ class App {
     await saveRegion(data);
     setLastRegionId(id);
     if (!openDialog) return this.showRegion(model, ld);
-    const tile = pickNiceTile(model, 2);
+    const tile = model.pickNiceTile(2);
     await this.showRegion(model, ld, tile.key, false);
     const p = openNewCityDialog({ region: model, tile });
     markReady();
@@ -785,7 +785,7 @@ class App {
     await deleteRegion('quickstart').catch(() => undefined);
     const { data, model } = createRegionData({ seed, preset: 'greenvale', id: 'quickstart', name: 'Quickstart Valley' });
     this.region = model;
-    const tile = pickNiceTile(model, size);
+    const tile = model.pickNiceTile(size);
     const partial: Partial<CityConfigData> = { name: randomCityName(), mayor: randomMayorName() };
     const terrain = q.get('terrain') as TerrainPreset | null;
     if (terrain && terrain !== 'region') partial.terrain = terrain;
@@ -813,22 +813,6 @@ function drawPreview(model: RegionModel): boolean {
   } catch {
     return false;
   }
-}
-
-/** a tile of the wanted size with a pleasant amount of water (some, not much) */
-function pickNiceTile(model: RegionModel, size: TileSize): RegionTile {
-  const cands = model.data.tiles.filter((t) => t.size === size);
-  const pool = cands.length ? cands : model.data.tiles;
-  let best = pool[0], bestScore = -1e9;
-  for (const t of pool) {
-    const w = model.tileWaterFraction(t);
-    const score = -Math.abs(w - 0.12) - (w > 0.4 ? 1 : 0) - Math.hypot(t.x + t.size / 2 - 8, t.z + t.size / 2 - 8) * 0.01;
-    if (score > bestScore) {
-      bestScore = score;
-      best = t;
-    }
-  }
-  return best;
 }
 
 const host = document.getElementById('app') ?? document.body;
