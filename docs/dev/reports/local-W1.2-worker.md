@@ -263,6 +263,25 @@ crash-dialog screenshots waited out the 30 s settle limit (the modal's finished 
 **Not covered by the runs**: the G6 window (a crash between the worker's Ready and the scene: code path only); real-GPU
 numbers (SwiftShader: function, not timings).
 
+### T034b, the protector control (cloud carry-over, Nov 3)
+
+Branch `cloud/t034b` (worktree `scratchpad/co/t034b`), from `cloud/t034` (`042efa5`), with dev `9fcc2ec` and then
+`50a6b29` (docs only: NOTE-051, NOTE-052) merged in, both clean. Read: the task file; NOTE-041, 044, 045, 046, 047, 048,
+049 (the NOTEs that name T034) and T061's task file; WORKER_DESIGN §5.4 and §6 row W1.2; this report; the diff against
+dev; the re-review's one major.
+
+#### Gap list (required versus done, at the start of T034b)
+
+| # | Required (source) | State on `cloud/t034` (`042efa5`) |
+|---|---|---|
+| B1 | The re-review's major: qa-worker's positive control must invalidate the protector. V8 15.3 (Chromium 153) has the ArrayBufferDetaching protector but tracks views: a detach of a buffer with no view or one TypedArray view leaves it intact; two or more views, a DataView or a detach key invalidate it | **Invalid.** `CONTROL_WORKER` detached `new ArrayBuffer(8)` with no view, so `control.observable` was false in every run and the worker's probe was never gated (both runs logged "the worker made its probe" and a NOTE) |
+| B2 | qa-worker on the production build, once with `--soak-min 10 --simwasm wasm` and once without the soak and with `?simwasm` unset, with the protector gated | **Not run** with a valid control |
+| B3 | Corrections: decision 11, `protector-chromium153.txt`, the `.done` line's open item, the "Left open" line, the comments of `src/worker/protectorProbe.ts`, `tools/bench/trafficCore/protector.ts:8` and the qa-worker header | **Wrong**: each says Chromium 153's V8 has no ArrayBufferDetaching protector |
+| B4 | NOTE-048 / T061 item 1: check WorkerSimHost for LoopbackSimHost.ts:180's order (speedChanged re-emitted before the speed mirror moves); fix it there with a test, leave LoopbackSimHost to T061 | **Present.** `WorkerSimHost extends PacketSimHost`: the replica replays a packet's log (a speedChanged the worker made, such as an urgent pause) before the base class's clock hook sets `speedMirror`, so a handler that re-reads `host.speed` inside the event reads the old speed |
+| B5 | NOTE-041 item 2, NOTE-048's WorldView.ts:388 (the resync rebuilt from the old state), T061 item 4 | **Done on `cloud/t034`**: `WorldView.ts:393` rebuilds from `getState()` (CityScene passes `() => this.sim.state`); tests/worker/worldResync.test.ts. Dev still has the old line 388 until T034 merges |
+| B6 | Gates: tsc, the full vitest, the bot identical to dev (`residents [ 61124, 93804, 37971 ]`), the two qa-worker runs | To run on the final tree |
+| B7 | The fix round's last qa-worker commit (`e47f273`, the crash dialog's settle wait) had not run in a browser | Runs in B2 |
+
 ## The rebuild on T032's code (the local worker)
 
 Branch `local/W1.2-worker`, committed locally, no `.done`. I pushed nothing; a usage-limit snapshot (`bddba48`, not

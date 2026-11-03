@@ -243,7 +243,7 @@ export class WorkerSimHost extends PacketSimHost {
    * PacketSimHost's clock hook moves its speed mirror to the packet's clock. A handler that re-read host.speed inside
    * that event read the old speed (T048's QA: after an urgent pause the LIVE duck never engaged). So during the packet
    * the speed is its clock's, unless a speed command of the page's is newer than the packet: the mirror holds that one,
-   * before the packet and after it.
+   * before the packet and after it. Once T061 moves the mirror before the log replay in PacketSimHost, this goes.
    */
   private packetSpeed: number | null = null;
   /** the last setSpeed or resume posted */
