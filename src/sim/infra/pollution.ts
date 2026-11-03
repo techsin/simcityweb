@@ -40,7 +40,8 @@
  *  Emits layerUpdated('pollution') after the flags step.
  *
  *  B2 (docs/dev/B2_DESIGN.md §6): each of the ten steps runs as a sequence of small pieces (one scheduler step each, about
- *  half INFRA_PIECE_COLD_MS estimated warm ms): the building stages over chunks of one building snapshot per pass, the
+ *  half INFRA_PIECE_COLD_MS estimated warm ms, the cell work a quarter): the building stages over chunks of one building
+ *  snapshot per pass, the
  *  cell and blur work as small field programs run in row ranges (blur.ts Blur3Run / downsampleRows / upsampleAddRows),
  *  every saved layer built in a private buffer and published by one .set(), the flags from candidate lists applied in one
  *  piece. A pass whose pieces run with nothing in between computes exactly what the pre-B2 steps computed.
@@ -203,6 +204,13 @@ class FieldOp {
  */
 const COLD = INFRA_PIECE_COLD_MS / 2;
 /**
+ * the budget of the cell work (the field programs, the landfill scan, the road checksum, the allocation, the BFS queues):
+ * a quarter of INFRA_PIECE_COLD_MS (G3 dense1m from load: on a pass's first executions after a load these loops ran at
+ * ~150-300 ns per cell, 30-70 x warm, so a piece at the cold cell floor's ~16,000 cells took 2-5 ms; at ~8,000 about
+ * half). With the cold cell floor: about 8,000 cells per piece.
+ */
+const CELL = INFRA_PIECE_COLD_MS / 4;
+/**
  * the absolute scale of the estimates: stepCost = PL_EST x (PC.piece + the piece's units x PC) / 1000. PC sets the relative
  * costs, so (with the budget) the chunk sizes; PL_EST makes the estimate honest warm wall ms without moving a chunk
  * (traffic's TR_EST / services' SV_EST pattern).
@@ -247,8 +255,51 @@ const PC = {
 /** the chunk plan of the pass snapshot: the cold Building floor per building + the costliest per-footprint-cell loop's start
  *  fit (stageA, 41 ns; sizing only — the estimates use each stage's own coefficients) */
 const PLAN_B = INFRA_BLD_SIZING_US, PLAN_F = 0.041;
+// ---- B2: the field programs' stage loops, one small function each (R10), each over a range of today's loop
+/** acc[m] += coarse[m] * g for m in [m0, m1) (stageAirNear's accumulation) */
+function accRows(acc: Float32Array, coarse: Float32Array, g: number, m0: number, m1: number): void {
+  for (let m = m0; m < m1; m++) acc[m] += coarse[m] * g;
+}
+/** t[i] = trees[i] * 0.25 (updateTreeCover's tree field) */
+function treeRows(t: Float32Array, trees: Uint8Array, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) t[i] = trees[i] * 0.25;
+}
+/** the count of cells with near[i] > 0, added to n */
+function countNear(near: Float32Array, n: number, i0: number, i1: number): number {
+  for (let i = i0; i < i1; i++) if (near[i] > 0) n++;
+  return n;
+}
+/** negative sources (treatment plants) also clean nearby water bodies (stageB's cleaning, on the private layer L) */
+function cleanRows(wm: Uint8Array, tmp: Float32Array, L: Float32Array, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) if (wm[i] && tmp[i] < 0) L[i] = Math.max(0, L[i] + tmp[i] * 0.05);
+}
+/** cur[q] = L[wc[q]] (the diffusion's init) */
+function gatherRange(cur: Float32Array, L: Float32Array, wc: Int32Array, q0: number, q1: number): void {
+  for (let q = q0; q < q1; q++) cur[q] = L[wc[q]];
+}
+/** L[wc[q]] = cur[q] (the diffusion's write-back) */
+function scatterRange(L: Float32Array, cur: Float32Array, wc: Int32Array, q0: number, q1: number): void {
+  for (let q = q0; q < q1; q++) L[wc[q]] = cur[q];
+}
+/** land = ground water (stageB, before the banks) */
+function landRows(wm: Uint8Array, L: Float32Array, ground: Float32Array, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) if (!wm[i]) L[i] = ground[i];
+}
+/** land raised on the banks of polluted water bodies */
+function bankRange(L: Float32Array, bank: Int32Array, src: Int32Array, k0: number, k1: number): void {
+  for (let k = k0; k < k1; k++) {
+    const v = BANK_COUPLING * L[src[k]];
+    const i = bank[k];
+    if (v > L[i]) L[i] = v;
+  }
+}
+/** other cells (roads, empty lots, demolished buildings): leftovers blow away (garbageApply, on the private layer G) */
+function leftRows(bld: Int32Array, lab: Int32Array, G: Float32Array, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) if (bld[i] < 0 && lab[i] < 0 && G[i] !== 0) G[i] *= 0.5;
+}
+
 /** cells of one piece of a once-per-pass cell loop costing `us` per cell (the cold cell floor) */
-function cellUnits(us: number, budget = COLD): number {
+function cellUnits(us: number, budget = CELL): number {
   return pieceUnits(us > INFRA_CELL_SIZING_US ? us : INFRA_CELL_SIZING_US, 1, budget);
 }
 /** the traffic system's attachment refresh (a lazy cache freightRailCells triggers) */
@@ -735,7 +786,7 @@ export class PollutionSystem implements SimSystem {
           case GR_START: return PC.setup + this.nSeeds * PC.seed;
           case GR_SUM: return cells(PC.netSum, C - k);
           case GR_CHECK: return PC.setup + C * PC.fill + this.nSeeds * PC.seed;
-          case GR_BFS: return chunk(PC.bfs, Math.max(1, this.grQt - this.grQh));
+          case GR_BFS: return Math.max(0, Math.min(pieceUnits(PC.bfs, 1, CELL), Math.max(1, this.grQt - this.grQh))) * PC.bfs;
           case GR_BLD: return snap.countOf(k) * PC.grB + snap.cellsOf(k) * PC.grF;
           case GR_SORT: return PC.setup;
           case GR_SCAT: return snap.countOf(k) * PC.scatB;
@@ -889,7 +940,7 @@ export class PollutionSystem implements SimSystem {
    * budget. True when the program is done.
    */
   private opsPiece(sim: Simulation): boolean {
-    const budget = pieceBudgetUs(COLD);
+    const budget = pieceBudgetUs(CELL);
     let used = 0;
     while (this.opK < this.nOps) {
       const op = this.ops[this.opK];
@@ -908,7 +959,7 @@ export class PollutionSystem implements SimSystem {
 
   /** µs of the next program piece (the same walk as opsPiece, without running anything) */
   private opsUs(): number {
-    const budget = pieceBudgetUs(COLD);
+    const budget = pieceBudgetUs(CELL);
     let used = 0, est = 0, k = this.opK, u = this.opU;
     while (k < this.nOps) {
       const op = this.ops[k];
@@ -925,26 +976,21 @@ export class PollutionSystem implements SimSystem {
     return est;
   }
 
-  /** units [u0, u1) of op (rows, cells or list entries: see OP_*) */
+  /** units [u0, u1) of op (rows, cells or list entries: see OP_*); a thin dispatcher, one method per loop (R10) */
   private execOp(sim: Simulation, op: FieldOp, u0: number, u1: number): void {
     const N = op.n;
     switch (op.kind) {
       case OP_FILL: op.a.fill(0, 0, op.n); return;
       case OP_COPY: op.a.set(op.b.subarray(0, op.n)); return;
-      case OP_DOWN: {
+      case OP_DOWN:
         if (u0 === 0) { const M = Math.ceil(N / op.f); op.b.fill(0, 0, M * M); }
         downsampleRows(op.a, N, op.f, op.b, u0, u1);
         return;
-      }
       case OP_BLUR:
         if (u0 === 0) this.blurRun.begin(op.a, op.b, N, op.r);
         this.blurRun.run(u1 - u0);
         return;
-      case OP_ACC: {
-        const acc = op.a, coarse = op.b, g = op.g;
-        for (let m = u0 * N, m1 = u1 * N; m < m1; m++) acc[m] += coarse[m] * g;
-        return;
-      }
+      case OP_ACC: accRows(op.a, op.b, op.g, u0 * N, u1 * N); return;
       case OP_UP: upsampleAddRows(op.a, op.b, N, op.f, op.g, op.dx, op.dz, u0, u1); return;
       case OP_SAT: saturateRange(op.a, op.b, u0 * N, u1 * N, op.g, op.dx, op.mask, op.c, op.k1, op.d, op.k2); return;
       case OP_BOXH: boxHRows(op.a, op.b, N, op.r, u0, u1); return;
@@ -953,47 +999,20 @@ export class PollutionSystem implements SimSystem {
         this.boxRun.run(u1 - u0);
         return;
       case OP_CELLS: this.cellRows(sim, u0 * N, u1 * N); return;
-      case OP_TREES: { const t = this.tmp, trees = sim.state.trees; for (let i = u0 * N, i1 = u1 * N; i < i1; i++) t[i] = trees[i] * 0.25; return; }
-      case OP_COUNT: {
-        const near = this.treeNear, C = N * N;
-        let n = this.nearN;
-        for (let i = u0 * N, i1 = u1 * N; i < i1; i++) if (near[i] > 0) n++;
-        this.nearN = n;
-        if (u1 >= op.units) this.nearShare = C > 0 ? n / C : 0;
+      case OP_TREES: treeRows(this.tmp, sim.state.trees, u0 * N, u1 * N); return;
+      case OP_COUNT:
+        this.nearN = countNear(this.treeNear, this.nearN, u0 * N, u1 * N);
+        if (u1 >= op.units) this.nearShare = N * N > 0 ? this.nearN / (N * N) : 0;
         return;
-      }
       case OP_NOISEBUF: { const st = sim.state; noiseBuffer(this.tmp, st.trees, this.treeNear, st.treeCover, this.parkBuf, this.noiseBuf, N, u0, u1); return; }
-      case OP_CLEAN: {
-        // negative sources (treatment plants) also clean nearby water bodies
-        const wm = sim.state.water, tmp = this.tmp, L = this.wNext;
-        for (let i = u0 * N, i1 = u1 * N; i < i1; i++) if (wm[i] && tmp[i] < 0) L[i] = Math.max(0, L[i] + tmp[i] * 0.05);
-        return;
-      }
-      case OP_WINIT: { const cur = this.tmp2, L = this.wNext, wc = this.waCells; for (let q = u0; q < u1; q++) cur[q] = L[wc[q]]; return; }
+      case OP_CLEAN: cleanRows(sim.state.water, this.tmp, this.wNext, u0 * N, u1 * N); return;
+      case OP_WINIT: gatherRange(this.tmp2, this.wNext, this.waCells, u0, u1); return;
       case OP_WDIFF: this.diffuseRange(u0, u1); return;
-      case OP_WCOPY: { const cur = this.tmp2, nxt = this.tmp; for (let q = u0; q < u1; q++) cur[q] = nxt[q]; return; }
-      case OP_WBACK: { const cur = this.tmp2, L = this.wNext, wc = this.waCells; for (let q = u0; q < u1; q++) L[wc[q]] = cur[q]; return; }
-      case OP_LAND: {
-        // land = ground water, raised on the banks of polluted water bodies
-        const wm = sim.state.water, L = this.wNext, ground = this.ground;
-        for (let i = u0 * N, i1 = u1 * N; i < i1; i++) if (!wm[i]) L[i] = ground[i];
-        return;
-      }
-      case OP_BANK: {
-        const L = this.wNext, bank = this.waBank, src = this.waBankSrc;
-        for (let k = u0; k < u1; k++) {
-          const v = BANK_COUPLING * L[src[k]];
-          const i = bank[k];
-          if (v > L[i]) L[i] = v;
-        }
-        return;
-      }
-      case OP_LEFT: {
-        // other cells (roads, empty lots, demolished buildings): leftovers blow away
-        const bld = sim.state.building, lab = this.lfRegion, G = this.gNext;
-        for (let i = u0 * N, i1 = u1 * N; i < i1; i++) if (bld[i] < 0 && lab[i] < 0 && G[i] !== 0) G[i] *= 0.5;
-        return;
-      }
+      case OP_WCOPY: this.tmp2.set(this.tmp.subarray(u0, u1), u0); return;
+      case OP_WBACK: scatterRange(this.wNext, this.tmp2, this.waCells, u0, u1); return;
+      case OP_LAND: landRows(sim.state.water, this.wNext, this.ground, u0 * N, u1 * N); return;
+      case OP_BANK: bankRange(this.wNext, this.waBank, this.waBankSrc, u0, u1); return;
+      case OP_LEFT: leftRows(sim.state.building, this.lfRegion, this.gNext, u0 * N, u1 * N); return;
       default: this.soilRows(sim.state, u0 * N, u1 * N); return;
     }
   }
@@ -1313,17 +1332,9 @@ export class PollutionSystem implements SimSystem {
     const st = sim.state;
     switch (this.sub) {
       case GR_START: this.grStart(st); this.sub = GR_SUM; this.cur = 0; this.grNs = 0; return false;
-      case GR_SUM: {
-        // cheap road checksum too, so direct layer edits (tests, sandbox tools) without networkChanged are picked up
-        const C = st.cells, net = st.network;
-        const i1 = Math.min(C, this.cur + cellUnits(PC.netSum));
-        let ns = this.grNs;
-        for (let i = this.cur; i < i1; i++) if (net[i] !== 0) ns = (ns + (i + 1) * net[i]) % 2147483647;
-        this.grNs = ns;
-        this.cur = i1;
-        if (i1 >= C) this.sub = GR_CHECK;
+      case GR_SUM:
+        if (this.grNetSum(st)) this.sub = GR_CHECK;
         return false;
-      }
       case GR_CHECK: {
         const sig = (this.grSig * 7 + this.grNs) % 2147483647;
         if (this.routeDirty || sig !== this.routeSig || this.roadDist.length !== st.cells) {
@@ -1336,7 +1347,7 @@ export class PollutionSystem implements SimSystem {
         return false;
       }
       case GR_BFS:
-        if (this.truckBfsRun(st, pieceUnits(PC.bfs, 1, COLD))) { this.sub = GR_BLD; this.cur = 0; }
+        if (this.truckBfsRun(st, pieceUnits(PC.bfs, 1, CELL))) { this.sub = GR_BLD; this.cur = 0; }
         return false;
       case GR_BLD:
         if (this.cur === 0) {
@@ -1357,22 +1368,35 @@ export class PollutionSystem implements SimSystem {
         this.cur = 0;
         return false;
       }
-      case GR_SCAT: {
-        if (this.cur < this.snap.chunks) {
-          const R = GARBAGE_TRUCK_RANGE, bucket = this.bucketCount, orderIds = this.orderIds, bd = this.bDist, list = this.snap.list;
-          for (let bI = this.snap.bounds[this.cur], b1 = this.snap.bounds[this.cur + 1]; bI < b1; bI++) {
-            const m = bd[bI];
-            if (m <= R) orderIds[bucket[m]++] = list[bI].id;
-          }
-          this.cur++;
-        }
+      case GR_SCAT:
+        if (this.cur < this.snap.chunks) this.grScatter(this.cur++);
         if (this.cur >= this.snap.chunks) { this.grAllocStart(); this.sub = GR_ALLOC; this.cur = 0; }
         return false;
-      }
       case GR_ALLOC:
         if (this.grAlloc()) this.sub = GR_PUB;
         return false;
       default: this.grPublish(st); return true;
+    }
+  }
+
+  /** the road checksum by cell ranges (a sequential mod sum in index order); true when done */
+  private grNetSum(st: CityState): boolean {
+    // cheap road checksum too, so direct layer edits (tests, sandbox tools) without networkChanged are picked up
+    const C = st.cells, net = st.network;
+    const i1 = Math.min(C, this.cur + cellUnits(PC.netSum));
+    let ns = this.grNs;
+    for (let i = this.cur; i < i1; i++) if (net[i] !== 0) ns = (ns + (i + 1) * net[i]) % 2147483647;
+    this.grNs = ns;
+    this.cur = i1;
+    return i1 >= C;
+  }
+
+  /** chunk k of the counting sort's scatter (buildings nearest first, list order within a distance) */
+  private grScatter(k: number): void {
+    const R = GARBAGE_TRUCK_RANGE, bucket = this.bucketCount, orderIds = this.orderIds, bd = this.bDist, list = this.snap.list;
+    for (let bI = this.snap.bounds[k], b1 = this.snap.bounds[k + 1]; bI < b1; bI++) {
+      const m = bd[bI];
+      if (m <= R) orderIds[bucket[m]++] = list[bI].id;
     }
   }
 

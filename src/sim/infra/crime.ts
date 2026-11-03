@@ -15,7 +15,7 @@
  *  Emits layerUpdated('crime').
  *
  *  B2 (docs/dev/B2_DESIGN.md §5): each of the three steps runs as a sequence of small pieces (one scheduler step each,
- *  about half INFRA_PIECE_COLD_MS estimated warm ms): the raw step over chunks of one building snapshot per pass, the
+ *  about a quarter of INFRA_PIECE_COLD_MS estimated warm ms): the raw step over chunks of one building snapshot per pass, the
  *  blur by rows into crime-private buffers, the mix into a private buffer published by one .set(), the flags from a
  *  candidate list applied in one piece. A pass whose pieces run with nothing in between computes exactly what the
  *  pre-B2 steps computed.
@@ -48,13 +48,15 @@ const SP_COPY = 0, SP_BLUR = 1, SP_MIX = 2, SP_PUB = 3;
 // flags (stepIdx 2): building chunks (sums, candidates), the publish (flags in order, stats), the events (batches)
 const CF_BLD = 0, CF_PUB = 1, CF_EV = 2;
 /**
- * B2 piece budget (design R2): every crime loop runs once per pass (every CRIME_PERIOD days), so it runs cold for many
- * passes after a load — the map-other prototype's split crime pieces ran at p99 ~20 x and up to 37 x their warm cost in
- * days 0-200 — half INFRA_PIECE_COLD_MS, like traffic's and services' once-per-pass loops (G1 / G2), with G2's cold cell
- * and Building floors (params INFRA_CELL_SIZING_US / INFRA_BLD_SIZING_US). The pure native fills / copies of a whole
- * layer (raw.fill, tmp.set, the publish) are one piece each, far below INFRA_PIECE_MS.
+ * B2 piece budget (design R2): every crime loop runs once per pass (every CRIME_PERIOD days, the rarest of the split
+ * passes), so it runs cold for many passes after a load — the map-other prototype's split crime pieces ran at p99 ~20 x
+ * and up to 37 x their warm cost in days 0-200; G3's dense1m runs from load at half INFRA_PIECE_COLD_MS had the mix and
+ * the building chunks at 3-4.6 ms on the first two passes (the mix at ~300 ns per cell) — a quarter of
+ * INFRA_PIECE_COLD_MS, with G2's cold cell and Building floors (params INFRA_CELL_SIZING_US / INFRA_BLD_SIZING_US): about
+ * 8,000 cells or 90 buildings per piece. The pure native fills / copies of a whole layer (raw.fill, tmp.set, the publish)
+ * are one piece each, far below INFRA_PIECE_MS.
  */
-const COLD = INFRA_PIECE_COLD_MS / 2;
+const COLD = INFRA_PIECE_COLD_MS / 4;
 /**
  * the absolute scale of the estimates: stepCost = CR_EST x (CR.piece + the piece's units x CR) / 1000. CR sets the relative
  * costs, so (with the budgets) the chunk sizes; CR_EST makes the estimate honest warm wall ms without moving a chunk
@@ -519,14 +521,8 @@ export class CrimeSystem implements SimSystem {
         if (this.blurPiece(N)) { this.sub = SP_MIX; this.cur = 0; }
         return false;
       case SP_MIX: {
-        const raw = this.raw, tmp = this.tmp, L = st.crime, out = this.next;
-        const alpha = first ? 1 : 0.4;
         const z1 = Math.min(N, this.cur + rowUnits(CR.mix, N));
-        for (let i = this.cur * N, i1 = z1 * N; i < i1; i++) {
-          let t = Math.max(raw[i] * 0.85, tmp[i]);
-          if (t > 1) t = 1;
-          out[i] = L[i] + (t - L[i]) * alpha;
-        }
+        mixRows(this.raw, this.tmp, st.crime, this.next, first ? 1 : 0.4, this.cur * N, z1 * N);
         this.cur = z1;
         if (z1 >= N) this.sub = SP_PUB;
         return false;
@@ -654,6 +650,19 @@ interface Ctx {
   high: Float32Array;
   play: Float32Array;
   traffic: TrafficSystem | null;
+}
+
+/**
+ * the smoothing's mix over cells [i0, i1): spill onto neighbouring cells, keep peaks on buildings, smoothed in time. Into
+ * the private `out`: out[i] = L[i] + (t - L[i]) x alpha is pre-B2's L[i] += (t - L[i]) x alpha (the same double
+ * expression, the same Float32 store), published by one .set()
+ */
+function mixRows(raw: Float32Array, tmp: Float32Array, L: Float32Array, out: Float32Array, alpha: number, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) {
+    let t = Math.max(raw[i] * 0.85, tmp[i]);
+    if (t > 1) t = 1;
+    out[i] = L[i] + (t - L[i]) * alpha;
+  }
 }
 
 /** add amount x (1 - d / r) to raw around (cx, cz) (cell-centre coordinates), within radius r */
