@@ -4,10 +4,10 @@
  * A small SimBot city (64², two years) is the uninterrupted game. It is saved as a file (serializeCity + encodeBundle)
  * on several days of a month — before and after the month tick, on the population sample days, on tourism's venue
  * day (26), on the advisors' scan days (28, 29) — and once right after a player edit between two days (a park
- * bulldozed, a road and a park built: the land value queue, the swap-removed building lists). Each save is loaded into a
- * new Simulation and both run 30 more days: the whole serialized city must be equal on every one of those days, and
- * right after the load. The infrastructure systems are not in this test: their continuity holds for B2's rewrite of
- * src/sim/infra (docs/dev/reports/cloud-T057-save-load.md).
+ * bulldozed, a street built and zoned: the land value queue, the swap-removed building lists, growth's candidates). Each
+ * save is loaded into a new Simulation and both run 30 more days (the loaded games get the same edit on its day): the
+ * whole serialized city must be equal right after the load and on every one of those days. The infrastructure systems
+ * are not in this test: their continuity waits for B2's rewrite of src/sim/infra (docs/dev/reports/cloud-T057-save-load.md).
  */
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
