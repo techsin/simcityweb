@@ -9,6 +9,9 @@
  * save is loaded into a new Simulation and both run 30 more days (the loaded games get the same edit on its day): the
  * whole serialized city must be equal right after the load and on every one of those days. The infrastructure systems
  * are not in this test: their continuity waits for B2's rewrite of src/sim/infra (docs/dev/reports/cloud-T057-save-load.md).
+ *
+ * Also: saving is not a game event (the save hooks' contract, src/sim/persist.ts), and recovery snapshots may leave the
+ * continuity records out.
  */
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
@@ -126,6 +129,22 @@ describe('T057: save / load continuity', () => {
     // (the IndexedDB path, a structured clone, holds the same city as the file)
     const st2 = deserializeCity(decodeBundle(saves.get(saveAt[0])!) as SerializedCity);
     expect(differing(digest(viaClone(st2)), digest(st2))).toEqual([]);
+  });
+
+  it('saving is not a game event: a game that saves every day continues like one that never saves', { timeout: 120_000 }, () => {
+    // (the save hooks write their records at every save; nothing the simulation reads may change with them)
+    const opts = { size: 48, years: 1, seed: 5, difficulty: 'medium', terrain: 'plains', water: 0.1, quiet: true, noInfra: true } as const;
+    const quiet = new SimBot({ ...opts }, economySystems());
+    const saving = new SimBot({ ...opts }, economySystems());
+    let saves = 0;
+    saving.sim.events.on('day', () => { serializeCity(saving.st); saves++; });
+    quiet.run(1);
+    saving.run(1);
+    expect(saves).toBeGreaterThan(300);
+    expect(saving.st.stats.population).toBeGreaterThan(500);
+    const records = new Set(CONTINUITY_RECORDS.map((k) => `sd.${k}`));
+    const game = (st: CityState) => Object.fromEntries(Object.entries(digest(st)).filter(([k]) => !records.has(k)));
+    expect(differing(game(quiet.st), game(saving.st))).toEqual([]);
   });
 
   it('recovery snapshots leave the continuity records out when lean or over their budget, and still load', { timeout: 120_000 }, () => {
