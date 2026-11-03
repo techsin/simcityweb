@@ -1,7 +1,7 @@
 /**
  * B2 G2 (docs/dev/B2_DESIGN.md §4, §11): the services pass and the NIMBY rebuild in pieces — one go against many small
  * steps, and against the frozen pre-B2 ServicesSystem (tests/sim/exact/servicesOriginal.ts = services.ts at 41ae570).
- *  kernels   the resumable runs against their whole-call originals: RoadTimeRun / RoadDistRun (catchments), the transit
+ *  kernels   the resumable runs against their whole-call originals: RoadTimeRun / RoadDistRun / ReachRun (catchments), the transit
  *            coverage by stop ranges, NimbyRun (nimby.ts; also against the frozen pre-J4 rebuild), the police need run
  *            (facilities.ts), with other searches / scans between the pieces
  *  services  passes run in one go (scale 1e9), at the production piece size and in tiny / random pieces give identical
@@ -21,7 +21,7 @@ import { createSystems } from '../../src/sim/systems/index';
 import { infraSystems } from '../../src/sim/systems/infra';
 import { buildingList, removeBuilding } from '../../src/sim/infra/common';
 import {
-  RoadDistRun, RoadTimeRun, TIME_Q, reachRaw, roadDistMulti, roadTimeMulti, tierProvider, unservedClusters,
+  ReachRun, RoadDistRun, RoadTimeRun, TIME_Q, reachRaw, reachResult, roadDistMulti, roadTimeMulti, tierProvider, unservedClusters,
 } from '../../src/sim/infra/catchments';
 import { NimbyRun, nimbyCost, rebuildNimby } from '../../src/sim/infra/nimby';
 import { justiceSites, pluggedList, facilityReport } from '../../src/sim/infra/facilities';
@@ -215,6 +215,33 @@ describe('B2 G2 kernels: the resumable runs equal their whole-call originals', (
       }
       expect(digest(b), `case ${c}`).toBe(digest(a));
       expect(run.settled, `case ${c} settled`).toBe(nA);
+    }
+  });
+
+  it('ReachRun in random pieces = reachRaw (walk, drive, disk): cells, order, weights; other reaches between the pieces', () => {
+    const rng = new RNG(0xb2c6);
+    const run = new ReachRun();
+    for (let c = 0; c < 80; c++) {
+      const N = rng.pick([1, 5, 16, 40, 64]);
+      const st = randomRoads(rng, N, rng.range(0.15, 0.85));
+      for (let i = 0; i < st.cells; i++) if (st.network[i] === 0 && rng.chance(0.1)) st.water[i] = 1;
+      const bw = rng.int(1, 4), bd = rng.int(1, 4);
+      const bx = rng.int(-1, N - 1), bz = rng.int(-1, N - 1);
+      const R = rng.pick([0, 0.5, 3, 9, 26, 40]), metric = rng.int(0, 2);
+      const n = reachRaw(st, bx, bz, bw, bd, R, metric);
+      const { touched, best } = reachResult();
+      const want = Array.from(touched.subarray(0, n), (i) => [i, best[i]]);
+      run.begin(st, bx, bz, bw, bd, R, metric);
+      let pieces = 0;
+      while (!run.run(rng.pick([1, 2, 9, 120, 1e9]))) {
+        pieces++;
+        reachRaw(st, rng.int(0, N - 1), rng.int(0, N - 1), 2, 1, rng.pick([2, 12]), rng.int(0, 2));
+      }
+      const got = Array.from(run.touched.subarray(0, run.n), (i) => [i, run.best[i]]);
+      expect(run.n, `case ${c} n (${pieces} pieces)`).toBe(n);
+      expect(digest(got), `case ${c}`).toBe(digest(want));
+      expect(run.run(5)).toBe(true);
+      run.release();
     }
   });
 

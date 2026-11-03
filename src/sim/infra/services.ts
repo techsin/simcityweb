@@ -86,7 +86,7 @@ import { pieceBudgetUs, pieceUnits, schedulerOf } from './scheduler';
 import { StopCollector, stopServes, transitCoverageActive, transitCoverageRange, type StopList } from './transit';
 import { getDef } from '../catalog';
 import {
-  NEED_ORDER, RoadDistRun, RoadTimeRun, TIER_NEED, TIME_Q, reachRaw, reachResult, tierLayer, tierProvider, type FacilityLoad,
+  NEED_ORDER, ReachRun, RoadDistRun, RoadTimeRun, TIER_NEED, TIME_Q, tierLayer, tierProvider, type FacilityLoad,
   type TierNeedRun,
 } from './catchments';
 import { NimbyRun } from './nimby';
@@ -108,6 +108,13 @@ export const SERVICES_STAFF_DELTA = 0.05;
  * costs about SC.tierUnit warm µs per unit (pre-B2: U_SEARCH 3.6, the report 0.25 per entry + 8, the init 0.1 per cell)
  */
 const U_SEARCH = 1.75, U_COPY = 0.1, U_ENTRY = 0.25, U_REPORT = 0.45;
+/**
+ * B2 (G2): tier work units of a fresh reach's pieces: per Dial queue entry taken (a road reach), per disk cell visited (a
+ * disk), and per reached cell of the pool copy that ends it. dense1m's 2,428 facilities: 0.389 queue entries per reached
+ * cell (so 4.5 per entry = U_SEARCH per reached cell, the pre-B2 count), 0.100 warm µs per entry (4.1 units) and 0.035 µs
+ * per disk cell (1.4 units). Sizes only: where a piece ends moves no result.
+ */
+const U_REACH_POP = 4.5, U_REACH_DISK = 1.4, U_REACH_COPY = 0.1;
 /** tier work units per cell: a slot's init fills (A, cov, seat), an empty slot's layer fill, the final clamp / stats / publish */
 const U_INIT = 0.035, U_EMPTY = 0.0175, U_CLAMP = 0.11, U_STATS = 0.11, U_PUBLISH = 0.02;
 /** tier work units per footprint cell of the per-tier footprint max (two passes over each lot) */
@@ -413,6 +420,20 @@ export class ServicesSystem implements SimSystem {
   private nimbyRun = new NimbyRun();
   private accRun = new RoadTimeRun();
   private shopRun = new RoadDistRun();
+  /**
+   * B2 (G2): the tier search's fresh reach in pieces (catchments ReachRun, its own engine). A fresh reach is held across
+   * tier steps: reachPh 1 = searching, 2 = searched (the pool copy, the record and the union splat still to run); the
+   * facility's cursor advances when its item completes. reachKey / reachRoad are the cache entry's key and kind, taken
+   * when the reach begins (as pre-B2's reachOf took them before its search).
+   */
+  private reach = new ReachRun();
+  private reachPh = 0;
+  private reachKey = 0;
+  private reachRoad = true;
+  /** units the held item has spent so far (its remaining estimate) */
+  private reachDone = 0;
+  /** set by a tier item that stops before it completes: tierWork ends the step */
+  private tierHold = false;
   /** accessCommute's value for unreached cells (from stats.avgCommute, read at the output's first piece) */
   private accUnreached = 0;
   private accNext = new Float32Array(0);
@@ -648,6 +669,8 @@ export class ServicesSystem implements SimSystem {
     this.nimbyRun.release();
     this.accRun.release();
     this.shopRun.release();
+    this.reach.release();
+    this.reachPh = 0; this.reachDone = 0; this.tierHold = false;
     this.accUnreached = 0;
     this.fiServed = 0; this.fiUnreached = 0;
     this.eqPop = 0; this.eqEdu = 0; this.eqHealth = 0; this.eqAir = 0; this.eqWp1 = false;
@@ -1239,6 +1262,7 @@ export class ServicesSystem implements SimSystem {
       work += done;
       this.workLeft -= done;
       if (rowItem) break;
+      if (this.tierHold) { this.tierHold = false; break; }
     }
   }
 
@@ -1260,11 +1284,14 @@ export class ServicesSystem implements SimSystem {
       case P_SEARCH: {
         if (this.cursor >= list.length) return shared ? list.length * Math.log2(list.length + 1) : 0;
         const b = list[this.cursor];
+        // (a held fresh reach: what is left of its estimate; searched: its pool copy and splat)
+        if (this.reachPh === 1) return Math.max(8, this.freshUnits(st, b, k) - this.reachDone);
+        if (this.reachPh === 2) return this.reach.n * (U_REACH_COPY + (shared ? 0 : U_ENTRY * 2)) + 16;
         if (!st.buildings.has(b.id)) return 0;
         const cache = this.cache[k];
         const e = cache?.ent.get(b.id);
         if (cache && e && e.valid && e.key === keyOf(b)) return (e.end - e.start) * (U_COPY + (shared ? 0 : U_ENTRY * 2)) + (shared ? 8 : 16);
-        return this.searchCells(st, b, k) * ((this.metricOf(st, b, k) === 2 ? U_SEARCH / 2 : U_SEARCH) + (shared ? 0 : U_ENTRY * 2)) + (shared ? 16 : 24);
+        return this.freshUnits(st, b, k);
       }
       case P_ALLOC: {
         if (this.cursor >= list.length) return 0;
@@ -1294,11 +1321,17 @@ export class ServicesSystem implements SimSystem {
     }
   }
 
+  /** expected units of facility b's fresh reach item (its search, pool copy and union splat) */
+  private freshUnits(st: CityState, b: Building, k: number): number {
+    const shared = this.shared[k];
+    return this.searchCells(st, b, k) * ((this.metricOf(st, b, k) === 2 ? U_SEARCH / 2 : U_SEARCH) + (shared ? 0 : U_ENTRY * 2)) + (shared ? 16 : 24);
+  }
+
   /** run the next tier item (row / lot items: as many rows / lots as `room` units allow, at least one); returns its units */
   private tierItem(st: CityState, k: number, room: number): number {
     switch (this.tierPhase) {
       case P_INIT: return this.fac[k].length === 0 ? this.tierEmpty(st, k) : this.tierInit(st, k);
-      case P_SEARCH: return this.cursor >= this.fac[k].length ? this.tierSearchEnd(k) : this.tierSearch(st, k);
+      case P_SEARCH: return this.cursor >= this.fac[k].length ? this.tierSearchEnd(k) : this.tierSearch(st, k, room);
       case P_ALLOC: return this.tierAlloc(st, k);
       case P_REPORT: return this.tierReport(st, k);
       default: return this.finalItem(st, k, room);
@@ -1350,11 +1383,35 @@ export class ServicesSystem implements SimSystem {
     return w;
   }
 
-  private tierSearch(st: CityState, k: number): number {
-    const c = this.cursor++;
+  /**
+   * facility `cursor` of slot k: its reach (a cached copy, or a fresh search in pieces of at most `room` units, held across
+   * steps), then the union splat. The cursor advances when the item completes; the pool, the cache entry, the record and
+   * the splat are written in its last piece, in pre-B2's order.
+   */
+  private tierSearch(st: CityState, k: number, room: number): number {
+    const c = this.cursor;
     const b = this.fac[k][c];
-    if (!st.buildings.has(b.id)) { this.facStart[c] = this.facEnd[c] = this.poolN; return 0; }
-    return this.reachOf(st, b, k, c) + (this.shared[k] ? 0 : this.splatUnion(st, b, k, c, this.needOfSlot(k)));
+    let w = 0;
+    if (this.reachPh === 0) {
+      if (!st.buildings.has(b.id)) { this.facStart[c] = this.facEnd[c] = this.poolN; this.cursor++; return 0; }
+      const hit = this.reachCached(b, k, c);
+      if (hit >= 0) { this.cursor++; return hit + (this.shared[k] ? 0 : this.splatUnion(st, b, k, c, this.needOfSlot(k))); }
+      this.reachBegin(st, b, k);
+    }
+    if (this.reachPh === 1) {
+      const rr = this.reach, w0 = rr.work;
+      const unit = this.reachRoad ? U_REACH_POP : U_REACH_DISK;
+      const done = rr.run(Math.max(1, Math.floor(room / unit)));
+      w = (rr.work - w0) * unit;
+      this.reachDone += w;
+      if (!done) { this.tierHold = true; return w; }
+      this.reachPh = 2;
+      // (the pool copy and the union splat when they fit in what is left of the step, else first in the next one)
+      if (w > 0 && w + rr.n * (U_REACH_COPY + (this.shared[k] ? 0 : U_ENTRY * 2)) + 16 > room) { this.tierHold = true; return w; }
+    }
+    w += this.reachFinish(st, b, k, c);
+    this.cursor++;
+    return w + (this.shared[k] ? 0 : this.splatUnion(st, b, k, c, this.needOfSlot(k)));
   }
 
   /** shared tiers: facilities take seats in seat order (best op first, then building id) */
@@ -1448,8 +1505,10 @@ export class ServicesSystem implements SimSystem {
    * mean police over R cells 0.98 -> 0.46 on those days, a deep lot's stored desirability -9 vs raw +49)
    */
   private finFoot(st: CityState, room: number): number {
-    // (at most the cold cell floor's lot cells: a once-per-pass cell loop)
-    const cap = cellUnits(FOOT_WORK * SC.tierUnit) * FOOT_WORK;
+    // (at most S_FOOT's lots per piece, the same loop: SC.foot per lot cell at the cold budget. G2 dense1m: the first call
+    // of a load's second pass ran at ~0.19 µs per lot cell, 2-3 ms and once 10 ms for the ~12,000 lot cells the cold cell
+    // floor allowed, in about half the runs)
+    const cap = cellUnits(SC.foot) * FOOT_WORK;
     const r = lotMaxRange(this.finBuf, st.size, this.multiRect, this.multi.length, this.finCur, room < cap ? room : cap, FOOT_WORK, this.lotOut);
     this.finCur = r;
     if (r >= this.multi.length) { this.finSub = F_PUBLISH; this.finCur = 0; }
@@ -1481,27 +1540,41 @@ export class ServicesSystem implements SimSystem {
     ord.sort((a, b) => ops[b] - ops[a] || list[a].id - list[b].id);
   }
 
-  /** reach of facility c of slot k into the pool (cached copy or fresh search); returns work units */
-  private reachOf(st: CityState, b: Building, k: number, c: number): number {
+  /** facility b's reach copied from the slot's cache (entry valid, same key): its units, or -1 (a fresh reach) */
+  private reachCached(b: Building, k: number, c: number): number {
     const key = keyOf(b), id = b.id;
     const cache = this.cache[k];
     const e = cache?.ent.get(id);
+    if (!(cache && e && e.valid && e.key === key)) return -1;
     const off = this.poolN;
-    if (cache && e && e.valid && e.key === key) {
-      const n = e.end - e.start;
-      this.ensurePool(off + n);
-      this.pIdx.set(cache.idx.subarray(e.start, e.end), off);
-      this.pW.set(cache.w.subarray(e.start, e.end), off);
-      this.poolN = off + n;
-      this.facStart[c] = off; this.facEnd[c] = off + n;
-      this.curEnt.set(id, { key, start: off, end: off + n, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, road: e.road, valid: true });
-      return n * U_COPY + 8;
-    }
+    const n = e.end - e.start;
+    this.ensurePool(off + n);
+    this.pIdx.set(cache.idx.subarray(e.start, e.end), off);
+    this.pW.set(cache.w.subarray(e.start, e.end), off);
+    this.poolN = off + n;
+    this.facStart[c] = off; this.facEnd[c] = off + n;
+    this.curEnt.set(id, { key, start: off, end: off + n, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, road: e.road, valid: true });
+    return n * U_COPY + 8;
+  }
+
+  /** a fresh reach of facility b begins (reachRaw's prologue in the run; the key and the kind as pre-B2 took them) */
+  private reachBegin(st: CityState, b: Building, k: number): void {
+    this.reachKey = keyOf(b);
     const inf = infoOf(st, b);
     const transit = k === SLOT_TRANSIT;
     const metric = transit ? 2 : inf.metric;
-    const n = reachRaw(st, b.x, b.z, b.w, b.d, transit ? inf.covRadius : inf.tierRadius, metric);
-    const { touched, best } = reachResult();
+    this.reachRoad = metric !== 2;
+    this.reach.begin(st, b.x, b.z, b.w, b.d, transit ? inf.covRadius : inf.tierRadius, metric);
+    this.reachPh = 1;
+    this.reachDone = 0;
+  }
+
+  /** the searched reach into the pool (cells with weight > 0, in search order) and the slot's cache entry */
+  private reachFinish(st: CityState, b: Building, k: number, c: number): number {
+    const rr = this.reach;
+    const n = rr.n;
+    const touched = rr.touched, best = rr.best;
+    const off = this.poolN;
     this.ensurePool(off + n);
     const pIdx = this.pIdx, pW = this.pW;
     const N = st.size;
@@ -1519,8 +1592,11 @@ export class ServicesSystem implements SimSystem {
     }
     this.poolN = m;
     this.facStart[c] = off; this.facEnd[c] = m;
-    this.curEnt.set(id, { key, start: off, end: m, x0, z0, x1, z1, road: metric !== 2, valid: true });
-    return n * (metric === 2 ? U_SEARCH / 2 : U_SEARCH) + 16;
+    this.curEnt.set(b.id, { key: this.reachKey, start: off, end: m, x0, z0, x1, z1, road: this.reachRoad, valid: true });
+    rr.release();
+    this.reachPh = 0;
+    this.reachDone = 0;
+    return n * U_REACH_COPY + 16;
   }
 
   private ensurePool(n: number): void {
@@ -2352,12 +2428,21 @@ function lotMaxRange(L: Float32Array, N: number, rect: Int32Array, nLots: number
     const u = Math.max(1, x1 - x0) * Math.max(1, z1 - z0) * perCell;
     if (used > 0 && used + u > room) break;
     used += u;
-    let m = 0;
-    for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) { const v = L[z * N + x]; if (v > m) m = v; }
-    for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) L[z * N + x] = m;
+    lotFill(L, N, x0, z0, x1, z1, lotMax(L, N, x0, z0, x1, z1));
   }
   out[0] = used;
   return q;
+}
+/** the max of L over a lot (one loop per function, R10: G2 traced lotMaxRange deoptimising in its OSR code on the never
+ *  executed fill loop after the max loop, ten times in a load's first pass) */
+function lotMax(L: Float32Array, N: number, x0: number, z0: number, x1: number, z1: number): number {
+  let m = 0;
+  for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) { const v = L[z * N + x]; if (v > m) m = v; }
+  return m;
+}
+/** v over a lot */
+function lotFill(L: Float32Array, N: number, x0: number, z0: number, x1: number, z1: number, v: number): void {
+  for (let z = z0; z < z1; z++) L.fill(v, z * N + x0, z * N + x1);
 }
 
 /** the stale-record clear over ids [i0, i1) */
