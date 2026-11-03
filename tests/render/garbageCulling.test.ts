@@ -201,15 +201,22 @@ describe('garbage mirrored road frontage', () => {
     expectFront(props, b, roadRot);
   });
 
-  it('selects the first road edge, then the next remaining edge after mirrored network invalidation', () => {
+  it('prefers the building front when a road runs along it, else the first road edge, after mirrored network invalidation', () => {
     const props = renderer(64), b = building(7, { rot: 3 });
     const state = { size: 64, network: new Uint8Array(64 * 64) };
+    const west = b.z * state.size + b.x - 1;
     const south = (b.z + b.d) * state.size + b.x;
-    state.network[b.z * state.size + b.x - 1] = Network.Road;
+    state.network[west] = Network.Road;
     state.network[south] = Network.Street;
     state.network[b.z * state.size + b.x + b.w] = Network.Avenue;
     props.resetGarbage([b], 100);
     props.updateGarbage(100, close, { ...flat, state });
+    // the front (rot 3, the -X side) has a road: the bags go by the entrance, not on the side street
+    expectFront(props, b, 3);
+    state.network[west] = Network.None;
+    props.invalidateGarbage({ x0: b.x - 1, z0: b.z, x1: b.x, z1: b.z + 1 });
+    props.updateGarbage(100, close, { ...flat, state });
+    // no road at the front any more: the first road edge in +Z, +X, -Z, -X order
     expectFront(props, b, 0);
     state.network[south] = Network.None;
     props.invalidateGarbage({ x0: b.x, z0: b.z + b.d, x1: b.x + 1, z1: b.z + b.d + 1 });

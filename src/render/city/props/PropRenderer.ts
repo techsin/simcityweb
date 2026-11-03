@@ -111,6 +111,8 @@ function garbageFront(b: GarbageBuilding, state?: GarbageSurface['state']): numb
     }
     return false;
   };
+  // the building's own front first (the entrance), when a road runs along it; else the first road edge
+  if (edge(b.rot & 3)) return b.rot & 3;
   for (let side = 0; side < 4; side++) if (edge(side)) return side;
   return b.rot;
 }
