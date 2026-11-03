@@ -1,5 +1,6 @@
 /** Rank bursts share the city renderer, but never hold or interrupt the New Year show. */
 import type { GameContext } from '../game/context';
+import { resolveMotion } from '../game/settings';
 import type { Fireworks } from '../render/city/effects/Fireworks';
 import { CITY_RANKS, type CityRank } from '../sim/economy/rewards';
 
@@ -17,7 +18,7 @@ export class RankFireworks {
     this.reset();
     this.offs.push(
       ctx.host.events.on('reset', () => this.reset()),
-      ctx.ui.on('uiTick', () => { if (ctx.host.policy.live) this.cancel(); }),
+      ctx.ui.on('uiTick', () => { if (ctx.host.policy.live || resolveMotion(ctx.settings.motion) === 'reduced') this.cancel(); }),
     );
     ctx.signal.addEventListener('abort', this.abort, { once: true });
   }
@@ -26,7 +27,7 @@ export class RankFireworks {
     const tier = CITY_RANKS.findIndex((r) => r.id === rank.id);
     if (this.disposed || tier <= this.highest) return;
     this.highest = tier;
-    if (this.isBusy() || this.ctx.host.policy.live) return;
+    if (this.isBusy() || this.ctx.host.policy.live || resolveMotion(this.ctx.settings.motion) === 'reduced') return;
     const fw = (this.ctx.objects as { fireworks?: RankFireworksView }).fireworks;
     if (!fw) return;
     this.current = fw;

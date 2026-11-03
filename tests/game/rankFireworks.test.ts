@@ -13,6 +13,7 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function renderer() {
@@ -29,7 +30,7 @@ function setup(population = 0) {
   const events = new Emitter<Record<string, unknown>>(), ui = new Emitter<Record<string, unknown>>();
   const fw = { isRankBurst: false, start: vi.fn((_opts: FireworksStartOptions) => { fw.isRankBurst = true; }), stop: vi.fn(() => { fw.isRankBurst = false; }) };
   const host = { events, policy: { live: false } };
-  const ctx = { state, signal: signal.signal, host, ui, objects: { fireworks: fw } } as unknown as GameContext;
+  const ctx = { state, signal: signal.signal, host, ui, settings: { ...DEFAULT_SETTINGS }, objects: { fireworks: fw } } as unknown as GameContext;
   let busy = false;
   const bursts = new RankFireworks(ctx, () => busy);
   cleanups.push(() => signal.abort());
@@ -62,6 +63,48 @@ describe('rank fireworks gating', () => {
     expect(t.fw.start).not.toHaveBeenCalled();
     t.start(3);
     expect(t.fw.start).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['reduced', 'system'] as const)('skips a rank when motion resolves to reduced (%s), without replaying it later', (motion) => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+    const t = setup();
+    t.ctx.settings.motion = motion;
+    t.start(1);
+    t.ctx.settings.motion = 'full';
+    t.start(1);
+    expect(t.fw.start).not.toHaveBeenCalled();
+    t.start(2);
+    expect(t.fw.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('honours full motion over the device preference and follows a full system preference', () => {
+    let reduced = true;
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: reduced })));
+    const t = setup();
+    t.ctx.settings.motion = 'full';
+    t.start(1);
+    t.ctx.settings.motion = 'system';
+    reduced = false;
+    t.start(2);
+    expect(t.fw.start).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancels its burst when motion becomes reduced without stopping a New Year takeover', () => {
+    let reduced = false;
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: reduced })));
+    const t = setup();
+    t.ctx.settings.motion = 'system';
+    t.start(1);
+    reduced = true;
+    t.ui.emit('uiTick', undefined);
+    expect(t.fw.stop).toHaveBeenCalledTimes(1);
+    reduced = false;
+    t.start(2);
+    t.fw.isRankBurst = false;
+    t.ctx.settings.motion = 'reduced';
+    t.ui.emit('uiTick', undefined);
+    t.signal.abort();
+    expect(t.fw.stop).toHaveBeenCalledTimes(1);
   });
 
   it('initializes existing ranks silently and cancels a burst on reset and disposal', () => {
