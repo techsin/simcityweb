@@ -260,8 +260,9 @@ const US = { plan: 0.012, label: 0.007, cells: INFRA_CELL_SIZING_US, zoned: INFR
 /** the chunk plan of the pass snapshot (every building stage walks it): the cold Building floor per building + 20 ns per
  *  footprint cell (the results' footprint writes; sizing only — the estimates use each stage's own coefficients) */
 const UT_PLAN_B = INFRA_BLD_SIZING_US, UT_PLAN_F = 0.02;
-/** the treatment prefix scan's sizing per building (a DefInfo lookup and two fields: a quarter of the Building floor) */
-const UT_SCAN_SIZING = INFRA_BLD_SIZING_US / 4;
+/** the treatment prefix scan's sizing per building (a DefInfo lookup and two fields: half the Building floor, about 540
+ *  buildings per piece; at a quarter its first pieces after a load ran at ~3 µs per building, 4.1 ms) */
+const UT_SCAN_SIZING = INFRA_BLD_SIZING_US / 2;
 /** cells of one piece of a once-per-pass cell loop costing `us` per cell (the cold cell floor) */
 function cellUnits(us: number): number {
   return pieceUnits(us > INFRA_CELL_SIZING_US ? us : INFRA_CELL_SIZING_US, 1, COLD);

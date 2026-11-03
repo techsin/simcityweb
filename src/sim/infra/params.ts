@@ -137,14 +137,17 @@ export const TRAFFIC_MIN_CYCLE_MS = 1000;
 /**
  * headless: estimated ms of infra steps per sim day (at least one step always runs). Pre-B2 value 3.2 (2.6 + the WP3
  * 0.15, WP2 0.25, WP8 0.15 and WP7b 0.05 shares of P0-15, in the old under-estimated units). B2 (docs/dev/B2_DESIGN.md
- * §9.4): the step estimates become honest warm wall ms, about 1.65 x the old units on average, so the budget, the carry
- * and the credit floor scale by the same factor to keep the real infra time per day. PROVISIONAL (G1); G4 measures B's
- * real ms per day and sets the final values.
+ * §9.4): the step estimates become honest warm wall ms (per-piece medians), so the budget, the carry and the credit floor
+ * scale by about 1.65 (G1's provisional values). G4 measured (dense1m and bot256, --warm 300 --days 120; §18): at 5.3
+ * every task keeps at least B's cadence (traffic cycles as B: 5 and 8 in 120 days; services, utilities and pollution more
+ * often) for 1.3-1.9 x B's real infra ms per day; at 4.2 dense1m's traffic falls to 3 cycles, at 3.2 (B's real ms per
+ * day) services to 0-1 passes. The real-time match of §9.4 item 2 starves the large passes, so G4 keeps 5.3 (the
+ * balance runs check the time: totalMsPerDay <= baseline + 3).
  */
 export const INFRA_DAY_BUDGET = 5.3;
-/** headless: unused budget (next step did not fit) carried to the next day, at most this much (pre-B2: 0.6; provisional) */
+/** headless: unused budget (next step did not fit) carried to the next day, at most this much (pre-B2: 0.6; B2: x 1.65) */
 export const INFRA_DAY_CARRY = 1.0;
-/** max priority (estimated ms) an idle task can bank in the scheduler's fairness credit (pre-B2: 4 in scheduler.ts; provisional) */
+/** max priority (estimated ms) an idle task can bank in the scheduler's fairness credit (pre-B2: 4 in scheduler.ts; B2: x 1.65) */
 export const CREDIT_FLOOR = 6.5;
 /** with a live renderer: real ms of infra steps per frame (at least one step when due) */
 export const INFRA_FRAME_BUDGET_MS = 3;
