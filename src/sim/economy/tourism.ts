@@ -871,15 +871,20 @@ export function emergencySafety(st: CityState, crime: number): number {
 }
 
 /** estimated current residential target lost to the safety record; no arrival flow is modelled by migration */
-export function emergencyMigrationImpact(st: CityState): { multiplierLoss: number[]; targetResidents: number } {
+export function emergencyMigrationImpact(st: CityState): { multiplierLoss: number[]; targetResidents: number; multiplier: number } {
   const d = st.systemData.economy as (SafetyMigrationData & { migration?: number[]; rawTarget?: number[] }) | undefined;
   const loss = [0, 1, 2].map((w) => d?.safetyMigrationLoss?.[w] ?? 0);
-  let target = 0;
+  let target = 0, current = 0;
   for (let w = 0; w < 3; w++) {
     const m = d?.migration?.[w] ?? 1;
-    if (m > 0) target += Math.max(0, d?.rawTarget?.[w] ?? 0) * loss[w] / m;
+    if (m > 0) {
+      const r = Math.max(0, d?.rawTarget?.[w] ?? 0);
+      current += r;
+      target += r * loss[w] / m;
+    }
   }
-  return { multiplierLoss: loss, targetResidents: Math.round(target) };
+  const without = current + target;
+  return { multiplierLoss: loss, targetResidents: Math.round(target), multiplier: without > 0 ? clamp(current / without, 0, 1) : 1 };
 }
 
 /** scores 0..1 [culture, parks, safety, clean, quiet, services, jobs, connect] per wealth (0..2) and city-wide (3);

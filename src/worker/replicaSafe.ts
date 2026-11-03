@@ -8,6 +8,7 @@
 export const REPLICA_SAFE = [
   'listRewards', 'listOrdinances', 'loanOffer', 'maxLoanAmount', 'regionTerms',
   'serviceEffectiveness', 'onStrike', 'demandInfo', 'emptyZoneStatus', 'utilityReaches', 'infraFlags',
+  'emergencyRebuildCosts', 'emergencyMigrationImpact',
   'windVector', 'overlayLayer', 'overlayReadout', 'cityFingerprint',
   'zone', 'dezone', 'bulldoze', 'buildNetwork', 'buildPowerLine', 'buildSubway', 'plop', 'terraform', 'plantTrees',
   'setOrdinance', 'takeLoan', 'repayLoan',

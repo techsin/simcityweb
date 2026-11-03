@@ -1,3 +1,184 @@
+# local-T043-lg06-neglect: Round 3
+
+Branch `local/T043-lg06-neglect`; merged dev base `683d02b` through `c12dc75`. **Round 3 is in progress: the shared A/A envelope is zero, the completed EM_REP=12 profile fails, and the final bounded EM_REP=24 profile is pending.** The original infrastructure commit `7c0e586` still **holds for B2**. Round-3 changes are uncommitted; the approved panel and additive Worker audit hunks are kept small for the lead to commit separately. No commit, push or `.done` file was made in this round. The Review-1 report below is preserved as historical evidence; its final-status and open-decision statements describe that earlier round only.
+
+## Lead decisions and amendments to LG-06
+
+`docs/dev/queue/NOTE-048-desk-requests.md`, “T043 (LG-06): the four decisions” and “The SIM balance rule”, supplies the following amendments:
+
+- Retain the safety record, the **15%** rebuilding charge and **18-month** scars. This round does not change the bot's default strategy, growth/jobs/map/redevelopment calibration or tourism-ratio denominator.
+- Replace the original all-year ±0.5% population gate with **every yearly base row from year 10 within max(±1%, that command row's shared A/A envelope)**. Investigate a systematic same-direction movement exceeding half the respective tolerance on all three command rows. The shared envelope also records air at homes, approval and I-HT share. Final gates must be repeated against the post-NEW-05 dev/envelope when that base lands.
+- Judge “approval cost unchanged or larger” by the **year-60 gap, neglect minus attentive**, versus the same seed with LG-06 off at the same base, allowing **0.5 approval points** of slack. Thus `gap_on <= gap_off + 0.5`. Report the mean annual gap from year 10 separately; it does not gate.
+- A variant miss smaller than its metric's A/A envelope counts as met only when the intended direction holds on the other seed; report the actual miss and margin. The envelope is evidence, not a replacement assumed tolerance.
+- Amend the original panel's “Y fewer newcomers” wording to the approved **current multiplier** wording: “Cost of unanswered emergencies this year: §X rebuild; the safety record is cutting newcomers by N %”. Round N to a whole percent and hide the percentage clause at zero. There is no new arrival ledger.
+
+The panel amendment is implemented. `emergencyMigrationImpact` now also returns a read-only aggregate multiplier, `R / (R + loss)`, using current nonnegative uncapped residential targets and their same-state counterfactual safety losses. It keeps full precision before display rounding, weights the wealth tiers by their targets and returns 1 for old saves or zero usable residential targets. The helper uses the existing mirrored economy outputs; it performs no simulation writes, initialization or RNG draws.
+
+## Round-3 changes by file
+
+- `src/sim/economy/tourism.ts`: add the aggregate `multiplier` to the existing pure `emergencyMigrationImpact` result. Existing safety scoring, migration behavior and stored outputs are unchanged by this display-reader extension.
+- `src/ui/panels/EmergenciesPanel.ts` — **newly approved formerly cloud-held hunk**: add the exact cost row in Statistics. Read through `ctx.state`, the host's mirrored state; include the rounded cut in the render signature so the text refreshes even when emergency statistics do not change. Read actual rounded trailing-year unanswered rebuilding charges, not this month's unbilled estimate.
+- `src/worker/replicaSafe.ts` — **approved additive Worker hunk**: register `emergencyRebuildCosts` and `emergencyMigrationImpact`. No protocol/schema/system-key change is needed: emergency stats and `systemData.economy` already travel in packets.
+- `tests/worker/replicaSafe.test.ts` — **minimal approved registry audit hunk outside the original named files**: add the two readers to the existing parity/purity check calls.
+- New `tests/sim/neglectMigrationImpact.test.ts`: **8 cases**, covering pure old-save fallbacks, target weighting, full-precision percentage rounding, unusable tiers, zero targets, missing optional losses and mid-month save/load with and without a saved venue pass.
+- New `tests/sim/neglectPanel.test.ts`: **3 cases**, covering exact cost/current-percentage text, hidden rounded-zero percentages and refresh with unchanged emergency statistics. A hostile `ctx.sim` getter rejects accidental live-system reads.
+- New `tests/sim/neglectReplica.test.ts`: **2 packet-host cases**, checking Ready and subsequent-packet parity/purity/copy isolation, plus neutral old-save fields on a real `LoopbackSimHost` with explicit empty modules.
+- `docs/dev/reports/local-T043-lg06-neglect.md`: this current-round record, followed by the preserved historical report.
+
+There are **no new infrastructure hunks in Round 3**. The emergency/nimby hunks itemized in the historical report remain separately held for B2. The optional `CityState.ts` interfaces from the original WIP also remain unchanged.
+
+## Constants and bounded screening
+
+The production source currently retains `EM_REP = 4` while scratch-only snapshots test **8**, **12** and **24**. Each trial changes that constant alone. They do not resurrect the rejected Review-1 migration mappings. No final profile has yet been selected.
+
+Unchanged values: `EM_DEATHS_PER_1000 = 0.002`; `EM_REP_N0 = 30`; `REBUILD_SHARE = 0.15`; `EM_SCAR = { amount: 0.15, radius: 3, days: 18 * DAYS_PER_MONTH }`; the existing migration range `0.88–1.12`; and the existing tourism/attractiveness safety weights. No broader calibration is included. In particular, the SIM rule's prohibition on weakening specified costs is respected.
+
+The initial 128×15 seed-7 screen is complete. Largest movement below is measured only over the newly gating years 2010–2015. Tourism is the trailing mean of 12 monthly new/legacy tourism-job ratios at year 15. **Every on profile in this table fails the amended 1% base-population gate**; the shared A/A envelope supplies no additional tolerance.
+
+| Profile | Population 2015 | Funds | Approval | Largest absolute population movement from year 10 | Tourism at year 15 | Maximum failed share from year 10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| LG-06 off | 192,899 | §146,349 | 81.3650175 | 0% | 1.2043515 | 0% |
+| Retained `EM_REP = 4` | 195,379 | §152,842 | 78.8664800 | 3.0643043% | 0.8996060 | 3.5087719% |
+| Trial `EM_REP = 8` | 196,351 | §194,576 | 81.6700592 | 3.9998396% | 1.2310974 | 0% |
+| Trial `EM_REP = 12` | 195,544 | §152,025 | 80.0462081 | 2.3618707% | 1.2092658 | 0% |
+
+The response is not monotone in final population: the direct score is monotone, but stronger penalties also change discrete construction and affordability decisions. The prior ablations and seed-11 trace below establish those feedback paths. The 12 profile was selected for full-sized trials because its 128 screen has the smallest maximum post-year-10 population drift of the three on profiles; that is a reason to test it, not evidence that both 256 gates pass.
+
+## Full-size gates and shared envelope
+
+The shared report is now available through `git show local/T062-sim-aa-envelope:docs/dev/reports/sim-aa-envelope.md`, commit **`3833c8d2379d3350663e624fe30be7867c559310`**. It completes all six independent processes. **All twelve row/metric A/A envelopes are exactly zero**: the day-1 +§1 funds nudge remains exactly +§1 in annual funds, with no divergence in population, air, approval or I-HT share. This measures the specified perturbation; it does not demonstrate an envelope for larger costs or shocks. The amended base bands therefore remain **1%**, and there is no positive A/A allowance for a missed variant target.
+
+T062 measured underlying dev `9fcc2ec` plus its task-file commit `0df76bce`. The read-only diff against `683d02b` is empty for **SIM, core, bot and Worker sources**, so its baseline applies here without a numerical rebaseline. The earlier fetch write restriction was bypassed by reading the newly available local ref; no shared Git metadata was written by this lane. NEW-05 is signed off in documentation but its runtime is not in this base; the SIM rule still requires final gates against the subsequent dev/envelope including NEW-05.
+
+### Completed EM_REP=12 profile
+
+All four 256×60 runs completed, one at a time through the quiet gate. This profile changes **only EM_REP, 4 → 12**, and is **not selected for production**. Its current 128 result is 195,544 residents, §152,025 and approval 80.0462081; population moves +1.37118% at the endpoint and reaches +2.36187% in a gating year.
+
+| Seed | Attentive population | Neglect population | Neglect population gap | Attentive funds | Neglect funds | Funds gap | Population/funds gates |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 7 | 1,390,161 | 1,443,396 | **+3.8294126%** | §18,880,115 | §17,259,391 | −§1,620,724 | **FAIL / PASS** |
+| 11 | 1,384,178 | 1,343,735 | **−2.9218063%** | §20,521,861 | §19,143,688 | −§1,378,173 | **PASS / PASS** |
+
+Seed 7 misses the required −2% population target by **5.8294126 percentage points** and has the wrong direction. Seed 11 clears it by 0.9218063 points. Both funds comparisons pass strictly. A/A supplies no near-miss credit.
+
+The approval references below use T062's full-precision annual attentive approval table and the existing same-source off-neglect JSON, rather than the older balance fixture's two-decimal approval values. Report precision is 12 significant digits; these differences are far larger than its display rounding. The same-source comparison is backed by the source provenance above.
+
+| Seed | Attentive approval | Neglect approval | Year-60 gap | LG-06-off gap | Largest permitted gap after 0.5 slack | Miss beyond slack | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 7 | 79.0592265450 | 77.3867087367 | −1.6725178083 | −4.3323668620 | −3.8323668620 | **2.1598490538 points** | **FAIL** |
+| 11 | 79.5746997143 | 73.2039988460 | −6.3707008684 | −7.0081926632 | −6.5081926632 | **0.1374917948 points** | **FAIL** |
+
+Mean annual approval gaps over 2010–2060, reporting only: seed 7 **−3.2824051469** versus off **−3.8879495827**; seed 11 **−4.5321751003** versus off **−5.1618123068**. The costs shrink in both means, but only the year-60 comparison gates.
+
+| Row | Largest base population movement from year 10 | Year | Attentive tourism monthly bounds from year 15 | Maximum attentive rolling-year failed share from year 10 | Base population / tourism / failed gates |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 128×15 s7 | +2.3618707% | 2012 | 1.2092658–1.2092658 | 0% | **FAIL / PASS / PASS** |
+| 256×60 s7 | −8.6672736% | 2059 | 0.7498500–1.1422135 | 2.4390244% | **FAIL / PASS / PASS** |
+| 256×60 s11 | −4.1438556% | 2052 | 0.8200349–1.2419598 | 1.6129032% | **FAIL / PASS / PASS** |
+
+For completeness, neglect tourism monthly bounds are **0.7912311–1.1023346** on seed 7 and **0.7899194–1.2002925** on seed 11. Their maximum rolling-year failed shares are 7.0175439% and 10%, respectively; the ≤5% condition is a **base-run** gate, not a requirement for a deliberately neglectful city. Tourism bounds use the trailing mean of twelve monthly ratios at every monthly observation from year 15, rather than annual endpoints alone.
+
+The following are the largest absolute **annual** changes from year 10 against T062's matching off rows, retaining the sign at the maximum. Air and I-HT are fractions; approval is in points. These are metric changes, not A/A envelopes:
+
+| Base row | Population | Air at homes | Approval | I-HT share |
+| --- | --- | --- | --- | --- |
+| 128×15 s7 | +2.3618707% (2012) | −0.0088923068 (2015) | −1.3188094242 points (2015) | +0.0071208791 (2013; +0.7120879 points) |
+| 256×60 s7 | −8.6672736% (2059) | −0.0170294056 (2047) | +4.2478121283 points (2012) | −0.1023986676 (2060; −10.2398668 points) |
+| 256×60 s11 | −4.1438556% (2052) | +0.0263576178 (2011) | −4.5180430786 points (2021) | +0.1160789841 (2054; +11.6078984 points) |
+
+**Systematic-shift investigation:** population endpoints have mixed signs (+1.37118%, −8.16958%, −3.02395%), so the three-row same-direction population trigger does not fire. Air and I-HT endpoint changes also have mixed signs. Approval endpoints all decrease: **−1.3188094, −1.2981982 and −1.7819948 points**, respectively. Each exceeds half its 1% relative base-approval band, so the broader metric check flags an approval shift for investigation. No approval term or free compensating bonus was changed. The mechanics do not directly edit approval, and the old ablations establish migration/tourism/spending/layout feedback; they do not decompose this profile's exact approval loss. Matching off term-level diagnostics remain necessary before attributing that loss to a particular approval term.
+
+### Final bounded profile
+
+ROUND3_REP24_PENDING
+
+The remaining scratch-only profile changes **only EM_REP, 4 → 24**, and comprises a 128 screen plus both attentive/neglect 256 pairs, run serially. It tests stronger record exposure under the existing migration clamp; it is not a predicted correction to the base rows. The 4/8/12 screens and prior ablations already show nonmonotone final outcomes from monotone direct penalties. The production source still retains 4 pending the final disposition. No costs are weakened and no unrelated calibration is authorized by this additional trial.
+
+## Same-base provenance and commands
+
+`git diff --name-only fb1531f 683d02b -- src/sim src/core tools/simbot.ts` is empty; the corresponding SIM/core/bot/Worker diff from `683d02b` to T062's `9fcc2ec` base is also empty. The Round-3 off snapshots were nevertheless normalized to the **exact Git blob bytes at 683d02b**, rather than relying on the old exports' line endings. Scratch `review3/base-provenance.json` records:
+
+| Off source | Git blob at `683d02b` |
+| --- | --- |
+| `src/sim/economy/tourism.ts` | `4fa042058064d40754e47738ef79a776b6bc5b51` |
+| `src/sim/economy/budget.ts` | `c1e4e411ad9fe4b467ec59f08a3a952f1557b688` |
+| `src/sim/economy/tuning.ts` | `ba9c80a6fc3e4addb2dfbbbe5aaacfb025bb1371` |
+| `src/sim/infra/emergency.ts` | `21dc0739de87025f3f0542432cc9f8882e793928` |
+| `src/sim/infra/nimby.ts` | `e78ff0689b7e5c1ea3a8f1ecbf8bbc9665b9b5d7` |
+
+A fresh 128×15 off process reproduces **all 15 prior yearly hashes**, ending at 192,899. A fresh retained-4 process also reproduces **all 15 prior yearly hashes**, ending at 195,379. This confirms that the new pure display helper does not alter saved simulation state or the original WIP trajectory. This is one new process per profile compared with existing independent processes; it is not a claim that two new repeats were run for every trial.
+
+Run from `C:/Users/techsin/Desktop/projects/simcityweb-T043`. The equivalent option sets remain:
+
+```text
+npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
+npx tsx tools/simbot.ts --size 256 --years 60 --seed 11 --quiet
+npx tsx tools/simbot.ts --size 256 --years 60 --seed 11 --quiet --neglect
+npx tsx tools/simbot.ts --size 256 --years 60 --seed 7 --quiet
+npx tsx tools/simbot.ts --size 256 --years 60 --seed 7 --quiet --neglect
+```
+
+As in Review 1, the actual fallback uses Node 22 TypeScript transformation and an extension resolver because `tsx` is unavailable offline. All trial switches and frozen source copies stay in scratch. **All eight commands below completed**: the four initial 128 screens and the four EM_REP=12 full-sized runs. EM_REP=24's separate queue remains pending in its section above.
+
+```powershell
+$S = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch'
+$R = "$S/review3"
+$Q = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs'
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=off" "$R/gates.mts" --size 128 --years 15 --seed 7 --quiet --hash --out "$R/128_s7_off_base.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=rep4" "$R/gates.mts" --size 128 --years 15 --seed 7 --quiet --hash --out "$R/128_s7_rep4_base.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=rep8" "$R/gates.mts" --size 128 --years 15 --seed 7 --quiet --hash --out "$R/128_s7_rep8_base.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=rep12" "$R/gates.mts" --size 128 --years 15 --seed 7 --quiet --hash --out "$R/128_s7_rep12_base.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=rep12" "$R/gates.mts" --size 256 --years 60 --seed 11 --quiet --out "$R/256_s11_rep12_base.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=rep12" "$R/gates.mts" --size 256 --years 60 --seed 11 --quiet --neglect --out "$R/256_s11_rep12_neglect.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=rep12" "$R/gates.mts" --size 256 --years 60 --seed 7 --quiet --out "$R/256_s7_rep12_base.json"
+node "$Q" node --no-warnings --experimental-transform-types --experimental-loader "file:///$R/loader.mjs?mode=rep12" "$R/gates.mts" --size 256 --years 60 --seed 7 --quiet --neglect --out "$R/256_s7_rep12_neglect.json"
+```
+
+## Round-3 checks and remaining integration
+
+TypeScript has passed with the new display/packet-reader code. The ordinary Vitest startup still failed with `spawn EPERM`, but T062's **native config loader and threads pool workaround succeeds**. Every file below was run separately through the quiet gate with `--maxWorkers=1`; these are actual formal Vitest results, not native-adapter substitutes:
+
+| Test file / check | Result |
+| --- | --- |
+| `tests/sim/neglectReplica.test.ts` | **2 passed**; real Loopback Ready/subsequent packets, read parity/purity and old fields |
+| `tests/sim/neglectMigrationImpact.test.ts` | **8 passed** |
+| `tests/sim/neglectPanel.test.ts` | **3 passed** |
+| `tests/sim/neglectSafety.test.ts` | **11 passed** |
+| `tests/sim/neglectScars.test.ts` | **6 passed** |
+| `tests/worker/replicaSafe.test.ts` | **2 passed, 1 skipped** |
+| `tests/worker/hygiene.test.ts` | **17 passed, 1 skipped** |
+| `npx tsc --noEmit` | **PASS** with the Round-3 implementation |
+
+That is **49 formal cases passed and 2 skipped** across seven separately run files. The new formal packet-host cases supersede the earlier native adapter's CSS-import startup limitation. Short native probes additionally passed **10 mechanics**, **8 impact** and **3 panel** cases; they are redundant supporting checks, not additional formal-case coverage or a browser claim. No final native packet-adapter rerun is needed after the real packet-host file passes.
+
+The exact successful invocation form, run from this worktree, is shown below; repeat it separately for each listed test file (substituting only the file argument):
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T043/node_modules/vitest/vitest.mjs run tests/sim/neglectReplica.test.ts --maxWorkers=1 --configLoader native --pool threads
+```
+
+The successful workaround does not erase the ordinary startup failure, and skipped cases remain skipped. **The full suite, browser/real-Worker rendering, B2 integration, GPU timing and benchmarks remain for the lead** under the supplied restrictions. Post-NEW-05 final bot/envelope remeasurement also remains as required by NOTE-048.
+
+The newly approved panel and Worker read requests are fulfilled by the small hunks above. Outstanding requests from the original WIP remain:
+
+- **B2, `src/sim/infra/services.ts` due/prep and NIMBY dirty handling:** invalidate on scar creation and next expiry; avoid a synchronous full raster rebuild at burn-down. Source footprints/absolute expiries persist exactly, but the existing raster cadence can lag them by about 30 game days.
+- **GUIDE/cloud, `src/ui/panels/BudgetPanel.ts`:** label/group `emergency:rebuild` as **“Rebuilding after emergencies”**. The charge already exists in budget data; this held file is untouched.
+- **META, `src/ui/EmergencyBanner.ts` outcome text:** append the formatted incident rebuilding amount from the existing host-delivered optional `Incident.rebuildCost`. This round's panel permission does not authorize the banner hunk.
+- **Prestige rendering:** the existing NIMBY/Prestige overlay already reads the scarred `st.stigma` raster. Footprint/expiry outlines would additionally require an optional `emergencyScars` source mirror, but no such source UI is needed for the specified splat and no protocol entry was added.
+
+Browser checklist for the lead:
+
+- [ ] Statistics shows settled unanswered rebuilding and the approved whole-percent current cut; a rounded-zero cut hides only that clause, and changing the current multiplier refreshes the row.
+- [ ] Compare attentive/ignored-call safety and the following tourism pass; confirm no fixed-input emergency migration bonus.
+- [ ] Cause §56,000 damage: forecast and settle §8,400 exactly once, with the requested budget label after its owner integrates it.
+- [ ] Compare unanswered/late-answered burn-downs: both rebuild, only unanswered losses create scars and unanswered cost attribution.
+- [ ] Prestige shows the .15 core/radius-3 falloff and overlapping scars; check creation/expiry cadence with B2's invalidation hook.
+- [ ] Rebuilding the lot leaves its source until 18 months; save midway, reload exact footprint/expiry and continue through expiration.
+- [ ] Old saves without optional counters/list/losses continue, display neutral fallbacks and do not retroactively bill historical months.
+- [ ] Repeat costs, current-multiplier refresh, outcomes and save/load with LocalSimHost and packet/Worker hosts; browser rendering remains unverified by native adapters.
+
+---
+
 # local-T043-lg06-neglect: Review 1
 
 Branch `local/T043-lg06-neglect`, base `fb1531f` plus the task-file commit. Status: **holds for B2; BALANCE GATES FAIL**. The original WIP is preserved in `7c0e586` (infrastructure hunks, held for B2) and `7b1f376` (economy, tests and report). **Final runtime source remains that original WIP.** Review 1's rejected migration candidate and its new tests were archived to scratch and rolled back; only this report update remains uncommitted. No new commit, push, merge or `.done` file was made in Review 1.
