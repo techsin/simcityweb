@@ -128,11 +128,13 @@ points lower; above 13% demand collapses." It no longer says people leave (veter
 Sub-lane (b)'s branch does not touch this rule, so (b)'s merge after this one meets no overlap.
 
 **Tests** (each fails with its fix reverted; checked by restoring the dev-side file and re-running):
-- `tests/game/approvalHud.test.ts` (new, 9 tests): the model ("—", the 52 / 38 / 30 faces at 3,000, 60 / 40 from
+- `tests/game/approvalHud.test.ts` (new, 10 tests): the model ("—", the 52 / 38 / 30 faces at 3,000, 60 / 40 from
   10,000, the per-difficulty footer, the fix map) and the TopBar (the "—" card and its rebuild at the first residents,
   the footer under 10k and not from 10k, the visible details, crime → `ctx.overlay = Overlay.Police` without opening the
-  advisors, tax / air / parks / services, the dismissed card, one listener however often the rows are rebuilt).
-  With TopBar.ts reverted 5 of 9 fail; with the module removed all 9 fail.
+  advisors, tax / air / parks / services, the dismissed card, one listener however often the rows are rebuilt), plus
+  the card on the replica: a grown test city on `LoopbackSimHost`, whose baseline, crime and tax details equal the
+  sim's and whose crime row opens the Police view. With TopBar.ts reverted the 6 TopBar tests fail; with the module
+  removed all 10 fail; with approval.ts reverted to dev the replica test fails.
 - `tests/sim/taxHighAdvice.test.ts` (new, 2 tests; beside `advisors.test.ts`, which (b) is editing): 2 of 2 fail with
   advisors.ts reverted.
 - `tests/game/budgetTaxes.test.ts`: `showTab` opens Taxes from another tab; fails with BudgetPanel.ts reverted.
@@ -175,7 +177,7 @@ the shown approval covers 85-90% of it, against the EMA's 88.2%.
 | Gate | Result |
 |---|---|
 | `npx tsc --noEmit` (sem) | clean after the dev merge, and clean at `613735e` |
-| Targeted tests (approvalHud, taxHighAdvice, budgetTaxes, topBarFrame, uiStacking, panelsAdvisors, advisors, approvalGuide, difficultyRules, panelCommands, panelsMisc) | 11 files, 119 tests passed |
+| Targeted tests (approvalHud, taxHighAdvice, budgetTaxes, topBarFrame, uiStacking, panelsAdvisors, advisors, approvalGuide, difficultyRules, panelCommands, panelsMisc) | 11 files, 119 tests passed (120 with the replica test added in `9765ad1`) |
 | Each new test with its fix reverted | taxHighAdvice 2 of 2 fail (advisors.ts reverted); approvalHud 5 of 9 fail with TopBar.ts reverted and 9 of 9 with the module removed; the `showTab` case fails with BudgetPanel.ts reverted |
 | Full `npx vitest run --configLoader runner` (lock, with the bench fixtures, so the grown-fixture cases run) | **206 files passed, 1 skipped; 2,043 tests passed, 4 skipped**, 450 s |
 | The 128 × 15 seed-7 bot (lock), against dev `923428d` run from a clean export in `co/t037d-devbase` | **identical**: `residents [ 59288, 95301, 41512 ]` = **196,101**, the year table, the last 25 log lines and the last 12 news all match; only the two timing columns differ |
@@ -186,7 +188,7 @@ this bot run even the news tail is unchanged.
 
 ### Browser checklist (cloud; one Chromium on SwiftShader, 1280 × 720, `demo-ui.html` on its own vite port)
 
-Harness and scenarios: `scratchpad/t037d/harness/` (`run.mjs`, `check.mjs`, `check2.mjs`). Real mouse moves (stepped,
+Harness and scenarios: `scratchpad/t037d/harness/` (`run.mjs`, `check.mjs`; `check2.mjs` was written but not run). Log: `scratchpad/t037d/browser2.log`, 36 of 36 checks on the local host. Real mouse moves (stepped,
 so the pointer crosses the 8 px gap under the segment), real clicks, and the arrow keys on the focused slider.
 
 | # | Check | Result | Evidence (`scratchpad/t037d/…`) |
@@ -201,10 +203,10 @@ so the pointer crosses the 8 px gap under the segment), real clicks, and the arr
 | 8 | FH-09: `warn` at 10 and 13, `bad` at 14 (rows read "heads 17.5 lower"), neutral and plain at 9 | pass | `shots/07-budget-taxes-14.png` |
 | 9 | FH-06/FH-09: one month at 11%: the tax term is −7.0, the card's row reads "homes are taxed 11% on average — …", and the new `taxHigh` toast appears ("Residential taxes average 11.0%. Each point above 9% costs 3.5 approval, …") | pass | `shots/08-card-after-month-at-11.png` |
 | 10 | FH-06: the tax row opens Budget · Taxes from the Loans tab, and the card hides | pass | `shots/09-tax-row-opens-budget.png` |
-| 11 | FH-06: at 3,000 residents 52% smile, 38% meh, 30% frown; at 12,000 52% meh | pass (data; the first clip missed the segment, re-shot in the follow-up run) | `shots2/10-face-*.png` |
+| 11 | FH-06: at 3,000 residents 52% smile, 38% meh, 30% frown; at 12,000 52% meh (the segment's `data-face`, class and value, read from the live page) | pass (data). The clipped shots of this step missed the segment, so they were deleted; the faces are visible in `02` (meh at 47%, 4,433 residents) and `11` (smile at 58%) | log; `shots/02-town-card.png`, `shots/11-easy-grace-card.png` |
 | 12 | FH-06: Easy keeps its "new-town grace" crime row (+0.0, "new-town grace"); its footer reads 55–60% | pass | `shots/11-easy-grace-card.png` |
 | 13 | No page errors on the new city, the Medium town or the Easy town | pass | log |
-| 14 | The replica (`?simworker=loopback`): the crime detail from the mirrored `resCrime`, and the crime row opens the Police view | queued (the lock) | `shots2/12-loopback-card.png`, `shots2/13-loopback-police-view.png` |
+| 14 | The replica: the crime detail from the mirrored `resCrime`, and the crime row opens the Police view | pass in vitest (`LoopbackSimHost`, above). The page run on `?simworker=loopback` hit a demo limit (`days=` needs the local host: "[demo] runDays failed", so the town had no residents). A follow-up page run that grows the town at ultra speed (`harness/check2.mjs`) waited 2.5 h behind 14 jobs on the shared lock and was withdrawn | `tests/game/approvalHud.test.ts` |
 
 The first run found one problem, fixed in `613735e`: with the card now taking the pointer, it stayed over the Budget
 panel and the Parks flyout it had just opened while the pointer rested on it. Fixes that open a panel or a toolbar tab
@@ -235,6 +237,14 @@ now hide the card until the pointer leaves the segment; data-view fixes keep it,
    ("Crime at homes") and the new crime detail; it is kept.
 9. **§8.1's verifier list** runs once every GUIDE and META round-1 item is in; it is not this sub-lane's gate.
 10. **The browser's timings are SwiftShader's**, so this report claims function and visuals only.
+
+### Observation for the Worker phase (not this sub-lane's rows)
+
+On the replica, three other rows lose their detail line: noise ("average noise at homes 16%"), outages ("100% of
+residents without power") and garbage read the sim-side resident survey (a WeakMap on the sim's state), which the
+replica does not have; the card then shows those rows without a detail. FH-06's baseline, crime and tax rows read
+mirrored data and match (the replica test). Mirroring the survey's shares, or reading the mirrored `stats` averages
+where they agree, is a W1.2 (T034) or SIM row; it is listed here, not changed.
 
 ### Remaining
 
