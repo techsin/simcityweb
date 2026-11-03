@@ -144,11 +144,12 @@ export const CONN_MAX = { R: 1.3, C: 1.35, I: 1.5 };
 export const FREIGHT_BOOST: Record<string, number> = { tr_freight_station: 0.05, tr_seaport: 0.12, tr_airport_small: 0.03, tr_airport_large: 0.08 };
 export const FREIGHT_BOOST_MAX = 0.3;
 
-/** tax sensitivity per DevType (also used by desirability); targets use a reciprocal penalty above neutral */
+/** tax sensitivity per DevType (also used by desirability) */
 export const TAX_NEUTRAL = 9;
+export const TAX_DEMAND_PIVOT = 11;
 export const TAX_SENS: readonly number[] = [0.35, 0.5, 0.8, 0.4, 0.5, 0.7, 0.55, 0.8, 0.3, 0.35, 0.45, 0.75];
-/** above-neutral target penalty: reciprocal response preserves headroom in the jobs / residents feedback loop */
-export const TAX_DEMAND_RESPONSE = 0.5;
+/** target-demand tax curvature above the pivot; preserves the legacy value and slope at the join */
+export const TAX_DEMAND_RESPONSE = 0.3;
 export const TAX_FACTOR_MIN = 0.05;
 export const TAX_FACTOR_MAX = 1.5;
 
@@ -215,7 +216,9 @@ export const CAP_BINDING = 0.92;
 /** per-day fraction of positive absolute demand that may start construction */
 export const GROWTH_RESPONSE = 0.06;
 /** normalized subtype demand for full throughput; wanted growth weights the family's capped responses */
-export const GROWTH_DEMAND_FULL = 0.575;
+export const GROWTH_DEMAND_FULL = { R: 1, C: 0.1, I: 0.1 };
+/** exponent of the family's wanted-weighted capped subtype response */
+export const GROWTH_DEMAND_EXPONENT = 0.1;
 /** minimum wanted capacity per day when demand is positive (before throughput and demand response) */
 export const GROWTH_MIN_ALLOW = { R: 25, C: 10, I: 10 };
 /**
@@ -223,8 +226,8 @@ export const GROWTH_MIN_ALLOW = { R: 25, C: 10, I: 10 };
  * Growth slows relatively as the city grows (≈ 120%/yr max at 10k, 30% at 100k, 10% at 1M) — the realized
  * rate is lower (demand, caps, zoning, stage milestones). This is the main "pace of the game" knob.
  */
-export const GROWTH_MAX_BASE = { R: 24.15, C: 9.2, I: 10.35 };
-export const GROWTH_MAX_FRAC = 0.000805;
+export const GROWTH_MAX_BASE = { R: 19, C: 8, I: 9 };
+export const GROWTH_MAX_FRAC = 0.0006;
 export const GROWTH_MAX_SCALE = 25000;
 /** growth attempts (candidate lots) per day: base + per 100 candidates, capped */
 export const GROWTH_ATTEMPTS_BASE = 30;
