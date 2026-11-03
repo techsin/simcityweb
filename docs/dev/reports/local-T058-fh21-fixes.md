@@ -263,3 +263,94 @@ Round 2's physical button rectangles and real-click behavior, fresh numeric post
 suite remain unverified by this lane. The worker supplied the passing original-fix/acceptance recheck; Round 2 does
 not rerun the bot or change its expected 192,899 residents. The earlier exact bot commands and numbers are retained
 above for the lead.
+
+## Cloud carry-over (Nov 3)
+
+The desktop's lane was finished and gated on its real GPU at `c73b0a4`. This step is the cloud's verification on
+`cloud/t058`, worktree `scratchpad/co/t058`. It started from `local/T058-fh21-fixes` and merged dev `759bbd4`. As
+instructed, it ran tsc and the targeted tests only. The merge step runs the full vitest and the bot on the merged tree.
+
+### Gap list (what was required against what was done)
+
+Sources: the task file, NOTE-047 item 6, NOTE-048 ("FH-21's real-GPU recheck and T058"), NOTE-054, NOTE-044, POLISH_PLAN
+FH-21 with its Acceptance, this report, `local-T058/fh21-recheck-qa.md` and the diff against dev.
+
+| Required | Where | State at `c73b0a4` | Cloud action |
+|---|---|---|---|
+| Bug 1: reset the fps sample when firstFrame is set. Test: a long first frame does not count | task 1 | `CityScene.ts` loop, `graphicsRestore.test.ts` (4 cases) | verified line by line; the tests fail with the fix reverted |
+| Bug 2 / NOTE-048: questions keep their buttons in place when toasts arrive, as its own commit after T036 step 3; FEEL-02a's budget tests unchanged; a browser check of a real Keep click | task 2, NOTE-048 | `cec3eab` (its own commit, after the `4c00713` merge of T036 step 3): `Toasts.insertToast` keeps questions leading, `notificationsQuestion.test.ts` (6 cases), one expected order in `graphicsFirstRun.test.ts`; real-GPU click 8/8 Keep, 3/3 Switch, 0.00 px | verified; `toastBudget.test.ts` is byte-identical to dev and passes; the new tests fail with dev's Notifications.ts |
+| Bug 3: Restore re-applies the data view. Test | task 3 | `restoreViews` calls `ctx.setOverlay(overlay, variant)` after `applySettings`; 3 cases | verified; the tests fail with the fix reverted |
+| Bug 4: Play's t0 after the recovery gate, one line in main.ts | task 4 | moved exactly one line (`main.ts` diff: 1 -, 1 +) | **gap: no regression test.** main.ts is cloud-held App wiring that T034 and others edit, so a merge could undo it unseen. Added `tests/game/playLoadTime.test.ts` |
+| Minor 5: Restore keeps the time of day | task 5 | `timeOfDay` read before dispose, set after `applySettings`; 3 cases | verified; 2 of its 3 cases fail with the fix reverted (the third, a fixed hour with autoTime off, is the control) |
+| Minor 6: Settings labels the detected tier Recommended | task 6 | `dialogs.ts` uses `detectQuality()`; High's subtitle is now "Detailed"; 4 cases | verified; `quality.ts` imports only a type, so the title bundle does not take in three.js |
+| Owns: CityScene META hunks, dialogs.ts, one line of main.ts, new tests. Notifications.ts by NOTE-048 | task, NOTE-048 | the diff against dev touches only these and the report files | confirmed: no `src/sim`, `src/worker`, `src/save` or `tools` file changes |
+| Report the ~11.5 s prompt latency as an observed difference | NOTE-048, NOTE-054 | reported above | none needed |
+| Gates: tsc, full vitest, bot 192,899; the real-GPU recheck of bugs 1, 3, 5 and the six acceptance lines | task gates | desktop: tsc clean, vitest 223 files / 2,217 tests, bot 192,899, every real-GPU line PASS | tsc and the targeted tests run here; the full vitest and the bot run in the merge step |
+| Evidence images | task, QA notes | **not pushed**: every image in `fh21-recheck-qa.md` and above is in the desktop's scratch `qa/FH21/` (Windows paths), not in the repo or on any `local/*` branch | none could be viewed; recorded under decisions |
+| The browser checklist's last box | this report | still `[ ]` in "Browser checklist for the lead", although the round-3 table above records it as done (8 of 8, 3 of 3) | read as done; the desktop's text is left unedited |
+
+### What the cloud did
+
+- Merged dev `759bbd4` into the lane (NOTE-051 to NOTE-054 and T061's queue entry, docs only). The merge was clean,
+  and tsc is clean after it.
+- Checked every source hunk against dev line by line:
+  - The fps reset sits before `firstFrame = true`. The same frame's fps block then only stamps `fps.last`, so neither
+    view building nor the first draw enters `checkSlow`.
+  - `createViews` is synchronous, so the restored hour and overlay go onto the new WorldView, not onto the Null
+    stand-in.
+  - `setOverlay` re-sends the host view and sets the terrain variant and the objects' overlay mode.
+  - `insertToast` handles four cases: new toasts, a repeated live toast, a second question, and a repeated question.
+    In each, questions stay as the leading children of `.toasts`.
+  - `.toasts` is the first child of `.hud-tl`, which is anchored at the top (`hud.css:389`, `top: 70px`). Inserting
+    or evicting toasts below a question therefore cannot move it. This is the static version of the desktop's
+    0.00 px measurement.
+  - Eviction still removes the oldest toast that is not a question.
+- Added `tests/game/playLoadTime.test.ts`, which reads `playCity`'s source. It checks that `const t0` comes after
+  `await this.recoveryGate(`, and that this `t0` is the one passed to `enterCity`, which records `lastLoadMs`.
+  graphicsFirstRun already checks the constructor's source this way.
+- Ran each fix's tests with the fix reverted, then restored the file from HEAD:
+
+| Fix reverted | Test file(s) | Result with the fix reverted |
+|---|---|---|
+| fps reset (`CityScene.ts`) | graphicsRestore | 4 of 10 fail (every fps case, including "still offers Medium once …", because the 22 s stall fires the prompt by itself) |
+| overlay re-apply | graphicsRestore | 3 of 10 fail (Land value, Desirability variant 13, None) |
+| time of day | graphicsRestore | 5 of 10 fail (the 3 overlay cases, which also check the hour, plus hours 0 and 23.99 with autoTime on); hour 14 with autoTime off passes, as a control should |
+| `dialogs.ts` (dev's) | graphicsRecommended | 2 of 4 fail (4 cores → Medium, mobile → Low); 8 and 16 cores pass, because dev already labelled High |
+| `Notifications.ts` (dev's) | notificationsQuestion, graphicsFirstRun, toastBudget | 6 fail: 5 of 6 notificationsQuestion cases (newest-first order with no question is the control) and graphicsFirstRun's "news toasts never push a question out"; toastBudget passes either way |
+| `main.ts` (dev's) | playLoadTime | 1 of 1 fails (`expected 82 to be greater than 350`) |
+
+### Gates
+
+| Gate | Result |
+|---|---|
+| tsc (sem), after the merge and again after the new test | **clean** (exit 0, no output) |
+| Targeted vitest (sem, `--maxWorkers=2`): graphicsFirstRun, graphicsRecommended, graphicsRestore, notificationsQuestion, playLoadTime, toastBudget, newYearPacing, pacingProbe, panelsNews, cityTeardown, views, titleSettings, settingsSchema, worker/hygiene | **13 files passed, 1 skipped; 131 tests passed, 5 skipped, 0 failing** (22.3 s). The skips are older ones: pacingProbe's 4 `PACING_SAVE` probes and hygiene's W1.2 import-graph case |
+| `toastBudget.test.ts` against dev | byte-identical (`git diff --exit-code` 0) and passing |
+| `git diff --check` against dev | clean |
+| src/sim, src/worker, src/save, tools | untouched. The bot must stay identical to dev's (192,899). The desktop measured 192,899, and the merge step re-runs it |
+| Full vitest, bot | not run in this step, which saves the shared lock as instructed. The merge step runs both on the merged tree. Desktop at `ae36c3c`: 223 files / 2,217 tests passed, bot [61124, 93804, 37971] = 192,899 |
+| Real-GPU recheck (bugs 1, 3, 5, the six acceptance lines, the Keep and Switch clicks) | desktop, RTX 5070 Ti: all PASS (tables above). This cloud step ran no browser session |
+
+### Browser evidence
+
+This step took no screenshots and started no browser, as instructed. The desktop's screenshots are
+`qa/FH21/…/*.jpg`, for example `ctx/overlay-lost-after-restore.jpg` and `slow-keep-bot256/02-slow-prompt.jpg`. They
+are in the desktop worker's own scratch folder, which is unavailable since Oct 28, and were never pushed. So the
+image evidence for this lane exists only as the desktop's written tables.
+
+### Decisions
+
+1. **Load-time regression test added for bug 4.** The task asked for no test there. A one-line fix in main.ts, which
+   other lanes edit and the cloud resolves conflicts in, is easy to lose in a merge. The test is cheap and fails with
+   the fix reverted. It reads the source because `App` is not exported and main.ts boots when imported.
+2. **The evidence images cannot be checked.** They were never pushed. The real-GPU results are accepted from the
+   desktop's tables, with their numbers: 8/8 Keep, 3/3 Switch, 0.00 px over 28 arrivals; context loss 13/13 in 3
+   runs; load 1.19-1.22 s. The lead's NOTE-054 had already received T058 on those numbers. A SwiftShader re-run
+   could check function but not the real-GPU timings, and this step was told not to take the lock.
+3. **NOTE-048's "Add a browser check that a real click on Keep lands while a toast arrives"** is read as a QA run.
+   The desktop did it on the real GPU (round 3). Its script (`clickdiag.mjs`, `slowprompt.mjs`) is in the desktop's
+   scratch, not in `tools/`. Committing a repo copy, like `tools/qa-context-loss.mjs`, is an optional follow-up.
+4. **The ~11.5 s prompt latency** stays the accepted observed difference (NOTE-048, NOTE-054). The window is
+   unchanged.
+5. **FH-21 Acceptance line 5's P-5 persona report** is a persona playtest, outside this fix lane. Its input is
+   measured: 1.20 s on the 4-core profile, and the readout and `lastLoadMs` agree.
