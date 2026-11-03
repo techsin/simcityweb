@@ -36,8 +36,9 @@ describe('LG-09 monthly disaster thresholds', () => {
     }
   });
 
-  it('Medium retains the legacy monthly random stream and exact decisions', () => {
+  it.each(['easy', 'medium', 'sandbox'] as const)('%s retains the legacy monthly random stream and exact decisions', (difficulty) => {
     const st = newState(64, true);
+    st.config.difficulty = difficulty;
     st.stats.population = 2000;
     const sys = new DisastersSystem();
     const sim = new Simulation(st, [sys]);
@@ -91,7 +92,7 @@ describe('LG-09 manual dispatch windows', () => {
     expect(dispatchWindowEnd(inc)).toBe(inc.deadline);
   });
 
-  it('Expert closes the player window at 75% while leaving the deadline, grace and late dispatch available', () => {
+  it('Expert closes both manual dispatch paths at 75% without moving the deadline or grace', () => {
     const expert = emergencyTown('expert');
     const medium = emergencyTown('medium');
     const ei = expert.em.incident(expert.em.spawn(expert.sim, 'spill', expert.site.x, expert.site.z))!;
@@ -104,9 +105,64 @@ describe('LG-09 manual dispatch windows', () => {
     medium.sim.runDays(23);
     expect(mi.manualPossible).toBe(true);
     expect(ei.manualPossible).toBe(false);
-    expect(ei.canSend).toBe(true);
+    expect(ei.canSend).toBe(false);
     expect(expert.em.incident(ei.id)).toBe(ei);
+    expect(expert.em.dispatchOptions(expert.sim, ei.id)).toEqual([]);
+    const vehicles = expert.em.vehicles().slice();
+    expect(expert.em.dispatch(expert.sim, ei.id, expert.station.id)).toEqual({ ok: false, reason: 'The manual dispatch window has closed' });
+    expect(expert.em.dispatchBest(expert.sim, ei.id)).toEqual({ ok: false, reason: 'The manual dispatch window has closed' });
+    expect(expert.em.vehicles()).toEqual(vehicles);
+    expect(ei.answered).toBe(0);
+  });
+
+  it.each(['easy', 'medium', 'hard', 'sandbox'] as const)('%s still allows the original day-23 manual response', (difficulty) => {
+    const { sim, em, site } = emergencyTown(difficulty);
+    const inc = em.incident(em.spawn(sim, 'spill', site.x, site.z))!;
+    sim.runDays(23);
+    expect(inc.manualPossible).toBe(true);
+    expect(inc.canSend).toBe(true);
+    expect(em.dispatchOptions(sim, inc.id).length).toBeGreaterThan(0);
+    expect(em.dispatchBest(sim, inc.id).ok).toBe(true);
+  });
+
+  it.each([22.4, 22.5, 22.6])('Expert enforces its fractional cutoff at day %s in options and commands', (now) => {
+    const { sim, em, site, station } = emergencyTown('expert');
+    const inc = em.incident(em.spawn(sim, 'spill', site.x, site.z))!;
+    vi.spyOn(sim, 'simTime').mockReturnValue(now);
+    const open = now < dispatchWindowEnd(inc);
+    expect(em.dispatchOptions(sim, inc.id).length > 0).toBe(open);
+    expect(em.dispatch(sim, inc.id, station.id).ok).toBe(open);
+    if (!open) expect(em.dispatchBest(sim, inc.id).ok).toBe(false);
+  });
+
+  it('Expert leaves units sent before the cutoff on their original response timing', () => {
+    const expert = emergencyTown('expert');
+    const medium = emergencyTown('medium');
+    const ei = expert.em.incident(expert.em.spawn(expert.sim, 'spill', expert.site.x, expert.site.z))!;
+    const mi = medium.em.incident(medium.em.spawn(medium.sim, 'spill', medium.site.x, medium.site.z))!;
+    expert.sim.runDays(22);
+    medium.sim.runDays(22);
     expect(expert.em.dispatchBest(expert.sim, ei.id).ok).toBe(true);
+    expect(medium.em.dispatchBest(medium.sim, mi.id).ok).toBe(true);
+    expect(expert.em.vehicles()).toEqual(medium.em.vehicles());
+    expect(expert.em.vehicles()[0].arrive).toBeGreaterThan(dispatchWindowEnd(ei));
+    expert.sim.runDays(15);
+    medium.sim.runDays(15);
+    expect(expert.st.stats.emergency).toEqual(medium.st.stats.emergency);
+    expect(expert.em.vehicles()).toEqual(medium.em.vehicles());
+  });
+
+  it('Expert can still automatically dispatch a newly covering station after the manual cutoff', () => {
+    const { sim, st, em, site } = emergencyTown('expert');
+    const inc = em.incident(em.spawn(sim, 'spill', site.x, site.z))!;
+    sim.runDays(23);
+    expect(inc.canSend).toBe(false);
+    const station = place(st, 't_fire', 44, 19, { flags: BF.Powered });
+    sim.events.emit('buildingAdded', station);
+    sim.runDays(1);
+    expect(inc.answered).toBe(1);
+    expect(inc.state).toBe('dispatched');
+    expect(em.vehicles().some((v) => v.incidentId === inc.id && v.stationId === station.id)).toBe(true);
   });
 
   it('Expert industrial prompts shorten from the original ignition tick without moving the automatic retry or ignition', () => {
@@ -166,5 +222,24 @@ describe('LG-09 manual dispatch windows', () => {
     const oldIncident = { kind: 'industrial', start: 0.25, deadline: 12.25 } as const;
     expect(dispatchWindowEnd(oldIncident)).toBe(4);
     expect(dispatchWindowEnd({ kind: 'spill', start: 0.25, deadline: 30.25 })).toBe(30.25);
+  });
+
+  it('Expert cannot regain an expired manual window by saving and loading', () => {
+    const { st, em, sim, site, station } = emergencyTown('expert');
+    const inc = em.incident(em.spawn(sim, 'spill', site.x, site.z))!;
+    sim.runDays(23);
+    // A save from the earlier LG-09 implementation may still have its send button enabled.
+    inc.canSend = true;
+    const restored = deserializeCity(serializeCity(st, { copy: true }));
+    const loaded = new EmergencySystem();
+    const resumed = new Simulation(restored, [new FireSystem(), loaded]);
+    const saved = loaded.incident(inc.id)!;
+    expect(saved.manualPossible).toBe(false);
+    expect(saved.canSend).toBe(false);
+    expect(loaded.dispatchOptions(resumed, inc.id)).toEqual([]);
+    expect(loaded.dispatch(resumed, inc.id, station.id).ok).toBe(false);
+    expect(loaded.dispatchBest(resumed, inc.id).ok).toBe(false);
+    expect(loaded.vehicles()).toEqual([]);
+    expect(saved.answered).toBe(0);
   });
 });

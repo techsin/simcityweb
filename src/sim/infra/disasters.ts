@@ -177,10 +177,16 @@ export class DisastersSystem implements SimSystem {
     const r = this.rng.next();
     const N = st.size;
     const x = this.rng.int(8, N - 9), z = this.rng.int(8, N - 9);
-    const multiplier = difficultyRules(st.config.difficulty).disasterMultiplier;
-    if (r < 0.008 * multiplier) this.trigger(sim, 'tornado', x, z);
-    else if (r < 0.012 * multiplier) this.trigger(sim, 'earthquake', x, z);
-    else if (r < 0.0145 * multiplier) this.trigger(sim, 'meteor', x, z);
+    if (st.config.difficulty === 'hard' || st.config.difficulty === 'expert') {
+      const multiplier = difficultyRules(st.config.difficulty).disasterMultiplier;
+      if (r < 0.008 * multiplier) this.trigger(sim, 'tornado', x, z);
+      else if (r < 0.012 * multiplier) this.trigger(sim, 'earthquake', x, z);
+      else if (r < 0.0145 * multiplier) this.trigger(sim, 'meteor', x, z);
+    } else {
+      if (r < 0.008) this.trigger(sim, 'tornado', x, z);
+      else if (r < 0.012) this.trigger(sim, 'earthquake', x, z);
+      else if (r < 0.0145) this.trigger(sim, 'meteor', x, z);
+    }
     this.persist();
   }
 
