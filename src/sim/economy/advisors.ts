@@ -173,11 +173,15 @@ const STALL_DAYS = 330;
 /** advice posts kept in AdvisorData.posts (2 a month at most: two years) */
 const POSTS_KEPT = 48;
 
+/** the day the city was founded (FEEL-05: a player's city on day 90, 1 April; the bot and an old save on day 0) */
+const foundedDay = (st: CityState): number => (typeof st.systemData.foundedDay === 'number' ? st.systemData.foundedDay : 0);
+
 export function advisorData(st: CityState): AdvisorData {
   let a = st.systemData.advisors as AdvisorData | undefined;
   if (!a || a.v !== 1) {
-    // new city: first headline around day 45 (as before); an older save gets a calm first month
-    a = { v: 1, nextHeadline: st.day < 45 ? 45 : st.day + 30, bag: [], shown: {}, seen: {} };
+    // new city: first headline 45 days after founding (as before); an older save gets a calm first month
+    const f = foundedDay(st);
+    a = { v: 1, nextHeadline: st.day - f < 45 ? f + 45 : st.day + 30, bag: [], shown: {}, seen: {} };
     st.systemData.advisors = a;
   }
   a.bag ??= [];
@@ -2013,7 +2017,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
           : `${count(scan.noAccess, 'zoned tile')} ${scan.noAccess === 1 ? 'has' : 'have'} no road access and will never develop. Run a road into those zones.` });
     }
     const alive = rt.totals.growables - rt.totals.abandoned;
-    if (alive <= 0 && scan.ready > 0 && st.day >= 60) {
+    if (alive <= 0 && scan.ready > 0 && st.day - foundedDay(st) >= 60) {
       // zones face a road and have their utilities, yet not a single building stands
       let best = -1;
       for (let z = Zone.ResLow; z <= Zone.IndHigh; z++) if (scan.readyZones & (1 << z)) for (const dv of ZONE_DEVTYPES[z]) best = Math.max(best, s.demand[dv]);
@@ -2025,7 +2029,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         else if (famDemand(8, 11) > 0.1 && !(scan.readyZones & I_ZONES)) tip = 'Industry wants to move in — zone some industrial land.';
         out.push({ id: 'noDemand', cooldown: 90, priority: 7, kind: 'warning', advisor: 'planning', confirm: true, ...cellAt(scan.readyAt),
           text: `Nothing is growing: there is no demand for ${fams.join(' or ')} buildings right now (see the RCI meter). ${tip}` });
-      } else if (st.day >= 150 && scan.ready >= 12) {
+      } else if (st.day - foundedDay(st) >= 150 && scan.ready >= 12) {
         out.push({ id: 'growthStalled', cooldown: 120, priority: 6, kind: 'warning', advisor: 'planning', confirm: true, ...cellAt(scan.readyAt),
           text: 'Nothing is growing although there is demand and the zones have roads and utilities. The land may be too steep or too unattractive (pollution, noise, a power plant next door) — check the Desirability data view.' });
       }

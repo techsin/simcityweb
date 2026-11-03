@@ -145,10 +145,12 @@ function regionLabels() {
     camera: cam, renderer: { domElement: { getBoundingClientRect: rect } },
     tileCenter: () => new THREE.Vector3(128, 260, 128), selectedTile: null,
     refreshCities: vi.fn(async () => {}), dispose: vi.fn(),
+    // FH-11: the recommended first-city tile (none: this region has a city)
+    recommendedTile: null, recommend: vi.fn(),
   };
   // Exercise the real label / refresh methods without constructing the region's WebGL renderer and unrelated HUD.
   const screen = Object.assign(Object.create(RegionScreen.prototype), {
-    view, model: { data: { tiles }, reindex() {} }, labels: new Map(), labelLayer: layer,
+    view, model: { data: { tiles }, reindex() {}, recommendedTile: () => null }, labels: new Map(), labelLayer: layer, recLabel: null,
     labelView: new THREE.Matrix4(), labelProjection: new THREE.Matrix4(), labelsMoving: false,
     labelsDisposed: false, lastLabels: -Infinity, labelWidth: 0, labelHeight: 0,
     renderCard() {}, renderList() {}, player: { dispose() {} }, el: new FEl('div'), tip: new FEl('div'), host: new FEl('div'),

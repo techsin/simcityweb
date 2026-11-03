@@ -1,10 +1,12 @@
 /**
  * T036 (§7.5, FH-23): the title screen's Settings gets an "Accessibility & interface" section. Its controls show the stored
- * app settings, write each change to the store at once, and "Reset to defaults" restores only their four keys.
+ * app settings, write each change to the store at once, and "Reset to defaults" restores only their keys.
+ * NOTE-042: text size, motion and colour vision stay hidden until their feature reads them (A11Y_WIRED); the second block
+ * checks each control as it will show once its lane wires it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadSettings as loadGameSettings } from '../../src/game/settings';
-import { DEFAULT_SETTINGS, UI_SCALE, cityOverrides, loadSettings, type AppSettings } from '../../src/region/settings';
+import { A11Y_WIRED, DEFAULT_SETTINGS, UI_SCALE, cityOverrides, loadSettings, type AppSettings } from '../../src/region/settings';
 import { openSettings } from '../../src/region/ui/dialogs';
 import { setUiRoot, type Modal } from '../../src/region/ui/modal';
 import { FEl, FNode, installFakeDom, textOf } from './fakeDom';
@@ -59,7 +61,57 @@ function selected(sec: FEl, label: string): string {
 }
 const stored = () => JSON.parse(store.get(KEY) ?? 'null') as Record<string, unknown> | null;
 
-describe('title screen Settings: Accessibility & interface', () => {
+describe('title screen Settings: Accessibility & interface, until its features are wired (NOTE-042)', () => {
+  it('shows only UI scale and Reset: text size, motion and colour vision are hidden', () => {
+    expect(A11Y_WIRED).toEqual({ textSize: false, motion: false, colourVision: false });
+    store.set(KEY, JSON.stringify({ ...DEFAULT_SETTINGS, uiScale: 1.2, textSize: 20, motion: 'reduced', colourVision: 'blue-yellow' }));
+    const sec = openSection();
+    expect(sec.querySelectorAll('label')).toHaveLength(0);
+    expect(sec.querySelectorAll('.seg-item')).toHaveLength(0);
+    expect(textOf(sec.querySelector('.slider')!.querySelector('.field-label')!)).toBe('UI scale120%');
+    expect(sec.querySelectorAll('button').map((b) => textOf(b))).toEqual(['Reset to defaults']);
+    expect(textOf(sec)).not.toMatch(/Text size|Motion|Colour vision|Your device/);
+  });
+
+  it('a change writes the store at once and keeps the hidden keys; Reset resets UI scale only', () => {
+    store.set(KEY, JSON.stringify({ ...DEFAULT_SETTINGS, quality: 'low', textSize: 10, motion: 'full', colourVision: 'red-green' }));
+    const onChange = vi.fn();
+    const sec = openSection(onChange);
+    const input = scaleInput(sec);
+    input.value = '1.3';
+    input.fire('input');
+    expect(stored()).toEqual({ ...DEFAULT_SETTINGS, quality: 'low', uiScale: 1.3, textSize: 10, motion: 'full', colourVision: 'red-green' });
+    const reset = sec.querySelectorAll('button').find((b) => textOf(b) === 'Reset to defaults')!;
+    expect(reset.title).toBe('UI scale');
+    reset.click();
+    expect(stored()).toEqual({ ...DEFAULT_SETTINGS, quality: 'low', textSize: 10, motion: 'full', colourVision: 'red-green' });
+    expect(scaleInput(sec).value).toBe('1');
+    expect(onChange).toHaveBeenCalledTimes(2);
+  });
+
+  it('motion keeps storing "system" on a fresh profile, whatever the device asks', () => {
+    reduce = true;
+    openSection();
+    expect(loadSettings().motion).toBe('system');
+    expect(store.has(KEY)).toBe(false);
+  });
+
+  it.each(['textSize', 'motion', 'colourVision'] as const)('shows %s once its feature wires it, and only that one', (key) => {
+    A11Y_WIRED[key] = true;
+    try {
+      const sec = openSection();
+      expect(sec.querySelectorAll('label').map((e) => textOf(e))).toEqual([{ textSize: 'Text size', motion: 'Motion', colourVision: 'Colour vision' }[key]]);
+      expect(sec.querySelectorAll('button').find((b) => textOf(b) === 'Reset to defaults')?.title).toBe(`UI scale and ${{ textSize: 'text size', motion: 'motion', colourVision: 'colour vision' }[key]}`);
+    } finally {
+      A11Y_WIRED[key] = false;
+    }
+  });
+});
+
+describe('title screen Settings: Accessibility & interface, once every control is wired', () => {
+  beforeEach(() => Object.assign(A11Y_WIRED, { textSize: true, motion: true, colourVision: true }));
+  afterEach(() => Object.assign(A11Y_WIRED, { textSize: false, motion: false, colourVision: false }));
+
   it('sits between Graphics and Gameplay and shows the stored values', () => {
     store.set(KEY, JSON.stringify({ ...DEFAULT_SETTINGS, uiScale: 1.2, textSize: 20, motion: 'reduced', colourVision: 'blue-yellow' }));
     const sec = openSection();

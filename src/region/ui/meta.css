@@ -175,7 +175,9 @@
 .section-title::after { content: ''; flex: 1; height: 1px; background: rgba(255, 255, 255, 0.07); }
 
 /* ------------------------------------------------------------------ new city dialog */
-.nc-grid { display: grid; grid-template-columns: 380px 1fr; gap: 26px; }
+/* (minmax(0, …): the form column's min-content, e.g. the hidden custom-terrain chips, pushed it past the dialog's edge) */
+.nc-grid { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 26px; }
+.nc-grid > *, .nc-row2 > * { min-width: 0; }
 .nc-preview-wrap { display: flex; flex-direction: column; gap: 12px; }
 .nc-preview {
   position: relative; width: 380px; height: 380px; border-radius: 14px; overflow: hidden; background: #0a0f16;
@@ -192,6 +194,25 @@
 .nc-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .nc-custom { overflow: hidden; transition: max-height 0.35s var(--ease), opacity 0.25s; }
 .nc-custom.hidden { max-height: 0 !important; opacity: 0; }
+/* FH-11: difficulty cards with FH-04's one-line description (2 x 2), and the switches under Climate */
+.seg.nc-diff { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.seg.nc-diff .seg-item { padding: 8px 11px; gap: 2px; }
+.seg.nc-diff .si-s { line-height: 1.35; }
+.nc-opts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; align-items: start; margin-top: 2px; }
+.nc-opt { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; }
+.nc-note { font-size: 11.5px; color: var(--text-dim); line-height: 1.4; }
+.nc-opts .nc-year { flex-direction: row; align-items: center; gap: 10px; margin: 0; }
+/* short screens (1280x720): the whole dialog fits without scrolling */
+@media (max-height: 820px) {
+  .modal:has(.nc-grid) .modal-head { padding: 14px 22px 8px; }
+  .modal:has(.nc-grid) .modal-body { padding-bottom: 10px; }
+  .nc-grid .field { margin-bottom: 8px; gap: 5px; }
+  .nc-grid .slider { margin-bottom: 6px; }
+  .nc-grid .seg-item { padding: 7px 11px; }
+  .seg.nc-diff .seg-item { padding: 6px 10px; }
+  .nc-opts { gap: 8px 18px; }
+  .nc-opt { gap: 6px; }
+}
 
 /* ------------------------------------------------------------------ region preset cards / region list */
 .preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
@@ -318,6 +339,10 @@
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); transition: opacity 0.2s;
 }
 .city-label small { font-weight: 500; color: var(--text-dim); margin-left: 6px; }
+/* FH-11: the recommended first-city tile (its outline is drawn by the terrain shader in the same warm colour) */
+.city-label.rec-label { display: flex; align-items: center; gap: 6px; color: #ffd58a; border-color: rgba(255, 196, 90, 0.55); }
+.city-label.rec-label .ico { color: #ffc45a; }
+.region-tip .rt-rec { margin-top: 6px; color: #ffd58a; font-weight: 600; font-size: 12px; display: flex; align-items: center; gap: 5px; }
 .city-label::after { content: ''; position: absolute; left: 50%; bottom: -5px; width: 8px; height: 8px; transform: translateX(-50%) rotate(45deg); background: rgba(10, 14, 22, 0.72); border-right: 1px solid rgba(255, 255, 255, 0.14); border-bottom: 1px solid rgba(255, 255, 255, 0.14); }
 
 .toast-wrap { position: absolute; left: 50%; top: 20px; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
