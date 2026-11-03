@@ -97,60 +97,64 @@ export interface MonoBassOpts {
 
 /** a bar (or phrase) of re-triggered mono synth-bass notes; notes must be sorted by time */
 export function monoBass(env: MusicEnv, notes: readonly MonoNote[], o: MonoBassOpts = {}): void {
-  const ns = notes.filter((n) => allowed(env, 'synthBass', n.t, n.len));
-  if (!ns.length) return;
-  const { ctx, inst } = env;
-  const nyq = ctx.sampleRate * 0.45;
-  const base = o.cutoff ?? 360, amt = o.envAmt ?? 0.55, dec = o.decay ?? 0.16;
-  const saw = ctx.createOscillator();
-  saw.type = 'sawtooth';
-  const sub = ctx.createOscillator();
-  sub.type = 'sine';
-  const lp = ctx.createBiquadFilter();
-  lp.type = 'lowpass';
-  lp.Q.value = o.reso ?? 4.5;
-  const subLevel = o.sub ?? 0.55;
-  const sg = ctx.createGain();
-  sg.gain.value = subLevel;
-  const amp = ctx.createGain();
-  amp.gain.value = 0;
-  kRate(saw.frequency, saw.detune, sub.frequency, sub.detune, lp.frequency, lp.detune, lp.Q, lp.gain, sg.gain);
-  saw.connect(lp).connect(amp);
-  sub.connect(sg).connect(amp);
-  amp.connect(inst.channel('synthBass').input);
-  const g = amp.gain;
-  const rel = Math.max(0.01, o.release ?? 0.035);
-  const t0 = ns[0].t;
-  g.setValueAtTime(0, t0);
-  lp.frequency.setValueAtTime(base, t0);
-  let end = t0;
-  ns.forEach((n, i) => {
-    const t = n.t;
-    const next = i + 1 < ns.length ? ns[i + 1].t : Infinity;
-    const v = clamp01(n.vel);
-    const peak = 0.36 * vc(v);
-    const tc = Math.max(t + 0.02, Math.min(t + n.len, next - rel - 0.004));
-    const f = mtof(n.midi);
-    // pitch and sub level change while the amp is at 0 (previous note fully released)
-    saw.frequency.setValueAtTime(f, t);
-    sub.frequency.setValueAtTime(f / 2, t);
-    sg.gain.setValueAtTime(subLevel * clamp01((n.midi - 34) / 6), t);
-    // amp: 4 ms attack, exponential sag to 0.8 over 0.3 s (synthBass shape), linear release
-    g.setValueAtTime(0, t);
-    g.linearRampToValueAtTime(peak, t + 0.004);
-    expCut(g, peak, peak * 0.8, t + 0.004, t + 0.3, tc);
-    g.linearRampToValueAtTime(0, tc + rel);
-    // filter: base * (1 + 8 amt v) -> base over `dec`
-    const f0 = Math.min(nyq, base * (1 + 8 * amt * v));
-    lp.frequency.setValueAtTime(f0, t);
-    expCut(lp.frequency, f0, base, t, t + dec, Math.min(t + dec, next - 0.002));
-    end = tc + rel;
+  return env.inst.oneShot((nodes) => {
+    const ns = notes.filter((n) => allowed(env, 'synthBass', n.t, n.len));
+    if (!ns.length) return;
+    const { ctx, inst } = env;
+    const nyq = ctx.sampleRate * 0.45;
+    const base = o.cutoff ?? 360, amt = o.envAmt ?? 0.55, dec = o.decay ?? 0.16;
+    const saw = ctx.createOscillator();
+    saw.type = 'sawtooth';
+    const sub = ctx.createOscillator();
+    sub.type = 'sine';
+    const lp = inst.node.filter('lowpass', 350);
+    lp.type = 'lowpass';
+    lp.Q.value = o.reso ?? 4.5;
+    const subLevel = o.sub ?? 0.55;
+    const sg = inst.node.gain(1);
+    sg.gain.value = subLevel;
+    const amp = inst.node.gain(1);
+    amp.gain.value = 0;
+    kRate(saw.frequency, saw.detune, sub.frequency, sub.detune, lp.frequency, lp.detune, lp.Q, lp.gain, sg.gain);
+    saw.connect(lp).connect(amp);
+    sub.connect(sg).connect(amp);
+    amp.connect(inst.channel('synthBass').input);
+    const g = amp.gain;
+    const rel = Math.max(0.01, o.release ?? 0.035);
+    const t0 = ns[0].t;
+    g.setValueAtTime(0, t0);
+    lp.frequency.setValueAtTime(base, t0);
+    let end = t0;
+    ns.forEach((n, i) => {
+      const t = n.t;
+      const next = i + 1 < ns.length ? ns[i + 1].t : Infinity;
+      const v = clamp01(n.vel);
+      const peak = 0.36 * vc(v);
+      const tc = Math.max(t + 0.02, Math.min(t + n.len, next - rel - 0.004));
+      const f = mtof(n.midi);
+      // pitch and sub level change while the amp is at 0 (previous note fully released)
+      saw.frequency.setValueAtTime(f, t);
+      sub.frequency.setValueAtTime(f / 2, t);
+      sg.gain.setValueAtTime(subLevel * clamp01((n.midi - 34) / 6), t);
+      // amp: 4 ms attack, exponential sag to 0.8 over 0.3 s (synthBass shape), linear release
+      g.setValueAtTime(0, t);
+      g.linearRampToValueAtTime(peak, t + 0.004);
+      expCut(g, peak, peak * 0.8, t + 0.004, t + 0.3, tc);
+      g.linearRampToValueAtTime(0, tc + rel);
+      // filter: base * (1 + 8 amt v) -> base over `dec`
+      const f0 = Math.min(nyq, base * (1 + 8 * amt * v));
+      lp.frequency.setValueAtTime(f0, t);
+      expCut(lp.frequency, f0, base, t, t + dec, Math.min(t + dec, next - 0.002));
+      end = tc + rel;
+    });
+    saw.start(t0);
+    sub.start(t0);
+    saw.stop(end + 0.03);
+    nodes.source(saw, end + 0.03);
+    sub.stop(end + 0.03);
+    nodes.source(sub, end + 0.03);
+    bump(env, t0, 2, ns.length);
   });
-  saw.start(t0);
-  sub.start(t0);
-  saw.stop(end + 0.03);
-  sub.stop(end + 0.03);
-  bump(env, t0, 5, ns.length);
 }
 
 export interface MonoArpOpts {
@@ -165,50 +169,53 @@ export interface MonoArpOpts {
 
 /** a bar of mono sequencer-arp steps; notes must be sorted by time */
 export function monoArp(env: MusicEnv, notes: readonly MonoNote[], o: MonoArpOpts = {}): void {
-  const ns = notes.filter((n) => allowed(env, 'arp', n.t, n.len));
-  if (!ns.length) return;
-  const { ctx, inst } = env;
-  const nyq = ctx.sampleRate * 0.45;
-  const dec = o.decay ?? 0.2;
-  const x = ctx.createOscillator();
-  x.type = o.wave === 'square' ? 'square' : 'sawtooth';
-  const lp = ctx.createBiquadFilter();
-  lp.type = 'lowpass';
-  lp.Q.value = o.reso ?? 3;
-  const amp = ctx.createGain();
-  amp.gain.value = 0;
-  kRate(x.frequency, x.detune, lp.frequency, lp.detune, lp.Q, lp.gain);
-  x.connect(lp).connect(amp).connect(inst.channel('arp').input);
-  const envAmt = o.envAmt ?? 3;
-  // a square carries 4.7 dB more energy than a saw of the same peak (its fundamental is twice the saw's), whatever
-  // the note or cutoff: level-match it so the arp sits the same in the mix whichever wave the seed rolls
-  const waveGain = o.wave === 'square' ? 0.58 : 1;
-  const g = amp.gain;
-  const rel = 0.012;
-  const t0 = ns[0].t;
-  g.setValueAtTime(0, t0);
-  let end = t0;
-  ns.forEach((n, i) => {
-    const t = n.t;
-    const next = i + 1 < ns.length ? ns[i + 1].t : Infinity;
-    const v = clamp01(n.vel);
-    const peak = 0.3 * vc(v) * waveGain;
-    const tc = Math.max(t + 0.012, Math.min(t + n.len, next - rel - 0.003));
-    x.frequency.setValueAtTime(mtof(n.midi), t);
-    const ta = t + 0.003;
-    g.setValueAtTime(0, t);
-    g.linearRampToValueAtTime(peak, ta);
-    expCut(g, peak, peak * 1e-3, ta, ta + dec * 3, tc);
-    g.linearRampToValueAtTime(0, tc + rel);
-    const c = n.cut ?? 1800;
-    const f0 = Math.min(nyq, c * (1 + envAmt * v)), f1 = Math.max(120, c * 0.5);
-    lp.frequency.setValueAtTime(f0, t);
-    expCut(lp.frequency, f0, f1, t, t + dec, Math.min(t + dec, next - 0.002));
-    end = tc + rel;
+  return env.inst.oneShot((nodes) => {
+    const ns = notes.filter((n) => allowed(env, 'arp', n.t, n.len));
+    if (!ns.length) return;
+    const { ctx, inst } = env;
+    const nyq = ctx.sampleRate * 0.45;
+    const dec = o.decay ?? 0.2;
+    const x = ctx.createOscillator();
+    x.type = o.wave === 'square' ? 'square' : 'sawtooth';
+    const lp = inst.node.filter('lowpass', 350);
+    lp.type = 'lowpass';
+    lp.Q.value = o.reso ?? 3;
+    const amp = inst.node.gain(1);
+    amp.gain.value = 0;
+    kRate(x.frequency, x.detune, lp.frequency, lp.detune, lp.Q, lp.gain);
+    x.connect(lp).connect(amp).connect(inst.channel('arp').input);
+    const envAmt = o.envAmt ?? 3;
+    // a square carries 4.7 dB more energy than a saw of the same peak (its fundamental is twice the saw's), whatever
+    // the note or cutoff: level-match it so the arp sits the same in the mix whichever wave the seed rolls
+    const waveGain = o.wave === 'square' ? 0.58 : 1;
+    const g = amp.gain;
+    const rel = 0.012;
+    const t0 = ns[0].t;
+    g.setValueAtTime(0, t0);
+    let end = t0;
+    ns.forEach((n, i) => {
+      const t = n.t;
+      const next = i + 1 < ns.length ? ns[i + 1].t : Infinity;
+      const v = clamp01(n.vel);
+      const peak = 0.3 * vc(v) * waveGain;
+      const tc = Math.max(t + 0.012, Math.min(t + n.len, next - rel - 0.003));
+      x.frequency.setValueAtTime(mtof(n.midi), t);
+      const ta = t + 0.003;
+      g.setValueAtTime(0, t);
+      g.linearRampToValueAtTime(peak, ta);
+      expCut(g, peak, peak * 1e-3, ta, ta + dec * 3, tc);
+      g.linearRampToValueAtTime(0, tc + rel);
+      const c = n.cut ?? 1800;
+      const f0 = Math.min(nyq, c * (1 + envAmt * v)), f1 = Math.max(120, c * 0.5);
+      lp.frequency.setValueAtTime(f0, t);
+      expCut(lp.frequency, f0, f1, t, t + dec, Math.min(t + dec, next - 0.002));
+      end = tc + rel;
+    });
+    x.start(t0);
+    x.stop(end + 0.03);
+    nodes.source(x, end + 0.03);
+    bump(env, t0, 1, ns.length);
   });
-  x.start(t0);
-  x.stop(end + 0.03);
-  bump(env, t0, 3, ns.length);
 }
 
 /** returns tail(t, vel, len?) that adds the gated-reverb burst behind a snare hit at t */
@@ -244,12 +251,12 @@ export function makeGatedSnare(env: MusicEnv, level = 0.2): (t: number, vel: num
     }
     return input;
   };
-  return (t: number, vel: number, len = 0.3) => {
+  return (t: number, vel: number, len = 0.3) => inst.oneShot((nodes) => {
     if (!allowed(env, 'snare', t, len)) return;
     const pk = level * vc(vel);
     const src = ctx.createBufferSource();
     src.buffer = env.noise;
-    const g = ctx.createGain();
+    const g = inst.node.gain(1);
     g.gain.value = 0;
     const s = t + 0.004;
     const p = g.gain;
@@ -261,6 +268,7 @@ export function makeGatedSnare(env: MusicEnv, level = 0.2): (t: number, vel: num
     const off = ((k++ * 0.2371) % Math.max(0.05, env.noise.duration - len - 0.1)) + 0.02;
     src.start(s, off);
     src.stop(s + len + 0.02);
-    bump(env, t, 2, 1);
-  };
+    nodes.source(src, s + len + 0.02);
+    bump(env, t, 1, 1);
+  });
 }

@@ -7,9 +7,10 @@
  *   &stall=30                    block the main thread for 3 s at t=30 (tab throttling / jank): no note burst after it
  *   &next=40 / &select=<id>@50   exercise next() / select() at those times
  *   &screen=city&night=1&pop=200000&activity=1   music context
+ *   &musicPauses=0              disable city rests (default on; menus always crossfade)
  *
  * window.__result: { events: [{t, id}], levels: dB every 100 ms, gaps (runs < -50 dB inside the run), maxJumpDb,
- *                    nodesAfterStall, errors }. Loudness here is only a sanity check - use ?track= for real stats.
+ *                    scheduledGaps, errors }. Scheduled gaps use actual start/end times (including ring-out).
  */
 import { MusicDirector, type MusicScreen } from '../music/director';
 import { ALL_TRACKS } from '../music/tracks';
@@ -67,15 +68,30 @@ export async function runDirectorTest(q: URLSearchParams, log: (s: string) => vo
   an.fftSize = 2048;
   bus.connect(an);
   rv.output.connect(an);
-  const tracks = q.get('real') === '1' ? ALL_TRACKS : TEST_TRACKS;
+  const t0 = ctx.currentTime;
+  const plays: { id: string; start: number; end: number; manual: boolean }[] = [];
+  let manual = false;
+  const tracks = (q.get('real') === '1' ? ALL_TRACKS : TEST_TRACKS).map((track) => ({
+    ...track,
+    create(env: MusicEnv) {
+      const player = track.create(env);
+      const start = player.start.bind(player);
+      player.start = (at: number) => {
+        start(at);
+        plays.push({ id: track.id, start: at - t0, end: player.endTime - t0, manual });
+        manual = false;
+      };
+      return player;
+    },
+  }));
   let saved: unknown = null;
   const d = new MusicDirector(tracks, { load: () => ({ shuffle: q.get('shuffle') !== '0', disabled: [] }), save: (p) => (saved = p) });
   d.setContext({ screen: (q.get('screen') as MusicScreen) ?? 'menu', night: q.get('night') === '1', population: parseFloat(q.get('pop') ?? '0'), activity: parseFloat(q.get('activity') ?? '0.5') });
+  d.setMusicPauses(q.get('musicPauses') !== '0');
   const errors: string[] = [];
   const origWarn = console.warn;
   console.warn = (...a: unknown[]) => (errors.push(a.map(String).join(' ')), origWarn(...a));
   d.attach(ctx, bus, rv.input, makeNoiseBuffer(ctx));
-  const t0 = ctx.currentTime;
   const events: { t: number; id: string | null; elapsed?: number; duration?: number }[] = [];
   d.onChange(() => {
     const np = d.nowPlaying;
@@ -108,10 +124,12 @@ export async function runDirectorTest(q: URLSearchParams, log: (s: string) => vo
     }
     if (!done.next && t >= nextAt) {
       done.next = true;
+      manual = true;
       d.next();
     }
     if (!done.select && selId && t >= selAt) {
       done.select = true;
+      manual = true;
       d.select(selId);
     }
   }
@@ -133,6 +151,11 @@ export async function runDirectorTest(q: URLSearchParams, log: (s: string) => vo
   const ids = events.map((e) => e.id).filter(Boolean) as string[];
   let repeats = 0;
   for (let i = 1; i < ids.length; i++) if (ids[i] === ids[i - 1]) repeats++;
+  const scheduledGaps = plays.slice(1).map((p, i) => ({ after: plays[i].id, before: p.id, seconds: p.start - plays[i].end, manual: p.manual }));
+  const automatic = scheduledGaps.filter((g) => !g.manual);
+  const rests = d.getContext().screen === 'city' && q.get('musicPauses') !== '0';
+  const ctxState = ctx.state;
+  await ctx.close();
   return {
     mode: 'director',
     tracks: tracks.map((t) => t.id),
@@ -140,12 +163,16 @@ export async function runDirectorTest(q: URLSearchParams, log: (s: string) => vo
     events,
     immediateRepeats: repeats,
     gaps,
+    plays,
+    scheduledGaps,
+    musicPauses: q.get('musicPauses') !== '0',
+    acceptance: { songGaps: automatic.length ? automatic.every((g) => rests ? g.seconds >= 15 && g.seconds <= 40 : g.seconds <= 0) : null },
     maxStepDb: Math.round(maxJump * 10) / 10,
     stall: stallInfo,
     errors,
     savedPrefs: saved,
     levels: lv,
-    ctxState: ctx.state,
+    ctxState,
     weights: tracks.map((t) => ({ id: t.id, w: Math.round(d.weight(t) * 100) / 100 })),
   };
 }

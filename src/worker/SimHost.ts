@@ -1,4 +1,4 @@
-/** The main-thread seam. Full views and persistence join it in W0.5–W0.6. */
+/** The main-thread simulation seam, including commands, queries, views and persistence. */
 import type { CellRect, Emitter } from '../core/events';
 import type { DevType, Network, Zone } from '../core/types';
 import { ActionsProxy } from '../game/ActionsProxy';
@@ -16,6 +16,29 @@ import { simWasmFlagSelects } from '../wasm/simWasm';
 import { SimCore, type SimErrors, type SimFlags, type SimModules } from './SimCore';
 import { queryKey, type QueryName, type QueryArgs, type QueryResult, type WatchPolicy } from './queries';
 import type { PolicyState, SimSettings, ViewState } from './protocol';
+import { NO_PENDING, type PendingView } from './PendingEdits';
+// W0.6: local persistence composition; SimCore imports only the codec / IDB side.
+import type { RegionCitySummary } from '../region/types';
+import type { HostState } from '../save/state';
+import { CHANGE_EVENTS, cityFingerprint } from '../save/fingerprint';
+import { writeRecoverySnapshot, type RecoverySnapshot, type WriteResult } from '../save/recovery';
+import { clearRecoveryAfterSave as clearRecoveryLs } from '../save/recoveryLs';
+
+export type { HostState } from '../save/state';
+export type { SaveReason } from './protocol';
+import type { SaveReason } from './protocol';
+export type SnapshotWhy = import('./protocol').SnapshotWhy | 'beforeunload' | 'pagehide' | 'exit';
+export interface SaveAck {
+  savedAt: number; cmd: number; pktSeq: number; fp: string; summary: RegionCitySummary;
+  /** Local has no packets: this counter is captured with the copy, before the IDB await. */
+  changes: number;
+  recoveryDropped: boolean;
+}
+export interface SnapshotAck extends WriteResult, RecoverySnapshot { cmd: number; fp: string; changes: number }
+export interface CityPersistence { regionId: string; tileKey: string; regionName?: string }
+/** The page's synchronous unload write: all the app needs. The local host writes snapshots synchronously and has
+ *  none; packet hosts write their journal mirror (src/worker/recoveryMirror.ts, T033) through it. */
+export interface RecoveryMirror { writeNow(why: SnapshotWhy | 'crash'): void }
 
 export type { QueryName, QueryArgs, QueryResult, WatchPolicy } from './queries';
 
@@ -52,6 +75,7 @@ class LocalWatch<K extends QueryName> implements WatchHandle<QueryResult<K>, Que
   private listeners = new Map<() => void, () => void>();
   private key: string;
   private at = -Infinity;
+  private commandEpoch: number | undefined;
   private failed = '';
   error: unknown;
   version = 0;
@@ -63,6 +87,8 @@ class LocalWatch<K extends QueryName> implements WatchHandle<QueryResult<K>, Que
     report(e: unknown): void;
     remove(): void;
     interval: number;
+    /** Dispatch controls reflect an acknowledged command immediately, even inside the normal cap. */
+    commandEpoch?: () => number;
   } | null) { this.args = structuredClone(args); this.key = queryKey(args); }
 
   get value(): QueryResult<K> | undefined { this.refresh(); return this.cache.get(this.key)?.value; }
@@ -80,12 +106,13 @@ class LocalWatch<K extends QueryName> implements WatchHandle<QueryResult<K>, Que
   refresh(): void {
     const s = this.source;
     if (!s) return;
-    const now = s.now(), cached = this.cache.get(this.key);
-    // The global cap includes argument changes; the inspector's 1 Hz gate is per argument key.
-    if (now - this.at < 200 || (cached && now - cached.at < s.interval)) return;
+    const now = s.now(), cached = this.cache.get(this.key), commandEpoch = s.commandEpoch?.();
+    // Argument changes share the cap; dispatch command epochs bypass it. Inspector's 1 Hz gate is per key.
+    if (commandEpoch === this.commandEpoch && (now - this.at < 200 || (cached && now - cached.at < s.interval))) return;
     const signature = s.signature(this.args), failureKey = this.key + ':' + signature;
     if (cached?.signature === signature || this.failed === failureKey) return;
     this.at = now;
+    this.commandEpoch = commandEpoch;
     try {
       const value = s.run(this.args);
       this.cache.delete(this.key);
@@ -162,6 +189,11 @@ interface Commands {
   dismissAlert(incidentId: number): void;
   setSettings(settings: SimSettings): void;
 }
+/** NOTE-041: the New Year countdown holds the calendar at midnight. A main-thread write into `sim` never reaches a
+ *  worker's clock, so the hold is a command: idempotent, released on midnight, cancel and dispose. */
+interface Commands {
+  holdCalendar(on: boolean): void;
+}
 export type CommandOp = keyof Commands;
 export type CommandArgs<K extends CommandOp> = Parameters<Commands[K]>;
 export type CommandResult<K extends CommandOp> = ReturnType<Commands[K]>;
@@ -188,6 +220,13 @@ export class Gesture {
   private failed = false;
   private resolve!: () => void;
   readonly settled = new Promise<void>((resolve) => { this.resolve = resolve; });
+
+  // W1.1b: a mixed-success stroke is not a prediction mismatch (R4).
+  private exactFeedback = false;
+  private accepted = false;
+  recordFeedback(): void { this.exactFeedback = true; }
+  recordAck(ok: boolean): void { this.accepted ||= ok; }
+  get mismatch(): boolean { return this.ended && !this.pending && this.exactFeedback && !this.accepted; }
 
   constructor(readonly owner: GestureOwner, private onEnd: () => void = () => {}) {}
 
@@ -219,7 +258,7 @@ export class Gesture {
 export interface SimHost {
   readonly kind: 'local' | 'loopback' | 'worker';
   readonly ready: Promise<void>;
-  readonly state: CityState;
+  readonly state: HostState;
   readonly events: Emitter<CityEvents>;
   /** Simulation compatibility during W0; narrowed as commands, queries and views migrate. */
   readonly sim: Simulation;
@@ -231,6 +270,8 @@ export interface SimHost {
   resume(source: SpeedSource): void;
   act<K extends CommandOp>(op: K, args: CommandArgs<K>, opts?: ActOptions): Ticket<CommandResult<K>>;
   readonly cause: Cause | null;
+  /** Read epoch for UI memos; counts issued commands, including same-day edits. */
+  readonly commandCount: number;
   beginGesture(owner: GestureOwner): Gesture;
   query<K extends QueryName>(name: K, args: QueryArgs<K>): Promise<QueryResult<K>>;
   watch<K extends QueryName>(name: K, args: QueryArgs<K>, when: WatchPolicy): WatchHandle<QueryResult<K>, QueryArgs<K>>;
@@ -249,6 +290,18 @@ export interface SimHost {
 export interface SimHost {
   readonly policy: PolicyView;
 }
+/** W0.6 persistence; independent of queries, policy and views. */
+export interface SimHost {
+  readonly changes: number;
+  readonly recovery: RecoveryMirror | null;
+  save(reason: SaveReason): Promise<SaveAck>;
+  snapshot(why: SnapshotWhy): Promise<SnapshotAck | null>;
+}
+
+/** W1.1b: local commands apply synchronously; replica hosts expose their preview reservations. */
+export interface SimHost {
+  readonly pending: PendingView;
+}
 
 export interface LocalSimHostOptions {
   rctx?: RegionContext | null;
@@ -258,6 +311,7 @@ export interface LocalSimHostOptions {
   /** Monotonic real time, injectable for watch cadence tests. */
   now?: () => number;
   signal?: AbortSignal;
+  persistence?: CityPersistence;
 }
 
 /** Broken lazy imports must not take down the city screen: the local host keeps its stand-ins. */
@@ -267,6 +321,8 @@ const IN_NODE = typeof (globalThis as { process?: { versions?: { node?: string }
 
 export class LocalSimHost implements SimHost {
   readonly kind = 'local';
+  // W1.1b: no local edit remains in flight after act returns.
+  readonly pending = NO_PENDING;
   readonly actions: ActionsProxy;
   readonly preview: ActionsProxy;
   private core: SimCore;
@@ -281,6 +337,11 @@ export class LocalSimHost implements SimHost {
   private queryClock: () => number;
   private views: ReturnType<typeof localViews>;
   private news: ReturnType<typeof newsSequence>;
+  // W0.6: the queue owns copies, never a page-provided state or callback.
+  private persistence: CityPersistence | null;
+  private saveChain: Promise<unknown> = Promise.resolve();
+  private saveChanges = { count: 0, dispose: () => {} };
+  readonly recovery = null;
   private resolveReady!: () => void;
   private rejectReady!: (e: unknown) => void;
   readonly ready = new Promise<void>((resolve, reject) => {
@@ -289,11 +350,13 @@ export class LocalSimHost implements SimHost {
   });
 
   constructor(state: CityState, opts: LocalSimHostOptions = {}) {
-    this.core = new SimCore(state, opts.errors, opts.flags);
+    this.core = new SimCore(state, opts.errors, opts.flags, opts.now);
     this.rctx = opts.rctx ?? null;
     this.queryClock = opts.now ?? (() => performance.now());
     this.views = localViews(this.sim);
     this.news = newsSequence(this.events, state.news.length, opts.signal);
+    this.persistence = opts.persistence ?? null;
+    this.saveChanges = changeSequence(this.events, opts.signal);
     const fallback = new FallbackActions(this.sim);
     this.actions = new LocalActions(fallback, this);
     this.preview = new LocalActions(fallback, this, true);
@@ -301,7 +364,7 @@ export class LocalSimHost implements SimHost {
   }
 
   get sim(): Simulation { return this.core.sim; }
-  get state(): CityState { return this.sim.state; }
+  get state(): HostState { return this.sim.state; }
   get events(): Emitter<CityEvents> { return this.sim.events; }
   get speed(): number { return this.sim.speed; }
   get liveSlowdown(): number { return this.sim.liveSlowdown; }
@@ -316,8 +379,42 @@ export class LocalSimHost implements SimHost {
   get traffic(): TrafficView { return this.views.traffic; }
   get utilities(): UtilitiesView { return this.views.utilities; }
   get newsSeq(): number { return this.news.seq; }
+  get commandCount(): number { return this.seq; }
   /** All local layers are already available; replica hosts subscribe through this seam. */
   setView(_view: ViewState): void {}
+
+  // W0.6: save acknowledgements describe the copy, not the city after a slow write.
+  get changes(): number { return this.saveChanges.count; }
+
+  save(_reason: SaveReason): Promise<SaveAck> {
+    const run = this.saveChain.then(async () => {
+      if (this.core.isDisposed) throw new Error('Simulation host is disposed');
+      const p = this.persistence;
+      if (!p) throw new Error('City persistence is not configured');
+      const copy = this.core.copySave(p.regionId, p.tileKey);
+      const cmd = this.seq, changes = this.changes;
+      const droppedIdb = await this.core.putSave(copy);
+      const droppedLs = clearRecoveryLs(p.regionId, p.tileKey, copy.record.savedAt);
+      return { savedAt: copy.record.savedAt, cmd, pktSeq: 0, fp: copy.fp, summary: copy.summary, changes, recoveryDropped: droppedIdb || droppedLs };
+    });
+    this.saveChain = run.catch(() => undefined);
+    return run;
+  }
+
+  snapshot(why: SnapshotWhy): Promise<SnapshotAck | null> {
+    try {
+      if (this.core.isDisposed) throw new Error('Simulation host is disposed');
+      const p = this.persistence;
+      if (!p) return Promise.resolve(null);
+      const st = this.core.sim.state;
+      // No await here: beforeunload / pagehide must finish the localStorage write in this task.
+      const result = writeRecoverySnapshot(p.regionId, p.tileKey, st, {
+        cityName: st.config.name, regionName: p.regionName, population: st.stats?.population ?? 0,
+        funds: st.funds, why, lean: why === 'periodic',
+      });
+      return Promise.resolve({ ...result, cmd: this.seq, fp: cityFingerprint(st), changes: this.changes });
+    } catch (e) { return Promise.reject(e); }
+  }
 
   setSpeed(v: number, source: SpeedSource): void { this.act('setSpeed', [v, source]); }
   resume(source: SpeedSource): void { this.act('resume', [source]); }
@@ -370,6 +467,7 @@ export class LocalSimHost implements SimHost {
       report: (e) => this.queryError(name, e),
       remove: () => this.watches.delete(w as LocalWatch<QueryName>),
       interval: name === 'inspectBuilding' || name === 'inspectCell' ? 1000 : 200,
+      commandEpoch: name === 'dispatchOptions' ? () => this.seq : undefined,
     });
     this.watches.add(w as LocalWatch<QueryName>);
     w.refresh();
@@ -382,11 +480,11 @@ export class LocalSimHost implements SimHost {
   }
 
   /** Attach the lazy systems and real CityActions, in the same order as CityScene.loadSim. */
-  async start(): Promise<void> {
+  async start(modules?: SimModules): Promise<void> {
     if (this.started || this.core.isDisposed) return this.ready;
     this.started = true;
     try {
-      const [sysMod, actMod] = await Promise.all([
+      const [sysMod, actMod] = modules ? [modules, modules] : await Promise.all([
         SIM_MODULES['../sim/systems/index.ts']?.().catch((e: unknown) => {
           this.core.report('Simulation systems failed to load — the city will not grow', e, { sim: true });
           return null;
@@ -429,11 +527,24 @@ export class LocalSimHost implements SimHost {
     for (const w of this.watches) w.dispose();
     this.queries.clear();
     this.news.dispose();
+    this.saveChanges.dispose();
+    this.persistence = null;
     this.core.dispose();
     this.rctx = null;
     this.resolveReady(); // an exit while imports are pending must not leave awaiters hanging
     return Promise.resolve();
   }
+}
+
+/** W0.6: the same dirty events as App, bound to the city lifetime and released on host disposal. */
+function changeSequence(events: Emitter<CityEvents>, signal?: AbortSignal): { count: number; dispose(): void } {
+  const counter = { count: 0, dispose: () => {} };
+  if (signal?.aborted) return counter;
+  const offs = CHANGE_EVENTS.map((type) => events.on(type, () => { counter.count++; }));
+  const dispose = () => { for (const off of offs) off(); signal?.removeEventListener('abort', dispose); };
+  counter.dispose = dispose;
+  signal?.addEventListener('abort', dispose, { once: true });
+  return counter;
 }
 
 /** W0.5 local views: no commands or system internals escape through these readers. */

@@ -116,11 +116,11 @@ describe('LocalSimHost', () => {
     expect(host.actions.plantTrees(trees)).toEqual(actions.plantTrees(trees));
     sim.runDays(45);
     host.sim.runDays(45);
-    expect(serializeCity(host.state, { copy: true })).toEqual(serializeCity(sim.state, { copy: true }));
+    expect(serializeCity(host.sim.state, { copy: true })).toEqual(serializeCity(sim.state, { copy: true }));
     expect(host.sim.rng.state).toBe(sim.rng.state);
     expect(report).not.toHaveBeenCalled();
 
-    const loaded = new LocalSimHost(deserializeCity(serializeCity(host.state, { copy: true })), { rctx, errors: { report } });
+    const loaded = new LocalSimHost(deserializeCity(serializeCity(host.sim.state, { copy: true })), { rctx, errors: { report } });
     const baseline = new Simulation(deserializeCity(serializeCity(sim.state, { copy: true })), []);
     const offLoaded = trackRegionEffects(baseline, rctx);
     const loadedSystems = createSystems();
@@ -129,7 +129,7 @@ describe('LocalSimHost', () => {
     await loaded.start();
     baseline.runDays(30);
     loaded.sim.runDays(30);
-    expect(serializeCity(loaded.state, { copy: true })).toEqual(serializeCity(baseline.state, { copy: true }));
+    expect(serializeCity(loaded.sim.state, { copy: true })).toEqual(serializeCity(baseline.state, { copy: true }));
     expect(loaded.sim.rng.state).toBe(baseline.rng.state);
     expect(report).not.toHaveBeenCalled();
     off();

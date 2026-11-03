@@ -2,6 +2,7 @@
 import { Network, Zone } from '../core/types';
 import type { GameContext } from '../game/context';
 import { CATEGORIES, CATEGORY_COLORS, categoryOfTool, findToolSpec, type ToolCategory, type ToolSpec } from '../game/toolCatalog';
+import { budgetEffect } from '../game/tools/Tool';
 import type { BuildingDef } from '../sim/catalogTypes';
 import { facilityDefFacts } from '../sim/infra/facilities';
 import { opexTierOf } from '../sim/economy/opex';
@@ -331,7 +332,8 @@ export class Toolbar {
           const headBottom = head ? (head.getBoundingClientRect().bottom - pr.top) / z + 6 : (fr.top - pr.top) / z;
           const iR = (r.right - pr.left) / z + 8, iL = (r.left - pr.left) / z - tw - 8;
           x = iR + tw <= W - 8 ? iR : iL >= 8 ? iL : x;
-          y = Math.max(headBottom, TOP, Math.min(H - th - 8, itemMid - th / 2));
+          // below the head when it fits; a tip taller than the room left covers the head rather than leave the screen
+          y = Math.min(Math.max(headBottom, TOP, Math.min(H - th - 8, itemMid - th / 2)), Math.max(TOP, H - th - 8));
         }
       }
       this.tip.style.left = x + 'px';
@@ -403,6 +405,11 @@ export class Toolbar {
         // shows what it earns now, final fixes P3; a business deal pays its income as it is)
         if (d.category !== 'reward') hints.push(`Income: ${money(d.income)} / month when busy — less while it is quiet (its inspector shows what it earns now)`);
       }
+      // FH-05: what placing it does to the monthly budget — last month's net → after this, at the upkeep above (red below
+      // zero, with how long the treasury lasts); none on a card that does not select (locked, already built, in ruins)
+      // (the Income row above already notes a venue's busy income, so the card's line leaves it out)
+      const be = s.locked || s.disabled ? null : budgetEffect(this.ctx.state, d, est ? est.now : d.upkeep ?? 0, this.ctx.sandbox(), { venueNote: false });
+      if (be) rows.push(['Monthly budget', `<span${be.bad ? ' class="neg"' : ''}>${escapeHtml(be.text)}</span>${be.reserves ? `<br><span class="neg">${escapeHtml(be.reserves)}</span>` : ''}`]);
       rows.push(['Size', `${d.footprint[0]} × ${d.footprint[1]} tiles`]);
       if (d.jobs) rows.push(['Jobs', num(d.jobs)]);
       // (facts that repeat a row above — Jobs, Upkeep, Size — are left out, with the upkeep's hint)

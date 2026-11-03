@@ -263,7 +263,7 @@ function blurCoarse(raw: Float32Array, out: Float32Array, cw: number): void {
  *  phase within the period) */
 const DEMO_UPDATE_DAYS = 16 * OCC_PERIOD;
 /** the city-wide cohort / education / coarse-grid sample (aggregate) runs every DEMO_AGG_DAYS */
-const DEMO_AGG_DAYS = 8 * OCC_PERIOD;
+export const DEMO_AGG_DAYS = 8 * OCC_PERIOD;
 
 /**
  * The last demographics sample (coarse grids desirability reads — residents by wealth, education, kids — and the cohort
@@ -292,7 +292,20 @@ function storeGrids(st: CityState, rt: EconRuntime, coh: Float64Array): void {
 }
 
 /** day of the month of the EQ / HQ update (off the month tick; the commercial core runs on day 20, freight on 15) */
-const EQHQ_DAY = 25;
+export const EQHQ_DAY = 25;
+/** day of the month on which the outage records of buildings that are gone are pruned (off the month tick) */
+export const OUTAGE_PRUNE_DAY = 7;
+/**
+ * Phases of the periodic samples (B3): the employment sample on day % OCC_PERIOD === OCC_PHASE, the demographics sample
+ * on day % DEMO_AGG_DAYS === DEMO_PHASE (≡ OCC_PHASE mod OCC_PERIOD: a demographics day is also an employment day, as
+ * before). Both odd: a day of the month has the parity of its day number (30 is even), so neither ever lands on a month
+ * tick (was phase 0: the employment sample on every other tick, the demographics sample on one tick in 16), on tourism's
+ * venue pass (TOURISM_DAY 26) or on the advisors' zone scan (28). The 'demographics' layer event on dom 1
+ * (DEMOGRAPHICS_EVENT_PHASE), out of the month frame.
+ */
+export const OCC_PHASE = 1;
+export const DEMO_PHASE = 17;
+export const DEMOGRAPHICS_EVENT_PHASE = 1;
 
 /** EMPLOYED_EMA per day compounded over one OCC_PERIOD (the traffic ledger is sampled every OCC_PERIOD days) */
 const EMPLOYED_EMA_PERIOD = 1 - Math.pow(1 - EMPLOYED_EMA, OCC_PERIOD);
@@ -332,9 +345,10 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     const cc = cw * cw;
     // employment sample (workforce x traffic access): every OCC_PERIOD days; cohort shares / coarse demographics
     // grids / city mean education: every DEMO_AGG_DAYS (the fields change slowly) — the cohort stats follow the daily
-    // population at the sampled shares. A loaded city takes the saved sample (systemData.popGrids, see PopGrids)
-    const sample = first || st.day % OCC_PERIOD === 0;
-    const demo = first || st.day % DEMO_AGG_DAYS === 0;
+    // population at the sampled shares. A loaded city takes the saved sample (systemData.popGrids, see PopGrids). On
+    // odd days (OCC_PHASE / DEMO_PHASE), never on a month tick
+    const sample = first || st.day % OCC_PERIOD === OCC_PHASE;
+    const demo = first || st.day % DEMO_AGG_DAYS === DEMO_PHASE;
     const saved = first && st.day > 0 && rt.coarsePopW[0].length === cc ? savedGrids(st, cc) : null;
     if (sample) cache.ensure(st.nextBuildingId);
     const mWf = cache.wf;
@@ -721,9 +735,10 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       rt.ensureLists();
       aggregate(sim, false);
       demographicsData(sim.state).cursor = cursor;
-      if (sim.state.day % DEMOGRAPHICS_EVENT_DAYS === 0) sim.events.emit('layerUpdated', 'demographics');
+      // (the Demographics overlay's refresh: monthly, the day after the month tick)
+      if (sim.state.day % DEMOGRAPHICS_EVENT_DAYS === DEMOGRAPHICS_EVENT_PHASE) sim.events.emit('layerUpdated', 'demographics');
       // (monthly, off the month tick) outage records of buildings that are gone
-      if (sim.state.day % DAYS_PER_MONTH === 7) pruneOutages(sim.state);
+      if (sim.state.day % DAYS_PER_MONTH === OUTAGE_PRUNE_DAY) pruneOutages(sim.state);
       // EQ / HQ from the residents' education stock and health access, once a month (with sim-infra services; approval
       // keeps the legacy coverage lag in sim-core-only runs) — on day EQHQ_DAY of the month, not on the month tick,
       // which already carries every system's monthly work; the homes are read in daily slices (a loop over all homes

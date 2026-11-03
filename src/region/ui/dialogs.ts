@@ -2,7 +2,7 @@
 import { audio } from '../../audio';
 import type { Climate } from '../../core/types';
 import { RNG } from '../../core/rng';
-import { loadSettings, saveSettings, type AppSettings } from '../settings';
+import { A11Y_WIRED, DEFAULT_SETTINGS, TEXT_SIZES, UI_SCALE, loadSettings, resolveMotion, saveSettings, type AppSettings, type ColourVision, type MotionPref, type TextSize } from '../settings';
 import { REGION_PRESETS, RegionModel, createRegionData, generateRegionTerrain, type RegionPresetInfo } from '../RegionModel';
 import type { RegionData, RegionPresetId } from '../types';
 import { drawRegionMap } from '../mapPreview';
@@ -59,6 +59,8 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
         },
       }).el,
     ),
+    h('div', { class: 'section-title' }, 'Accessibility & interface'),
+    accessibilitySection(s, commit),
     h('div', { class: 'section-title' }, 'Gameplay'),
     h(
       'div',
@@ -94,6 +96,92 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
   );
   const m: Modal = new Modal({ title: 'Settings', subtitle: 'Saved automatically on this device', icon: 'settings', size: 'mid', body, footer: [h('div', { class: 'grow' }), button('Done', { cls: 'lg primary', onClick: () => m.close() })] });
   return m;
+}
+
+/**
+ * "Accessibility & interface" (FH-23): UI scale, text size, motion and colour vision. They are app-level settings, so they
+ * apply before any city exists and a city opens with them (src/region/settings.ts). NOTE-042: text size, motion and colour
+ * vision show only once their feature reads them (A11Y_WIRED); "Reset to defaults" resets the controls shown.
+ */
+function accessibilitySection(s: AppSettings, commit: () => void): HTMLElement {
+  const field = (label: string, control: HTMLElement) => h('div', { class: 'field' }, h('label', {}, label), control);
+  const scale = slider({
+    label: 'UI scale',
+    icon: 'expand',
+    value: s.uiScale,
+    min: UI_SCALE.min,
+    max: UI_SCALE.max,
+    step: UI_SCALE.step,
+    format: (v) => `${Math.round(v * 100)}%`,
+    onInput: (v) => {
+      s.uiScale = v;
+      commit();
+    },
+  });
+  const shown: HTMLElement[] = [scale.el];
+  /** the shown controls' names (Reset's title) and resets */
+  const names = ['UI scale'];
+  const resets: (() => void)[] = [() => scale.set((s.uiScale = DEFAULT_SETTINGS.uiScale))];
+  if (A11Y_WIRED.textSize) {
+    const text = segmented<TextSize>({
+      items: TEXT_SIZES.map((v) => ({ value: v, title: v ? `+${v}%` : 'Default' })),
+      value: s.textSize,
+      cols: 4,
+      onChange: (v) => {
+        s.textSize = v;
+        commit();
+      },
+    });
+    shown.push(field('Text size', text.el));
+    names.push('text size');
+    resets.push(() => text.set((s.textSize = DEFAULT_SETTINGS.textSize)));
+  }
+  if (A11Y_WIRED.motion) {
+    const motion = segmented<MotionPref>({
+      items: [
+        { value: 'system', title: 'System', sub: `Your device: ${resolveMotion('system')}` },
+        { value: 'full', title: 'Full', sub: 'Every animation' },
+        { value: 'reduced', title: 'Reduced', sub: 'No shake or flashing' },
+      ],
+      value: s.motion,
+      cols: 3,
+      onChange: (v) => {
+        s.motion = v;
+        commit();
+      },
+    });
+    shown.push(field('Motion', motion.el));
+    names.push('motion');
+    resets.push(() => motion.set((s.motion = DEFAULT_SETTINGS.motion)));
+  }
+  if (A11Y_WIRED.colourVision) {
+    const vision = segmented<ColourVision>({
+      items: [
+        { value: 'standard', title: 'Standard', sub: 'Default colours' },
+        { value: 'red-green', title: 'Red-green safe', sub: 'Deuteranopia, protanopia' },
+        { value: 'blue-yellow', title: 'Blue-yellow safe', sub: 'Tritanopia' },
+      ],
+      value: s.colourVision,
+      cols: 3,
+      onChange: (v) => {
+        s.colourVision = v;
+        commit();
+      },
+    });
+    shown.push(field('Colour vision', vision.el));
+    names.push('colour vision');
+    resets.push(() => vision.set((s.colourVision = DEFAULT_SETTINGS.colourVision)));
+  }
+  const reset = button('Reset to defaults', {
+    icon: 'refresh',
+    cls: 'ghost',
+    title: names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0],
+    onClick: () => {
+      for (const r of resets) r();
+      commit();
+    },
+  });
+  return h('div', { class: 'a11y-settings' }, ...shown, h('div', { style: 'display:flex; justify-content:flex-end; margin: -6px 0 14px' }, reset));
 }
 
 // ------------------------------------------------------------------ credits

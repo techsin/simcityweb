@@ -10,10 +10,25 @@ import type { Command, CommandOp, CommandResult } from './SimHost';
 import { runQuery, watchSignature, type QueryName, type QueryArgs, type QueryResult, type WatchPolicy } from './queries';
 // W0.4: headless policy and its read-only host view.
 import { Emitter } from '../core/events';
-import { AlertQueue, LIVE_IDLE, followingDispatch, pendingCount, sendDays, speedPolicy, unbanneredPrompt, urgentSeconds, type LiveState, type PolicyAlert } from '../game/emergencyPolicy';
+import { AlertQueue, LIVE_COOLDOWN_MS, LIVE_IDLE, followingDispatch, pendingCount, sendDays, speedPolicy, unbanneredPrompt, urgentSeconds, type LiveState, type PolicyAlert } from '../game/emergencyPolicy';
 import type { EmergencyEvent } from '../sim/Simulation';
 import type { Incident } from '../sim/infra/emergency';
 import type { PolicySnapshot, PolicyView, SimSettings } from './SimHost';
+// W0.6: authoritative save copies and IDB only; browser recovery composition stays in LocalSimHost.
+import { createCityRecord, putCityRecord, type CityRecord } from '../save/cities';
+import { openKV } from '../save/db';
+import { cityFingerprint } from '../save/fingerprint';
+import { clearRecoveryAfterSave } from '../save/recoveryIdb';
+import { summarizeCity } from '../region/citySummary';
+import type { RegionCitySummary } from '../region/types';
+// W1.1b (T033): authoritative recovery only. The page-side mirror and localStorage stay out of this graph.
+import { getRecoveryBase } from '../save/cities';
+import {
+  buildRecoverySnapshot, JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, journalMatches,
+  type JournalBase, type RecoveryJournal, type RecoverySnapshot, type SnapshotInfo,
+} from '../save/recoveryCodec';
+
+export interface CitySaveCopy { record: CityRecord; fp: string; summary: RegionCitySummary }
 
 /** The page's flags, passed at init (WORKER_DESIGN §1). */
 export interface SimFlags {
@@ -38,17 +53,21 @@ export class SimCore {
   private disposed = false;
   private offRegion: (() => void) | null = null;
   private pausedFrom = 1;
+  /** NOTE-041: the day cap before holdCalendar(true), given back by holdCalendar(false); null while not held */
+  private heldMax: number | null = null;
   /** Cleared at dispose: a retained system must not reach the scene or its HUD (close-out c4). */
   private guard: { errors: SimErrors | null };
   // W0.4: the host's city lifetime also owns policy listeners and queued flushes.
   private abort = new AbortController();
   readonly livePolicy: LivePolicy;
 
-  constructor(state: CityState, errors?: SimErrors, flags: SimFlags = { simwasm: null }) {
+  /** `clock`: the real-time milliseconds the live policy's alert close delays count in (the host's clock, so a
+   *  deterministic harness stays deterministic); performance.now by default. */
+  constructor(state: CityState, errors?: SimErrors, flags: SimFlags = { simwasm: null }, clock?: () => number) {
     this.sim = new Simulation(state, []);
     this.guard = { errors: errors ?? null };
     this.flags = flags;
-    this.livePolicy = new LivePolicy(this.sim, this.abort.signal);
+    this.livePolicy = new LivePolicy(this.sim, this.abort.signal, clock);
   }
 
   get isDisposed(): boolean { return this.disposed; }
@@ -98,6 +117,59 @@ export class SimCore {
 
   querySignature<K extends QueryName>(name: K, args: QueryArgs<K>, when: WatchPolicy, commands: number): string {
     return `${this.booted}:${watchSignature(this.sim, name, args, when, commands)}`;
+  }
+
+  // W0.6: all values describing a save are captured in the same synchronous unit.
+  copySave(regionId: string, tileKey: string): CitySaveCopy {
+    if (this.disposed) throw new Error('Simulation core is disposed');
+    const st = this.sim.state;
+    return { record: createCityRecord(regionId, tileKey, st), fp: cityFingerprint(st), summary: summarizeCity(st) };
+  }
+
+  async putSave(copy: CitySaveCopy): Promise<boolean> {
+    const kv = await openKV(), rec = copy.record;
+    await putCityRecord(kv, rec);
+    return clearRecoveryAfterSave(kv, rec.regionId, rec.tileKey, rec.savedAt).catch(() => false);
+  }
+
+  /** W1.1b (T033): the payload is encoded to the budget left after the journal's reserve (§4.3). The owner cuts the
+   *  bytes and its command watermark in one synchronous unit; `base` is the save still being written, if any. */
+  copyRecoverySnapshot(regionId: string, tileKey: string, info: SnapshotInfo, base = getRecoveryBase(regionId, tileKey),
+    at = Date.now()): RecoverySnapshot {
+    if (this.disposed) throw new Error('Simulation core is disposed');
+    return buildRecoverySnapshot(regionId, tileKey, this.sim.state, base, { ...info, at }, LS_BUDGET_BYTES - JOURNAL_RESERVE_BYTES);
+  }
+
+  /** §4.3: after init, before the first tick, each command at the base's day; one that now fails is dropped. The
+   *  caller names the save (and snapshot) it loaded; a journal bound to another base replays nothing (null). */
+  replayRecoveryJournal(journal: RecoveryJournal, base: JournalBase): { applied: number[]; failed: number[] } | null {
+    if (this.disposed) throw new Error('Simulation core is disposed');
+    if (!journalMatches(journal, base)) return null;
+    if (!this.booted || !this.actions) throw new Error('Recovery replay requires initialized CityActions');
+    const applied: number[] = [], failed: number[] = [];
+    for (const entry of journal.ops) {
+      try {
+        const result = this.applyCommand({ op: entry.op, args: structuredClone(entry.args) } as Command, this.actions);
+        if (result === false || (result && typeof result === 'object' && !result.ok)) { failed.push(entry.seq); continue; }
+        if (entry.op === 'bulldoze' && entry.cost !== undefined && result && typeof result === 'object' && 'cost' in result) {
+          this.keepCharge(entry.cost, entry.refund, result.cost, result.refund);
+        }
+        applied.push(entry.seq);
+      } catch { failed.push(entry.seq); }
+    }
+    return { applied, failed };
+  }
+
+  /** FH-07a: the journal records the refund that was charged, not the rule. A replay at the base's day would re-date
+   *  it (a day-20 bulldoze becomes a same-day one), so both budget lines and the funds move to the ack's amounts. */
+  private keepCharge(cost: number, refund: number | undefined, replayCost: number, replayRefund = 0): void {
+    const st = this.sim.state, b = st.budget, line = (to: Record<string, number>, key: string, d: number) => { if (d) to[key] = (to[key] ?? 0) + d; };
+    if (refund !== undefined) {
+      line(b.curIncome, 'oneoff:refund', refund - replayRefund);
+      line(b.curExpense, 'oneoff:demolition', (cost + refund) - (replayCost + replayRefund));
+    } else if (replayCost > cost) line(b.curIncome, 'oneoff:refund', replayCost - cost); // only the net charge is known
+    else line(b.curExpense, 'oneoff:demolition', cost - replayCost);
+    if (!st.config.sandbox && st.config.difficulty !== 'sandbox') st.funds -= cost - replayCost;
   }
 
   /** Commands run synchronously between local ticks, through the same authoritative actions as before. */
@@ -157,6 +229,13 @@ export class SimCore {
       // W0.4: only the policy owner changes dismissals and simulation settings.
       case 'dismissAlert': this.livePolicy.dismiss(cmd.args[0]); return;
       case 'setSettings': this.livePolicy.setSettings(cmd.args[0]); return;
+      // NOTE-041: no sim day advances while held; the frame-rate systems and the player's speed are untouched
+      case 'holdCalendar': {
+        const [on] = cmd.args;
+        if (on && this.heldMax === null) { this.heldMax = sim.maxDaysPerFrame; sim.maxDaysPerFrame = 0; }
+        else if (!on && this.heldMax !== null) { sim.maxDaysPerFrame = this.heldMax > 0 ? this.heldMax : 4; this.heldMax = null; }
+        return;
+      }
     }
   }
 
@@ -216,8 +295,11 @@ export class LivePolicy {
   private scanned = false;
   private attached = false;
   private flushQueued = false;
+  private cooldownLeft = 0;
+  private cooldownAt = 0;
+  private cooldownRunning = false;
 
-  constructor(private sim: Simulation, private signal: AbortSignal) {
+  constructor(private sim: Simulation, private signal: AbortSignal, private clock: () => number = () => performance.now()) {
     const self = this;
     this.view = {
       get alerts() { return self.snapshot.alerts; },
@@ -240,8 +322,9 @@ export class LivePolicy {
     this.attached = true;
     const off = this.sim.events.on('emergency', (e) => this.onEvent(e));
     const offReset = this.sim.events.on('reset', () => this.boot());
+    const offSpeed = this.sim.events.on('speedChanged', () => this.updateCooldown());
     this.signal.addEventListener('abort', () => {
-      off(); offReset();
+      off(); offReset(); offSpeed();
       this.changes.clear();
       this.alerts.clear();
       this.incoming.clear();
@@ -260,6 +343,9 @@ export class LivePolicy {
     this.dismissed.clear();
     this.incoming.clear();
     this.live = { ...LIVE_IDLE };
+    this.cooldownLeft = 0;
+    this.cooldownAt = this.clock();
+    this.cooldownRunning = this.sim.speed > 0;
     this.sim.liveSlowdown = 1;
     this.trigger = this.episodeBad = this.scanned = false;
     this.publish();
@@ -319,6 +405,10 @@ export class LivePolicy {
     let raised = false, added = false;
     for (const id of ids) {
       const inc = em.incident(id);
+      if (inc?.reason === 'busy') {
+        if (this.alerts.delete(id)) { this.queue.remove(id); raised = true; }
+        continue;
+      }
       if (!inc || inc.state !== 'uncovered' || this.dismissed.has(id) || !(inc.manualPossible || inc.canSend)) continue;
       const possible = !Number.isNaN(this.send(em, inc));
       const shown = this.alerts.get(id);
@@ -327,7 +417,7 @@ export class LivePolicy {
         continue;
       }
       const st = this.sim.state;
-      if (!this.queue.offer({ id, kind: inc.kind, major: inc.major, manualPossible: possible }, st.day, st.stats.population, this.settings.emergencyAlerts)) continue;
+      if (!this.queue.offer({ id, kind: inc.kind, major: inc.major, manualPossible: possible, reason: inc.reason }, st.day, st.stats.population, this.settings.emergencyAlerts)) continue;
       this.alerts.set(id, { id, inc, wasPossible: possible, closeAt: 0 });
       added = raised = true;
       if (possible) this.trigger = true;
@@ -344,9 +434,10 @@ export class LivePolicy {
       if (unbanneredPrompt(inc, this.alerts, this.dismissed, (i) => this.send(em, i))) this.incoming.add(inc.id);
     }
     this.flush();
-    const now = this.sim.simTime(), nowMs = performance.now();
+    const now = this.sim.simTime(), nowMs = this.clock();
     for (const [id, alert] of this.alerts) {
       const inc = em?.incident(id);
+      if (inc?.reason === 'busy') { this.alerts.delete(id); this.queue.remove(id); continue; }
       const waiting = inc && (inc.state === 'uncovered' || inc.state === 'queued');
       if (!inc || (!waiting && !(this.settings.emergencyUncovered === 'live' && followingDispatch(inc, now)))) {
         if (!alert.closeAt) alert.closeAt = nowMs + (inc ? 4000 : 2500);
@@ -356,9 +447,18 @@ export class LivePolicy {
     this.apply();
   }
 
+  /** Account for real time at every speed boundary, even when no host tick runs during a pause. */
+  private updateCooldown(): void {
+    const now = this.clock();
+    if (this.cooldownRunning) this.cooldownLeft = Math.max(0, this.cooldownLeft - Math.max(0, now - this.cooldownAt));
+    this.cooldownAt = now;
+    this.cooldownRunning = this.sim.speed > 0;
+  }
+
   /** Dispatch and settings commands re-evaluate the current episode without flushing a half-finished burst. */
   apply(warn = false): void {
     if (!this.attached || this.signal.aborted) return;
+    this.updateCooldown();
     const sim = this.sim, em = sim.getSystem<EmergencySystem>('emergency');
     const incidents = em?.incidents() ?? [], now = sim.simTime();
     const send = (inc: Incident) => em ? this.send(em, inc) : NaN;
@@ -366,12 +466,13 @@ export class LivePolicy {
     const pending = pendingCount(policy, this.alerts, incidents, this.dismissed, now, send);
     this.episodeBad ||= pending.bad;
     const was = this.live.active;
-    const step = speedPolicy(policy, this.live, sim.speed, this.trigger, pending.count, slowmo, this.episodeBad, policy === 'live' ? urgentSeconds(this.alerts, incidents, this.dismissed, now, slowmo, send) : Infinity);
+    const step = speedPolicy(policy, this.live, sim.speed, this.trigger && this.cooldownLeft === 0, pending.count, slowmo, this.episodeBad, policy === 'live' ? urgentSeconds(this.alerts, incidents, this.dismissed, now, slowmo, send) : Infinity);
     this.trigger = false;
     this.live = step.state;
     if (was !== this.live.active || step.toast) this.episodeBad = false;
     if (step.speed !== undefined && step.speed !== sim.speed) sim.speed = step.speed;
     if (sim.liveSlowdown !== step.liveSlowdown) sim.liveSlowdown = step.liveSlowdown;
+    if (was && !this.live.active) { this.cooldownLeft = LIVE_COOLDOWN_MS; this.cooldownAt = this.clock(); }
     this.publish(step.toast, warn);
   }
 

@@ -23,9 +23,10 @@ import { CAP_RELIEF } from '../../src/sim/catalog';
 import { Simulation as Sim } from '../../src/sim/Simulation';
 import { stressCity } from '../infra/cityGen';
 
-const tourismSys = (sim: Simulation) => sim.systems.find((s) => s.name === 'economy.tourism') as SimSystem;
-/** run the monthly tourism update now (the survey / visits of "today") */
-const tourismMonth = (sim: Simulation) => tourismSys(sim).monthly!(sim);
+const tourismSys = (sim: Simulation) => sim.systems.find((s) => s.name === 'economy.tourism') as SimSystem & { refresh(sim: Simulation): void };
+/** run the whole tourism update now — the venue pass and the attract step (the survey / visits of "today"; B3 runs the
+ *  pass on TOURISM_DAY and the attract step on the month tick) */
+const tourismMonth = (sim: Simulation) => tourismSys(sim).refresh(sim);
 
 /** a flat city with an edge-to-edge highway (neighbour connections, freight access) */
 function city(size = 96) {
@@ -490,23 +491,27 @@ describe('tourism: cost', () => {
     (rt as unknown as { rebuildBuildingLists(): void }).rebuildBuildingLists();
     st.stats.population = 600000;
     for (let w = 0; w < 3; w++) tourismMonth(sim);
-    let best = Infinity;
+    let best = Infinity, bestPass = Infinity, bestAttract = Infinity;
     const phase: Record<string, number> = {};
     for (let r = 0; r < 12; r++) {
       st.day++;
       const t0 = performance.now();
       tourismMonth(sim);
       best = Math.min(best, performance.now() - t0);
+      // (B3: the venue pass runs on TOURISM_DAY, the attract step on the tick; here st.day steps by hand, so the attract
+      // step takes a full resident survey every time, where the tick reads the month's slices)
+      bestPass = Math.min(bestPass, rt.timing['tourism.pass']);
+      bestAttract = Math.min(bestAttract, rt.timing['tourism.survey'] + rt.timing['tourism.attract']);
       for (const [key, v] of Object.entries(rt.timing)) if (key.startsWith('tourism.')) phase[key] = Math.min(phase[key] ?? Infinity, v);
       if (process.env.TOURISM_PERF) console.log(`run ${r}: ${(performance.now() - t0).toFixed(2)} ms: ` + Object.entries(rt.timing).filter(([k]) => k.startsWith('tourism.')).map(([k, v]) => `${k.slice(8)} ${v.toFixed(1)}`).join(' '));
     }
     const s = tourismSummary(st)!;
     console.log(Object.entries(phase).map(([key, v]) => `${key} ${v.toFixed(2)}`).join(' · '));
-    console.log(`tourism monthly (incl. resident survey): ${best.toFixed(2)} ms · ${rt.growables.length} growables, ${s.beachCells} beach cells, `
-      + `${Math.round(s.tourists)} tourists ≈ ${(best / 30).toFixed(3)} ms/day`);
+    console.log(`tourism venue pass ${bestPass.toFixed(2)} ms, attract step (incl. a full resident survey) ${bestAttract.toFixed(2)} ms, `
+      + `both ${best.toFixed(2)} ms · ${rt.growables.length} growables, ${s.beachCells} beach cells, ${Math.round(s.tourists)} tourists`);
     expect(s.beachCells).toBeGreaterThan(100);
     // wall-clock budgets only with PERF_STRICT=1 (like tests/infra/perf.test.ts): the shared CI box spikes 10–200 ms
-    // under load, while an unloaded run measures ≈ 1.5–3 ms per month
-    if (process.env.PERF_STRICT) expect(best).toBeLessThan(6);
+    // under load, while an unloaded run measures ≈ 1.5–3 ms per month (the venue pass)
+    if (process.env.PERF_STRICT) expect(bestPass).toBeLessThan(6);
   });
 });

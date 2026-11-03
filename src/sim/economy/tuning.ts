@@ -589,6 +589,8 @@ export const DIFFICULTY_RULES: Readonly<Record<Difficulty, DifficultyRules>> = {
   hard: { income: 0.85, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true, blurb: '§40k, −15% taxes, tight from day one' },
   sandbox: { income: 1.0, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true, blurb: 'unlimited money, everything unlocked' },
 };
+/** tornadoes, quakes and meteors strike only from this population (src/sim/infra/disasters.ts; the New City dialog's note) */
+export const DISASTER_MIN_POP = 2000;
 /** a city's rules; an unknown difficulty gets Medium's, as the income multiplier always fell back to 1 */
 export function difficultyRules(difficulty: string): DifficultyRules {
   return DIFFICULTY_RULES[difficulty as Difficulty] ?? DIFFICULTY_RULES.medium;

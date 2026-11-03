@@ -4,8 +4,10 @@ import type { EmergencySystem } from '../../src/sim/infra/emergency';
 import type { SimHost, WatchHandle } from '../../src/worker/SimHost';
 import { queryKey, runQuery, watchSignature, type QueryArgs, type QueryName, type QueryResult, type WatchPolicy } from '../../src/worker/queries';
 
-export function queryHost(sim: Simulation): Pick<SimHost, 'query' | 'watch' | 'emergency'> {
+export function queryHost(sim: Simulation): Pick<SimHost, 'query' | 'watch' | 'emergency' | 'events' | 'commandCount'> {
   return {
+    events: sim.events,
+    commandCount: 0,
     query: (name, args) => Promise.resolve(structuredClone(runQuery(sim, name, args))),
     watch<K extends QueryName>(name: K, args: QueryArgs<K>, when: WatchPolicy): WatchHandle<QueryResult<K>, QueryArgs<K>> {
       let key = '', value: QueryResult<K> | undefined, disposed = false;

@@ -17,7 +17,7 @@ const WORK = S + '/b2work'
 const LOCK = S + '/timing.lock'
 
 const __C = {}
-const __R = ["map:other", "design"]
+const __R = ["map:other", "design", "design-review:targets"]
 const __NOTE = 'RESUMING: an earlier run of this exact task was interrupted (usage limit, restart or crash). Your scratch dir under ' + WORK + ' may hold partial work from it: read it first, keep what is sound, check git -C ' + W + ' log and status for commits or edits it already made, and continue rather than redo. Every process of yours from before the restart was stopped: restart what you need. If ' + LOCK + ' exists and no timing process runs (pgrep), remove it.'
 async function __A(prompt, opts) {
   const lab = opts && opts.label

@@ -61,6 +61,8 @@ class IdbKV implements KV {
       t.objectStore(store).delete(key);
       t.oncomplete = () => resolve();
       t.onerror = () => reject(t.error);
+      // W0.6 awaits this delete before a save is acknowledged: an aborted transaction must settle too
+      t.onabort = () => reject(t.error ?? new Error('IndexedDB transaction aborted'));
     });
   }
   async getAll<T>(store: StoreName): Promise<T[]> {
