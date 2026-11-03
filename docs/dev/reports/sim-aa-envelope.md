@@ -1,5 +1,7 @@
 # Shared SIM A/A envelope (NOTE-048)
 
+> Current rule: [NOTE-052 / Round 3](#note-052-symmetric-fork-noise-protocol-round-3) supersedes the historical margin guidance below. Base rows use ±1%; the selected envelope widens variant-target margins only.
+
 Measured commit: `0df76bce1a663ee44957cf47cfecdb8b18eed187` (branch `local/T062-sim-aa-envelope`). Host: `none`; independent node processes.
 
 Source fingerprint: `0e0f3bbcf84081835fd39008f3d94fad8f3eb3ba19e5fd6db33f2d0ce6f9730b`. Source diff SHA256: `55d5a6a875e74d27ceb696ab68e6d939dc8aa1be4efeb304745f0ec91bb2c50f`.
@@ -1510,3 +1512,870 @@ node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5
 Do not point the original `--report-only` generator at this combined report when rebuilding its +§1 tables: it overwrites the destination. Generate its output into scratch, and build this section separately with `forkNoiseReport.mjs`. The old section was preserved byte for byte when this follow-up was appended.
 
 No infra hunks, cloud-held edits, outside-scope repository hunks, cloud requests, baseline re-recording, commits, pushes or `.done` files. No browser checks occur in this task’s acceptance (checklist: N/A). Full-suite/GPU/browser checks, 256×60 later-day probes, sub-§10 threshold searches, negative nudges, and the post-T041 measurement were not run. The calibration’s common negative endpoint direction remains an explicit issue for the lead before accepting it as unbiased noise.
+
+
+## NOTE-052 symmetric fork-noise protocol (Round 3)
+
+**Chosen X: §100.** All twelve probes (±§100 on day 1 and at the start of year 5, across all three rows) change the complete action log against the unnudged control. This is the smallest qualifying common size in the mandated §10/§100/§1,000/§10,000 grid; it is not an exact sub-grid threshold. In this chosen-size matrix, the three unnudged controls and three +§100 day-1 probes are reused from Round 2 because the simulation source is unchanged; nine missing probes complete that matrix. Failed smaller-size probes are additional selection evidence, not part of the chosen-size envelope.
+
+This section supersedes Round 2’s one-sided probe recommendation and margin guidance. NOTE-052 keeps base-row gates at **±1%**; the selected envelope can widen **variant-target margins only**. No balance fixture or baseline has been re-recorded. The Round 2 sweep above remains supporting evidence, including its non-monotonic size response.
+
+The year-5 injection is before the first bot `daily()` of year 5: loop day **1441**, after advancing the city clock, before that day’s monthly decisions. The city calendar day is zero-based at a year boundary, so day 1440 is the preceding annual checkpoint; injecting there would affect the end-of-year-4 callback and is not the timing used here. Day-1 probes use the committed funds-nudge flag. The later probes change only funds once in the scratch wrapper.
+
+The fork criterion is the **complete `say()` action log**, comparing ordered `{day, text}` entries. Each first differing pair below comes from its longest common prefix; an inserted event is paired with the next control event, which can be later. The successful-command journal is supplemental evidence: successful non-preview CityActions calls, unchanged tax/funding setters omitted, with no failed attempts/private branches recorded. Indices are one-based. Calendar dates are copied from the log; run year is `ceil(day / 360)`.
+
+Metrics match the earlier sections: population; `stats.avgAir` at homes (the balance-test air metric); approval points; I-HT industrial jobs divided by I-D + I-M + I-HT jobs, excluding agriculture. No industrial jobs means share 0. I-HT shares and deltas are fractions (×100 gives percentage points). Tables use 12 significant digits; linked raw JSON preserves full precision.
+
+### Smaller-size selection failures
+
+A common candidate fails as soon as any required signed/timed probe has an identical complete action log to its control. Finishing the other probes cannot make that candidate qualify. The following completed, source-matched records justify advancing to the next grid size; they are excluded from the selected envelope.
+
+| Rejected X | Non-forking probe | Complete log | Successful journal | Annual population / air / approval / I-HT | Annual funds Δ |
+|---:|---|---|---|---|---|
+| §10 | [256x60_s11_n-10_d1](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/256x60_s11_n-10_d1.json>) | identical | identical | all four identical for all 60 checkpoints | -10 |
+
+In particular, the 256×60 seed-11 −§10 day-1 run keeps funds exactly §10 below control at every yearly checkpoint while leaving all four metrics, all successful commands, and the full action log identical. Consequently §10 does not satisfy the symmetric protocol, despite its three positive day-1 forks in Round 2.
+
+Failed-probe provenance: `256x60_s11_n-10_d1`, simbot `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`, source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. Exact command:
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\256x60_s11_n-10_d1.spec.json
+```
+
+### Chosen-size first differing decisions
+
+| Row | Probe | First differing complete action-log entries | First differing successful commands (supplemental) |
+|---|---|---|---|
+| 128x15_s7 | +§100 / day 1 | #178: control day 1230; Jun 2003; run year 4; calendar year 2003: `developed R block (7,2) as zone 2`; probe day 1200; May 2003; run year 4; calendar year 2003: `built Medical Clinic ($1802)` | #406: control day 1230; Jun 2003; run year 4: `buildNetwork([{"from":{"x":64,"z":19},"to":{"x":73,"z":19},"length":10,"hash":"6cd8ca1364a2a1850611e54e73afd56540f7b90ecf149cbada1d8a20dc99f4de"},2])`; cost `180`; affected `9`; probe day 1200; May 2003; run year 4: `buildNetwork([{"from":{"x":91,"z":73},"to":{"x":100,"z":73},"length":10,"hash":"b0055ac6cd2b2849d614e01ac7193268218ed63c2b420639bf51a787a79b7a17"},3])`; cost `364`; affected `10` |
+| 128x15_s7 | −§100 / day 1 | #299: control day 2010; Aug 2005; run year 6; calendar year 2005: `cleared 1 small lots for Bus Stop ($150)`; probe day 2010; Aug 2005; run year 6; calendar year 2005: `built 3 bus stops` | #632: control day 2010; Aug 2005; run year 6: `bulldoze([{"x0":33,"z0":68,"x1":37,"z1":69}])`; cost `29`; affected `4`; probe day 2040; Sep 2005; run year 6: `buildNetwork([{"from":{"x":64,"z":118},"to":{"x":73,"z":118},"length":10,"hash":"6e1606cb0a6129283cf8ea3c7af65b1751107084de59ca4108aff4ec12050af7"},2])`; cost `180`; affected `9` |
+| 128x15_s7 | +§100 / day 1441 | #215: control day 1560; May 2004; run year 5; calendar year 2004: `developed R block (10,11) as zone 2`; probe day 1530; Apr 2004; run year 5; calendar year 2004: `built Medical Clinic ($1800)` | #500: control day 1560; May 2004; run year 5: `buildNetwork([{"from":{"x":91,"z":109},"to":{"x":100,"z":109},"length":10,"hash":"cb9cce3aec34337e83b1f515977c6a7b70a96f1e77f28287a44ce5b6837b1bb4"},3])`; cost `380`; affected `10`; probe day 1530; Apr 2004; run year 5: `plop(["civ_clinic",14,65,0])`; cost `1800`; affected `1` |
+| 128x15_s7 | −§100 / day 1441 | #299: control day 2010; Aug 2005; run year 6; calendar year 2005: `cleared 1 small lots for Bus Stop ($150)`; probe day 2010; Aug 2005; run year 6; calendar year 2005: `built 3 bus stops` | #632: control day 2010; Aug 2005; run year 6: `bulldoze([{"x0":33,"z0":68,"x1":37,"z1":69}])`; cost `29`; affected `4`; probe day 2040; Sep 2005; run year 6: `buildNetwork([{"from":{"x":64,"z":118},"to":{"x":73,"z":118},"length":10,"hash":"6e1606cb0a6129283cf8ea3c7af65b1751107084de59ca4108aff4ec12050af7"},2])`; cost `180`; affected `9` |
+| 256x60_s7 | +§100 / day 1 | #139: control day 750; Feb 2002; run year 3; calendar year 2002: `rezoned (12,16) to 2`; probe day 750; Feb 2002; run year 3; calendar year 2002: `developed C block (17,9) as zone 5` | #270: control day 720; Jan 2002; run year 2: `setTax([0,10])`; cost ``; affected ``; probe day 720; Jan 2002; run year 2: `buildNetwork([{"from":{"x":155,"z":137},"to":{"x":164,"z":137},"length":10,"hash":"df70dcd77b3b1f0bd971eb79afc0bd8790992c04626009ac39e4eca9b1e6f5d6"},2])`; cost `180`; affected `9` |
+| 256x60_s7 | −§100 / day 1 | #206: control day 1530; Apr 2004; run year 5; calendar year 2004: `built Medical Clinic ($1800)`; probe day 1560; May 2004; run year 5; calendar year 2004: `developed R block (9,18) as zone 2` | #466: control day 1530; Apr 2004; run year 5: `plop(["civ_clinic",132,93,0])`; cost `1800`; affected `1`; probe day 1560; May 2004; run year 5: `buildNetwork([{"from":{"x":83,"z":173},"to":{"x":92,"z":173},"length":10,"hash":"a1e8382fabc117eda9e9711a082a91b10dc6c73cfaadec5cf02fbfa85ef6ed2b"},2])`; cost `208`; affected `10` |
+| 256x60_s7 | +§100 / day 1441 | #550: control day 2850; Dec 2007; run year 8; calendar year 2007: `developed R block (11,20) as zone 2`; probe day 2820; Nov 2007; run year 8; calendar year 2007: `rezoned (13,11) to 3` | #1033: control day 2850; Dec 2007; run year 8: `setTax([0,9.5])`; cost ``; affected ``; probe day 2820; Nov 2007; run year 8: `zone([{"x0":120,"z0":102,"x1":128,"z1":110},3])`; cost `1220`; affected `61` |
+| 256x60_s7 | −§100 / day 1441 | #206: control day 1530; Apr 2004; run year 5; calendar year 2004: `built Medical Clinic ($1800)`; probe day 1560; May 2004; run year 5; calendar year 2004: `developed R block (9,18) as zone 2` | #466: control day 1530; Apr 2004; run year 5: `plop(["civ_clinic",132,93,0])`; cost `1800`; affected `1`; probe day 1560; May 2004; run year 5: `buildNetwork([{"from":{"x":83,"z":173},"to":{"x":92,"z":173},"length":10,"hash":"a1e8382fabc117eda9e9711a082a91b10dc6c73cfaadec5cf02fbfa85ef6ed2b"},2])`; cost `208`; affected `10` |
+| 256x60_s11 | +§100 / day 1 | #168: control day 1110; Feb 2003; run year 4; calendar year 2003: `saving for a prison ($12000): 26 % of the sentenced have no bed`; probe day 1110; Feb 2003; run year 4; calendar year 2003: `built Prison ($12000)` | #390: control day 1110; Feb 2003; run year 4: `buildNetwork([{"from":{"x":92,"z":92},"to":{"x":92,"z":101},"length":10,"hash":"5061b4da1e89bd278af646c00c717cf66899e1fc7626353b9097eddf6bcc514d"},2])`; cost `160`; affected `8`; probe day 1110; Feb 2003; run year 4: `buildNetwork([{"from":{"x":173,"z":137},"to":{"x":182,"z":137},"length":10,"hash":"c9f18e69eb9dacc01a55339e5aed6bda6310c11c9d8c1dab13f5b6b54d4ce462"},2])`; cost `180`; affected `9` |
+| 256x60_s11 | −§100 / day 1 | #177: control day 1230; Jun 2003; run year 4; calendar year 2003: `developed I block (19,11) as zone 8`; probe day 1260; Jul 2003; run year 4; calendar year 2003: `developed R block (9,10) as zone 2` | #407: control day 1230; Jun 2003; run year 4: `buildNetwork([{"from":{"x":173,"z":101},"to":{"x":182,"z":101},"length":10,"hash":"78b46f267615579c3e44d8ccc0188ccef0309721e9632df3f42045f850310b09"},2])`; cost `180`; affected `9`; probe day 1260; Jul 2003; run year 4: `buildNetwork([{"from":{"x":83,"z":101},"to":{"x":92,"z":101},"length":10,"hash":"59eed3a785933bbacd26349156a217c52549158e7a2f7e844b652920dbd5ccf5"},2])`; cost `190`; affected `9` |
+| 256x60_s11 | +§100 / day 1441 | #245: control day 1830; Feb 2005; run year 6; calendar year 2005: `built Medical Clinic ($1800)`; probe day 1830; Feb 2005; run year 6; calendar year 2005: `built Police Station ($1500)` | #555: control day 1830; Feb 2005; run year 6: `plop(["civ_clinic",150,93,0])`; cost `1800`; affected `1`; probe day 1830; Feb 2005; run year 6: `plop(["civ_police_station",120,96,0])`; cost `1500`; affected `1` |
+| 256x60_s11 | −§100 / day 1441 | #299: control day 2010; Aug 2005; run year 6; calendar year 2005: `cleared 1 small lots for Bus Stop ($150)`; probe day 2040; Sep 2005; run year 6; calendar year 2005: `built Water Pump ($502)` | #629: control day 2010; Aug 2005; run year 6: `bulldoze([{"x0":116,"z0":114,"x1":119,"z1":115}])`; cost `23`; affected `3`; probe day 2040; Sep 2005; run year 6: `plop(["util_water_pump",123,154,0])`; cost `502`; affected `1` |
+
+### Selected symmetric envelope
+
+For each row and metric, the envelope is `max |probe − control|` over all four signed/timed runs and every annual checkpoint from **year 10 (2010), inclusive**, through the row’s end. The percentage in the first percentage column divides the absolute maximum by the control **at the same winning year**. The independently maximized annual percentage is reported separately; it can peak in a different run/year. Zero/zero is 0%; nonzero/zero is ∞, so use the absolute metric unit in that case. Ties retain the first timing/sign/year encountered (+day1, −day1, +year5, −year5; chronological years).
+
+| Row | Metric | Max absolute Δ | Winning probe / year | Signed Δ there | Control there | % of control there | Max annual relative Δ / winning probe / year |
+|---|---|---:|---|---:|---:|---:|---|
+| 128x15_s7 | Population | 2767 | +§100 / day 1 / 2015 | -2767 | 192899 | 1.43442941643% | 1.43442941643% / +§100 / day 1 / 2015 |
+| 128x15_s7 | Air at homes | 0.00560960939425 | +§100 / day 1441 / 2015 | +0.00560960939425 | 0.0908835924374 | 6.1723015605% | 6.53408693626% / −§100 / day 1 / 2010 |
+| 128x15_s7 | Approval (points) | 1.92919785979 | +§100 / day 1441 / 2012 | +1.92919785979 | 75.0662775328 | 2.56999270937% | 2.65746204589% / +§100 / day 1441 / 2010 |
+| 128x15_s7 | I-HT share (fraction) | 0 | +§100 / day 1 / 2010 | 0 | 0 | 0% | 0% / +§100 / day 1 / 2010 |
+| 256x60_s7 | Population | 133913 | +§100 / day 1 / 2060 | -133913 | 1513835 | 8.84594424095% | 8.84594424095% / +§100 / day 1 / 2060 |
+| 256x60_s7 | Air at homes | 0.0248380385345 | −§100 / day 1 / 2056 | -0.0248380385345 | 0.179043508252 | 13.8726272609% | 17.7282071198% / +§100 / day 1441 / 2019 |
+| 256x60_s7 | Approval (points) | 5.50529078302 | −§100 / day 1 / 2013 | -5.50529078302 | 67.7892603094 | 8.12118432609% | 8.12118432609% / −§100 / day 1 / 2013 |
+| 256x60_s7 | I-HT share (fraction) | 0.0511209163901 | +§100 / day 1 / 2054 | +0.0511209163901 | 0.0236319752152 | 216.320963121% | ∞% / +§100 / day 1 / 2048 |
+| 256x60_s11 | Population | 87489 | +§100 / day 1441 / 2059 | +87489 | 1416617 | 6.17591063781% | 6.17591063781% / +§100 / day 1441 / 2059 |
+| 256x60_s11 | Air at homes | 0.0406407867526 | −§100 / day 1 / 2057 | +0.0406407867526 | 0.145909746932 | 27.8533734772% | 27.9314906143% / −§100 / day 1 / 2058 |
+| 256x60_s11 | Approval (points) | 5.42848638277 | −§100 / day 1 / 2014 | -5.42848638277 | 70.2355302508 | 7.72897472744% | 7.72897472744% / −§100 / day 1 / 2014 |
+| 256x60_s11 | I-HT share (fraction) | 0.103251506482 | −§100 / day 1441 / 2060 | -0.103251506482 | 0.103251506482 | 100% | 100% / +§100 / day 1441 / 2051 |
+
+### Real-effect direction checks
+
+The diagnostic asks whether both signs consistently align with the nudge (+ up / − down), consistently reverse it (+ down / − up), or both signs move the metric up or down. Endpoint and mean classifications require a **strict nonzero direction in every row** for a timing; the combined column requires all six positive probes and all six negative probes across both timings. The annual classification is stricter: it flattens every paired annual delta from year 10 onward and requires that same nonzero pattern at **every checkpoint of every applicable trajectory**. A zero delta does not establish a direction. These are descriptive checks, not additional gates or proof that money has no effect.
+
+Endpoint checks compare each row’s final year against its control. Mean checks average **paired signed annual deltas** from year 10 through the end (six samples for the 128 row, 51 for each 256 row). Mean percentages divide by the mean control over those same years. Endpoint/mean summaries do not imply a sign held throughout the trajectory: the explicit annual classification tests that requirement, and the annual sign-count table below retains reversals and zeros.
+
+| Metric | Summary | Day 1, all three rows | Year 5, all three rows | Both timings, all rows |
+|---|---|---|---|---|
+| Population | endpoint | mixed or zero | mixed or zero | mixed or zero |
+| Population | mean | mixed or zero | mixed or zero | mixed or zero |
+| Population | annual | mixed or zero | mixed or zero | mixed or zero |
+| Air at homes | endpoint | mixed or zero | mixed or zero | mixed or zero |
+| Air at homes | mean | mixed or zero | mixed or zero | mixed or zero |
+| Air at homes | annual | mixed or zero | mixed or zero | mixed or zero |
+| Approval (points) | endpoint | mixed or zero | mixed or zero | mixed or zero |
+| Approval (points) | mean | mixed or zero | mixed or zero | mixed or zero |
+| Approval (points) | annual | mixed or zero | mixed or zero | mixed or zero |
+| I-HT share (fraction) | endpoint | mixed or zero | mixed or zero | mixed or zero |
+| I-HT share (fraction) | mean | mixed or zero | mixed or zero | mixed or zero |
+| I-HT share (fraction) | annual | mixed or zero | mixed or zero | mixed or zero |
+
+**Direction patterns that meet the strict all-row test:**
+No metric has one of the strict all-row direction patterns in endpoint, mean, or every-annual-checkpoint checks, at either timing or across both timings.
+
+**Within-row agreement between positive and negative probes**
+
+A separate reading of “both signs move a metric the same direction in every row” allows the shared direction to differ across rows. This pairwise test requires nonzero + and − deltas with matching signs within each of the three rows. The qualifying endpoint/mean cases below show actual signed deltas as `+ probe Δ / − probe Δ`. They are within-row concordances, **not additional flags for a common direction across rows**.
+
+| Metric | Summary | Timing | 128×15 s7: + Δ / − Δ | 256×60 s7: + Δ / − Δ | 256×60 s11: + Δ / − Δ |
+|---|---|---:|---:|---:|---:|
+| Population | endpoint | 1 | -2767 / -1311 | -133913 / -52748 | +56178 / +71451 |
+| Air at homes | endpoint | 1 | +0.000809537058363 / +0.00198947417753 | -0.0203231686575 / -0.0114359563202 | +0.0213970798684 / +0.0350765371117 |
+| Air at homes | mean | 1 | +0.00103222662238 / +0.0000362128313091 | -0.00929403977621 / -0.00603037782527 | +0.00515633359313 / +0.0163988099227 |
+| Approval (points) | mean | 1 | +0.28075996588 / +0.0274575606952 | -0.26624486122 / -0.184315987357 | -0.80333473934 / -1.31604041601 |
+| Approval (points) | mean | 1441 | +1.42320444747 / +0.0274575606952 | -0.690025697882 / -0.184315987357 | -0.79149782196 / -0.312785739121 |
+
+No metric/timing has strict within-row +/− concordance at every year-10-onward checkpoint across all three rows. The endpoint/mean concordances above do not persist throughout every trajectory.
+
+
+**Signed endpoint deltas and values**
+
+| Metric | Row | Timing | Control | + probe value | + signed Δ (%) | − probe value | − signed Δ (%) |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Population | 128x15_s7 | 1 | 192899 | 190132 | -2767 (-1.43442941643%) | 191588 | -1311 (-0.679630272837%) |
+| Population | 128x15_s7 | 1441 | 192899 | 193108 | +209 (+0.10834685509%) | 191588 | -1311 (-0.679630272837%) |
+| Population | 256x60_s7 | 1 | 1513835 | 1379922 | -133913 (-8.84594424095%) | 1461087 | -52748 (-3.48439559133%) |
+| Population | 256x60_s7 | 1441 | 1513835 | 1504801 | -9034 (-0.59676252696%) | 1461087 | -52748 (-3.48439559133%) |
+| Population | 256x60_s11 | 1 | 1427340 | 1483518 | +56178 (+3.93585270503%) | 1498791 | +71451 (+5.00588507293%) |
+| Population | 256x60_s11 | 1441 | 1427340 | 1503201 | +75861 (+5.31485140191%) | 1472527 | +45187 (+3.16581893592%) |
+| Air at homes | 128x15_s7 | 1 | 0.0908835924374 | 0.0916931294957 | +0.000809537058363 (+0.890740601964%) | 0.0928730666149 | +0.00198947417753 (+2.18903558296%) |
+| Air at homes | 128x15_s7 | 1441 | 0.0908835924374 | 0.0964932018316 | +0.00560960939425 (+6.1723015605%) | 0.0928730666149 | +0.00198947417753 (+2.18903558296%) |
+| Air at homes | 256x60_s7 | 1 | 0.178626333759 | 0.158303165101 | -0.0203231686575 (-11.3774762264%) | 0.167190377439 | -0.0114359563202 (-6.4021670711%) |
+| Air at homes | 256x60_s7 | 1441 | 0.178626333759 | 0.183209193398 | +0.00458285963956 (+2.5656125517%) | 0.167190377439 | -0.0114359563202 (-6.4021670711%) |
+| Air at homes | 256x60_s11 | 1 | 0.147485057472 | 0.16888213734 | +0.0213970798684 (+14.5079645594%) | 0.182561594583 | +0.0350765371117 (+23.7831124814%) |
+| Air at homes | 256x60_s11 | 1441 | 0.147485057472 | 0.171516885347 | +0.0240318278749 (+16.2944153712%) | 0.177723910876 | +0.030238853404 (+20.5029946236%) |
+| Approval (points) | 128x15_s7 | 1 | 81.3650175025 | 81.556299867 | +0.191282364456 (+0.23509165281%) | 80.9060989013 | -0.458918601182 (-0.564024460718%) |
+| Approval (points) | 128x15_s7 | 1441 | 81.3650175025 | 81.3803027179 | +0.015285215385 (+0.0187859793486%) | 80.9060989013 | -0.458918601182 (-0.564024460718%) |
+| Approval (points) | 256x60_s7 | 1 | 80.3574246959 | 79.9395016464 | -0.417923049509 (-0.520080193075%) | 80.5414097299 | +0.183985033973 (+0.228958350357%) |
+| Approval (points) | 256x60_s7 | 1441 | 80.3574246959 | 79.7398013242 | -0.617623371738 (-0.768595278004%) | 80.5414097299 | +0.183985033973 (+0.228958350357%) |
+| Approval (points) | 256x60_s11 | 1 | 81.3566945637 | 81.271739906 | -0.0849546577103 (-0.104422454926%) | 79.1371672705 | -2.21952729322 (-2.72814340003%) |
+| Approval (points) | 256x60_s11 | 1441 | 81.3566945637 | 80.4411987232 | -0.915495840463 (-1.12528642587%) | 79.9558196962 | -1.4008748675 (-1.721892556%) |
+| I-HT share (fraction) | 128x15_s7 | 1 | 0 | 0 | 0 (0%) | 0 | 0 (0%) |
+| I-HT share (fraction) | 128x15_s7 | 1441 | 0 | 0 | 0 (0%) | 0 | 0 (0%) |
+| I-HT share (fraction) | 256x60_s7 | 1 | 0.10239866758 | 0.137623904611 | +0.0352252370316 (+34.4000931497%) | 0.126146721117 | +0.0237480535376 (+23.191760302%) |
+| I-HT share (fraction) | 256x60_s7 | 1441 | 0.10239866758 | 0.114821932244 | +0.0124232646645 (+12.1322522628%) | 0.126146721117 | +0.0237480535376 (+23.191760302%) |
+| I-HT share (fraction) | 256x60_s11 | 1 | 0.103251506482 | 0.0886738163746 | -0.0145776901074 (-14.1186221917%) | 0.0819100032892 | -0.0213415031927 (-20.6694351684%) |
+| I-HT share (fraction) | 256x60_s11 | 1441 | 0.103251506482 | 0.00458502431922 | -0.0986664821627 (-95.5593632718%) | 0 | -0.103251506482 (-100%) |
+
+**Signed mean annual (year ≥10) deltas and values**
+
+| Metric | Row | Timing | Control | + probe value | + signed Δ (%) | − probe value | − signed Δ (%) |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Population | 128x15_s7 | 1 | 145151 | 143488.833333 | -1662.16666667 (-1.14512932509%) | 145007.666667 | -143.333333333 (-0.0987477408584%) |
+| Population | 128x15_s7 | 1441 | 145151 | 146102.5 | +951.5 (+0.655524247163%) | 145007.666667 | -143.333333333 (-0.0987477408584%) |
+| Population | 256x60_s7 | 1 | 760259.72549 | 744441.215686 | -15818.5098039 (-2.08067181169%) | 755811.72549 | -4448 (-0.585063216012%) |
+| Population | 256x60_s7 | 1441 | 760259.72549 | 754882.196078 | -5377.52941176 (-0.707327934318%) | 755811.72549 | -4448 (-0.585063216012%) |
+| Population | 256x60_s11 | 1 | 752842.745098 | 759306.215686 | +6463.47058824 (+0.85854192397%) | 751880.27451 | -962.470588235 (-0.127844838049%) |
+| Population | 256x60_s11 | 1441 | 752842.745098 | 761658.058824 | +8815.31372549 (+1.17093692978%) | 756043.411765 | +3200.66666667 (+0.425144120403%) |
+| Air at homes | 128x15_s7 | 1 | 0.0788612141128 | 0.0798934407352 | +0.00103222662238 (+1.30891545862%) | 0.0788974269442 | +0.0000362128313091 (+0.0459196979358%) |
+| Air at homes | 128x15_s7 | 1441 | 0.0788612141128 | 0.0801837869565 | +0.00132257284366 (+1.67708912237%) | 0.0788974269442 | +0.0000362128313091 (+0.0459196979358%) |
+| Air at homes | 256x60_s7 | 1 | 0.109373713422 | 0.100079673646 | -0.00929403977621 (-8.49750775156%) | 0.103343335597 | -0.00603037782527 (-5.51355315331%) |
+| Air at homes | 256x60_s7 | 1441 | 0.109373713422 | 0.116133311679 | +0.00675959825713 (+6.18027681939%) | 0.103343335597 | -0.00603037782527 (-5.51355315331%) |
+| Air at homes | 256x60_s11 | 1 | 0.096718281946 | 0.101874615539 | +0.00515633359313 (+5.33129155045%) | 0.113117091869 | +0.0163988099227 (+16.9552328606%) |
+| Air at homes | 256x60_s11 | 1441 | 0.096718281946 | 0.105752983059 | +0.0090347011134 (+9.34125475724%) | 0.105208997286 | +0.00849071534004 (+8.77881117118%) |
+| Approval (points) | 128x15_s7 | 1 | 75.8376461233 | 76.1184060892 | +0.28075996588 (+0.370211867367%) | 75.865103684 | +0.0274575606952 (+0.0362057132556%) |
+| Approval (points) | 128x15_s7 | 1441 | 75.8376461233 | 77.2608505708 | +1.42320444747 (+1.876646389%) | 75.865103684 | +0.0274575606952 (+0.0362057132556%) |
+| Approval (points) | 256x60_s7 | 1 | 77.4873848716 | 77.2211400104 | -0.26624486122 (-0.343597685818%) | 77.3030688842 | -0.184315987357 (-0.237865799268%) |
+| Approval (points) | 256x60_s7 | 1441 | 77.4873848716 | 76.7973591737 | -0.690025697882 (-0.89050069121%) | 77.3030688842 | -0.184315987357 (-0.237865799268%) |
+| Approval (points) | 256x60_s11 | 1 | 78.5384389162 | 77.7351041769 | -0.80333473934 (-1.02285549653%) | 77.2223985002 | -1.31604041601 (-1.67566408776%) |
+| Approval (points) | 256x60_s11 | 1441 | 78.5384389162 | 77.7469410943 | -0.79149782196 (-1.00778400091%) | 78.2256531771 | -0.312785739121 (-0.398258156691%) |
+| I-HT share (fraction) | 128x15_s7 | 1 | 0 | 0 | 0 (0%) | 0 | 0 (0%) |
+| I-HT share (fraction) | 128x15_s7 | 1441 | 0 | 0 | 0 (0%) | 0 | 0 (0%) |
+| I-HT share (fraction) | 256x60_s7 | 1 | 0.00979833418844 | 0.0182901750615 | +0.00849184087309 (+86.6661690628%) | 0.0153588607647 | +0.0055605265763 (+56.7497134651%) |
+| I-HT share (fraction) | 256x60_s7 | 1441 | 0.00979833418844 | 0.0118073169191 | +0.0020089827307 (+20.5033089509%) | 0.0153588607647 | +0.0055605265763 (+56.7497134651%) |
+| I-HT share (fraction) | 256x60_s11 | 1 | 0.00973947278981 | 0.00812634116302 | -0.00161313162679 (-16.5628228714%) | 0.00805019274808 | -0.00168928004173 (-17.3446764336%) |
+| I-HT share (fraction) | 256x60_s11 | 1441 | 0.00973947278981 | 0.000540672922461 | -0.00919879986735 (-94.4486428154%) | 0 | -0.00973947278981 (-100%) |
+
+**Annual sign persistence (year ≥10)**
+
+Each count is an annual checkpoint against the paired unnudged control. The minimum/maximum are signed deltas. A trajectory with both up and down counts changes direction; zero checkpoints are retained. Strict across-trajectory direction is established only when every checkpoint has that nonzero sign.
+
+| Metric | Row | Probe | Annual up / down / zero | Minimum signed Δ | Maximum signed Δ |
+|---|---|---|---:|---:|---:|
+| Population | 128x15_s7 | +§100 / day 1 | 0 / 6 / 0 | -2767 | -569 |
+| Population | 128x15_s7 | −§100 / day 1 | 3 / 3 / 0 | -1311 | +667 |
+| Population | 128x15_s7 | +§100 / day 1441 | 6 / 0 / 0 | +209 | +1887 |
+| Population | 128x15_s7 | −§100 / day 1441 | 3 / 3 / 0 | -1311 | +667 |
+| Population | 256x60_s7 | +§100 / day 1 | 35 / 16 / 0 | -133913 | +4393 |
+| Population | 256x60_s7 | −§100 / day 1 | 42 / 9 / 0 | -57162 | +12855 |
+| Population | 256x60_s7 | +§100 / day 1441 | 16 / 35 / 0 | -40517 | +2549 |
+| Population | 256x60_s7 | −§100 / day 1441 | 42 / 9 / 0 | -57162 | +12855 |
+| Population | 256x60_s11 | +§100 / day 1 | 26 / 25 / 0 | -5150 | +66063 |
+| Population | 256x60_s11 | −§100 / day 1 | 9 / 42 / 0 | -18786 | +71451 |
+| Population | 256x60_s11 | +§100 / day 1441 | 17 / 34 / 0 | -9853 | +87489 |
+| Population | 256x60_s11 | −§100 / day 1441 | 11 / 40 / 0 | -11773 | +58143 |
+| Air at homes | 128x15_s7 | +§100 / day 1 | 6 / 0 / 0 | +0.00012233718726 | +0.00294449733518 |
+| Air at homes | 128x15_s7 | −§100 / day 1 | 4 / 2 / 0 | -0.00483607514773 | +0.00308479111722 |
+| Air at homes | 128x15_s7 | +§100 / day 1441 | 3 / 3 / 0 | -0.00174002979428 | +0.00560960939425 |
+| Air at homes | 128x15_s7 | −§100 / day 1441 | 4 / 2 / 0 | -0.00483607514773 | +0.00308479111722 |
+| Air at homes | 256x60_s7 | +§100 / day 1 | 4 / 47 / 0 | -0.0226935081447 | +0.0056914356465 |
+| Air at homes | 256x60_s7 | −§100 / day 1 | 5 / 46 / 0 | -0.0248380385345 | +0.0093295322441 |
+| Air at homes | 256x60_s7 | +§100 / day 1441 | 46 / 5 / 0 | -0.00381833581007 | +0.0190834129024 |
+| Air at homes | 256x60_s7 | −§100 / day 1441 | 5 / 46 / 0 | -0.0248380385345 | +0.0093295322441 |
+| Air at homes | 256x60_s11 | +§100 / day 1 | 34 / 17 / 0 | -0.00601105020839 | +0.0262246665456 |
+| Air at homes | 256x60_s11 | −§100 / day 1 | 47 / 4 / 0 | -0.00210159090022 | +0.0406407867526 |
+| Air at homes | 256x60_s11 | +§100 / day 1441 | 41 / 10 / 0 | -0.00333805080417 | +0.0277067039892 |
+| Air at homes | 256x60_s11 | −§100 / day 1441 | 32 / 19 / 0 | -0.00810476188716 | +0.0384151934715 |
+| Approval (points) | 128x15_s7 | +§100 / day 1 | 5 / 1 / 0 | -0.645426457629 | +0.695722764347 |
+| Approval (points) | 128x15_s7 | −§100 / day 1 | 3 / 3 / 0 | -0.458918601182 | +0.389363177501 |
+| Approval (points) | 128x15_s7 | +§100 / day 1441 | 6 / 0 / 0 | +0.015285215385 | +1.92919785979 |
+| Approval (points) | 128x15_s7 | −§100 / day 1441 | 3 / 3 / 0 | -0.458918601182 | +0.389363177501 |
+| Approval (points) | 256x60_s7 | +§100 / day 1 | 13 / 38 / 0 | -2.04733939351 | +3.92461663103 |
+| Approval (points) | 256x60_s7 | −§100 / day 1 | 23 / 28 / 0 | -5.50529078302 | +2.02694016002 |
+| Approval (points) | 256x60_s7 | +§100 / day 1441 | 9 / 42 / 0 | -3.43243846148 | +1.41343218476 |
+| Approval (points) | 256x60_s7 | −§100 / day 1441 | 23 / 28 / 0 | -5.50529078302 | +2.02694016002 |
+| Approval (points) | 256x60_s11 | +§100 / day 1 | 6 / 45 / 0 | -3.23743074775 | +0.651232242633 |
+| Approval (points) | 256x60_s11 | −§100 / day 1 | 0 / 51 / 0 | -5.42848638277 | -0.12429850795 |
+| Approval (points) | 256x60_s11 | +§100 / day 1441 | 5 / 46 / 0 | -2.15547139223 | +0.87014830121 |
+| Approval (points) | 256x60_s11 | −§100 / day 1441 | 11 / 40 / 0 | -2.09580134763 | +0.810168390043 |
+| I-HT share (fraction) | 128x15_s7 | +§100 / day 1 | 0 / 0 / 6 | 0 | 0 |
+| I-HT share (fraction) | 128x15_s7 | −§100 / day 1 | 0 / 0 / 6 | 0 | 0 |
+| I-HT share (fraction) | 128x15_s7 | +§100 / day 1441 | 0 / 0 / 6 | 0 | 0 |
+| I-HT share (fraction) | 128x15_s7 | −§100 / day 1441 | 0 / 0 / 6 | 0 | 0 |
+| I-HT share (fraction) | 256x60_s7 | +§100 / day 1 | 13 / 0 / 38 | 0 | +0.0511209163901 |
+| I-HT share (fraction) | 256x60_s7 | −§100 / day 1 | 11 / 0 / 40 | 0 | +0.0362124270835 |
+| I-HT share (fraction) | 256x60_s7 | +§100 / day 1441 | 8 / 2 / 41 | -0.00569600146813 | +0.0258333886853 |
+| I-HT share (fraction) | 256x60_s7 | −§100 / day 1441 | 11 / 0 / 40 | 0 | +0.0362124270835 |
+| I-HT share (fraction) | 256x60_s11 | +§100 / day 1 | 0 / 10 / 41 | -0.0145776901074 | 0 |
+| I-HT share (fraction) | 256x60_s11 | −§100 / day 1 | 1 / 9 / 41 | -0.0213415031927 | +0.00141049029616 |
+| I-HT share (fraction) | 256x60_s11 | +§100 / day 1441 | 0 / 10 / 41 | -0.0986664821627 | 0 |
+| I-HT share (fraction) | 256x60_s11 | −§100 / day 1441 | 0 / 10 / 41 | -0.103251506482 | 0 |
+
+### Per-year four-run metrics and signed deltas
+
+Cells show `probe value (signed Δ from control)`; the control column is unperturbed. These are the full four-run annual observations used for the selected envelope, not newly recorded balance targets.
+
+**128x15_s7**
+
+**Population**
+
+| Year | Control | + day 1 | − day 1 | + year 5 (day 1441) | − year 5 (day 1441) |
+|---:|---:|---:|---:|---:|---:|
+| 2010 | 99729 | 98826 (-903) | 100141 (+412) | 101026 (+1297) | 100141 (+412) |
+| 2011 | 116996 | 115670 (-1326) | 116914 (-82) | 118282 (+1286) | 116914 (-82) |
+| 2012 | 134385 | 133816 (-569) | 135052 (+667) | 136272 (+1887) | 135052 (+667) |
+| 2013 | 153902 | 151950 (-1952) | 154050 (+148) | 154203 (+301) | 154050 (+148) |
+| 2014 | 172995 | 170539 (-2456) | 172301 (-694) | 173724 (+729) | 172301 (-694) |
+| 2015 | 192899 | 190132 (-2767) | 191588 (-1311) | 193108 (+209) | 191588 (-1311) |
+
+**Air at homes**
+
+| Year | Control | + day 1 | − day 1 | + year 5 (day 1441) | − year 5 (day 1441) |
+|---:|---:|---:|---:|---:|---:|
+| 2010 | 0.074013021175 | 0.0744164291217 (+0.000403407946707) | 0.0691769460273 (-0.00483607514773) | 0.0737038752696 (-0.000309145905416) | 0.0691769460273 (-0.00483607514773) |
+| 2011 | 0.0762975017902 | 0.0764198389775 (+0.00012233718726) | 0.0734733641701 (-0.0028241376201) | 0.0745574719959 (-0.00174002979428) | 0.0734733641701 (-0.0028241376201) |
+| 2012 | 0.0708048271401 | 0.0737493244753 (+0.00294449733518) | 0.0726766850373 (+0.00187185789727) | 0.0713872420802 (+0.000582414940134) | 0.0726766850373 (+0.00187185789727) |
+| 2013 | 0.0778400375672 | 0.0785338317705 (+0.000693794203292) | 0.0787714041308 (+0.000931366563658) | 0.0777135397159 (-0.000126497851312) | 0.0787714041308 (+0.000931366563658) |
+| 2014 | 0.0833283045672 | 0.0845480905707 (+0.00121978600348) | 0.0864130956845 (+0.00308479111722) | 0.0872473908458 (+0.00391908627857) | 0.0864130956845 (+0.00308479111722) |
+| 2015 | 0.0908835924374 | 0.0916931294957 (+0.000809537058363) | 0.0928730666149 (+0.00198947417753) | 0.0964932018316 (+0.00560960939425) | 0.0928730666149 (+0.00198947417753) |
+
+**Approval (points)**
+
+| Year | Control | + day 1 | − day 1 | + year 5 (day 1441) | − year 5 (day 1441) |
+|---:|---:|---:|---:|---:|---:|
+| 2010 | 70.5454822917 | 69.9000558341 (-0.645426457629) | 70.8518853117 (+0.306403019916) | 72.4202017087 (+1.87471941699) | 70.8518853117 (+0.306403019916) |
+| 2011 | 73.3377191709 | 73.7951143882 (+0.457395217392) | 73.0679494545 (-0.269769716381) | 75.2252772179 (+1.88755804704) | 73.0679494545 (-0.269769716381) |
+| 2012 | 75.0662775328 | 75.4853709141 (+0.419093381347) | 75.0147602906 (-0.0515172421673) | 76.9954753925 (+1.92919785979) | 75.0147602906 (-0.0515172421673) |
+| 2013 | 76.3292420144 | 77.0249647788 (+0.695722764347) | 76.7186051919 (+0.389363177501) | 78.1388951287 (+1.80965311426) | 76.7186051919 (+0.389363177501) |
+| 2014 | 78.3821382274 | 78.9486307528 (+0.566492525369) | 78.6313229539 (+0.249184726484) | 79.4049512588 (+1.02281303138) | 78.6313229539 (+0.249184726484) |
+| 2015 | 81.3650175025 | 81.556299867 (+0.191282364456) | 80.9060989013 (-0.458918601182) | 81.3803027179 (+0.015285215385) | 80.9060989013 (-0.458918601182) |
+
+**I-HT share (fraction)**
+
+| Year | Control | + day 1 | − day 1 | + year 5 (day 1441) | − year 5 (day 1441) |
+|---:|---:|---:|---:|---:|---:|
+| 2010 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2011 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2012 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2013 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2014 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2015 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+
+**256x60_s7**
+
+**Population**
+
+| Year | Control | + day 1 | − day 1 | + year 5 (day 1441) | − year 5 (day 1441) |
+|---:|---:|---:|---:|---:|---:|
+| 2010 | 98300 | 99145 (+845) | 99253 (+953) | 98274 (-26) | 99253 (+953) |
+| 2011 | 112214 | 112884 (+670) | 113394 (+1180) | 112139 (-75) | 113394 (+1180) |
+| 2012 | 128926 | 130031 (+1105) | 129198 (+272) | 127207 (-1719) | 129198 (+272) |
+| 2013 | 145044 | 146526 (+1482) | 145600 (+556) | 144178 (-866) | 145600 (+556) |
+| 2014 | 162271 | 163206 (+935) | 162928 (+657) | 160481 (-1790) | 162928 (+657) |
+| 2015 | 181278 | 181762 (+484) | 182155 (+877) | 180069 (-1209) | 182155 (+877) |
+| 2016 | 200597 | 201610 (+1013) | 201275 (+678) | 199101 (-1496) | 201275 (+678) |
+| 2017 | 219921 | 221905 (+1984) | 220777 (+856) | 218074 (-1847) | 220777 (+856) |
+| 2018 | 240425 | 242093 (+1668) | 241134 (+709) | 239141 (-1284) | 241134 (+709) |
+| 2019 | 261862 | 263043 (+1181) | 262375 (+513) | 260393 (-1469) | 262375 (+513) |
+| 2020 | 283841 | 284938 (+1097) | 285431 (+1590) | 283865 (+24) | 285431 (+1590) |
+| 2021 | 307765 | 309551 (+1786) | 309055 (+1290) | 307460 (-305) | 309055 (+1290) |
+| 2022 | 330779 | 332599 (+1820) | 332670 (+1891) | 332098 (+1319) | 332670 (+1891) |
+| 2023 | 354200 | 357442 (+3242) | 356659 (+2459) | 356749 (+2549) | 356659 (+2459) |
+| 2024 | 378985 | 382163 (+3178) | 380900 (+1915) | 380023 (+1038) | 380900 (+1915) |
+| 2025 | 404262 | 407731 (+3469) | 406912 (+2650) | 406143 (+1881) | 406912 (+2650) |
+| 2026 | 432145 | 433030 (+885) | 433598 (+1453) | 431806 (-339) | 433598 (+1453) |
+| 2027 | 460757 | 461953 (+1196) | 461632 (+875) | 460782 (+25) | 461632 (+875) |
+| 2028 | 489700 | 491659 (+1959) | 491442 (+1742) | 490453 (+753) | 491442 (+1742) |
+| 2029 | 519724 | 522937 (+3213) | 522372 (+2648) | 520150 (+426) | 522372 (+2648) |
+| 2030 | 550399 | 553169 (+2770) | 553583 (+3184) | 550404 (+5) | 553583 (+3184) |
+| 2031 | 580940 | 584845 (+3905) | 585610 (+4670) | 582204 (+1264) | 585610 (+4670) |
+| 2032 | 613567 | 616271 (+2704) | 617395 (+3828) | 613290 (-277) | 617395 (+3828) |
+| 2033 | 646596 | 649520 (+2924) | 649727 (+3131) | 645810 (-786) | 649727 (+3131) |
+| 2034 | 678863 | 681622 (+2759) | 681383 (+2520) | 679236 (+373) | 681383 (+2520) |
+| 2035 | 711503 | 715283 (+3780) | 715266 (+3763) | 712703 (+1200) | 715266 (+3763) |
+| 2036 | 745163 | 747267 (+2104) | 747885 (+2722) | 746244 (+1081) | 747885 (+2722) |
+| 2037 | 778371 | 781483 (+3112) | 781532 (+3161) | 778850 (+479) | 781532 (+3161) |
+| 2038 | 814131 | 816400 (+2269) | 818087 (+3956) | 814455 (+324) | 818087 (+3956) |
+| 2039 | 848978 | 849116 (+138) | 853454 (+4476) | 848274 (-704) | 853454 (+4476) |
+| 2040 | 885236 | 885012 (-224) | 890501 (+5265) | 885781 (+545) | 890501 (+5265) |
+| 2041 | 922651 | 920795 (-1856) | 928329 (+5678) | 917818 (-4833) | 928329 (+5678) |
+| 2042 | 953459 | 954296 (+837) | 957446 (+3987) | 951529 (-1930) | 957446 (+3987) |
+| 2043 | 990285 | 990452 (+167) | 997916 (+7631) | 988082 (-2203) | 997916 (+7631) |
+| 2044 | 1029252 | 1027086 (-2166) | 1034676 (+5424) | 1023376 (-5876) | 1034676 (+5424) |
+| 2045 | 1066213 | 1065179 (-1034) | 1072615 (+6402) | 1064870 (-1343) | 1072615 (+6402) |
+| 2046 | 1103538 | 1106293 (+2755) | 1110071 (+6533) | 1098739 (-4799) | 1110071 (+6533) |
+| 2047 | 1139240 | 1143633 (+4393) | 1152095 (+12855) | 1138642 (-598) | 1152095 (+12855) |
+| 2048 | 1186078 | 1184386 (-1692) | 1187726 (+1648) | 1177033 (-9045) | 1187726 (+1648) |
+| 2049 | 1222311 | 1225463 (+3152) | 1232104 (+9793) | 1219475 (-2836) | 1232104 (+9793) |
+| 2050 | 1265741 | 1261963 (-3778) | 1271588 (+5847) | 1260949 (-4792) | 1271588 (+5847) |
+| 2051 | 1306287 | 1302868 (-3419) | 1310245 (+3958) | 1299862 (-6425) | 1310245 (+3958) |
+| 2052 | 1347980 | 1317983 (-29997) | 1342501 (-5479) | 1337018 (-10962) | 1342501 (-5479) |
+| 2053 | 1392709 | 1331848 (-60861) | 1354614 (-38095) | 1361273 (-31436) | 1354614 (-38095) |
+| 2054 | 1413703 | 1341305 (-72398) | 1374323 (-39380) | 1389189 (-24514) | 1374323 (-39380) |
+| 2055 | 1433758 | 1338273 (-95485) | 1398399 (-35359) | 1407293 (-26465) | 1398399 (-35359) |
+| 2056 | 1455861 | 1351622 (-104239) | 1419186 (-36675) | 1416443 (-39418) | 1419186 (-36675) |
+| 2057 | 1470002 | 1360384 (-109618) | 1418230 (-51772) | 1439713 (-30289) | 1418230 (-51772) |
+| 2058 | 1488790 | 1363572 (-125218) | 1442416 (-46374) | 1448273 (-40517) | 1442416 (-46374) |
+| 2059 | 1504810 | 1372983 (-131827) | 1447648 (-57162) | 1488777 (-16033) | 1447648 (-57162) |
+| 2060 | 1513835 | 1379922 (-133913) | 1461087 (-52748) | 1504801 (-9034) | 1461087 (-52748) |
+
+**Air at homes**
+
+| Year | Control | + day 1 | − day 1 | + year 5 (day 1441) | − year 5 (day 1441) |
+|---:|---:|---:|---:|---:|---:|
+| 2010 | 0.0739850444917 | 0.0699563236806 (-0.00402872081107) | 0.0802627946323 (+0.0062777501406) | 0.0704382396244 (-0.00354680486728) | 0.0802627946323 (+0.0062777501406) |
+| 2011 | 0.0601583915644 | 0.0658498272109 (+0.0056914356465) | 0.0694879238085 (+0.0093295322441) | 0.0700432335119 (+0.00988484194743) | 0.0694879238085 (+0.0093295322441) |
+| 2012 | 0.0552751532608 | 0.0547563621067 (-0.000518791154169) | 0.0590170184239 (+0.00374186516306) | 0.0590557211552 (+0.00378056789434) | 0.0590170184239 (+0.00374186516306) |
+| 2013 | 0.054735849427 | 0.0557479292751 (+0.00101207984811) | 0.0590546329688 (+0.00431878354183) | 0.0602716823544 (+0.0055358329274) | 0.0590546329688 (+0.00431878354183) |
+| 2014 | 0.0601129027154 | 0.0533041738602 (-0.00680872885515) | 0.0585039394277 (-0.0016089632877) | 0.0584087150806 (-0.00170418763477) | 0.0585039394277 (-0.0016089632877) |
+| 2015 | 0.0565621396886 | 0.0520474226221 (-0.00451471706652) | 0.0563234720299 (-0.000238667658692) | 0.0556163296971 (-0.000945809991485) | 0.0563234720299 (-0.000238667658692) |
+| 2016 | 0.0578913055256 | 0.0526888852507 (-0.00520242027494) | 0.0551385476053 (-0.00275275792031) | 0.0550865775116 (-0.00280472801403) | 0.0551385476053 (-0.00275275792031) |
+| 2017 | 0.0620043357323 | 0.0534986620443 (-0.00850567368798) | 0.0553132853763 (-0.00669105035601) | 0.0581859999222 (-0.00381833581007) | 0.0553132853763 (-0.00669105035601) |
+| 2018 | 0.0624139781013 | 0.0534298215879 (-0.00898415651339) | 0.0577463087727 (-0.00466766932864) | 0.0632737035353 (+0.000859725434029) | 0.0577463087727 (-0.00466766932864) |
+| 2019 | 0.0580984232595 | 0.0533046888207 (-0.00479373443888) | 0.0551992230652 (-0.00289920019431) | 0.0683982320683 (+0.0102998088088) | 0.0551992230652 (-0.00289920019431) |
+| 2020 | 0.0561423982413 | 0.0522226282819 (-0.00391976995939) | 0.0548954530563 (-0.001246945185) | 0.0595928518964 (+0.00345045365516) | 0.0548954530563 (-0.001246945185) |
+| 2021 | 0.0561130323232 | 0.051047701643 (-0.00506533068018) | 0.0536702474236 (-0.00244278489956) | 0.061835959954 (+0.0057229276308) | 0.0536702474236 (-0.00244278489956) |
+| 2022 | 0.0546999219558 | 0.0499785533711 (-0.0047213685847) | 0.0532523899714 (-0.00144753198436) | 0.0608312173134 (+0.00613129535759) | 0.0532523899714 (-0.00144753198436) |
+| 2023 | 0.0592411972196 | 0.0507366522873 (-0.00850454493231) | 0.0536960108499 (-0.0055451863697) | 0.062303437841 (+0.00306224062143) | 0.0536960108499 (-0.0055451863697) |
+| 2024 | 0.0612263226049 | 0.0529724048716 (-0.00825391773334) | 0.0570906756188 (-0.00413564698613) | 0.0694638608233 (+0.00823753821845) | 0.0570906756188 (-0.00413564698613) |
+| 2025 | 0.0611682600552 | 0.0572523507335 (-0.00391590932177) | 0.0578569471507 (-0.00331131290456) | 0.0681830300373 (+0.0070147699821) | 0.0578569471507 (-0.00331131290456) |
+| 2026 | 0.0627063337354 | 0.0578413540984 (-0.00486497963699) | 0.0576544237627 (-0.00505190997274) | 0.0681487009787 (+0.0054423672433) | 0.0576544237627 (-0.00505190997274) |
+| 2027 | 0.0644352592731 | 0.0579550492795 (-0.00648020999362) | 0.0592879334372 (-0.00514732583596) | 0.0694904468741 (+0.00505518760093) | 0.0592879334372 (-0.00514732583596) |
+| 2028 | 0.0662124312463 | 0.0580580143984 (-0.0081544168479) | 0.0598405489781 (-0.00637188226822) | 0.0713018696509 (+0.00508943840456) | 0.0598405489781 (-0.00637188226822) |
+| 2029 | 0.0710718581218 | 0.0625188177239 (-0.00855304039792) | 0.0646516106759 (-0.00642024744595) | 0.0766479039481 (+0.00557604582624) | 0.0646516106759 (-0.00642024744595) |
+| 2030 | 0.0757641322725 | 0.0657542974046 (-0.0100098348679) | 0.0662961153293 (-0.00946801694317) | 0.0801341995663 (+0.00437006729387) | 0.0662961153293 (-0.00946801694317) |
+| 2031 | 0.0822221449947 | 0.0720512714269 (-0.0101708735678) | 0.071387970564 (-0.0108341744308) | 0.0844021845717 (+0.002180039577) | 0.071387970564 (-0.0108341744308) |
+| 2032 | 0.0833016719808 | 0.0777944140293 (-0.00550725795147) | 0.0762349641241 (-0.0070667078567) | 0.0921530972229 (+0.00885142524209) | 0.0762349641241 (-0.0070667078567) |
+| 2033 | 0.0866347129278 | 0.080072674836 (-0.00656203809185) | 0.0802682566791 (-0.00636645624871) | 0.095025260551 (+0.0083905476232) | 0.0802682566791 (-0.00636645624871) |
+| 2034 | 0.0953405191024 | 0.0862932629323 (-0.00904725617009) | 0.0854119381418 (-0.00992858096059) | 0.0984079420798 (+0.00306742297738) | 0.0854119381418 (-0.00992858096059) |
+| 2035 | 0.0967528291132 | 0.0888725503557 (-0.00788027875754) | 0.0900893304223 (-0.00666349869094) | 0.106854005488 (+0.0101011763751) | 0.0900893304223 (-0.00666349869094) |
+| 2036 | 0.104260484687 | 0.096559708282 (-0.00770077640523) | 0.0985766757053 (-0.00568380898195) | 0.112796976636 (+0.00853649194864) | 0.0985766757053 (-0.00568380898195) |
+| 2037 | 0.111184867164 | 0.112730953624 (+0.00154608645942) | 0.102755676251 (-0.00842919091326) | 0.122396988761 (+0.0112121215968) | 0.102755676251 (-0.00842919091326) |
+| 2038 | 0.113757455394 | 0.1141075382 (+0.000350082805994) | 0.111509206562 (-0.00224824883293) | 0.132840868297 (+0.0190834129024) | 0.111509206562 (-0.00224824883293) |
+| 2039 | 0.125735778555 | 0.117889086092 (-0.00784669246294) | 0.117469039436 (-0.00826673911901) | 0.138909582156 (+0.0131738036003) | 0.117469039436 (-0.00826673911901) |
+| 2040 | 0.132807427482 | 0.118367254642 (-0.0144401728399) | 0.123397884516 (-0.00940954296593) | 0.13951387196 (+0.00670644447847) | 0.123397884516 (-0.00940954296593) |
+| 2041 | 0.134063531203 | 0.121413257917 (-0.0126502732866) | 0.125318391669 (-0.00874513953485) | 0.143379778413 (+0.00931624720927) | 0.125318391669 (-0.00874513953485) |
+| 2042 | 0.137795632176 | 0.128251480154 (-0.00954415202155) | 0.131581969679 (-0.00621366249722) | 0.147671955797 (+0.00987632362084) | 0.131581969679 (-0.00621366249722) |
+| 2043 | 0.147602957846 | 0.130338848098 (-0.0172641097478) | 0.132227601661 (-0.0153753561846) | 0.155297690857 (+0.00769473301061) | 0.132227601661 (-0.0153753561846) |
+| 2044 | 0.147342438296 | 0.140588745833 (-0.00675369246277) | 0.13882561089 (-0.00851682740554) | 0.158979489623 (+0.0116370513277) | 0.13882561089 (-0.00851682740554) |
+| 2045 | 0.155903303419 | 0.145699677246 (-0.0102036261727) | 0.143134952917 (-0.0127683505016) | 0.160586629451 (+0.00468332603197) | 0.143134952917 (-0.0127683505016) |
+| 2046 | 0.158856001761 | 0.144261354987 (-0.0145946467741) | 0.150067530572 (-0.00878847118917) | 0.166444098207 (+0.00758809644582) | 0.150067530572 (-0.00878847118917) |
+| 2047 | 0.165945846636 | 0.147691928499 (-0.0182539181365) | 0.14765903251 (-0.0182868141255) | 0.167729313218 (+0.0017834665821) | 0.14765903251 (-0.0182868141255) |
+| 2048 | 0.155345502961 | 0.147753026628 (-0.00759247633235) | 0.15336972846 (-0.00197577450087) | 0.172723700048 (+0.0173781970877) | 0.15336972846 (-0.00197577450087) |
+| 2049 | 0.166970501919 | 0.147350051474 (-0.0196204504455) | 0.150475101405 (-0.0164954005141) | 0.169689774178 (+0.00271927225859) | 0.150475101405 (-0.0164954005141) |
+| 2050 | 0.167177882126 | 0.154532950761 (-0.0126449313647) | 0.155464893246 (-0.0117129888803) | 0.177092364457 (+0.00991448233036) | 0.155464893246 (-0.0117129888803) |
+| 2051 | 0.172646983238 | 0.152603594368 (-0.0200433888704) | 0.164149715258 (-0.00849726798048) | 0.178798806246 (+0.00615182300819) | 0.164149715258 (-0.00849726798048) |
+| 2052 | 0.165388201505 | 0.154956977403 (-0.010431224102) | 0.153368043387 (-0.0120201581183) | 0.177893690569 (+0.0125054890639) | 0.153368043387 (-0.0120201581183) |
+| 2053 | 0.162583798599 | 0.155333511713 (-0.00725028688538) | 0.164037287854 (+0.00145348925531) | 0.174625979708 (+0.0120421811089) | 0.164037287854 (+0.00145348925531) |
+| 2054 | 0.166730635037 | 0.152678693712 (-0.0140519413244) | 0.164129877814 (-0.00260075722249) | 0.182993966319 (+0.0162633312824) | 0.164129877814 (-0.00260075722249) |
+| 2055 | 0.170764696709 | 0.156632087612 (-0.0141326090971) | 0.16540508106 (-0.00535961564827) | 0.175748978394 (+0.00498428168557) | 0.16540508106 (-0.00535961564827) |
+| 2056 | 0.179043508252 | 0.156350000107 (-0.0226935081447) | 0.154205469717 (-0.0248380385345) | 0.18611066335 (+0.00706715509871) | 0.154205469717 (-0.0248380385345) |
+| 2057 | 0.173427477068 | 0.153725182706 (-0.0197022943621) | 0.17084205647 (-0.00258542059812) | 0.181635705648 (+0.00820822857966) | 0.17084205647 (-0.00258542059812) |
+| 2058 | 0.17540397003 | 0.153828657944 (-0.0215753120856) | 0.168051154679 (-0.00735281535056) | 0.187011146621 (+0.0116071765916) | 0.168051154679 (-0.00735281535056) |
+| 2059 | 0.17442361977 | 0.156109528702 (-0.0183140910682) | 0.169665793985 (-0.00475782578518) | 0.18516328007 (+0.0107396603002) | 0.169665793985 (-0.00475782578518) |
+| 2060 | 0.178626333759 | 0.158303165101 (-0.0203231686575) | 0.167190377439 (-0.0114359563202) | 0.183209193398 (+0.00458285963956) | 0.167190377439 (-0.0114359563202) |
+
+**Approval (points)**
+
+| Year | Control | + day 1 | − day 1 | + year 5 (day 1441) | − year 5 (day 1441) |
+|---:|---:|---:|---:|---:|---:|
+| 2010 | 63.8519045379 | 63.8830864747 (+0.0311819368076) | 62.1769382346 (-1.67496630328) | 63.8207616878 (-0.0311428500733) | 62.1769382346 (-1.67496630328) |
+| 2011 | 62.1163974625 | 61.6347522976 (-0.481645164884) | 63.2229332272 (+1.10653576475) | 61.7172108006 (-0.399186661851) | 63.2229332272 (+1.10653576475) |
+| 2012 | 63.1424208328 | 67.0670374638 (+3.92461663103) | 61.6471759948 (-1.495244838) | 61.0514145318 (-2.09100630095) | 61.6471759948 (-1.495244838) |
+| 2013 | 67.7892603094 | 67.5262026271 (-0.263057682316) | 62.2839695264 (-5.50529078302) | 64.3568218479 (-3.43243846148) | 62.2839695264 (-5.50529078302) |
+| 2014 | 66.4381073297 | 67.8405307697 (+1.40242343999) | 64.5977660967 (-1.84034123302) | 66.185627447 (-0.252479882724) | 64.5977660967 (-1.84034123302) |
+| 2015 | 69.3903791891 | 68.7736616745 (-0.616717514634) | 69.0050762861 (-0.38530290302) | 68.9233547452 (-0.467024443966) | 69.0050762861 (-0.38530290302) |
+| 2016 | 70.1598871862 | 69.963527374 (-0.196359812184) | 69.9951035479 (-0.164783638355) | 69.923648637 (-0.236238549233) | 69.9951035479 (-0.164783638355) |
+| 2017 | 70.2317655245 | 70.685579499 (+0.453813974527) | 69.517886913 (-0.713878611528) | 69.4188273617 (-0.812938162814) | 69.517886913 (-0.713878611528) |
+| 2018 | 69.9960738892 | 70.3879066239 (+0.39183273478) | 69.986378043 (-0.00969584616116) | 69.9004616121 (-0.0956122770515) | 69.986378043 (-0.00969584616116) |
+| 2019 | 70.8859047855 | 71.4754971645 (+0.589592378945) | 71.1729072576 (+0.28700247205) | 70.2671187341 (-0.618786051423) | 71.1729072576 (+0.28700247205) |
+| 2020 | 72.5456527563 | 72.5607755828 (+0.0151228264326) | 71.2536573593 (-1.29199539707) | 72.1371693692 (-0.408483387106) | 71.2536573593 (-1.29199539707) |
+| 2021 | 73.9583321142 | 72.7557117057 (-1.20262040842) | 72.4112819559 (-1.54705015826) | 73.0587092729 (-0.899622841225) | 72.4112819559 (-1.54705015826) |
+| 2022 | 75.9606356589 | 75.4310635313 (-0.529572127531) | 75.3358113332 (-0.624824325676) | 76.3700096606 (+0.409374001729) | 75.3358113332 (-0.624824325676) |
+| 2023 | 76.342032398 | 76.5288864317 (+0.186854033713) | 76.2288094072 (-0.113222990815) | 76.9512044095 (+0.609172011551) | 76.2288094072 (-0.113222990815) |
+| 2024 | 75.4614011897 | 77.0661490765 (+1.60474788676) | 76.6132485291 (+1.15184733939) | 76.8748333745 (+1.41343218476) | 76.6132485291 (+1.15184733939) |
+| 2025 | 77.065802537 | 76.8474486626 (-0.218353874461) | 76.4997075282 (-0.566095008828) | 77.1276849904 (+0.0618824533867) | 76.4997075282 (-0.566095008828) |
+| 2026 | 77.201767656 | 76.5939861035 (-0.607781552459) | 76.5059936839 (-0.695773972117) | 76.0578162169 (-1.1439514391) | 76.5059936839 (-0.695773972117) |
+| 2027 | 78.2094524809 | 77.7635714659 (-0.445881015056) | 77.6260208603 (-0.583431620664) | 78.0843374511 (-0.125115029854) | 77.6260208603 (-0.583431620664) |
+| 2028 | 77.9452588346 | 77.5878293884 (-0.357429446151) | 77.3822568207 (-0.563002013888) | 78.7304332546 (+0.785174419991) | 77.3822568207 (-0.563002013888) |
+| 2029 | 78.535558838 | 78.6671743671 (+0.131615529032) | 78.665187276 (+0.129628437934) | 79.3833210906 (+0.847762252559) | 78.665187276 (+0.129628437934) |
+| 2030 | 79.881255312 | 79.6785143761 (-0.202740935975) | 80.3749907249 (+0.493735412916) | 79.4576306687 (-0.423624643327) | 80.3749907249 (+0.493735412916) |
+| 2031 | 81.3426041265 | 81.129591828 (-0.213012298486) | 81.3154538597 (-0.0271502668016) | 81.1895452269 (-0.153058899571) | 81.3154538597 (-0.0271502668016) |
+| 2032 | 82.2056823218 | 81.7744578114 (-0.431224510375) | 81.8707557972 (-0.334926524606) | 81.3780773367 (-0.827604985107) | 81.8707557972 (-0.334926524606) |
+| 2033 | 82.4035368299 | 82.1871823006 (-0.216354529247) | 81.9068757713 (-0.496661058605) | 82.2639187704 (-0.139618059439) | 81.9068757713 (-0.496661058605) |
+| 2034 | 82.7216193094 | 81.8762409523 (-0.845378357029) | 81.8116427338 (-0.909976575502) | 82.1208985786 (-0.600720730705) | 81.8116427338 (-0.909976575502) |
+| 2035 | 82.3212765252 | 82.1188384802 (-0.202438045003) | 82.6115277297 (+0.290251204468) | 82.5384176932 (+0.217141168004) | 82.6115277297 (+0.290251204468) |
+| 2036 | 81.6550759309 | 80.7596983645 (-0.895377566423) | 82.0831285934 (+0.428052662422) | 81.682528931 (+0.0274530000529) | 82.0831285934 (+0.428052662422) |
+| 2037 | 82.1080479323 | 81.3545245065 (-0.753523425777) | 81.9702029966 (-0.137844935721) | 81.7050848917 (-0.402963040554) | 81.9702029966 (-0.137844935721) |
+| 2038 | 81.8263275001 | 79.7789881066 (-2.04733939351) | 82.1077685112 (+0.281441011107) | 80.8578107174 (-0.968516782629) | 82.1077685112 (+0.281441011107) |
+| 2039 | 81.6680640579 | 81.1414694683 (-0.52659458958) | 82.0318126819 (+0.363748624022) | 80.6149224318 (-1.05314162605) | 82.0318126819 (+0.363748624022) |
+| 2040 | 82.6186158782 | 81.4937968568 (-1.12481902142) | 82.2978528738 (-0.320763004431) | 81.9362788961 (-0.682336982047) | 82.2978528738 (-0.320763004431) |
+| 2041 | 82.6850781617 | 81.517374299 (-1.16770386274) | 82.6811451297 (-0.00393303203975) | 81.3243931387 (-1.36068502306) | 82.6811451297 (-0.00393303203975) |
+| 2042 | 81.7318925805 | 81.3181849625 (-0.413707617956) | 82.0639661132 (+0.332073532729) | 80.8415919546 (-0.890300625859) | 82.0639661132 (+0.332073532729) |
+| 2043 | 81.4184619882 | 80.7653319744 (-0.653130013833) | 82.5827416228 (+1.16427963464) | 79.8445693135 (-1.57389267473) | 82.5827416228 (+1.16427963464) |
+| 2044 | 81.5077523582 | 80.0182498482 (-1.48950250998) | 81.4090083679 (-0.0987439903304) | 80.0097050034 (-1.49804735484) | 81.4090083679 (-0.0987439903304) |
+| 2045 | 80.9601454361 | 80.5979980254 (-0.362147410669) | 81.1881858681 (+0.228040432076) | 79.7520941943 (-1.20805124175) | 81.1881858681 (+0.228040432076) |
+| 2046 | 80.8512483237 | 80.5408554153 (-0.310392908381) | 81.0005068417 (+0.149258518066) | 79.5704829996 (-1.28076532403) | 81.0005068417 (+0.149258518066) |
+| 2047 | 79.775902191 | 80.1748088328 (+0.39890664184) | 81.0588852664 (+1.28298307539) | 79.2554570494 (-0.520445141551) | 81.0588852664 (+1.28298307539) |
+| 2048 | 80.4586668362 | 80.8686423011 (+0.409975464846) | 80.4624820383 (+0.00381520207813) | 79.8964904416 (-0.562176394573) | 80.4624820383 (+0.00381520207813) |
+| 2049 | 80.9511105372 | 80.8374549884 (-0.113655548801) | 80.7488537718 (-0.202256765416) | 78.807667578 (-2.14344295924) | 80.7488537718 (-0.202256765416) |
+| 2050 | 80.8282333843 | 80.6653369586 (-0.162896425612) | 80.8447373631 (+0.0165039788294) | 79.0001615783 (-1.828071806) | 80.8447373631 (+0.0165039788294) |
+| 2051 | 80.7534327958 | 79.1599302612 (-1.59350253455) | 79.6780085888 (-1.07542420696) | 78.9820083742 (-1.7714244216) | 79.6780085888 (-1.07542420696) |
+| 2052 | 80.6369747076 | 79.3124832948 (-1.32449141285) | 80.4376637069 (-0.199311000677) | 78.7405308964 (-1.89644381123) | 80.4376637069 (-0.199311000677) |
+| 2053 | 80.7548470143 | 79.288229889 (-1.46661712532) | 80.0034644751 (-0.751382539201) | 78.7171376936 (-2.03770932069) | 80.0034644751 (-0.751382539201) |
+| 2054 | 80.5938057518 | 79.9087755491 (-0.68503020266) | 81.0113417551 (+0.417536003256) | 78.74415033 (-1.84965542177) | 81.0113417551 (+0.417536003256) |
+| 2055 | 79.0876602917 | 79.6920910962 (+0.60443080455) | 81.1146004517 (+2.02694016002) | 79.8113875174 (+0.723727225731) | 81.1146004517 (+2.02694016002) |
+| 2056 | 80.0662775043 | 79.4981521614 (-0.568125342866) | 81.0223110796 (+0.956033575336) | 79.0694871654 (-0.996790338919) | 81.0223110796 (+0.956033575336) |
+| 2057 | 80.4826074625 | 80.2581576061 (-0.224449856408) | 80.5079109207 (+0.0253034582485) | 79.2567015091 (-1.22590595334) | 80.5079109207 (+0.0253034582485) |
+| 2058 | 80.0913343012 | 80.0148022281 (-0.0765320730862) | 80.9268790245 (+0.835544723313) | 79.7689561178 (-0.322378183427) | 80.9268790245 (+0.835544723313) |
+| 2059 | 79.8836708941 | 79.5680978547 (-0.315573039329) | 80.6622888259 (+0.778617931801) | 79.4466630409 (-0.437007853123) | 80.6622888259 (+0.778617931801) |
+| 2060 | 80.3574246959 | 79.9395016464 (-0.417923049509) | 80.5414097299 (+0.183985033973) | 79.7398013242 (-0.617623371738) | 80.5414097299 (+0.183985033973) |
+
+**I-HT share (fraction)**
+
+| Year | Control | + day 1 | − day 1 | + year 5 (day 1441) | − year 5 (day 1441) |
+|---:|---:|---:|---:|---:|---:|
+| 2010 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2011 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2012 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2013 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2014 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2015 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2016 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2017 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2018 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2019 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2020 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2021 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2022 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2023 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2024 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2025 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2026 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2027 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2028 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2029 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2030 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2031 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2032 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2033 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2034 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2035 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2036 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2037 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2038 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2039 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2040 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2041 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2042 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2043 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2044 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2045 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2046 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2047 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2048 | 0 | 0.00175555599145 (+0.00175555599145) | 0 (0) | 0 (0) | 0 (0) |
+| 2049 | 0 | 0.0135973647924 (+0.0135973647924) | 0 (0) | 0 (0) | 0 (0) |
+| 2050 | 0 | 0.0266876566095 (+0.0266876566095) | 0.0136107814235 (+0.0136107814235) | 0 (0) | 0.0136107814235 (+0.0136107814235) |
+| 2051 | 0.00592249012918 | 0.0322995310774 (+0.0263770409483) | 0.017711478238 (+0.0117889881089) | 0.0108506944444 (+0.00492820431526) | 0.017711478238 (+0.0117889881089) |
+| 2052 | 0.00814035221034 | 0.0394797299685 (+0.0313393777582) | 0.0256530991081 (+0.0175127468977) | 0.0275955816651 (+0.0194552294547) | 0.0256530991081 (+0.0175127468977) |
+| 2053 | 0.00956450956451 | 0.0588376540404 (+0.0492731444759) | 0.0389398138279 (+0.0293753042634) | 0.0353978982498 (+0.0258333886853) | 0.0389398138279 (+0.0293753042634) |
+| 2054 | 0.0236319752152 | 0.0747528916054 (+0.0511209163901) | 0.053544494721 (+0.0299125195057) | 0.0469383243681 (+0.0233063491529) | 0.053544494721 (+0.0299125195057) |
+| 2055 | 0.0366587441133 | 0.0799960858184 (+0.0433373417051) | 0.0676564334843 (+0.030997689371) | 0.0506116510086 (+0.0139529068953) | 0.0676564334843 (+0.030997689371) |
+| 2056 | 0.0559334779715 | 0.0967523307406 (+0.0408188527691) | 0.0838448478516 (+0.0279113698801) | 0.0651489527774 (+0.00921547480592) | 0.0838448478516 (+0.0279113698801) |
+| 2057 | 0.0740231723265 | 0.113108534011 (+0.0390853616841) | 0.11023559941 (+0.0362124270835) | 0.069570251311 (-0.00445292101544) | 0.11023559941 (+0.0362124270835) |
+| 2058 | 0.0895362510269 | 0.129007519917 (+0.0394712688897) | 0.123119258943 (+0.0335830079166) | 0.0838402495588 (-0.00569600146813) | 0.123119258943 (+0.0335830079166) |
+| 2059 | 0.0939054034731 | 0.128900168955 (+0.034994765482) | 0.122839370876 (+0.0289339674031) | 0.0973976272484 (+0.00349222377528) | 0.122839370876 (+0.0289339674031) |
+| 2060 | 0.10239866758 | 0.137623904611 (+0.0352252370316) | 0.126146721117 (+0.0237480535376) | 0.114821932244 (+0.0124232646645) | 0.126146721117 (+0.0237480535376) |
+
+**256x60_s11**
+
+**Population**
+
+| Year | Control | + day 1 | − day 1 | + year 5 (day 1441) | − year 5 (day 1441) |
+|---:|---:|---:|---:|---:|---:|
+| 2010 | 97469 | 97480 (+11) | 96407 (-1062) | 97010 (-459) | 96079 (-1390) |
+| 2011 | 111424 | 111232 (-192) | 110332 (-1092) | 111220 (-204) | 110096 (-1328) |
+| 2012 | 126476 | 127871 (+1395) | 126617 (+141) | 126754 (+278) | 125601 (-875) |
+| 2013 | 143996 | 145099 (+1103) | 142480 (-1516) | 144130 (+134) | 143383 (-613) |
+| 2014 | 163210 | 162893 (-317) | 159429 (-3781) | 163214 (+4) | 160600 (-2610) |
+| 2015 | 182428 | 181910 (-518) | 178036 (-4392) | 181953 (-475) | 179951 (-2477) |
+| 2016 | 202147 | 201032 (-1115) | 198931 (-3216) | 201746 (-401) | 199261 (-2886) |
+| 2017 | 221560 | 220264 (-1296) | 217743 (-3817) | 221252 (-308) | 219067 (-2493) |
+| 2018 | 241641 | 240111 (-1530) | 238125 (-3516) | 242039 (+398) | 239254 (-2387) |
+| 2019 | 264481 | 261751 (-2730) | 259674 (-4807) | 264370 (-111) | 260637 (-3844) |
+| 2020 | 287234 | 284274 (-2960) | 281689 (-5545) | 286886 (-348) | 283799 (-3435) |
+| 2021 | 310168 | 307076 (-3092) | 303929 (-6239) | 310073 (-95) | 306293 (-3875) |
+| 2022 | 332224 | 331951 (-273) | 327213 (-5011) | 333566 (+1342) | 328831 (-3393) |
+| 2023 | 356520 | 355340 (-1180) | 350807 (-5713) | 357155 (+635) | 353318 (-3202) |
+| 2024 | 381058 | 380475 (-583) | 375374 (-5684) | 381880 (+822) | 377503 (-3555) |
+| 2025 | 406789 | 405400 (-1389) | 400281 (-6508) | 406287 (-502) | 402379 (-4410) |
+| 2026 | 432624 | 431885 (-739) | 426244 (-6380) | 432136 (-488) | 428640 (-3984) |
+| 2027 | 459464 | 460015 (+551) | 454626 (-4838) | 459324 (-140) | 456712 (-2752) |
+| 2028 | 489945 | 489506 (-439) | 484568 (-5377) | 488133 (-1812) | 485941 (-4004) |
+| 2029 | 520692 | 520829 (+137) | 515169 (-5523) | 518809 (-1883) | 515857 (-4835) |
+| 2030 | 551235 | 551396 (+161) | 545987 (-5248) | 549130 (-2105) | 547314 (-3921) |
+| 2031 | 582733 | 582250 (-483) | 577395 (-5338) | 579744 (-2989) | 578928 (-3805) |
+| 2032 | 614845 | 614648 (-197) | 608730 (-6115) | 610615 (-4230) | 610449 (-4396) |
+| 2033 | 647575 | 646489 (-1086) | 641046 (-6529) | 643324 (-4251) | 643353 (-4222) |
+| 2034 | 679334 | 679323 (-11) | 671270 (-8064) | 675552 (-3782) | 675310 (-4024) |
+| 2035 | 713490 | 713314 (-176) | 705812 (-7678) | 706910 (-6580) | 708864 (-4626) |
+| 2036 | 746748 | 747427 (+679) | 738362 (-8386) | 741622 (-5126) | 740004 (-6744) |
+| 2037 | 780557 | 781066 (+509) | 773730 (-6827) | 776288 (-4269) | 775648 (-4909) |
+| 2038 | 815501 | 816651 (+1150) | 807517 (-7984) | 811907 (-3594) | 809106 (-6395) |
+| 2039 | 850651 | 852303 (+1652) | 841049 (-9602) | 844940 (-5711) | 843442 (-7209) |
+| 2040 | 888193 | 889673 (+1480) | 879800 (-8393) | 880019 (-8174) | 878323 (-9870) |
+| 2041 | 921632 | 924866 (+3234) | 914584 (-7048) | 913767 (-7865) | 914510 (-7122) |
+| 2042 | 958822 | 957920 (-902) | 950104 (-8718) | 952007 (-6815) | 947049 (-11773) |
+| 2043 | 993905 | 994389 (+484) | 981631 (-12274) | 989261 (-4644) | 986663 (-7242) |
+| 2044 | 1031139 | 1031463 (+324) | 1017766 (-13373) | 1030678 (-461) | 1023542 (-7597) |
+| 2045 | 1068216 | 1069790 (+1574) | 1055287 (-12929) | 1072401 (+4185) | 1065768 (-2448) |
+| 2046 | 1109143 | 1109236 (+93) | 1094324 (-14819) | 1109943 (+800) | 1103535 (-5608) |
+| 2047 | 1147425 | 1144003 (-3422) | 1132339 (-15086) | 1144048 (-3377) | 1151307 (+3882) |
+| 2048 | 1186527 | 1187525 (+998) | 1169316 (-17211) | 1183951 (-2576) | 1187374 (+847) |
+| 2049 | 1225495 | 1231690 (+6195) | 1209924 (-15571) | 1222848 (-2647) | 1233587 (+8092) |
+| 2050 | 1272103 | 1266953 (-5150) | 1254073 (-18030) | 1262250 (-9853) | 1261639 (-10464) |
+| 2051 | 1313026 | 1310721 (-2305) | 1295571 (-17455) | 1306968 (-6058) | 1307156 (-5870) |
+| 2052 | 1354608 | 1353432 (-1176) | 1335822 (-18786) | 1348318 (-6290) | 1352531 (-2077) |
+| 2053 | 1372356 | 1391300 (+18944) | 1376252 (+3896) | 1392815 (+20459) | 1387290 (+14934) |
+| 2054 | 1388950 | 1401401 (+12451) | 1398314 (+9364) | 1440737 (+51787) | 1410655 (+21705) |
+| 2055 | 1386414 | 1426671 (+40257) | 1413815 (+27401) | 1464302 (+77888) | 1428499 (+42085) |
+| 2056 | 1400344 | 1445471 (+45127) | 1433502 (+33158) | 1476049 (+75705) | 1444001 (+43657) |
+| 2057 | 1403945 | 1456317 (+52372) | 1442965 (+39020) | 1487877 (+83932) | 1462088 (+58143) |
+| 2058 | 1414561 | 1464337 (+49776) | 1448528 (+33967) | 1491046 (+76485) | 1462768 (+48207) |
+| 2059 | 1416617 | 1482680 (+66063) | 1484614 (+67997) | 1504106 (+87489) | 1471782 (+55165) |
+| 2060 | 1427340 | 1483518 (+56178) | 1498791 (+71451) | 1503201 (+75861) | 1472527 (+45187) |
+
+**Air at homes**
+
+| Year | Control | + day 1 | − day 1 | + year 5 (day 1441) | − year 5 (day 1441) |
+|---:|---:|---:|---:|---:|---:|
+| 2010 | 0.065350349494 | 0.0606476563068 (-0.0047026931872) | 0.0741703598792 (+0.00882001038522) | 0.0654003938042 (+0.0000500443101811) | 0.062168676391 (-0.00318167310303) |
+| 2011 | 0.0580437408479 | 0.055855359234 (-0.00218838161389) | 0.0593061927397 (+0.00126245189175) | 0.0644109030923 (+0.00636716224434) | 0.0645595073575 (+0.00651576650958) |
+| 2012 | 0.0544750470377 | 0.0497127203034 (-0.00476232673432) | 0.0562949667144 (+0.00181991967665) | 0.0525824920964 (-0.0018925549413) | 0.0518874926503 (-0.00258755438745) |
+| 2013 | 0.0520217003319 | 0.0482164861661 (-0.00380521416582) | 0.0555974714951 (+0.00357577116313) | 0.0510184235683 (-0.00100327676366) | 0.0499834863083 (-0.00203821402367) |
+| 2014 | 0.0522545755233 | 0.0462435253149 (-0.00601105020839) | 0.0537209677605 (+0.00146639223719) | 0.055483865296 (+0.00322928977262) | 0.0473097713287 (-0.00494480419462) |
+| 2015 | 0.0514671112541 | 0.0459873844775 (-0.00547972677656) | 0.0563030703865 (+0.00483595913243) | 0.0565486899266 (+0.00508157867257) | 0.045746366541 (-0.00572074471303) |
+| 2016 | 0.0522574326203 | 0.0498514346879 (-0.00240599793241) | 0.0565367466969 (+0.00427931407661) | 0.0527427747305 (+0.000485342110139) | 0.0441526707332 (-0.00810476188716) |
+| 2017 | 0.0573060732476 | 0.0515647492163 (-0.00574132403126) | 0.0598561785793 (+0.00255010533178) | 0.062884943181 (+0.00557886993343) | 0.050383138573 (-0.0069229346746) |
+| 2018 | 0.0563750850087 | 0.0572274241276 (+0.000852339118852) | 0.0608228784064 (+0.0044477933977) | 0.0545566195012 (-0.00181846550753) | 0.0501280973105 (-0.00624698769825) |
+| 2019 | 0.0556510217607 | 0.0528865929813 (-0.00276442877948) | 0.0560521993084 (+0.000401177547621) | 0.0539889333438 (-0.00166208841695) | 0.0504015313443 (-0.00524949041642) |
+| 2020 | 0.0557169253613 | 0.0523462587196 (-0.00337066664166) | 0.0549987054698 (-0.000718219891509) | 0.0523788745571 (-0.00333805080417) | 0.0496295109793 (-0.00608741438197) |
+| 2021 | 0.0547470670098 | 0.0522871911587 (-0.00245987585108) | 0.0572027484116 (+0.00245568140177) | 0.0523680172558 (-0.00237904975401) | 0.0506567511298 (-0.00409031587996) |
+| 2022 | 0.0584134414695 | 0.0527593531738 (-0.00565408829569) | 0.0563118505693 (-0.00210159090022) | 0.0552336852261 (-0.00317975624339) | 0.0544952927805 (-0.00391814868905) |
+| 2023 | 0.0611642692479 | 0.0567692796297 (-0.00439498961818) | 0.0604832878747 (-0.000680981373167) | 0.0600525360776 (-0.00111173317026) | 0.0577381724933 (-0.00342609675458) |
+| 2024 | 0.0632593138714 | 0.0599573237568 (-0.00330199011462) | 0.0656655722565 (+0.00240625838508) | 0.0613773650253 (-0.00188194884615) | 0.0594275024251 (-0.00383181144636) |
+| 2025 | 0.0629129261695 | 0.0629580310288 (+0.0000451048593248) | 0.0668897743491 (+0.00397684817961) | 0.0660536522379 (+0.00314072606843) | 0.0617308977597 (-0.00118202840985) |
+| 2026 | 0.0670506912252 | 0.0612959316657 (-0.00575475955955) | 0.0669440457419 (-0.000106645483367) | 0.0665075245825 (-0.000543166642692) | 0.0623330877204 (-0.00471760350482) |
+| 2027 | 0.0657421438106 | 0.0615860872533 (-0.00415605655726) | 0.06960806194 (+0.00386591812947) | 0.0662493464781 (+0.000507202667514) | 0.0629151474749 (-0.00282699633566) |
+| 2028 | 0.0630358514868 | 0.0611067885077 (-0.00192906297901) | 0.0716394825492 (+0.00860363106246) | 0.0656833434827 (+0.0026474919959) | 0.0628195431198 (-0.000216308366968) |
+| 2029 | 0.0636400710001 | 0.0643486511194 (+0.000708580119256) | 0.0750147502442 (+0.0113746792442) | 0.0679750941102 (+0.00433502311011) | 0.0681110431934 (+0.00447097219334) |
+| 2030 | 0.0677812627025 | 0.0697412838765 (+0.00196002117404) | 0.0769039723364 (+0.00912270963392) | 0.0721811532593 (+0.00439989055683) | 0.0688450115832 (+0.00106374888066) |
+| 2031 | 0.0701001861004 | 0.0723293316163 (+0.00222914551595) | 0.0834208008024 (+0.013320614702) | 0.077930327836 (+0.00783014173564) | 0.0744927478238 (+0.00439256172339) |
+| 2032 | 0.0724190332987 | 0.0800183036137 (+0.00759927031498) | 0.0858982828134 (+0.0134792495147) | 0.0833964452328 (+0.0109774119341) | 0.0794164284736 (+0.00699739517485) |
+| 2033 | 0.0757977680989 | 0.0850560958123 (+0.00925832771339) | 0.0908314923925 (+0.0150337242936) | 0.0837325368929 (+0.00793476879397) | 0.0820384730526 (+0.00624070495369) |
+| 2034 | 0.0827262118302 | 0.0867467297895 (+0.00402051795932) | 0.101733974655 (+0.019007762825) | 0.091709024897 (+0.00898281306679) | 0.0864207421429 (+0.00369453031276) |
+| 2035 | 0.0854047246629 | 0.0938345707107 (+0.00842984604781) | 0.100116876454 (+0.0147121517915) | 0.0987167230067 (+0.0133119983438) | 0.0974763542354 (+0.0120716295725) |
+| 2036 | 0.0919302300019 | 0.0951031585647 (+0.00317292856277) | 0.107488300411 (+0.0155580704094) | 0.100810481872 (+0.00888025187016) | 0.102959981473 (+0.0110297514712) |
+| 2037 | 0.0981501369686 | 0.101905123945 (+0.00375498697661) | 0.113785284161 (+0.0156351471929) | 0.106671345828 (+0.0085212088594) | 0.103445688051 (+0.00529555108203) |
+| 2038 | 0.102178297807 | 0.105172353882 (+0.00299405607522) | 0.119279615383 (+0.0171013175756) | 0.108876402027 (+0.00669810422012) | 0.114245085227 (+0.0120667874201) |
+| 2039 | 0.107450141015 | 0.112769676625 (+0.00531953561027) | 0.126056959369 (+0.0186068183548) | 0.117281865418 (+0.00983172440315) | 0.117423067503 (+0.00997292648897) |
+| 2040 | 0.113307293426 | 0.116828998634 (+0.00352170520821) | 0.129887023697 (+0.0165797302715) | 0.12195091575 (+0.00864362232458) | 0.124273557956 (+0.0109662645303) |
+| 2041 | 0.123881921098 | 0.124133908368 (+0.000251987270081) | 0.142696690675 (+0.0188147695775) | 0.127374058334 (+0.00349213723624) | 0.12381012157 (-0.0000717995280235) |
+| 2042 | 0.126086734444 | 0.130450086912 (+0.00436335246771) | 0.144575050726 (+0.0184883162813) | 0.127965290031 (+0.00187855558644) | 0.137016775084 (+0.0109300406396) |
+| 2043 | 0.129741976511 | 0.135476425365 (+0.00573444885399) | 0.146611437364 (+0.0168694608534) | 0.132142502792 (+0.002400526281) | 0.136380379174 (+0.00663840266333) |
+| 2044 | 0.127841465029 | 0.136740245089 (+0.00889878005952) | 0.153304499935 (+0.0254630349055) | 0.142594588148 (+0.0147531231187) | 0.152859208646 (+0.025017743617) |
+| 2045 | 0.134717231435 | 0.143253165617 (+0.0085359341817) | 0.158265272862 (+0.0235480414272) | 0.14080238453 (+0.0060851530951) | 0.150519909214 (+0.0158026777786) |
+| 2046 | 0.135719597588 | 0.142904522095 (+0.00718492450625) | 0.15990635414 (+0.0241867565515) | 0.152674323384 (+0.016954725796) | 0.15197178937 (+0.0162521917819) |
+| 2047 | 0.138409774208 | 0.15833456052 (+0.0199247863112) | 0.169138761911 (+0.0307289877031) | 0.157108470572 (+0.0186986963634) | 0.149802722178 (+0.0113929479695) |
+| 2048 | 0.142596638453 | 0.153205640123 (+0.0106090016699) | 0.171808653885 (+0.0292120154312) | 0.157149319071 (+0.0145526806178) | 0.160871906113 (+0.0182752676596) |
+| 2049 | 0.145552599512 | 0.151758240459 (+0.00620564094701) | 0.173847097014 (+0.0282944975024) | 0.162690375251 (+0.0171377757398) | 0.154546439733 (+0.00899384022118) |
+| 2050 | 0.140626416381 | 0.166325150971 (+0.02569873459) | 0.174208293745 (+0.0335818773637) | 0.162816154634 (+0.0221897382531) | 0.166178183192 (+0.0255517668106) |
+| 2051 | 0.146472679267 | 0.156639596163 (+0.0101669168964) | 0.175126842925 (+0.028654163658) | 0.168199521175 (+0.0217268419082) | 0.165858823431 (+0.019386144164) |
+| 2052 | 0.143862404618 | 0.163855812119 (+0.0199934075008) | 0.180875223886 (+0.0370128192681) | 0.16947079926 (+0.0256083946419) | 0.166770411334 (+0.0229080067164) |
+| 2053 | 0.142825009073 | 0.156253892991 (+0.013428883918) | 0.176661749973 (+0.0338367408998) | 0.166497204058 (+0.0236721949852) | 0.163510597338 (+0.0206855882652) |
+| 2054 | 0.143359957365 | 0.164056788484 (+0.0206968311198) | 0.175300481566 (+0.031940524201) | 0.16437900878 (+0.0210190514154) | 0.166995973574 (+0.0236360162097) |
+| 2055 | 0.144885651148 | 0.161343344166 (+0.0164576930185) | 0.184043543051 (+0.0391578919031) | 0.169314615785 (+0.0244289646375) | 0.174912011361 (+0.0300263602131) |
+| 2056 | 0.144751544239 | 0.16306190722 (+0.018310362981) | 0.17942816008 (+0.0346766158414) | 0.167833523342 (+0.0230819791033) | 0.177614379313 (+0.0328628350743) |
+| 2057 | 0.145909746932 | 0.164808838054 (+0.0188990911223) | 0.186550533685 (+0.0406407867526) | 0.173270672509 (+0.027360925577) | 0.174061608776 (+0.0281518618434) |
+| 2058 | 0.142471353527 | 0.168696020073 (+0.0262246665456) | 0.182265726266 (+0.0397943727385) | 0.170178057516 (+0.0277067039892) | 0.180886546999 (+0.0384151934715) |
+| 2059 | 0.147304497255 | 0.162311254467 (+0.0150067572117) | 0.182973823183 (+0.0356693259279) | 0.162669681915 (+0.0153651846599) | 0.175752339177 (+0.0284478419216) |
+| 2060 | 0.147485057472 | 0.16888213734 (+0.0213970798684) | 0.182561594583 (+0.0350765371117) | 0.171516885347 (+0.0240318278749) | 0.177723910876 (+0.030238853404) |
+
+**Approval (points)**
+
+| Year | Control | + day 1 | − day 1 | + year 5 (day 1441) | − year 5 (day 1441) |
+|---:|---:|---:|---:|---:|---:|
+| 2010 | 64.5131653156 | 63.0769391389 (-1.43622617669) | 64.121745472 (-0.391419843605) | 64.676211261 (+0.163045945341) | 64.9457940974 (+0.432628781813) |
+| 2011 | 63.4003528592 | 61.8757810925 (-1.52457176667) | 62.3414562954 (-1.05889656382) | 63.5843318522 (+0.183978993053) | 64.0420290185 (+0.641676159296) |
+| 2012 | 63.5637266137 | 62.0262406601 (-1.53748595367) | 61.9924189426 (-1.57130767117) | 62.7494778673 (-0.814248746388) | 63.0316284368 (-0.532098176946) |
+| 2013 | 63.6206172189 | 63.2402586377 (-0.380358581151) | 62.4083362375 (-1.21228098139) | 64.4907655201 (+0.87014830121) | 63.4843576984 (-0.136259520464) |
+| 2014 | 70.2355302508 | 67.6701296663 (-2.56540058456) | 64.8070438681 (-5.42848638277) | 69.7922046748 (-0.443325576079) | 69.9254351369 (-0.310095113958) |
+| 2015 | 70.8877589306 | 70.2828251982 (-0.604933732415) | 67.0215711403 (-3.86618779032) | 69.9334179345 (-0.954340996118) | 71.1467203415 (+0.258961410969) |
+| 2016 | 72.3115621325 | 70.6290310398 (-1.68253109265) | 70.4025500066 (-1.90901212587) | 70.930926154 (-1.38063597845) | 72.0593578805 (-0.252204252027) |
+| 2017 | 72.3716101346 | 70.6852792769 (-1.68633085768) | 70.1747235226 (-2.19688661201) | 71.7462059723 (-0.625404162313) | 72.1474844745 (-0.224125660128) |
+| 2018 | 73.1531831645 | 70.8175666723 (-2.33561649227) | 71.241047626 (-1.91213553851) | 72.6849184417 (-0.468264722866) | 73.0735203119 (-0.0796628526384) |
+| 2019 | 74.3239597793 | 72.0316989205 (-2.29226085872) | 72.4338189705 (-1.89014080876) | 73.6696893807 (-0.654270398595) | 73.9368019881 (-0.387157791134) |
+| 2020 | 76.4404919454 | 73.2030611977 (-3.23743074775) | 73.7681846693 (-2.67230727618) | 76.1679586732 (-0.272533272202) | 76.3537571287 (-0.086734816742) |
+| 2021 | 77.7540836674 | 75.5605060621 (-2.1935776053) | 75.1840649435 (-2.57001872388) | 77.2123468278 (-0.541736839566) | 76.9415584023 (-0.812525265047) |
+| 2022 | 77.3706823023 | 76.7061259887 (-0.66455631366) | 76.0479120587 (-1.32277024363) | 77.4890035906 (+0.118321288269) | 77.3505446464 (-0.0201376559459) |
+| 2023 | 77.9120360245 | 77.2939185279 (-0.618117496611) | 76.2887567216 (-1.62327930296) | 77.6433592556 (-0.268676768933) | 77.9336070815 (+0.0215710569898) |
+| 2024 | 78.1691956093 | 77.5436026214 (-0.625592987909) | 76.4603769478 (-1.70881866153) | 77.7414366218 (-0.42775898754) | 78.0419120235 (-0.127283585766) |
+| 2025 | 78.0048748875 | 77.182950673 (-0.821924214525) | 76.912012365 (-1.09286252249) | 76.2640054381 (-1.74086944937) | 77.6147377146 (-0.39013717293) |
+| 2026 | 78.2446253242 | 77.544905082 (-0.699720242178) | 77.2549435325 (-0.989681791703) | 77.5347736949 (-0.709851629275) | 77.4017167485 (-0.842908575648) |
+| 2027 | 78.0884129186 | 78.2067006264 (+0.118287707818) | 76.5165356378 (-1.57187728075) | 77.0703712907 (-1.01804162785) | 77.5910608598 (-0.49735205878) |
+| 2028 | 80.1594304101 | 78.1333126686 (-2.02611774147) | 77.7653943036 (-2.39403610649) | 78.0039590179 (-2.15547139223) | 78.9467285643 (-1.21270184579) |
+| 2029 | 81.6009226435 | 79.1036508928 (-2.49727175061) | 79.5910751866 (-2.00984745686) | 80.2667622591 (-1.33416038437) | 79.5051212958 (-2.09580134763) |
+| 2030 | 81.4590017164 | 80.8501245868 (-0.608877129569) | 80.1015030183 (-1.35749869808) | 81.6331017631 (+0.174100046743) | 81.4404011945 (-0.0186005218952) |
+| 2031 | 82.2232143329 | 80.9234804993 (-1.29973383354) | 81.0140749074 (-1.2091394255) | 81.9152452188 (-0.307969114067) | 81.8911466084 (-0.332067724489) |
+| 2032 | 82.3868309707 | 81.981636368 (-0.405194602675) | 81.5399457676 (-0.846885203089) | 81.6151927392 (-0.77163823153) | 82.1603265696 (-0.226504401102) |
+| 2033 | 82.3619177508 | 82.12052659 (-0.241391160807) | 82.2376192429 (-0.12429850795) | 81.4447745966 (-0.917143154231) | 83.1720861408 (+0.810168390043) |
+| 2034 | 82.9694498342 | 82.1385293596 (-0.830920474593) | 81.9956103728 (-0.973839461305) | 81.6148849526 (-1.3545648815) | 82.7060501036 (-0.263399730571) |
+| 2035 | 82.8921472633 | 82.722366309 (-0.169780954289) | 82.0975389445 (-0.79460831883) | 81.2325811 (-1.65956616332) | 82.8874108553 (-0.00473640800571) |
+| 2036 | 83.8068783412 | 82.4672159037 (-1.33966243752) | 82.4523262652 (-1.35455207605) | 81.8511807927 (-1.95569754851) | 82.5830114622 (-1.22386687901) |
+| 2037 | 83.1437641225 | 82.2512230651 (-0.89254105743) | 82.4190760791 (-0.724688043451) | 82.3181606984 (-0.825603424076) | 82.0410693877 (-1.10269473483) |
+| 2038 | 82.9540376397 | 82.5325089984 (-0.421528641299) | 81.4223369041 (-1.53170073555) | 81.5748907845 (-1.37914685515) | 82.1592113194 (-0.794826320227) |
+| 2039 | 82.8090936591 | 83.0208501669 (+0.211756507786) | 82.114800467 (-0.694293192082) | 81.7314164498 (-1.07767720932) | 83.1101948772 (+0.301101218076) |
+| 2040 | 83.0747485967 | 82.8624900983 (-0.212258498406) | 82.6798979898 (-0.394850606946) | 81.9454839227 (-1.12926467404) | 82.9221156273 (-0.15263296943) |
+| 2041 | 82.7341033392 | 82.1884032783 (-0.545700060905) | 82.1334679586 (-0.600635380576) | 81.1310210895 (-1.6030822497) | 82.5358667038 (-0.198236635415) |
+| 2042 | 82.3437330942 | 82.0540874713 (-0.289645622929) | 82.1575348568 (-0.186198237462) | 81.583606989 (-0.760126105222) | 82.0478262311 (-0.295906863082) |
+| 2043 | 81.6238087259 | 82.0046563218 (+0.380847595845) | 81.0054729891 (-0.618335736862) | 81.2709746426 (-0.35283408333) | 82.0453687947 (+0.421560068775) |
+| 2044 | 81.6738854807 | 81.3885927267 (-0.285292753964) | 80.8561381665 (-0.817747314186) | 81.3544681847 (-0.319417296007) | 81.6548746945 (-0.0190107862) |
+| 2045 | 81.3672525062 | 80.5826588627 (-0.784593643494) | 80.9084507238 (-0.458801782415) | 80.9465309421 (-0.420721564071) | 81.3620270895 (-0.00522541671944) |
+| 2046 | 81.3922144238 | 80.5715003478 (-0.82071407599) | 80.3864119872 (-1.00580243654) | 81.02390851 (-0.368305913775) | 81.1568988778 (-0.235315545954) |
+| 2047 | 81.4479538941 | 80.5774730815 (-0.87048081259) | 79.5412460772 (-1.90670781692) | 80.3222267899 (-1.12572710425) | 81.8762702293 (+0.428316335237) |
+| 2048 | 81.4228326633 | 80.4817288086 (-0.941103854723) | 79.7791260831 (-1.64370658021) | 79.7900236096 (-1.63280905372) | 81.4782541627 (+0.0554214993408) |
+| 2049 | 81.0957329846 | 80.2711868681 (-0.824546116459) | 80.2386953987 (-0.857037585875) | 79.8305016712 (-1.26523131337) | 81.248412134 (+0.152679149437) |
+| 2050 | 80.9499364094 | 80.8221717706 (-0.12776463879) | 79.9565191964 (-0.993417213004) | 79.8307428068 (-1.11919360259) | 80.438332376 (-0.511604033339) |
+| 2051 | 80.4217985169 | 80.3679574004 (-0.0538411165489) | 79.6633762229 (-0.758422294065) | 79.9492527193 (-0.472545797616) | 80.6414577051 (+0.219659188191) |
+| 2052 | 80.6428101102 | 80.7251923185 (+0.0823822083271) | 79.9800760914 (-0.662734018769) | 79.5939078267 (-1.04890228354) | 80.4232597104 (-0.21955039979) |
+| 2053 | 81.1771549768 | 81.107340801 (-0.0698141757492) | 80.4829884336 (-0.694166543196) | 79.3138476557 (-1.86330732108) | 80.6480393726 (-0.529115604226) |
+| 2054 | 80.4236104261 | 80.3250126135 (-0.0985978125782) | 80.2338463766 (-0.189764049462) | 80.0636408587 (-0.359969567339) | 79.7013495829 (-0.722260843154) |
+| 2055 | 80.7403544601 | 80.9548984002 (+0.214543940098) | 79.9308201976 (-0.809534262591) | 80.0500672483 (-0.690287211854) | 80.4130059591 (-0.327348501094) |
+| 2056 | 80.4208527847 | 80.3413496665 (-0.0795031181607) | 80.2474455786 (-0.173407206091) | 80.2545719243 (-0.166280860322) | 80.3756313061 (-0.0452214785361) |
+| 2057 | 81.1171802385 | 80.2976690264 (-0.819511212142) | 79.6853405289 (-1.43183970964) | 80.1255566076 (-0.991623630938) | 79.0766552494 (-2.04052498911) |
+| 2058 | 80.7983833485 | 80.717239099 (-0.0811442495033) | 79.5188434281 (-1.27953992033) | 79.6756895717 (-1.12269377675) | 80.053724096 (-0.744659252444) |
+| 2059 | 80.1027854209 | 80.7540176635 (+0.651232242633) | 79.6906575395 (-0.412127881383) | 80.0132186901 (-0.089566730768) | 79.8283400653 (-0.274445355664) |
+| 2060 | 81.3566945637 | 81.271739906 (-0.0849546577103) | 79.1371672705 (-2.21952729322) | 80.4411987232 (-0.915495840463) | 79.9558196962 (-1.4008748675) |
+
+**I-HT share (fraction)**
+
+| Year | Control | + day 1 | − day 1 | + year 5 (day 1441) | − year 5 (day 1441) |
+|---:|---:|---:|---:|---:|---:|
+| 2010 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2011 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2012 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2013 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2014 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2015 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2016 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2017 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2018 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2019 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2020 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2021 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2022 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2023 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2024 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2025 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2026 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2027 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2028 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2029 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2030 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2031 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2032 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2033 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2034 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2035 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2036 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2037 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2038 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2039 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2040 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2041 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2042 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2043 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2044 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2045 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2046 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2047 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2048 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2049 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2050 | 0 | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| 2051 | 0.0100193668234 | 0.00129182146827 (-0.00872754535518) | 0.00160669993874 (-0.0084126668847) | 0 (-0.0100193668234) | 0 (-0.0100193668234) |
+| 2052 | 0.0108910310306 | 0.00520282099724 (-0.0056882100334) | 0.00640601711561 (-0.00448501391503) | 0 (-0.0108910310306) | 0 (-0.0108910310306) |
+| 2053 | 0.0244613470833 | 0.0161053470136 (-0.00835600006974) | 0.0169915953487 (-0.00746975173469) | 0 (-0.0244613470833) | 0 (-0.0244613470833) |
+| 2054 | 0.0316264226817 | 0.0301154846347 (-0.00151093804707) | 0.0287983457869 (-0.00282807689482) | 0 (-0.0316264226817) | 0 (-0.0316264226817) |
+| 2055 | 0.0406296878671 | 0.0285893289846 (-0.0120403588825) | 0.0397066422504 (-0.000923045616716) | 0.00462511666494 (-0.0360045712022) | 0 (-0.0406296878671) |
+| 2056 | 0.0479925961835 | 0.0432669063547 (-0.00472568982885) | 0.0494030864797 (+0.00141049029616) | 0.00460919979744 (-0.0433833963861) | 0 (-0.0479925961835) |
+| 2057 | 0.0605594441453 | 0.056150189789 (-0.00440925435631) | 0.0547291076944 (-0.0058303364509) | 0.00458502431922 (-0.0559744198261) | 0 (-0.0605594441453) |
+| 2058 | 0.0762453855407 | 0.0680136762997 (-0.00823170924096) | 0.058744564988 (-0.0175008205527) | 0.00458492962546 (-0.0716604559152) | 0 (-0.0762453855407) |
+| 2059 | 0.0910363244426 | 0.0770340073979 (-0.0140023170447) | 0.0722637672603 (-0.0187725571823) | 0.00458502431922 (-0.0864513001234) | 0 (-0.0910363244426) |
+| 2060 | 0.103251506482 | 0.0886738163746 (-0.0145776901074) | 0.0819100032892 (-0.0213415031927) | 0.00458502431922 (-0.0986664821627) | 0 (-0.103251506482) |
+
+### Reused Round 2 size-response evidence
+
+The [Round 2 sweep](#fork-noise-envelopes) supplies the +day1 size comparison. The population envelopes below repeat those completed measurements against the same controls. They do not increase monotonically with the size of the grant: the 256 seed-7 envelope falls from 226,318 at §10 to 12,589 at §1,000, then rises to 110,350 at §10,000. The chosen symmetric envelope above follows NOTE-052; the largest positive-only sweep spread is not substituted as extra tolerance.
+
+| Row | +§10 day1 population envelope | +§100 | +§1,000 | +§10,000 |
+|---|---:|---:|---:|---:|
+| 128x15_s7 | 1145 | 2767 | 3194 | 2620 |
+| 256x60_s7 | 226318 | 133913 | 12589 | 110350 |
+| 256x60_s11 | 64424 | 66063 | 107059 | 126017 |
+
+### Raw provenance and exact measurement commands
+
+This section is generated by `C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\round3Report.mjs` (SHA256 `c5ec9dc2ded79d1a84a86a32e5ce1090d8a67d343587cf065c490734529fe3d9`). The generator starts no simulations. The selected protocol uses 15 complete runs / 675 annual records; nine symmetric probes are new and the three controls plus three +day1 probes are reused. Original controls recorded their 135 annual state-hash and non-timing-row matches; unchanged simbot/source identities permit reuse despite documentation-only intervening commits.
+
+**128x15_s7_base**: commit `3833c8d2379d3350663e624fe30be7867c559310`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/128x15_s7_base.json>).
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\128x15_s7_base.spec.json
+```
+
+**128x15_s7_n100_d1**: commit `3833c8d2379d3350663e624fe30be7867c559310`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/128x15_s7_n100_d1.json>).
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\128x15_s7_n100_d1.spec.json
+```
+
+**128x15_s7_n-100_d1**: commit `e990432a4e376606880020f1e51806ace1f6e5ee`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/128x15_s7_n-100_d1.json>).
+
+```powershell
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\128x15_s7_n-100_d1.spec.json'
+```
+
+**128x15_s7_n100_d1441**: commit `e990432a4e376606880020f1e51806ace1f6e5ee`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/128x15_s7_n100_d1441.json>).
+
+```powershell
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\128x15_s7_n100_d1441.spec.json'
+```
+
+**128x15_s7_n-100_d1441**: commit `e990432a4e376606880020f1e51806ace1f6e5ee`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/128x15_s7_n-100_d1441.json>).
+
+```powershell
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\128x15_s7_n-100_d1441.spec.json'
+```
+
+**256x60_s7_base**: commit `3833c8d2379d3350663e624fe30be7867c559310`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/256x60_s7_base.json>).
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\256x60_s7_base.spec.json
+```
+
+**256x60_s7_n100_d1**: commit `3833c8d2379d3350663e624fe30be7867c559310`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/256x60_s7_n100_d1.json>).
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\256x60_s7_n100_d1.spec.json
+```
+
+**256x60_s7_n-100_d1**: commit `e990432a4e376606880020f1e51806ace1f6e5ee`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/256x60_s7_n-100_d1.json>).
+
+```powershell
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\256x60_s7_n-100_d1.spec.json'
+```
+
+**256x60_s7_n100_d1441**: commit `e990432a4e376606880020f1e51806ace1f6e5ee`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/256x60_s7_n100_d1441.json>).
+
+```powershell
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\256x60_s7_n100_d1441.spec.json'
+```
+
+**256x60_s7_n-100_d1441**: commit `e990432a4e376606880020f1e51806ace1f6e5ee`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/256x60_s7_n-100_d1441.json>).
+
+```powershell
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\256x60_s7_n-100_d1441.spec.json'
+```
+
+**256x60_s11_base**: commit `3833c8d2379d3350663e624fe30be7867c559310`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/256x60_s11_base.json>).
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\256x60_s11_base.spec.json
+```
+
+**256x60_s11_n100_d1**: commit `3833c8d2379d3350663e624fe30be7867c559310`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/256x60_s11_n100_d1.json>).
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\256x60_s11_n100_d1.spec.json
+```
+
+**256x60_s11_n-100_d1**: commit `e990432a4e376606880020f1e51806ace1f6e5ee`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/256x60_s11_n-100_d1.json>).
+
+```powershell
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\256x60_s11_n-100_d1.spec.json'
+```
+
+**256x60_s11_n100_d1441**: commit `e990432a4e376606880020f1e51806ace1f6e5ee`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/256x60_s11_n100_d1441.json>).
+
+```powershell
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\256x60_s11_n100_d1441.spec.json'
+```
+
+**256x60_s11_n-100_d1441**: commit `e990432a4e376606880020f1e51806ace1f6e5ee`; simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`; source tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. [Full-precision JSON](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/256x60_s11_n-100_d1441.json>).
+
+```powershell
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\256x60_s11_n-100_d1441.spec.json'
+```
+
+The tree-parameterised NOTE-052 runner and its one-command-per-row reproduction commands are documented in the handoff added with this section. It reruns the protocol on a target tree, retains the smallest tested size that forks the full log for every signed/timed probe, and must be rerun on the dev containing T041. Reused measurements here do not substitute for that new-base measurement.
+
+The symmetric diagnostic exposes whether the one-sided Round 2 downward population endpoints persist under both signs/timings. A mixed classification rules out the stated all-row direction pattern in this finite sample; it does not prove a pure-noise mechanism or turn the envelope into a confidence interval. No RNG draw, simulation balance, strategy, save schema, or baseline was changed.
+
+
+### Reproduce NOTE-052 on this base and after T041
+
+The measurement HEAD is `e990432a4e376606880020f1e51806ace1f6e5ee` (the Round 2 results and NOTE-052 are committed). The simulation identities match Round 2: simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`, src tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. New §100 records carry this HEAD; reused records retain their original commit. No simulation or bot-strategy source differs between them. The new runner and tests are uncommitted diagnostics; no production source is edited.
+
+The new [tools/simAaForkEnvelope.mts](../../../tools/simAaForkEnvelope.mts) accepts a target tree and one balance row. It builds with that tree’s local Rolldown and launches each independent child sequentially through the quiet gate. It changes no target-tree files and writes only its explicit output directory. Later-day injection is diagnostic instrumentation, not a new bot flag. Completed evidence is reused only with matching clean `src` and simbot content identities, row, sign, timing and bot configuration. Use the same installed dependency versions for comparisons; dependency identity is not part of the reuse key.
+
+These are the three commands used for the selected §100 matrix, each collecting the missing probes and reusing its same-source control/+day1 run. They are safe to repeat with `--report-only` to regenerate per-row summaries without bots:
+
+```powershell
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simAaForkEnvelope.mts --tree C:/Users/techsin/Desktop/projects/simcityweb-T062 --size 128 --years 15 --seed 7 --out-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052 --reuse-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --nudge 100
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simAaForkEnvelope.mts --tree C:/Users/techsin/Desktop/projects/simcityweb-T062 --size 256 --years 60 --seed 7 --out-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052 --reuse-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --nudge 100
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simAaForkEnvelope.mts --tree C:/Users/techsin/Desktop/projects/simcityweb-T062 --size 256 --years 60 --seed 11 --out-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052 --reuse-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --nudge 100
+```
+
+After T041, use a fresh output directory and the dev tree containing T041. To collect the full selection protocol with **one command per row**, use `--all-sizes`; run these commands one at a time. This measures all four signs/timings for every grid size, rather than assuming fork qualification or metric response is monotonic. It is more work than the adaptive stop used here, but needs no further bot invocation to select the common size:
+
+```powershell
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simAaForkEnvelope.mts --tree PATH_TO_DEV_WITH_T041 --size 128 --years 15 --seed 7 --out-dir FRESH_T041_SCRATCH --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --all-sizes
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simAaForkEnvelope.mts --tree PATH_TO_DEV_WITH_T041 --size 256 --years 60 --seed 7 --out-dir FRESH_T041_SCRATCH --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --all-sizes
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simAaForkEnvelope.mts --tree PATH_TO_DEV_WITH_T041 --size 256 --years 60 --seed 11 --out-dir FRESH_T041_SCRATCH --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --all-sizes
+```
+
+Each `*_note052.summary.json` records `rowQualifyingXs`, every candidate’s four first-log differences and envelope, and signed endpoint deltas. Choose the smallest X present in all three qualifying sets; use that candidate’s envelope in each row’s `candidates` array. Do not choose the maximum of independent local minima: qualification can be non-monotonic. If a row exhausts all four sizes with no qualifying candidate, its reported envelope is 0 and ±1% applies. A failed forced candidate alone remains unresolved and does not invoke that fallback. Do not reuse this base’s output on the T041 tree: changed source identities are rejected. Repeat the signed endpoint and year-10-onward direction checks on the new raw records; the current numbers do not transfer to T041.
+
+### Round 3 verification and limits
+
+- The selected protocol has **15 complete runs / 675 annual records**: three controls and three +§100 day-1 runs reused, nine symmetric/timed probes measured. The five additionally completed §10 probes establish rejection/supporting timing evidence; one in-progress 256×60 s7 +§10 year-5 probe was stopped after §10 had failed on seed 11. Its partial data is excluded. No other process was stopped. All completed probes and that partial attempt used the quiet gate; no two bots ran together.
+- Independent `validateRound3.mjs` checked all 12 selected full-log forks and successful-command first differences, all selected annual/action NDJSON against their completed JSON, all 12 pooled metric envelopes and independently maximized relative values. It also rechecked **135 original-control hashes/non-timing rows** and **24 pre-year-5 hashes/rows** (the first four years of each of six timing probes).
+- `npx tsc --noEmit`: passed. `tests/sim/botAaFundsNudge.test.ts`: **11 passed**. New `tests/sim/botAaForkEnvelope.test.ts`: **7 passed**, covering log-only qualification, insertions/timing differences, four-run/year-10 maxima, relative denominators/zero controls, and source/sign/timing reuse guards. Each single test file ran sequentially through the quiet gate with the native config loader/thread pool documented below.
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/node_modules/vitest/vitest.mjs run tests/sim/botAaFundsNudge.test.ts --maxWorkers=1 --configLoader native --pool threads
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/node_modules/vitest/vitest.mjs run tests/sim/botAaForkEnvelope.test.ts --maxWorkers=1 --configLoader native --pool threads
+```
+
+- Flags-off 128×15 s7 remains **192,899**, residents `[61124,93804,37971]`; controls end at **1,513,835 / 1,427,340** on the long rows. No baseline fixture, default strategy, balance constant, RNG draw, host wiring, save format, infra or cloud-held file changed. No cloud requests or outside-scope hunks.
+- NOTE-052 supersedes the earlier NOTE-048 base-band wording: **base rows stay at ±1%; this chosen envelope widens only variant-target margins**. The older sweep remains measured supporting evidence. The year-5 timing uses the first bot-loop day after four completed years (1441), explicitly documented above because the city calendar changes at day 1440.
+- These finite symmetric probes test the specified direction patterns; mixed outcomes do not prove an absence of a money effect or define a statistical confidence interval. Sub-grid thresholds, negative sizes beyond the selected protocol, Hard/save-specific continuations, full-suite and GPU/browser checks are not measured here. The post-T041 protocol remains required. Browser Acceptance checklist: **N/A — T062 has no browser gates**.
