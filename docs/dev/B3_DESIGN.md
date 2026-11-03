@@ -1,6 +1,7 @@
-# B3: spreading the month-boundary work (design, rev 2)
+# B3: spreading the month-boundary work (design, rev 5: as built, merged onto dev)
 
-Design for docs/WASM_PLAN.md row B3 and docs/WORKER_DESIGN.md §6 row S4. Base: a59f08f, branch `b3-month-spread`.
+Design for docs/WASM_PLAN.md row B3 and docs/WORKER_DESIGN.md §6 row S4. Base: a59f08f, branch `b3-month-spread`;
+rev 5: merged onto dev `44f39b1`, then `5b12abe`; branch `cloud/b3`.
 It is built on the three B3 maps (tourism; population, EQ/HQ and advisors; the whole month day). The numbers below
 come from their runs on this machine: wall clock, idle-gated, interleaved B/W, base code.
 
@@ -21,6 +22,143 @@ come from their runs on this machine: wall clock, idle-gated, interleaved B/W, b
 - Optional items adopted: determinism O1–O13 (fresh arrays, the pass written last, the daily's structure, the stricter
   validator, clamps, `tc` / `dump` in the pass, edge cases, the A1 leftovers, corrections); gameplay O1, O3–O9. Not
   adopted: gameplay O2 (§3.1, "Rejected"), O10 is the gates agent's (§8).
+
+**Rev 3 (as built)** records what the implementation adds to rev 2 and what it measured. Commits: A0 616a760, T1 6e1a875,
+T2 6c0d1ed, P3 0a949fc, the whole-city checks of T2's tests 954d9eb, A1 b0218df (the last code commit; it can be
+dropped on its own), and this revision.
+- **Verified (no timing runs; those are the gates agent's):**
+  - A0 and T1 are bit-identical. cityDigest after 120 days at design cadence equals the base on bot256 (`9f9a4666…eb54`)
+    and dense1m (`a4821afc…5899`); the 128×15 seed-7 bot ends 2015 at 194,432 [63702, 93494, 37236].
+  - T2 + P3 are deterministic: two runs of each fixture, 90 days at design cadence, give the same digest.
+  - A1 is bit-identical to T2 + P3: the same digests after 90 days on bot256 (`6653fea5…73ed`) and dense1m
+    (`dbdb1a30…0602`), and the 128×15 bot's output identical line for line.
+  - Saves on every day 31–60 of the continuity town continue the whole city bit for bit: its save on day 91 equals the
+    uninterrupted game's, field by field and by sha256 (§7 test 2). A save from before B3 (no pass, a v1 slice record)
+    loaded on dom 10 or dom 28 is the uninterrupted game from its first tick on (§7 test 3 d).
+  - tsc and the full vitest suite are clean at b0218df: 136 files, 1,332 tests passed, 18 skipped.
+  - No systematic tourism shift (§8, tourism jobs): on identical states (the two fixtures, no bot, 180 days at design
+    cadence) W's tourists at each tick are within 0.4 % of B's, and its attractiveness is equal or up to 0.25 points
+    higher. On day 26 W already shows the values B reaches at the tick.
+- **The bot changes by design** (128×15 seed 7, residents in 2015): base 194,432; T2 197,227 [65942, 93399, 37886];
+  T2 + P3 195,597 [63452, 94452, 37693]; with A1 the same.
+- **T2, beyond §3.1:**
+  - the tick's freshness test also requires that the venue records came from the saved pass object
+    (`TourismState.pass === systemData.tourismPass`): a pass replaced or deleted after init is recomputed;
+  - a new pass carries the previous pass's `tc` and `dump` (what the last tick scored) until the next tick;
+  - the daily resets a slice record whose `m`, `done` or `rooms` is not a finite number;
+  - init restores whenever a valid pass is present.
+- **P3, beyond §3.3:** population.ts exports `EQHQ_DAY`, `OUTAGE_PRUNE_DAY` (the prune day, named), `OCC_PHASE`,
+  `DEMO_PHASE`, `DEMOGRAPHICS_EVENT_PHASE` and `DEMO_AGG_DAYS` for the calendar test. growth.ts's `CORE_DAY` is not
+  exported (outside B3's files); the test states its value.
+- **A1, beyond §3.2:**
+  - The tick's announcement loop became `announce()`, which calls back for each advice before it tests the next. So the
+    tick takes the same decisions in the same order: an announced advice's cooldown and news item still count for the
+    rest of the pass. The prediction calls the same function.
+  - `AdvisorsSystem.predictPlaces(st)` exposes the prediction (tests). A saved place must be two integers; anything
+    else is looked up.
+  - **The rule wasted at d11040** (gameplay R2 a). The prototype (base + A1) predicted noise and playgrounds on d11039,
+    and the tick posted unemployment and noise. So **playgrounds** (priority 3) was wasted, and the term that differs is
+    the ADVICE_PER_MONTH cap: unemployment (priority 5) holds only from the tick. The base takes its employment sample on
+    the tick itself (11040 mod 4 = 0); with P3 that sample runs on d11037.
+  - With T2 + P3 under A1, dense1m's ticks 10950–11040 waste nothing. Two places were predicted (noElementary,
+    noCollege) and both were posted there. The d11039 prediction looks nothing up: d11040 posts plantFireReach and
+    unemployment, neither with a lazy place (`b3work/implementer/probe/waste_*.out`).
+- **Tests that differ from §7:** test 2's systems and whole-city check, test 3's sentinels and old-save case (d), test 4's
+  twins (see §7); A1's tests are numbered 11–13 (rev 2 numbered them 6–8, and test 6 was also the slicing test). Plus two
+  existing tests:
+  - `tests/infra/emergencyBot.test.ts`, EM-1 normal play: the town is seed 3 over 6 years instead of seed 7 over 4.
+    Seed 7's town raised 3 prompts in the base, 1 after T2 and none after T2 + P3. Across 5 seeds × 10 years the base
+    raised 21 prompts and B3 16 (seeds 7, 3, 11, 13, 21: 5/1, 7/4, 3/3, 3/6, 3/2): the bot's incidents are chaotic,
+    not fewer by design. Seed 3 over 6 years raises 5 (base), 2 (T2) and 3 (T2 + P3, with A1 too).
+  - `tests/sim/desirability.test.ts`, "a loaded city reads the saved demographics sample": its sample days follow
+    `DEMO_PHASE` (days 49 and 81 instead of 64 and 96).
+
+**Rev 4 (fix round 1)** answers the gates' failed items and the two verifiers' findings. Commits: b5f5d94 (tourism),
+6d6fc5c and 2339b0c (advisors), 038100b (EM-1's towns), and this revision with the balance rows. Scratch:
+`b3work/implementer-fix/`.
+- **Fixed:**
+  - **The layer event** (verify-a minor 2). `venuePass` emits nothing; the daily, the tick's fallback, `refresh` and
+    `init` emit `layerUpdated` `'tourism'` as their last statement, and the daily starts the next slice window before
+    the pass. Before, a listener that threw (the Tourism overlay's rebuild, under the scene's guard) left last month's
+    pass in `systemData` next to this month's records and raster, and a save on dom 26–29 restored the old ones. No sim
+    system listens to that event, so the city is unchanged.
+  - **−0** (verify-a minor 3). The slice window of the days before a city's first `TOURISM_DAY` was −0; a save stores
+    0, so a structured-clone load and a file load differed in `tourismAcc.m`. `tourismWindow` adds 0.
+  - **The advisors' month scans in any list order** (verify-a minor 4; pre-existing, but in `advisors.ts`). The facility
+    scan lists its buildings in ascending id and `civicFirst` is the lowest unpowered civic id; the outage scan and the
+    bus-stop place take the lowest id among equals. A game loaded before the day-29 scan now predicts and posts the same
+    "Show me" places as the game it continues (§4). An advice's place changes only among equals or after a removal.
+  - **EM-1 normal play** (verify-a minor 5): a fixed list of towns instead of one (§7). The sweep behind it: over seeds
+    1–40 × 6 years the base and B3 both raise 86 prompts (2.15 a town; paired W − B +0.00, se 0.39; W above B in 14
+    towns, equal in 10, below in 16). Every town keeps its prompts (none lost beyond one, none counted unraised), and 14
+    (base) and 17 (B3) of the 40 towns raise fewer than the floor of 2 (`implementer-fix/em1/`).
+- **Tests added** (§7, tests 7, 8 and 14). Each fails on bed0ebf and passes now.
+- **Re-verified at 038100b** (2339b0c only skips a sort of lists already in order):
+  - The city digests after 120 days at design cadence (cityDigest's sha256) are unchanged from bed0ebf: dense1m
+    `75782c66…77b1` and bot256 `e3c73eca…4b67`, twice each in separate processes (the base: `a4821afc…`, `9f9a4666…`).
+    So the fix round is bit-identical on both fixtures.
+  - tsc is clean, and the full vitest suite passes: 137 files (1 skipped), 1,335 tests (18 skipped); rev 3 had 136 files
+    and 1,332 tests.
+  - The 128×15 seed-7 bot equals bed0ebf's line for line in every non-timing column: 195,597 [63452, 94452, 37693] in
+    2015 (a59f08f: 194,432 [63702, 93494, 37236]).
+  - The balance runs (256×60 seeds 7 and 11, 128×15 seed 7) equal the gates' W runs in every non-timing column.
+    Acceptance on 256 seed 7, against the lead's base runs of a59f08f:
+    - population 180,536 at year 15 and 1,475,500 at year 60, at least 0.976× the base in every year;
+    - approval at least 80.4 from year 30, funds at least 7,373;
+    - EQ 100 or more from 2018 (122.1 in 2030);
+    - `totalMsPerDay` 10.84 against the base's 12.74;
+    - tourism jobs as the gates measured on the same rows: within ±30 % from year 15, and outside the band in the young
+      town in the base as well.
+
+    The rows are now under a `b3` key in `tests/sim/fixtures/balance-baseline.json` (§8 asked for them; rev 3 had not
+    added them).
+  - The day-29 sort is small. dense1m's scan holds 467 ids (tiered 376) and bot256's 479. A sort call costs 0.03 ms warm
+    and up to 0.9 ms cold in a fresh process; 2339b0c skips it while a list is in order, as it is until a plopped
+    building is removed.
+- **Not changed, and why:**
+  - **The full-game save / load gate** (the gates' first item): it fails in the base and in B3 alike, on 24 of 24 saves,
+    because of keys that B3 neither adds nor moves (§4).
+  - **Approval's resumed init** (the gates' second item, verify-a minor 1). It recomputes the tourism pride from
+    today's tourists. That is display-only and lasts until the next tick, and the base shows it after any venue removal.
+    The fix is in `approval.ts`, outside B3's files: L7, with a tested 4-line patch (§4, §10).
+  - **The timing reading as written** (verify-b's blocker, the gates' third item). B3 cannot meet it on the first three
+    ticks after a load. Every hook is cold there, and the budget's cold cell loop (L1, `budget.ts`), population's post-load
+    refill (L2) and, in frames, the infra steps that share the month frame carry most of the excess. B3's own hooks
+    on those ticks (verify-b's per-hook medians): advisors +0.6 to +2.3 ms; tourism at most +0.5 ms on the 2nd and 3rd
+    ticks, and not among the six largest hooks on the 1st. L0 is the lead's decision (§8, §10).
+  - **128×15 tourism** (verify-b minor 7): no systematic shift. Over seeds 3, 5, 7, 9, 11, 13 and 21 the bot's tourism
+    jobs, summed over the 15 years, are W/B 0.764–1.343 (geometric mean 1.015; W above B in 4 of 7), its 2015 tourists
+    0.980 and its attractiveness +0.02 points (`implementer-fix/tj/`). Seed 7's 0.764 is the low end of the chaos.
+  - The other findings of verify-b (off-tick deopt days, max / p99, `totalMsPerDay`, tourism jobs in the young town, L4)
+    need no B3 change; their readings are the lead's (§8).
+
+**Rev 5 (the cloud carry-over, Nov 3)** merges B3 onto dev and applies L7. Branch `cloud/b3`; the gap list, every
+gate and the evidence are in docs/dev/reports/cloud-B3.md.
+- **Merged onto dev `44f39b1`** (`422bdf0`: B1, W0–W1.1, T029, FH-04 and the J-fixes as merged). Dev's tourism.ts,
+  advisors.ts and population.ts equal `a59f08f`'s, so B3's code merged unchanged. This file (dev held rev 2) and
+  `balance-baseline.json` (B1's `b1` key next to B3's `b3`) conflicted; both sides were kept.
+  Dev's next commit `5b12abe` (T037d: approval labels and details, the taxHigh rule) merged cleanly (`dea855c`); the
+  bot, the digests and the balance rows below are the same on both merges.
+- **L7 is in** (`1db0c5d`, approval.ts): a resumed init keeps the saved tourism term (finite), else computes it as
+  before. §7 gains a test: a static town saved on days 56–59 keeps the tick's approval terms and raw value right after
+  each load (it fails without the fix, on day 56); test 2 compares them right after each of its 30 loads too (it fails
+  without the fix on day 31, the base's removal case). The §4 and §10 L7 items are closed.
+- **The bot on dev changes by design, from T2 and P3 alone:** 128×15 seed 7 ends 2015 at 192,899
+  [61124, 93804, 37971], against dev's 196,101 [59288, 95301, 41512] (−1.6 %). Dev with every B3 file except T2's
+  tourism.ts (T1's instead) and P3's population.ts gives dev's output line for line; dev with only T2's and P3's files
+  gives B3's line for line. So A0, T1, A1 (after B1, §3.2 O9), the fix round and L7 change nothing on the bot.
+- **Digests on dev** (monthbench `--digest`, 120 days at design cadence, two processes each): dense1m `f341ae74…18be`,
+  bot256 `b3081164…d504`, equal in both processes (dev: `a93bb936…3571`, `f561f4e9…58aa`; the no-T2/P3 tree equals dev
+  on both).
+- **Timing on dev** (L0; W and dev interleaved, 5 runs a side at design cadence, 3 in frames): the worst warm month is
+  4.23 (dense1m design), 6.98 (bot256 design), 5.62 / 9.66 (dense1m frames: unit / month frame), against dev's 14.04,
+  13.79, 10.84 / 9.64. Dom 26 ≤ 3.8 and dom 29 ≤ 8.5 everywhere. **Dom 28 misses A0's gate at design cadence** in both
+  trees (W 16.2 / 10.3, dev 13.8 / 8.4; frames 5.8 / 6.5): a JIT lottery (one state's day 0.9–17.8 ms across runs), so L3.
+- **The balance procedure on dev passes** (256×60 seed 7: 1,513,835 at year 60, 0.991× b1, every year ≥ 0.978×; seed
+  11 ≥ 0.947×; approval, funds, EQ and `totalMsPerDay` against a same-session dev run all pass). The `b3` rows of
+  `balance-baseline.json` are re-recorded from the merged tree and `reference` is `b3`. Tourism jobs within ±30 % of dev:
+  41 of 46 years from year 15 on seed 7 and 43 of 46 on seed 11, the misses in opposite directions; six 128×15 seeds give a
+  summed W/B geometric mean of 1.074. Bot chaos, as §8 expected.
 
 ## 1. The decision
 
@@ -154,11 +292,13 @@ City digests after 120 days of bot256 at design cadence are identical to the bas
      `splat(acc, N, cx, cz, v)` and `raw[blockOf(cx, cz)] += v` per entry, then `visitorsLayer`, then `coarseBlur3`.
      `blockOf` uses `floor(cx)`, which equals `b.x + (b.w >> 1)`, and the block centre for beaches. So the block sums are
      the ones the present code makes.
-  9. It updates the `TourismState` WeakMap, emits `layerUpdated` `'tourism'`, and **writes `systemData.tourismPass` as
-     its last step** (determinism O2): a throw inside the guarded daily leaves the old pass, whose `m` is then stale, and
-     the tick's fallback recomputes from scratch instead of reading a half-written pass. `ven` and `spl` are fresh
-     arrays for every pass (O1): `serializeCity` without `copy` aliases `systemData`, so a reused buffer could rewrite a
-     saved pass.
+  9. It updates the `TourismState` WeakMap and **writes `systemData.tourismPass` as its last step** (determinism O2): a
+     throw inside the guarded daily leaves the old pass, whose `m` is then stale, and the tick's fallback recomputes from
+     scratch instead of reading a half-written pass. It emits nothing (rev 4): the daily, the tick's fallback, `refresh`
+     and `init` emit `layerUpdated` `'tourism'` as their own last statement, as the base's update did. So a listener
+     that throws (the Tourism overlay's rebuild, under the scene's guard) cannot leave the saved pass, the slice window
+     or the attract step behind the state in memory. `ven` and `spl` are fresh arrays for every pass (O1):
+     `serializeCity` without `copy` aliases `systemData`, so a reused buffer could rewrite a saved pass.
 - **The attract step** runs in `tourism.monthly()`.
   1. If `tourismPass` is missing, invalid or **not fresh**, `venuePass(sim, null)` runs first. The pass is fresh when
      `pass.m === ⌈st.day / 30⌉`, which equals `st.monthIndex` on a tick day (determinism R2). The fallback is defensive:
@@ -213,7 +353,10 @@ interface TourismPass {
 1. A missing record, or a `v !== 2` one, becomes `{ v: 2, m: -1, done: 0, rooms: 0, hist: [] }`.
 2. When `m` differs, the sums start over.
 3. If slice `day % 30` is not done, it is added. (No early return: the pass below must run on a done slice too.)
-4. On `TOURISM_DAY` it runs `venuePass(sim, window complete ? acc : null)`, then `a.m = m + 1` with the sums cleared.
+4. On `TOURISM_DAY` it takes the window's sums (when every slice is in), starts the next window (`a.m = m + 1`, the sums
+   cleared), runs `venuePass` on the sums it took (`null` otherwise: one full pass), and emits the layer event last (rev 4:
+   the window was reset after the pass, so a throwing listener left it un-reset in a save of that day).
+5. (Rev 4.) `tourismWindow` adds 0: the days before a city's first `TOURISM_DAY` gave −0, which a save stores as 0.
 
 **`init()`:**
 - **A loaded city with a valid `tourismPass`** takes the **restore path**. Valid (determinism O4): `v === 1`; `ven`
@@ -425,6 +568,37 @@ is also limited by approval's survey slices, population's float coarse sums and 
 order after a load and live outside B3's files. So continuity is tested per month-state on an economy-only town (§7) that
 removes and adds **plopped** buildings, as in tests/sim/finalFixesEcon.test.ts, and not with fixture digests.
 
+Measured (rev 3):
+- **With every economy system, the rest of the economy does not continue exactly across a load**, in the base and in
+  B3 alike. A town saved on day 45 diverges on day 46: population's homes (pop, age, edu) after its post-load refill, and
+  approval's init recomputes its terms at load.
+- **With tourism, budget and approval on one runtime, the whole city continues bit for bit** to day 91 from every save
+  day 31–60 in B3. The base fails right after the load on every save day (its approximate rebuild), and a B3 copy
+  without the id sort fails at the ticks.
+- So §7's test 2 runs those three systems.
+- (Rev 4.) **Approval's resumed init** recomputes `approvalTerms` and `approvalRaw` at load, from a full survey and from
+  `econData.tourists`; the uninterrupted game keeps what its last tick scored. The tourism term therefore differs right
+  after a load whenever the tourists changed since the tick: after any venue removal in the base, and in B3 also after
+  the pass of day 26. In test 2's town (a removal on day 30) it differs right after 29 of the 30 loads, in the base and
+  in B3 alike. It is display-only (`approvalBreakdown`, the TopBar's "heading for" tooltip; `stats.approval` is kept)
+  and lasts until the next tick: in B3 the whole city on day 91 equals the uninterrupted game's from all 30 saves. The fix
+  belongs in `approval.ts` (L7: keep the saved tourism term on a resumed init; with it 0 of the 30 differ). Rev 5:
+  applied (`1db0c5d`).
+- (Rev 4.) **The advisors' month scans do not depend on the order of `rt.plopped` / `rt.growables`** (swap-removes in a
+  running game, Map order after a load): the facility scan lists its buildings in ascending id and takes the lowest
+  unpowered civic id as `civicFirst`; the outage scan and the bus-stop place take the lowest id among equals. A game
+  loaded before the day-29 scan therefore predicts and posts the same "Show me" places. This was pre-existing; A1 made it
+  matter more, since the tick's places now come from that scan.
+- (Rev 4.) **The full game** (`createSystems` at design cadence; the gates' save / load gate, whole-city sha256 at day
+  120) does not continue exactly in the base or in B3: 24 of 24 saves differ in each tree, and right after the load 47–74
+  keys differ in both. They are the infra layers and building flags, approval's survey terms, emergency, `infraTransport`
+  and their stats, plus population's stats on 4–7 of 12 saves in B3 and 4–5 in the base (14–744 fewer residents right
+  after the load, with the same buildings). None of them is state that B3 adds or moves: the tourism pass and window,
+  the advisors' scans, the visitor raster and the tourism read-outs are equal right after all 24 loads in B3 (the base
+  differs on 22 of 24).
+- **The budget inserts its income lines in `rt.plopped` order**, which a load rebuilds in Map order. The values are
+  equal and only the key order differs (budget.ts, outside B3), so the test compares the lines key by key.
+
 **Size.** `ven` + `spl` at dense1m: 445 venues → ≈ 2.7k doubles ≈ 21 kB, against bundles of 3.5–4.3 MB. The bundle codec
 stores typed arrays in its binary blob. The recovery codec carries `systemData` (the `data` part) as-is through
 `encodeBundle`, as a raw blob that the localStorage budget never drops (determinism O10: rev 1 said it XOR-codes them; it
@@ -539,53 +713,83 @@ documented in the code:
 - `tests/sim/exact/j10Original.ts`: the two P3 phases and the event day (determinism R3).
 
 **New, in tests/sim/monthSpread.test.ts (T2, P3):**
-1. **Schedule.** On a town with a castle, a hotel and a historic home:
+1. **Schedule.** On test 2's town, with every economy system:
    - the totals, records and raster change on day 26 and on no other day;
    - `layerUpdated` `'tourism'` is emitted on day 26 only;
    - on the tick, only attractiveness, its terms, migration and migrants change, and `tourismPass.m === st.monthIndex`.
-2. **Continuity on every day of the month** (determinism R4). An economy-only town (finalFixesEcon's `town()`) with
-   venues (castle, museum, zoo, small and large airports, train station), hotels, historic homes, a college and a lake
-   for beaches. A script of player actions runs in every game at the end of its day:
+2. **Continuity on every day of the month** (determinism R4). An economy-only 160² town: 148 apartment blocks, four of
+   them historic; six hotels; 22 venues (landmarks, culture, parks, both airports, a train station, a college); a lake
+   with beaches. It runs tourism, budget and approval on one runtime (rev 3: §4's measurements). A script of player
+   actions runs in every game at the end of its day:
    - (a) day 30: bulldoze a venue that is **not the last plopped building** (the swap-remove reorders `rt.plopped`; a
      load rebuilds Map order);
    - (b) day 58: bulldoze a landmark and the operating large airport (saves on 58–60 carry a decremented
      `pass.culture` / `conn` and a `ven` id whose building is gone);
    - (c) day 58: plop a new venue (no record until day 86, so `venueIncomeFactor` is 1 on day 60 in both games).
 
-   For each save day s = 31…60: `serializeCity({copy})` → `deserializeCity` → `new Sim(economySystems())`, then both
-   games run to day 91 (passes on 56 and 86, ticks on 60 and 90). With `Object.is` / byte equality:
+   For each save day s = 31…60: `serializeCity({copy})` → `deserializeCity` → `new Sim` with the same three systems,
+   then both games run to day 91 (passes on 56 and 86, ticks on 60 and 90). With `Object.is` / byte equality (the income
+   lines key by key):
    - right after the load: every `venueVisits`, `tourismSummary`, `attractivenessBreakdown` and `st.visitors`;
    - at days 60 and 90: the econData tourism totals, attractiveness, `attractTerms`, migration and migrants; the stats;
-     `lastIncome['tourism']` and every `facility:*` line; `st.visitors`.
+     `lastIncome['tourism']` and every `facility:*` line; `st.visitors`;
+   - on day 91 (rev 3): the whole city, every field of its `serializeCity` save (`savedAt` aside) and its sha256 digest.
 3. **Fallbacks:**
    - (a) Delete `tourismPass` before loading on dom 10 and on dom 28. Init rebuilds (records exist, raster > 0 at the
-     venues). On dom 28 the tick uses init's pass; with the pass deleted after init, it runs its own.
-   - (b) A v1 `tourismAcc` becomes v2, and the first pass's sums equal the sliced sums of an uninterrupted run.
+     venues). On dom 28 the tick uses init's pass; with the pass deleted after init, it runs its own. (Rev 3: the save
+     carries sentinel totals, which stay on dom 10 and give way to init's pass on dom 28.)
+   - (b) A v1 `tourismAcc` becomes v2, and the first pass's sums equal the sliced sums of an uninterrupted run (rev 3:
+     the whole pass and the tourism outputs equal the uninterrupted game's at day 56).
    - (c) A pass that fails the validator (a Float32Array `ven`, a short `conn`) takes the fallback.
+   - (d) (Rev 3.) A save from before B3 (no `tourismPass`, a v1 `tourismAcc`) loaded on dom 10 or dom 28 of a static town
+     continues, and from its first tick on it is the uninterrupted game: the tourism outputs on days 60 and 90, and the
+     whole city (fields and sha256) on day 91. Loaded on dom 10, its day-56 pass already equals the game's, except the
+     breakdown's culture detail, which stays the one init's pass scored until the tick.
 4. **Removal between the pass and the tick.** Bulldoze a landmark and the only large airport on day 28. The totals drop
    at once, as today. `pass.culture`, `pass.tc` and `pass.conn[0]` drop (never below 0). The tick's
-   `attractTerms.connect` equals the value with no large airport.
+   `attractTerms.connect` equals the value with no large airport (rev 3: equal to a twin town that bulldozed them before
+   the pass, below one that kept them).
 5. **Determinism.** Two runs of the same city give identical `serializeCity` digests after a year (12 passes, 12 ticks).
 6. **Slicing units.** The window month (`m = ⌈(day − 26)/30⌉`) covers each slice exactly once per window; the pass reads
    the window only from the daily; the venue order is ascending id whatever the order of `rt.plopped`.
+7. (Rev 4.) **A save in the city's first month** (days 3 and 25: the slice window is 0, never −0), loaded through the
+   bundle codec and through a structured clone: the same city, and the whole city on day 91 is the uninterrupted game's.
+8. (Rev 4.) **A layer listener that throws on the pass day** (day 56, under a guard that runs the next day): the saved
+   pass is the new one and the slice record is the next window's; saves on days 56–59 continue field by field and by
+   digest. Tests 7 and 8 fail on bed0ebf.
 9. **P3.** Over days 1…960, no month tick is an employment or a demographics sample day, the samples still recur every 4
    and 32 days, and the `'demographics'` event comes on dom 1. The existing save/load tests of `wfNow` and `popGrids`
    stay green.
 10. **The calendar** (gameplay O9): the month offsets (`EQHQ_DAY`, `TOURISM_DAY`, `MONTH_SCAN_DAYS`, `CORE_DAY`,
     `FACILITY_SCAN_DAY`, the prune day, the P3 phases) never fall on dom 0, and the heavy ones are pairwise distinct.
 
-**New, for A0 and A1, in tests/sim/advisors.test.ts and tests/sim/advisorsPredict.test.ts:**
-- A0: the kernels give the same `ZoneScan` as a frozen copy of the base's `scanZones` on random zone maps (lots, odd
-  tiles, steep tiles, outages, rubble).
-6. A lazy-place rule (`noElementary`, at the biggest unserved cluster): after day 29, `scan.places[id]` is set. The
+**New, for A0 and A1, in tests/sim/exact/advisorsScan.test.ts (A0) and tests/sim/advisorsPredict.test.ts (A1):**
+- A0: the kernels give the same `ZoneScan` (and `lotFitAt`) as a frozen copy of the base's scans
+  (`tests/sim/exact/advisorsScanOriginal.ts`) on random zone maps (lots, odd tiles, steep tiles, outages, rubble,
+  roadless blocks), with `Object.is`.
+11. **A lazy-place rule** (`noElementary`, at the biggest unserved cluster): after day 29, `scan.places[id]` is set. The
    tick's news item carries that x/z, and the rule's `where` is not called on the tick.
-7. **Predict is read-only** (gameplay O4). All of `st.systemData` (survey, popGrids, outages included), `st.news`,
+12. **Predict is read-only** (gameplay O4). All of `st.systemData` (survey, popGrids, outages included), `st.news`,
    econData and the RNG state are deep-equal before and after `predictPlaces`; `residentSurvey` is not called and no
-   zone scan runs (module spies). Without `scan.zone` the prediction is empty.
-8. **Saves on day 28 and day 29** (determinism R4 d). The loaded games post the same news (text, x, z) on the tick as
+   zone scan runs (module spies). Without `scan.zone` the prediction is empty. (Rev 3: `residentSurvey` is spied, and the
+   spy is shown to see the advisors' calls. The zone scan has no export to spy on: gather takes the saved scan, and without
+   one the prediction returns before gather.)
+13. **Saves on day 28 and day 29** (determinism R4 d). The loaded games post the same news (text, x, z) on the tick as
    the uninterrupted one: the day-28 save predicts on day 29 itself. With `scan.places` deleted, the tick looks the place
    up and, in a steady city, finds the same one. The existing "month scans are saved with the city" test covers `places`
    in its `structuredClone` check.
+14. (Rev 4, tests/sim/advisorsScanOrder.test.ts.) **The scans in any list order:** a game whose `rt.plopped` and
+   `rt.growables` were reordered by swap-removes and its loaded copy give the same month scans and predicted places. The
+   facility lists are in ascending id, `civicFirst` is the lowest, and the outage place is the lowest id of equally
+   occupied homes. It fails on bed0ebf.
+15. (Rev 5, tests/sim/monthSpread.test.ts.) **Approval right after a load on dom 26–29** (L7): a static town saved on
+   days 56–59 keeps the approval terms and raw value its tick of day 30 scored, as the uninterrupted game does; test 2
+   compares them right after each of its loads as well. Both fail without the approval.ts fix.
+
+**Changed in rev 4:** `tests/infra/emergencyBot.test.ts`, EM-1 normal play. The towns 3, 7, 11 and 13 (6 years each) run
+in that order until 2 prompts were raised in all, and each town's prompts must hold (every counted one raised, at most
+one lost). One town's count is chaotic: over seeds 1–40 the base and B3 both raise 86 prompts, and 14 and 17 of the 40
+towns raise fewer than 2 (§8). Seed 3 raises 3 (5 in the base), so the test still runs one town.
 
 ## 8. Verification gates
 
@@ -594,7 +798,7 @@ documented in the code:
 | A0 | tsc; vitest; cityDigest of bot256 and dense1m after 120 days at design cadence = base; 128×15 seed-7 bot identical (194,432 in 2015); **dom 28: worst warm month ≤ +10 ms at dense1m design cadence** (timing) |
 | T1 | tsc; vitest; cityDigest of bot256 after 120 days at design cadence = base (`9f9a4666…eb54`); 128×15 seed-7 bot identical |
 | T2, P3 | tsc; vitest including tests 1–6, 9 and 10; determinism (two runs, same digest) |
-| A1 | tsc; vitest including tests 6–8; digests after 90 days equal to T2 + P3 on both fixtures; bot table identical (also after B2). If either differs, say why: a day-29 place that differs from the tick's. **Day 29: the worst warm month and the p90 ≤ the tick's bar after B3; otherwise drop A1** (gameplay R2 b). Name the rule wasted at d11040 and the filter term that differs, with P3 under it (gameplay R2 a; §10) |
+| A1 | tsc; vitest including tests 11–13; digests after 90 days equal to T2 + P3 on both fixtures; bot table identical (also after B2). If either differs, say why: a day-29 place that differs from the tick's. **Day 29: the worst warm month and the p90 ≤ the tick's bar after B3; otherwise drop A1** (gameplay R2 b). Name the rule wasted at d11040 and the filter term that differs, with P3 under it (gameplay R2 a; §10) |
 
 **The balance procedure** (docs/SIM_DEPTH_SPEC.md, "Balance procedure"): runs of 256×60 seeds 7 and 11 and 128×15 seed
 7, against the lead's base runs in `scratchpad/balance/base/`. Acceptance on 256 seed 7:
@@ -602,9 +806,15 @@ documented in the code:
 - approval ≥ 50 from year 30, and funds ≥ 0;
 - EQ ≥ 100 by year 30;
 - **tourism jobs within ±30 %** (gameplay R6): neither the balance-json rows nor the bot's table has a tourism-jobs
-  column, and tools are outside B3's files. A scratch probe (`b3work/implementer/tourismJobs.ts`) runs the bot's city
+  column, and tools are outside B3's files. A scratch probe (`b3work/implementer/tourismJobs.mts`) runs the bot's city
   and logs per year `econData.tourism` against `demandContext(st, rt).tourism` (the legacy formula, demand.ts:57), for B
   and W on 256×60 seed 7; the ratio must stay within 0.7–1.3 and within ±30 % of B's;
+  - (Rev 3.) The base itself is below that band in a young town: B's ratio is 0.29–0.40 in the first three years of 128
+    seed 7, W's 0.24–0.29 (`implementer/probe/tj_smoke*.json`). B3 changes when the venue model runs, not the model, so
+    where B is outside 0.7–1.3 the comparison with B decides. Single years can still differ by more than ±30 % through
+    the bot's chaos: on 128×15 seed 7 W's yearly tourists are 0.62–1.14 × B's (T2 alone 0.65–1.04) at the same
+    population. On identical states without the bot (the fixtures, 180 days at design cadence) W's tourists at each tick
+    are within 0.4 % of B's (`implementer/probe/trace_*.json`, `probe/tourismTrace.mts`);
 - `totalMsPerDay` ≤ baseline + 3.
 
 If 256×60 seed 7 lands under 0.9× the baseline (gameplay O10: the bot moves ±9–15 % at year 60 from step-boundary
@@ -613,7 +823,7 @@ changes alone), run T2-only and P3-only to attribute it, and use seed 11 and 128
 **The bot output changes by design** (T2, P3). Expect the change to stay within the run-to-run chaos margin. The new
 128×15 seed-7 2015 population goes in the hand-off report; docs/dev/STATUS.md (the 194,432 gate line) is the lead's and
 is not edited here (gameplay R7). Add the B3 rows to tests/sim/fixtures/balance-baseline.json under a new key, leaving
-the old rows untouched (the B1 precedent).
+the old rows untouched (the B1 precedent). (Rev 4: done, key `b3`, from the runs at 038100b.)
 
 **Acceptance timing** with `monthbench` (§9) through `tgate.py`:
 - B = b3base against W = b3 after T2 + P3 (and again with A1), ≥ 3 interleaved runs per side;
@@ -641,7 +851,11 @@ Judge (gameplay R4, the statistic the lead is asked to approve):
   - A1: `MonthScans.places`; `gather`'s `'predict'` mode and `depthRules`' `Scans.predict`; the shared announcement test;
     `recentNews`' day; `predictPlaces`, the day-29 hook and the tick's use of saved places.
 - `src/sim/economy/population.ts`: `OCC_PHASE`, `DEMO_PHASE` and the `'demographics'` event day.
-- The tests in §7, and `tests/sim/exact/j10Original.ts`.
+- The tests in §7, and `tests/sim/exact/j10Original.ts`; rev 3: `tests/infra/emergencyBot.test.ts` (EM-1's town) and
+  `tests/sim/desirability.test.ts` (the sample days).
+- Rev 4: `tourism.ts` (the layer event's place, the window reset, `tourismWindow`); `advisors.ts` (`scanFacilities`'
+  order and `civicFirst`, `scanOutages`' and the bus-stop place's tie-break); `tests/sim/advisorsScanOrder.test.ts`;
+  EM-1's towns.
 
 **Not touched:**
 - `budget.ts`, `demographics.ts`, `tuning.ts`, `params.ts`;
@@ -656,7 +870,11 @@ Judge (gameplay R4, the statistic the lead is asked to approve):
   - `tools/monthbench.ts`, bundled with `tools/bundle.mjs --tree <worktree>`;
   - `tools/tgate.py` and `tools/monthagg.py`;
   - saves from dom 16 and 28: `map-month/fixtures/*_d{16,28}.metropolis`.
-- The tourism-jobs probe: `implementer/tourismJobs.ts` (§8).
+- The tourism-jobs probe: `implementer/tourismJobs.mts` (§8; `TREE=<worktree> npx tsx tourismJobs.mts 256 60 7 out.json`,
+  run from inside the tree).
+- The tourism trace (rev 3): `implementer/probe/tourismTrace.mts` (`cd <tree> && TREE=$PWD npx tsx tourismTrace.mts
+  <fixture> <days> <out.json>`): the tourism outputs, attractiveness and its terms on every day 26 and tick of a fixture
+  run at design cadence, for a B / W comparison without the bot.
 - The §5 model: `designer/model.py` (the m_ runs), `model_i.py` (the instrumented runs), `model_c.py` (first ticks after a
   load), `doms.py` (days 26–29) and `resid.py` (per-tick residuals).
 
@@ -701,3 +919,11 @@ Judge (gameplay R4, the statistic the lead is asked to approve):
 - **L5, the autosave on the main-thread month frame.** 50–130 ms at 1M. This belongs to W1.3.
 - **L6, small items.** Demand's caps refresh on dom 0 (0.4–1.5 ms, demand.ts). The inspector's "(next month)" wording
   (facilities.ts).
+- **L7 (rev 4; rev 5: applied in `1db0c5d`), approval's resumed init** (approval.ts; §4). On a resumed init keep the
+  saved tourism pride instead of recomputing it from today's tourists: `b3work/implementer-fix/approval/approval-resumed-tourism.patch`, 4 lines. In
+  test 2's town the approval terms right after a load then equal the uninterrupted game's on all 30 saves (29 of 30
+  differ without it, in the base and in B3), and the whole city on day 91 still does (`approval/out_*.txt`). The other
+  terms are recomputed from a full survey at load as before; keeping them too would need the survey's coverage, which
+  approval does not save. `approval-resumed-tourism-test.patch` makes test 2 compare the approval terms right after
+  each load too: on a copy of cf6af9a it fails without the approval patch (day 31) and passes with it, as do
+  tests/sim/approval.test.ts and tests/save (tsc clean, 69 tests; `approval/l7_*.log`).

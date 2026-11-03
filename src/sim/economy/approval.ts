@@ -378,7 +378,11 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
     T.garbage = g.garbage;
     T.needs = g.needs;
     T.tapWater = g.tapWater;
-    T.tourism = Math.min(AT.tourismMax, (data.tourists ?? 0) / AT.tourismPerPoint);
+    // (a loaded city keeps the tourism pride its last tick scored, until its next tick: tourism's venue pass on day 26
+    //  changes the tourist totals 4 days before the tick that scores them — B3 — and a bulldozed venue leaves them at once)
+    const tourismSaved = resumed ? data.approvalTerms.tourism : undefined;
+    T.tourism = tourismSaved !== undefined && Number.isFinite(tourismSaved) ? tourismSaved
+      : Math.min(AT.tourismMax, (data.tourists ?? 0) / AT.tourismPerPoint);
     // HQ: a bonus for good health care; the penalty fades in with the city (no hamlet has a hospital)
     const hq = w > 0 ? clamp(AT.hq * (s.hq - AT.hqRef) / AT.hqSpan, -AT.hq, AT.hq) : 0;
     T.hq = hq < 0 ? hq * fadeIn : hq;

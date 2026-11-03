@@ -3,9 +3,11 @@
  * The accessibility keys (uiScale, textSize, motion, colourVision: docs/POLISH_PLAN.md §7.5) live here, so the title, region
  * and New City screens can apply them before any city exists; a city reads them with the other shared keys (cityOverrides)
  * and hands its changes back (takeCityChanges). The other §7.5 keys are in-game settings (src/game/settings.ts), except
- * disasterRate and crises (per-city config, src/sim/config.ts, with LG-15 and LG-25) and the first-run quality (FH-21).
+ * disasterRate and crises (per-city config, src/sim/config.ts, with LG-15 and LG-25). The first run's quality comes from
+ * the device (applyFirstRunQuality, FH-21).
  */
 import type { QualityLevel } from '../render/contracts';
+import { detectQuality } from '../render/world/quality';
 
 /** extra text size in percent, on top of the UI zoom (FH-23) */
 export type TextSize = 0 | 10 | 20 | 30;
@@ -19,6 +21,14 @@ export const MOTION_PREFS: readonly MotionPref[] = ['system', 'full', 'reduced']
 export const COLOUR_VISIONS: readonly ColourVision[] = ['standard', 'red-green', 'blue-yellow'];
 /** the UI scale slider (title screen and in-city panel) */
 export const UI_SCALE = { min: 0.7, max: 1.5, step: 0.05 } as const;
+
+/**
+ * NOTE-042: a control that changes nothing reads as broken, so the title screen shows an accessibility control only once
+ * its feature reads the key. The lane that wires one sets its flag here in the same change: FH-23 text size, FEEL-21
+ * motion (which also labels 'system' with the device's value), FH-20 colour vision (with T038's palette). Until then the
+ * key keeps its stored value and its default.
+ */
+export const A11Y_WIRED: Record<'textSize' | 'motion' | 'colourVision', boolean> = { textSize: false, motion: false, colourVision: false };
 
 export interface AppSettings {
   /** default graphics quality */
@@ -106,6 +116,24 @@ export function loadSettings(): AppSettings {
   if (stored?.uiScale === undefined) assign(s, 'uiScale', legacyUiScale());
   s.v = SETTINGS_VERSION;
   return s;
+}
+
+/** keys that mean this browser has run the game before (an existing profile keeps its settings: FH-21) */
+const PROFILE_KEYS = [KEY, LEGACY_UI_SCALE_KEY, 'metropolis.lastRegion', 'metropolis.lastSession'];
+
+/**
+ * FH-21: on the first run only (no profile in this browser yet), the default graphics quality comes from the device:
+ * detectQuality(), mobile -> Low, under 8 cores -> Medium, else High. Returns true when it applied: the caller saves it,
+ * so the choice holds from then on like any other setting.
+ */
+export function applyFirstRunQuality(s: AppSettings, detect: () => QualityLevel = detectQuality): boolean {
+  try {
+    if (PROFILE_KEYS.some((k) => localStorage.getItem(k) !== null)) return false;
+  } catch {
+    return false;
+  }
+  s.quality = detect();
+  return true;
 }
 
 export function saveSettings(s: AppSettings): void {
