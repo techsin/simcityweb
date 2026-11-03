@@ -56,6 +56,21 @@
 .emg-btns { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .emg-btns .btn .emg-eta { font-weight: 800; opacity: 0.9; margin-left: 2px; }
 .emg-x { position: absolute; top: 6px; right: 6px; width: 24px !important; height: 24px !important; }
+/* FH-08: first-incident teaching stays readable when the ordinary banner is compact. */
+.emg-teach, .emg-teach-reason {
+  border-top: 1px solid var(--hair, rgba(255, 255, 255, 0.12)); margin-top: 8px; padding-top: 8px;
+  display: flex; flex-direction: column; gap: 6px; font-size: 12px; line-height: 1.4;
+}
+.emg-teach-title { font-weight: 700; }
+.emg-teach .emg-btns { margin-top: 2px; }
+.emg-teach-reason > .btn { align-self: flex-start; }
+.emg-banner.teaching { opacity: 1; }
+/* No banner-sized gap beside open panels: keep the one-shot lesson's controls available above them. */
+.emg-teach-fallback {
+  position: absolute; top: 70px; left: 50%; transform: translateX(-50%); z-index: 56; pointer-events: auto;
+  width: 440px; max-width: calc(100% - 32px); max-height: calc(100% - 154px); overflow-y: auto; padding: 12px;
+}
+.emg-teach-fallback .emg-teach { border-top: 0; margin-top: 0; padding-top: 0; }
 .emg-more {
   pointer-events: auto; cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 12px;
   color: var(--warn); font-weight: 600;

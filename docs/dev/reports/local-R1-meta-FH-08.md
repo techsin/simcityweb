@@ -1,0 +1,153 @@
+# T036s5 / FH-08 — first emergency teaching
+
+Desktop implementation on `local/T036s5-fh08`, based on `821a8d6`. Changes are uncommitted.
+**E1 is staged, not active end to end:** the cloud-owned worker settings and policy transport do not yet carry the
+teaching episode. The exact hookup is below. E2 and E3 use existing host data and can run without that hookup.
+No `.done` file was changed, following the explicit instruction not to write done markers.
+
+## Changes by file
+
+| File | Change |
+| --- | --- |
+| `src/game/emergencyPolicy.ts` | `EmergencyTeachingPolicy` selects and latches one E1a and one E1b from settled major alerts. Profile arming, acknowledgement and recording a seen tip are separate. Optional argument 9 of `speedPolicy` adds the E1a pause, releases it into LIVE follow, respects manual speed changes and preserves normal later episodes. E1b leaves speed alone. |
+| `src/ui/EmergencyBanner.ts` | Renders the optional authoritative episode from `host.policy`; stores four independent flags in `loadPref('emergencyTeaching', …)`; sends arming/acknowledgement through `host.act('setSettings', …)`. Adds primary-responder station/ETA copy, service/view actions, async dispatch acknowledgement, once-only LIVE toast and first-failure explanation. Dispatch uses its host tag and gesture. Event subscriptions use `host.events` and the city lifetime. |
+| `src/ui/emergency.css` | Separate teaching selectors. The card stays readable in compact banners; if all banners fold, the same card moves into a scrollable foreground fallback so its pause always has visible controls. |
+| `tests/game/emergencyPolicy.test.ts` | Adds both variants, one-shot selection/pause, acknowledgement, dispatch/removal/reset, urgency interaction, manual speed override, policy changes and the first lesson during a normal trigger cooldown. |
+| `tests/game/emergencyTeaching.test.ts` (new) | Mock worker-host presentation tests: actual station and ETA, independent profile flags, delayed/failed/supporting dispatch acknowledgements, stale episodes, loading options, folded-card fallback, E2 once across remounts, measured E3, replay-time clock lag, chosen-station ETA, industrial primary responder, Tips off and city abort. The fixture explicitly stages the missing worker episode. |
+| This report | Changes, gate results and cloud handoff. |
+
+No `src/sim/infra/*` hunks. No other source files changed. `EmergenciesPanel.ts`, settings, TopBar, NewYear,
+Notifications, App wiring and `src/worker/**` are untouched. There are no new systemData keys or RNG draws.
+
+E3 retains the free primary unit's observed dispatch-options ETA while waiting. Once a primary unit was sent,
+`Incident.etaMin` and `answered` take precedence, so choosing another station cannot attribute its trip to the nearest
+station. Industrial ambulance support is never described as a fire truck. Failure duration uses the mirrored event
+day (`ctx.state.day`), because `host.simTime()` still describes the previous clock during worker event replay.
+The existing outcome note remains unchanged; the explanation and prevention action get their own line.
+For an unbannered failure, the explanation is a toast. Local host terminal events can use a retained EmergencyView
+incident reference; worker replay already exposes final incident data during the event.
+
+## Checks
+
+| Gate | Result |
+| --- | --- |
+| `npx tsc --noEmit` | Passed after the implementation and new fixtures. |
+| `git diff --check` / UTF-8 | Passed; all six changed/new repository files are valid UTF-8 without a BOM. |
+| Short native Node TypeScript policy probe | Passed against actual source imports: first pause, repeat callback, dispatch into slowed LIVE, restoration, no delayed normal trigger, E1b unchanged speed, seen-versus-ack latch, one-shot guard and 30,000 ms constant. This is not a Vitest or worker transport pass. |
+| `tests/game/emergencyPolicy.test.ts` | Attempted through the quiet gate. Vite config startup failed with `spawn EPERM` in `externalize-deps` / `windowsSafeRealPathSync`; no tests executed. |
+| `tests/game/emergencyTeaching.test.ts` | Attempted through the quiet gate with `--configLoader native` after the normal loader failure. Startup failed with `ERR_UNKNOWN_FILE_EXTENSION` for `vite.config.ts`; no tests executed. |
+| `tests/worker/hygiene.test.ts` | Attempted through the quiet gate. Same Vite `spawn EPERM`; no tests executed. |
+| Full Vitest / existing banner and worker policy suites | Left to the owner. Full-suite execution was explicitly prohibited. The sandbox startup restriction also prevents local targeted regression execution. |
+| 128 × 15, seed 7 bot | Native Node fallback completed with residents `[61124, 93804, 37971]` = **192,899** in 2015, matching the required baseline. See exact commands and log below. |
+| Browser / real GPU | Not run, as instructed. Worker transport integration must land first. |
+
+The first typecheck found an overlay string instead of `Overlay.Emergency` and missing required event fields in new
+fixtures; these were corrected. An initial diagnostic using the legacy TypeScript transpile API could not run because
+TypeScript 7 does not expose that API here; the successful policy probe used Node 22's native TypeScript transform.
+
+Targeted commands attempted (one process at a time):
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/emergencyPolicy.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/emergencyTeaching.test.ts --maxWorkers=1 --configLoader native
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/worker/hygiene.test.ts --maxWorkers=1
+```
+
+The requested bot command could not start: offline npm reported `ENOTCACHED` for `tsx`. Its output is
+`scratch/fh08-simbot128x15-s7.log` under the supplied T036s5 scratch directory:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
+```
+
+The alternative uses a scratch-only loader, `fh08-native-typescript.mjs`, which resolves extensionless relative
+imports to the existing `.ts` source. It changes no source, flags, simulation rules or bot actions. Exact successful
+command (stdout/stderr redirected to `scratch/fh08-simbot128x15-s7-native-clean.log`):
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --no-warnings --experimental-transform-types --import file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T036s5/scratch/fh08-native-typescript.mjs tools/simbot.ts --size 128 --years 15 --seed 7
+```
+
+The first native run also completed with the same residents, but PowerShell treated Node's experimental-feature
+warnings on stderr as an error. The clean run suppresses those advisory warnings and explicitly propagates the child
+exit code. No balance change is intended. The owner may rerun the standard `npx tsx` command when tsx is available;
+its acceptance numbers remain `[61124, 93804, 37971]`, total 192,899. No 256 × 60 runs are needed for this item.
+Hard bit identity, old-save continuation and two-process hashes were not independently exercised here.
+
+## Exact cloud requests
+
+1. **`src/worker/protocol.ts`, `SimSettings` and `PolicyState`:** carry the optional fields exported by
+   `EmergencyTeachingSettings`: `teachFirst?: boolean`, `teachTooFar?: boolean`, `teachingAck?: number`; add
+   `teaching?: EmergencyTeaching` to `PolicyState`. Undefined arming flags mean off. `teachFirst` arms E1a;
+   `teachTooFar` independently arms E1b. The second flag is necessary for the two separate profile firsts.
+   Acknowledgement uses the existing settings command, not a new mutation API.
+2. **`src/worker/SimHost.ts`, `PolicySnapshot`:** add readonly optional `teaching` with `{ id, variant: 'E1a' | 'E1b' }`.
+3. **`src/worker/SimCore.ts`, `LivePolicy`:** create an `EmergencyTeachingPolicy`; expose `teaching` in `view`;
+   call its `reset()` in `boot()` before publishing a reset; in `apply()` call
+   `teaching.update(this.settings, this.alerts, incidents)` after settled alert selection and pass that result as
+   argument 9 to `speedPolicy`. Keep the existing trigger cooldown expression. The optional first lesson can start
+   its own episode, while later calls still require the normal trigger. `publish()` must include `teaching.episode`
+   when present and compare its id/variant in the no-change guard, including a change to absent. Clear open teaching
+   on disposal. Preserve the existing busy retirement and 30 s cooldown accounting.
+4. **`src/worker/LoopbackSimHost.ts`, `PacketSimHost` constructor's policy view:** add the explicit getter
+   `get teaching() { return host.replica.policy.teaching; }`, alongside alerts/live/toast/warn. Packet policy copying
+   already uses the policy shape; verify optional teaching survives recorder → packet → replica, including clearing.
+5. **`src/ui/TopBar.ts`, `TopBar.buildLeft()`'s `.live-pill` creation (or its extracted split component):** update
+   the title to explain the first slowdown and restoration, e.g.
+   “Within station range never slows. Outside it, LIVE slows your dispatch; your speed returns when help arrives.
+   Settings → Gameplay.” Keep the current badge visibility and speed controls. No TopBar edit was made here.
+6. **`src/game/NewYear.ts`, `NewYearCelebration` constructor deps / `busy` state, and `src/game/CityScene.ts`'s NewYear
+   construction:** expose a city-bound show-busy notification covering the entire show, including completion,
+   cancellation and abort. Connect it through the context/UI-event contract so FH-08 can defer cards/toasts and
+   teaching arming until the show ends. The current `.newyear-countdown` covers only part of the show and is not a
+   suitable signal. This needs coordination with the cloud's FEEL-02a / Notifications work.
+
+After 1–4 land, replace the local optional `TeachingSnapshot` extension with the shared snapshot type and verify
+the existing structurally widened settings payload is accepted by both local and worker hosts. The current tests
+are explicit presentation/pure-policy tests, not evidence that these cloud changes already exist.
+
+## Plan versus this base
+
+- FH-08 names `teachFirst`; §7.6 calls it `teachFirstEmergency`, and neither exists in the merged worker contract.
+  This lane exports `teachFirst` plus independent E1b arming and acknowledgement as above.
+- T037a's GuideProfile and “Tips you've seen” infrastructure are absent (`src/ui/guide/` contains only `copy.ts`).
+  This lane uses the existing `loadPref`/`savePref` per-profile storage and the currently working `GameSettings.tips`.
+  On the T037a merge, migrate the four flags into that profile and use its Tips on/off source; register the E1–E3
+  entries in Help. No new settings schema or onboarding edit was made here.
+- Full-show New Year suppression has no host/context signal on this base and remains an explicit integration
+  request above. The desktop implementation does not claim §4.1's “nothing shows during New Year” check passed.
+- PB-ACCIDENT's primary responder and ignition send window, PB-AMBER's real manual reachability and stopped
+  post-loss countdown, PB-COOLDOWN's settled prompt coverage, PB-GRACE and T029 are used as merged; no infra edits.
+- The first failure is not necessarily a fire. Text and service actions use the real primary responder. Clinic
+  prevention copy avoids claiming its walk catchment radius is an ambulance road radius.
+- If a failure was never bannered, E3 uses the existing toast API; that API has no action-button argument. Bannered
+  failures get the service-tab button. No Notifications change was made.
+- The foreground fallback is restricted to a teaching card whose ordinary banner has folded. It may cover an open
+  panel because no ordinary banner-sized gap remains; normal banner docking is unchanged.
+
+## Browser checklist for the owner (real GPU, worker)
+
+After the worker hookup, use a fresh profile, Medium city and Disasters on or a debug spawn. A savable uncovered
+fire needs a reachable free truck beyond automatic coverage; a city with no reachable unit does not raise today's
+dispatch alert.
+
+- [ ] Uncovered savable major fire pauses once and shows E1a with the actual place, primary station, ETA and
+      “Auto-dispatch” label.
+- [ ] Send nearest leaves the primary incident dispatched and closes the card after acknowledgement; its truck
+      remains LIVE-followed and the player's speed returns after arrival. A failed send leaves the card open.
+- [ ] A too-far major fire shows E1b, leaves speed alone and opens Fire tab / Emergency view correctly.
+- [ ] A second savable uncovered fire has today's normal policy, urgency behavior and 30 s unpaused cooldown;
+      busy in-range incidents never banner, teach, slow or pause.
+- [ ] The LIVE explainer appears exactly once, including repeated snapshots and entering another city. Paused LIVE
+      and plain 1× do not consume it.
+- [ ] The first failure explains measured ETA and duration; test a chosen farther station and an industrial
+      ambulance-only response. No post-loss countdown. The second failure gets the normal outcome.
+- [ ] Got it, Emergency view and service actions acknowledge once. Tips off releases an open lesson. Closing a
+      city with a pending dispatch produces no late card, toast or listener effects.
+- [ ] At 1280 × 720 and 1024 × 600 with overlapping panels / toolbar flyouts, the folded-card fallback remains
+      readable, scrollable and actionable; normal docking returns after the card closes.
+- [ ] Per-profile seen flags survive reload and city changes, and old saves still continue normally.
+- [ ] Once the NewYear integration request lands, no teaching card or toast appears during any part of the show.
+
+Remaining owner gates: full Vitest, the targeted suites (including existing `tests/game/emergencyBanner.test.ts`
+and `tests/worker/policy.test.ts`), hygiene, actual worker transport tests for the new fields and the browser list.
