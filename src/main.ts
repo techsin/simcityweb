@@ -8,8 +8,10 @@
  *   ?region=1       open the region view of a fresh default region (&preset=<id> &seed=N &demo=1 founds demo cities)
  *   ?newcity=1      like region=1, then open the New City dialog on a medium tile
  *   ?simworker=1    W1.2: the simulation runs in a dedicated Web Worker (WORKER_DESIGN §6); the region screen
- *                   pre-spawns it, a boot failure falls back to the main thread, a crash offers restart / recover /
- *                   the main thread. ?simworker=loopback runs the same protocol on the main thread (CityScene).
+ *                   prefetches and pre-spawns it, a boot failure falls back to the main thread, a crash offers
+ *                   restart / recover / the main thread. ?simworker=loopback runs the same protocol on the main thread
+ *                   (CityScene). &simdev=1 boots the worker with its dev checks and protector probe in a production build
+ *                   (tools/qa-worker.mjs; the probe needs Chromium's --js-flags=--allow-natives-syntax).
  * window.__ready = true once the first screen has rendered. window.__metropolis exposes the App (debugging).
  *
  * Saving: CityScene autosaves on game time (AppSettings.autosaveMonths, default 3); the app saves on tab hide and
@@ -146,7 +148,12 @@ const SNAPSHOT_INTERVAL_MS = 30_000;
 
 /** W1.2 (WORKER_DESIGN §6): the simulation in a dedicated worker, behind ?simworker=1 */
 const SIM_WORKER = new URLSearchParams(location.search).get('simworker') === '1';
-const workerModules = () => Promise.all([import('./worker/WorkerSimHost'), import('./wasm/simWasm')]);
+/** the worker's dev checks (assertOwnedBuffers, the recorder's audits, the protector probe): dev builds, or &simdev=1 */
+const SIM_WORKER_DEV = !!import.meta.env.DEV || new URLSearchParams(location.search).get('simdev') === '1';
+const workerModules = () => Promise.all([import('./worker/WorkerSimHost'), import('./wasm/simWasm'), import('./worker/simWorkerUrl')]);
+/** §4.1 step 1: the hello deadline starts once the prefetch has completed or the city is entered, whichever is later;
+ *  a download that stalls without an error event starts it this long after entry at the latest (decision, T034) */
+const PREFETCH_WAIT_MS = 60_000;
 /** the loading screen's text for the worker's boot phases (§4.1 step 4: a slow load shows, not a frozen veil) */
 const BOOT_PHASES: Record<string, string> = {
   idb: 'Reading the city…', deserialize: 'Reading the city…', wasm: 'Loading the simulation kernels…',
@@ -198,6 +205,8 @@ class App {
   } | null = null;
   /** W1.2: the next city's worker, spawned while the region screen shows (§4.1 step 1) */
   private spareWorker: Promise<WorkerPort | null> | null = null;
+  /** W1.2: the worker script's prefetch (O12), once per page; settles when it has downloaded or failed */
+  private workerScript: Promise<void> | null = null;
   /** W1.2: the player chose "Continue on the main thread" after a crash: local hosts for the rest of this page */
   private workerOff = false;
   /** serializes city saves (CityScene autosave, tab-hide, exit) so writes never overlap */
@@ -474,7 +483,7 @@ class App {
     try {
       ld.set('Generating terrain…', 0.1);
       await paint();
-      const st = new CityStateClass(cfg);
+      let st: CityState | null = new CityStateClass(cfg);
       const topts = terrainOptionsFor(cfg, model, tile);
       generateTerrain(st, { ...topts, skipTrees: true });
       ld.set('Planting trees…', 0.35);
@@ -486,10 +495,13 @@ class App {
       tile.city.thumbnail = cityThumbnail(st, 256);
       await saveCity(model.data.id, tile.key, st);
       await this.persistRegion();
-      // W1.2: the worker then loads it from IndexedDB (§4.5); main keeps no recovery base (O6)
+      // W1.2: the worker then loads it from IndexedDB (§4.5). Main keeps no recovery base and no state of its own (O6):
+      // the scene runs on the worker's replica, as when a saved city is played
       const worker = this.useWorker() ? await this.bootWorker(model, tile, ld) : null;
       if (worker) clearRecoveryBase();
-      await this.enterCity(model, tile, st, ld, worker ?? undefined);
+      const state = worker ? worker.host.state : st;
+      st = null;
+      await this.enterCity(model, tile, state, ld, worker ?? undefined);
     } catch (e) {
       console.error('[main] failed to found city', e);
       toast(`Could not found the city: ${(e as Error).message}`, 'bad', 6000);
@@ -580,7 +592,11 @@ class App {
     audio.setAmbience({ population: st.stats.population, zoom: 0.5, night: false, water: 0, month: st.month, climate: st.config.climate, construction: 0, activity: 1 });
     audio.startAmbienceAfterLoading(this.root);
     audio.setMusicContext({ screen: 'city', night: false, population: st.stats.population, activity: 0.5 });
-    if (Ctor) {
+    if (Ctor && worker?.host.isDisposed) {
+      // W1.2: the worker crashed between its Ready and here (enterCity awaited a paint and the scene's chunk). No scene
+      // on a closed host: the crash dialog below decides what follows (§4.4)
+      this.city.host = worker.host;
+    } else if (Ctor) {
       const scene = new Ctor({
         container,
         state: st,
@@ -599,8 +615,14 @@ class App {
       this.city.scene = scene;
       this.city.host = scene.host;
       if (worker) worker.errors.target = scene.errors ?? null;
-      await scene.start?.();
-      await waitForScene(scene);
+      try {
+        await scene.start?.();
+        await waitForScene(scene);
+      } catch (e) {
+        // a worker that crashed while the scene started: the crash dialog below, not the founding / loading error
+        if (!worker?.host.isDisposed) throw e;
+        console.warn('[main] the city scene did not finish starting: its simulation worker stopped', e);
+      }
       if (rctx.neighbors.some((n) => n.founded)) this.city.labels = new NeighborLabels(container, () => scene.worldView?.camera, scene.sim?.state ?? st, rctx.neighbors);
     } else {
       const { LocalSimHost } = await import('./worker/SimHost');
@@ -622,7 +644,7 @@ class App {
     markReady();
     if (this.city) this.city.entered = true;
     // W1.2: the worker crashed while the city was being entered; the dialog opens now
-    if (worker?.crashed) void this.onWorkerCrash(worker.host, worker.crashed);
+    if (worker && (worker.crashed || worker.host.isDisposed)) void this.onWorkerCrash(worker.host, worker.crashed ?? new Error('The simulation worker stopped'));
   }
 
   private currentState(): HostState | null {
@@ -792,12 +814,32 @@ class App {
     return SIM_WORKER && !this.workerOff;
   }
 
-  /** §4.1 step 1: spawned while the region screen shows; its hello waits for the host that boots on it */
+  /** §4.1 step 1: prefetched, then spawned while the region screen shows; its hello waits for the host that boots on it */
   private prespawnWorker(): void {
     if (this.spareWorker) return;
-    this.spareWorker = workerModules().then(([m]) => m.browserSimWorker(), (e) => {
+    this.spareWorker = workerModules().then(async ([m, , { SIM_WORKER_URL }]) => {
+      await this.prefetchWorkerScript(SIM_WORKER_URL);
+      return m.browserSimWorker(SIM_WORKER_URL);
+    }).catch((e) => {
       console.warn('[main] the simulation worker could not be pre-spawned', e);
       return null;
+    });
+  }
+  /** O12: the worker's chunk into the HTTP cache, so the spawn does not wait for the network. Never rejects: a script
+   *  that cannot load is the worker's own error event (R11). */
+  private prefetchWorkerScript(url: string): Promise<void> {
+    return this.workerScript ??= new Promise<void>((resolve) => {
+      const link = document.createElement('link');
+      if (link.relList?.supports?.('prefetch')) {
+        link.rel = 'prefetch';
+        link.href = url;
+        link.addEventListener('load', () => resolve(), { once: true });
+        link.addEventListener('error', () => resolve(), { once: true });
+        document.head.append(link);
+      } else {
+        // a Blob holds the bytes natively: no ArrayBuffer is made on the page
+        fetch(url).then((r) => r.blob()).then(() => resolve(), () => resolve());
+      }
     });
   }
   private async takeSpareWorker(): Promise<WorkerPort | undefined> {
@@ -820,10 +862,17 @@ class App {
     const errors = new ErrorSink();
     let boot: WorkerBoot | null = null;
     try {
-      const [[{ loadWorkerSimHost }, { pageSimWasmFlag }], port] = await Promise.all([workerModules(), this.takeSpareWorker()]);
+      const [[{ loadWorkerSimHost, browserSimWorker }, { pageSimWasmFlag }, { SIM_WORKER_URL }], spare] = await Promise.all([workerModules(), this.takeSpareWorker()]);
       ld.set('Starting the simulation…', 0.35);
+      // quickstart and Continue enter without the region screen: the prefetch starts with the spawn
+      const prefetched = this.prefetchWorkerScript(SIM_WORKER_URL);
+      const port = spare ?? browserSimWorker(SIM_WORKER_URL);
+      // entry is now: the hello deadline runs from the prefetch's end, or from PREFETCH_WAIT_MS hence at the latest
+      let waited: ReturnType<typeof setTimeout> | undefined;
+      const scriptLoaded = Promise.race([prefetched, new Promise<void>((r) => { waited = setTimeout(r, PREFETCH_WAIT_MS); })])
+        .finally(() => clearTimeout(waited));
       const host = await loadWorkerSimHost(model.data.id, tile.key, {
-        port, rctx: regionContext(model, tile), regionName: model.data.name, errors,
+        port, scriptLoaded, dev: SIM_WORKER_DEV, rctx: regionContext(model, tile), regionName: model.data.name, errors,
         // paused until the scene knows from the replica whether the city is new (CityScene applies the speed)
         initialSpeed: 0,
         flags: { simwasm: pageSimWasmFlag() },

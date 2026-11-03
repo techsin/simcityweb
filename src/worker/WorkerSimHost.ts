@@ -13,7 +13,7 @@ import { PacketSimHost, type PacketHostOptions, type Settle } from './LoopbackSi
 import { exactDigest } from './queries';
 import type { RecoveryMirror, SnapshotAck, SnapshotWhy } from './SimHost';
 import { PROTOCOL_VERSION, assertOwnedBuffers, errorText, type Ready, type Reply, type SimSettings, type W2M } from './protocol';
-import { ACK_WINDOW, WorkerLiveness, type SerializedSource, type WorkerInput, type WorkerOutput, type WorkerPort } from './workerProtocol';
+import { ACK_WINDOW, WorkerLiveness, type SerializedSource, type WorkerDebugReport, type WorkerInput, type WorkerOutput, type WorkerPort } from './workerProtocol';
 
 /** A save or snapshot reply no caller waits for any more */
 const NO_WAIT: Settle = { resolve: () => {}, reject: () => {} };
@@ -23,15 +23,16 @@ export class HostCrashed extends Error { override name = 'HostCrashed'; }
 
 /** No `journal`: W1.2 has none (R14); T039 (W1.3) brings the journal and its boot replay to the worker. */
 export interface WorkerSimHostOptions extends Omit<PacketHostOptions, 'persistence' | 'journal'> {
-  /** the region screen's pre-spawned browserSimWorker() (§4.1); a fresh one by default; a node port in tests */
-  port?: WorkerPort;
+  /** the worker: the region screen's pre-spawned browserSimWorker(SIM_WORKER_URL) or a fresh one (§4.1); a node port in tests */
+  port: WorkerPort;
   kv?: KV;
   settings?: SimSettings;
   regionName?: string;
   /** deterministic mode (§5.1): the worker's live flag stays off and days come from runDays */
   deterministic?: boolean;
   dev?: boolean;
-  /** the region screen's prefetch: no hello deadline runs while the script may still be downloading (§4.1) */
+  /** the worker script's prefetch, settled no earlier than city entry: the hello deadline runs from then (§4.1); without
+   *  it, none runs (a script that fails to load still fails fast) */
   scriptLoaded?: Promise<void>;
   onBoot?: (phase: Extract<W2M, { t: 'boot' }>['phase'], pct: number) => void;
   /** App integration: a boot failure falls back to LocalSimHost; a later crash takes the crash path (§4.4) */
@@ -40,10 +41,11 @@ export interface WorkerSimHostOptions extends Omit<PacketHostOptions, 'persisten
 /** LivePolicy's own defaults, as LocalSimHost and the loopback start */
 const DEFAULT_SETTINGS: SimSettings = { emergencyUncovered: 'live', emergencyLiveSlowmo: 3, emergencyAlerts: 'major' };
 
-/** The real worker, created as the LOD worker is. Spawn it early (the region screen): its messages and errors wait for
- *  the host that boots on it. */
-export function browserSimWorker(): WorkerPort {
-  const worker = new Worker(new URL('./simWorker.ts', import.meta.url), { type: 'module', name: 'sim' });
+/** The real worker, from the bundled script's URL (simWorkerUrl.ts: Vite's IIFE worker chunk runs as a module worker,
+ *  and in dev the module itself). Spawn it early (the region screen): its messages and errors wait for the host that
+ *  boots on it. */
+export function browserSimWorker(url: string | URL): WorkerPort {
+  const worker = new Worker(url, { type: 'module', name: 'sim' });
   const lifetime = new AbortController(), queued: ({ message: WorkerOutput } | { error: unknown })[] = [];
   let target: { receive(m: WorkerOutput): void; fail(e: unknown): void } | null = null;
   const deliver = (item: typeof queued[number]) => {
@@ -72,13 +74,19 @@ interface LinkTarget { receive(m: WorkerOutput): void; fail(e: unknown): void; p
 class WorkerLink {
   readonly life: WorkerLiveness;
   private lifetime = new AbortController();
-  private timer: ReturnType<typeof setInterval>;
+  private timer: ReturnType<typeof setInterval> | undefined;
   private closing: Promise<void> | null = null;
-  constructor(private port: WorkerPort, now: () => number, scriptLoaded: Promise<void> | undefined, private target: LinkTarget) {
+  constructor(private port: WorkerPort, now: () => number, private scriptLoaded: Promise<void> | undefined, private target: LinkTarget) {
     this.life = new WorkerLiveness(now);
+  }
+  /** Listen, then start the watchdog. Separate from the constructor: a pre-spawned port delivers what it queued (a load
+   *  error, a wrong-version hello, a fatal) synchronously inside listen(), and the boot's handlers close this link. */
+  start(): void {
+    if (this.closing) return;
     const signal = this.lifetime.signal;
-    port.listen((m) => { this.life.received(m.t); this.target.receive(m); }, (e) => this.target.fail(e), signal);
-    void scriptLoaded?.then(() => this.life.scriptLoaded(), (e) => this.target.fail(e));
+    this.port.listen((m) => { this.life.received(m.t); this.target.receive(m); }, (e) => this.target.fail(e), signal);
+    if (this.closing) return;
+    void this.scriptLoaded?.then(() => this.life.scriptLoaded(), (e) => this.target.fail(e));
     if (typeof document !== 'undefined') {
       // a frozen page freezes its worker too: hidden or frozen time never counts
       const reset = () => this.life.reset(document.visibilityState === 'visible');
@@ -111,15 +119,15 @@ class WorkerLink {
 }
 
 /** R14: read the stored record without deserializing it on main, then boot the worker on it. */
-export async function loadWorkerSimHost(regionId: string, tileKey: string, opts: WorkerSimHostOptions = {}): Promise<WorkerSimHost> {
+export async function loadWorkerSimHost(regionId: string, tileKey: string, opts: WorkerSimHostOptions): Promise<WorkerSimHost> {
   const kv = opts.kv ?? await openKV(), record = await getCityRecord(kv, regionId, tileKey);
-  if (!record) { void opts.port?.terminate(); throw new Error('City record not found'); }
+  if (!record) { void opts.port.terminate(); throw new Error('City record not found'); }
   return bootWorkerSimHost({ kind: 'serialized', regionId, tileKey, savedAt: record.savedAt, city: record.city }, { ...opts, kv });
 }
 
 /** Post init, follow hello and the boot phases (20 s of visible time at most between them), and build the host from the
  *  worker's Ready. Rejects with HostCrashed on a version mismatch, a fatal message, an error or a timeout. */
-export function bootWorkerSimHost(source: SerializedSource, opts: WorkerSimHostOptions = {}): Promise<WorkerSimHost> {
+export function bootWorkerSimHost(source: SerializedSource, opts: WorkerSimHostOptions): Promise<WorkerSimHost> {
   // T031's HostActions and the optimistic writes run CityActions on the replica: both load lazily while the worker boots,
   // as the loopback loads them in start() (FH-07a: the city screen's static graph has no actions.ts)
   const modules = Promise.all([
@@ -139,7 +147,7 @@ export function bootWorkerSimHost(source: SerializedSource, opts: WorkerSimHostO
       reject(e);
     };
     const cancel = () => finish(new Error('Simulation host is disposed'), false);
-    const link = new WorkerLink(opts.port ?? browserSimWorker(), opts.now ?? (() => performance.now()), opts.scriptLoaded, {
+    const link = new WorkerLink(opts.port, opts.now ?? (() => performance.now()), opts.scriptLoaded, {
       receive: (m) => {
         if (done) return;
         if (m.t === 'hello') { if (m.v !== PROTOCOL_VERSION) finish(new Error(`Worker protocol version ${m.v}; the page speaks ${PROTOCOL_VERSION}`), true); }
@@ -156,6 +164,9 @@ export function bootWorkerSimHost(source: SerializedSource, opts: WorkerSimHostO
     });
     if (opts.signal?.aborted) { cancel(); return; }
     opts.signal?.addEventListener('abort', cancel, { once: true });
+    // after `link` is assigned: what a pre-spawned port queued is delivered inside start()
+    link.start();
+    if (done) return;
     link.post({ t: 'init', v: PROTOCOL_VERSION, city: source, persistence: 'main', rctx: opts.rctx ?? null,
       initialSpeed: opts.initialSpeed ?? 1, settings: opts.settings ?? DEFAULT_SETTINGS,
       flags: { simwasm: opts.flags?.simwasm ?? null, dev: opts.dev ?? !!import.meta.env?.DEV },
@@ -188,7 +199,7 @@ export class WorkerSimHost extends PacketSimHost {
   private pings = 0;
 
   /** Built by bootWorkerSimHost from the worker's real Ready. */
-  constructor(ready: Ready, link: WorkerLink, source: SerializedSource, opts: WorkerSimHostOptions = {}) {
+  constructor(ready: Ready, link: WorkerLink, source: SerializedSource, opts: WorkerSimHostOptions) {
     const snapshots = new SnapshotMirror(source.savedAt);
     // R14: no journal in W1.2. T033's page journal stays off: the worker replays none at boot, and its unload write
     // (a journal-only slot) would replace the snapshot this host's SnapshotMirror keeps in localStorage
@@ -211,6 +222,12 @@ export class WorkerSimHost extends PacketSimHost {
     if (!Number.isInteger(days) || days < 0) return Promise.reject(new Error('Invalid day count'));
     // a wire-only op of protocol.ts: SimHost's command table has no debug entries
     return this.post('debug.runDays' as never, [days] as never).done;
+  }
+
+  /** debug.verify (§2.2, §5.4: tools/qa-worker.mjs): the worker isolate's protector probe (flags.dev and natives syntax),
+   *  its wasm kernels and its digest, as a debug unit acked in the command sequence. */
+  debugVerify(): Promise<WorkerDebugReport> {
+    return this.post('debug.verify' as never, [] as never).done as Promise<WorkerDebugReport>;
   }
 
   /** §5.4 (tools/qa-worker.mjs): the worker's exact digest and the replica's, read once its reply has been applied.
@@ -302,7 +319,8 @@ export class WorkerSimHost extends PacketSimHost {
     // the snapshot first, while the host is open (§4.4)
     try { this.recovery?.writeNow('crash'); } catch (e) { this.report('recovery', e); }
     const onCrashed = this.onCrashed;
-    this.fail(crashed);
+    // a caller that takes the crash path (the App's crash dialog, §4.4) shows it: no second error card in the overlay
+    this.fail(crashed, !onCrashed);
     void this.dispose();
     try { onCrashed?.(crashed, false); } catch { /* the host is closed */ }
   }

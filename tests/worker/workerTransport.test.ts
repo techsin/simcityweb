@@ -28,6 +28,19 @@ function unitProbe() {
     busy = true; queueMicrotask(() => { busy = false; });
   } };
 }
+/** Moves a test clock that WorkerLink's real 250 ms polls read: 300 ms of it every 100 ms of real time, so each poll
+ *  sees about 750 ms, never a main-thread stall (> 1 s, which counts as 1 s at most). Resolves to the clock's value
+ *  once `done` holds; throws after `maxMs` of it. */
+async function stepClock(step: (ms: number) => number, done: () => boolean, maxMs: number): Promise<number> {
+  let t = step(0);
+  const end = t + maxMs;
+  while (!done()) {
+    if (t > end) throw new Error(`still pending after ${maxMs} ms of the test clock`);
+    t = step(300);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return t;
+}
 const fatal = (messages: WorkerOutput[]) => messages.filter((m) => m.t === 'fatal' || (m.t === 'pkt' && m.p.replies?.some((r) => r.t === 'error')));
 
 describe('the worker loop (in-process)', () => {
@@ -157,6 +170,19 @@ describe('the real worker (node worker_threads)', () => {
     } finally { await host.dispose(); }
   });
 
+  it('debug.verify reports the worker isolate: its digest, its wasm kernels and its protector probe (dev only)', { timeout: 30000 }, async () => {
+    const host = await bootNode(initialCity(), { kv: new MemoryKV() });
+    try {
+      const report = await within(host.debugVerify());
+      // vitest runs without natives syntax: the probe cannot be made (qa-worker launches Chromium with it)
+      expect(report).toEqual({ digest: exactDigest(host.state), day: host.state.day, protector: null,
+        wasm: expect.objectContaining({ blur: false, grows: null }) });
+      // a debug unit in the command sequence: the next command still acks
+      await within(send(host, 'setTax', [DevType.R1, 9]));
+      expect(host.state.budget.taxRates[DevType.R1]).toBe(9);
+    } finally { await host.dispose(); }
+  });
+
   it('holdCalendar holds the real worker\'s calendar while its frames run, and the replica\'s clock with it (NOTE-041)', { timeout: 30000 }, async () => {
     const host = await bootNode(initialCity(), { kv: new MemoryKV(), initialSpeed: 3 });
     const frames = async (n: number) => { for (let i = 0; i < n; i++) { host.frame(0.25); await new Promise((r) => setTimeout(r, 5)); } };
@@ -222,15 +248,20 @@ describe('the real worker (node worker_threads)', () => {
   });
 
   it('a fatal message from the worker after ready takes the crash path', { timeout: 30000 }, async () => {
-    let raw!: WorkerPort;
-    const crashes: boolean[] = [];
-    const host = await bootNode(initialCity(), { kv: new MemoryKV(), onCrash: (_e, boot) => crashes.push(boot), wrap: (port) => (raw = port) });
-    try {
-      const read = host.query('verify', {});
-      raw.postMessage({ t: 'tick', seq: 1, dt: -1, ack: 0 }); // the worker refuses it: Invalid tick
-      await expect(within(read)).rejects.toBeInstanceOf(HostCrashed);
-      expect(crashes).toEqual([false]);
-    } finally { await host.dispose(); }
+    for (const handled of [true, false]) {
+      let raw!: WorkerPort;
+      const crashes: boolean[] = [], reports: string[] = [];
+      const host = await bootNode(initialCity(), { kv: new MemoryKV(), errors: { report: (title) => reports.push(title) },
+        onCrash: handled ? (_e, boot) => crashes.push(boot) : undefined, wrap: (port) => (raw = port) });
+      try {
+        const read = host.query('verify', {});
+        raw.postMessage({ t: 'tick', seq: 1, dt: -1, ack: 0 }); // the worker refuses it: Invalid tick
+        await expect(within(read)).rejects.toBeInstanceOf(HostCrashed);
+        expect(crashes).toEqual(handled ? [false] : []);
+        // the App's crash dialog shows a crash it takes: the error overlay gets no 'host' card for it (§4.4)
+        expect(reports, handled ? 'handled by onCrash' : 'no crash path').toEqual(handled ? [] : ['host']);
+      } finally { await host.dispose(); }
+    }
   });
 
   it('R11: pings once per visible second, and 10 visible seconds without a packet are a crash', { timeout: 30000 }, async () => {
@@ -242,11 +273,14 @@ describe('the real worker (node worker_threads)', () => {
       listen(receive, fail, signal) { port.listen((m) => { if (!drop) receive(m); }, fail, signal); },
     }) });
     try {
-      now += 1000;
-      await waitFor(() => posted.includes('ping'), 'a ping');
+      const step = (ms: number) => { now += ms; return now; };
+      await stepClock(step, () => posted.includes('ping'), 5000);
       drop = true; // the worker goes silent
-      const read = host.query('verify', {});
-      now += 10000;
+      const silentAt = now, read = host.query('verify', {});
+      let rejected = false;
+      void read.catch(() => { rejected = true; });
+      const at = await stepClock(step, () => rejected, 30000);
+      expect(at - silentAt, 'not before 10 visible seconds').toBeGreaterThanOrEqual(10000);
       await expect(within(read)).rejects.toThrow(/stopped responding/);
     } finally { await host.dispose(); }
   });
@@ -274,7 +308,24 @@ describe('boot (R11)', () => {
     }
   });
 
-  it('reports boot phases, and times out after 20 visible seconds without one; the hello deadline waits for the script', async () => {
+  it('a pre-spawned port that queued a failure delivers it inside listen(): the boot still fails fast as a crash', async () => {
+    // browserSimWorker() queues what a worker posts or throws before a host listens, and hands it over synchronously
+    const queued: Record<string, (receive: (m: WorkerOutput) => void, fail: (e: unknown) => void) => void> = {
+      'script error': (_r, fail) => fail(new Error('The simulation worker failed to load')),
+      'wrong-version hello': (receive) => receive({ t: 'hello', v: PROTOCOL_VERSION + 1 }),
+      'fatal after hello': (receive) => { receive({ t: 'hello', v: PROTOCOL_VERSION }); receive({ t: 'fatal', message: 'boot failed' }); },
+    };
+    for (const [what, deliver] of Object.entries(queued)) {
+      let terminated = false, posted = 0;
+      const crashes: boolean[] = [];
+      const port: WorkerPort = { postMessage() { posted++; }, listen(r, f) { deliver(r, f); }, terminate() { terminated = true; } };
+      const booting = bootWorkerSimHost(source(), { port, onCrash: (_e, boot) => crashes.push(boot) });
+      await expect(booting, what).rejects.toBeInstanceOf(HostCrashed);
+      expect({ terminated, crashes, posted }, what).toEqual({ terminated: true, crashes: [true], posted: 0 });
+    }
+  });
+
+  it('reports boot phases, and times out after 20 visible seconds without one; the hello deadline waits for the script', { timeout: 30000 }, async () => {
     let now = 0;
     const fake = fakePort(), phases: string[] = [];
     let loaded!: () => void;
@@ -288,11 +339,10 @@ describe('boot (R11)', () => {
     loaded(); await Promise.resolve();
     fake.receive({ t: 'hello', v: PROTOCOL_VERSION });
     fake.receive({ t: 'boot', phase: 'systems', pct: 0.5 });
-    now += 19000;
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(settled).toBe(false);
     expect(phases).toEqual(['systems']);
-    now += 1000;
+    // the clock moves on in steps the page's 250 ms polls see as on time (a single jump would be a main-thread stall)
+    const bootAt = now, at = await stepClock((ms) => { now += ms; return now; }, () => settled, 40000);
+    expect(at - bootAt, 'not before 20 visible seconds without boot progress').toBeGreaterThanOrEqual(20000);
     await expect(booting).rejects.toThrow(/did not boot in time/);
     expect(fake.terminated()).toBe(true);
   });
@@ -300,26 +350,37 @@ describe('boot (R11)', () => {
   it('counts visible, unfrozen time only (the watchdog)', () => {
     let now = 0;
     const life = new WorkerLiveness(() => now);
+    /** the page's on-time polls (every 250 ms) for `ms`: when the first verdict came, or null */
+    const polls = (ms: number) => {
+      for (let t = 250; t <= ms; t += 250) { now += 250; if (life.poll().timeout) return t; }
+      return null;
+    };
     now = 60000; expect(life.poll().timeout, 'no hello deadline during the download').toBe(false);
-    life.scriptLoaded(); now += 9999; expect(life.poll().timeout).toBe(false);
-    now++; expect(life.poll().timeout).toBe(true);
-    life.received('hello'); now += 19000; expect(life.poll().timeout).toBe(false);
-    life.received('boot'); now += 19999; expect(life.poll().timeout).toBe(false);
-    now++; expect(life.poll().timeout, '20 s without boot progress').toBe(true);
+    life.scriptLoaded(); expect(polls(9750)).toBe(null);
+    expect(polls(250), 'the hello deadline').toBe(250);
+    life.received('hello'); expect(polls(19000)).toBe(null);
+    life.received('boot'); expect(polls(19750)).toBe(null);
+    expect(polls(250), '20 s without boot progress').toBe(250);
     life.received('ready');
     for (let i = 0; i < 10; i++) { now += 100; life.received('pkt'); }
     expect(life.poll().ping, 'packets do not suppress the 1 Hz ping').toBe(true);
     life.reset(false); now += 15000; expect(life.poll().timeout, 'hidden time').toBe(false);
     life.reset(true); expect(life.poll().timeout).toBe(false);
-    now += 9999; expect(life.poll().timeout).toBe(false);
-    now++; expect(life.poll().timeout, '10 visible seconds without a packet').toBe(true);
+    expect(polls(9750)).toBe(null);
+    expect(polls(250), '10 visible seconds without a packet').toBe(250);
     // a main-thread stall (a long task) holds back the worker's packets as well: the poll after it is no verdict
     life.received('pkt'); now += 30000;
     expect(life.poll().timeout, 'the poll right after a 30 s stall').toBe(false);
     life.received('pkt'); now += 250;
     expect(life.poll().timeout, 'the packet queued behind the stall arrived').toBe(false);
+    // and a stall counts as one second at most: nine more seconds of on-time silence are needed, not one ping's chance
     now += 30000; expect(life.poll().timeout).toBe(false);
-    now += 250; expect(life.poll().timeout, 'nothing came after the stall: the next poll on time is the verdict').toBe(true);
+    expect(polls(8500), 'the polls on time after the stall, nothing from the worker').toBe(null);
+    expect(polls(250), '250 ms before, 1 s of the stall, 8.75 s after').toBe(250);
+    // a stall right at the limit still gives no verdict on its own poll
+    life.received('pkt'); expect(polls(9500)).toBe(null);
+    now += 5000; expect(life.poll().timeout, 'the poll after a stall, past the limit').toBe(false);
+    expect(polls(250)).toBe(250);
   });
 });
 

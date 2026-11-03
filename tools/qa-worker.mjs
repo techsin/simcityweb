@@ -3,28 +3,39 @@
  * W1.2's browser acceptance (docs/WORKER_DESIGN.md §5.4 and §6 row W1.2): a real simulation worker in Playwright's
  * Chromium, against the production build by default. One browser and one server, both stopped on any exit.
  *
- *   node tools/qa-worker.mjs [--dev] [--port 5535] [--out <dir>] [--size small] [--quality low] [--freeze-ms 15000]
- *                            [--soak-min 0]
+ *   node tools/qa-worker.mjs [--dev] [--port 5535] [--out <dir>] [--size 256] [--quality low] [--freeze-ms 15000]
+ *                            [--soak-min 0] [--simwasm <flag>]
+ *
+ * Chromium runs with --js-flags=--allow-natives-syntax and every page with &simdev=1, so the worker isolate makes its
+ * protector probe first thing at boot (src/worker/protectorProbe.ts) and host.debugVerify() reads it. --simwasm wasm
+ * adds &simwasm=wasm: the kernels then load in the worker (WASM_PLAN §7.8's worker mode), and boot checks they did.
  *
  * Steps, each logged PASS or FAIL (exit code 1 on any FAIL):
- *   boot      ?quickstart=1&simworker=1 reaches __ready on a worker host (the worker is its own script)
- *   tools     a road drag and a zone drag through the real tools (pointer events on the canvas) are acked
+ *   boot      ?quickstart=1&simworker=1 reaches __ready on a worker host (the worker is its own script); the worker's
+ *             protector probe is intact (§5.4); with --simwasm, blur runs on wasm in the worker and its memory never grew
+ *   tools     through the real tools (pointer events on the canvas), each acked in the replica with nothing pending: a
+ *             road, a zone, a power line, a park plopped, part of the zone dezoned, part of the road bulldozed, trees
+ *             brushed, and a held level brush that reaches flat: one release sound, no error sound, no toast (§2.2, R4)
  *   play      days advance at speed 3
  *   verify    paused, the worker's exact digest equals the replica's (host.verify(): query 'verify')
  *   save      Ctrl+S, then the stored record holds the road and the zone
  *   load      a reload, the title's Continue: the same city on a new worker, which continues
- *   freeze    CDP Page.setWebLifecycleState frozen for 15 s, then active: no crash path, days advance within 1 s
+ *   freeze    CDP Page.setWebLifecycleState frozen for 15 s, then active: no crash path, days advance (1 s: reported),
+ *             the worker's protector still intact
  *   hidden    a hidden tab still saves (main acks outside ticks)
  *   crash     a fatal in the worker: the crash dialog; "Restart from autosave" boots a new worker from the save
  *   recover   an edit after the save, a worker snapshot (R14: stored by main), a fatal: "Recover unsaved progress"
  *             restores the snapshot and boots a new worker with the edit
  *   watchdog  a worker that stops posting: 10 visible seconds, the crash dialog; "Continue on the main thread"
  *   fallback  a worker script that fails to load: the city boots on the main thread, with one toast
- *   soak      (--soak-min N) N minutes at speed 3 after the freeze: the worker stays alive and the days keep coming
+ *   soak      (--soak-min N) N minutes at speed 3 after the freeze: the worker stays alive, the days keep coming, and its
+ *             protector is intact at the end (§6 W1.2: after 10 min)
+ *   region    ?newcity=1: the region screen prefetches the worker's chunk and pre-spawns one worker; Found City boots
+ *             the new city on that worker (no second one), paused and saved, and its days advance (§4.1 step 1)
  *   console   no console errors outside the steps that crash on purpose
- * Measured, not gated: boot time and action latency (post to ack applied, p50 / p95 / p99). Not covered here: the
- * protector probe in the page and the worker (S1's tests/perf/protector.test.ts runs the production loop under node),
- * the held terraform brush, and W1.3's journal check. WebGL runs on SwiftShader: function, not GPU timings.
+ * Measured, not gated: boot time, action latency (post to ack applied, p50 / p95 / p99), and the page's own protector
+ * probe (lodBuilder's transfer list invalidates it until S0's J0 lands). Not covered: W1.3's journal check. WebGL runs on
+ * SwiftShader: function, not GPU timings.
  */
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -40,7 +51,10 @@ const opt = (name, dflt) => { const i = args.indexOf(`--${name}`); return i >= 0
 const DEV = flag('dev');
 const PORT = Number(opt('port', 5535));
 const OUT = path.resolve(opt('out', path.join(os.tmpdir(), 'qa-worker')));
-const SIZE = opt('size', 'small');
+const SIZE = opt('size', '256');
+const SIMWASM = opt('simwasm', null);
+/** every page: the worker's dev checks and its protector probe in the production build; the kernels' flag if given */
+const Q = `&simdev=1${SIMWASM ? `&simwasm=${encodeURIComponent(SIMWASM)}` : ''}`;
 const FREEZE_MS = Number(opt('freeze-ms', 15000));
 const SOAK_MIN = Number(opt('soak-min', 0));
 /** the app's graphics quality: SwiftShader draws 'high' at a frame every few seconds, and ticks follow rAF */
@@ -85,6 +99,42 @@ const hostInfo = (page) => page.evaluate(() => {
 });
 const waitHost = (page, test, arg, ms = 60000) => page.waitForFunction(test, arg, { timeout: ms, polling: 100 });
 const crashDialog = (page) => page.evaluate(() => [...document.querySelectorAll('.modal h2')].some((e) => e.textContent === 'The simulation stopped'));
+/** the crash dialog has finished fading in (SwiftShader composites slowly): no animation left on it or its backdrop */
+async function settleDialog(page) {
+  await page.waitForFunction(() => {
+    const m = [...document.querySelectorAll('.modal')].find((e) => e.querySelector('h2')?.textContent === 'The simulation stopped');
+    if (!m) return false;
+    const busy = document.getAnimations().some((a) => { const t = a.effect?.target; return t instanceof Element && (t.contains(m) || m.contains(t)); });
+    return !busy && Number(getComputedStyle(m).opacity) === 1;
+  }, null, { timeout: 30000, polling: 250 }).catch(() => log('the crash dialog was still animating after 30 s'));
+  await sleep(500);
+}
+/** the worker isolate's protector probe and kernels (debug.verify), and the page's own probe (reported only) */
+async function protector(page, when) {
+  const r = await page.evaluate(async () => {
+    const w = await window.__metropolis.city.host.debugVerify();
+    return { ...w, page: window.__qaPageProbe ? window.__qaPageProbe() : null };
+  }).catch((e) => ({ error: String(e) }));
+  check(`protector: the worker's probe intact ${when}`, r.protector === true, JSON.stringify(r));
+  return r;
+}
+/** counts in the replica: what the tools change */
+const counts = (page) => page.evaluate(() => {
+  const st = window.__metropolis.city.host.state, h = window.__metropolis.city.host;
+  let roads = 0, zoned = 0, power = 0, trees = 0;
+  for (let i = 0; i < st.network.length; i++) { if (st.network[i]) roads++; if (st.zone[i]) zoned++; if (st.powerLines[i]) power++; trees += st.trees[i]; }
+  let parks = 0;
+  for (const b of st.buildings.values()) if (b.defId === 'park_small') parks++;
+  return { roads, zoned, power, trees, parks, buildings: st.buildings.size, pending: h.pending?.count ?? 0 };
+});
+/** acked: the replica's count moved the expected way and nothing is pending */
+const settled = (page, key, from, dir) => waitHost(page, ([k, n, d]) => {
+  const st = window.__metropolis.city.host.state, h = window.__metropolis.city.host;
+  let v = 0;
+  if (k === 'parks') { for (const b of st.buildings.values()) if (b.defId === 'park_small') v++; }
+  else { const a = k === 'roads' ? st.network : k === 'zoned' ? st.zone : k === 'power' ? st.powerLines : st.trees; for (let i = 0; i < a.length; i++) v += k === 'trees' ? a[i] : a[i] ? 1 : 0; }
+  return (d > 0 ? v > n : v < n) && (h.pending?.count ?? 0) === 0;
+}, [key, from, dir], 60000).then(() => true, () => false);
 
 /** screen points of the canvas whose picked cells are buildable: a row for the road, a rectangle below it to zone */
 async function dragPlan(page) {
@@ -123,7 +173,7 @@ async function enterCity(page, url, what) {
 }
 async function continueFromTitle(page, base) {
   const t0 = Date.now();
-  await page.goto(`${base}/?simworker=1`);
+  await page.goto(`${base}/?simworker=1${Q}`);
   await page.waitForFunction(() => window.__ready === true, null, { timeout: READY_MS, polling: 250 });
   await page.getByText('Continue', { exact: true }).first().click();
   await cityUp(page);
@@ -137,6 +187,94 @@ async function noCrash(page, step) {
 }
 async function setSpeed(page, n) {
   await page.keyboard.press(`Digit${n}`);
+}
+async function click(page, at) {
+  await page.mouse.move(at[0], at[1], { steps: 4 });
+  await sleep(300); // the tool's hover preview
+  await page.mouse.down(); await sleep(120); await page.mouse.up();
+}
+
+/** §5.4: each command through the real tools (synthetic pointer events), checked by its effect in the replica */
+async function tools(page) {
+  const plan = await dragPlan(page);
+  log('drag plan', plan);
+  const [cx, cy] = [(plan.a[0] + plan.b[0]) / 2, plan.a[1] + 40];
+  const step = async (name, tool, key, dir, act) => {
+    const before = await counts(page);
+    await selectTool(page, tool);
+    await act();
+    const ok = await settled(page, key, before[key], dir);
+    await page.keyboard.press('Escape');
+    const after = await counts(page);
+    await noCrash(page, `tools: ${name}`);
+    check(`tools: ${name}`, ok && after.pending === 0, JSON.stringify({ [key]: [before[key], after[key]], pending: after.pending }));
+    return after;
+  };
+  await step('a road drag', 'net:2', 'roads', 1, () => drag(page, plan.a, plan.b));
+  await step('a zone drag', 'zone:1', 'zoned', 1, () => drag(page, plan.z0, plan.z1));
+  await step('a power line drag', 'power', 'power', 1, () => drag(page, [cx - 120, cy - 150], [cx + 120, cy - 150]));
+  await step('a park plopped beside the road', 'plop:park_small', 'parks', 1, () => click(page, [cx - 40, cy - 80]));
+  await step('part of the zone dezoned', 'dezone', 'zoned', -1, () => drag(page, plan.z0, [plan.z0[0] + 60, plan.z0[1] + 30]));
+  await step('part of the road bulldozed', 'bulldoze', 'roads', -1, () => drag(page, [plan.b[0] - 40, plan.b[1]], plan.b));
+  await step('trees brushed', 'trees', 'trees', 1, async () => {
+    await page.mouse.move(cx + 230, cy + 120, { steps: 4 }); await page.mouse.down(); await sleep(1500); await page.mouse.up();
+  });
+  await heldBrush(page, cx, cy);
+  log('long tasks so far', await page.evaluate(() => window.__qaLong));
+  await shot(page, '02-tools');
+}
+
+/** §5.4 / R4: a held level brush on a slope until it reaches flat ("Nothing to change" acks after applied ones): one
+ *  release sound, after the gesture settles, no error sound and no toast */
+async function heldBrush(page, cx, cy) {
+  await selectTool(page, 'terra:level');
+  // radius 1 (from 3): four corners, so the hold reaches flat in a few seconds of SwiftShader frames
+  for (let i = 0; i < 4; i++) await page.keyboard.press('BracketLeft');
+  const spot = await page.evaluate(([x0, y0]) => {
+    const scene = window.__metropolis.city.scene, st = scene.host.state, N = st.size, N1 = N + 1, H = st.heights;
+    const free = (x, z) => { for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const i = (z + dz) * N + x + dx; if (st.building[i] >= 0 || st.network[i] || st.water[i] || st.zone[i]) return false; } return true; };
+    for (let dy = 0; dy <= 200; dy += 8) for (let dx = 0; dx <= 260; dx += 8) {
+      const px = x0 + dx, py = y0 - 160 + dy, c = scene.world.pickCell(px, py);
+      if (!c || c.x < 2 || c.z < 2 || c.x > N - 3 || c.z > N - 3 || !free(c.x, c.z)) continue;
+      const i = c.z * N1 + c.x, hs = [H[i], H[i + 1], H[i + N1], H[i + N1 + 1]];
+      const spread = Math.max(...hs) - Math.min(...hs);
+      if (spread > 0.05 && spread < 0.6) return { px, py, cell: c, spread };
+    }
+    return null;
+  }, [cx + 140, cy]);
+  if (!spot) { check('tools: a held level brush reaches flat', false, 'no sloped free cell under the canvas'); return; }
+  await page.mouse.move(spot.px, spot.py, { steps: 4 });
+  await sleep(400);
+  const tip = await page.evaluate(() => document.querySelector('.cursor-tip')?.textContent ?? null);
+  const before = await page.evaluate(() => {
+    const scene = window.__metropolis.city.scene, ctx = scene.ctx;
+    window.__qaSounds = []; window.__qaUp = false; window.__qaToastsAt = window.__qaToasts.length;
+    if (!ctx.__qaWrapped) {
+      const sound = ctx.sound;
+      ctx.sound = (n, o) => { window.__qaSounds.push({ n, o: o ?? null, up: window.__qaUp }); return sound(n, o); };
+      ctx.__qaWrapped = true;
+    }
+    return { funds: scene.host.state.funds };
+  });
+  const t0 = Date.now();
+  await page.mouse.down();
+  // hold until an application was refused after applied ones: the brush reached flat
+  const flat = await page.waitForFunction(() => { const t = window.__metropolis.city.scene.tools.current; return t.stroke?.spent > 0 && t.stroke?.failed; },
+    null, { timeout: 60000, polling: 100 }).then(() => true, () => false);
+  const held = Date.now() - t0;
+  await page.evaluate(() => { window.__qaUp = true; });
+  await page.mouse.up();
+  await waitHost(page, () => (window.__metropolis.city.host.pending?.count ?? 0) === 0, null, 30000).catch(() => undefined);
+  await sleep(2000); // the release sound waits for gesture.settled
+  const r = await page.evaluate(() => {
+    const t = window.__metropolis.city.scene.tools.current, sounds = window.__qaSounds;
+    return { stroke: t.stroke, holdSounds: sounds.filter((s) => !s.up).length, release: sounds.filter((s) => s.up && !s.o).map((s) => s.n),
+      toasts: window.__qaToasts.slice(window.__qaToastsAt), pending: window.__metropolis.city.host.pending?.count ?? 0, funds: window.__metropolis.city.host.state.funds };
+  });
+  await page.keyboard.press('Escape');
+  for (let i = 0; i < 2; i++) await page.keyboard.press('BracketRight');
+  const detail = JSON.stringify({ spot, tip, heldMs: held, spent: before.funds - r.funds, ...r });
+  check('tools: a held level brush reaches flat: one release sound, no error, no toast', flat && r.release.length === 1 && r.release[0] === 'terraform' && r.toasts.length === 0 && r.pending === 0, detail);
 }
 
 async function main() {
@@ -159,13 +297,44 @@ async function main() {
   }
   const base = `http://127.0.0.1:${PORT}`;
   log('server', base, DEV ? '(dev)' : '(production build)');
-  browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+  // natives syntax: the protector probes (the worker's src/worker/protectorProbe.ts, the page's below); V8 flags reach
+  // every isolate of the renderer, the worker's included
+  browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--allow-natives-syntax'] });
 
+  /** the simulation worker's script throws on load (other workers, such as the LOD builder's, are left alone) */
+  const failingWorker = () => {
+    const W = window.Worker;
+    window.Worker = class extends W {
+      constructor(url, o) { super(/simWorker/.test(String(url)) ? 'data:text/javascript,throw new Error("qa-worker: the script failed")' : url, o); }
+    };
+  };
+  /** the App's toasts (src/region/ui/modal.ts) last a few seconds: collect each as it appears */
+  const toastLog = () => {
+    window.__qaToasts = [];
+    document.addEventListener('DOMContentLoaded', () => {
+      new MutationObserver((ms) => {
+        for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1 && n.classList.contains('toast')) window.__qaToasts.push(n.textContent);
+      }).observe(document.body, { childList: true, subtree: true });
+    });
+  };
   const lowQuality = (q) => {
     try { const s = JSON.parse(localStorage.getItem('metropolis.settings') ?? '{}'); if (!s.quality || s.quality !== q) localStorage.setItem('metropolis.settings', JSON.stringify({ ...s, quality: q })); } catch { /* storage blocked */ }
   };
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await ctx.addInitScript(lowQuality, QUALITY);
+  // the page's own protector probe, first thing in the page (reported, not gated: lodBuilder's transfer list, J0)
+  await ctx.addInitScript(() => {
+    try {
+      const ta = new Float32Array(64);
+      const probe = new Function('a', 'let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s;');
+      new Function('f', 'a', '%PrepareFunctionForOptimization(f); f(a); f(a); %OptimizeFunctionOnNextCall(f); f(a);')(probe, ta);
+      const status = new Function('f', 'return %GetOptimizationStatus(f);'), s0 = status(probe);
+      let intact = !!(s0 & 16);
+      window.__qaPageProbe = () => { probe(ta); intact = intact && status(probe) === s0; return intact; };
+      setInterval(() => window.__qaPageProbe(), 1000);
+    } catch { /* no natives syntax */ }
+  });
+  await ctx.addInitScript(toastLog);
   // main-thread long tasks (SwiftShader's blocking readbacks among them): the watchdog must not read them as a dead worker
   await ctx.addInitScript(() => {
     window.__qaLong = { n: 0, over1s: 0, max: 0 };
@@ -188,29 +357,16 @@ async function main() {
   page.on('worker', (w) => { workers.push(w.url()); log('worker', w.url().split('/').pop()); });
 
   // ---- boot
-  const bootMs = await enterCity(page, `${base}/?quickstart=1&size=${SIZE}&seed=7&simworker=1`, 'quickstart');
+  const bootMs = await enterCity(page, `${base}/?quickstart=1&size=${SIZE}&seed=7&simworker=1${Q}`, 'quickstart');
   let info = await hostInfo(page);
   check('boot: a worker host', info?.kind === 'worker' && workers.some((u) => /simWorker/.test(u)), JSON.stringify({ info, workers: workers.length, bootMs }));
   check('boot: a new city starts paused (the scene\'s rule, applied to the booted host)', info?.speed === 0, `speed ${info?.speed}`);
+  const booted = await protector(page, 'after boot');
+  if (SIMWASM) check('boot: the kernels on wasm in the worker, its memory never grown (WASM_PLAN §7.8)', booted.wasm?.state === 'ready' && booted.wasm.blur === true && booted.wasm.grows === 0, JSON.stringify(booted.wasm));
   await shot(page, '01-boot');
 
-  // ---- tools: a road, then a zone beside it, through the real tools
-  const plan = await dragPlan(page);
-  log('drag plan', plan);
-  const before = await hostInfo(page);
-  await selectTool(page, 'net:2');
-  await drag(page, plan.a, plan.b);
-  await waitHost(page, (n) => { const h = window.__metropolis.city.host; let r = 0; for (const v of h.state.network) if (v) r++; return r > n && (h.pending?.count ?? 0) === 0; }, before.roads).catch(() => undefined);
-  await selectTool(page, 'zone:1');
-  await drag(page, plan.z0, plan.z1);
-  await waitHost(page, (n) => { const h = window.__metropolis.city.host; let z = 0; for (const v of h.state.zone) if (v) z++; return z > n && (h.pending?.count ?? 0) === 0; }, before.zoned).catch(() => undefined);
-  await page.keyboard.press('Escape');
-  info = await hostInfo(page);
-  log('long tasks so far', await page.evaluate(() => window.__qaLong));
-  await noCrash(page, 'tools');
-  check('tools: road and zone drags acked', info.roads > before.roads && info.zoned > before.zoned && info.pending === 0,
-    JSON.stringify({ before: { roads: before.roads, zoned: before.zoned }, after: { roads: info.roads, zoned: info.zoned, pending: info.pending } }));
-  await shot(page, '02-tools');
+  // ---- tools: each command through the real tools, acked in the replica
+  await tools(page);
 
   // ---- play
   await setSpeed(page, 3);
@@ -314,6 +470,7 @@ async function main() {
   const freezeInfo = JSON.stringify({ frozenAt, ...resumed, crashDialog: crashedAfterFreeze });
   check('freeze: frozen 15 s, then no crash path and the days resume', !crashedAfterFreeze && !resumed.disposed && resumed.d1 > resumed.d0, freezeInfo);
   log(resumed.ms <= 1000 ? 'PASS' : 'NOTE', 'freeze: the first day within 1 s of resume (wall time, SwiftShader; not gated here)', freezeInfo);
+  await protector(page, 'after the freeze');
   await shot(page, '05-after-freeze');
   if (SOAK_MIN > 0) {
     await setSpeed(page, 3);
@@ -326,6 +483,7 @@ async function main() {
     }
     const rising = samples.every((x, i) => i === 0 || x.day > samples[i - 1].day);
     check(`soak: ${SOAK_MIN} min at speed 3, alive and advancing`, rising && !samples.some((x) => x.disposed) && !(await crashDialog(page)), JSON.stringify({ first: samples[0], last: samples.at(-1) }));
+    await protector(page, `after ${SOAK_MIN} min`);
     await shot(page, '05b-after-soak');
   }
   check('console: no errors in normal play', errors.length === 0, errors.slice(0, 5).join(' | '));
@@ -336,8 +494,9 @@ async function main() {
   await page.evaluate(() => { const h = window.__metropolis.city.host; h.link.post({ t: 'tick', seq: 0, dt: -1, ack: 0 }); });
   await page.waitForFunction(() => [...document.querySelectorAll('.modal h2')].some((e) => e.textContent === 'The simulation stopped'), null, { timeout: 30000 }).catch(() => undefined);
   const dialog = await crashDialog(page);
-  check('crash: a fatal opens the crash dialog', dialog);
-  await sleep(1000); // the dialog fades in
+  const cards = await page.evaluate(() => [...document.querySelectorAll('.err-stack .err-card')].map((c) => c.textContent.slice(0, 80)));
+  check('crash: a fatal opens the crash dialog, and no second error card under it (§4.4)', dialog && cards.length === 0, JSON.stringify({ cards }));
+  await settleDialog(page);
   await shot(page, '06-crash-dialog');
   if (dialog) {
     await page.getByText('Restart from autosave', { exact: true }).click();
@@ -360,7 +519,7 @@ async function main() {
   const offer = await page.evaluate(() => [...document.querySelectorAll('.modal button')].map((b) => b.textContent.trim()));
   check('recover: the crash dialog offers the snapshot', offer.includes('Recover unsaved progress'), JSON.stringify(offer));
   if (offer.includes('Recover unsaved progress')) {
-    await sleep(1000);
+    await settleDialog(page);
     await shot(page, '07c-crash-dialog-recoverable');
     await page.getByText('Recover unsaved progress', { exact: true }).click();
     await cityUp(page, 'worker').catch(() => undefined);
@@ -376,7 +535,7 @@ async function main() {
   await page.waitForFunction(() => [...document.querySelectorAll('.modal h2')].some((e) => e.textContent === 'The simulation stopped'), null, { timeout: 40000 }).catch(() => undefined);
   const watchdog = await crashDialog(page), after = Date.now() - t0;
   check('watchdog: 10 visible seconds without a packet open the crash dialog', watchdog && after >= 9000, `${after} ms`);
-  await sleep(1000);
+  await settleDialog(page);
   await shot(page, '07b-watchdog-dialog');
   if (watchdog) {
     await page.getByText('Continue on the main thread', { exact: true }).click();
@@ -391,30 +550,72 @@ async function main() {
   // ---- fallback: a worker script that fails to load
   const fctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await fctx.addInitScript(lowQuality, QUALITY);
-  await fctx.addInitScript(() => {
-    const W = window.Worker;
-    window.Worker = class extends W {
-      constructor(url, o) { super(/simWorker/.test(String(url)) ? 'data:text/javascript,throw new Error("qa-worker: the script failed")' : url, o); }
-    };
-  });
-  await fctx.addInitScript(() => {
-    // the App's toasts (src/region/ui/modal.ts) last a few seconds: collect each as it appears
-    window.__qaToasts = [];
-    document.addEventListener('DOMContentLoaded', () => {
-      new MutationObserver((ms) => {
-        for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1 && n.classList.contains('toast')) window.__qaToasts.push(n.textContent);
-      }).observe(document.body, { childList: true, subtree: true });
-    });
-  });
+  await fctx.addInitScript(failingWorker);
+  await fctx.addInitScript(toastLog);
   const fpage = await fctx.newPage();
   fpage.setDefaultNavigationTimeout(READY_MS);
-  await enterCity(fpage, `${base}/?quickstart=1&size=${SIZE}&seed=7&simworker=1`, 'fallback');
+  await enterCity(fpage, `${base}/?quickstart=1&size=${SIZE}&seed=7&simworker=1${Q}`, 'fallback');
   const finfo = await hostInfo(fpage);
   const toasts = await fpage.evaluate(() => window.__qaToasts);
   const workerToasts = toasts.filter((t) => /simulation worker/i.test(t));
   check('fallback: a failed worker script boots the city on the main thread, with one toast', finfo?.kind === 'local' && workerToasts.length === 1, JSON.stringify({ kind: finfo?.kind, toasts }));
   await shot(fpage, '09-fallback');
   await fctx.close();
+
+  // ---- region: the region screen prefetches and pre-spawns the next city's worker; Found City boots on it
+  const rctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  await rctx.addInitScript(lowQuality, QUALITY);
+  const rpage = await rctx.newPage();
+  rpage.setDefaultNavigationTimeout(READY_MS);
+  const rworkers = [], rerrors = [];
+  rpage.on('worker', (w) => { if (/simWorker/.test(w.url())) rworkers.push(w.url().split('/').pop()); });
+  rpage.on('console', (m) => { if (m.type() === 'error') { rerrors.push(m.text()); log('console error', m.text().slice(0, 300)); } });
+  rpage.on('pageerror', (e) => { rerrors.push(String(e)); log('pageerror', String(e).slice(0, 300)); });
+  await rpage.goto(`${base}/?newcity=1&seed=7&simworker=1${Q}`);
+  await rpage.waitForFunction(() => window.__ready === true, null, { timeout: READY_MS, polling: 250 });
+  await rpage.getByText('Found City', { exact: true }).waitFor({ timeout: 60000 });
+  await waitHost(rpage, () => !!document.querySelector('link[rel=prefetch][href*="simWorker"]'), null, 30000).catch(() => undefined);
+  const deadline = Date.now() + 30000;
+  while (!rworkers.length && Date.now() < deadline) await sleep(250);
+  const onRegion = { workers: rworkers.length, prefetch: await rpage.evaluate(() => document.querySelector('link[rel=prefetch][href*="simWorker"]')?.getAttribute('href') ?? null) };
+  await shot(rpage, '10-region-prespawned');
+  check('region: the worker chunk prefetched and one worker pre-spawned on the region screen', onRegion.workers === 1 && !!onRegion.prefetch, JSON.stringify(onRegion));
+  await rpage.getByText('Found City', { exact: true }).click();
+  await cityUp(rpage, 'worker');
+  await sleep(2000);
+  const founded = await rpage.evaluate(() => { const app = window.__metropolis, c = app.city; return { kind: c.host.kind, speed: c.host.speed, day: c.host.state.day, dirty: app.isDirty(),
+    indicator: document.querySelector('.save-status')?.textContent ?? null, sceneOnReplica: c.scene.opts?.state === c.host.state }; });
+  check('region: Found City boots on the pre-spawned worker, paused and saved, the scene on the replica (O6)', founded.kind === 'worker' && rworkers.length === 1 && founded.speed === 0 && !founded.dirty && founded.sceneOnReplica,
+    JSON.stringify({ ...founded, workers: rworkers.length }));
+  await protector(rpage, 'in the founded city');
+  await setSpeed(rpage, 3);
+  await waitHost(rpage, (d) => window.__metropolis.city.host.state.day >= d + 10, founded.day, 120000).catch(() => undefined);
+  const rday = await rpage.evaluate(() => window.__metropolis.city.host.state.day);
+  check('region: the founded city runs', rday >= founded.day + 10 && rerrors.length === 0, JSON.stringify({ from: founded.day, to: rday, errors: rerrors.slice(0, 3) }));
+  await shot(rpage, '11-region-founded');
+  await rctx.close();
+
+  // ---- region fallback: the pre-spawned worker's script fails while the region screen shows; its queued error reaches
+  // the host inside listen() at Found City, and the city boots on the main thread with one toast (G4 with R11)
+  const pctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  await pctx.addInitScript(lowQuality, QUALITY);
+  await pctx.addInitScript(failingWorker);
+  await pctx.addInitScript(toastLog);
+  const ppage = await pctx.newPage();
+  ppage.setDefaultNavigationTimeout(READY_MS);
+  const perrors = [];
+  ppage.on('pageerror', (e) => { perrors.push(String(e)); log('pageerror', String(e).slice(0, 300)); });
+  await ppage.goto(`${base}/?newcity=1&seed=7&simworker=1${Q}`);
+  await ppage.waitForFunction(() => window.__ready === true, null, { timeout: READY_MS, polling: 250 });
+  await ppage.getByText('Found City', { exact: true }).waitFor({ timeout: 60000 });
+  await sleep(4000); // the spawn, and its load error, while the dialog shows
+  await ppage.getByText('Found City', { exact: true }).click();
+  await cityUp(ppage);
+  const pinfo = await hostInfo(ppage), ptoasts = (await ppage.evaluate(() => window.__qaToasts)).filter((t) => /simulation worker/i.test(t));
+  check('region fallback: a pre-spawned worker that failed to load: the founded city runs on the main thread, one toast',
+    pinfo?.kind === 'local' && ptoasts.length === 1 && perrors.length === 0, JSON.stringify({ kind: pinfo?.kind, toasts: ptoasts, pageErrors: perrors }));
+  await shot(ppage, '12-region-fallback');
+  await pctx.close();
 }
 
 try {

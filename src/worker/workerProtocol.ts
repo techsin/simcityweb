@@ -20,6 +20,17 @@ export type WorkerInput = Exclude<M2W, { t: 'init' }> | WorkerInit
   | { t: 'stored'; savedAt: number; ok: boolean };
 export type WorkerOutput = W2M;
 
+/** debug.verify's result (§2.2; dev harnesses and tools/qa-worker.mjs): what the worker isolate runs on */
+export interface WorkerDebugReport {
+  /** exactDigest of the worker's state when the unit ran */
+  digest: number;
+  day: number;
+  /** the isolate's protector probe, sticky since boot (§5.4, risk 7); null without flags.dev or natives syntax */
+  protector: boolean | null;
+  /** the worker's wasm kernels (WASM_PLAN §7.8): loader state, blur on wasm, memory size and loader grows (never) */
+  wasm: { state: string; blur: boolean; capacity: number | null; grows: number | null; error: string | null };
+}
+
 /** A single-argument post is deliberate: neither endpoint may transfer ownership. */
 export interface WorkerPort {
   postMessage(message: WorkerInput): void;
@@ -41,7 +52,8 @@ export const STALL_MS = 1000;
 
 /** R11: only visible, unfrozen time counts; the page resets the count on its lifecycle events. A main-thread stall (a
  *  long task: a blocking GPU readback, a debugger) holds back the worker's messages too, so the poll that follows one
- *  gives no verdict: the packets queued behind it are read first, and a silent worker is caught at the next poll. */
+ *  gives no verdict, and the stall counts as STALL_MS at most: the packets queued behind it are read first, and a
+ *  silent worker is caught once the page has seen (nearly) the full timeout of on-time silence. */
 export class WorkerLiveness {
   private at: number;
   private elapsed = 0;
@@ -66,10 +78,11 @@ export class WorkerLiveness {
     const limit = this.phase === 'boot' ? BOOT_TIMEOUT_MS : this.phase === 'hello' ? HELLO_TIMEOUT_MS : LIVENESS_TIMEOUT_MS;
     return { ping, timeout: !stalled && this.elapsed >= limit };
   }
-  /** the time since the last poll or message */
+  /** the time since the last poll or message; a stall's share of it is capped (it is not evidence against the worker) */
   private advance(): number {
     const now = this.now(), dt = Math.max(0, now - this.at); this.at = now;
-    if (this.visible && this.phase !== 'loading') { this.elapsed += dt; this.pingAt += dt; }
+    const counted = Math.min(dt, STALL_MS);
+    if (this.visible && this.phase !== 'loading') { this.elapsed += counted; this.pingAt += counted; }
     return dt;
   }
 }

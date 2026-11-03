@@ -34,7 +34,7 @@ export function stripCells(r: unknown): unknown {
 }
 
 /** the real worker on a node worker_threads port; `wrap` may interpose on the transport */
-export async function bootNode(city: SerializedCity, opts: WorkerSimHostOptions & { kv: KV; wrap?: (port: WorkerPort) => WorkerPort } ): Promise<WorkerSimHost> {
+export async function bootNode(city: SerializedCity, opts: Omit<WorkerSimHostOptions, 'port'> & { kv: KV; wrap?: (port: WorkerPort) => WorkerPort } ): Promise<WorkerSimHost> {
   const port = nodeWorkerPort(await buildWorkerTest());
   return bootWorkerSimHost({ kind: 'serialized', regionId: 'hosts', tileKey: '0', savedAt: city.savedAt, city },
     { dev: true, ...opts, port: opts.wrap?.(port) ?? port });

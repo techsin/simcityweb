@@ -10,12 +10,14 @@ import type { DisastersSystem } from '../sim/infra/disasters';
 import { schedulerOf } from '../sim/infra/scheduler';
 import { deserializeCity } from '../save/serialize';
 import type { CityRecord } from '../save/cities';
-import { initSimWasm, simWasmFlagSelects } from '../wasm/simWasm';
+import { initSimWasm, simWasmFlagSelects, simWasmStatus } from '../wasm/simWasm';
 import { SimCore, type CitySaveCopy, type SimModules } from './SimCore';
 import { ChangeRecorder } from './recorder';
 import { ProtocolInbox, type InboxStore } from './protocolInbox';
+import { makeProtectorProbe } from './protectorProbe';
+import { exactDigest } from './queries';
 import { PROTOCOL_VERSION, assertOwnedBuffers, errorText, type M2W, type Packet, type Reply } from './protocol';
-import { ACK_WINDOW, sourceRecord, type SerializedSource, type SimWorkerScope, type WorkerInit, type WorkerInput, type WorkerOutput } from './workerProtocol';
+import { ACK_WINDOW, sourceRecord, type SerializedSource, type SimWorkerScope, type WorkerDebugReport, type WorkerInit, type WorkerInput, type WorkerOutput } from './workerProtocol';
 
 const IN_NODE = typeof (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node === 'string';
 
@@ -61,6 +63,8 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
   let ack = 0, epoch = 1, confirmed = 1, flushWanted = false;
   /** posted packets main has not acked, with the replies they carried: a resync's Ready lists those as lost */
   let unacked: { seq: number; ids: number[]; saves: number[] }[] = [];
+  /** dev: this isolate's protector probe (§5.4, risk 7), read by debug.verify and once per frame (it is sticky) */
+  let protector: (() => boolean) | null = null;
 
   function post(message: WorkerOutput): void {
     if (abort.signal.aborted) return;
@@ -81,6 +85,8 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
   const live = () => !init!.deterministic && !run;
 
   async function boot(m: WorkerInit): Promise<void> {
+    // first, before the city and the wasm loader: the probe sees only a detach that comes after it (needs natives syntax)
+    if (m.flags?.dev) protector = makeProtectorProbe();
     if (m.v !== PROTOCOL_VERSION) throw new Error(`Protocol version ${m.v}; this worker speaks ${PROTOCOL_VERSION}`);
     if (m.city?.kind !== 'serialized' || m.persistence !== 'main' || m.journal) throw new Error('W1.2 boots a serialized city with persistence main and no journal');
     init = m;
@@ -194,6 +200,7 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
         inbox.shift(); startRun(m);
         continue;
       }
+      if (m.t === 'cmd' && m.op === 'debug.verify') { inbox.shift(); protocol.acknowledge(m.seq, debugReport()); continue; }
       inbox.shift(); protocol.handle(m);
     }
   }
@@ -204,6 +211,13 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
     run = { seq: m.seq, left: days as number };
     setLive(false);
     if (!run.left) finishRun();
+  }
+  /** debug.verify (§2.2; dev harnesses, tools/qa-worker.mjs): acked in the command sequence with what this isolate ran on */
+  function debugReport(): WorkerDebugReport {
+    const wasm = simWasmStatus();
+    return { digest: exactDigest(core!.sim.state), protector: protector ? protector() : null, day: core!.sim.state.day,
+      wasm: { state: wasm.state, blur: wasm.kernels.blur?.active ?? false, capacity: wasm.heap?.capacity ?? null,
+        grows: wasm.heap?.grows ?? null, error: wasm.error } };
   }
   function finishRun(): void {
     const seq = run!.seq;
@@ -223,6 +237,7 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
     if (!frame) {
       if (pendingDt === null) return null;
       frame = { dt: pendingDt, stage: 'steps', days: 0 }; pendingDt = null;
+      protector?.();
       core!.livePolicy.tick(); sim.frameHooks(frame.dt); scheduler.beginFrame(sim);
       return 'hooks';
     }
