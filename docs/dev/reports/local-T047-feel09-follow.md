@@ -38,7 +38,8 @@ QA notes: scratchpad `qa/T047/qa.md`, rounds 1-4, with data and shots.
 |---|---|
 | tsc | clean |
 | Full vitest with the fixtures (`7ccf3ed`) | **223 files passed, 1 skipped; 2,241 tests passed, 7 skipped; 0 failing** |
-| 128×15 s7 bot with the action log | **identical to dev:** residents [ 61124, 93804, 37971 ] = 192,899 |
+| Full vitest after the dev merge (`7111b02`) | **227 files passed, 2 skipped; 2,293 tests passed, 11 skipped; 0 failing** |
+| 128×15 s7 bot with the action log, both commits | **identical to dev:** residents [ 61124, 93804, 37971 ] = 192,899 |
 
 ## Left open, with their owners
 
