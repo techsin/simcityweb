@@ -1,4 +1,86 @@
-# T037ar — onboarding round 3
+# T037ar — onboarding round 4
+
+Round-4 base: **fb60208**, with dev 50a6b29 merged after round 3's e8d03de. Read NOTE-051 in full before editing. Its two approved save-path entries and event form **one standalone change**, with the tests and report below. They resolve the dirty/journal requests recorded in the historical rounds. FH-22's real Local/packet save/reload and fresh-core recovery checks now pass; browser acceptance remains with the lead.
+
+## Round-4 change 1 — NOTE-051 save-path completion
+
+| File | Change |
+|---|---|
+| src/save/recoveryCodec.ts | Add setOnboarding: true to JOURNAL_OPS. |
+| src/worker/protocol.ts | Add setOnboarding to JournalOp only. |
+| src/save/fingerprint.ts | Add savedDataChanged to CHANGE_EVENTS; fingerprint bytes stay unchanged. |
+| src/sim/Simulation.ts | Declare savedDataChanged: void in CityEvents. |
+| src/worker/SimCore.ts | After validation, compare records with existing plainEqual. Identical valid records return true without replacement/event; changed records install the detached copy, then emit savedDataChanged. Invalid records still return false. |
+| tests/worker/onboardingPersistence.test.ts | Add Local/packet dirty-boundary cases: initial install +1, save/reload, reordered identical record +0, invalid future record +0, changed field +1. Existing actual save/reload and absent-op invariants remain. |
+| tests/worker/recovery.test.ts | Add actual mirror enrollment/written-journal progress-only replay on a fresh core. Extend the every-whitelisted-op fixture with setOnboarding; assert its boolean true and the declared void results, preserving the other actions' existing { ok: true } expectations. |
+| docs/dev/reports/local-R1-guide-a.md | This round's evidence and W1.3/T039 handoff. |
+
+The dirty tests compare the host's public changes count with its actual save acknowledgement and also require an unchanged cityFingerprint, exercising the same two-part clean/dirty boundary as App. Equivalent records with different object-key insertion order remain clean. Journal replay restores the record and the complete saved city, without advancing time or RNG.
+
+Numbering retained for the lane: **1** is the single change above; **2, 3, 4, 5 and 6** have no new edits. **No src/sim/infra/* hunk or outside-scope hunk.** No edits to protocolInbox.ts, WorkerSimHost.ts, LoopbackSimHost.ts, simWorker, WorkerLink, TopBar/topbar, main.ts or other cloud-held files. The existing generic event subscribers, packet change counter, journal enrollment and replay paths suffice.
+
+### What W1.3 / T039 must keep
+
+Preserve **both** whitelist entries (JOURNAL_OPS and JournalOp), the typed savedDataChanged event, its CHANGE_EVENTS registration, and SimCore's validated changed-only emit. W1.3's worker-side journal must treat setOnboarding as an ordinary whitelisted command; boot replay must apply it through the generic SimCore path and accept its boolean result. A replayed changed record is unsaved; an identical record must not increment the change count. If W1.3 relocates the whitelist, move the entry with it. Do not drop either entry or the event in a merge conflict. No additional cloud implementation request is needed for this change.
+
+### Round-4 tests and gates
+
+**PASS:** npx tsc --noEmit; git diff --check; all eight changed files have no UTF-8 BOM. The following **10 single-file runs passed: 135 tests, 1 existing skipped**, sequentially through the quiet gate. The skip is the existing W1.2 simWorker import-graph test; no new skip was introduced.
+
+| Test file | Passed | Existing skips |
+|---|---:|---:|
+| tests/worker/recovery.test.ts | 26 | 0 |
+| tests/save/recoveryCodec.test.ts | 8 | 0 |
+| tests/save/recovery.test.ts | 14 | 0 |
+| tests/save/recoveryIdb.test.ts | 4 | 0 |
+| tests/save/recoveryLs.test.ts | 4 | 0 |
+| tests/save/fingerprint.test.ts | 2 | 0 |
+| tests/worker/onboardingPersistence.test.ts | 10 | 0 |
+| tests/game/onboarding.test.ts | 49 | 0 |
+| tests/worker/hygiene.test.ts | 17 | 1 |
+| tests/worker/exactDigest.test.ts | 1 | 0 |
+
+Used the successful round-3 runner below, with no Vite/config/dependency edits. Onboarding emits the same AbortSignal listener-limit warnings seen in round 3; all its assertions pass.
+
+~~~text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types node_modules/vitest/vitest.mjs run <single-file-from-table> --maxWorkers=1 --configLoader native --pool threads
+~~~
+
+**PASS, bot:** **2015 residents [61,124, 93,804, 37,971] = 192,899**, identical to the reference. The requested command was attempted, but tsx is absent and npm's cache has no package (ENOTCACHED):
+
+~~~text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
+~~~
+
+The repository documents the installed Rolldown fallback in tools/balance-json.ts and simbot's help. Bundled tools/simbot.ts as Node ESM in the assigned scratch folder and ran its unchanged CLI with the same arguments through the quiet gate:
+
+~~~text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T037ar/scratch/round4-simbot.mjs --size 128 --years 15 --seed 7 --quiet
+~~~
+
+**PASS, unchanged exact/determinism digests:** paired short 32² seed-7 SimCore probes compare the working sources with **fb60208's versions of all five changed production files**, supplied to the bundler without a checkout or worktree mutation. Real systems/actions run for 45 days, day 358 to 403, with ordinary tax/funding commands across month/year boundaries and no setOnboarding. All **46 initial/daily samples** match: exactDigest, canonical saved-city SHA-256 (same canonicalization as querySideEffects, savedAt excluded), RNG state and change count. Both runs have no onboarding key, zero savedDataChanged events and zero system errors.
+
+| Sample | exactDigest, both | Saved-city SHA-256, both | RNG, both |
+|---|---:|---|---:|
+| Day 358 | 2099856967 | cdeed96fa61ea4b04447ed0cd3c516260d567ecda0b728ee231b2610b59f0c17 | 2654435774 |
+| Day 403 | 1834814790 | fd708863a82fa5a6fca24366420e94f795b796772b9e8c48765195094b5c7ec3 | 2597156171 |
+
+The digest comparison is a 45-day regression probe, not a claim of full-bot hash measurement. The separate 128×15 bot above establishes the requested population gate. Existing absent-onboarding exact-digest and direct-Simulation/Local save/RNG comparisons also passed in onboardingPersistence.
+
+Scratch evidence: round4-test-results.json; round4-bot-128x15-s7.txt; round4-invariants-comparison.json; per-variant sample JSON, probe/builder and source-hash metadata. No other worktree or branch was touched. Changes remain uncommitted; no .done file was written.
+
+**Plan versus code:** the entries/event fit the existing generic paths; no host workaround or plan amendment. NOTE-051 also confirms guideFacts' previously reported 7.3 ms one-time cold metadata hydration is not a gate; its 0.124 ms full reevaluation and 0.002 ms cached read remain the recorded measurements, not new runs.
+
+**Left for the lead / unverified:** full Vitest after integration, actual W1.3 worker-side journal/boot migration, and real-GPU/browser acceptance. No new 256×60 or guide-follower bot run is needed for this additive save-path change. The prior guide-only first-city numeric/browser gates below still apply.
+
+- [ ] Local and packet city: a progress-only dismissal/minimise/timer change shows Unsaved; saving clears it; repeating the identical record leaves it clean.
+- [ ] Reach G4, save/reload and continue. Unload/crash after a progress-only edit, recover at boot, and retain the guide record without advancing the recovered date for replay.
+- [ ] Old saves without onboarding still load and remain keyless until enrolled. After W1.3 integration, repeat progress-only recovery and no-op dirty checks on the actual Worker host.
+- [ ] Complete the existing FH-01/FH-02/FH-22 and real-input 1280×720 guide-only first-city checklist below.
+
+---
+
+## Round-3 report (historical, committed as e8d03de)
 
 Round-3 base: 865e956, after round 2 was committed as 3f18111 / 30cc30d / 865e956. The user verified tsc and the unchanged **192,899** bot total; their full suite found the one guideFacts packet-test failure reproduced here.
 
