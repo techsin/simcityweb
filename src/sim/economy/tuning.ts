@@ -152,6 +152,8 @@ export const TAX_SENS: readonly number[] = [0.35, 0.5, 0.8, 0.4, 0.5, 0.7, 0.55,
 export const TAX_DEMAND_RESPONSE = 0.3;
 export const TAX_FACTOR_MIN = 0.05;
 export const TAX_FACTOR_MAX = 1.5;
+/** Budget red threshold: NEW-05 128×15 s7 loses 12.8503% at 13→14%, the first step above 10% (NOTE-050). */
+export const TAX_GROWTH_WARNING_RATE = 14;
 
 /** unemployment above this pushes R down and C/I up */
 export const UNEMP_NEUTRAL = 0.08;
