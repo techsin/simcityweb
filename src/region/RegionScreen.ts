@@ -1,7 +1,8 @@
 /**
  * RegionScreen — RegionView + HUD overlay: region card (name, totals, RCI), toolbar (menu, rename, export, import,
  * music, settings), founded-cities list, hover tooltip, floating city labels and the selected-tile card
- * (Found new city / Play / Delete city).
+ * (Found new city / Play / Delete city). In a region without cities one medium tile is outlined and labelled as a good
+ * first city (FH-11, RegionModel.recommendedTile).
  */
 import * as THREE from 'three';
 import { audio } from '../audio';
@@ -13,6 +14,7 @@ import { button, formatMoney, formatPop, h, icon, timeAgo, withSounds } from './
 import { confirmDialog, promptDialog, toast } from './ui/modal';
 import { downloadBlob, exportRegion, importRegion, safeFileName } from '../save';
 import { MusicPlayer } from '../ui/MusicPlayer';
+import { guideCopy } from '../ui/guide/copy';
 
 export interface RegionScreenCallbacks {
   onPlay(tile: RegionTile): void;
@@ -36,6 +38,8 @@ export class RegionScreen {
   private tip: HTMLElement;
   private tileCard: HTMLElement | null = null;
   private labels = new Map<string, HTMLElement>();
+  /** FH-11: the label over the recommended first-city tile (while the region has no city) */
+  private recLabel: HTMLElement | null = null;
   private labelLayer: HTMLElement;
   private labelWidth = 0;
   private labelHeight = 0;
@@ -69,6 +73,7 @@ export class RegionScreen {
     this.fileInput.addEventListener('change', () => this.importFile());
     this.el = h('div', { class: 'region-hud' });
     root.append(this.labelLayer, this.el, this.tip);
+    this.recommend();
     this.buildHud();
 
     this.view.onHover = (tile, x, y) => {
@@ -162,7 +167,12 @@ export class RegionScreen {
   private renderList(): void {
     const founded = this.model.data.tiles.filter((t) => t.city).sort((a, b) => (b.city!.population ?? 0) - (a.city!.population ?? 0));
     if (!founded.length) {
-      this.list.replaceChildren(h('div', { class: 'rc-empty' }, 'No cities yet. Click any tile on the map, then ', h('b', {}, 'Found New City'), ' to start building.'));
+      const rec = this.view.recommendedTile;
+      this.list.replaceChildren(
+        rec
+          ? h('div', { class: 'rc-empty' }, 'No cities yet. The outlined tile is ', h('b', {}, guideCopy.phaseA.A3Tile().toLowerCase()), ': click it, then ', h('b', {}, 'Found New City'), '.')
+          : h('div', { class: 'rc-empty' }, 'No cities yet. Click any tile on the map, then ', h('b', {}, 'Found New City'), ' to start building.'),
+      );
       return;
     }
     this.list.replaceChildren(
@@ -195,6 +205,7 @@ export class RegionScreen {
     this.tip.replaceChildren(
       h('div', { class: 'rt-t' }, c ? c.name : 'Unfounded land', h('span', { class: `size-badge s${tile.size}` }, TILE_SIZE_LABEL[tile.size])),
       h('div', { class: 'rt-s' }, c ? `${formatPop(c.population)} residents · Mayor ${c.mayor}` : `${km} × ${km} km · ${tile.size * 64} × ${tile.size * 64} cells`),
+      ...(tile === this.view.recommendedTile ? [h('div', { class: 'rt-rec' }, icon('star', 12), guideCopy.phaseA.A3Tile())] : []),
       h('div', { class: 'rt-cta' }, icon(c ? 'play' : 'plus', 12), c ? 'Double-click to play' : 'Double-click to found a new city'),
     );
     const r = this.tip.parentElement!.getBoundingClientRect();
@@ -240,7 +251,7 @@ export class RegionScreen {
         'div',
         { style: 'min-width:0' },
         h('div', { class: 'tc-title' }, h('h3', {}, c ? c.name : 'Unfounded land'), h('span', { class: `size-badge s${tile.size}` }, TILE_SIZE_LABEL[tile.size])),
-        h('div', { class: 'tc-sub' }, c ? `Mayor ${c.mayor} · ${c.difficulty} difficulty` : 'Found a city here — its terrain will match the neighbouring tiles.'),
+        h('div', { class: 'tc-sub' }, c ? `Mayor ${c.mayor} · ${c.difficulty} difficulty` : tile === this.view.recommendedTile ? `${guideCopy.phaseA.A3Tile()}: mostly flat land with a little water.` : 'Found a city here — its terrain will match the neighbouring tiles.'),
         h('div', { class: 'tc-stats' }, ...stats),
         actions,
       ),
@@ -326,6 +337,26 @@ export class RegionScreen {
         el.remove();
         this.labels.delete(k);
       }
+    const rec = this.view.recommendedTile;
+    if (rec && this.recLabel) {
+      const p = this.view.tileCenter(rec, 260).project(cam);
+      const off = p.z > 1 || p.z < -1;
+      this.recLabel.style.opacity = off ? '0' : '1';
+      if (!off) this.recLabel.style.transform = `translate(${(p.x * 0.5 + 0.5) * this.labelWidth}px, ${(-p.y * 0.5 + 0.5) * this.labelHeight}px) translate(-50%, -100%)`;
+    }
+  }
+
+  /** FH-11: outline + label the recommended first-city tile while the region has no city; clear them once it has one */
+  private recommend(): void {
+    const rec = this.model.recommendedTile();
+    this.view.recommend(rec);
+    if (rec && !this.recLabel) {
+      this.recLabel = h('div', { class: 'city-label rec-label' }, icon('star', 12), guideCopy.phaseA.A3Tile());
+      this.labelLayer.appendChild(this.recLabel);
+    } else if (!rec && this.recLabel) {
+      this.recLabel.remove();
+      this.recLabel = null;
+    }
   }
 
   // ------------------------------------------------------------------ actions
@@ -381,6 +412,7 @@ export class RegionScreen {
   /** re-read region data (after returning from a city / deleting) */
   async refresh(): Promise<void> {
     this.model.reindex();
+    this.recommend();
     this.renderCard();
     this.renderList();
     if (this.view.selectedTile) this.selectTile(this.view.selectedTile);

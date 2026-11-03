@@ -35,7 +35,7 @@ import { openNewCityDialog, terrainOptionsFor } from './region/NewCityDialog';
 import { summarizeCity } from './region/citySummary';
 import { cityThumbnail, drawCityMap, normalizeThumbnail, regionPreviewDataUrl, regionPreviewKey } from './region/mapPreview';
 import { randomCityName, randomMayorName } from './region/names';
-import { cityOverrides, loadSettings, saveSettings, takeCityChanges, type AppSettings } from './region/settings';
+import { applyFirstRunQuality, cityOverrides, loadSettings, saveSettings, takeCityChanges, type AppSettings } from './region/settings';
 import { TitleScreen } from './region/ui/TitleScreen';
 import { LoadingScreen } from './region/ui/LoadingScreen';
 import { openCredits, openLoadRegion, openNewRegion, openRecoverDialog, openSettings, openSimCrashDialog } from './region/ui/dialogs';
@@ -89,6 +89,8 @@ interface CitySceneLike {
   worldView?: { camera?: Camera; isNull?: boolean };
   /** optional: resolves once the 3D views are up (used to delay window.__ready) */
   ready?: Promise<unknown>;
+  /** FH-21: the measured time from the click to the first interactive frame (the fps readout shows it) */
+  reportLoadTime?(ms: number): void;
   whenReady?(): Promise<unknown>;
 }
 interface CitySceneOptions {
@@ -142,6 +144,9 @@ async function waitForScene(scene: CitySceneLike): Promise<void> {
 function markReady(): void {
   requestAnimationFrame(() => requestAnimationFrame(() => ((window as unknown as { __ready: boolean }).__ready = true)));
 }
+
+/** FEEL-05: the day a new city is founded on, 1 April of its start year (systemData.foundedDay; the bot founds on day 0) */
+const FOUNDING_DAY = 90;
 
 /** wall-clock interval of background recovery snapshots while there are unsaved changes */
 const SNAPSHOT_INTERVAL_MS = 30_000;
@@ -222,8 +227,12 @@ class App {
   private offerPending: Promise<RecoverChoice> | null = null;
   /** last recovery snapshot result (debugging / tests) */
   lastSnapshot: (WriteResult & { why: string }) | null = null;
+  /** FH-21: ms from the last "Found City" / "Play" to the city's first interactive frame (P-5 reports it) */
+  lastLoadMs: number | null = null;
 
   constructor(host: HTMLElement) {
+    // FH-21: a first run picks the graphics quality the device can carry (and keeps it, like a chosen setting)
+    if (applyFirstRunQuality(this.settings)) saveSettings(this.settings);
     this.root = h('div', { class: 'meta-root' });
     host.appendChild(this.root);
     setUiRoot(this.root);
@@ -477,13 +486,18 @@ class App {
     await this.startNewCity(this.region, tile, cfg);
   }
 
-  private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData): Promise<void> {
+  /** `t0`: when the player asked for the city (performance.now(); FH-21 measures the load from it) */
+  private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData, t0 = performance.now()): Promise<void> {
     this.busy = true;
     const ld = new LoadingScreen(this.root);
     try {
       ld.set('Generating terrain…', 0.1);
       await paint();
       let st: CityState | null = new CityStateClass(cfg);
+      // FEEL-05: a player's city opens in spring (1 April); the CityState constructor keeps day 0 for the bot, the tests
+      // and old saves, so only a city founded here starts later in its first year
+      st.day = FOUNDING_DAY;
+      st.systemData.foundedDay = FOUNDING_DAY;
       const topts = terrainOptionsFor(cfg, model, tile);
       generateTerrain(st, { ...topts, skipTrees: true });
       ld.set('Planting trees…', 0.35);
@@ -501,7 +515,7 @@ class App {
       if (worker) clearRecoveryBase();
       const state = worker ? worker.host.state : st;
       st = null;
-      await this.enterCity(model, tile, state, ld, worker ?? undefined);
+      await this.enterCity(model, tile, state, ld, t0, worker ?? undefined);
     } catch (e) {
       console.error('[main] failed to found city', e);
       toast(`Could not found the city: ${(e as Error).message}`, 'bad', 6000);
@@ -528,6 +542,7 @@ class App {
   }
 
   async playCity(tile: RegionTile, existing?: LoadingScreen): Promise<void> {
+    const t0 = performance.now();
     if (this.busy || !this.region) {
       existing?.remove();
       return;
@@ -545,7 +560,7 @@ class App {
       // W1.2: main reads the record without deserializing it, and the worker boots on it (O6, R14)
       const worker = this.useWorker() ? await this.bootWorker(this.region, tile, ld) : null;
       if (worker) {
-        await this.enterCity(this.region, tile, worker.host.state, ld, worker);
+        await this.enterCity(this.region, tile, worker.host.state, ld, t0, worker);
         return;
       }
       const st = await loadCity(this.region.data.id, tile.key);
@@ -557,7 +572,7 @@ class App {
         await this.regionScreen?.refresh();
         return;
       }
-      await this.enterCity(this.region, tile, st, ld);
+      await this.enterCity(this.region, tile, st, ld, t0);
     } catch (e) {
       console.error('[main] failed to load city', e);
       toast(`Could not load the city: ${(e as Error).message}`, 'bad', 6000);
@@ -567,8 +582,8 @@ class App {
     }
   }
 
-  /** `worker`: W1.2's booted worker host, whose replica `st` is */
-  private async enterCity(model: RegionModel, tile: RegionTile, st: CityState, ld: LoadingScreen, worker?: WorkerBoot): Promise<void> {
+  /** `t0`: when the player asked for the city (FH-21); `worker`: W1.2's booted worker host, whose replica `st` is */
+  private async enterCity(model: RegionModel, tile: RegionTile, st: CityState, ld: LoadingScreen, t0 = performance.now(), worker?: WorkerBoot): Promise<void> {
     ld.set('Building the city…', 0.7);
     await paint();
     this.clearScreens();
@@ -640,6 +655,9 @@ class App {
       this.tickSaveState();
     }
     await ld.hide();
+    // FH-21: the loading screen is gone and the views drew a frame: the city takes input from here
+    this.lastLoadMs = performance.now() - t0;
+    this.city?.scene?.reportLoadTime?.(this.lastLoadMs);
     audio.play('cityReady');
     markReady();
     if (this.city) this.city.entered = true;
@@ -977,7 +995,7 @@ class App {
     await saveRegion(data);
     setLastRegionId(id);
     if (!openDialog) return this.showRegion(model, ld);
-    const tile = pickNiceTile(model, 2);
+    const tile = model.pickNiceTile(2);
     await this.showRegion(model, ld, tile.key, false);
     const p = openNewCityDialog({ region: model, tile });
     markReady();
@@ -995,7 +1013,7 @@ class App {
     await deleteRegion('quickstart').catch(() => undefined);
     const { data, model } = createRegionData({ seed, preset: 'greenvale', id: 'quickstart', name: 'Quickstart Valley' });
     this.region = model;
-    const tile = pickNiceTile(model, size);
+    const tile = model.pickNiceTile(size);
     const partial: Partial<CityConfigData> = { name: randomCityName(), mayor: randomMayorName() };
     const terrain = q.get('terrain') as TerrainPreset | null;
     if (terrain && terrain !== 'region') partial.terrain = terrain;
@@ -1023,22 +1041,6 @@ function drawPreview(model: RegionModel): boolean {
   } catch {
     return false;
   }
-}
-
-/** a tile of the wanted size with a pleasant amount of water (some, not much) */
-function pickNiceTile(model: RegionModel, size: TileSize): RegionTile {
-  const cands = model.data.tiles.filter((t) => t.size === size);
-  const pool = cands.length ? cands : model.data.tiles;
-  let best = pool[0], bestScore = -1e9;
-  for (const t of pool) {
-    const w = model.tileWaterFraction(t);
-    const score = -Math.abs(w - 0.12) - (w > 0.4 ? 1 : 0) - Math.hypot(t.x + t.size / 2 - 8, t.z + t.size / 2 - 8) * 0.01;
-    if (score > bestScore) {
-      bestScore = score;
-      best = t;
-    }
-  }
-  return best;
 }
 
 const host = document.getElementById('app') ?? document.body;

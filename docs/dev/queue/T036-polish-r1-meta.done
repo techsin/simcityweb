@@ -1,1 +1,5 @@
 schema (step 1, POLISH_PLAN 7.5): local/R1-meta-schema, report docs/dev/reports/local-R1-meta-schema.md; gates green, browser check 8 of 8
+NOTE-042 #2-3 (step 2): cloud/t036s2, report docs/dev/reports/local-R1-meta-step2.md; text size, motion and colour vision hidden until wired (A11Y_WIRED), motion stores 'system'; gates green, browser 21 of 21 + 8 of 8
+FH-11 (step 2): cloud/t036s2, report docs/dev/reports/local-R1-meta-step2.md; difficulty blurbs, Easy + Guided start for a first city, Disasters note, one recommended tile; gates green, browser checks pass (1280x720 after a city: nothing clipped)
+FEEL-05 (step 2): cloud/t036s2, report docs/dev/reports/local-R1-meta-step2.md; new cities on Apr 1 (foundedDay 90), advisors from foundedDay, seasonal minimap; bot 128x15 s7 identical (196,101)
+FH-21 (step 2): cloud/t036s2, report docs/dev/reports/local-R1-meta-step2.md; first-run quality from detectQuality(), one slow-frame prompt per profile, context loss survived; tools/qa-context-loss.mjs 13 of 13

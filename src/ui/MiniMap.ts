@@ -1,5 +1,12 @@
-/** Mini-map (bottom-right): terrain / water / zones / roads / buildings + camera frustum; click or drag to jump. */
+/**
+ * Mini-map (bottom-right): terrain / water / zones / roads / buildings + camera frustum; click or drag to jump.
+ * FEEL-05: the land follows the season like the 3D foliage. paintBase also fills a land mask (natural ground, not water,
+ * beach, snow, roads, zones or buildings); draw() blends the masked land toward straw by the renderer's uFoliageDry with a
+ * 'color' composite (the hue of lum × (1.18, 1.02, 0.68), at the land's own luminance), so a month changes one draw and
+ * never repaints the base.
+ */
 import * as THREE from 'three';
+import { sharedUniforms } from '../assets/materials';
 import { CELL_SIZE } from '../core/constants';
 import { Network, Overlay } from '../core/types';
 import type { GameContext } from '../game/context';
@@ -10,6 +17,9 @@ const ZC: Record<number, [number, number, number]> = {
   1: [120, 205, 130], 2: [80, 185, 105], 3: [50, 160, 85], 4: [120, 165, 240], 5: [80, 140, 240], 6: [55, 110, 215],
   7: [200, 205, 110], 8: [230, 180, 60], 9: [215, 145, 40], 10: [150, 120, 90],
 };
+/** the dry-foliage hue the renderer blends toward, lum × (1.18, 1.02, 0.68) (materials.ts), as an sRGB colour */
+const STRAW: [number, number, number] = [255, 220, 147];
+
 const BC: Record<number, [number, number, number]> = {
   1: [210, 245, 215], 2: [180, 235, 195], 3: [150, 225, 175], 4: [200, 220, 255], 5: [175, 205, 255], 6: [150, 185, 255],
   7: [235, 235, 170], 8: [255, 220, 140], 9: [250, 200, 120], 10: [180, 150, 120],
@@ -22,6 +32,13 @@ export class MiniMap {
   private base: HTMLCanvasElement;
   private bg: CanvasRenderingContext2D;
   private img: ImageData;
+  /** FEEL-05: the season layer: STRAW where the base shows natural land, transparent elsewhere (uploaded only when used) */
+  private mask: HTMLCanvasElement;
+  private mg: CanvasRenderingContext2D;
+  private maskImg: ImageData;
+  private maskDirty = false;
+  /** the uFoliageDry the map was last drawn with */
+  private drawnDry = 0;
   private dirty = true;
   private painted = false;
   private paintRow = 0;
@@ -49,6 +66,11 @@ export class MiniMap {
     this.base.height = N;
     this.bg = this.base.getContext('2d')!;
     this.img = this.bg.createImageData(N, N);
+    this.mask = document.createElement('canvas');
+    this.mask.width = N;
+    this.mask.height = N;
+    this.mg = this.mask.getContext('2d')!;
+    this.maskImg = this.newMask(N);
     const collapse = h('button', { class: 'icon-btn', title: 'Collapse map', html: icon('chevDown', 14) });
     collapse.addEventListener('click', () => {
       this.collapsed = !this.collapsed;
@@ -111,8 +133,9 @@ export class MiniMap {
       this.paintState = st;
       this.paintOverlay = this.ctx.overlay;
       if (this.img.data.length !== N * N * 4) this.img = this.bg.createImageData(N, N);
+      if (this.maskImg.data.length !== N * N * 4) this.maskImg = this.newMask(N);
     }
-    const d = this.img.data;
+    const d = this.img.data, md = this.maskImg.data;
     const ov = this.paintOverlay;
     const start = performance.now(), firstRow = this.paintRow;
     // Keep the previous complete map visible; stop between rows at 2 ms or 4096 cells per frame.
@@ -122,6 +145,7 @@ export class MiniMap {
         const o = i * 4;
         const hgt = st.cellHeight(x, z);
         let r: number, g: number, b: number;
+        md[o + 3] = 0;
         if (st.water[i]) {
           const dd = Math.min(1, -hgt / 25);
           r = 38 - dd * 18; g = 92 - dd * 30; b = 128 - dd * 25;
@@ -149,7 +173,7 @@ export class MiniMap {
         } else if (zn) {
           const c = ZC[zn];
           r = r * 0.35 + c[0] * 0.65; g = g * 0.35 + c[1] * 0.65; b = b * 0.35 + c[2] * 0.65;
-        }
+        } else if (!st.water[i] && hgt >= 1.6 && hgt <= 170) md[o + 3] = 255; // natural ground: follows the season
         if (ov === Overlay.Power && !st.water[i] && (bid >= 0 || zn)) {
           const p = st.powered[i];
           r = p ? 250 : 80; g = p ? 215 : 70; b = p ? 80 : 70;
@@ -161,6 +185,8 @@ export class MiniMap {
     }
     if (this.base.width !== N) this.base.width = this.base.height = N;
     this.bg.putImageData(this.img, 0, 0);
+    if (this.mask.width !== N) this.mask.width = this.mask.height = N;
+    this.maskDirty = true;
     this.paintState = null;
     this.paintRow = 0;
     return true;
@@ -186,6 +212,7 @@ export class MiniMap {
     g.imageSmoothingEnabled = false;
     g.clearRect(0, 0, W, W);
     g.drawImage(this.base, 0, 0, W, W);
+    this.drawSeason(g, W);
     let cam: THREE.PerspectiveCamera | null = null;
     try {
       cam = this.ctx.world.camera;
@@ -217,6 +244,33 @@ export class MiniMap {
     g.restore();
   }
 
+  /** FEEL-05: blend the natural land toward the renderer's dry-foliage hue (none from late spring to early autumn) */
+  private drawSeason(g: CanvasRenderingContext2D, W: number): void {
+    const dry = Math.max(0, Math.min(1, sharedUniforms.uFoliageDry.value));
+    this.drawnDry = sharedUniforms.uFoliageDry.value;
+    if (dry < 0.01) return;
+    if (this.maskDirty) {
+      this.mg.putImageData(this.maskImg, 0, 0);
+      this.maskDirty = false;
+    }
+    g.save();
+    g.globalCompositeOperation = 'color';
+    g.globalAlpha = dry;
+    g.drawImage(this.mask, 0, 0, W, W);
+    g.restore();
+  }
+
+  /** a season mask buffer: STRAW everywhere, alpha set per cell by paintBase */
+  private newMask(N: number): ImageData {
+    const m = this.mg.createImageData(N, N);
+    for (let o = 0; o < m.data.length; o += 4) {
+      m.data[o] = STRAW[0];
+      m.data[o + 1] = STRAW[1];
+      m.data[o + 2] = STRAW[2];
+    }
+    return m;
+  }
+
   markDirty(): void {
     this.dirty = true;
   }
@@ -235,6 +289,8 @@ export class MiniMap {
       this.cameraProjection.copy(cam.projectionMatrix);
     }
     if (this.collapsed) return stopped;
+    // FEEL-05: the season changed (the renderer sets uFoliageDry from the month): redraw, no repaint
+    if (sharedUniforms.uFoliageDry.value !== this.drawnDry) this.viewDirty = true;
     this.acc += dt;
     this.frAcc += dt;
     if (this.paintState || this.dirty && (this.acc > 0.8 || !this.painted)) {

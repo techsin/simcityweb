@@ -30,7 +30,7 @@ import { FallbackObjectsView } from './fallback/FallbackObjectsView';
 import { FallbackWorldView } from './fallback/FallbackWorldView';
 import { NullObjectsView, NullWorldView } from './fallback/NullViews';
 import { loadGameModules, type GameModules } from './modules';
-import { loadSettings, saveSettings, type GameSettings } from './settings';
+import { loadPref, loadSettings, savePref, saveSettings, type GameSettings } from './settings';
 import { NewYearCelebration, type CelebrateOptions } from './NewYear';
 import { GameSounds } from './GameSounds';
 import { HOTKEY_CYCLES, PANEL_HOTKEYS } from './toolCatalog';
@@ -39,7 +39,7 @@ import { CursorTip } from '../ui/CursorTip';
 import { h, isTyping } from '../ui/dom';
 import { MiniMap } from '../ui/MiniMap';
 import { ErrorOverlay, HelpPanel, PauseMenu, SavePill, confirmOpen } from '../ui/Modals';
-import { CameraMemory, validCamera } from './cameraStart';
+import { CameraMemory, applyCamera, readCamera, validCamera } from './cameraStart';
 import { NewsTicker, Toasts } from '../ui/Notifications';
 import { Onboarding } from '../ui/Onboarding';
 import { PanelManager } from '../ui/Panel';
@@ -97,6 +97,12 @@ const SOUND_MAP: Record<string, string> = {
 
 /** game-action sounds that follow the cursor's screen x (stereo) */
 const SPATIAL = new Set(['road', 'rail', 'power', 'pipe', 'zone', 'dezone', 'bulldoze', 'plop', 'terraform', 'tree', 'construct', 'error', 'rotate', 'query']);
+
+/** FH-21's slow-frame prompt: after this long on High / Ultra at a median under SLOW_FPS, offer Medium once per profile */
+const SLOW_WINDOW_S = 20;
+const SLOW_FPS = 25;
+/** the prompt's answer, per profile ('metropolis.ui.slowPrompt': shown, then 'switch' / 'keep') */
+const SLOW_PREF = 'slowPrompt';
 
 export class CityScene {
   readonly host: LocalSimHost | LoopbackSimHost | WorkerSimHost;
@@ -163,6 +169,14 @@ export class CityScene {
   private readonly newCity: boolean;
   /** the view stored in the save (state.systemData.camera), only once the real view's camera has been placed */
   private camMemory = new CameraMemory();
+  /** FH-21: the graphics context was lost: the card, and whether a rebuild of the views is running */
+  private ctxLost: { card: HTMLElement; restoring: boolean } | null = null;
+  /** FH-21: fps samples (value, seconds) of the last SLOW_WINDOW_S on High / Ultra; null once the prompt was shown */
+  private slow: { fps: number; dt: number }[] | null = loadPref<unknown>(SLOW_PREF, null) === null ? [] : null;
+  /** FH-21: the real views rendered their first frame (the app's loading screen goes then): the slow-frame window starts */
+  private firstFrame = false;
+  /** FH-21: ms from "Found City" / "Play" to the first interactive frame (main.ts reports it), for the fps readout */
+  private loadMs: number | null = null;
 
   constructor(opts: CitySceneOptions) {
     this.opts = opts;
@@ -451,6 +465,21 @@ export class CityScene {
     } catch {
       /* ignore */
     }
+    this.createViews();
+    this.resize();
+    this.applySettings({});
+    this.placeInitialCamera();
+    if (this.mods.errors.length) console.warn('[game] module load issues', this.mods.errors);
+    this.showDevBadge();
+    this.feedWind();
+    this.uiEvents.emit('viewsReady', undefined);
+    this.readyPending = true; // resolved after the next rendered frame (see loop)
+    this.veil.classList.add('gone');
+    setTimeout(() => this.veil.remove(), 600);
+  }
+
+  /** the world and city-objects views on this.canvas (real ones, else stand-ins); at start and after a lost context */
+  private createViews(): void {
     const state = this.sim.state;
     const events = this.sim.events;
     const force = this.opts.forceFallback;
@@ -504,16 +533,78 @@ export class CityScene {
       }
     }
     this.objects = objects ?? new NullObjectsView();
+    this.watchContext(this.canvas);
+  }
+
+  // ------------------------------------------------------------------------------------------------ lost graphics (FH-21)
+  /**
+   * a driver reset or a GPU-starved machine can take the WebGL context away: pause, save, and offer to rebuild. One canvas
+   * is watched at a time: the views' dispose forces a context loss on their old canvas (WorldView.dispose), which must
+   * not read as a new loss after a rebuild.
+   */
+  private watchContext(canvas: HTMLCanvasElement): void {
+    this.ctxWatch?.abort();
+    const watch = (this.ctxWatch = new AbortController());
+    const signal = AbortSignal.any ? AbortSignal.any([this.abort.signal, watch.signal]) : this.abort.signal;
+    canvas.addEventListener('webglcontextlost', (e) => {
+      // (preventDefault: the browser may hand the context back, webglcontextrestored)
+      e.preventDefault();
+      if (!watch.signal.aborted) this.onContextLost();
+    }, { signal });
+    canvas.addEventListener('webglcontextrestored', () => { if (!watch.signal.aborted) void this.restoreViews(); }, { signal });
+  }
+  private ctxWatch: AbortController | null = null;
+
+  private onContextLost(): void {
+    if (this.disposed || this.ctxLost) return;
+    this.host.setSpeed(0, 'error');
+    // the camera goes into the save, and the rebuilt view opens on it
+    this.storeCamera();
+    void this.save(false);
+    const restore = h('button', { class: 'btn primary', type: 'button' }, 'Restore');
+    const card = h('div', { class: 'ctx-lost mp-glass', role: 'alertdialog', style: 'position:absolute; left:50%; top:38%; transform:translate(-50%,-50%); z-index:60; max-width:360px; padding:18px 20px; text-align:center; pointer-events:auto' },
+      h('div', { style: 'font-weight:700; font-size:16px; margin-bottom:6px' }, 'Graphics reset'),
+      h('div', { style: 'opacity:0.8; margin-bottom:14px; line-height:1.45' }, 'The graphics card stopped drawing the city. The game is paused and your city is saved.'),
+      restore,
+    );
+    restore.addEventListener('click', () => void this.restoreViews(), { signal: this.abort.signal });
+    this.uiRoot.appendChild(card);
+    this.ctxLost = { card, restoring: false };
+    this.sound('error');
+  }
+
+  /**
+   * Restore (or the browser's webglcontextrestored): rebuild the world and city views on a fresh canvas and context, at the
+   * camera of the lost view. The simulation is not touched (it stays paused: the player resumes it).
+   */
+  private async restoreViews(): Promise<void> {
+    const lost = this.ctxLost;
+    if (!lost || lost.restoring || this.disposed) return;
+    lost.restoring = true;
+    const cam = readCamera(this.world.controls) ?? validCamera(this.sim.state.systemData.camera, this.sim.state);
+    // stop watching the old canvas first: disposing its views forces a (second) context loss on it
+    this.ctxWatch?.abort();
+    for (const v of [this.objects, this.world]) {
+      try {
+        v.dispose();
+      } catch (e) {
+        console.warn('[game] disposing a lost view', e);
+      }
+    }
+    this.world = new NullWorldView();
+    this.objects = new NullObjectsView();
+    // a lost context stays lost on its canvas: the new views get a new one
+    this.swapCanvas();
+    this.createViews();
     this.resize();
     this.applySettings({});
-    this.placeInitialCamera();
-    if (this.mods.errors.length) console.warn('[game] module load issues', this.mods.errors);
-    this.showDevBadge();
-    this.feedWind();
-    this.uiEvents.emit('viewsReady', undefined);
-    this.readyPending = true; // resolved after the next rendered frame (see loop)
-    this.veil.classList.add('gone');
-    setTimeout(() => this.veil.remove(), 600);
+    const c = this.world.controls;
+    if (c && cam) applyCamera(c, cam);
+    else this.placeInitialCamera();
+    this.minimap.markDirty();
+    lost.card.remove();
+    this.ctxLost = null;
+    this.sound('confirm');
   }
 
   /**
@@ -614,6 +705,7 @@ export class CityScene {
     }
     if (this.readyPending) {
       this.readyPending = false;
+      this.firstFrame = true;
       this.resolveReady();
     }
     const cameraStopped = this.minimap.frame(dt);
@@ -655,11 +747,54 @@ export class CityScene {
     this.fps.last = tNow;
     if (this.fps.t >= 0.5) {
       this.fps.value = this.fps.frames / this.fps.t;
+      this.checkSlow(this.fps.value, this.fps.t);
       this.fps.frames = 0;
       this.fps.t = 0;
       if (this.settings.showFps) this.updatePerf();
     }
   };
+
+  /**
+   * FH-21: a machine that cannot carry High or Ultra gets one offer, once per profile: after SLOW_WINDOW_S of play on the
+   * real views (from their first rendered frame) at a median under SLOW_FPS. Hidden tabs, a lost context and other
+   * qualities restart the window.
+   */
+  private checkSlow(fps: number, dt: number): void {
+    const w = this.slow;
+    if (!w) return;
+    const q = this.settings.quality;
+    // (not before the first frame: a slow first render, behind the loading screen, filled the window and the question
+    // expired unseen)
+    if ((q !== 'high' && q !== 'ultra') || !this.firstFrame || this.ctxLost || (typeof document !== 'undefined' && document.hidden)) {
+      w.length = 0;
+      return;
+    }
+    w.push({ fps, dt });
+    let total = 0;
+    for (const x of w) total += x.dt;
+    while (w.length > 1 && total - w[0].dt >= SLOW_WINDOW_S) total -= w.shift()!.dt;
+    if (total < SLOW_WINDOW_S) return;
+    const sorted = w.map((x) => x.fps).sort((a, b) => a - b);
+    const mid = sorted.length >> 1;
+    const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    if (median >= SLOW_FPS) return;
+    this.slow = null;
+    savePref(SLOW_PREF, { shown: true, median: Math.round(median * 10) / 10 });
+    const answer = (a: 'switch' | 'keep') => savePref(SLOW_PREF, { shown: true, answer: a });
+    this.toasts.show('The city is running slowly — switch graphics to Medium?', 'warning', undefined, 'Graphics', {
+      buttons: [
+        { label: 'Switch', primary: true, run: () => { answer('switch'); this.applySettings({ quality: 'medium' }); } },
+        { label: 'Keep', run: () => answer('keep') },
+      ],
+    });
+  }
+
+  /** FH-21: the time from "Found City" (or "Play") to the first interactive frame, measured by the app; shown in the fps readout */
+  reportLoadTime(ms: number): void {
+    this.loadMs = ms;
+    console.info(`[metropolis] first interactive frame ${Math.round(ms)} ms after the click`);
+    if (this.settings.showFps) this.updatePerf();
+  }
 
   /** QA readout: fps + frame time, world / city draw calls and triangles (world.stats, objects.stats()) */
   private updatePerf(): void {
@@ -686,6 +821,7 @@ export class CityScene {
     }
     const st = this.sim.state;
     lines.push(`sim day ${st.day} · ${st.buildings.size} buildings · speed ${this.sim.speed}`);
+    if (this.loadMs !== null) lines.push(`load ${(this.loadMs / 1000).toFixed(1)} s to the first interactive frame`);
     this.fpsEl.innerHTML = lines.join('<br>');
   }
 

@@ -448,6 +448,9 @@
   color: #fff; background: color-mix(in srgb, var(--tc, var(--accent)) 70%, transparent); vertical-align: 1px;
 }
 .toast .t-go { font-size: 11px; color: var(--text-faint); margin-top: 3px; display: flex; align-items: center; gap: 4px; }
+/* a question toast's answers (FH-21's slow-frame prompt) */
+.toast .t-btns { display: flex; gap: 6px; margin-top: 8px; }
+.toast .t-btn { padding: 4px 12px; font-size: 12px; }
 .toast .t-x { position: absolute; top: 6px; right: 6px; width: 20px; height: 20px; opacity: 0; }
 .toast:hover .t-x { opacity: 1; }
 .toast .t-timer { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--tc, var(--accent)); opacity: 0.5; animation: timer linear forwards; }
