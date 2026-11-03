@@ -9,7 +9,7 @@ import { placeBuilding, removeBuilding } from '../../src/sim/economy/buildings';
 import { desirabilityBreakdown, desirabilitySystem, NT } from '../../src/sim/economy/desirability';
 import { growthData, growthLimits, growthSystem, stationLotMask, stationTowerLots, towerLot } from '../../src/sim/economy/growth';
 import { EconRuntime, econData } from '../../src/sim/economy/runtime';
-import { APPROVAL, DOWNTOWN_STAGE, TOD } from '../../src/sim/economy/tuning';
+import { APPROVAL, APPROVAL_TERMS, DOWNTOWN_STAGE, TOD } from '../../src/sim/economy/tuning';
 import { centerCell } from '../../src/sim/infra/common';
 import { TrafficSystem } from '../../src/sim/infra/traffic';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
@@ -278,25 +278,58 @@ describe('transit development: desirability', () => {
 });
 
 describe('transit development: commute approval', () => {
-  it('starts charging above 15 minutes through the resident-weighted survey', () => {
-    const { st } = makeCity({ size: 32 }, []);
+  const town = (difficulty: 'medium' | 'hard' = 'medium') => {
+    const { st } = makeCity({ size: 32, difficulty }, []);
     const rt = new EconRuntime(), approval = approvalSystem(rt);
     const sim = new Simulation(st, [approval]);
     expect(econData(st).approvalTerms.commute).toBe(0); // an empty city's fallback is not anybody's commute
-    const a = put(sim, 'res_apartment.r2.4', 4, 4, { pop: 300 });
-    const b = put(sim, 'res_apartment.r2.4', 12, 4, { pop: 900 });
-    st.stats.population = 1200;
-    st.stats.residents = [0, 1200, 0];
+    const a = put(sim, 'res_apartment.r2.4', 4, 4, { pop: 3000 });
+    const b = put(sim, 'res_apartment.r2.4', 12, 4, { pop: 9000 });
+    st.stats.population = 12000;
+    st.stats.residents = [0, 12000, 0];
     st.systemData.infraVersion = 1;
     st.systemData.infraLayers = { traffic: true, utilities: false, pollution: false, services: false };
-    expect(APPROVAL.commuteStart).toBe(15);
-    for (const minutes of [15, 16, 25]) {
+    const month = (aMinutes: number, bMinutes = aMinutes) => {
       st.day++;
-      st.commute[centerCell(st, a)] = minutes - 3;
-      st.commute[centerCell(st, b)] = minutes + 1;
+      st.commute[centerCell(st, a)] = aMinutes;
+      st.commute[centerCell(st, b)] = bMinutes;
       approval.monthly!(sim);
-      expect(residentSurvey(st, rt).commute).toBe(minutes);
-      expect(econData(st).approvalTerms.commute).toBeCloseTo(APPROVAL.commute * Math.max(0, minutes - 15), 12);
+      return econData(st).approvalTerms.commute;
+    };
+    return { st, rt, a, b, month };
+  };
+
+  it.each(['medium', 'hard'] as const)('fades commute pressure in with sampled residents on %s', (difficulty) => {
+    const c = town(difficulty);
+    const mid = (APPROVAL_TERMS.needsPop0 + APPROVAL_TERMS.needsPop1) / 2;
+    for (const [pop, expected] of [[0, 0], [1200, 0], [APPROVAL_TERMS.needsPop0, 0], [mid, -1.25],
+      [APPROVAL_TERMS.needsPop1, -2.5], [12000, -2.5]]) {
+      c.a.pop = pop / 4;
+      c.b.pop = pop * 3 / 4;
+      // The survey, rather than the lagging displayed population, controls the grace period.
+      c.st.stats.population = pop === mid ? 12000 : pop;
+      c.st.stats.residents = [0, c.st.stats.population, 0];
+      expect(c.month(25), `${pop} sampled residents`).toBeCloseTo(expected, 12);
+      expect(residentSurvey(c.st, c.rt).pop[3]).toBe(pop);
     }
+  });
+
+  it('starts charging above the resident-weighted mean of 15 minutes in a full-size town', () => {
+    const c = town();
+    expect(APPROVAL.commuteStart).toBe(15);
+    for (const [minutes, expected] of [[15, 0], [16, -0.25], [25, -2.5]]) {
+      // At mean 15, the 12/16-minute homes cost nothing; the threshold applies after averaging.
+      expect(c.month(minutes - 3, minutes + 1)).toBeCloseTo(expected, 12);
+      expect(residentSurvey(c.st, c.rt).commute).toBe(minutes);
+    }
+    expect(c.month(25)).toBeCloseTo(-2.5, 12); // a genuine measurement equal to the fallback is still charged
+  });
+
+  it('keeps the measured cut-off penalty on Hard even when the city average is zero', () => {
+    const c = town('hard');
+    c.st.stats.avgCommute = 0;
+    expect(c.month(120)).toBeCloseTo(-26.25, 12);
+    expect(residentSurvey(c.st, c.rt).commute).toBe(120);
+    expect(c.st.stats.avgCommute).toBe(0);
   });
 });

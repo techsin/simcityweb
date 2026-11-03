@@ -371,6 +371,7 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
     // the first power plant and clinic without the mayor being blamed); garbage fades in more slowly and unmet needs
     // follow WP1's expectation curve (tuning APPROVAL_TERMS / NEEDS_POP_*).
     const fadeIn = w > 0 ? smoothstep(AT.needsPop0, AT.needsPop1, w) : 0;
+    T.commute *= fadeIn;
     if (rules.fadeCrime) T.crime *= fadeIn;
     T.noise = w > 0 ? AT.noise * sv.noise[3] : 0;
     T.outages = fadeIn * (AT.unpowered * sv.unpowered[3] + AT.unwatered * sv.unwatered[3]);
