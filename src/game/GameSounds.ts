@@ -6,7 +6,7 @@
  *               info), at most one news sound every NEWS_GAP ms plus a per-kind gap (NEWS); the same message (numbers
  *               ignored) sounds at most every REPEAT_MS; ticker-only items (headlines, routine advisor tips) get a rare,
  *               very soft bell. Population milestones
- *               1k/10k/50k/100k/250k/500k/1M -> 'milestone' (brighter for bigger ones); money trouble ("in the red",
+ *               500 through 1.5M -> 'milestone' (brighter for bigger ones); money trouble ("in the red",
  *               debt) -> soft 'bankrupt'; BANKRUPT -> 'bankrupt'; other disaster news -> 'alarm' unless a specific
  *               alarm just played
  *   disaster    active=true: 'tornado' (≥ 40 s; the sim re-emits per cell), 'quake', 'meteor', anything else 'alarm';
@@ -38,7 +38,7 @@ export interface GameSoundsDeps {
 }
 
 /** population milestones that get the celebratory sound */
-export const POP_MILESTONES = [1000, 10000, 50000, 100000, 250000, 500000, 1000000];
+export const POP_MILESTONES = [500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 750000, 1000000, 1250000, 1500000];
 
 /** news kind -> sound, priority within a burst, per-kind minimum gap (ms), volume */
 const NEWS: Record<string, { name: string; prio: number; gap: number; vol?: number }> = {
@@ -146,8 +146,8 @@ export class GameSounds {
         const pop = m ? Number(m[1].replace(/[,.]/g, '')) : 0;
         if (pop && POP_MILESTONES.includes(pop)) {
           // bigger milestones sound a little brighter (up to +4 semitones at 250k+)
-          const tier = POP_MILESTONES.indexOf(pop);
-          if (this.ready('milestone', 1500)) this.play('milestone', { pitch: Math.pow(2, Math.min(4, Math.floor(tier / 2) * 2) / 12) });
+          const semitones = pop >= 250000 ? 4 : pop >= 50000 ? 2 : 0;
+          if (this.ready('milestone:' + pop, 1500)) this.play('milestone', { pitch: Math.pow(2, semitones / 12) });
         } else this.queueNews('good', n.text);
         return;
       }

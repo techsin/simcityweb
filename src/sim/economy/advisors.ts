@@ -75,7 +75,7 @@ import type { BuildingDef } from '../catalogTypes';
 import { demolishFee, lotSlope } from './buildings';
 import { formatMoney } from './format';
 import { buildingPowered, buildingWatered } from './population';
-import { APPROVAL, GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, TAX_NEUTRAL, TOURISM_INCOME_PER_VISITOR, WATER_REQUIRED_STAGE } from './tuning';
+import { APPROVAL, GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, STAGE_POP, TAX_NEUTRAL, TOURISM_INCOME_PER_VISITOR, WATER_REQUIRED_STAGE } from './tuning';
 import { buildingUpkeep } from './opex';
 import { getOrdinance, ordinanceAvailable, ordinanceEffect } from './ordinances';
 
@@ -134,7 +134,10 @@ function recentNews(st: CityState, re: RegExp, day = st.day): boolean {
   return false;
 }
 
-const POP_MILESTONES = [500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 750000, 1000000];
+const POP_MILESTONES = [500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 750000, 1000000, 1250000, 1500000];
+const STAGE_NEWS: Readonly<Record<number, string>> = {
+  4: 'mid-rise buildings', 5: 'high-rise buildings', 6: 'the first towers', 7: 'skyscrapers', 8: 'supertalls',
+};
 
 /** a `confirm` rule speaks once its condition has held this many days (i.e. at the second monthly check in a row) */
 const CONFIRM_DAYS = 25;
@@ -149,6 +152,8 @@ export const HEADLINE_REPEAT_DAYS = 720;
 /** advisor state in state.systemData.advisors (plain data, saved with the city) */
 export interface AdvisorData {
   v: 1;
+  /** highest building-stage population threshold announced (optional in older saves) */
+  stageMilestone?: number;
   /** absolute day of the next flavour headline */
   nextHeadline: number;
   /** headline shuffle bag (HEADLINES ids, drawn from the end) */
@@ -1575,6 +1580,8 @@ export const MONTH_SCAN_DAYS = [28, 29] as const;
 const LOCATE_TTL = 8;
 
 export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
+  /** load baseline without creating the headline schedule earlier than its first daily pass */
+  let initialStageMilestone = 0;
   /** flood-fill scratch for the monthly zone scan (re-sized with the map) */
   let scratch = { visited: new Uint8Array(0), stack: new Int32Array(0), lots: new Int32Array(0) };
   const zoneScan = (st: CityState, util: boolean): ZoneScan => {
@@ -2218,6 +2225,9 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       rt.attach(sim);
       const d = econData(sim.state);
       if (!d.popMilestone) d.popMilestone = POP_MILESTONES.filter((m) => m <= sim.state.stats.population).pop() ?? 0;
+      initialStageMilestone = STAGE_POP.filter((m) => m.pop <= sim.state.stats.population).pop()?.pop ?? 0;
+      const a = sim.state.systemData.advisors as AdvisorData | undefined;
+      if (a?.v === 1) a.stageMilestone ??= initialStageMilestone;
       // Noisy homes follow the building events (pollution emits buildingChanged on every flag flip)
       if (subscribedTo !== sim) {
         for (const f of unsub) f();
@@ -2267,8 +2277,16 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
           sim.notify(`${st.config.name} reaches ${m.toLocaleString('en-US')} residents!`, 'good', undefined, undefined, 'news');
         }
       }
-      // flavor headlines (shuffle bag; the schedule persists with the city)
       const a = advisorData(st);
+      // stage unlocks survive population drops and load silently at the city's existing population
+      a.stageMilestone ??= initialStageMilestone;
+      for (const m of STAGE_POP) {
+        if (m.pop > a.stageMilestone && pop >= m.pop) {
+          a.stageMilestone = m.pop;
+          sim.notify(`New building stage unlocked: ${STAGE_NEWS[m.stage]} can now grow in ${st.config.name} (${m.pop.toLocaleString('en-US')} residents).`, 'good', undefined, undefined, 'news');
+        }
+      }
+      // flavor headlines (shuffle bag; the schedule persists with the city)
       if (st.day >= a.nextHeadline) {
         a.nextHeadline = st.day + 40 + sim.rng.int(0, 60);
         if (pop > 300) {
