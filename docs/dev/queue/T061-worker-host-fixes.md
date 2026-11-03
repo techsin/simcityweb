@@ -24,6 +24,8 @@ do:
   5. **Plant loads on the packet hosts** (T051's request d, NOTE-054): forward `utilities.plantLoad(id)` in LoopbackSimHost
      and WorkerSimHost to the replica's id→load map. T051 adds the stream, the recorder publishing, the replica map and
      SimHost's UtilitiesView type. Test that a plant's load reaches the page on the loopback host and clears on adopt.
+  6. **`policy.teaching` on the worker host** (NOTE-055): T036 step 5 adds the missing getter to LoopbackSimHost.ts.
+     Check WorkerSimHost for the same gap, and add `get teaching()` there if it is missing, with a test.
 gates:
   - each item's test, plus tsc, the full vitest and the worker hygiene test;
   - the bot identical to dev (residents [ 61124, 93804, 37971 ]);
