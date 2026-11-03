@@ -9,6 +9,9 @@ Oct 28 usage limit with no report and no `.done`. The cloud carries it over on `
 
 ## Cloud carry-over (Nov 3)
 
+Scratch files named `t038work/…` are in `/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t038work/`,
+and `co/t038-devbase` (the clean export of dev used as "before") is in `…/scratchpad/co/t038-devbase`.
+
 ### Gap list (required against done, at the start)
 
 | # | required (task file, plan, NOTEs) | state on `local/T038-r2-fh20` |
@@ -76,28 +79,35 @@ of null (reading 'collect')`):
 "before" is dev's own `collectLaunchSites` loaded from the clean export `co/t038-devbase` @ `48991d7`; visuals are
 deterministic stand-ins held in a `Map`, as `BuildingRenderer.getVisual` holds them). Warm: 30 interleaved rounds × 20
 calls per variant, the order rotated each round; A/A = before against itself. Cold: the first call in a fresh process
-(as at New Year, once a game year), 7 processes per variant interleaved A, B, A, B.
+(as at New Year, once a game year), interleaved A, B, A, B: 7 processes per variant in run 1, 5 in run 2. Two
+independent runs (`t038work/timing1.json`, `timing2.json`):
 
-| fixture | buildings | before warm (median / p90) | after warm | after / before | A/A | before cold 1st call | after cold 1st call | index build at load |
+| fixture | run | before warm (median / p90) | after warm | after / before | A/A | before cold 1st call (median, range) | after cold 1st call | index build at load |
 |---|---|---|---|---|---|---|---|---|
-| dense1m_s7 (1.12M residents) | 17,154 | 1.918 / 2.778 ms | 0.396 / 0.557 ms | 0.206 | 1.004 | 15.5 ms (13.8-20.2) | 4.4 ms (3.8-6.8) | 23.6 ms cold, 18.2 warm |
-| bot256_s7_y60 | 11,276 | 1.306 / 1.700 ms | 0.294 / 0.412 ms | 0.225 | 1.008 | 9.7 ms (8.9-14.0) | 5.8 ms (2.9-6.2) | 20.2 ms cold, 11.0 warm |
+| dense1m_s7 (17,154 buildings, 1.12M residents) | 1 | 1.918 / 2.778 ms | 0.396 / 0.557 ms | 0.206 | 1.004 | 15.5 ms (13.8-20.2) | 4.4 ms (3.8-6.8) | 23.6 ms cold, 18.2 warm |
+| | 2 | 1.759 / 2.589 ms | 0.378 / 0.528 ms | 0.215 | 1.005 | 17.6 ms (13.6-22.6) | 9.4 ms (3.9-13.3) | 25.7 ms cold, 25.5 warm |
+| bot256_s7_y60 (11,276 buildings) | 1 | 1.306 / 1.700 ms | 0.294 / 0.412 ms | 0.225 | 1.008 | 9.7 ms (8.9-14.0) | 5.8 ms (2.9-6.2) | 20.2 ms cold, 11.0 warm |
+| | 2 | 1.216 / 1.582 ms | 0.239 / 0.304 ms | 0.197 | 0.994 | 10.3 ms (8.2-13.3) | 5.6 ms (4.2-5.9) | 20.7 ms cold, 12.5 warm |
+
+- Warm, the show's site collection is 0.20-0.23× the full scan, in both runs. Cold, on its first call (the case at New
+  Year), it is 0.29-0.60×, about half: the cold numbers spread widely on this shared machine.
 
 - What the show still pays: one pass over the buildings for the pop/jobs centre, the centre snap and the waterfront
   scan (0.029 / 0.028 ms of it). The first-call cost after the change is mostly that pass running cold.
-- The per-event cost of keeping the index (dense1m / bot256): a `buildingChanged` 3 / 1 µs median (max 0.09 / 0.06 ms);
-  a remove + add 2 / 1 µs median (max 1.4 / 0.23 ms, a one-off); a kept winner removed (the group re-ranked from the
-  cache) 0.37 / 0.13 ms; an edge building removed (the bounds re-scan) 0.21 / 0.15 ms.
-- The index build moves the definition and visual reads to load and reset: 18-24 ms at 1M, once.
+- The per-event cost of keeping the index (dense1m / bot256, run 1; run 2 alike): a `buildingChanged` 3 / 1 µs median
+  (max 0.09-0.13 ms); a remove + add 2 / 1 µs median (max 1.4-2.1 / 0.23 ms, one-offs); a kept winner removed (the
+  group re-ranked from the cache) 0.32-0.37 / 0.13-0.15 ms; an edge building removed (the bounds re-scan) 0.19-0.21 /
+  0.15 ms.
+- The index build moves the definition and visual reads to load and reset: 11-26 ms at 1M, once.
 
 **The identity gate through a real New Year** (both fixtures, the sim run to its next `'year'` event):
 - `--year` (the tool, index fed from the sim's events, visuals kept the way the renderer keeps them): dense1m 239 days,
   6,236 building events, 9 checks; bot256_y60 360 days, 15,870 events, 13 checks; every month boundary and the New Year
   identical to both full scans (this tree's and dev's).
-- The production wiring (`CityObjectsView` with the real `BuildingRenderer` visuals, `t038work/realview.mts`, the same
-  run as `--view`): dense1m 10 checks, bot256_y60 14 checks, load + every month + New Year, all identical
-  (30 and 34 sites: centre, parks, plazas, landmarks, 5 roofs). Also small_s7_y10 (2,765 buildings, 3,754 events):
-  14 checks identical.
+- The production wiring (`CityObjectsView` with the real `BuildingRenderer` visuals): dense1m 10 checks, bot256_y60
+  14 checks, load + every month + New Year, all identical (30 and 34 sites: centre, parks, plazas, landmarks, 5 roofs).
+  This ran twice: once from the scratch script `t038work/realview.mts`, and once through the committed tool's `--view`
+  in run 2. Also small_s7_y10 (2,765 buildings, 3,754 events): 14 checks identical. `--year` was identical in run 2 too.
 - The fixture tests (`fireworks fixture identity`): 140 random add/remove/change events on each fixture, identical
   after every 7th; they ran (not skipped) here.
 
@@ -141,7 +151,7 @@ panel's text per shot).
 | New Year launch sites identical to the full scan, bot256_y60 and dense1m | **identical**: a real New Year on both fixtures through the index fed by sim events (22 checks) and through the production `CityObjectsView` with real visuals (24 checks); random events on both (fixture tests) |
 | the palette's distances above the floor, deuteranopia and protanopia | **135.4 and 138.3** (closest pairs) against the floor of 120 |
 | screenshots of the Emergency view in each mode | 6 shots, standard / red-green / blue-yellow × fire / police |
-| R2's 1M timing, before and after | dense1m: warm 1.918 → 0.396 ms (0.21×), cold first call 15.5 → 4.4 ms (0.29×); bot256_y60: 1.306 → 0.294 ms (0.23×), 9.7 → 5.8 ms (0.60×); A/A 1.004 / 1.008 |
+| R2's 1M timing, before and after (two runs) | dense1m: warm 1.92 / 1.76 → 0.40 / 0.38 ms (0.21×), cold first call 15.5 / 17.6 → 4.4 / 9.4 ms; bot256_y60: warm 1.31 / 1.22 → 0.29 / 0.24 ms (0.20-0.23×), cold 9.7 / 10.3 → 5.8 / 5.6 ms; A/A 0.994-1.008 |
 | the bot | **not run, not required**: the lane changes no file under `src/sim`, `src/worker`, `src/game` or `src/save` (`git diff --name-only` against dev: `src/render/city/CityObjectsView.ts`, `src/render/city/effects/Fireworks.ts`, `src/render/world/overlays.ts`, tests, `tools/bench/fireworksSites.ts`, this report) |
 
 ### Decisions
@@ -151,7 +161,7 @@ panel's text per shot).
    reads wider: "Emergency colours that work for everyone, in round 1", and its Acceptance says "The Emergency pairs
    pass in every mode from round 1". The standard palette does not pass (66.5 / 56.0). I kept the task file's narrower,
    later reading: no change to what every player sees. Making the safe palette the default for everyone is one line
-   (`EMERGENCY_COLOUR_VISION`, or the Standard row of `overlayDef`), for the lead or the owner to decide.
+   (`EMERGENCY_COLOUR_VISION`, or `overlayDef`'s choice of `EMERGENCY_STANDARD`), for the lead or the owner to decide.
 2. **`AppSettings.colourVision` is not wired.** The key exists in dev now (T036 step 1) but is hidden
    (`A11Y_WIRED.colourVision = false`, NOTE-042: the lane that wires it shows the control in the same change). Wiring it
    means TerrainRenderer's two `overlayDef` calls, the UI legend path (`mods.overlayLegend`), a refresh on change, and
@@ -165,10 +175,16 @@ panel's text per shot).
 4. **AC2 ("the real game on R1", R2's gate column) is a real-GPU frame measurement** and cannot run here. As the lead
    asked, `collectLaunchSites` was timed as CPU work in node, against dev's own function, with interleaved runs and an
    A/A, under the lock. The stand-in visuals replace only the renderer's `Map` lookup, which they reproduce.
-5. **What the change buys is smaller than "a full scan at New Year" suggested.** At 1M the full scan is 1.3-1.9 ms warm and
-   10-16 ms on its cold first call (dense1m has 17,154 buildings). After the change the show pays 0.3-0.4 ms warm and
-   4-6 ms cold: one pass over the buildings for the pop/jobs centre, needed for exactness because pop and jobs change
-   without events. In exchange, building the index costs 18-24 ms once at load and reset. Keeping the centre
+5. **What the change buys is smaller than "a full scan at New Year" suggested.** At 1M the full scan is 1.2-1.9 ms warm and
+   10-18 ms on its cold first call (dense1m has 17,154 buildings). After the change the show pays 0.24-0.40 ms warm and
+   4-9 ms cold: one pass over the buildings for the pop/jobs centre, needed for exactness because pop and jobs change
+   without events. In exchange, building the index costs 11-26 ms once at load and reset. Keeping the centre
    incremental would break the bit-identity gate, so it stays as written.
 6. **Safe-mode screenshots come from scratch copies with the constant flipped**, because the setting is not wired.
    No URL flag or runtime hook was added to the product for the evidence.
+
+### Remaining
+
+Nothing for T038's round-1 scope. For the lead: decisions 1 (the default palette), 2 (who wires `colourVision`, with
+the control) and 3 (blue-yellow's own Emergency colours, round 3). AC2 for R2 is a real-GPU run on R1, with BuildingRenderer's
+and MiniMap's R2 parts, which are not in this task.
