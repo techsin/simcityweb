@@ -39,9 +39,9 @@ import { defaultCityConfig, type CityConfigData } from '../src/sim/config';
 import { Simulation, type SimSystem } from '../src/sim/Simulation';
 import { economySystems, economyRuntime } from '../src/sim/systems/economy';
 import { CityActions, lPath, type ActionResult, type Cell } from '../src/sim/actions';
-import { DevType, Network, Zone, type Difficulty, type TerrainPreset } from '../src/core/types';
-import { CAP_RELIEF, getDef, rotatedFootprint } from '../src/sim/catalog';
-import { econData, type EconRuntime } from '../src/sim/economy/runtime';
+import { DevType, Network, Zone, zoneDensity, type Difficulty, type TerrainPreset } from '../src/core/types';
+import { CAP_RELIEF, getDef, growablesForZone, rotatedFootprint } from '../src/sim/catalog';
+import { econData, infraFlags, type EconRuntime } from '../src/sim/economy/runtime';
 import { BF, type Building, type CityState } from '../src/sim/CityState';
 import { maxLoanAmount } from '../src/sim/economy/loans';
 import { listRewards } from '../src/sim/economy/rewards';
@@ -50,13 +50,15 @@ import { facilityLoad, tierLayer, unservedClusters } from '../src/sim/infra/catc
 import { emergencyOf, uncoveredHotspots } from '../src/sim/infra/emergency';
 import { expectedUpkeep } from '../src/sim/economy/opex';
 import { ATTRACTIONS, venueVisits } from '../src/sim/economy/tourism';
-import { BRIDGE_UPKEEP_MUL, COARSE, NETWORK_UPKEEP, SUBWAY_UPKEEP, TOURISM, TOURISM_INCOME_PER_VISITOR, VENUE_INCOME, TAX_NEUTRAL } from '../src/sim/economy/tuning';
+import { BRIDGE_UPKEEP_MUL, COARSE, GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, NETWORK_UPKEEP, SUBWAY_UPKEEP, TOURISM, TOURISM_INCOME_PER_VISITOR, VENUE_INCOME, TAX_NEUTRAL, WATER_REQUIRED_STAGE } from '../src/sim/economy/tuning';
 import type { BuildingDef } from '../src/sim/catalogTypes';
 import { smoothstep } from '../src/core/rng';
 import { adviceIdOf, openAdvice } from '../src/sim/economy/advisors';
 import { approvalBreakdown } from '../src/sim/economy/approval';
 import type { FactorTerm } from '../src/sim/explain';
 import { getOrdinance, ordinanceMonthly } from '../src/sim/economy/ordinances';
+import { countFront, lotSlope } from '../src/sim/economy/buildings';
+import { desirMaxStage, popMaxStage } from '../src/sim/economy/growth';
 
 export interface BotOptions {
   size: number;
@@ -516,6 +518,88 @@ export class SimBot {
       if (o?.developed) return true;
     }
     return false;
+  }
+
+  /** Clean-only planning: an empty industrial lot's best stage-ready front cell, or -Infinity if it cannot fit. */
+  private cleanIndustryLot(b: Block, def: BuildingDef, x: number, z: number, rot: number, planned = false): number {
+    const st = this.st, N = this.N, [w, d] = rotatedFootprint(def, rot);
+    if (x < b.x0 || z < b.z0 || x + w > b.x1 || z + d > b.z1) return -Infinity;
+    let p = false, water = (def.stage ?? 1) < WATER_REQUIRED_STAGE && zoneDensity(planned ? Zone.IndHigh : b.zone) < 2;
+    for (let zz = z; zz < z + d; zz++) for (let xx = x; xx < x + w; xx++) {
+      const i = zz * N + xx;
+      if (st.zone[i] !== (planned ? Zone.None : b.zone) || st.building[i] >= 0 || st.network[i] !== Network.None || st.water[i] || st.powerLines[i]) return -Infinity;
+      p ||= !!st.powered[i]; water ||= !!st.watered[i];
+    }
+    const length = rot === 0 || rot === 2 ? w : d;
+    const front = countFront(st, x, z, w, d, rot, (i) => {
+      const xx = i % N, zz = (i / N) | 0, n = st.network[i];
+      return n >= Network.Street && n <= Network.Highway || planned &&
+        (xx === b.x0 - 1 || xx === b.x1 || zz === b.z0 - 1 || zz === b.z1);
+    });
+    if (front.hit !== length || front.total !== length || lotSlope(st, x, z, w, d) > GROW_MAX_SLOPE + GROW_MAX_SLOPE_PER_CELL * Math.max(w, d)) return -Infinity;
+    if (infraFlags(st).utilities) {
+      p ||= countFront(st, x, z, w, d, rot, (i) => !!st.powered[i]).hit > 0;
+      water ||= countFront(st, x, z, w, d, rot, (i) => !!st.watered[i]).hit > 0;
+      if (!p || !water) return -Infinity;
+    }
+    let best = -Infinity;
+    for (let k = 0; k < length; k++) {
+      const fx = rot === 0 || rot === 2 ? x + k : rot === 1 ? x + w - 1 : x;
+      const fz = rot === 1 || rot === 3 ? z + k : rot === 0 ? z + d - 1 : z;
+      const des = st.desirability[def.devType!][fz * N + fx];
+      if (des > GROW_MIN_DESIR && Math.min(desirMaxStage(des), popMaxStage(st.stats.population)) >= (def.stage ?? 1)) best = Math.max(best, des);
+    }
+    return best;
+  }
+
+  /** Frontage cells belonging to complete usable lots; fragmented one-cell remnants are not room for a factory. */
+  cleanIndustryRoom(highTech = false): number {
+    const front = new Set<number>();
+    for (const b of this.blocks) {
+      if (!b.developed || (highTech ? b.zone !== Zone.IndHigh : ![Zone.IndMed, Zone.IndHigh, Zone.IndAg].includes(b.zone))) continue;
+      for (const def of growablesForZone(b.zone)) {
+        if (highTech && def.devType !== DevType.IHT || !highTech && def.devType === DevType.ID) continue;
+        for (let rot = 0; rot < 4; rot++) {
+          const [w, d] = rotatedFootprint(def, rot), length = rot === 0 || rot === 2 ? w : d;
+          for (let z = b.z0; z + d <= b.z1; z++) for (let x = b.x0; x + w <= b.x1; x++) {
+            if (!Number.isFinite(this.cleanIndustryLot(b, def, x, z, rot))) continue;
+            for (let k = 0; k < length; k++) {
+              const fx = rot === 0 || rot === 2 ? x + k : rot === 1 ? x + w - 1 : x;
+              const fz = rot === 1 || rot === 3 ? z + k : rot === 0 ? z + d - 1 : z;
+              front.add(fz * this.N + fx);
+            }
+          }
+        }
+      }
+    }
+    return front.size;
+  }
+
+  /** A clean mayor reserves a viable campus site among the town's vacant blocks before extending the factory park. */
+  cleanIndustryBlock(): Block | undefined {
+    const campus = getDef('ind_tech_campus.iht.4')!;
+    let best: Block | undefined, score = -Infinity;
+    for (const b of this.blocks) {
+      if (b.developed || !['I', 'R', 'C'].includes(b.use) || !this.touchesDeveloped(b)) continue;
+      const xa = b.x0 - 1, xb = b.x1, za = b.z0 - 1, zb = b.z1;
+      const roads: [number, number, number, number, Network][] = [
+        [xa, za, xb, za, this.lineType(b.bz, false)], [xa, zb, xb, zb, this.lineType(b.bz + 1, false)],
+        [xa, za, xa, zb, this.lineType(b.bx, true)], [xb, za, xb, zb, this.lineType(b.bx + 1, true)],
+      ];
+      if (!roads.every(([x0, z0, x1, z1, type]) => {
+        const path = lPath({ x: x0, z: z0 }, { x: x1, z: z1 });
+        let p = this.A.buildNetwork(path, type, true);
+        if (!p.ok && type !== Network.Road) p = this.A.buildNetwork(path, Network.Road, true);
+        return p.ok && !p.demolished?.length;
+      })) continue;
+      let ready = -Infinity;
+      for (let rot = 0; rot < 4; rot++) {
+        const [w, d] = rotatedFootprint(campus, rot);
+        for (let z = b.z0; z + d <= b.z1; z++) for (let x = b.x0; x + w <= b.x1; x++) ready = Math.max(ready, this.cleanIndustryLot(b, campus, x, z, rot, true));
+      }
+      if (ready > score || ready === score && best && (b.use === 'I' && best.use !== 'I' || b.use === best.use && b.ring < best.ring)) { best = b; score = ready; }
+    }
+    return best ?? this.nextBlock('I');
   }
 
   /** find a spot for a ploppable inside blocks of the given uses near (nx,nz). Returns result or null. `accept` may veto
@@ -1033,6 +1117,7 @@ export class SimBot {
     const cx = this.line(this.cbx) + 3 * GRID, cz = this.trunkZ;
     let def = 'util_wind_turbine';
     if (need > 12) def = this.st.unlocked.has('nuclear_power') && need > 900 ? 'util_nuclear_plant' : need > 150 ? 'util_coal_plant' : 'util_gas_plant';
+    if (this.skips('dirty') && def === 'util_coal_plant') def = 'util_gas_plant';
     const cost = getDef(def)?.cost ?? 0;
     if (!this.canSpend(cost) && this.funds < cost + 2000) {
       // POWER TRAP (WP4 note): the plant the city needs is not affordable yet — bridge the shortfall with wind turbines
@@ -2099,13 +2184,14 @@ export class SimBot {
     ];
     for (const [use, dem, zs] of wants) {
       if (dem < 0.1) continue;
-      const empty = emptyOf(zs);
+      const empty = this.skips('dirty') && use === 'I' ? this.cleanIndustryRoom() : emptyOf(zs);
       let blocks = empty < growthCells * (use === 'R' ? 1 : 0.6) ? (dem > 0.5 && pop > 20000 ? 2 : 1) : 0;
       while (blocks-- > 0) {
-        const b = this.nextBlock(use);
+        const b = this.skips('dirty') && use === 'I' ? this.cleanIndustryBlock() : this.nextBlock(use);
         if (!b) break;
         if (!this.canInvest(2500)) break;
-        this.develop(b);
+        if (this.skips('dirty') && use === 'I') { if (this.develop(b, Zone.IndHigh)) b.use = 'I'; }
+        else this.develop(b);
         this.say(`developed ${use} block (${b.bx},${b.bz}) as zone ${b.zone}`);
       }
     }
@@ -2127,9 +2213,9 @@ export class SimBot {
       }
     }
     // sub-type specific: high-tech industry needs IndHigh room, farms need IndAg land
-    if (d[DevType.IHT] > 0.35 && emptyOf([Zone.IndHigh]) < growthCells * 0.3 && this.canSpend(3000)) {
-      const b = this.nextBlock('I');
-      if (b) { this.develop(b, Zone.IndHigh); this.say(`developed high-tech block (${b.bx},${b.bz})`); }
+    if (d[DevType.IHT] > 0.35 && (this.skips('dirty') ? this.cleanIndustryRoom(true) : emptyOf([Zone.IndHigh])) < growthCells * 0.3 && this.canSpend(3000)) {
+      const b = this.skips('dirty') ? this.cleanIndustryBlock() : this.nextBlock('I');
+      if (b) { if (this.develop(b, Zone.IndHigh) && this.skips('dirty')) b.use = 'I'; this.say(`developed high-tech block (${b.bx},${b.bz})`); }
     }
     const farms = this.blocks.filter((b) => b.zone === Zone.IndAg).length;
     if (d[DevType.IA] > 0.4 && emptyOf([Zone.IndAg]) < 8 && farms < 1 + pop / 80000 && this.canSpend(2000)) {
