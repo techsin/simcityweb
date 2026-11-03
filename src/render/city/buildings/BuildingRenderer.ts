@@ -2,7 +2,7 @@
  * BuildingRenderer — every building in ONE BatchedMesh (plus foundation skirts / construction sites / rubble in the
  * same batch). Incremental add/remove/change via Simulation events, pop-in animation, construction rising,
  * abandoned / burning / burnt looks, selection flag.
- * Live adds / visual changes wait without instances or visuals in a per-frame geometry queue (BUILD_BUDGET_MS).
+ * Live adds wait undrawn in a per-frame geometry queue (BUILD_BUDGET_MS); changes keep their old visual until swapped.
  * The oldest BUILD_WAVE_SIZE entries are prioritized by view and target distance, then finished before later waves
  * (no starvation). Bulk adds, rebuildAll, quality switches and flushLod stay synchronous.
  *
@@ -130,6 +130,8 @@ export interface BuildingVisual {
 
 interface BInst {
   b: Building;
+  /** placement of the drawn state, independent of later mutations to b while a rebuild waits */
+  pose: Pick<Building, 'w' | 'd' | 'rot' | 'built'>;
   main: number;
   site: number;
   found: number;
@@ -172,7 +174,7 @@ interface BInst {
   flod: number;
   /** building id (= b.id) */
   id: number;
-  /** index in BuildingRenderer.list (and its flat LOD arrays), -1 while queued and not drawn */
+  /** index in BuildingRenderer.list (and its flat LOD arrays), -1 for a new entry not built yet */
   li: number;
   /** removed (stale references in the LOD wake queue are skipped) */
   gone: boolean;
@@ -1007,7 +1009,7 @@ export class BuildingRenderer {
   /** ... and at most this much time for their evaluations per frame (ms; the clock is read every 16 evaluations) */
   lodWakeMs = 1;
   private disposed = false;
-  /** dense list of built instances for the per-frame LOD scan (queued entries live only in inst / buildQueue) */
+  /** dense list of built instances, including entries awaiting a change; unbuilt adds live only in inst / buildQueue */
   private list: BInst[] = [];
   /** flat copies per list index: LOD centre (also read by every evaluation / fade distance: much cheaper than the
    *  visual's boxed doubles), the squared distance band of its current levels (see lodPos) and its catch-up priority
@@ -1650,6 +1652,7 @@ export class BuildingRenderer {
     bi.shear.length = 0;
     bi.main = bi.site = bi.found = -1;
     bi.foundGeom = bi.foundLod = -1;
+    bi.waiting = bi.wakeGeom = -1;
   }
 
   private stateKey(b: Building): string {
@@ -1681,6 +1684,7 @@ export class BuildingRenderer {
     if (b.flags & BF.Burnt) animate = false;
     const bi: BInst = {
       b, main: -1, site: -1, found: -1, cells: [], kitGeo: [], kitLod: [], kitM: null, kitLw: false, shear: [], tile: 0, key: '', flags: 0, cr: 1, cg: 1, cb: 1, anim: animate ? POP_TIME : 0, geom: -1,
+      pose: { w: b.w, d: b.d, rot: b.rot, built: b.built },
       vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, minH: 0, foundGeom: -1, foundLod: -1, fh: 0, flod: 0,
       id: b.id, li: -1, gone: false, waiting: -1, wakeGeom: -1, fresh: true, fade: null,
     };
@@ -1716,8 +1720,6 @@ export class BuildingRenderer {
     }
     bi.li = -1;
     bi.vis = null as unknown as BuildingVisual;
-    bi.waiting = -1;
-    bi.wakeGeom = -1;
     this.animating.delete(bi.id);
     this.onVisual?.(null, bi.id);
   }
@@ -1738,21 +1740,26 @@ export class BuildingRenderer {
 
   private queueBuild(bi: BInst): void {
     this.buildQueue.add(bi);
-    this.unbuild(bi);
   }
 
-  /** allocate and announce only when the entry actually becomes drawable; waiting time never consumes its pop */
+  /** swap a drawn entry in its list slot, or allocate a new one; only removal announces a null visual */
   private buildNow(bi: BInst): void {
     this.buildQueue.delete(bi);
     const b = bi.b, burnt = !!(b.flags & BF.Burnt);
     if (burnt) bi.anim = 0;
     else if (bi.key.split('|')[3] === '1' && !(b.flags & BF.Constructing) && b.built >= 1) bi.anim = POP_TIME * 0.7;
-    bi.li = this.list.length;
-    this.ensureFlat(bi.li);
-    this.list.push(bi);
-    if (bi.lod) this.lodCount++;
+    if (bi.li >= 0) this.freeInstances(bi);
+    else {
+      bi.li = this.list.length;
+      this.ensureFlat(bi.li);
+      this.list.push(bi);
+      if (bi.lod) this.lodCount++;
+    }
     this.build(bi);
-    if (bi.anim > 0 && bi.li >= 0 && !bi.gone && !this.buildQueue.has(bi)) this.animating.add(bi.id);
+    if (bi.li >= 0 && !bi.gone) {
+      if (bi.anim > 0) this.animating.add(bi.id);
+      else this.animating.delete(bi.id);
+    }
   }
 
   /** sort each wave once, without constructing geometry just to find its priority */
@@ -1769,11 +1776,19 @@ export class BuildingRenderer {
     warmTarget(cam, target);
     const priority = new Map<BInst, [number, number]>();
     for (const bi of order) {
-      const b = bi.b, h = MANIFEST_BY_ID[modelIdOf(b)]?.height[1] ?? 12;
-      const x = (b.x + b.w / 2) * CELL_SIZE, z = (b.z + b.d / 2) * CELL_SIZE;
-      _sphere.center.set(x, b.baseY + h / 2, z);
-      _sphere.radius = Math.hypot(b.w * CELL_SIZE, b.d * CELL_SIZE, h) / 2;
-      priority.set(bi, [fr.intersectsSphere(_sphere) ? 0 : 1, (x - target.x) ** 2 + (z - target.z) ** 2]);
+      const drawn = bi.li >= 0;
+      let x: number, z: number;
+      if (drawn) {
+        x = bi.vis.cx; z = bi.vis.cz;
+        _sphere.center.set(x, bi.cy, z);
+        _sphere.radius = Math.max(bi.radius, Math.hypot(bi.vis.sw, bi.vis.sd) / 2);
+      } else {
+        const b = bi.b, h = MANIFEST_BY_ID[modelIdOf(b)]?.height[1] ?? 12;
+        x = (b.x + b.w / 2) * CELL_SIZE; z = (b.z + b.d / 2) * CELL_SIZE;
+        _sphere.center.set(x, b.baseY + h / 2, z);
+        _sphere.radius = Math.hypot(b.w * CELL_SIZE, b.d * CELL_SIZE, h) / 2;
+      }
+      priority.set(bi, [fr.intersectsSphere(_sphere) ? drawn ? 0 : 1 : 2, (x - target.x) ** 2 + (z - target.z) ** 2]);
     }
     order.sort((a, b) => { const p = priority.get(a)!, q = priority.get(b)!; return p[0] - q[0] || p[1] - q[1]; });
   }
@@ -1799,6 +1814,7 @@ export class BuildingRenderer {
 
   private build(bi: BInst): void {
     const b = bi.b;
+    bi.pose = { w: b.w, d: b.d, rot: b.rot, built: b.built };
     const st = this.state;
     const f = b.flags;
     const model = modelIdOf(b);
@@ -1917,7 +1933,8 @@ export class BuildingRenderer {
   }
 
   private place(bi: BInst): void {
-    const b = bi.b;
+    const b = bi.pose;
+    if (!this.buildQueue.has(bi)) b.built = bi.b.built;
     const v = bi.vis;
     let pop = 1;
     if (bi.anim > 0) pop = Math.max(0.02, easeOutBack(1 - bi.anim / POP_TIME));
@@ -2201,7 +2218,7 @@ export class BuildingRenderer {
     this.kitMask = m;
     const lean = this.kitLean();
     for (const bi of this.list) {
-      if (bi.kitM !== null && bi.kitLw !== lean) {
+      if (bi.kitM !== null && bi.kitLw !== lean && !this.buildQueue.has(bi)) {
         this.freeInstances(bi);
         this.build(bi);
       }
@@ -2623,7 +2640,7 @@ export class BuildingRenderer {
     for (const bi of this.inst.values()) {
       const b = bi.b;
       if (b.x + b.w < x0 || b.x > x1 || b.z + b.d < z0 || b.z > z1) continue;
-      if (bi.li < 0) continue; // the queued build will read the latest heights
+      if (bi.li < 0 || this.buildQueue.has(bi)) continue; // the queued swap will read the latest heights
       this.freeInstances(bi);
       this.build(bi);
     }

@@ -16,12 +16,13 @@ registerAllModels();
 
 type BI = {
   id: number; b: Building; li: number; main: number; site: number; found: number; cells: number[];
-  geom: number; lod: number; flod: number; flags: number; anim: number; wakeGeom: number;
+  key: string; vis: BuildingVisual; geom: number; lod: number; flod: number; flags: number; anim: number; wakeGeom: number;
 };
 type Internals = {
   inst: Map<number, BI>; list: BI[]; animating: Set<number>; lodWake: BI[]; evalWake: boolean;
   buildOrder: BI[]; buildAt: number;
   build(bi: BI): void;
+  freeInstances(bi: BI): void;
   lodEval(bi: BI, c: THREE.Vector3, K: number, on: number, off: number): void;
   wakeWaiting(c: THREE.Vector3, K: number, on: number, off: number, all: boolean): void;
 };
@@ -79,6 +80,24 @@ function drain(br: BuildingRenderer) {
   while (br.pendingBuilds && frames++ < 100) br.update(1);
   expect(br.pendingBuilds).toBe(0);
   br.update(1);
+}
+
+function slots(bi: BI) {
+  return [bi.main, bi.site, bi.found, ...bi.cells].filter((id) => id >= 0);
+}
+
+function allocation(br: BuildingRenderer) {
+  const mesh = br.batch.mesh as unknown as { _instanceInfo: { active: boolean }[]; _availableInstanceIds: number[] };
+  return { count: br.batch.instanceCount, active: mesh._instanceInfo.map((info) => info.active), free: [...mesh._availableInstanceIds] };
+}
+
+/** The former synchronous change kept the list slot and freed/rebuilt all its instances in one call. */
+function synchronousChange(br: BuildingRenderer, b: Building) {
+  const internal = inside(br), bi = internal.inst.get(b.id)!;
+  bi.b = b;
+  bi.anim = 0;
+  internal.freeInstances(bi);
+  internal.build(bi);
 }
 
 /** Geometry ids and instance slots depend on build order; compare their exact active buffer contents by lot/role. */
@@ -314,13 +333,16 @@ describe('BuildingRenderer geometry work queue', () => {
     expect(visuals.filter(([v]) => v !== null)).toHaveLength(1);
     br.update(1);
     expect(br.getVisual(1)!.sy).toBe(1);
+    const drawn = br.getVisual(1);
     br.changed({ ...bi.b, flags: BF.OnFire });
-    expect(br.getVisual(1)).toBeNull();
-    expect(br.count).toBe(0);
-    expect(visuals.at(-1)).toEqual([null, 1]);
+    expect(br.getVisual(1)).toBe(drawn);
+    expect(br.count).toBe(1);
+    expect(visuals.some(([v]) => v === null)).toBe(false);
     const remove = vi.spyOn(br.batch, 'remove');
+    const allocated = slots(bi);
     br.remove(1);
-    expect(remove).not.toHaveBeenCalled();
+    expect(remove.mock.calls.map(([id]) => id)).toEqual(allocated);
+    expect(visuals.at(-1)).toEqual([null, 1]);
     expect(br.pendingBuilds).toBe(0);
     br.update(1);
     expect(br.count).toBe(0);
@@ -337,6 +359,8 @@ describe('BuildingRenderer geometry work queue', () => {
     expect(br.getVisual(1)!.sy).toBe(0.7);
     br.changed({ ...b, built: 1, flags: 0 });
     expect(br.pendingBuilds).toBe(1);
+    expect(br.getVisual(1)!.constructing).toBe(true);
+    expect(br.getVisual(1)!.sy).toBe(0.7);
     expect(inside(br).animating.size).toBe(0);
     br.update(5);
     expect(bi.anim).toBeCloseTo(0.55 * 0.7, 12);
@@ -344,7 +368,197 @@ describe('BuildingRenderer geometry work queue', () => {
     expect(inside(br).animating.has(1)).toBe(true);
   });
 
-  it('allows a visual-removal callback to change, remove and replace the queued lot', () => {
+  it('keeps every old instance, visual and list slot in every frame until a changed building swaps', () => {
+    const { br } = town();
+    const b = building(1, { built: 0.3, flags: BF.Constructing, baseY: 2.4 });
+    br.add(b, false);
+    br.flushLod();
+    br.updateLod(camera(), 720);
+    const internal = inside(br), bi = internal.inst.get(1)!;
+    const old = { key: bi.key, visual: bi.vis, li: bi.li, slots: slots(bi), lod: bi.lod, count: br.lodCount };
+    const before = snapshot(br)[0];
+    expect(old.slots).toHaveLength(3); // model, construction site and foundation
+    const timer = clockedBuild(br, 3);
+    const announced: (BuildingVisual | null)[] = [];
+    br.onVisual = (visual, id) => { if (id === 1) announced.push(visual); };
+    for (const id of [2, 3, 4, 5]) br.add(building(id));
+    br.update(0); // start a finite older wave before queuing the drawn change
+    br.changed({ ...b, flags: BF.OnFire, built: 1, variant: 1 });
+    for (let frame = 0; frame < 3; frame++) {
+      br.update(0);
+      expect(timer.entries).not.toContain(bi);
+      expect(bi.key).toBe(old.key);
+      expect(slots(bi)).toEqual(old.slots);
+      expect(allocation(br).active.filter(Boolean).length).toBe(br.batch.instanceCount);
+      for (const id of old.slots) expect(allocation(br).active[id]).toBe(true);
+      expect(br.getVisual(1)).toBe(old.visual);
+      expect([...br.visuals()]).toContain(old.visual);
+      expect(internal.list[old.li]).toBe(bi);
+      expect(bi.li).toBe(old.li);
+      expect(bi.lod).toBe(old.lod);
+      expect(br.lodCount).toBe(old.count);
+      expect(snapshot(br).find((entry) => entry.id === 1)).toEqual(before);
+      expect(announced).toEqual([]);
+    }
+    const remove = vi.spyOn(br.batch, 'remove');
+    br.update(0);
+    expect(timer.entries.at(-1)).toBe(bi);
+    expect(bi.key).not.toBe(old.key);
+    expect(bi.vis).not.toBe(old.visual);
+    expect(bi.vis.burning).toBe(true);
+    expect(bi.vis.constructing).toBe(false);
+    expect(internal.list[old.li]).toBe(bi);
+    expect(bi.li).toBe(old.li);
+    expect(remove.mock.calls.map(([id]) => id)).toEqual(old.slots);
+    expect(announced).toEqual([bi.vis]);
+    expect(br.pendingBuilds).toBe(0);
+  });
+
+  it('frees exactly the old construction, foundation and rubble instances like a synchronous change', () => {
+    const queued = town(), sync = town();
+    for (const b of [building(1, { built: 0.35, flags: BF.Constructing, baseY: 2.4 }), building(2, { def: 'ind_warehouse', w: 3, d: 2, flags: BF.Burnt, baseY: 1.1 }), building(3)]) {
+      queued.br.add({ ...b }, false);
+      sync.br.add({ ...b }, false);
+    }
+    const internal = inside(queued.br), first = internal.inst.get(1)!, second = internal.inst.get(2)!;
+    const oldFirst = slots(first), oldSecond = slots(second), order = [...internal.list];
+    expect(oldFirst).toHaveLength(3);
+    expect(second.cells.length).toBeGreaterThan(0);
+    const timer = clockedBuild(queued.br, 3);
+    const remove = vi.spyOn(queued.br.batch, 'remove');
+    const changes: Building[] = [{ ...first.b, flags: 0, built: 1 }, { ...second.b, variant: 2, w: 1, d: 1, rot: 1, baseY: 0.8 }];
+    for (const b of changes) { queued.br.changed(b); synchronousChange(sync.br, { ...b }); }
+    expect(remove).not.toHaveBeenCalled();
+    queued.br.update(0);
+    expect(timer.built).toEqual([1]);
+    expect(remove.mock.calls.map(([id]) => id)).toEqual(oldFirst);
+    queued.br.update(0);
+    expect(remove.mock.calls.map(([id]) => id)).toEqual([...oldFirst, ...oldSecond]);
+    expect(internal.list).toEqual(order);
+    expect(first.li).toBe(0);
+    expect(second.li).toBe(1);
+    for (const br of [queued.br, sync.br]) { br.update(1); br.flushLod(); br.updateLod(camera(), 720); }
+    expect(queued.br.pendingBuilds).toBe(0);
+    expect(allocation(queued.br)).toEqual(allocation(sync.br));
+    expect(snapshot(queued.br)).toEqual(snapshot(sync.br));
+  });
+
+  it('removes a drawn pending change immediately and never builds it afterward', () => {
+    const { br } = town();
+    const b = building(1, { built: 0.3, flags: BF.Constructing, baseY: 2.4 });
+    br.add(b, false);
+    const bi = inside(br).inst.get(1)!, old = slots(bi);
+    const timer = clockedBuild(br, 3);
+    const remove = vi.spyOn(br.batch, 'remove'), announced: (BuildingVisual | null)[] = [];
+    br.onVisual = (visual) => announced.push(visual);
+    br.changed({ ...b, flags: BF.Abandoned });
+    expect(slots(bi)).toEqual(old);
+    expect(remove).not.toHaveBeenCalled();
+    br.remove(1);
+    expect(remove.mock.calls.map(([id]) => id)).toEqual(old);
+    expect(announced).toEqual([null]);
+    expect(br.getVisual(1)).toBeNull();
+    expect([...br.visuals()]).toEqual([]);
+    expect(br.count).toBe(0);
+    expect(br.batch.instanceCount).toBe(0);
+    expect(allocation(br).free).toEqual([...old].sort((a, b) => a - b));
+    expect(br.pendingBuilds).toBe(0);
+    br.update(1);
+    expect(timer.entries).toEqual([]);
+    expect(remove).toHaveBeenCalledTimes(old.length);
+  });
+
+  it('skips an old drawn pending change after its id is reused inside an active wave', () => {
+    const { br } = town();
+    br.add(building(1, { baseY: 2.4 }), false);
+    const internal = inside(br), old = internal.inst.get(1)!, allocated = slots(old);
+    const timer = clockedBuild(br, 3), remove = vi.spyOn(br.batch, 'remove');
+    const announced: [BuildingVisual | null, number][] = [];
+    br.onVisual = (visual, id) => announced.push([visual, id]);
+    br.add(building(2));
+    br.changed({ ...old.b, flags: BF.OnFire });
+    br.update(0);
+    expect(timer.built).toEqual([2]);
+    expect(internal.buildOrder).toContain(old);
+    br.remove(1);
+    expect(remove.mock.calls.map(([id]) => id)).toEqual(allocated);
+    br.add(building(1, { def: 'com_office_small', variant: 2 }));
+    const replacement = internal.inst.get(1)!;
+    expect(replacement).not.toBe(old);
+    expect(br.getVisual(1)).toBeNull();
+    br.update(0);
+    expect(timer.entries).not.toContain(old);
+    expect(timer.entries.at(-1)).toBe(replacement);
+    expect(br.getVisual(1)!.model).toBe('com_office_small');
+    expect(internal.list).toEqual([internal.inst.get(2), replacement]);
+    expect(announced.filter(([, id]) => id === 1)).toEqual([[null, 1], [replacement.vis, 1]]);
+    expect(remove).toHaveBeenCalledTimes(allocated.length);
+    expect(br.pendingBuilds).toBe(0);
+  });
+
+  it('animates the old construction pose while its mutable building changes in the queue', () => {
+    const queued = town(), reference = town();
+    const b = building(1, { built: 0.3, flags: BF.Constructing, w: 2, d: 3, baseY: 2.4 });
+    queued.br.add(b); reference.br.add({ ...b });
+    queued.br.update(0); reference.br.update(0);
+    const bi = inside(queued.br).inst.get(1)!;
+    const oldKey = bi.key;
+    clockedBuild(queued.br, 3);
+    for (const id of [2, 3]) queued.br.add(building(id));
+    Object.assign(b, { built: 1, flags: 0, w: 4, d: 1, rot: 1 });
+    queued.br.changed(b);
+    for (let frame = 0; frame < 2; frame++) {
+      queued.br.update(0.1); reference.br.update(0.1);
+      expect(bi.key).toBe(oldKey);
+      expect(bi.vis.constructing).toBe(true);
+      expect(snapshot(queued.br).find((entry) => entry.id === 1)).toEqual(snapshot(reference.br)[0]);
+    }
+    queued.br.update(0);
+    expect(bi.key).not.toBe(oldKey);
+    expect(bi.vis.constructing).toBe(false);
+    expect(bi.anim).toBeCloseTo(0.55 * 0.7, 12);
+  });
+
+  it('clears an existing pop only when a pending burn-down becomes rubble', () => {
+    const { br } = town();
+    br.add(building(1));
+    br.update(0);
+    const bi = inside(br).inst.get(1)!, visual = bi.vis;
+    clockedBuild(br, 3);
+    br.add(building(2));
+    br.changed({ ...bi.b, flags: BF.Burnt });
+    expect(bi.anim).toBe(0.55);
+    expect(inside(br).animating.has(1)).toBe(true);
+    br.update(0.1);
+    expect(bi.vis).toBe(visual);
+    expect(bi.vis.burnt).toBe(false);
+    expect(bi.anim).toBeCloseTo(0.45, 12);
+    br.update(0);
+    expect(bi.vis.burnt).toBe(true);
+    expect(bi.vis.sy).toBe(1);
+    expect(bi.anim).toBe(0);
+    expect(inside(br).animating.has(1)).toBe(false);
+  });
+
+  it('prioritizes a drawn visible change before visible and off-screen adds in the same wave', () => {
+    const { br } = town();
+    const b = building(1, { x: 15, z: 15 });
+    br.add(b, false);
+    const cam = new THREE.PerspectiveCamera(20, 1, 1, 20000);
+    cam.position.set(256, 80, 600);
+    cam.lookAt(256, 0, 256);
+    cam.updateMatrixWorld();
+    br.updateLod(cam, 720);
+    const timer = clockedBuild(br, 3);
+    br.add(building(3, { x: 58, z: 56 }));
+    br.add(building(2, { x: 15, z: 15 }));
+    // Priority follows the old drawn lot until its queued move swaps in.
+    br.changed({ ...b, flags: BF.OnFire, x: 58, z: 56 });
+    drain(br);
+    expect(timer.built).toEqual([1, 2, 3]);
+  });
+
+  it('allows a removal callback to change, remove and replace the removed lot', () => {
     const { br } = town();
     const b = building(1);
     br.add(b, false);
@@ -361,6 +575,8 @@ describe('BuildingRenderer geometry work queue', () => {
       br.add({ ...b, def: 'ind_warehouse' });
     };
     br.changed({ ...b, flags: BF.OnFire });
+    expect(replaced).toBe(false);
+    br.remove(1);
     const replacement = inside(br).inst.get(1)!;
     expect(replacement).not.toBe(old);
     expect(br.pendingBuilds).toBe(1);
@@ -373,7 +589,7 @@ describe('BuildingRenderer geometry work queue', () => {
     expect(inside(br).list).toEqual([replacement]);
   });
 
-  it('ignores stale proxy wakes while queued and after a different geometry has been built', () => {
+  it('keeps old proxy wakes valid until a pending change swaps to another geometry', () => {
     const { br } = town();
     br.add(building(1), false);
     br.flushLod();
@@ -384,11 +600,14 @@ describe('BuildingRenderer geometry work queue', () => {
     br.changed({ ...bi.b, def: 'com_office_small' });
     const evals = vi.spyOn(internal, 'lodEval');
     internal.wakeWaiting(new THREE.Vector3(), 1, 9, 10, true);
-    expect(evals).not.toHaveBeenCalled();
+    expect(evals).toHaveBeenCalledTimes(1);
+    expect(bi.geom).toBe(old);
+    evals.mockClear();
     br.update(0);
     expect(bi.geom).not.toBe(old);
     internal.lodWake.push(bi);
     // The old wake may already have been copied into a background batch before the rebuild cancelled it.
+    bi.wakeGeom = old;
     internal.wakeWaiting(new THREE.Vector3(), 1, 9, 10, true);
     expect(evals).not.toHaveBeenCalled();
   });
@@ -445,7 +664,7 @@ describe('BuildingRenderer geometry work queue', () => {
     expect(bi.lod).toBe(1);
     b.flags = BF.Abandoned;
     br.changed(b);
-    expect(br.lodCount).toBe(0);
+    expect(br.lodCount).toBe(1);
     // At the new preset this distance keeps an existing proxy, but does not downgrade a full model.
     const K = 360 / Math.tan(cam.fov * Math.PI / 360), distance = bi.radius * K / 11;
     const visualX = (b.x + b.w / 2) * CELL_SIZE, visualZ = (b.z + b.d / 2) * CELL_SIZE;
