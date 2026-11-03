@@ -90,10 +90,14 @@ export const NEW_YEAR_PACING = {
   minGapMs: 3 * 60_000,
   /** at most this many full shows in any periodMs (Goal 8: "rank-ups included") */
   maxPerPeriod: 2,
-  /** the burst: Fireworks' shortest show (its minimum duration) with the opening salvo launched at once; its sparks are
-   *  gone about 10 s after the start (9.1-10.0 s from 3k to 1M residents, measured on the real Fireworks) */
+  /** the burst: Fireworks' shortest show (its minimum duration), the opening salvo launched at once, at most this show
+   *  size (0..1); its sparks are gone 8.6-12.4 s after the start (measured on the real Fireworks, 3 hamlet to megacity
+   *  populations x 20 seeds x camera distances from 300 m to 9 km; over 12 s only from 4.5 km away) */
   burstDuration: 6,
   burstDelay: 0,
+  burstSize: 0.4,
+  /** a burst is never on screen longer than this (s of show time): sparks still alive then are cleared */
+  burstMaxS: 12,
   /** a game year shorter than this (real s) is ultra speed: no burst, only the compact toast */
   ultraYearSec: 45,
   /** how long the compact ultra toast stays (ms; an ultra year is 18 s) */
@@ -147,7 +151,7 @@ type Phase = 'idle' | 'lapse' | 'countdown' | 'show' | 'restore';
 type TimeWorld = WorldViewApi & { timeScale?: number };
 /** the parts of the fireworks the celebration uses (duck-typed: tests pass a stand-in) */
 type FireworksLike = Pick<Fireworks, 'start' | 'stop' | 'fastForward' | 'active' | 'midnight' | 'timeScale' | 'onSound'> &
-  Partial<Pick<Fireworks, 'settled' | 'isRunning' | 'centre' | 'showSize' | 'lengthFor'>>;
+  Partial<Pick<Fireworks, 'settled' | 'isRunning' | 'centre' | 'showSize' | 'lengthFor' | 'time' | 'liveCount'>>;
 /** WorldView's camera controller (CameraController): only what the show camera needs */
 interface CamCtl {
   enabled: boolean;
@@ -192,9 +196,13 @@ const nf = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
+/** show size 0..1 for a population (the curve of Fireworks' fireworksShowSize) */
+function showSizeFor(pop: number): number {
+  return clamp01((Math.log10(Math.max(pop, 30)) - 1.7) / 4.0);
+}
 /** default show length when the fireworks don't say (same curve as Fireworks.lengthFor) */
 function defaultShowLength(pop: number): number {
-  return 20 + 70 * Math.pow(clamp01((Math.log10(Math.max(pop, 30)) - 1.7) / 4.0), 1.4);
+  return 20 + 70 * Math.pow(showSizeFor(pop), 1.4);
 }
 function smooth(t: number): number {
   t = clamp01(t);
@@ -255,6 +263,8 @@ export class NewYearCelebration {
   private speedAtStart = -1;
   /** FEEL-02a: which New Years get the full show (real time) */
   readonly pacer = new NewYearPacer();
+  /** a burst is running: frame() ends it at burstMaxS of show time */
+  private burstOn = false;
 
   constructor(deps: NewYearDeps) {
     this.deps = deps;
@@ -381,6 +391,7 @@ export class NewYearCelebration {
     const burst = !!opts.burst;
     if (burst) mode = 'fireworks';
     this.cancel(true);
+    this.burstOn = burst;
     const st = this.deps.sim.state;
     const year = (this.year = opts.year ?? st.year);
     if (!opts.quiet && !burst) this.toastYear(year);
@@ -448,7 +459,7 @@ export class NewYearCelebration {
       try {
         fw.timeScale = 1;
         fw.onSound = (k, x, y, z, size, extra) => this.onSound(k, x, y, z, size, extra);
-        fw.start({ population, delay, seed: opts.seed, duration });
+        fw.start({ population, delay, seed: opts.seed, duration, ...(burst ? { intensity: Math.min(showSizeFor(population), NEW_YEAR_PACING.burstSize) } : {}) });
         if (opts.fastForward && opts.fastForward > 0) {
           fw.fastForward(opts.fastForward);
           this.t = opts.fastForward;
@@ -513,6 +524,9 @@ export class NewYearCelebration {
       else if (now - this.dateHold.at > (this.midnightAt + 10) * 1000) this.releaseDate();
     }
     if (!this.pointerOffs.length && this.frames % 30 === 1) this.watchPointer();
+    // a burst's last embers never outlast burstMaxS, also after the celebration settled (only a show seen from far away
+    // gets there). Its show clock: the fireworks advance at most 0.1 s a frame
+    if (this.burstOn) this.capBurst();
     if (this.phase === 'idle' && this.camPhase === 'off') {
       this.releaseDate();
       return;
@@ -561,6 +575,21 @@ export class NewYearCelebration {
     const fw = this.fw;
     const fwDone = !fw || !fw.active || fw.settled === true;
     if (this.phase === 'show' && ((fwDone && this.t > this.midnightAt + 5) || this.t > this.midnightAt + 160)) this.finish();
+  }
+
+  private capBurst(): void {
+    const fw = this.fw;
+    if (!fw) {
+      this.burstOn = false;
+      return;
+    }
+    if ((fw.time ?? this.t) < NEW_YEAR_PACING.burstMaxS) return;
+    this.burstOn = false;
+    try {
+      if (fw.active && (fw.liveCount ?? 0) > 0) fw.stop(true);
+    } catch {
+      /* ignore */
+    }
   }
 
   // ------------------------------------------------------------------------------------------------ time of day

@@ -358,40 +358,68 @@ describe('NewYearCelebration: FEEL-02a pacing', () => {
 });
 
 describe('the burst on the real Fireworks', () => {
-  it('its sparks are gone within 12 s of the start, from a hamlet to a million residents; it settles by then too', () => {
-    const cam = new THREE.PerspectiveCamera(50, 16 / 9, 1, 20000);
-    cam.position.set(1000, 800, 1800);
+  function rig(dist: number) {
+    const cam = new THREE.PerspectiveCamera(50, 16 / 9, 1, 30000);
+    cam.position.set(1024, dist * 0.6, 1024 + dist);
+    cam.lookAt(1024, 0, 1024);
     cam.updateMatrixWorld();
-    const sites = Array.from({ length: 30 }, (_, i) => ({ x: 800 + (i % 6) * 60, y: 0, z: 800 + Math.floor(i / 6) * 60, kind: 'park' as const, weight: 1 }));
+    const sites = Array.from({ length: 40 }, (_, i) => ({ x: 724 + (i % 8) * 80, y: 0, z: 824 + Math.floor(i / 8) * 80, kind: 'park' as const, weight: 1 }));
     const fw = new Fireworks({ camera: cam, mapSize: 2048, quality: 'low', groundAt: () => 0, getSites: () => sites });
     const world = new FakeWorld();
     const settings = { ...DEFAULT_SETTINGS };
     const state = { day: 0, year: 2001, stats: { population: 0 }, buildings: new Map(), history: { pop: [] as number[] }, config: { name: 'X', startYear: 2000 } };
     const sim = { events: new Emitter<CityEvents>(), state, speed: 1, secondsPerDay: () => 0.5 } as unknown as Simulation;
     const ny = new NewYearCelebration({ sim, world: () => world as unknown as WorldViewApi, objects: () => ({ fireworks: fw }) as unknown as CityObjectsViewApi, settings: () => settings, toast: () => undefined });
-    try {
-      for (const population of [300, 3000, 101_650, 1_000_000]) {
-        state.stats.population = population;
-        ny.frame(1 / 30, 0);
-        expect(ny.celebrate({ burst: true, seed: 7 })).toBe(true);
-        let t = 0, sparksEnd = 0, busyEnd = 0;
-        const dt = 1 / 30;
-        while (t < 40) {
-          fw.update(dt);
-          ny.frame(dt, 0);
-          t += dt;
-          if ((fw as unknown as { mesh: THREE.Mesh }).mesh.visible) sparksEnd = t;
-          if (ny.busy) busyEnd = t;
-          if (!fw.active && !ny.busy) break;
-        }
-        expect(sparksEnd).toBeGreaterThan(5);
-        expect(sparksEnd).toBeLessThanOrEqual(12);
-        expect(busyEnd).toBeLessThanOrEqual(12);
-        fw.stop(true);
+    /** one burst: when its last spark was on screen and when the celebration stopped being busy (s of show time) */
+    const burst = (population: number, seed: number) => {
+      state.stats.population = population;
+      ny.frame(1 / 30, 0);
+      expect(ny.celebrate({ burst: true, seed })).toBe(true);
+      let t = 0, sparksEnd = 0, busyEnd = 0;
+      const dt = 1 / 30;
+      while (t < 40) {
+        fw.update(dt);
+        ny.frame(dt, 0);
+        t += dt;
+        if ((fw as unknown as { mesh: THREE.Mesh }).mesh.visible) sparksEnd = t;
+        if (ny.busy) busyEnd = t;
+        if (!fw.active && !ny.busy) break;
       }
+      fw.stop(true);
+      return { sparksEnd, busyEnd };
+    };
+    return { fw, ny, burst, dispose: () => (ny.dispose(), fw.dispose()) };
+  }
+
+  it('its sparks are gone within 12 s of the start, from a hamlet to a megacity, near and far; it settles by then too', () => {
+    for (const dist of [600, 3000, 6000]) {
+      const r = rig(dist);
+      try {
+        for (const population of [300, 3000, 101_650, 1_000_000]) {
+          // (seeds 10 and 20 seen from 6 km leave embers to 12.2-12.4 s: the cap clears them at 12)
+          for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 10, 20]) {
+            const { sparksEnd, busyEnd } = r.burst(population, seed);
+            expect(sparksEnd).toBeGreaterThan(5);
+            expect(sparksEnd).toBeLessThanOrEqual(12.05);
+            expect(busyEnd).toBeLessThanOrEqual(12);
+          }
+        }
+      } finally {
+        r.dispose();
+      }
+    }
+  });
+
+  it('a burst is smaller than the full show of a big city (show size at most 0.4)', () => {
+    const r = rig(1500);
+    try {
+      r.fw.start({ population: 101_650, delay: 0, duration: 6, seed: 3 });
+      const full = r.fw.showSize;
+      r.burst(101_650, 3);
+      expect(full).toBeGreaterThan(0.8);
+      expect(r.fw.showSize).toBeCloseTo(NEW_YEAR_PACING.burstSize, 5);
     } finally {
-      ny.dispose();
-      fw.dispose();
+      r.dispose();
     }
   });
 });
