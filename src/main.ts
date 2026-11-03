@@ -130,6 +130,9 @@ function markReady(): void {
   requestAnimationFrame(() => requestAnimationFrame(() => ((window as unknown as { __ready: boolean }).__ready = true)));
 }
 
+/** FEEL-05: the day a new city is founded on, 1 April of its start year (systemData.foundedDay; the bot founds on day 0) */
+const FOUNDING_DAY = 90;
+
 /** wall-clock interval of background recovery snapshots while there are unsaved changes */
 const SNAPSHOT_INTERVAL_MS = 30_000;
 /** outcome of a "Recover unsaved progress?" prompt ('later' = dismissed, snapshot kept; 'none' = nothing to offer) */
@@ -429,6 +432,10 @@ class App {
       ld.set('Generating terrain…', 0.1);
       await paint();
       const st = new CityStateClass(cfg);
+      // FEEL-05: a player's city opens in spring (1 April); the CityState constructor keeps day 0 for the bot, the tests
+      // and old saves, so only a city founded here starts later in its first year
+      st.day = FOUNDING_DAY;
+      st.systemData.foundedDay = FOUNDING_DAY;
       const topts = terrainOptionsFor(cfg, model, tile);
       generateTerrain(st, { ...topts, skipTrees: true });
       ld.set('Planting trees…', 0.35);
