@@ -77,21 +77,36 @@ describe('year review history telemetry', () => {
     expect(HISTORY_KEYS).toContain('approval_clamp');
   });
 
-  it('records the future LG-05 flag contract (synthetic producer)', () => {
+  it('records land exhaustion independently of demand-gated advice (stub LG-05 producer)', () => {
     const st = reviewCity();
+    recordHistory(st);
+    st.stats.demand.fill(0);
+    st.systemData.advisors = { full: true, builtOut: false };
+    recordHistory(st);
+    st.systemData.advisors = { full: false, builtOut: true };
     recordHistory(st);
     st.systemData.advisors = { builtOut: true };
     recordHistory(st);
-    st.systemData.advisors = { builtOut: false };
-    recordHistory(st);
-    expect(st.history.builtOut).toEqual([0, 1, 0]);
+    expect(st.history.builtOut).toEqual([0, 1, 0, 0]);
+  });
+
+  it('saves the stub full flag and grades unemployment even with weak demand and no built-out advice', () => {
+    const st = reviewCity();
+    st.systemData.advisors = { full: true, builtOut: false };
+    st.stats.demand.fill(0); st.stats.unemployment = 0.04;
+    for (let month = 0; month <= 12; month++) { st.day = month * 30; recordHistory(st); }
+    const loaded = deserializeCity(serializeCity(st));
+    expect(loaded.systemData.advisors).toMatchObject({ full: true, builtOut: false });
+    const input = yearGradeInput(loaded.history, 12)!;
+    expect(input.builtOut).toBe(true);
+    expect(yearGrade(input).scores.growth).toBe(100);
   });
 
   it('follows the real economy advisor output, retaining growth scoring while LG-05 is absent', () => {
     const st = newState(16);
     const sim = new Simulation(st, economySystems());
     sim.runDays(360);
-    const produced = (st.systemData.advisors as { builtOut?: boolean } | undefined)?.builtOut === true;
+    const produced = (st.systemData.advisors as { full?: boolean } | undefined)?.full === true;
     expect(st.history.builtOut.at(-1)).toBe(produced ? 1 : 0);
     const input = yearGradeInput(st.history, 12)!;
     expect(input.builtOut).toBe(produced);

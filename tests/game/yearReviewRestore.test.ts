@@ -18,11 +18,12 @@ installFakeDom();
 class LostFireworks {
   isRunning = false;
   disposed = false;
+  fading = false;
   timeScale = 1;
   onSound: unknown = null;
   midnight = 0;
   get active(): boolean { return this.isRunning; }
-  get settled(): boolean { return !this.isRunning; }
+  get settled(): boolean { return this.fading || !this.isRunning; }
   start(options: { delay?: number }): void {
     this.midnight = options.delay ?? 0;
     this.isRunning = true;
@@ -35,6 +36,38 @@ class LostFireworks {
 describe('year review graphics recovery', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it('shows after the celebration phase ends while its final sparks are still fading', () => {
+    const state = new CityState(defaultCityConfig({ size: 16, startYear: 2000 }));
+    for (let t = 0; t <= 12; t++) {
+      for (const key of HISTORY_KEYS) state.history[key].push(0);
+      state.history.t[t] = t; state.history.pop[t] = 1000 + 10 * t;
+    }
+    state.stats.population = 1120;
+    const events = new Emitter<CityEvents>(), ui = new Emitter<UIEvents>(), abort = new AbortController();
+    const root = new FEl('div'), map = new FEl('div'), canvas = new FEl('canvas');
+    map.append(canvas, root); vi.stubGlobal('window', new FEl('window'));
+    const settings = { ...DEFAULT_SETTINGS, newYear: 'fireworks' as const };
+    const sim = { state, events, speed: 1 } as unknown as Simulation;
+    const fw = new LostFireworks();
+    const ny = new NewYearCelebration({ sim, world: () => new NullWorldView(),
+      objects: () => Object.assign(new NullObjectsView(), { fireworks: fw }), settings: () => settings, toast() {} });
+    vi.spyOn(ny as unknown as { loadAudio(): void }, 'loadAudio').mockImplementation(() => undefined);
+    const host = { events, speed: 1, policy: { live: false, subscribe: () => () => undefined } };
+    const ctx = { state, host, ui, settings, root, canvas, signal: abort.signal } as unknown as GameContext;
+    new YearReview(ctx, { busy: () => ny.active });
+    try {
+      ui.emit('viewsReady', undefined); state.day = 360; ny.frame(0.1, 1000); events.emit('year', 2001);
+      for (let i = 1; i <= 50; i++) ny.frame(0.1, 1000 + i * 100);
+      expect(ny['phase']).toBe('show'); ui.emit('uiTick', undefined);
+      expect(root.querySelector('.year-review')).toBeNull();
+      fw.fading = true;
+      for (let i = 51; i <= 100; i++) ny.frame(0.1, 1000 + i * 100);
+      expect(ny.active).toBe(false); expect(ny.busy).toBe(true); expect(fw.isRunning).toBe(true);
+      ui.emit('uiTick', undefined);
+      expect(textOf(root.querySelector('.year-review')!)).toContain('Figures on 1 January 2001');
+    } finally { ny.dispose(); abort.abort(); }
+  });
 
   it('cancels an active show before disposing its view, then releases this and later yearly cards', async () => {
     const state = new CityState(defaultCityConfig({ size: 16, seed: 7, startYear: 2000, name: 'Queensbury' }));
@@ -82,7 +115,7 @@ describe('year review graphics recovery', () => {
       settings: () => settings, toast() {},
     });
     vi.spyOn(ny as unknown as { loadAudio(): void }, 'loadAudio').mockImplementation(() => undefined);
-    new YearReview(ctx, { busy: () => ny.busy });
+    new YearReview(ctx, { busy: () => ny.active });
     const card = () => root.querySelector('.year-review');
     let now = 1000;
     const step = (seconds: number) => {

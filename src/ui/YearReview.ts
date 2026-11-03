@@ -87,8 +87,8 @@ export function buildYearReview(state: CityState, year: number, regionName?: str
   const history = state.history, month = (year - state.config.startYear) * 12;
   const indices = yearWindow(history, month), end = history.t.indexOf(month), start = history.t.indexOf(month - 12);
   if (end < 0 || !indices.length) return null;
-  // GraphsPanel.draw's 1Y view contains twelve samples (eleven intervals), ending at this review's January.
-  const population = history.pop[end], previous = history.pop[Math.max(0, end + 1 - 12)] ?? null;
+  // GraphsPanel's 1Y view includes both January endpoints (or all available samples for a younger city).
+  const population = history.pop[end], previous = history.pop[start >= 0 ? start : Math.max(0, end - 12)] ?? null;
   const economy = state.systemData.economy as { yearReviewGoals?: YearReviewGoals; yearReviewBaseline?: YearReviewBaseline } | undefined;
   const founding = economy?.yearReviewBaseline;
   const baseline = founding && founding.month >= month - 12 && founding.month < month ? founding : undefined;
@@ -98,8 +98,9 @@ export function buildYearReview(state: CityState, year: number, regionName?: str
     ? Object.fromEntries(YEAR_REVIEW_TERMS.map((id) => [id, history[`approval_${id}`][start]])) : baseline?.approvalTerms;
   const termsMeasured = previousTerms !== undefined && history.reviewTermsSample?.[end] === 1;
   const terms = termsMeasured
-    ? YEAR_REVIEW_TERMS.map((id) => ({ id, label: APPROVAL_LABELS[id] ?? id, change: history[`approval_${id}`][end] - (previousTerms[id] ?? 0) }))
-      .filter((term) => Math.abs(term.change) > 1e-9).sort((a, b) => Math.abs(b.change) - Math.abs(a.change)).slice(0, 3)
+    ? YEAR_REVIEW_TERMS.filter((id) => id !== 'base' && id !== 'clamp')
+      .map((id) => ({ id, label: id === 'emergencies' ? 'Emergencies' : APPROVAL_LABELS[id] ?? id, change: history[`approval_${id}`][end] - (previousTerms[id] ?? 0) }))
+      .filter((term) => Math.abs(term.change) >= 0.05).sort((a, b) => Math.abs(b.change) - Math.abs(a.change)).slice(0, 3)
     : [];
   const records: string[] = [];
   const prior = history.t.map((t, i) => t <= month - 12 ? i : -1).filter((i) => i >= 0);
@@ -216,20 +217,22 @@ export class YearReview {
     const card = h('article', { class: 'year-review mp-glass', role: 'region', 'aria-label': `${this.ctx.state.config.name} Gazette — ${report.year}` },
       close,
       h('header', null, h('div', null, h('div', { class: 'yr-eyebrow' }, `${report.year - 1} in review · ${report.rank}`),
-        h('h2', null, `${this.ctx.state.config.name || 'City'} Gazette — ${report.year}`)), grade),
+        h('h2', null, `${this.ctx.state.config.name || 'City'} Gazette — ${report.year}`),
+        h('p', { class: 'yr-date' }, `Figures on 1 January ${report.year}`)), grade),
       h('div', { class: 'yr-metrics' },
         metric('Residents', num(report.population), report.growth === null ? report.populationChange === null ? 'Annual change unavailable' : `${num(report.populationChange)} new residents` : `${signedPct(report.growth, 1)} · ${report.populationChange! >= 0 ? '+' : '−'}${num(Math.abs(report.populationChange!))} residents`),
         metric('Bank', report.bankMonths === null ? '—' : Number.isFinite(report.bankMonths) ? `${report.bankMonths.toFixed(1)} months` : 'No recurring expenses', moneyCompact(report.funds)),
         metric('Tourists / day', num(report.tourists), 'Year average'), metric('Education / health', `${num(report.eq)} / ${num(report.hq)}`, 'EQ / HQ at year end')),
       h('div', { class: 'yr-columns' },
-        section(`Approval ${num(report.approval)}%${report.approvalChange === null ? '' : ` · ${signed(report.approvalChange)} pts`}`, ...terms),
+        section(report.population > 0 ? `Approval ${num(report.approval)}%${report.approvalChange === null ? '' : ` · ${signed(report.approvalChange)} pts`}` : 'Approval —',
+          ...(report.population > 0 ? terms : [h('p', { class: 'dim' }, 'No residents yet.')])),
         section('Emergency response', list([
           `${num(report.incidents)} incidents`, `${report.answered === null ? '—' : num(report.answered)} answered`, `${report.failed === null ? '—' : num(report.failed)} failed`,
           `${num(report.deaths)} lives lost`, `${report.lost === null ? '—' : num(report.lost)} buildings lost`,
         ], 'No incidents')),
         section('Records · recorded history', list(report.records, 'No new records this year.')),
         section('Goals completed', list(report.completed, 'No newly completed goals recorded this year.'))),
-      h('div', { class: 'yr-next' }, h('h3', null, 'Next goals'), ...report.next.map((goal) => h('span', null, goal.name, h('b', null, pct(goal.progress))))),
+      report.next.length ? h('div', { class: 'yr-next' }, h('h3', null, 'Next goals'), ...report.next.map((goal) => h('span', null, goal.name, h('b', null, pct(goal.progress))))) : null,
       h('footer', null, h('div', null, report.region), h('small', null, 'Closes after 15 seconds or any map input')),
     );
     this.card = card;
