@@ -1,6 +1,6 @@
 # Worker acceptance harness (T028r)
 
-Review round 1 at **8ef8f7c**, branch `local/T028-qa-worker`. Implements WORKER_DESIGN §5.4 and R16 against
+Review round 3 at **f22933f**, branch `local/T028-qa-worker`. Implements WORKER_DESIGN §5.4 and R16 against
 production assets. **Loopback runs now and is the default.** `--host` selects local, loopback or worker;
 the URL uses `simworker=0`, `simworker=loopback` or `simworker=1` respectively. A requested host must actually
 boot; local fallback cannot pass a loopback/worker gate. No files under `src/` are modified.
@@ -64,7 +64,19 @@ PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tools/qa-worker.mjs --host loopba
 ```
 
 SwiftShader uses §5.4's flags and is marked in the report; it cannot establish the desktop GPU gate. Both modes
-include `--js-flags=--allow-natives-syntax`. One browser runs at a time. No normal browser profile is used.
+include this single Chromium argument, centralized as `PROTECTOR_V8_FLAGS` in `w1.mjs` and recorded in JSON
+`details.v8Flags`:
+
+```text
+--js-flags=--allow-natives-syntax --no-maglev --no-optimize-on-next-call-optimizes-to-maglev
+```
+
+The spaces belong inside the one argument supplied by the harness; no shell quoting is needed for the commands
+above. These flags keep `%OptimizeFunctionOnNextCall` on TurboFan. The probe requires
+`%ActiveTierIsTurbofan` after synchronous pre-import warm-up; numeric optimization status is diagnostic only.
+It never accepts a Maglev status or a changed optimization tier as an intact baseline. Unsupported intrinsics
+or failure to establish TurboFan fail closed. One browser runs at a time. No normal browser profile is used.
+Before reload, the gate retains any invalidation from the departing isolate so a fresh global cannot erase it.
 
 Freeze runs last. Playwright 1.56.1 keeps pages visible through focus emulation on its owning CDP session; a separate
 session cannot release that handle. `lifecycle.mjs` uses the installed in-process bridge to disable focus emulation
@@ -123,17 +135,20 @@ subscriptions end with `ctx.signal`, patches restore on abort/dispose, and archi
 
 ```powershell
 node "$root/tools/qa-worker/selftest.mjs"
-node --allow-natives-syntax "$root/tools/qa-worker/protector-selftest.mjs"
-node "$root/tools/qa-worker/protector-selftest.mjs"
+node --allow-natives-syntax --no-maglev --no-optimize-on-next-call-optimizes-to-maglev "$root/tools/qa-worker/protector-selftest.mjs"
+node --no-maglev --no-optimize-on-next-call-optimizes-to-maglev "$root/tools/qa-worker/protector-selftest.mjs"
 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tools/qa-worker/fixture.test.ts --maxWorkers=1
 npx tsc --noEmit
 ```
 
 The Node selftest tests the oracle/control/probe without Vite or a browser. It covers the pending-ticket polling
 deadline, real UI action preparation, packet-watch camera race, required sim-only protector gate, and actual-freeze
-setup/cleanup. The native selftest checks clone success, transfer invalidation and failure without native syntax.
-The protector warms synchronously before application imports, records V8 optimization statuses, and remains strict
-for main and the worker named `sim`; independent `lod-proxies-*` workers do not belong to the simulation gate.
+setup/cleanup. The first native command requires repeated clean polls and a typed-array clone to remain intact,
+then transfers an unrelated buffer and requires byteLength 0 and persistent probe failure. Reinstalling the probe
+must not reset that failed baseline. The second command omits native-syntax support and must fail closed.
+The protector warms synchronously before application imports, records V8 optimization statuses for diagnostics,
+and remains strict for main and the worker named `sim`; independent `lod-proxies-*` workers do not belong to the
+simulation gate.
 The Vitest fixture is in normal test
 discovery and validates real local/loopback growth and dispatch plus provisional dependencies, ghosts, tagged replay,
 query read-after-write, correction deduplication and abort cleanup. It uses deterministic design cadence only in
@@ -143,26 +158,29 @@ Error-overlay Pause remains explicitly SKIPPED in the healthy fixture and needs 
 Close-page worker journal restoration is explicitly SKIPPED until W1.3/T039. `holdCalendar` is an additional
 automatic New Year op: any observed ticket must settle, but this short command fixture does not force midnight.
 Full visual parity of every overlay variant, New Year and other Appendix A consumers remains manual QA.
-Round 1 Node results: **40 passed, 0 failed**, plus both native-probe commands passed. The supplied RTX 5070 Ti
-logs at 8ef8f7c establish the previous failures, not results for these fixes. No browser/build/perf/Vitest/bot was
-launched during this review round. No balance, simulation or RNG code changes;
+Round 3 Node results: **43 passed, 0 failed**, plus both native-probe commands passed (clean/clone accepted;
+unrelated transfer changed status 81 to 129 and failed persistently). The supplied RTX 5070 Ti logs at f22933f establish the
+remaining protector initialization failure, not results for this tier fix. No browser/build/perf/Vitest/bot was
+launched during review round 3. No balance, simulation or RNG code changes;
 the supplied seed-7 reference remains residents **[61124, 93804, 37971] = 192899** in 2015, unverified here.
 
 `tools/bench/browser-check.mjs` already supports production assets and is unchanged. No source/infra/cloud-held
 files were edited; no commit, push or DONE marker was made.
 
-## Round 1 classification and rerun
+## Round 3 classification and rerun
 
-The observed Onboarding, Query/InfoPanel, LOD-probe, freeze setup, broken-control classification, and loopback-only
-dispatch failures were harness issues. Dispatch had **zero issued tickets** in loopback: its asynchronous options
-fit overwrote station focus before any pointer input. No dispatch packet/ack or T029 host bug is demonstrated.
-The isolated freeze had advanced to day 91 and then recorded 1369 frames without freeze/resume events; failed
-Onboarding Play does not explain it. Missing setHistoric/all-command coverage was a consequence of Query selection.
+The lead's f22933f rerun passed local **47/0**, the >=15000 ms freeze/resume gate, both real broken-zone controls,
+and the dispatch observer control. Worker still exits **3** until T034. The remaining three protector failures
+occurred on both dev and a temporary T059 merge: numeric status **41** failed the old bit-16 initialization test.
+This was a harness tier-detection failure and did not establish the state of the detachment protector.
 
-Keep the main protector gate strict: `src/render/city/buildings/lodBuilder.ts:138` still transfers buffers from main,
-contrary to J0. The report requests the lead's clone-only fix. The old LOD initialization failure masked main status;
-the GPU rerun must determine whether it now reports this separate render-side protector regression.
+Rerun the same loopback and local `--w1` commands against both builds prepared by the lead. On dev,
+`src/render/city/buildings/lodBuilder.ts:138` transfers geometry buffers from main; the protector must fail after
+LOD activity. On the T059 clone-only merge, clean main must remain intact at boot, end and after freeze, with
+every other applicable gate passing. No render, worker or other `src/` file is changed by this harness fix.
 
-Rerun the exact desktop commands above, especially local, local --w1, loopback, isolated freeze, both broken-zone
-controls and --drop-ack dispatch. Require only the target pending-ack failure and PASS broken-build control
-for each real negative control; unrelated read errors still invalidate it.
+The native unrelated-buffer transfer is the deliberate negative control: it must detach its buffer and invalidate
+the probe while clean polls and clones pass. The browser rerun must confirm the same distinction on Chromium 141;
+Node success alone cannot establish it. Retain both exact broken-zone controls and `--drop-ack dispatch` in the
+rerun: only their selected pending acknowledgement may fail, with **PASS broken-build control** for each real
+broken build. Their earlier successful results and historical findings are preserved in the report.

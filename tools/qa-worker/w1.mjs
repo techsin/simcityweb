@@ -1,13 +1,17 @@
 import { assert } from './harness.mjs';
 
-/** Same optimized typed-array loop as tests/perf/protectorChild.ts. Installed before application code. */
+export const PROTECTOR_V8_FLAGS = ['--allow-natives-syntax', '--no-maglev', '--no-optimize-on-next-call-optimizes-to-maglev'];
+
+/** TurboFan typed-array dependency probe. Installed before application code; status bits are diagnostic only. */
 export function installProtector() {
+  if (typeof globalThis.__qaProtector === 'function') return;
   try {
     const a = new Float32Array(64);
     const loop = new Function('a', 'let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s;');
     const prepare = new Function('f', '%PrepareFunctionForOptimization(f);');
     const optimize = new Function('f', 'a', '%OptimizeFunctionOnNextCall(f); f(a);');
     const status = new Function('f', 'return %GetOptimizationStatus(f);');
+    const turbofan = new Function('f', 'return %ActiveTierIsTurbofan(f);');
     prepare(loop);
     // Chromium's cold worker contexts may need more feedback than the child-process test's two calls. Do this
     // synchronously before imports: waiting until application code runs would establish a possibly invalid baseline.
@@ -17,15 +21,15 @@ export function installProtector() {
       for (let i = 0; i < calls; i++) loop(a);
       optimize(loop, a);
       const s = status(loop); attempts.push(s);
-      if (s & 16) { initial = s; break; }
+      if (turbofan(loop)) { initial = s; break; }
     }
-    if (initial === undefined) throw new Error(`typed-array probe did not optimize after warm-up (V8 statuses: ${attempts.join(', ')}); require Chromium --js-flags=--allow-natives-syntax with optimizing compilers enabled`);
+    if (initial === undefined) throw new Error(`typed-array probe did not reach TurboFan after warm-up (V8 statuses: ${attempts.join(', ')}); check recorded v8Flags and enable TurboFan`);
     let intact = true;
     globalThis.__qaProtector = () => {
       loop(a);
-      const current = status(loop);
-      intact = intact && current === initial;
-      return { intact, initial, status: current };
+      const current = status(loop), active = turbofan(loop);
+      intact = intact && active;
+      return { intact, turbofan: active, initial, status: current };
     };
   } catch (e) { globalThis.__qaProtector = () => ({ intact: false, error: String(e) }); }
 }
@@ -60,7 +64,7 @@ export async function watchProtectors(page) {
         const identity = await send(sessionId, 'Runtime.evaluate', { expression: 'self.name', returnByValue: true });
         assert(!identity.exceptionDetails && typeof identity.result?.value === 'string', `worker identity unavailable: ${JSON.stringify(identity)}`);
         // The LOD pool is an independent rendering pipeline. Its workers transfer geometry by design; requiring
-        // their probe to optimize or stay intact would fail the sim gate even for LocalSimHost.
+        // their probe to stay intact would fail the sim gate even for LocalSimHost.
         if (identity.result.value !== 'sim') return;
         const r = await send(sessionId, 'Runtime.evaluate', {
           expression: `(${installProtector.toString()})(); ({name: self.name, probe: self.__qaProtector()})`, returnByValue: true,
@@ -90,6 +94,11 @@ export async function watchProtectors(page) {
         assert(!r.exceptionDetails && r.result?.value?.intact === true, `sim worker protector invalidated: ${JSON.stringify(r)}`);
       }
       return `main intact${sims.length ? '; sim worker intact' : '; no separate sim isolate for this host'}`;
+    },
+    async beforeReload(requireWorker) {
+      // Navigation replaces the probe's global. Retain the old isolate's failure without aborting UI save checks.
+      try { await this.check(requireWorker); }
+      catch (e) { failures.push(`before reload: ${e.message}`); }
     },
     async dispose() {
       await Promise.all([...jobs]);

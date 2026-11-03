@@ -284,6 +284,7 @@ export async function runChecks(page, options, report, protectors, signal) {
       window.__qaWorker.dispose();
     });
     await d.archive();
+    if (protectors) await protectors.beforeReload(options.host === 'worker');
     await page.reload({ waitUntil: 'load', timeout: options.bootTimeout });
     await page.waitForFunction(() => window.__ready === true, null, { timeout: options.bootTimeout });
     await page.evaluate(() => { window.__ready = false; });

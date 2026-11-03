@@ -1,5 +1,115 @@
 # T028r: worker acceptance harness review and loopback enablement
 
+## Review round 3 — f22933f
+
+The lead reran the round-2 harness on **Chromium 141 / RTX 5070 Ti**. Read the supplied logs in
+`C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/t028/`
+and its `x59/` subdirectory. `x59` is the lead's temporary merge with `local/T059-s0-lod-transfer`, which changes
+the main LOD post to clone-only. These are results for **f22933f**, before the fix below; no browser was launched here.
+
+| Supplied run | PASS / FAIL / SKIPPED | Remaining failure |
+| --- | --- | --- |
+| dev loopback | 50 / 3 / 3 | Main protector initialization at boot, end and after freeze. |
+| dev local | 47 / 0 / 9 | None; optional protector/verify gates were disabled. |
+| dev local --w1 | 48 / 3 / 5 | Same three main protector initialization failures. |
+| T059 merge loopback | 50 / 3 / 3 | Same three failures despite clone-only LOD posts. |
+| T059 merge local --w1 | 48 / 3 / 5 | Same three failures. |
+
+The isolated freeze passed **8 / 0 / 48**: **15007 ms**, **0** frozen frames, **45.2 ms** visible resume. Both real
+broken-ack controls passed their control verdict and exited **1**, **9 / 1 / 47**, with only pending zone seq **4**
+(loopback) / **5** (local) failing. `--drop-ack dispatch` retained pending dispatch seq **13**; its dispatch check
+and aggregate ack check failed for that same ticket, alongside the three known protector initialization failures
+(**46 / 5 / 5**). Worker mode exits **3**, **55 skips**, because T034 is absent. The earlier Onboarding, Query/InfoPanel, dispatch input, lifecycle
+and negative-control harness fixes now pass their relevant gates. No new host/packet/query/ack defect is demonstrated.
+
+### Finding and fix
+
+**High / harness, reviewed f22933f `tools/qa-worker/w1.mjs:17-28`:** the bit-16 initialization test rejected
+Chromium's **41, 41, 41, 41** statuses even though native syntax was working. Optimization-status bit assignments
+vary by V8 version; the numeric value alone does not establish the active tier. Accepting another bit or relaxing
+status equality would not prove that the typed-array loop retained the detachment dependency the check needs.
+
+The probe now establishes TurboFan synchronously before application imports using
+`%PrepareFunctionForOptimization` and `%OptimizeFunctionOnNextCall`, and checks the actual active tier with
+`%ActiveTierIsTurbofan`. `%GetOptimizationStatus` remains diagnostic only. The sampled typed array stays attached;
+a transfer of a different buffer must invalidate its isolate-wide dependency and stop the probe remaining in
+TurboFan. Failure is sticky, including across an attempted reinstall. Missing native syntax, unsupported intrinsics
+and failure to establish the required tier fail closed with their actual diagnostic.
+
+**High / harness, reviewed f22933f `checks.mjs:278-287`, fixed `w1.mjs:98`:** reload replaces the probe's global.
+A retained renderer isolate could then compile a new loop with explicit detached-buffer checks after an earlier
+invalidation, hiding it. The save/reload path now checkpoints main and sim before navigation and retains any failure
+for the later protector gates, while allowing the save/Continue UI checks to finish. Browser check names/counts are unchanged.
+
+The V8 primary sources expose the explicit tier predicate in
+[runtime-test.cc](https://raw.githubusercontent.com/v8/v8/main/src/runtime/runtime-test.cc) and define the current
+status bits in [runtime.h](https://raw.githubusercontent.com/v8/v8/main/src/runtime/runtime.h). These are current
+upstream sources, not a pinned Chromium 141 bitfield claim; the probe therefore uses the predicate directly.
+
+`PROTECTOR_V8_FLAGS` centralizes these process-wide flags in `w1.mjs`:
+
+```text
+--allow-natives-syntax --no-maglev --no-optimize-on-next-call-optimizes-to-maglev
+```
+
+`run.mjs` supplies them to Chromium as the single argument
+`--js-flags=--allow-natives-syntax --no-maglev --no-optimize-on-next-call-optimizes-to-maglev` and records the flags
+in JSON `details.v8Flags`. The flags and tier assertion apply to main and the dedicated simulation worker named
+`sim`. Independent LOD workers remain outside the sim-isolate gate and are resumed normally. The exact
+[V8 14.1 flag definitions](https://raw.githubusercontent.com/v8/v8/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/flags/flag-definitions.h)
+expose these tier controls. No application or performance-harness code changed; these flags apply to the acceptance harness.
+
+### Files, commands and validation
+
+| File | Change this round |
+| --- | --- |
+| `tools/qa-worker/w1.mjs` | Central V8 flags; explicit TurboFan baseline and active-tier check; numeric status diagnostics; sticky failed baseline. |
+| `tools/qa-worker/run.mjs` | Use the shared Chromium V8 flags and record them in report details. |
+| `tools/qa-worker/checks.mjs` | Checkpoint the old isolate before reload without masking or aborting the save/Continue checks. |
+| `tools/qa-worker/protector-selftest.mjs` | Repeated clean and clone success; unrelated-buffer transfer detaches and fails persistently; reinstall cannot reset failure; unsupported native syntax fails closed. |
+| `tools/qa-worker/selftest.mjs` | Simulated native-tier regressions for status 41, status drift, missing TurboFan, sticky failure and reload retention. |
+| `tools/qa-worker/README.md`, this report | Exact flags/commands, supplied GPU results, classification and remaining browser controls. |
+
+Run from this worktree, one process at a time:
+
+```powershell
+$root = 'C:/Users/techsin/Desktop/projects/simcityweb-T028'
+node "$root/tools/qa-worker/selftest.mjs"
+node --allow-natives-syntax --no-maglev --no-optimize-on-next-call-optimizes-to-maglev "$root/tools/qa-worker/protector-selftest.mjs"
+node --no-maglev --no-optimize-on-next-call-optimizes-to-maglev "$root/tools/qa-worker/protector-selftest.mjs"
+```
+
+**43 Node selftests passed, 0 failed.** New test names:
+
+- protector probe: active TurboFan passes with status 41; status drift alone cannot fail it
+- protector probe: numeric status cannot substitute for an active TurboFan dependency
+- protector gate: reload cannot erase an earlier isolate invalidation
+
+Both native commands above passed on **Node 22.12.0**. Repeated clean/clone checks retained TurboFan (**status 81**);
+the unrelated buffer detached (**byteLength 0**) and the dependency deoptimized (**status 129**, TurboFan false),
+with failure preserved through repeated checks and reinstallation. Omitting native syntax failed closed with
+SyntaxError. These Node results do not establish the new Chromium tier path.
+Syntax checks of `run.mjs` and `checks.mjs` passed. `git diff --check` and UTF-8-without-BOM checks passed.
+No browser, production build, Vitest, bench, bot, commit, push, merge or DONE marker is part of this review.
+**Infra/outside-owned source hunks: none. Cloud-held file changes or new requests: none.** The existing J0 request
+is addressed by the lead's separate T059 branch; it is not implemented in this worktree. No balance/RNG/simulation
+changes; the unchanged optional seed-7 bot expectation remains **[61124, 93804, 37971] = 192899**, unrerun.
+
+### Browser controls left for the lead
+
+Use the same [README commands](../../../tools/qa-worker/README.md) against each build prepared by the lead:
+
+- [ ] Clean T059 merge: full loopback and local `--w1` keep main intact at boot, end and after freeze; all other applicable checks pass. Repeat the >=15000 ms freeze gate with <=1000 ms visible resume, 0 frozen frames and 0 overlays/errors.
+- [ ] dev with main LOD transfers: after LOD activity, main protector fails. This is the expected render-side J0 failure, distinct from unavailable/unsupported-probe initialization.
+- [ ] Deliberate transfer control: a transfer of an unrelated main-thread buffer detaches it and makes the probe fail persistently; clean polls and clones pass. The native selftest exercises this without a browser; Chromium behavior remains to be confirmed by the two builds.
+- [ ] Both real broken-zone builds still exit 1 with **PASS broken-build control**, exactly their pending-zone acknowledgement failure, and no unrelated failure on the clone-only build.
+- [ ] `--drop-ack dispatch` still fails only its transported dispatch acknowledgement on the clone-only build; worker preflight remains exit 3 until T034. When T034 lands, require the same intact baseline in exactly one dedicated `sim` worker.
+
+Plan versus code: the acceptance check still measures loss of an optimized typed-array loop's detachment
+dependency; it now requires an explicit TurboFan tier instead of decoding a version-dependent bitfield. The forced
+tier is harness-only, and the browser's native intrinsic behavior and dev/T059 contrast remain unverified here.
+The prior report below is preserved as historical evidence.
+
 ## Review round 1 — 8ef8f7c
 
 Read all eight `.log`/`.json` pairs in

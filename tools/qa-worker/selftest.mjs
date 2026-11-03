@@ -3,13 +3,14 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
+import { runInNewContext } from 'node:vm';
 import { parseArgs, waitForAcks, poll, selectedChecks, CHECKS, brokenBuildVerdict, withCleanup, Report, validateSession } from './harness.mjs';
 import { installProbe, savedMarkers } from './page.mjs';
 import { breakAckPlugin } from './build.mjs';
 import { freeze, hideForFreeze, resumeDelay, restoreVisibility } from './freeze.mjs';
 import { owningLifecycleSession } from './lifecycle.mjs';
 import { Driver, toolSelected, dispatchState } from './driver.mjs';
-import { watchProtectors } from './w1.mjs';
+import { installProtector, watchProtectors } from './w1.mjs';
 
 const rows = (extra = {}) => [{ seq: 1, status: 'resolved', result: { ok: true }, ...extra }];
 afterEach(() => { globalThis.window?.__qaWorker?.dispose(); delete globalThis.window; delete globalThis.document; });
@@ -456,6 +457,38 @@ test('Dispatch input waits for packet watch data and the initial tool camera fit
   assert.equal(dispatchState({ incident: 1, station: 7 }).ready, false);
 });
 
+function protectorRuntime(canOptimize) {
+  const state = { active: false, status: 41 };
+  const context = { __native: {
+    PrepareFunctionForOptimization() {},
+    OptimizeFunctionOnNextCall() { state.active = canOptimize; },
+    GetOptimizationStatus() { return state.status; },
+    ActiveTierIsTurbofan() { return state.active; },
+  } };
+  // Simulate V8 intrinsics without a particular engine's numeric status layout or native-syntax flag.
+  const source = `(${installProtector.toString().replaceAll('%', '__native.')})();`;
+  runInNewContext(source, context);
+  return { context, state, reinstall: () => runInNewContext(source, context) };
+}
+
+test('protector probe: active TurboFan passes with status 41; status drift alone cannot fail it', () => {
+  const { context, state, reinstall } = protectorRuntime(true), probe = context.__qaProtector;
+  assert.equal(probe().intact, true);
+  state.status = 81;
+  assert.equal(probe().intact, true);
+  state.active = false;
+  assert.equal(probe().intact, false);
+  state.active = true; reinstall();
+  assert.equal(context.__qaProtector, probe);
+  assert.equal(probe().intact, false, 'tier recovery or reinstallation must not erase an invalidation');
+});
+
+test('protector probe: numeric status cannot substitute for an active TurboFan dependency', () => {
+  const { context } = protectorRuntime(false), result = context.__qaProtector();
+  assert.equal(result.intact, false);
+  assert.match(result.error, /did not reach TurboFan.*41, 41, 41, 41/);
+});
+
 function protectorPage() {
   const cdp = new EventEmitter(), sent = [], names = new Map(), probes = new Map();
   let main = { intact: true };
@@ -506,6 +539,17 @@ test('protector gate: the sim worker is probed before startup and initialization
     await assert.rejects(badGate.check(true), /worker protector could not initialize/);
     assert(bad.sent.some((s) => s.method === 'Runtime.runIfWaitingForDebugger'));
   } finally { await badGate.dispose(); }
+});
+
+test('protector gate: reload cannot erase an earlier isolate invalidation', async () => {
+  const f = protectorPage(), gate = await watchProtectors(f.page);
+  try {
+    await gate.beforeReload(false);
+    f.setMain({ intact: false, turbofan: false, status: 129 });
+    await gate.beforeReload(false);
+    f.setMain({ intact: true, turbofan: true, status: 41 });
+    await assert.rejects(gate.check(false), /before reload: main protector unavailable\/invalidated/);
+  } finally { await gate.dispose(); }
 });
 
 test('freeze adapter: disable focus emulation on Playwright owning session, failing closed on API or version drift', async () => {

@@ -5,7 +5,7 @@ import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assert, deadline } from './harness.mjs';
 import { BROWSER_CHECKS, runChecks } from './checks.mjs';
-import { watchProtectors } from './w1.mjs';
+import { PROTECTOR_V8_FLAGS, watchProtectors } from './w1.mjs';
 import { breakAckPlugin, ownTemp, removeTemp, sweepTemps } from './build.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -67,9 +67,10 @@ export async function run(options, report, signal) {
     });
     await report.check('Chromium', async () => {
       const { chromium } = await import('playwright');
+      report.details.v8Flags = [...PROTECTOR_V8_FLAGS];
       browser = await chromium.launch({ headless: !options.headed, executablePath: options.executable,
         handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
-        args: [...(options.swiftshader ? SWIFTSHADER : GPU), '--js-flags=--allow-natives-syntax'] });
+        args: [...(options.swiftshader ? SWIFTSHADER : GPU), `--js-flags=${PROTECTOR_V8_FLAGS.join(' ')}`] });
       assert(!signal?.aborted, 'run interrupted during browser launch');
       const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
       page = await context.newPage();
