@@ -1,4 +1,46 @@
-# T058: FH-21 follow-up fixes
+# T058 report: FH-21 follow-up fixes (desktop, real GPU)
+
+**Verdict: done.** The five round-1 fixes and the round-2 Notifications change pass on the real GPU. All six FH-21
+acceptance lines pass, and so does the click check that round 1 missed. No sim, worker or infra file is touched.
+
+Branch `local/T058-fh21-fixes`:
+- `aff7af2` the round-1 fixes: startup excluded from the fps sample, Restore keeps the overlay, variant and hour, the
+  recovery dialog left out of the load time, the detected tier labelled Recommended;
+- `4c00713` dev `683d02b` merged in (clean);
+- `cec3eab` round 2: a question toast keeps its buttons in place when other toasts arrive (NOTE-048 gives this
+  Notifications change to T058); `ae36c3c` its report.
+
+## Gates
+
+| Gate | Result |
+|---|---|
+| tsc | clean |
+| Full vitest with the fixtures (`ae36c3c`) | **223 files passed, 2 skipped; 2,217 tests passed, 11 skipped; 0 failing** |
+| 128×15 s7 bot with the action log | **identical to dev:** residents [ 61124, 93804, 37971 ] = 192,899 |
+
+## Real-GPU recheck, round 3 (RTX 5070 Ti, driver 610.47, ANGLE D3D11, Chromium 141)
+
+Each try used a fresh profile, the 653k city at High and a 20× CPU throttle. Once the question was up, the QA made
+one real mouse click, with no retry, and toasts arrived while the button was held down.
+
+| Check | Result | Measured |
+|---|---|---|
+| Keep, with toasts arriving during the press | **PASS, 8 of 8** | Toasts: the click's own "Now playing" (round 1's miss), a re-posted news toast, and all of those together. The first click answered Keep every time. The buttons moved 0.00 px across all 28 toast arrivals; the question stayed first in the stack, and new toasts went in below it. |
+| Switch, the same | **PASS, 3 of 3** | The first click switched the city, the view and both settings stores to Medium; 0.00 px. |
+| FEEL-02a's toast budget with the question up | **PASS** | 11 news items over 26 s were each shown or dropped as the budget allows: a 4 s gap, 8 a minute, bad news always shown. In 349 samples no toast overlapped Keep or Switch. |
+| Acceptance 3: no prompt on the 653k city when healthy | **PASS** (no prompt) | 5 runs of 30 s. Another agent loaded the GPU, so the city ran at 27-43 fps here; the round-1 tree did the same under that load (30.6-41.9 fps). Round 2 measured 59.92 fps on a free GPU. |
+| Acceptance 4: exactly one prompt under 20×, Keep remembered | **PASS** | One prompt 11.2 s into the slowdown; after a reload, 35 s at 2.3 fps without a prompt. |
+| Console and page errors | **PASS** | none in 13 sessions plus the controls. |
+
+Round 2 (on `aff7af2`) passed all six acceptance lines and the five fixes; its table follows below. QA notes are in
+the scratchpad `qa/FH21/qa.md` (rounds 1-3), with data and screenshots.
+
+**Observed difference, accepted by the lead (NOTE-048):** the prompt comes about 11.5 s after a mid-session
+slowdown (11.2 s in round 3), not the item's "about 20 s". The median of the 20 s window flips at half slow samples.
+
+The lane's own notes follow.
+
+## The lane's notes (rounds 1-2)
 
 Branch `local/T058-fh21-fixes`, originally based on `821a8d6`. The worker committed the five first-round fixes as
 `aff7af2` and cleanly merged dev `683d02b`, including T036 step 3 / FEEL-02a's toast budget. Round 2's Notifications
