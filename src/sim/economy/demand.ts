@@ -417,11 +417,13 @@ export function demandSystem(rt: EconRuntime): SimSystem {
     // positive demand of its DevTypes (an industrial target the city has no land for no longer starves the offices)
     for (let d = 0; d < DEV_TYPE_COUNT; d++) eff[d] = softmin(raw[d], cap[d]);
     const lf = smoothstep(LABOUR_POP0, LABOUR_POP1, P);
+    const blockedDirty = !hasDirtyRoom && !dirtyCanRedevelop;
+    const excludedI = blockedDirty ? Math.max(0, eff[DevType.ID] - cur[DevType.ID]) : 0;
     let jobsNow = t.civicJobCap, capC = 0, capI = 0, exC = 0, exI = 0;
     for (let d = DevType.CS1; d <= DevType.IHT; d++) {
       jobsNow += t.jobCapAll[d];
       // Refused factories cannot reserve workers without a buildable lot; occupied growables can still redevelop.
-      const ex = d === DevType.ID && !hasDirtyRoom && !dirtyCanRedevelop ? 0 : Math.max(0, eff[d] - cur[d]);
+      const ex = d === DevType.ID && blockedDirty ? 0 : Math.max(0, eff[d] - cur[d]);
       if (d <= DevType.CO3) { capC += t.jobCapAll[d]; exC += ex; } else { capI += t.jobCapAll[d]; exI += ex; }
     }
     const staffable = (W * (1 - LABOUR_UNEMP0)) / (1 - LABOUR_VAC0);
@@ -430,14 +432,16 @@ export function demandSystem(rt: EconRuntime): SimSystem {
     if (exC < hC) { hI += hC - exC; hC = exC; } else if (exI < hI) { hC += hI - exI; hI = exI; }
     const lkC = lf > 0 && exC > hC ? 1 - lf + (lf * hC) / exC : 1;
     const lkI = lf > 0 && exI > hI ? 1 - lf + (lf * hI) / exI : 1;
-    const lkAll = exC + exI > 0 ? (exC * lkC + exI * lkI) / (exC + exI) : 1;
+    const exAll = exC + exI + excludedI;
+    const lkAll = exAll > 0 ? (exC * lkC + exI * lkI + excludedI * (1 - lf)) / exAll : 1;
     data.labour = { staffable: Math.round(staffable), jobs: Math.round(jobsNow), headroom: Math.round(staffable - jobsNow), scale: Math.round(lkAll * 1000) / 1000 };
     // ---- absolute & normalised demand
     for (let d = 0; d < DEV_TYPE_COUNT; d++) {
       const fam = devFamily(d);
       const e = eff[d];
       let abs = e - cur[d];
-      if (abs > 0 && d >= DevType.CS1) abs *= d <= DevType.CO3 ? lkC : lkI;
+      // Excluded factories get only the small-town allowance, never an unreserved share of the worker budget.
+      if (abs > 0 && d >= DevType.CS1) abs *= d <= DevType.CO3 ? lkC : d === DevType.ID && blockedDirty ? 1 - lf : lkI;
       data.rawTarget[d] = Math.round(raw[d]);
       data.target[d] = Math.round(e);
       data.capBinding[d] = raw[d] > CAP_BINDING * cap[d] ? 1 : 0;

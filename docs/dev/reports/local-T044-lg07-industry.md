@@ -1,3 +1,129 @@
+**T044 / LG-07 — round 4: labour conservation bug fixed**
+
+Starting commit `be057d9bb9b2a84e1f57b0b61b8679da90b45b91`. Round-4 changes are **uncommitted**. This is case **(a), a bug**, specifically the blocked I-D output/reservation mismatch. I-M and I-HT receiving demand already passed through the headroom allocation. No test metric or bound was loosened, and `tests/sim/balanceEconomy.test.ts` is unchanged.
+
+**Cause and correction**
+
+The retooling code excluded positive I-D expansion from `exI` when no IndMed frontage or occupied district could accept it. The final loop nevertheless emitted that excluded request multiplied by `lkI`, which was calculated without the request. At full labour fade, the result was the allocated C/I budget **plus unbudgeted positive I-D demand**. Existing dirty jobs and capacity were never removed. Negative commercial demand in these fixtures is unrelated to retooling; subtracting it would hide the leak rather than measure a dirty-to-clean job transfer.
+
+`demand.ts` now uses the same `blockedDirty` condition for reservation and output. A positive excluded I-D request receives only the existing small-town allowance `1 − lf`; at full fade it requests zero new workers. Commerce and eligible industry keep their original `lkC`/`lkI`. Negative demand and occupied IndMed redevelopment are preserved. The diagnostic `labour.scale` now includes excluded positive requests in its denominator, and their actual faded output in its numerator. This also fixes the unchanged first test's `<0.2` scale assertion.
+
+The original fade remains: `lf=0` below 8,000 residents and `lf=1` from 40,000. No small-town/day-zero demand change, RNG draw, retooling-ratio/ramp change, residential compensation, cost weakening or bot strategy change was added.
+
+**Exact failing fixtures, before and after**
+
+These reproduce the unchanged test's synthetic totals and **40 daily updates**, including its empty-city demand EMA history. C/I DevTypes are shown; residential demand has resident units and does not enter this worker budget. `target` is the stored rounded, soft-capped target. Targets, `jobCapAll` and retooling additions are identical before/after. Values below are rounded for display; scratch JSON retains full precision.
+
+Both fixtures have 100,000 residents, EQ 100 and **59,277.777778 staffable jobs**. There is no IndMed or redevelopment opportunity.
+
+| Fixture | Existing C+I capacity | Headroom bound | Positive C+I before | Positive C+I after | Reported scale before → after |
+|---|---:|---:|---:|---:|---:|
+|More jobs than workforce|65,000|400 minimum|1,164.598714|400.007010|0.345 → 0.120|
+|Workers to spare|50,000|9,277.777778|15,722.665271|9,277.698366|0.864 → 0.511|
+
+The unchanged assertions remain **≤401** and **≤9,279.777778**. After 360 days the corrected sums converge to **400** and **9,277.777778**. Day-40 I-D retains **0.007723123** of the empty-city EMA history; its new instantaneous expansion request is zero. The fix keeps the existing EMA rather than resetting saved demand.
+
+Overstaffed fixture, C=40,000 / I=25,000:
+
+|DevType|jobCapAll|target|demandAbs before|demandAbs after|Current retooled addition to raw target|
+|---|---:|---:|---:|---:|---:|
+|CS1|8,000|5,305|−2,695.463075|−2,695.463075|0|
+|CS2|8,000|4,688|−3,311.826365|−3,311.826365|0|
+|CS3|4,000|1,699|−2,301.381610|−2,301.381610|0|
+|CO2|14,000|8,573|−5,426.569313|−5,426.569313|0|
+|CO3|6,000|4,945|−1,055.332982|−1,055.332982|0|
+|IA|1,250|738|−511.748387|−511.748387|0|
+|I-D|8,750|10,930|764.599427|0.007723|0|
+|I-M|11,250|11,782|182.690780|182.690780|193.112161|
+|I-HT|3,750|4,377|217.308508|217.308508|96.556081|
+
+Spare-workers fixture, C=40,000 / I=10,000:
+
+|DevType|jobCapAll|target|demandAbs before|demandAbs after|Current retooled addition to raw target|
+|---|---:|---:|---:|---:|---:|
+|CS1|8,000|5,305|−2,695.463075|−2,695.463075|0|
+|CS2|8,000|4,688|−3,311.826365|−3,311.826365|0|
+|CS3|4,000|1,699|−2,301.381610|−2,301.381610|0|
+|CO2|14,000|8,573|−5,426.569313|−5,426.569313|0|
+|CO3|6,000|4,945|−1,055.332982|−1,055.332982|0|
+|IA|500|738|206.649481|206.649481|0|
+|I-D|3,500|10,930|6,444.974629|0.007723|0|
+|I-M|4,500|11,989|6,473.429005|6,473.429005|484.778828|
+|I-HT|1,500|4,512|2,597.612157|2,597.612157|242.389414|
+
+What retooling adds, rather than subtracting existing jobs:
+
+- Overstaffed: refused dirty target **3,476.018900**; day-40 converted raw additions **193.112161 I-M / 96.556081 I-HT**. The capped I-M/I-HT targets are **11,782 / 4,377**, versus **11,641 / 4,286** with the ramp disabled in scratch.
+- Spare-workers: refused **8,726.018900**; additions **484.778828 / 242.389414**. Capped targets **11,989 / 4,512**, versus **11,641 / 4,286** without conversion.
+- In both, I-D's raw target stays **12,226**, capped target **10,930**, and existing capacity stays **8,750 / 3,500** respectively. No donor jobs/capacity are subtracted. Suppressing the blocked *expansion request* is appropriate; crediting an imaginary job removal is not.
+- Disabling only conversion in scratch still gives old positive sums **1,340.083621 / 16,058.845625**, above the same headroom. After the fix they are **400.007010 / 9,277.698366**. The reservation/output mismatch exists without the receiving additions.
+- At EQ **60**, I-HT conversion is zero, but the old spare-worker positive sum is **16,003.243470**; corrected **6,363.597833 ≤9,277.777778**. A new below-70 case checks the original positive-demand bound.
+- Restoring road-adjacent IndMed gives **9,277.698366 before and after**, with positive I-D demand **3,917.686524**. This is selective blocking, not a blanket suppression of dirty industry.
+
+The before/after verifier confirms all nine C/I targets, capacities and conversion additions match exactly, and **every non-I-D demandAbs matches exactly**, for both capacity fixtures at days 40 and 360, their no-conversion controls, the EQ-60 control and the open-land control.
+
+**Round-4 changes per file**
+
+- `src/sim/economy/demand.ts`: shared blocked-dirty predicate, consistent faded output, and aggregate `labour.scale` accounting. Allocation of eligible demand, raw/capped targets, ramp and receiving-sector modifiers are unchanged.
+- New `tests/sim/industryLabour.test.ts`: eight cases for aggregate positive and net demand through the 720-day ramp/unwind; zero/partial labour fade; EQ below 70; policy conversion with available dirty land; occupied-lot redevelopment; and preservation of negative demand. Fixed mature totals are initialized before asserting the strict headroom invariant, avoiding inherited empty-city EMA history.
+- `docs/dev/reports/local-T044-lg07-industry.md`: round-4 diagnosis and results prepended; round 3 retained explicitly as historical evidence.
+- **Infra hunks: none. Hunks outside task-owned production files: none. Cloud-held edits: none.** Existing `balanceEconomy.test.ts` and every other existing test remain unchanged. No tuning constant, save field, Worker code or bot strategy changed.
+
+**Tests and bot**
+
+All tests ran individually through the quiet gate with one worker, native config loading and the same scratch config used in round 3. Total: **106 passed, 1 skipped across nine files**. The known ordinary-loader `spawn EPERM` workaround is still used; no repository configuration was changed.
+
+|File / check|Round-4 result|
+|---|---|
+|`tests/sim/balanceEconomy.test.ts`|Before: exact two reported failures, 8 pass. After: **10 pass**, unchanged assertions|
+|`tests/sim/industryLabour.test.ts`|**8 pass**|
+|`tests/sim/industryRetooling.test.ts`|7 pass|
+|`tests/sim/industryCosts.test.ts`|4 pass|
+|`tests/sim/desirability.test.ts`|20 pass|
+|`tests/sim/botCleanIndustry.test.ts`|8 pass|
+|`tests/sim/industryProbe.test.ts`|4 pass|
+|`tests/sim/botLongGame.test.ts`|28 pass|
+|`tests/worker/hygiene.test.ts`|17 pass, 1 skip|
+|`npx tsc --noEmit`|Pass|
+
+The requested default **128×15 s7** run remains **[60,544, 94,177, 37,216] = 191,937**, delta **[0,0,0] / 0 residents** from round 3. All **15 annual observation rows**, RNG states and layout digests also match exactly. Annual JSON SHA256 remains `ac65084277e1d0fd6b33c6812ea31da439abd9de5e82cd7e5f9886353096d422`. This has the layout/observation-hash limits described in the historical report; no canonical full-state hash is claimed.
+
+Reproduction from this worktree (same scratch location as earlier rounds):
+
+```powershell
+$t044Quiet = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs'
+$t044Scratch = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T044/scratch'
+node $t044Quiet npx vitest run tests/sim/balanceEconomy.test.ts --config "$t044Scratch/r2-vitest.config.mjs" --configLoader native --pool threads --maxWorkers=1 --testTimeout=30000
+node $t044Quiet npx vitest run tests/sim/industryLabour.test.ts --config "$t044Scratch/r2-vitest.config.mjs" --configLoader native --pool threads --maxWorkers=1 --testTimeout=30000
+node $t044Quiet npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
+```
+
+The seven other test files used the same per-file command. `tsx` remains absent; the actual equivalent bot invocation was:
+
+```powershell
+node "$t044Scratch/r3-build.mjs" r4
+node $t044Quiet node "$t044Scratch/r3-r4/gates.mjs" --size 128 --years 15 --seed 7 --quiet "$t044Scratch/r4-base-128-s7.json"
+```
+
+Diagnostics: frozen `r4-before/labour.mjs` was bundled before editing production code; `r4-after/labour.mjs` afterward, using `r4-build.mjs` / `r4-labour.ts`. Each ran as `node $t044Quiet node <bundle>/labour.mjs <scratch/output.json>`, producing `r4-labour-before.json` / `r4-labour-after.json`. Scratch-only instrumentation observes the allocation and can disable only ramp additions; it never changes production files. `r4-summary.mjs` checks per-DevType invariants and exact bot-row identity, then writes `r4-summary.json`. Rebuilding a bundle named `before` now would use current source; retain the frozen one or reconstruct the original from `be057d9`.
+
+**Gates left / plan and cloud requests**
+
+NOTE-052 was read from `origin/claude/beautiful-johnson-u2jqoz:docs/dev/queue/NOTE-052-aa-perturbation.md`; it is absent in this worktree. It keeps current base judgment at ±1%, pending the symmetric funds-perturbation protocol, and reserves the chosen envelope for variant margins. I did not tune or reopen the lead's base-row decision.
+
+No 256×60, clean-strategy bot, full balance file, full Vitest suite, GPU timing or browser run was added in this focused round. Their previous measurements are historical below and **not revalidated after this fix**. The conservation bug is resolved; original LG-07 acceptance is not newly signed off. No new cloud request is needed. The existing GUIDE RCI/Stats requests remain unchanged below; no UI code was edited.
+
+Browser checklist, left for the lead:
+
+- [ ] In a mature city with no dirty room, check clean conversion ramp and worker-limited expansion without extra positive I-D expansion; existing dirty jobs stay present.
+- [ ] Restore IndMed frontage or inspect an occupied IndMed district: dirty expansion/redevelopment returns under the shared worker budget.
+- [ ] Check small-town fade, ordinance conversion, negative demand and mid-ramp save/load; compare displayed labour/demand information with the mirrored state.
+- [ ] Complete the original soil, RCI/Stats and y43 campus checks listed in the historical checklist after its GUIDE follow-up.
+
+---
+
+**Historical round-3 report.** The following measurements predate the conservation fix. Only the repeated 128 default result is reconfirmed in round 4; other bot/probe figures are historical, not a fresh acceptance claim. NOTE-052 supersedes the +§1 A/A protocol described below. The base-row decision remains with the lead.
+
 **T044 / LG-07 — round 3: approved changes measured; base gate still fails**
 
 Worktree `simcityweb-T044`, branch `local/T044-lg07-industry`, supplied HEAD `d0d6b456e05a6f97f775e0c69e4c02e66a8f3fec` (dev `683d02b` merged by the lead). Changes remain **uncommitted**. No commit, push, merge, `.done`, baseline rewrite, browser or GPU run was made.
