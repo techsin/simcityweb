@@ -15,7 +15,7 @@ import type { CityState } from '../../sim/CityState';
 import { sharedUniforms } from '../../assets/materials';
 import { getNoiseTexture, makeRampTexture } from './textures';
 import { seasonMix } from '../../assets/builders/nat_season';
-import { OVERLAYS, ZONE_COLORS, computeOverlayValues, overlayDef } from './overlays';
+import { OVERLAYS, ZONE_COLORS, computeOverlayValues, overlayDef, setBuildingOverlay } from './overlays';
 import { markOverlayRendered, overlayReady, overlayStale } from '../../sim/infra/overlays';
 import { TERRAIN_FRAG_COLOR, TERRAIN_FRAG_PARS, TERRAIN_VERT_MAIN, TERRAIN_VERT_PARS } from './terrainShader';
 import { receiverSweepBox, type ShadowReceiver } from './Shadows';
@@ -617,6 +617,7 @@ export class TerrainRenderer {
     const u = this.uniforms;
     u.uZoneMode.value = o === Overlay.Zones ? 1 : 0;
     u.uOverlayOn.value = o !== Overlay.None && o !== Overlay.Zones && overlayReady(this.state, o, variant) ? 1 : 0;
+    setBuildingOverlay(this.state, o, variant, u.uOverlayOn.value > 0);
     const def = OVERLAYS[o] ? overlayDef(o, variant) : OVERLAYS[Overlay.None];
     makeRampTexture(def.ramp, 128, this.rampTex);
     // per-building views draw whole cells; fields blend smoothly
@@ -713,6 +714,7 @@ export class TerrainRenderer {
     const on = this.overlay !== Overlay.None && this.overlay !== Overlay.Zones && overlayReady(this.state, this.overlay, this.overlayVariant);
     if (on && (!this.uniforms.uOverlayOn.value || overlayStale(this.state, this.overlay, this.overlayVariant))) this.overlayDirty = true;
     this.uniforms.uOverlayOn.value = on ? 1 : 0;
+    setBuildingOverlay(this.state, this.overlay, this.overlayVariant, on, this.overlayDirty && on);
     if (this.overlayDirty && on) {
       this.overlayDirty = false;
       computeOverlayValues(this.state, this.overlay, this.overlayData, this.overlayVariant);
@@ -724,7 +726,9 @@ export class TerrainRenderer {
   /** full rebuild (after load / reset) */
   reset(state: CityState) {
     if (state.size !== this.N) throw new Error('TerrainRenderer.reset: size mismatch; recreate WorldView');
+    setBuildingOverlay(this.state, Overlay.None);
     this.state = state;
+    setBuildingOverlay(state, this.overlay, this.overlayVariant);
     this.applyClimate();
     this.computeEdgeStats();
     this.rebuildAll();
@@ -751,6 +755,7 @@ export class TerrainRenderer {
   private heightVersion = 0;
 
   dispose() {
+    setBuildingOverlay(this.state, Overlay.None);
     for (const c of this.chunks) c.mesh.geometry.dispose();
     this.outer?.geometry.dispose();
     this.material.dispose();

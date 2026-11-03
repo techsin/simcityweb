@@ -82,7 +82,9 @@ import { ModelBuilder } from '../../../assets/ModelBuilder';
 import { jitterHex, leafBlob, mark, mixHex, quadOut, shadeHex, tintSince, triOut, type V3 } from '../../../assets/builders/nat_geom';
 import { P, profileSolid, type PP } from '../../../assets/builders/veh_parts';
 import { RNG } from '../../../core/rng';
-import { Surf } from '../../../core/types';
+import { Overlay, Surf } from '../../../core/types';
+import { overlayReadout, resolveVariant } from '../../../sim/infra/overlays';
+import { buildingOverlayOf } from '../../world/overlays';
 import { DynamicBatch, warmTarget, type TileCuller } from '../common/batch';
 import { getCityMaterial, flagsToAlpha, IF_FIRE, IF_SELECTED, IF_WINDOWS_OFF } from '../common/cityMaterial';
 import { shadowCasters } from '../../world/Shadows';
@@ -638,6 +640,53 @@ export function modelIdOf(b: Building): string {
 
 // ------------------------------------------------------------------------------------------------ LOD cross-fade
 
+const noRoadUniforms = {
+  uBuildingNoRoadTex: { value: null as THREE.DataTexture | null },
+  uBuildingNoRoadSize: { value: 1 },
+  uBuildingNoRoadOn: { value: 0 },
+  uBuildingNoRoadColor: { value: new THREE.Color(0xb8262a) },
+};
+
+/** A footprint lookup at the instance origin also covers proxies and both levels of a dissolve. No flag bits. */
+function patchNoRoad(shader: THREE.WebGLProgramParametersWithUniforms): void {
+  Object.assign(shader.uniforms, noRoadUniforms);
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', `#include <common>
+uniform sampler2D uBuildingNoRoadTex;
+uniform float uBuildingNoRoadSize;
+uniform float uBuildingNoRoadOn;
+flat varying float vBuildingNoRoad;`)
+    .replace('#include <project_vertex>', `#include <project_vertex>
+vBuildingNoRoad = 0.0;
+#ifdef USE_BATCHING
+if (uBuildingNoRoadOn > 0.5) {
+  vec2 cell = floor(batchingMatrix[3].xz / ${CELL_SIZE.toFixed(1)});
+  vBuildingNoRoad = texture2D(uBuildingNoRoadTex, (cell + 0.5) / uBuildingNoRoadSize).r;
+}
+#endif`);
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', `#include <common>
+flat varying float vBuildingNoRoad;
+uniform vec3 uBuildingNoRoadColor;`)
+    .replace('#include <normal_fragment_begin>', `
+if (vBuildingNoRoad > 0.5) diffuseColor.rgb = mix(diffuseColor.rgb, uBuildingNoRoadColor, 0.9);
+#include <normal_fragment_begin>`)
+    .replace('#include <lights_physical_fragment>', `
+if (vBuildingNoRoad > 0.5) totalEmissiveRadiance += uBuildingNoRoadColor * 0.25;
+#include <lights_physical_fragment>`);
+}
+
+let _noRoadMat: THREE.MeshStandardMaterial | null = null;
+function getNoRoadMaterial(): THREE.MeshStandardMaterial {
+  if (_noRoadMat) return _noRoadMat;
+  const city = getCityMaterial(), m = city.clone(), compile = city.onBeforeCompile;
+  m.onBeforeCompile = (shader, renderer) => { compile.call(city, shader, renderer); patchNoRoad(shader); };
+  const key = city.customProgramCacheKey();
+  m.customProgramCacheKey = () => key + '|building-noroad-v1';
+  m.name = 'building-noroad';
+  return (_noRoadMat = m);
+}
+
 /** per-instance fade code in the colour alpha, next to the city material's flags (a = 1 - flags / 16, read back by
  *  rounding): a = 1 - (flags + o) / 16 with o = 0.02 + 0.2 t for the level fading IN (drawn where the dither noise
  *  < t) and 0.24 + 0.2 t for the level fading OUT (drawn where the noise >= t); o stays below 0.45 */
@@ -683,7 +732,7 @@ let _fadeMat: THREE.MeshStandardMaterial | null = null;
 /** the city building material + the dithered LOD fade (only the fade layer uses it) */
 function getFadeMaterial(): THREE.MeshStandardMaterial {
   if (_fadeMat) return _fadeMat;
-  const city = getCityMaterial();
+  const city = getNoRoadMaterial();
   const m = city.clone();
   const cityCompile = city.onBeforeCompile;
   m.onBeforeCompile = (shader, renderer) => {
@@ -907,6 +956,14 @@ class LodFadeLayer {
 export class BuildingRenderer {
   readonly batch: DynamicBatch;
   private inst = new Map<number, BInst>();
+  private noRoadData: Uint8Array;
+  private noRoadTex: THREE.DataTexture;
+  private noRoadOn = false;
+  private noRoadVariant = -1;
+  private noRoadRevision = -1;
+  /** Revisions coalesce while this iterator finishes: frequent deliveries cannot starve later buildings. */
+  private noRoadWork: Iterator<BInst> | null = null;
+  private noRoadFirst = false;
   /** live adds / visual changes, keyed by object: building ids can be reused before a frame builds them */
   private buildQueue = new Set<BInst>();
   /** finite, view-prioritized wave: later events cannot keep older off-screen entries waiting forever */
@@ -1125,7 +1182,9 @@ export class BuildingRenderer {
   constructor(private state: CityState, private culler: TileCuller) {
     const pb = lodProxyBuilder();
     this.proxies = pb.available ? pb : null;
-    this.batch = new DynamicBatch(getCityMaterial(), 4096, 1 << 18, 'buildings');
+    this.noRoadData = new Uint8Array(state.cells);
+    this.noRoadTex = this.makeNoRoadTexture();
+    this.batch = new DynamicBatch(getNoRoadMaterial(), 4096, 1 << 18, 'buildings');
     // shadows of bare winter crowns: the view's foliage swap (kit trees' twig crowns, thinned lot crowns) in the depth
     // pass too, so a bare tree casts a twig shadow, not its summer crown's (materials.ts; winter-only uniform branch)
     patchFoliageDepthMaterial(this.batch.mesh.customDepthMaterial as THREE.MeshDepthMaterial);
@@ -1143,10 +1202,88 @@ export class BuildingRenderer {
     this.batch.mesh.add(this.fadeLayer.mesh);
     // the load's warm-up sweep of the batch (DynamicBatch.warmUp) runs the LOD for each of its poses (see warmLod)
     this.batch.warmHook = (view) => this.warmLod(view);
+    for (const mesh of [this.batch.mesh, this.fadeLayer.mesh]) {
+      const draw = mesh.onBeforeRender;
+      mesh.onBeforeRender = (renderer, scene, camera, geometry, material, group) => {
+        this.bindNoRoadOverlay();
+        draw.call(mesh, renderer, scene, camera, geometry, material, group);
+      };
+    }
   }
 
   setState(state: CityState): void {
+    this.noRoadTex.dispose();
     this.state = state;
+    this.noRoadData = new Uint8Array(state.cells);
+    this.noRoadTex = this.makeNoRoadTexture();
+    this.noRoadWork = null;
+    this.noRoadRevision = -1;
+    this.noRoadOn = false;
+    this.syncNoRoadOverlay();
+  }
+
+  private makeNoRoadTexture(): THREE.DataTexture {
+    const tex = new THREE.DataTexture(this.noRoadData, this.state.size, this.state.size, THREE.RedFormat, THREE.UnsignedByteType);
+    tex.minFilter = tex.magFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  /** O(1) per frame; all reads of individual buildings run in build / nextNoRoad's shared geometry budget. */
+  private syncNoRoadOverlay(): void {
+    const view = buildingOverlayOf(this.state);
+    const on = view?.overlay === Overlay.Emergency && view.ready;
+    const variant = resolveVariant(Overlay.Emergency, view?.variant);
+    if (on !== this.noRoadOn || variant !== this.noRoadVariant) {
+      this.noRoadData.fill(0);
+      this.noRoadTex.needsUpdate = true;
+      this.noRoadWork = null;
+      this.noRoadRevision = -1;
+    }
+    this.noRoadOn = on;
+    this.noRoadVariant = variant;
+    if (on && !this.noRoadWork && this.noRoadRevision !== view!.revision) {
+      this.noRoadWork = this.inst.values();
+      this.noRoadRevision = view!.revision;
+    }
+    this.bindNoRoadOverlay();
+  }
+
+  private bindNoRoadOverlay(): void {
+    noRoadUniforms.uBuildingNoRoadTex.value = this.noRoadTex;
+    noRoadUniforms.uBuildingNoRoadSize.value = this.state.size;
+    noRoadUniforms.uBuildingNoRoadOn.value = this.noRoadOn ? 1 : 0;
+    const city = getCityMaterial(), m = getNoRoadMaterial();
+    m.envMapIntensity = city.envMapIntensity;
+    m.roughness = city.roughness;
+    m.metalness = city.metalness;
+  }
+
+  private paintNoRoad(bi: BInst, value: number): void {
+    const v = bi.vis, N = this.state.size;
+    const x0 = Math.max(0, Math.round((v.cx - v.sw / 2) / CELL_SIZE));
+    const x1 = Math.min(N, Math.round((v.cx + v.sw / 2) / CELL_SIZE));
+    const z1 = Math.min(N, Math.round((v.cz + v.sd / 2) / CELL_SIZE));
+    for (let z = Math.max(0, Math.round((v.cz - v.sd / 2) / CELL_SIZE)); z < z1; z++) {
+      this.noRoadData.fill(value, z * N + x0, z * N + x1);
+    }
+    this.noRoadTex.needsUpdate = true;
+  }
+
+  private refreshNoRoad(bi: BInst): void {
+    if (!this.noRoadOn || bi.gone || bi.li < 0) return;
+    const v = bi.vis, x = Math.floor(v.cx / CELL_SIZE), z = Math.floor(v.cz / CELL_SIZE);
+    const own = this.state.building[z * this.state.size + x] === bi.id;
+    const noRoad = own && overlayReadout(this.state, Overlay.Emergency, x, z, this.noRoadVariant)?.reason === 'noRoad';
+    this.paintNoRoad(bi, noRoad ? 255 : 0);
+  }
+
+  private nextNoRoad(): boolean {
+    const next = this.noRoadWork!.next();
+    if (next.done) { this.noRoadWork = null; return false; }
+    this.refreshNoRoad(next.value);
+    return true;
   }
 
   get count(): number {
@@ -1292,6 +1429,7 @@ export class BuildingRenderer {
 
   /** build every pending LOD proxy now and settle every level (captures, benchmarks): no cut catch-up, no fades */
   flushLod(): void {
+    this.syncNoRoadOverlay();
     this.drainBuilds(true);
     for (const g of [...this.lodPending.keys()]) this.proxyOf(g, true);
     for (const bi of this.list) if (bi.lodGeom < 0) { bi.lodGeom = this.proxyOf(bi.geom, true); this.prio(bi); }
@@ -1606,6 +1744,10 @@ export class BuildingRenderer {
   }
 
   clear(): void {
+    this.noRoadData.fill(0);
+    this.noRoadTex.needsUpdate = true;
+    this.noRoadWork = null;
+    this.noRoadRevision = -1;
     for (const bi of this.inst.values()) { if (bi.li >= 0) this.freeInstances(bi); bi.gone = true; }
     this.buildQueue.clear();
     this.buildOrder.length = 0;
@@ -1646,6 +1788,7 @@ export class BuildingRenderer {
   }
 
   private freeInstances(bi: BInst): void {
+    if (this.noRoadOn) this.paintNoRoad(bi, 0);
     if (bi.fade) this.dropFade(bi.fade);
     if (bi.main >= 0) this.batch.remove(bi.main);
     if (bi.site >= 0) this.batch.remove(bi.site);
@@ -1808,13 +1951,18 @@ export class BuildingRenderer {
     order.length = 0;
   }
 
-  /** a frame admits at least one building, then checks the clock between entries; bulk paths explicitly take all */
+  /** Geometry and model-tint entries alternate under one deadline; bulk paths explicitly take all. */
   private drainBuilds(all = false): void {
-    if (!this.buildQueue.size || this.disposed) return;
+    if ((!this.buildQueue.size && !this.noRoadWork) || this.disposed) return;
     const end = performance.now() + BUILD_BUDGET_MS;
     let done = 0;
-    while (this.buildQueue.size) {
+    while (this.buildQueue.size || this.noRoadWork) {
       if (done > 0 && !all && performance.now() >= end) break;
+      if (this.noRoadWork && (this.noRoadFirst || !this.buildQueue.size)) {
+        if (this.nextNoRoad()) done++;
+        this.noRoadFirst = false;
+        continue;
+      }
       if (this.buildAt >= this.buildOrder.length) {
         this.orderBuilds();
         if (done > 0 && !all && performance.now() >= end) break;
@@ -1822,6 +1970,7 @@ export class BuildingRenderer {
       const bi = this.buildOrder[this.buildAt++];
       if (!this.buildQueue.has(bi)) continue; // cancelled, including a removed building whose id was reused
       this.buildNow(bi);
+      this.noRoadFirst = true;
       done++;
     }
     if (!this.buildQueue.size) { this.buildOrder.length = 0; this.buildAt = 0; }
@@ -1907,6 +2056,7 @@ export class BuildingRenderer {
       id: b.id, model: burnt ? 'rubble' : model, variant: b.variant, cx, cz, baseY: b.baseY, yaw, sw: b.w * CELL_SIZE, sd: b.d * CELL_SIZE,
       top: b.baseY + modelTop + rise, bounds, burning, burnt, constructing, abandoned, sy: 1,
     };
+    this.refreshNoRoad(bi);
     this.culler.noteHeight(bi.tile, bi.vis.top);
     const sp = bounds.getBoundingSphere(_sphere);
     bi.radius = kit ? RUB_LOD_R : Math.max(2, sp.radius);
@@ -2607,6 +2757,7 @@ export class BuildingRenderer {
   }
 
   update(dt: number): void {
+    this.syncNoRoadOverlay();
     if (lotTwigs.version !== this.twigVer) {
       // seasons r3: LOW twig strip (a quality switch: levels settled at once, proxies shared by key); the levels the
       // buildings had carry over (keepLod)
@@ -2669,6 +2820,13 @@ export class BuildingRenderer {
     this.proxies?.cancel(this); // (close-out c4: its waiting callbacks held this renderer and the city until answered)
     this.fadeLayer.dispose();
     this.batch.dispose();
+    this.noRoadWork = null;
+    this.noRoadTex.dispose();
+    if (noRoadUniforms.uBuildingNoRoadTex.value === this.noRoadTex) {
+      noRoadUniforms.uBuildingNoRoadTex.value = null;
+      noRoadUniforms.uBuildingNoRoadOn.value = 0;
+    }
+    _noRoadMat?.dispose();
     // (the module-level fade material: the renderer's dispose listener on it kept that renderer and the exited city
     // reachable; it stays cached and compiles again on next use)
     _fadeMat?.dispose();

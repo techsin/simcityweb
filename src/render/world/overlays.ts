@@ -1,6 +1,6 @@
 /**
  * Data-view overlays: per-cell values (0..1 packed into a Uint8 DataTexture, bilinear filtered on the terrain)
- * + a color ramp (RGBA, alpha = coverage) + UI legend, per overlay AND variant. Pure functions, no GPU state.
+ * + a color ramp (RGBA, alpha = coverage) + UI legend, per overlay AND variant. No GPU state.
  * The values come from the simulation's overlayLayer(state, o, variant) (src/sim/infra/overlays.ts), the same layer the
  * query tool's hover readout reads, so what the player sees and what the tip says always agree. (Road-only views —
  * Traffic — also paint each road's value on the land cells around it, since the road meshes hide the road cells: see
@@ -43,6 +43,28 @@ export interface OverlayDef {
 }
 
 type DefCore = Omit<OverlayDef, 'layers'>;
+
+interface BuildingOverlay {
+  overlay: Overlay;
+  variant: number;
+  ready: boolean;
+  revision: number;
+}
+
+/** The terrain owns view selection / readiness; buildings consume it without another game-side subscription. */
+const buildingOverlays = new WeakMap<CityState, BuildingOverlay>();
+export function buildingOverlayOf(state: CityState): Readonly<BuildingOverlay> | undefined {
+  return buildingOverlays.get(state);
+}
+
+export function setBuildingOverlay(state: CityState, overlay: Overlay, variant = -1, ready = false, refresh = false): void {
+  let view = buildingOverlays.get(state);
+  if (!view) buildingOverlays.set(state, (view = { overlay, variant, ready, revision: 0 }));
+  if (view.overlay !== overlay || view.variant !== variant || view.ready !== ready || refresh) view.revision++;
+  view.overlay = overlay;
+  view.variant = variant;
+  view.ready = ready;
+}
 
 const COVERAGE = (title: string, color: string, light: string, labels = ['None', 'Weak', 'Strong'], notes?: string[]): DefCore => ({
   title,
