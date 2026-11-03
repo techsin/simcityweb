@@ -7,7 +7,8 @@
  * arrayBuffer() fallback). The same technique as tests/perf/protectorChild.ts and tools/bench/trafficCore/protector.ts.
  *
  * null unless natives syntax is on (Chromium `--js-flags=--allow-natives-syntax`, `node --allow-natives-syntax`) and the
- * loop optimized. The result is sticky: a later re-optimization cannot hide an earlier detach, so call it often.
+ * loop TurboFan code. The result is sticky: a later re-optimization cannot hide an earlier detach,
+ * so call it often.
  */
 export function makeProtectorProbe(): (() => boolean) | null {
   try {
@@ -16,8 +17,13 @@ export function makeProtectorProbe(): (() => boolean) | null {
     const prep = new Function('f', 'a', '%PrepareFunctionForOptimization(f); f(a); f(a); %OptimizeFunctionOnNextCall(f); f(a);') as (f: unknown, a: unknown) => void;
     const status = new Function('f', 'return %GetOptimizationStatus(f);') as (f: unknown) => number;
     prep(probe, ta);
-    const s0 = status(probe);
-    if (!(s0 & 16)) return null; // an unoptimized loop cannot observe an invalidation
+    // TurboFan code (status bit 64) depends on the protector and deoptimizes on a detach. Node's V8 optimizes this loop
+    // with TurboFan at once; Chromium 153's gives Maglev code (status 41), which checks the length on every access and
+    // does not deoptimize (docs/dev/reports/local-W1.2-worker.md, the fix round), so warm it up until TurboFan takes it
+    let s0 = status(probe);
+    for (let i = 0; i < 1 << 19 && !(s0 & 64); i++) { probe(ta); if ((i & 255) === 0) s0 = status(probe); }
+    s0 = status(probe);
+    if (!(s0 & 64)) return null; // a loop that is not TurboFan code cannot observe an invalidation
     let intact = true;
     return () => { probe(ta); intact = intact && status(probe) === s0; return intact; };
   } catch {

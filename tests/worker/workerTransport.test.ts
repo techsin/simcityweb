@@ -265,22 +265,22 @@ describe('the real worker (node worker_threads)', () => {
   });
 
   it('R11: pings once per visible second, and 10 visible seconds without a packet are a crash', { timeout: 30000 }, async () => {
-    let now = 0, drop = false;
+    let now = 0, drop = false, lastAt = 0;
     const posted: string[] = [];
     const host = await bootNode(initialCity(), { kv: new MemoryKV(), now: () => now, wrap: (port) => ({
       ...port,
       postMessage(m) { posted.push(m.t); port.postMessage(m); },
-      listen(receive, fail, signal) { port.listen((m) => { if (!drop) receive(m); }, fail, signal); },
+      listen(receive, fail, signal) { port.listen((m) => { if (!drop) { lastAt = now; receive(m); } }, fail, signal); },
     }) });
     try {
       const step = (ms: number) => { now += ms; return now; };
       await stepClock(step, () => posted.includes('ping'), 5000);
       drop = true; // the worker goes silent
-      const silentAt = now, read = host.query('verify', {});
+      const read = host.query('verify', {});
       let rejected = false;
       void read.catch(() => { rejected = true; });
       const at = await stepClock(step, () => rejected, 30000);
-      expect(at - silentAt, 'not before 10 visible seconds').toBeGreaterThanOrEqual(10000);
+      expect(at - lastAt, 'not before 10 visible seconds after the last packet').toBeGreaterThanOrEqual(10000);
       await expect(within(read)).rejects.toThrow(/stopped responding/);
     } finally { await host.dispose(); }
   });

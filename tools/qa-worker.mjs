@@ -188,11 +188,6 @@ async function noCrash(page, step) {
 async function setSpeed(page, n) {
   await page.keyboard.press(`Digit${n}`);
 }
-async function click(page, at) {
-  await page.mouse.move(at[0], at[1], { steps: 4 });
-  await sleep(300); // the tool's hover preview
-  await page.mouse.down(); await sleep(120); await page.mouse.up();
-}
 
 /** §5.4: each command through the real tools (synthetic pointer events), checked by its effect in the replica */
 async function tools(page) {
@@ -213,7 +208,15 @@ async function tools(page) {
   await step('a road drag', 'net:2', 'roads', 1, () => drag(page, plan.a, plan.b));
   await step('a zone drag', 'zone:1', 'zoned', 1, () => drag(page, plan.z0, plan.z1));
   await step('a power line drag', 'power', 'power', 1, () => drag(page, [cx - 120, cy - 150], [cx + 120, cy - 150]));
-  await step('a park plopped beside the road', 'plop:park_small', 'parks', 1, () => click(page, [cx - 40, cy - 80]));
+  await step('a park plopped where its preview is ok', 'plop:park_small', 'parks', 1, async () => {
+    // the tool's own preview (PlopTool.res) on hover picks the spot: the plop is checked, not the search
+    for (const [dx, dy] of [[-60, 40], [-120, 60], [-160, 0], [0, 110], [-80, 120], [60, 130], [-200, 80], [120, -110], [-40, -90], [200, 40]]) {
+      await page.mouse.move(cx + dx, cy + dy, { steps: 3 });
+      await sleep(250);
+      if (await page.evaluate(() => window.__metropolis.city.scene.tools.current.res?.ok === true)) { log('plop spot', [dx, dy]); break; }
+    }
+    await page.mouse.down(); await sleep(120); await page.mouse.up();
+  });
   await step('part of the zone dezoned', 'dezone', 'zoned', -1, () => drag(page, plan.z0, [plan.z0[0] + 60, plan.z0[1] + 30]));
   await step('part of the road bulldozed', 'bulldoze', 'roads', -1, () => drag(page, [plan.b[0] - 40, plan.b[1]], plan.b));
   await step('trees brushed', 'trees', 'trees', 1, async () => {
@@ -227,22 +230,49 @@ async function tools(page) {
 /** §5.4 / R4: a held level brush on a slope until it reaches flat ("Nothing to change" acks after applied ones): one
  *  release sound, after the gesture settles, no error sound and no toast */
 async function heldBrush(page, cx, cy) {
-  await selectTool(page, 'terra:level');
   // radius 1 (from 3): four corners, so the hold reaches flat in a few seconds of SwiftShader frames
+  await selectTool(page, 'terra:raise');
   for (let i = 0; i < 4; i++) await page.keyboard.press('BracketLeft');
+  /** a free cell's corners: Σ|h − mean| (level's target is the mean), and what its first application costs: cost rounds
+   *  Σ|Δh| × 5.12, so a gentle slope levels for free, and a stroke with nothing spent ends on the error sound */
+  const cellInfo = (c) => page.evaluate(([x, z]) => {
+    const st = window.__metropolis.city.host.state, N1 = st.size + 1, H = st.heights, i = z * N1 + x;
+    const hs = [H[i], H[i + 1], H[i + N1], H[i + N1 + 1]], mean = (hs[0] + hs[1] + hs[2] + hs[3]) / 4;
+    const dev = hs.reduce((a, h) => a + Math.abs(h - mean), 0);
+    return { dev, firstCost: Math.round(dev * 0.1035 * 256 * 0.02) };
+  }, [c.x, c.z]);
+  // a free cell C (nothing within a cell of it or of its east neighbour) and the screen points of C and of C + (1, 0)
   const spot = await page.evaluate(([x0, y0]) => {
-    const scene = window.__metropolis.city.scene, st = scene.host.state, N = st.size, N1 = N + 1, H = st.heights;
-    const free = (x, z) => { for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const i = (z + dz) * N + x + dx; if (st.building[i] >= 0 || st.network[i] || st.water[i] || st.zone[i]) return false; } return true; };
-    for (let dy = 0; dy <= 200; dy += 8) for (let dx = 0; dx <= 260; dx += 8) {
+    const scene = window.__metropolis.city.scene, st = scene.host.state, N = st.size;
+    const free = (x, z) => { for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 2; dx++) { const i = (z + dz) * N + x + dx; if (st.building[i] >= 0 || st.network[i] || st.water[i] || st.zone[i]) return false; } return true; };
+    const at = new Map();
+    for (let dy = 0; dy <= 220; dy += 4) for (let dx = 0; dx <= 280; dx += 4) {
       const px = x0 + dx, py = y0 - 160 + dy, c = scene.world.pickCell(px, py);
-      if (!c || c.x < 2 || c.z < 2 || c.x > N - 3 || c.z > N - 3 || !free(c.x, c.z)) continue;
-      const i = c.z * N1 + c.x, hs = [H[i], H[i + 1], H[i + N1], H[i + N1 + 1]];
-      const spread = Math.max(...hs) - Math.min(...hs);
-      if (spread > 0.05 && spread < 0.6) return { px, py, cell: c, spread };
+      if (c && !at.has(`${c.x},${c.z}`)) at.set(`${c.x},${c.z}`, [px, py]);
+    }
+    for (const [k, p] of at) {
+      const [x, z] = k.split(',').map(Number), east = at.get(`${x + 1},${z}`);
+      if (east && x > 2 && z > 2 && x < N - 4 && z < N - 3 && free(x, z)) return { cell: { x, z }, px: p[0], py: p[1], east };
     }
     return null;
   }, [cx + 140, cy]);
-  if (!spot) { check('tools: a held level brush reaches flat', false, 'no sloped free cell under the canvas'); return; }
+  if (!spot) { check('tools: a held level brush reaches flat: one release sound, no error, no toast', false, 'no free cell under the canvas'); return; }
+  // tilt C: raise its east neighbour until C's first level application costs money (its two shared corners rise)
+  let tilt = await cellInfo(spot.cell);
+  if (tilt.firstCost < 1) {
+    await page.mouse.move(spot.east[0], spot.east[1], { steps: 4 });
+    await sleep(300);
+    await page.mouse.down();
+    const t0 = Date.now();
+    while (Date.now() - t0 < 30000 && (tilt = await cellInfo(spot.cell)).firstCost < 2) await sleep(150);
+    await page.mouse.up();
+    await waitHost(page, () => (window.__metropolis.city.host.pending?.count ?? 0) === 0, null, 30000).catch(() => undefined);
+    await sleep(1500);
+    tilt = await cellInfo(spot.cell);
+  }
+  spot.tilt = tilt;
+  await page.keyboard.press('Escape');
+  await selectTool(page, 'terra:level');
   await page.mouse.move(spot.px, spot.py, { steps: 4 });
   await sleep(400);
   const tip = await page.evaluate(() => document.querySelector('.cursor-tip')?.textContent ?? null);
@@ -328,8 +358,13 @@ async function main() {
       const ta = new Float32Array(64);
       const probe = new Function('a', 'let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s;');
       new Function('f', 'a', '%PrepareFunctionForOptimization(f); f(a); f(a); %OptimizeFunctionOnNextCall(f); f(a);')(probe, ta);
-      const status = new Function('f', 'return %GetOptimizationStatus(f);'), s0 = status(probe);
-      let intact = !!(s0 & 16);
+      const status = new Function('f', 'return %GetOptimizationStatus(f);');
+      // as src/worker/protectorProbe.ts: only TurboFan code (bit 64) deoptimizes on a detach; warm Maglev code up
+      let s0 = status(probe);
+      for (let i = 0; i < 1 << 19 && !(s0 & 64); i++) { probe(ta); if ((i & 255) === 0) s0 = status(probe); }
+      s0 = status(probe);
+      if (!(s0 & 64)) return; // no probe: reported as null
+      let intact = true;
       window.__qaPageProbe = () => { probe(ta); intact = intact && status(probe) === s0; return intact; };
       setInterval(() => window.__qaPageProbe(), 1000);
     } catch { /* no natives syntax */ }
