@@ -36,6 +36,7 @@ export const NET_TIME: readonly number[] = [
 ];
 /** subway in-vehicle minutes per cell */
 export const SUBWAY_TIME = 0.03;
+export const EXPRESS_SUBWAY_TIME = SUBWAY_TIME * 0.7;
 /** bus in-vehicle time multiplier on (congested) road time; buses stop and share roads */
 export const BUS_TIME_FACTOR = 1.25;
 /** extra minutes when moving between highway and a non-highway road (automatic ramp) */
@@ -58,10 +59,12 @@ export const STOP_WALK_TIME_PER_CELL = 0.5;
 /** average wait (minutes) at stops per transit mode */
 export const WAIT_BUS = 5;
 export const WAIT_SUBWAY = 3.5;
+export const EXPRESS_WAIT_SUBWAY = 2.5;
 export const WAIT_TRAIN = 6;
 /** stop capacity (riders/day) before crowding adds waiting time */
 export const STOP_CAP_BUS = 2500;
 export const STOP_CAP_SUBWAY = 9000;
+export const EXPRESS_STOP_CAP_SUBWAY = STOP_CAP_SUBWAY * 1.5;
 export const STOP_CAP_TRAIN = 14000;
 /** buses are vehicles on the road: PCU added to the road per rider */
 export const BUS_PCU_PER_RIDER = 1 / 12;

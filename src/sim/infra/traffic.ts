@@ -113,10 +113,12 @@ import {
   PR_PRICE_STEP, PR_STOP_RADIUS, GARAGE_GROUP_CELLS, RAMP_ALPHA, RAMP_BY_NET, RAMP_CAP, RAMP_MAX_FACTOR, RAMP_MSA_MIN, RIDERS_PER_BUS,
   STOP_CAP_FERRY, STOP_LOAD_SMOOTH, TRUCK_LOCAL_FACTOR, WAIT_FERRY, PR_GARAGE_BETA, PR_RESERVE_FULL, PR_RESERVE_SMOOTH, PR_RESERVE_SPREAD, PR_STOP_KEEP,
   PR_DOWNTOWN_SHARE, PR_DOWNTOWN_SMOOTH, PR_DOWNTOWN_TIE, PR_OPTIONS, PR_OPTION_MARGIN, PR_OPTION_TAPER, PR_RESERVE_MIN,
+  EXPRESS_SUBWAY_TIME, EXPRESS_WAIT_SUBWAY, EXPRESS_STOP_CAP_SUBWAY,
 } from './params';
 import { schedulerOf, type InfraTask } from './scheduler';
 import { REGION_JOBS_FOR_RESIDENTS } from '../economy/tuning';
 import { carlessShare, workerShare } from '../economy/demographics';
+import { completedProject } from '../economy/projects';
 import { Search, SearchK, Seeds, accumulate, roadSearch, transitSearch, type TransitNet } from './search';
 import { TRAFFIC_OF_STATE, collectStops, isStopMode, type StopList } from './transit';
 import { getDef } from '../catalog';
@@ -384,6 +386,7 @@ export class TrafficSystem implements SimSystem {
   private SB = new Search(); // scratch (inbound / shop / freight)
   private seeds = new Seeds();
   private tnet: TransitNet | null = null;
+  private expressMetro = false;
 
   // per road node
   private nodeTime: Float32Array<ArrayBuffer> = new Float32Array(0);
@@ -2078,6 +2081,7 @@ export class TrafficSystem implements SimSystem {
   private prepTransit(st: CityState): void {
     const g = this.road, rail = this.rail, sub = this.subway;
     const N = st.size;
+    this.expressMetro = completedProject(st, 'expressMetro');
     this.refreshAttach(st);
     const stops = collectStops(st, this.stops);
     this.stops = stops;
@@ -2176,8 +2180,8 @@ export class TrafficSystem implements SimSystem {
       if (this.stRho[s] < 0) this.stRho[s] = rhoOf[this.stDepot[s] >= 0 ? this.stDepot[s] : nD];
       // wait with crowding from the previous cycle (buses: the base wait shrinks / grows with the fleet)
       const prev = this.stLoadPrev.get(this.stKey[s]) ?? 0;
-      const capS = mode === Transit.Bus ? STOP_CAP_BUS : mode === Transit.Subway ? STOP_CAP_SUBWAY : mode === Transit.Ferry ? STOP_CAP_FERRY : STOP_CAP_TRAIN;
-      const base = mode === Transit.Bus ? WAIT_BUS / this.stRho[s] : mode === Transit.Subway ? WAIT_SUBWAY : mode === Transit.Ferry ? WAIT_FERRY : WAIT_TRAIN;
+      const capS = mode === Transit.Bus ? STOP_CAP_BUS : mode === Transit.Subway ? (this.expressMetro ? EXPRESS_STOP_CAP_SUBWAY : STOP_CAP_SUBWAY) : mode === Transit.Ferry ? STOP_CAP_FERRY : STOP_CAP_TRAIN;
+      const base = mode === Transit.Bus ? WAIT_BUS / this.stRho[s] : mode === Transit.Subway ? (this.expressMetro ? EXPRESS_WAIT_SUBWAY : WAIT_SUBWAY) : mode === Transit.Ferry ? WAIT_FERRY : WAIT_TRAIN;
       const r = prev / capS;
       this.stWait[s] = base * Math.min(4, 1 + r * r);
       const rx = Math.max(0, prev - (this.stPrPrev.get(this.stKey[s]) ?? 0)) / capS;
@@ -2247,7 +2251,7 @@ export class TrafficSystem implements SimSystem {
     for (let v = 0; v < nR; v++) busTime[v] = this.nodeTime[v] * BUS_TIME_FACTOR;
     this.tnet = {
       nR, nRail, nSub, nFerry, total, roadAdj: g.rev, busTime, railAdj: rail.adj, subAdj: sub.adj,
-      railTime: NET_TIME[Network.Rail], subTime: SUBWAY_TIME, trStart, trTo: to, trCost: cost,
+      railTime: NET_TIME[Network.Rail], subTime: this.expressMetro ? EXPRESS_SUBWAY_TIME : SUBWAY_TIME, trStart, trTo: to, trCost: cost,
     };
     this.tAcc = growF32(this.tAcc, total);
     // park & ride garages: an attached stop within PR_STOP_RADIUS (+ half the footprint) (WP7-8)
@@ -2356,7 +2360,7 @@ export class TrafficSystem implements SimSystem {
   /** wait (minutes) at stop s without crowding: the mode's wait, buses / the service ratio of the stop's bus pool */
   private baseWait(s: number): number {
     const m = this.stops.mode[s];
-    return m === Transit.Bus ? WAIT_BUS / (this.stRho[s] > 0 ? this.stRho[s] : 1) : m === Transit.Subway ? WAIT_SUBWAY : m === Transit.Ferry ? WAIT_FERRY : WAIT_TRAIN;
+    return m === Transit.Bus ? WAIT_BUS / (this.stRho[s] > 0 ? this.stRho[s] : 1) : m === Transit.Subway ? (this.expressMetro ? EXPRESS_WAIT_SUBWAY : WAIT_SUBWAY) : m === Transit.Ferry ? WAIT_FERRY : WAIT_TRAIN;
   }
 
   /** stops within radius R of (x,z) -> this.nsIdx / this.nsDist (returns count; no allocation) */
