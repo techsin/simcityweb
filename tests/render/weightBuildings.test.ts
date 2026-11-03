@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { registerAllModels } from '../../src/assets/builders';
 import { CELL_SIZE } from '../../src/core/constants';
-import { BuildingRenderer, type BuildingCollapse } from '../../src/render/city/buildings/BuildingRenderer';
+import { BuildingRenderer, type BudgetedWork, type BuildingCollapse } from '../../src/render/city/buildings/BuildingRenderer';
 import { TileCuller } from '../../src/render/city/common/batch';
 import { shadowCasters } from '../../src/render/world/Shadows';
 import { BF, type Building } from '../../src/sim/CityState';
@@ -16,6 +16,9 @@ type Inside = {
   inst: Map<number, BI>;
   collapses: { copy: BuildingCollapse; slots: number[]; age: number }[];
   collapseQueue: BuildingCollapse[];
+  collapseAt: number;
+  collapseWork: BudgetedWork;
+  budgetedWorks: BudgetedWork[];
   build(bi: BI): void;
   buildCollapse(copy: BuildingCollapse): void;
   startFade(bi: BI, from: number, to: number): void;
@@ -166,5 +169,35 @@ describe('detached building collapse', () => {
     expect(br.pendingBuilds).toBe(8);
     for (let i = 0; i < 10; i++) br.update(0);
     expect(br.pendingBuilds).toBe(0); expect(nCollapse).toBe(10); expect(nBuild).toBe(10);
+  });
+
+  it('runs registered collapse work and queued builds under one deadline across alternating frames', () => {
+    const br = town(); br.add(building(), false);
+    const copy = br.captureCollapse(1)!; br.remove(1);
+    const internal = inside(br), work = internal.collapseWork;
+    expect(internal.budgetedWorks).toContain(work);
+    expect(work.pending()).toBe(false);
+    expect(work.step()).toBe(false);
+    for (let i = 0; i < 3; i++) { br.queueCollapse(copy); br.add(building(i + 2)); }
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const trace: string[] = [], build = internal.build.bind(br), collapse = internal.buildCollapse.bind(br);
+    vi.spyOn(internal, 'build').mockImplementation((bi) => { build(bi); trace.push(`build:${bi.id}`); now += 0.75; });
+    vi.spyOn(internal, 'buildCollapse').mockImplementation((c) => { collapse(c); trace.push('collapse'); now += 0.75; });
+    const step = vi.spyOn(work, 'step');
+    br.update(0);
+    expect(trace).toEqual(['build:2', 'collapse', 'build:3']);
+    expect(now).toBe(2.25);
+    expect(step).toHaveBeenCalledTimes(1);
+    expect(br.pendingBuilds).toBe(1);
+    expect(work.pending()).toBe(true);
+    br.update(0);
+    expect(trace.slice(3)).toEqual(['collapse', 'build:4', 'collapse']);
+    expect(now).toBe(4.5);
+    expect(step).toHaveBeenCalledTimes(3);
+    expect(br.pendingBuilds).toBe(0);
+    expect(work.pending()).toBe(false);
+    expect(internal.collapseQueue).toHaveLength(0);
+    expect(internal.collapseAt).toBe(0);
   });
 });
