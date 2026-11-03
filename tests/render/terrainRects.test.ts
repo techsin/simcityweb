@@ -154,6 +154,72 @@ describe('TerrainRenderer dirty rectangles', () => {
     matchesStorage(driver, terrain);
   });
 
+  it('recomputes only the exit rows whose outer rings the union touches, and the texture whole', () => {
+    const { st, terrain, driver } = fixture();
+    const N = st.size, exit = terrain.uniforms.uExitTex.value as THREE.DataTexture, E = pixels(exit);
+    // a sentinel in each row: only a row the union touches may be rewritten (each is 0 when recomputed here)
+    const sentinel = () => { for (let row = 0; row < 4; row++) E[row * N + 30] = 99; };
+    const touched = (r: CellRect) => {
+      sentinel();
+      terrain.markCells(r);
+      terrain.update();
+      return [0, 1, 2, 3].filter((row) => E[row * N + 30] !== 99);
+    };
+    expect(touched({ x0: 1, z0: 20, x1: 2, z1: 21 })).toEqual([0]);
+    expect(touched({ x0: N - 3, z0: 20, x1: N - 2, z1: 21 })).toEqual([1]);
+    expect(touched({ x0: 20, z0: 0, x1: 21, z1: 1 })).toEqual([2]);
+    expect(touched({ x0: 20, z0: N - 1, x1: 21, z1: N })).toEqual([3]);
+    expect(touched({ x0: 0, z0: N - 1, x1: 1, z1: N })).toEqual([0, 3]);
+    expect(touched({ x0: 0, z0: 0, x1: N, z1: N })).toEqual([0, 1, 2, 3]);
+    expect(exit.updateRanges).toEqual([]);
+    expect(driver.upload(exit)).toEqual([{ x: 0, y: 0, width: N, height: 4 }]);
+    expect(driver.read(exit)).toEqual(E);
+  });
+
+  it('matches the original whole-edge exit scan for every network pairing, tunnel and edge', () => {
+    const { st, terrain } = fixture();
+    const N = st.size, E = pixels(terrain.uniforms.uExitTex.value as THREE.DataTexture);
+    // the pre-R1 updateExits, verbatim apart from its inputs
+    const reference = () => {
+      const net = st.network, out = new Uint8Array(N * 4);
+      const isRoad = (t: number) => t >= Network.Street && t <= Network.Highway;
+      const connects = (a: number, b: number) => {
+        if (a === Network.Rail || b === Network.Rail) return a === b;
+        if (!isRoad(a) || !isRoad(b)) return false;
+        if (a === Network.Highway || b === Network.Highway) return (a === Network.Highway ? b : a) !== Network.Street;
+        return true;
+      };
+      for (let k = 1; k < N - 1; k++) {
+        const cells: [number, number, number][] = [
+          [0, k * N, k * N + 1], [1, k * N + N - 1, k * N + N - 2], [2, k, N + k], [3, (N - 1) * N + k, (N - 2) * N + k],
+        ];
+        for (const [row, i, j] of cells) {
+          const t = net[i];
+          if (!t || st.netFlags[i] & 2 || !connects(t, net[j])) continue;
+          out[row * N + k] = t;
+        }
+      }
+      return out;
+    };
+    const rng = new RNG(0x5e7);
+    for (let round = 0; round < 400; round++) {
+      // a short stretch of one edge's two outer rings (corners included), so most frames refresh one or two rows:
+      // random network types (every pairing, including none) and tunnel flags
+      const side = rng.int(0, 3), from = rng.int(0, N - 6);
+      for (let n = rng.int(1, 6); n > 0; n--) {
+        const along = from + rng.int(0, 5), depth = rng.int(0, 1);
+        const x = side === 0 ? depth : side === 1 ? N - 1 - depth : along;
+        const z = side === 2 ? depth : side === 3 ? N - 1 - depth : along;
+        const i = z * N + x;
+        st.network[i] = rng.int(0, Network.Rail);
+        st.netFlags[i] = rng.chance(0.15) ? 2 : 0;
+        terrain.markCells({ x0: x, z0: z, x1: x + 1, z1: z + 1 });
+      }
+      terrain.update();
+      expect(E, `round ${round}`).toEqual(reference());
+    }
+  });
+
   it('keeps first uploads and full rebuild, reset, quality and climate refills complete', () => {
     const { st, terrain, driver } = fixture(false);
     const small = { x0: 10, z0: 10, x1: 11, z1: 11 };
@@ -211,6 +277,16 @@ describe('TerrainRenderer dirty rectangles', () => {
     }
     terrain.markCells(small); terrain.update();
     matchesStorage(restored, terrain);
+    // each event alone forces whole uploads into the new storage (a restore must not depend on seeing the loss first)
+    terrain.markCells(small); terrain.update();
+    for (const t of cellTextures(terrain)) expect(t.updateRanges).toHaveLength(3);
+    canvas.dispatchEvent(new Event('webglcontextrestored'));
+    const again = textureDriver();
+    for (const t of allTextures(terrain)) {
+      expect(t.updateRanges).toEqual([]);
+      expect(again.upload(t)).toEqual([{ x: 0, y: 0, width: t.image.width, height: t.image.height }]);
+      expect(again.read(t)).toEqual(pixels(t));
+    }
     terrain.dispose();
     const versions = allTextures(terrain).map((t) => t.version);
     canvas.dispatchEvent(new Event('webglcontextrestored'));

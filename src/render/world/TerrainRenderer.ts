@@ -22,6 +22,14 @@ import { receiverSweepBox, type ShadowReceiver } from './Shadows';
 
 export const TERRAIN_CHUNK = 32;
 
+/** an edge cell's network type continues off the map when its inward neighbour joins it (TerrainRenderer.updateExits) */
+function exitConnects(a: number, b: number): boolean {
+  if (a === Network.Rail || b === Network.Rail) return a === b;
+  if (!(a >= Network.Street && a <= Network.Highway) || !(b >= Network.Street && b <= Network.Highway)) return false;
+  if (a === Network.Highway || b === Network.Highway) return (a === Network.Highway ? b : a) !== Network.Street;
+  return true;
+}
+
 interface Chunk {
   mesh: THREE.Mesh;
   cx: number;
@@ -623,30 +631,26 @@ export class TerrainRenderer {
       }
     this.uploadCells(this.zoneTex, r);
     this.uploadCells(this.lightTexture, r);
-    if (x0 < 2 || z0 < 2 || x1 > N - 2 || z1 > N - 2) this.updateExits();
+    if (x0 < 2 || z0 < 2 || x1 > N - 2 || z1 > N - 2) this.updateExits(r);
   }
 
-  /** edge cells whose road / highway / rail line runs off the map (continued as ribbons in the landscape shader) */
-  private updateExits() {
-    const st = this.state, N = this.N, E = this.exitData, net = st.network;
-    const isRoad = (t: number) => t >= Network.Street && t <= Network.Highway;
-    const connects = (a: number, b: number) => {
-      if (a === Network.Rail || b === Network.Rail) return a === b;
-      if (!isRoad(a) || !isRoad(b)) return false;
-      if (a === Network.Highway || b === Network.Highway) return (a === Network.Highway ? b : a) !== Network.Street;
-      return true;
-    };
+  /**
+   * Edge cells whose road / highway / rail line runs off the map (continued as ribbons in the landscape shader).
+   * `r`: recompute only the edge rows whose two outer rings it touches (null: all four). The texture is N x 4, so
+   * it is always uploaded whole.
+   */
+  private updateExits(r: CellRect | null = null) {
+    const st = this.state, N = this.N, E = this.exitData, net = st.network, flags = st.netFlags;
     const TUNNEL = 2;
-    E.fill(0);
-    for (let k = 1; k < N - 1; k++) {
-      // [edge row, cell, inward neighbour]
-      const cells: [number, number, number][] = [
-        [0, k * N, k * N + 1], [1, k * N + N - 1, k * N + N - 2], [2, k, N + k], [3, (N - 1) * N + k, (N - 2) * N + k],
-      ];
-      for (const [row, i, j] of cells) {
-        const t = net[i];
-        if (!t || st.netFlags[i] & TUNNEL || !connects(t, net[j])) continue;
-        E[row * N + k] = t;
+    for (let row = 0; row < 4; row++) {
+      if (r && !(row === 0 ? r.x0 < 2 : row === 1 ? r.x1 > N - 2 : row === 2 ? r.z0 < 2 : r.z1 > N - 2)) continue;
+      // rows -x, +x, -z, +z: edge cell i = base + k * step, its inward neighbour i + inward (the corners stay 0)
+      const base = row === 1 ? N - 1 : row === 3 ? (N - 1) * N : 0;
+      const step = row < 2 ? N : 1;
+      const inward = row === 0 ? 1 : row === 1 ? -1 : row === 2 ? N : -N;
+      for (let k = 1; k < N - 1; k++) {
+        const i = base + k * step, t = net[i];
+        E[row * N + k] = t && !(flags[i] & TUNNEL) && exitConnects(t, net[i + inward]) ? t : 0;
       }
     }
     this.exitTex.clearUpdateRanges();
