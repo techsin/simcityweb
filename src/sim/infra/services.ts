@@ -306,6 +306,8 @@ export class ServicesSystem implements SimSystem {
   private facSeat = new Float64Array(64);
   /** seat order of the current shared slot (facility indices, best op first, then building id) */
   private order = new Int32Array(0);
+  /** the slot's building ids by facility index, for seatOrder's comparator */
+  private orderId = new Float64Array(0);
   private shared: boolean[] = new Array(NT + 1).fill(false);
   /** slot had facilities in the previous pass (an empty slot's layer is already 0) */
   private hadFac: boolean[] = new Array(NT + 1).fill(true);
@@ -1530,14 +1532,20 @@ export class ServicesSystem implements SimSystem {
     return st.cells * U_PUBLISH + 8;
   }
 
-  /** seat order of shared slot k: operating factor descending (better-run facilities fill first), then building id */
+  /**
+   * seat order of shared slot k: operating factor descending (better-run facilities fill first), then building id. B2
+   * (G2): the comparator reads the ids from a typed copy (the same values, so every comparison returns what pre-B2's
+   * `list[a].id - list[b].id` returned and the sort output is identical): reading them from the Buildings made this one
+   * item 0.9-2.7 ms at dense1m on every pass (play / green, 500-900 facilities, ~10 k comparisons on Building maps).
+   */
   private seatOrder(k: number): void {
     const list = this.fac[k], ops = this.facOp[k];
     const n = list.length;
     if (this.order.length < n) this.order = new Int32Array(Math.max(n, this.order.length * 2, 64));
-    const ord = this.order.subarray(0, n);
-    for (let c = 0; c < n; c++) ord[c] = c;
-    ord.sort((a, b) => ops[b] - ops[a] || list[a].id - list[b].id);
+    if (this.orderId.length < n) this.orderId = new Float64Array(Math.max(n, this.orderId.length * 2, 64));
+    const ord = this.order.subarray(0, n), ids = this.orderId;
+    for (let c = 0; c < n; c++) { ord[c] = c; ids[c] = list[c].id; }
+    ord.sort((a, b) => ops[b] - ops[a] || ids[a] - ids[b]);
   }
 
   /** facility b's reach copied from the slot's cache (entry valid, same key): its units, or -1 (a fresh reach) */
