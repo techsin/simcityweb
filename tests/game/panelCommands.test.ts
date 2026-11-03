@@ -1,6 +1,7 @@
 /** Budget and ordinance controls consume acknowledgements, and late replies cannot revive an exited city. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GameContext } from '../../src/game/context';
+import { queryHost } from './queryHost';
 import type { ActionResult } from '../../src/sim/actions';
 import { Simulation } from '../../src/sim/Simulation';
 import { BudgetPanel } from '../../src/ui/panels/BudgetPanel';
@@ -14,12 +15,14 @@ const flush = async () => { await Promise.resolve(); await Promise.resolve(); aw
 
 function fixture() {
   const state = newState(32), abort = new AbortController();
+  const sim = new Simulation(state, []);
   const sound = vi.fn(), toast = vi.fn();
   const calls: { op: string; args: unknown[]; resolve(r: ActionResult): void; reject(e: Error): void }[] = [];
   const ctx = {
-    state, sim: new Simulation(state, []), signal: abort.signal, sound, toast,
+    state, sim, signal: abort.signal, sound, toast,
     mods: { listOrdinances: () => [{ id: 'smoke_detectors', name: 'Smoke detectors', enabled: false, available: true, monthlyCost: 25, effects: [] }] },
     host: {
+      ...queryHost(sim),
       act: (op: string, args: unknown[]) => {
         const done = new Promise<ActionResult>((resolve, reject) => { calls.push({ op, args, resolve, reject }); });
         return { seq: calls.length, exact: false, predicted: { ok: true, cost: 0 }, done };
@@ -31,6 +34,27 @@ function fixture() {
 const button = (root: FEl, text: RegExp) => root.all().find((e) => e.tagName === 'button' && text.test(textOf(e)))!;
 
 describe('panel commands', () => {
+  it('a throwing host leaves tax rates and funding unchanged; disposed sliders stay silent', () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const f = fixture(), panel = new BudgetPanel(f.ctx);
+    const act = vi.spyOn(f.ctx.host, 'act').mockImplementation(() => { throw new Error('Host unavailable'); });
+    panel.mount(() => {}, () => {}, () => {});
+    const el = panel.el as unknown as FEl, before = structuredClone(f.state.budget);
+    const tax = el.querySelector('.ui-range')!;
+    (tax as unknown as HTMLInputElement).value = '14'; tax.fire('input');
+    expect(act).toHaveBeenCalledWith('setTax', expect.any(Array));
+    expect(f.state.budget.taxRates).toEqual(before.taxRates);
+    button(el, /^Services$/).click();
+    const funding = el.querySelector('.ui-range')!;
+    (funding as unknown as HTMLInputElement).value = '50'; funding.fire('input');
+    expect(act).toHaveBeenCalledWith('setFunding', expect.any(Array));
+    expect(f.state.budget.funding).toEqual(before.funding);
+    expect(log).toHaveBeenCalled();
+    const count = act.mock.calls.length;
+    f.abort.abort('dispose'); tax.fire('input'); funding.fire('input');
+    expect(act).toHaveBeenCalledTimes(count);
+  });
+
   it('repayment carries the rendered loan guard and reports a refusal only after its acknowledgement', async () => {
     const f = fixture();
     f.state.budget.loans.push({ principal: 10000, remaining: 8000, monthsLeft: 80, rate: 0.05, monthlyPayment: 100 });

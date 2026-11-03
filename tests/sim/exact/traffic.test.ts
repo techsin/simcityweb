@@ -20,11 +20,24 @@ function same(a: any, b: any, at: string, seen = new WeakMap<object, object>()):
   if (typeof a === 'function' && typeof b === 'function') return;
   if (Object.is(a, b)) return;
   if (ArrayBuffer.isView(a) && ArrayBuffer.isView(b)) {
-    if (a.constructor !== b.constructor || a.byteLength !== b.byteLength
-      || !Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(Buffer.from(b.buffer, b.byteOffset, b.byteLength))) {
+    if (a.constructor !== b.constructor || a.byteLength !== b.byteLength) {
       throw new Error(`${at}: different array bytes (${a.byteLength}, ${b.byteLength})`);
     }
-    return;
+    const ab = Buffer.from(a.buffer, a.byteOffset, a.byteLength), bb = Buffer.from(b.buffer, b.byteOffset, b.byteLength);
+    if (ab.equals(bb)) return;
+    // NaN bits are not part of JS semantics: a NaN made by arithmetic (x86's 0xffc00000) and a propagated one can be
+    // stored differently depending on which tier runs the code, so a NaN matches any NaN; every other byte must match
+    if ((a instanceof Float32Array && b instanceof Float32Array) || (a instanceof Float64Array && b instanceof Float64Array)) {
+      const stride = a.BYTES_PER_ELEMENT;
+      for (let i = 0; i < a.length; i++) {
+        if (Number.isNaN(a[i]) && Number.isNaN(b[i])) continue;
+        for (let j = i * stride; j < (i + 1) * stride; j++) {
+          if (ab[j] !== bb[j]) throw new Error(`${at}: different array bytes at [${i}] (${a[i]}, ${b[i]})`);
+        }
+      }
+      return;
+    }
+    throw new Error(`${at}: different array bytes (${a.byteLength}, ${b.byteLength})`);
   }
   if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) {
     throw new Error(`${at}: ${String(a)} != ${String(b)}`);

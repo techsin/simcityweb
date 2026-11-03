@@ -16,7 +16,7 @@ const B = S + '/b3base'
 const WORK = S + '/b3work'
 
 const __C = {}
-const __R = ["map:month", "design"]
+const __R = ["map:month", "design", "build"]
 const __NOTE = 'RESUMING: an earlier run of this exact task was interrupted (usage limit, restart or crash). Your scratch dir under ' + WORK + ' may hold partial work from it: read it first, keep what is sound, check git -C ' + W + ' log and status for commits or edits it already made, and continue rather than redo. Every process of yours from before the restart was stopped: restart what you need.'
 async function __A(prompt, opts) {
   const lab = opts && opts.label
@@ -288,6 +288,7 @@ log('design reviews: ' + dreviews.map((r) => r.verdict + ' (' + r.required.lengt
 
 phase('Build')
 const build = await __A(CTX + '\n\n' + implPrompt(design, dreviews), { label: 'build', phase: 'Build', schema: BUILD })
+if (!build) { log('build returned nothing (limit or error); stopping before the gates so a resume reruns it'); return { stopped: 'build' } }
 const gates = await __A(CTX + '\n\n' + gatesPrompt(build, maps, 1), { label: 'gates', phase: 'Build', schema: GATES })
 log('gates: pass=' + gates.pass + '; ' + gates.failures.join('; ').slice(0, 300))
 

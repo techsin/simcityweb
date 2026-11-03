@@ -4,7 +4,7 @@
  *   audio.attachAutoInit();                      // once at startup (main.ts)
  *   audio.play('click');                         // UI (see SOUND_META for every sound, its category and length)
  *   installUiSounds(() => audio)                 // src/ui/uiSounds.ts: generic feedback for every button / slider / tab
- *   audio.startAmbience(); audio.setAmbience({ population, zoom, night });   // CityScene, every ~0.5 s
+ *   audio.startAmbience(); audio.setCityAmbience(state, x, z, distance, night, construction, activity); // ~0.5 s
  *   audio.startMusic() / audio.setMusicEnabled(false)
  *   audio.setMusicContext({ screen: 'city', night, population, activity })   // main.ts per screen, CityScene ~2 Hz
  *   audio.music.nowPlaying / list() / next() / prev() / select(id) / shuffle / setEnabled(id, on) / onChange(cb)

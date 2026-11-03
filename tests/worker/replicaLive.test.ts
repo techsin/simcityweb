@@ -33,6 +33,8 @@ describe.each([
       },
     });
     const check = new ReplicaCheck(loop.core.sim, loop.replica);
+    // W0.4: the LIVE policy now runs in SimCore. This suite checks the replica at a fixed cadence, as the benches do.
+    loop.core.livePolicy.setSettings({ emergencyUncovered: 'ignore', emergencyLiveSlowmo: 3, emergencyAlerts: 'major' });
     try {
       const buildings = [...loop.primary.buildings.values()].filter((b) => b.pop > 0 && b.built >= 1);
       const first = buildings[0], second = buildings.find((b) => Math.hypot(b.x - first.x, b.z - first.z) > 30)!;

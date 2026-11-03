@@ -8,6 +8,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { BANNER_W, EmergencyBanner, PANEL_HEAD_H, STACK_TOP, TOOLBAR_GAP, dockPill, type DockPlace, type DockRect } from '../../src/ui/EmergencyBanner';
 
 const css = (f: string) => readFileSync(new URL(`../../src/ui/${f}`, import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 const sheets = css('hud.css') + '\n' + css('emergency.css');
@@ -80,5 +81,72 @@ describe('an open toolbar flyout above the emergency banners (final fixes r4 U1)
     expect(bodyOf('.hud-bottom')).toMatch(/(?:^|;)\s*transform\s*:\s*translateX\(-50%\)/);
     expect(bodyOf('.flyout')).toMatch(/(?:^|;)\s*position\s*:\s*absolute/);
     expect(bodyOf('.flyout')).not.toMatch(/z-index/);
+  });
+});
+
+/** NOTE-023: exercise both actual dock() branches with measured-layout inputs (CSS zoom 0.8 at these sizes). */
+describe('emergency count pill clear of centred panel bodies', () => {
+  const cases = [
+    { width: 1024, height: 600, panel: 'Demographics', panelWidth: 560 },
+    { width: 1024, height: 600, panel: 'Help', panelWidth: 900 },
+    { width: 1280, height: 720, panel: 'Help', panelWidth: 900 },
+  ];
+  const overlaps = (a: DockRect, b: DockRect) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+  for (const liveBanners of [false, true]) {
+    it.each(cases)(`${liveBanners ? 'live banners folded into the pill' : 'pill only'}: $panel at $width x $height`, ({ width, height, panelWidth }) => {
+      const W = width / 0.8, H = height / 0.8, bottom = H - 96 - TOOLBAR_GAP;
+      // Tall centred panels start below the top bar and reach their CSS max-height (100% - 170px).
+      const panel: DockRect = { x: (W - panelWidth) / 2, y: 72, w: panelWidth, h: H - 170 };
+      const panelEl = { offsetLeft: panel.x, offsetTop: panel.y, offsetWidth: panel.w, offsetHeight: panel.h,
+        classList: { contains: (c: string) => c === 'center' } };
+      const banners = new Map(Array.from({ length: liveBanners ? 10 : 0 }, (_, id) => [id, {
+        id, inc: { start: 0 }, el: { offsetHeight: 150, classList: { contains: () => false } },
+      }]));
+      let placed: { d: DockPlace | null; compact: boolean; rows: number } | undefined;
+      const state = {
+        ctx: { root: { clientWidth: W, clientHeight: H, querySelectorAll: () => [panelEl] } },
+        banners, moreShown: true, more: { offsetHeight: 34, style: { display: '', visibility: '' } },
+        el: { offsetWidth: BANNER_W }, ro: null, mo: null, pressAt: 0, hiddenPrompts: liveBanners ? 0 : 10,
+        dockDirty: true, ordered: () => [...banners.values()], stackBottom: () => bottom,
+        applyDock: (d: DockPlace | null, compact: boolean, rows: number) => { placed = { d, compact, rows }; },
+      };
+      const dock = (EmergencyBanner.prototype as unknown as { dock(this: unknown): void }).dock;
+      const check = () => {
+        expect(placed).toBeDefined();
+        expect(state.more.style.visibility).toBe('');
+        expect(placed!.rows).toBe(liveBanners ? -1 : 0);
+        const d = placed!.d;
+        const pill = { x: d?.left ?? (W - BANNER_W) / 2, y: d?.top ?? STACK_TOP, w: d?.width ?? BANNER_W, h: state.more.offsetHeight };
+        expect(overlaps(pill, panel), 'the whole body, including headline stats and section headings').toBe(false);
+        expect(overlaps(pill, { ...panel, h: PANEL_HEAD_H }), 'title and tabs').toBe(false);
+        expect(pill.x).toBeGreaterThanOrEqual(0);
+        expect(pill.x + pill.w).toBeLessThanOrEqual(W);
+        expect(pill.y).toBeGreaterThanOrEqual(STACK_TOP);
+        expect(pill.y + pill.h).toBeLessThanOrEqual(bottom);
+        return pill;
+      };
+      dock.call(state);
+      const first = check();
+      // The narrowed pill wraps; a subsequent dirty docking uses its actual taller measurement.
+      state.el.offsetWidth = first.w;
+      state.more.offsetHeight = first.w < 340 ? 94 : 48;
+      state.dockDirty = true;
+      dock.call(state);
+      check();
+    });
+  }
+
+  it('uses the strip below a panel when it fits above the toolbar, instead of the old below-header position', () => {
+    const panel = { x: 190, y: 72, w: 900, h: 450 };
+    const d = dockPill(1280, 34, [panel], 642)!;
+    expect(d.width).toBe(BANNER_W);
+    expect(d.top).toBeGreaterThanOrEqual(panel.y + panel.h);
+    expect(d.top! + 34).toBeLessThanOrEqual(642);
+    expect(overlaps({ x: d.left, y: d.top!, w: d.width, h: 34 }, panel)).toBe(false);
+  });
+
+  it('declines an occupied strip instead of returning a place over panel content', () => {
+    expect(dockPill(1280, 34, [{ x: 0, y: 64, w: 1280, h: 600 }], 642)).toBeNull();
   });
 });

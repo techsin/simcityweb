@@ -19,6 +19,7 @@ import { BF } from '../../src/sim/CityState';
 import { CityActions } from '../../src/sim/actions';
 import type { Simulation } from '../../src/sim/Simulation';
 import type { GameContext } from '../../src/game/context';
+import { queryHost } from './queryHost';
 import type { ToolPointer } from '../../src/game/tools/Tool';
 import { CUT_SETTLE_MS, RectTool } from '../../src/game/tools/ZoneTool';
 import { bulldozeRemoval, cutStats, utilityCutQuick } from '../../src/game/demolishRisk';
@@ -31,6 +32,7 @@ function fakeCtx(sim: Simulation) {
   const ctx = {
     state: sim.state,
     sim,
+    host: queryHost(sim),
     actions: new CityActions(sim),
     world: { setHighlight: (c: Cells) => calls.hl.push(c), setHighlightRect: () => {} },
     objects: { setGhost: () => {}, setNetworkPreview: () => {} },
@@ -121,7 +123,9 @@ describe('bulldoze preview: the full utility-cut fill waits for the rectangle to
     tool.activate();
     tool.move(at(4, 10));
     tool.down(at(4, 10, true));
+    (f.ctx.tools as unknown as { active: RectTool }).active = tool;
     tool.up(at(4, 10));
+    await Promise.resolve();
     expect(confirms.length).toBe(1);
     expect(confirms[0].items).toContain('Cuts power to 5 buildings (100 residents)');
     await Promise.resolve();
@@ -132,7 +136,7 @@ describe('bulldoze preview: the full utility-cut fill waits for the rectangle to
     expect(cutStats.fills).toBe(fills);
   });
 
-  it('a rezoning that demolishes the bridging home: the same deferral, and the confirm still names the cut', () => {
+  it('a rezoning that demolishes the bridging home: the same deferral, and the confirm still names the cut', async () => {
     const st = newState(32);
     place(st, 't_coal', 2, 10, { flags: BF.Plopped });
     st.zone[st.idx(4, 10)] = Zone.ResLow;
@@ -148,7 +152,9 @@ describe('bulldoze preview: the full utility-cut fill waits for the rectangle to
     vi.advanceTimersByTime(CUT_SETTLE_MS);
     expect(text(f.lastTip().html)).toContain('Cuts power to 3 buildings (24 residents)');
     zone.down(at(4, 10, true));
+    (f.ctx.tools as unknown as { active: RectTool }).active = zone;
     zone.up(at(4, 10));
+    await Promise.resolve();
     expect(confirms.length).toBe(1);
     expect(confirms[0].items?.some((t) => t.includes('Cuts power to 3 buildings'))).toBe(true);
   });

@@ -1,0 +1,136 @@
+From ddb0d22c9da82aa900000f6f4c2ecfa0462f6bef Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 04:45:26 +0000
+Subject: [PATCH 04/11] test(sim): B2 G1 adapt three tests to the piecewise
+ traffic and the new schedule
+
+- emergency.test 'runs on traffic's road graph' / 'emergency perf': count
+  GraphBuildRun.publish (traffic's piecewise rebuild) as a traffic build
+  next to RoadGraph.build.
+- employment.test 'with neighbour connections': compare the filled jobs
+  with the mean arriving workers of two consecutive assignments (they
+  alternate by a few % because the inbound pass is recomputed every 2nd
+  one); the moved headless schedule put the check on the other parity.
+- emergencyBot EM-1 'normal play keeps its prompts': seed 7 -> 2; the
+  bot's schedule moved by design and seed 7's town raises no prompt in 4
+  years any more (seeds 1, 2, 4-7 give 0, 4, 2, 2, 1, 0).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KT9tXthEhyzExdUuGEecAJ
+---
+ tests/infra/emergency.test.ts    | 21 +++++++++++++++++----
+ tests/infra/emergencyBot.test.ts |  4 +++-
+ tests/sim/employment.test.ts     | 10 ++++++++--
+ 3 files changed, 28 insertions(+), 7 deletions(-)
+
+diff --git a/tests/infra/emergency.test.ts b/tests/infra/emergency.test.ts
+index 63be73a..ef7200d 100644
+--- a/tests/infra/emergency.test.ts
++++ b/tests/infra/emergency.test.ts
+@@ -14,7 +14,7 @@ import {
+ } from '../../src/sim/infra/emergency';
+ import { CATALOG, getDef, rebuildCatalogIndex } from '../../src/sim/catalog';
+ import type { BuildingDef } from '../../src/sim/catalogTypes';
+-import { RoadGraph } from '../../src/sim/infra/graph';
++import { GraphBuildRun, GridGraph, RoadGraph } from '../../src/sim/infra/graph';
+ import { MinHeap } from '../../src/sim/infra/heap';
+ import { Search, Seeds, roadSearch } from '../../src/sim/infra/search';
+ import { getFire, getTraffic, triggerDisaster } from '../../src/sim/systems/infra';
+@@ -599,14 +599,19 @@ describe('emergency dispatch: coverage promise, search budget, road graph, persi
+     getFire(sim)!.riskBoost = 0;
+     const em = emergencyOf(sim)!;
+     const tr = getTraffic(sim)!;
+-    // every RoadGraph build from here on: whose graph, and inside the emergency system's daily work / a UI call?
++    // every RoadGraph build from here on: whose graph, and inside the emergency system's daily work / a UI call? (B2:
++    // traffic's own rebuild runs in pieces and publishes into its graph: GraphBuildRun.publish counts as its build)
+     const builds: { traffic: boolean; inEm: boolean }[] = [];
+     let inEm = false;
+-    const ob = RoadGraph.prototype.build;
++    const ob = RoadGraph.prototype.build, op = GraphBuildRun.prototype.publish;
+     RoadGraph.prototype.build = function (this: RoadGraph, s: CityState): void {
+       builds.push({ traffic: this === tr.road, inEm });
+       ob.call(this, s);
+     };
++    GraphBuildRun.prototype.publish = function (this: GraphBuildRun, road: RoadGraph, rail: GridGraph, subway: GridGraph): void {
++      builds.push({ traffic: road === tr.road, inEm });
++      op.call(this, road, rail, subway);
++    };
+     const od = em.dailyWork.bind(em);
+     em.dailyWork = (s: Simulation) => { inEm = true; try { od(s); } finally { inEm = false; } };
+     try {
+@@ -639,6 +644,7 @@ describe('emergency dispatch: coverage promise, search budget, road graph, persi
+       expect(builds.every((q) => q.traffic && !q.inEm), JSON.stringify(builds)).toBe(true);
+     } finally {
+       RoadGraph.prototype.build = ob;
++      GraphBuildRun.prototype.publish = op;
+     }
+   });
+ 
+@@ -839,12 +845,18 @@ describe('emergency perf', () => {
+     wrap('monthly');
+     // road edits (a player / the bot laying roads) every 20 days: traffic rebuilds its graph in its own scheduled
+     // step; the emergency system must never build one in its daily work (a 256² build is ~10 ms)
+-    const ob = RoadGraph.prototype.build;
++    const ob = RoadGraph.prototype.build, op = GraphBuildRun.prototype.publish;
+     RoadGraph.prototype.build = function (this: RoadGraph, s2: CityState): void {
+       builds++;
+       if (inEm) emBuilds++;
+       ob.call(this, s2);
+     };
++    // (B2: traffic's piecewise rebuild publishes into its graphs)
++    GraphBuildRun.prototype.publish = function (this: GraphBuildRun, road: RoadGraph, rail: GridGraph, subway: GridGraph): void {
++      builds++;
++      if (inEm) emBuilds++;
++      op.call(this, road, rail, subway);
++    };
+     let edit = -1;
+     for (let i = st.size * 2; i < st.cells && edit < 0; i++) if (st.network[i] === 0 && st.building[i] < 0 && st.network[i - 1] !== 0) edit = i;
+     expect(edit).toBeGreaterThan(0);
+@@ -862,6 +874,7 @@ describe('emergency perf', () => {
+       }
+     } finally {
+       RoadGraph.prototype.build = ob;
++      GraphBuildRun.prototype.publish = op;
+     }
+     expect(builds).toBeGreaterThan(10); // traffic did rebuild after the edits
+     expect(emBuilds).toBe(0);
+diff --git a/tests/infra/emergencyBot.test.ts b/tests/infra/emergencyBot.test.ts
+index 820e225..f35da78 100644
+--- a/tests/infra/emergencyBot.test.ts
++++ b/tests/infra/emergencyBot.test.ts
+@@ -56,7 +56,9 @@ describe('EM-1: an earthquake in a bot town with an attentive player (verify-fac
+ 
+ describe('EM-1: normal play keeps its prompts', () => {
+   it('a bot town over 4 years (no disasters, nobody answers): the prompts counted at settle points are the prompts raised', { timeout: 900000 }, async () => {
+-    const bot = new SimBot({ size: 128, years: 4, seed: 7, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: true, noInfra: false, neglect: true }, await botSystems(false));
++    // (seed 2: the scenario needs a few uncovered major incidents; B2's honest step estimates moved the bot's schedule,
++    // and seed 7's town now raises none in 4 years — seeds 1, 2, 4, 5, 6, 7 give 0, 4, 2, 2, 1, 0 prompts)
++    const bot = new SimBot({ size: 128, years: 4, seed: 2, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: true, noInfra: false, neglect: true }, await botSystems(false));
+     const sim = bot.sim;
+     // raised: an 'uncovered' event of a major incident with manualPossible (the old rule set prompted right then)
+     const raised = new Set<number>(), counted = new Set<number>();
+diff --git a/tests/sim/employment.test.ts b/tests/sim/employment.test.ts
+index 9179564..b9ae971 100644
+--- a/tests/sim/employment.test.ts
++++ b/tests/sim/employment.test.ts
+@@ -93,9 +93,15 @@ describe('one employment ledger (WP1-1)', () => {
+   it('with neighbour connections the ledger includes inbound workers and regional jobs', { timeout: 120000 }, () => {
+     const t = town({ jobsPerWorker: 1.1, connections: true });
+     const l = ledger(t);
+-    console.log(`connected: unemployment ${(l.unemp * 100).toFixed(1)}% vs traffic ${(l.accUnemp * 100).toFixed(1)}%, jobs ${l.jobs} arriving ${l.arriving} (inbound ${t.traffic.inboundTotal.toFixed(0)})`);
++    // the arriving workers alternate by a few % between assignments (the inbound pass is recomputed every 2nd one and
++    // capped by the vacancies on the others), while the filled jobs follow them smoothed: compare the jobs with the mean
++    // of two consecutive assignments (B2: the headless schedule moved, so the check no longer lands on one parity)
++    t.traffic.invalidate();
++    t.traffic.runCycleSync(t.sim);
++    const arriving2 = ledger(t).arriving, arriving = (l.arriving + arriving2) / 2;
++    console.log(`connected: unemployment ${(l.unemp * 100).toFixed(1)}% vs traffic ${(l.accUnemp * 100).toFixed(1)}%, jobs ${l.jobs} arriving ${l.arriving} / ${arriving2} (inbound ${t.traffic.inboundTotal.toFixed(0)})`);
+     expect(Math.abs(l.unemp - l.accUnemp)).toBeLessThan(0.01);
+-    expect(Math.abs(l.jobs - l.arriving)).toBeLessThan(l.arriving * 0.03);
++    expect(Math.abs(l.jobs - arriving)).toBeLessThan(arriving * 0.03);
+   });
+ 
+   it('2x job capacity -> unemployment < 3 %; jobs = 0.5 x workers without connections -> 45-55 %', { timeout: 120000 }, () => {
+-- 
+2.43.0
+

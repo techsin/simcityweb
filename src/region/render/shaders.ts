@@ -87,6 +87,9 @@ uniform sampler2D uTileTex;
 uniform sampler2D uCityTex;
 uniform vec4 uHover;
 uniform vec4 uSelect;
+// FH-11: the tile recommended for a first city (a warm outline that breathes with uPulse)
+uniform vec4 uRecommend;
+uniform vec3 uRecAccent;
 uniform vec3 uAccent;
 uniform float uPulse;
 varying vec3 vWorld;
@@ -180,6 +183,11 @@ void main() {
       lit = lit * 1.12 + uAccent * 0.05;
       lit = mix(lit, vec3(1.0), (1.0 - smoothstep(0.0, fw.x * 2.4, e)) * 0.95);
       lit += uAccent * (1.0 - smoothstep(0.0, fw.x * 14.0, e)) * 0.12;
+    }
+    if (unit.x >= uRecommend.x && unit.x < uRecommend.z && unit.y >= uRecommend.y && unit.y < uRecommend.w) {
+      float e = rectEdge(unit, uRecommend);
+      lit = mix(lit, uRecAccent * 1.25, (1.0 - smoothstep(0.0, fw.x * 3.0, e)) * 0.95);
+      lit += uRecAccent * (1.0 - smoothstep(0.0, fw.x * 18.0, e)) * (0.14 + 0.08 * uPulse);
     }
     if (unit.x >= uSelect.x && unit.x < uSelect.z && unit.y >= uSelect.y && unit.y < uSelect.w) {
       float e = rectEdge(unit, uSelect);

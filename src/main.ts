@@ -20,7 +20,7 @@ import { audio } from './audio';
 import { installUiSounds } from './ui/uiSounds';
 import type { CityState } from './sim/CityState';
 import type { CityConfigData } from './sim/config';
-import { BF, CityState as CityStateClass } from './sim/CityState';
+import { CityState as CityStateClass } from './sim/CityState';
 import { generateTerrain, scatterTrees } from './sim/terrainGen';
 import type { TerrainPreset, Difficulty, Climate } from './core/types';
 import { RegionModel, createRegionData, PRESET_BY_ID } from './region/RegionModel';
@@ -30,7 +30,7 @@ import { openNewCityDialog, terrainOptionsFor } from './region/NewCityDialog';
 import { summarizeCity } from './region/citySummary';
 import { cityThumbnail, drawCityMap, normalizeThumbnail, regionPreviewDataUrl, regionPreviewKey } from './region/mapPreview';
 import { randomCityName, randomMayorName } from './region/names';
-import { loadSettings, saveSettings, type AppSettings } from './region/settings';
+import { applyFirstRunQuality, cityOverrides, loadSettings, saveSettings, takeCityChanges, type AppSettings } from './region/settings';
 import { TitleScreen } from './region/ui/TitleScreen';
 import { LoadingScreen } from './region/ui/LoadingScreen';
 import { openCredits, openLoadRegion, openNewRegion, openRecoverDialog, openSettings } from './region/ui/dialogs';
@@ -38,7 +38,6 @@ import { SaveStatus } from './region/ui/SaveStatus';
 import { setUiRoot, toast } from './region/ui/modal';
 import { button, formatMoney, formatPop, h, paint, timeAgo } from './region/ui/dom';
 import {
-  clearRecoveryAfterSave,
   clearRecoveryBase,
   deleteCity,
   deleteRegion,
@@ -55,12 +54,12 @@ import {
   saveRegion,
   setLastRegionId,
   setLastSession,
-  writeRecoverySnapshot,
   type PendingRecovery,
   type WriteResult,
 } from './save';
-import { regionContext, applyRegionEffects, type RegionContext } from './region/regionEffects';
-import type { SimHost } from './worker/SimHost';
+import { regionContext, type RegionContext } from './region/regionEffects';
+import type { CityPersistence, HostState, SaveReason, SimHost, SnapshotWhy } from './worker/SimHost';
+import { cityFingerprint } from './save/fingerprint';
 import { NeighborLabels } from './region/NeighborLabels';
 import type { Camera } from 'three';
 
@@ -68,24 +67,28 @@ import type { Camera } from 'three';
 // CityScene contract (owned by ui-game; loaded lazily so the app works before it exists)
 // ---------------------------------------------------------------------------------------------------------------
 interface CitySceneLike {
-  readonly host?: SimHost;
+  readonly host: SimHost;
   start?(): unknown;
   dispose(): void;
   /** save now (shows CityScene's SavePill); resolves when done */
   save?(auto?: boolean): Promise<void>;
+  storeCamera?(): void;
   sim?: { state: CityState; events?: { on(type: 'month', fn: (m: number) => void): () => void } };
   /** current world view (NullWorldView until the 3D views are up); used for neighbour labels + readiness */
   worldView?: { camera?: Camera; isNull?: boolean };
   /** optional: resolves once the 3D views are up (used to delay window.__ready) */
   ready?: Promise<unknown>;
+  /** FH-21: the measured time from the click to the first interactive frame (the fps readout shows it) */
+  reportLoadTime?(ms: number): void;
   whenReady?(): Promise<unknown>;
 }
 interface CitySceneOptions {
   container: HTMLElement;
   state: CityState;
   rctx?: RegionContext;
+  persistence?: CityPersistence;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
-  onSave: (state: CityState) => Promise<void>;
+  onSave: (state: HostState, reason?: SaveReason) => Promise<void>;
   /** app-level settings; CityScene treats these keys as overrides of its stored in-game prefs */
   settings?: Partial<AppSettings>;
   onSettingsChange?: (s: Partial<AppSettings> & Record<string, unknown>) => void;
@@ -129,28 +132,9 @@ function markReady(): void {
   requestAnimationFrame(() => requestAnimationFrame(() => ((window as unknown as { __ready: boolean }).__ready = true)));
 }
 
-/**
- * Cheap summary of what a save would change: sim time, money, buildings, budget / policies, name, unlocks. Together
- * with the change events counted in App.city.changes it tells "unsaved changes" apart (camera moves don't count).
- */
-function cityFingerprint(st: CityState): string {
-  const b = st.budget;
-  const budget = b ? JSON.stringify([b.taxRates, b.funding, b.ordinances, b.loans?.length ?? 0]) : '';
-  // player-set "historic" marks (toggling one emits only buildingChanged, which derived recomputes emit too)
-  let hist = 0;
-  for (const x of st.buildings.values()) if (x.flags & BF.Historic) hist = (hist + Math.imul(x.id, 2654435761)) | 0;
-  return `${st.day}|${Math.round(st.funds * 100)}|${st.buildings.size}|${st.nextBuildingId}|${st.config.name}|${st.unlocked?.size ?? 0}|${hist}|${budget}`;
-}
+/** FEEL-05: the day a new city is founded on, 1 April of its start year (systemData.foundedDay; the bot founds on day 0) */
+const FOUNDING_DAY = 90;
 
-/**
- * sim events that change saved state without necessarily moving the fingerprint (paused edits: tools, dispatches,
- * disasters, unlocks). Not counted: derived recomputes (layerUpdated, and buildingChanged, which traffic / utilities /
- * pollution passes emit for flag updates after an edit — counting those would flag a just-saved city as unsaved).
- */
-const CHANGE_EVENTS = [
-  'networkChanged', 'zoneChanged', 'terrainChanged', 'powerLinesChanged', 'subwayChanged', 'treesChanged',
-  'buildingAdded', 'buildingRemoved', 'disaster', 'emergency', 'unlocked',
-];
 /** wall-clock interval of background recovery snapshots while there are unsaved changes */
 const SNAPSHOT_INTERVAL_MS = 30_000;
 /** outcome of a "Recover unsaved progress?" prompt ('later' = dismissed, snapshot kept; 'none' = nothing to offer) */
@@ -165,12 +149,11 @@ class App {
   private city: {
     scene: CitySceneLike | null;
     tile: RegionTile;
-    state: CityState;
+    host: SimHost | null;
     placeholder?: HTMLElement;
     lastSave: number;
     labels?: NeighborLabels;
     /** change events seen (counter) / at the last successful save / at the last recovery snapshot */
-    changes: number;
     cleanChanges: number;
     snapChanges: number;
     /** fingerprint at the last successful save / at the last recovery snapshot */
@@ -181,7 +164,6 @@ class App {
     lastSnap: number;
     saving: number;
     saveFailed: boolean;
-    offChanges?: () => void;
     status?: SaveStatus;
     ticker?: number;
   } | null = null;
@@ -198,8 +180,12 @@ class App {
   private offerPending: Promise<RecoverChoice> | null = null;
   /** last recovery snapshot result (debugging / tests) */
   lastSnapshot: (WriteResult & { why: string }) | null = null;
+  /** FH-21: ms from the last "Found City" / "Play" to the city's first interactive frame (P-5 reports it) */
+  lastLoadMs: number | null = null;
 
   constructor(host: HTMLElement) {
+    // FH-21: a first run picks the graphics quality the device can carry (and keeps it, like a chosen setting)
+    if (applyFirstRunQuality(this.settings)) saveSettings(this.settings);
     this.root = h('div', { class: 'meta-root' });
     host.appendChild(this.root);
     setUiRoot(this.root);
@@ -213,7 +199,7 @@ class App {
       if (document.visibilityState !== 'hidden' || !this.city) return;
       this.snapshotNow('hidden');
       // + a full save when the tab is merely hidden (on unload it would not finish; the snapshot covers that)
-      if (!this.unloading && this.isDirty()) void this.saveCurrentCity().catch(() => undefined);
+      if (!this.unloading && this.isDirty()) void this.saveCurrentCity('hidden').catch(() => undefined);
     });
     window.addEventListener('beforeunload', () => this.snapshotNow('beforeunload'));
     window.addEventListener('pagehide', () => {
@@ -445,13 +431,18 @@ class App {
     await this.startNewCity(this.region, tile, cfg);
   }
 
-  private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData): Promise<void> {
+  /** `t0`: when the player asked for the city (performance.now(); FH-21 measures the load from it) */
+  private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData, t0 = performance.now()): Promise<void> {
     this.busy = true;
     const ld = new LoadingScreen(this.root);
     try {
       ld.set('Generating terrain…', 0.1);
       await paint();
       const st = new CityStateClass(cfg);
+      // FEEL-05: a player's city opens in spring (1 April); the CityState constructor keeps day 0 for the bot, the tests
+      // and old saves, so only a city founded here starts later in its first year
+      st.day = FOUNDING_DAY;
+      st.systemData.foundedDay = FOUNDING_DAY;
       const topts = terrainOptionsFor(cfg, model, tile);
       generateTerrain(st, { ...topts, skipTrees: true });
       ld.set('Planting trees…', 0.35);
@@ -463,7 +454,7 @@ class App {
       tile.city.thumbnail = cityThumbnail(st, 256);
       await saveCity(model.data.id, tile.key, st);
       await this.persistRegion();
-      await this.enterCity(model, tile, st, ld);
+      await this.enterCity(model, tile, st, ld, t0);
     } catch (e) {
       console.error('[main] failed to found city', e);
       toast(`Could not found the city: ${(e as Error).message}`, 'bad', 6000);
@@ -490,6 +481,7 @@ class App {
   }
 
   async playCity(tile: RegionTile, existing?: LoadingScreen): Promise<void> {
+    const t0 = performance.now();
     if (this.busy || !this.region) {
       existing?.remove();
       return;
@@ -513,7 +505,7 @@ class App {
         await this.regionScreen?.refresh();
         return;
       }
-      await this.enterCity(this.region, tile, st, ld);
+      await this.enterCity(this.region, tile, st, ld, t0);
     } catch (e) {
       console.error('[main] failed to load city', e);
       toast(`Could not load the city: ${(e as Error).message}`, 'bad', 6000);
@@ -523,7 +515,7 @@ class App {
     }
   }
 
-  private async enterCity(model: RegionModel, tile: RegionTile, st: CityState, ld: LoadingScreen): Promise<void> {
+  private async enterCity(model: RegionModel, tile: RegionTile, st: CityState, ld: LoadingScreen, t0 = performance.now()): Promise<void> {
     ld.set('Building the city…', 0.7);
     await paint();
     this.clearScreens();
@@ -531,44 +523,39 @@ class App {
     const container = h('div', { class: 'meta-layer city-host' });
     this.root.prepend(container);
     setLastSession({ regionId: model.data.id, tileKey: tile.key });
-    // the host owns regional effects; the placeholder has no simulation host
+    // Both the playable city and the placeholder keep persistence and regional effects in the host.
     const rctx = regionContext(model, tile);
-    if (!Ctor) applyRegionEffects(st, rctx);
     // the state was just loaded / founded + saved: clean
     const now = Date.now();
-    this.city = { scene: null, tile, state: st, lastSave: now, changes: 0, cleanChanges: 0, snapChanges: 0, cleanFp: cityFingerprint(st), snapFp: '', lastSnap: now, saving: 0, saveFailed: false };
-    audio.startAmbience();
-    audio.setAmbience({ population: st.stats.population, zoom: 0.5, night: false });
+    this.city = { scene: null, tile, host: null, lastSave: now, cleanChanges: 0, snapChanges: 0, cleanFp: cityFingerprint(st), snapFp: '', lastSnap: now, saving: 0, saveFailed: false };
+    audio.setAmbience({ population: st.stats.population, zoom: 0.5, night: false, water: 0, month: st.month, climate: st.config.climate, construction: 0, activity: 1 });
+    audio.startAmbienceAfterLoading(this.root);
     audio.setMusicContext({ screen: 'city', night: false, population: st.stats.population, activity: 0.5 });
     if (Ctor) {
       const scene = new Ctor({
         container,
         state: st,
         rctx,
-        settings: { quality: this.settings.quality, edgeScroll: this.settings.edgeScroll, showFps: this.settings.showFps, autosaveMonths: this.settings.autosaveMonths },
+        persistence: { regionId: model.data.id, tileKey: tile.key, regionName: model.data.name },
+        settings: cityOverrides(this.settings),
         onExitToRegion: (thumb) => void this.exitCity(thumb),
-        onSave: (s) => this.saveCityState(s),
+        onSave: (_state, reason = 'manual') => this.saveCityState(reason),
         onSettingsChange: (gs) => {
-          // keep the app-level defaults in sync with changes made in the in-game settings panel
-          if (gs.quality) this.settings.quality = gs.quality;
-          if (typeof gs.edgeScroll === 'boolean') this.settings.edgeScroll = gs.edgeScroll;
-          if (typeof gs.showFps === 'boolean') this.settings.showFps = gs.showFps;
-          if (typeof gs.autosaveMonths === 'number') this.settings.autosaveMonths = gs.autosaveMonths;
+          // keep the app-level settings (the shared keys) in sync with changes made in the in-game settings panel
+          takeCityChanges(this.settings, gs);
           saveSettings(this.settings);
         },
       });
       this.city.scene = scene;
-      // edits that don't move the fingerprint (e.g. zoning while paused) still count as unsaved changes
-      const ev = scene.sim?.events as unknown as { on(type: string, fn: () => void): () => void } | undefined;
-      if (ev) {
-        const c = this.city;
-        const offs = CHANGE_EVENTS.map((t) => ev.on(t, () => void c.changes++));
-        c.offChanges = () => offs.forEach((off) => off());
-      }
+      this.city.host = scene.host;
       await scene.start?.();
       await waitForScene(scene);
       if (rctx.neighbors.some((n) => n.founded)) this.city.labels = new NeighborLabels(container, () => scene.worldView?.camera, scene.sim?.state ?? st, rctx.neighbors);
     } else {
+      const { LocalSimHost } = await import('./worker/SimHost');
+      const host = new LocalSimHost(st, { rctx, persistence: { regionId: model.data.id, tileKey: tile.key, regionName: model.data.name } });
+      await host.start({}); // the placeholder keeps its entry effects without running simulation systems
+      this.city.host = host;
       this.city.placeholder = this.cityPlaceholder(container, st, tile);
     }
     if (this.city) {
@@ -580,13 +567,16 @@ class App {
       this.tickSaveState();
     }
     await ld.hide();
+    // FH-21: the loading screen is gone and the views drew a frame: the city takes input from here
+    this.lastLoadMs = performance.now() - t0;
+    this.city?.scene?.reportLoadTime?.(this.lastLoadMs);
     audio.play('cityReady');
     markReady();
   }
 
-  private currentState(): CityState | null {
+  private currentState(): HostState | null {
     if (!this.city) return null;
-    return this.city.scene?.sim?.state ?? this.city.state;
+    return this.city.host?.state ?? null;
   }
 
   /** the current city differs from its last successful save */
@@ -594,7 +584,7 @@ class App {
     const c = this.city;
     const st = this.currentState();
     if (!c || !st) return false;
-    return c.changes !== c.cleanChanges || cityFingerprint(st) !== c.cleanFp;
+    return c.host?.changes !== c.cleanChanges || cityFingerprint(st) !== c.cleanFp;
   }
 
   /** refresh the save indicator; schedule a background recovery snapshot while dirty */
@@ -610,7 +600,7 @@ class App {
     if (dirty && this.persistent && !document.hidden && Date.now() - c.lastSnap >= SNAPSHOT_INTERVAL_MS) {
       c.lastSnap = Date.now(); // (re)armed now; the snapshot itself runs when the main thread is idle
       const ric = (window as Window & { requestIdleCallback?: (fn: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
-      if (ric) ric(() => this.snapshotNow('periodic'), { timeout: 5000 });
+      if (ric) ric(() => { if (this.city === c) this.snapshotNow('periodic'); }, { timeout: 5000 });
       else this.snapshotNow('periodic');
     }
   }
@@ -621,22 +611,28 @@ class App {
    * Periodic ones are lean (sim-recomputed layers left out: cheaper on the main thread); an unload snapshot after a
    * lean one is written in full even when nothing else changed.
    */
-  private snapshotNow(why: string): void {
+  private snapshotNow(why: SnapshotWhy): void {
     const c = this.city, model = this.region;
-    if (!c || !model || !this.persistent) return;
+    if (!c?.host || !model || !this.persistent) return;
     const st = this.currentState();
     if (!st) return;
     try {
+      c.host.recovery?.writeNow(why);
+      if (c.host.recovery && (why === 'beforeunload' || why === 'pagehide' || why === 'exit')) return;
       const fp = cityFingerprint(st);
       const lean = why === 'periodic';
-      if (c.saving === 0 && fp === c.cleanFp && c.changes === c.cleanChanges) return;
-      if (fp === c.snapFp && c.changes === c.snapChanges && (lean || !c.snapLean)) return;
-      const r = writeRecoverySnapshot(model.data.id, c.tile.key, st, { cityName: st.config.name, regionName: model.data.name, population: st.stats?.population ?? 0, funds: st.funds, why, lean });
-      c.snapFp = fp;
-      c.snapChanges = c.changes;
-      c.snapLean = lean;
-      c.lastSnap = Date.now();
-      this.lastSnapshot = { ...r, why };
+      if (c.saving === 0 && fp === c.cleanFp && c.host?.changes === c.cleanChanges) return;
+      if (fp === c.snapFp && c.host?.changes === c.snapChanges && (lean || !c.snapLean)) return;
+      void c.host.snapshot(why).then((r) => {
+        if (!r || this.city !== c) return;
+        if (r.ok) {
+          c.snapFp = r.fp;
+          c.snapChanges = r.changes;
+          c.snapLean = lean;
+          c.lastSnap = r.marker.at;
+        }
+        this.lastSnapshot = { ok: r.ok, bytes: r.bytes, ls: r.ls, idb: r.idb, ms: r.ms, dropped: r.dropped, why };
+      }).catch((e) => console.warn('[main] recovery snapshot failed', e));
     } catch (e) {
       console.warn('[main] recovery snapshot failed', e);
     }
@@ -650,38 +646,39 @@ class App {
     void p.catch((e) => toast(`Saving failed: ${(e as Error).message}`, 'bad', 6000));
   }
 
-  private async saveCurrentCity(thumb?: string): Promise<void> {
-    const st = this.currentState();
-    if (st) await this.saveCityState(st, thumb);
+  private async saveCurrentCity(reason: SaveReason = 'manual', thumb?: string): Promise<void> {
+    this.city?.scene?.storeCamera?.();
+    await this.saveCityState(reason, thumb);
   }
 
   /** persist a city + refresh its region tile summary (also CityScene's onSave). Saves are queued, never overlap. */
-  saveCityState(st: CityState, thumb?: string): Promise<void> {
-    const run = this.saveChain.then(() => this.doSaveCity(st, thumb));
+  saveCityState(reason: SaveReason, thumb?: string): Promise<void> {
+    const c = this.city, model = this.region;
+    const run = this.saveChain.then(() => c && model && this.city === c && this.region === model ? this.doSaveCity(reason, thumb) : undefined);
     this.saveChain = run.catch(() => undefined);
     return run;
   }
 
-  private async doSaveCity(st: CityState, thumb?: string): Promise<void> {
+  private async doSaveCity(reason: SaveReason, thumb?: string): Promise<void> {
     const model = this.region;
     const c = this.city;
-    if (!model || !c) return;
+    if (!model || !c?.host) return;
     const tile = c.tile;
-    // what this save covers: saveCity serializes synchronously (no other task runs before it)
-    const fp = cityFingerprint(st), changes = c.changes;
     c.saving++;
     c.status?.set('saving');
     try {
-      const savedAt = await saveCity(model.data.id, tile.key, st);
-      c.cleanFp = fp;
-      c.cleanChanges = changes;
+      const saved = await c.host.save(reason);
+      c.cleanFp = saved.fp;
+      c.cleanChanges = saved.changes;
       c.saveFailed = false;
-      c.lastSave = Date.now();
+      c.lastSave = saved.savedAt;
       // this save made the city's recovery snapshots obsolete; the next one is a delta of it. A snapshot taken while
       // it was being written (newer, but a delta of the replaced save) is dropped too: take a fresh one soon.
-      if (clearRecoveryAfterSave(model.data.id, tile.key, savedAt)) c.lastSnap = 0;
+      if (saved.recoveryDropped) c.lastSnap = 0;
       c.snapFp = '';
       c.snapChanges = -1;
+      const prev = tile.city;
+      tile.city = { ...saved.summary, founded: prev?.founded ?? saved.summary.founded, thumbnail: prev?.thumbnail };
     } catch (e) {
       c.saveFailed = true;
       throw e;
@@ -691,8 +688,7 @@ class App {
     }
     const prevThumb = tile.city?.thumbnail;
     const newThumb = thumb ? await normalizeThumbnail(thumb, Math.min(512, tile.size * 128)) : undefined;
-    tile.city = summarizeCity(st, tile.city);
-    tile.city.thumbnail = newThumb ?? prevThumb ?? cityThumbnail(st, 256);
+    if (tile.city) tile.city.thumbnail = newThumb ?? prevThumb ?? cityThumbnail(c.host.state, 256);
     await this.persistRegion();
   }
 
@@ -710,20 +706,20 @@ class App {
         // thumbnail + region summary (no second city save)
         if (thumb && c.tile.city) c.tile.city.thumbnail = await normalizeThumbnail(thumb, Math.min(512, c.tile.size * 128));
         await this.persistRegion();
-      } else await this.saveCurrentCity(thumb);
+      } else if (c.host?.kind === 'local') await this.saveCurrentCity('exit', thumb);
     } catch (e) {
       console.error('[main] save on exit failed', e);
       toast(`Saving failed: ${(e as Error).message}`, 'bad', 6000);
     }
     // the save failed: keep the progress as a recovery snapshot (offered when the city is opened again)
     if (this.isDirty()) this.snapshotNow('exit');
-    c.offChanges?.();
     clearInterval(c.ticker);
     c.status?.dispose();
     c.labels?.dispose();
     setLastSession({ regionId: model.data.id });
     try {
       c.scene?.dispose();
+      if (!c.scene) await c.host?.dispose();
     } catch (e) {
       console.warn('[main] CityScene.dispose failed', e);
     }
@@ -789,7 +785,7 @@ class App {
     await saveRegion(data);
     setLastRegionId(id);
     if (!openDialog) return this.showRegion(model, ld);
-    const tile = pickNiceTile(model, 2);
+    const tile = model.pickNiceTile(2);
     await this.showRegion(model, ld, tile.key, false);
     const p = openNewCityDialog({ region: model, tile });
     markReady();
@@ -807,7 +803,7 @@ class App {
     await deleteRegion('quickstart').catch(() => undefined);
     const { data, model } = createRegionData({ seed, preset: 'greenvale', id: 'quickstart', name: 'Quickstart Valley' });
     this.region = model;
-    const tile = pickNiceTile(model, size);
+    const tile = model.pickNiceTile(size);
     const partial: Partial<CityConfigData> = { name: randomCityName(), mayor: randomMayorName() };
     const terrain = q.get('terrain') as TerrainPreset | null;
     if (terrain && terrain !== 'region') partial.terrain = terrain;
@@ -835,22 +831,6 @@ function drawPreview(model: RegionModel): boolean {
   } catch {
     return false;
   }
-}
-
-/** a tile of the wanted size with a pleasant amount of water (some, not much) */
-function pickNiceTile(model: RegionModel, size: TileSize): RegionTile {
-  const cands = model.data.tiles.filter((t) => t.size === size);
-  const pool = cands.length ? cands : model.data.tiles;
-  let best = pool[0], bestScore = -1e9;
-  for (const t of pool) {
-    const w = model.tileWaterFraction(t);
-    const score = -Math.abs(w - 0.12) - (w > 0.4 ? 1 : 0) - Math.hypot(t.x + t.size / 2 - 8, t.z + t.size / 2 - 8) * 0.01;
-    if (score > bestScore) {
-      bestScore = score;
-      best = t;
-    }
-  }
-  return best;
 }
 
 const host = document.getElementById('app') ?? document.body;

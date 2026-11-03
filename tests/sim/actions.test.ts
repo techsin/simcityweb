@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { makeCity, addWaterRows, road } from './helpers';
-import { lPath, NET_BRIDGE, NET_ONEWAY_MASK, NET_ONEWAY_SHIFT } from '../../src/sim/actions';
+import { CityActions, lPath, NET_BRIDGE, NET_ONEWAY_MASK, NET_ONEWAY_SHIFT } from '../../src/sim/actions';
 import { DevType, Network, Zone } from '../../src/core/types';
 import { BF, type Building } from '../../src/sim/CityState';
-import { placeBuilding } from '../../src/sim/economy/buildings';
+import { demolishFee, placeBuilding } from '../../src/sim/economy/buildings';
+import { deserializeCity, serializeCity } from '../../src/save/serialize';
+import { LocalSimHost } from '../../src/worker/SimHost';
 
 function growable(st: ReturnType<typeof makeCity>['st'], def: string, x: number, z: number, w: number, d: number): Building {
   return { id: st.nextBuildingId++, def, x, z, w, d, rot: 0, variant: 0, pop: 5, jobs: 0, capacity: 6, wealth: 1, built: 1, age: 400, flags: 0, baseY: 5, health: 0.8, unhappy: 0 };
@@ -135,15 +137,17 @@ describe('CityActions: networks', () => {
 });
 
 describe('CityActions: bulldoze / plop / terraform / trees', () => {
-  it('bulldoze refunds 25% of networks, charges a growable demolition fee, civic free', () => {
+  it('bulldoze refunds 25% of older networks, charges a growable demolition fee, older civic free', () => {
     const { st, sim, A } = makeCity();
     road(A, 0, 5, 9, 5);
+    sim.advanceDay();
     const r = A.bulldoze({ x0: 0, z0: 5, x1: 10, z1: 6 }, true);
     expect(r.cost).toBeCloseTo(-50);
     A.zone({ x0: 0, z0: 0, x1: 4, z1: 4 }, Zone.ResLow);
     placeBuilding(sim, growable(st, 'res_shack.r1.1', 1, 1, 1, 1));
     expect(A.bulldoze({ x0: 1, z0: 1, x1: 2, z1: 2 }).cost).toBeGreaterThan(0);
     A.plop('civ_police_station', 20, 20, 0);
+    sim.runDays(31);
     const civ = A.bulldoze({ x0: 20, z0: 20, x1: 22, z1: 22 });
     expect(civ.ok).toBe(true);
     expect(civ.cost).toBe(0);
@@ -223,6 +227,193 @@ describe('CityActions: bulldoze / plop / terraform / trees', () => {
     expect(r.affected).toBe(16);
     expect(r.cost).toBe(48);
     expect(st.trees[0]).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('CityActions: fresh refunds (FH-07a)', () => {
+  it.each([[0, 25000], [1, 12500], [20, 12500], [29, 12500], [30, 0], [31, 0]])('coal plant on day %i refunds §%i', (days, refund) => {
+    const { st, sim, A } = makeCity();
+    const initial = st.funds;
+    expect(A.plop('util_coal_plant', 10, 10, 0)).toMatchObject({ ok: true, cost: 25000 });
+    const b = st.buildingAt(10, 10)!;
+    const rect = { x0: b.x, z0: b.z, x1: b.x + b.w, z1: b.z + b.d };
+    sim.runDays(days);
+    expect(b.age).toBe(days);
+    const funds = st.funds, income = st.budget.curIncome['oneoff:refund'] ?? 0;
+    const budget = structuredClone(st.budget), rng = sim.rng.state;
+    const pre = A.bulldoze(rect, true);
+    expect(pre).toMatchObject({ ok: true, cost: refund ? -refund : 0 });
+    expect(pre.refund).toBe(refund);
+    expect(pre.refundNote).toBe(days === 0 ? 'built today' : days < 30 ? 'under 30 days old' : undefined);
+    expect(st.funds).toBe(funds);
+    expect(st.budget).toEqual(budget);
+    expect(sim.rng.state).toBe(rng);
+    expect(st.buildings.has(b.id)).toBe(true);
+    expect(A.bulldoze(rect)).toEqual(pre);
+    expect(st.funds).toBe(funds + refund);
+    expect(st.budget.curIncome['oneoff:refund'] ?? 0).toBe(income + refund);
+    expect(st.buildingAt(10, 10)).toBeUndefined();
+    if (days === 0) expect(st.funds).toBe(initial);
+    expect(A.bulldoze(rect).ok).toBe(false);
+    expect(st.funds).toBe(funds + refund);
+  });
+
+  it.each([0, 40])('paused planning on day %i refunds buildings, roads and power lines through host commands', async (day) => {
+    const { st } = makeCity({}, []);
+    st.day = day;
+    const host = new LocalSimHost(st);
+    await host.start();
+    host.setSpeed(0, 'pause');
+    const tag = {}, gesture = host.beginGesture(tag);
+    try {
+      const initial = st.funds;
+      const path = lPath({ x: 2, z: 5 }, { x: 4, z: 5 });
+      expect(host.act('plop', ['util_coal_plant', 10, 10, 0], { tag, gesture }).predicted?.ok).toBe(true);
+      for (let i = 0; i < 120; i++) host.frame(0.25);
+      expect(host.act('buildNetwork', [path, Network.Road], { tag, gesture }).predicted?.ok).toBe(true);
+      expect(host.act('buildPowerLine', [path], { tag, gesture }).predicted?.ok).toBe(true);
+      for (let i = 0; i < 120; i++) host.frame(0.25);
+      expect(st.day).toBe(day);
+      expect(st.buildingAt(10, 10)!.age).toBe(0);
+      const rect = { x0: 2, z0: 5, x1: 20, z1: 20 };
+      const pre = host.preview.bulldoze(rect);
+      expect(pre.cost).toBe(-25075);
+      expect(pre.refundNote).toBe('built today');
+      const ticket = host.act('bulldoze', [rect], { tag, gesture });
+      expect(ticket.predicted).toEqual(pre);
+      await expect(ticket.done).resolves.toEqual(pre);
+      gesture.end();
+      await gesture.settled;
+      expect(st.funds).toBe(initial);
+      expect(st.budget.curExpense['oneoff:construction']).toBe(25075);
+      expect(st.budget.curIncome['oneoff:refund']).toBe(25075);
+    } finally {
+      gesture.end();
+      await host.dispose();
+    }
+  });
+
+  it.each([0, 1])('bridges and power lines over water keep their multipliers at age %i days', (days) => {
+    const { st, sim, A } = makeCity();
+    addWaterRows(st, 20, 24);
+    const net = A.buildNetwork(lPath({ x: 10, z: 18 }, { x: 10, z: 26 }), Network.Road);
+    const line = A.buildPowerLine(lPath({ x: 11, z: 18 }, { x: 11, z: 26 }));
+    expect(net.ok && line.ok).toBe(true);
+    sim.runDays(days);
+    const funds = st.funds;
+    const rect = { x0: 10, z0: 18, x1: 12, z1: 27 };
+    const refund = (net.cost + line.cost) * (days === 0 ? 1 : 0.25);
+    const pre = A.bulldoze(rect, true);
+    expect(pre.cost).toBe(-refund);
+    expect(A.bulldoze(rect)).toEqual(pre);
+    expect(st.funds).toBe(funds + refund);
+  });
+
+  it('overlapping extensions and no-op builds do not refresh old road or power-line cells', () => {
+    const { sim, A } = makeCity();
+    const path = lPath({ x: 5, z: 5 }, { x: 7, z: 5 });
+    A.buildNetwork(path, Network.Road);
+    A.buildPowerLine(path);
+    sim.advanceDay();
+    expect(A.buildNetwork(path, Network.Road).cost).toBe(0);
+    expect(A.buildPowerLine(path).cost).toBe(0);
+    const extended = [...path, { x: 8, z: 5 }];
+    expect(A.buildNetwork(extended, Network.Road).cost).toBe(20);
+    expect(A.buildPowerLine(extended).cost).toBe(5);
+    expect(A.bulldoze({ x0: 5, z0: 5, x1: 9, z1: 6 }).cost).toBe(-(3 * 25 * 0.25 + 25));
+  });
+
+  it.each([Network.Road, Network.Rail])('a fresh crossing refunds only its new layer over old network %i', (base) => {
+    const { sim, A } = makeCity();
+    const cell = [{ x: 10, z: 10 }];
+    A.buildNetwork(cell, base);
+    sim.advanceDay();
+    const added = base === Network.Road ? Network.Rail : Network.Road;
+    expect(A.buildNetwork(cell, added).ok).toBe(true);
+    const refund = base === Network.Road ? 20 * 0.25 + 30 : 30 * 0.25 + 20;
+    expect(A.bulldoze({ x0: 10, z0: 10, x1: 11, z1: 11 }).cost).toBe(-refund);
+    A.buildNetwork(cell, base);
+    A.buildNetwork(cell, added);
+    expect(A.bulldoze({ x0: 10, z0: 10, x1: 11, z1: 11 }).cost).toBe(-50);
+  });
+
+  it('a new power line does not refresh an old road, nor a new road an old power line', () => {
+    const { sim, A } = makeCity();
+    const a = [{ x: 5, z: 5 }], b = [{ x: 6, z: 5 }];
+    A.buildNetwork(a, Network.Road);
+    A.buildPowerLine(b);
+    sim.advanceDay();
+    A.buildPowerLine(a);
+    A.buildNetwork(b, Network.Road);
+    expect(A.bulldoze({ x0: 5, z0: 5, x1: 6, z1: 6 }).cost).toBe(-(20 * 0.25 + 5));
+    expect(A.bulldoze({ x0: 6, z0: 5, x1: 7, z1: 6 }).cost).toBe(-(20 + 5 * 0.25));
+  });
+
+  it('upgrades retain the original build day and leave their charges unchanged', () => {
+    const { sim, A } = makeCity();
+    road(A, 5, 5, 5, 5);
+    sim.advanceDay();
+    road(A, 6, 5, 6, 5);
+    expect(road(A, 5, 5, 6, 5, Network.Avenue).cost).toBe(40);
+    expect(A.bulldoze({ x0: 5, z0: 5, x1: 7, z1: 6 }).cost).toBe(-(40 * 0.25 + 40));
+  });
+
+  it('previews and rejected builds do not make old cells fresh', () => {
+    const { st, sim, A } = makeCity();
+    const path = lPath({ x: 5, z: 5 }, { x: 6, z: 5 });
+    A.buildNetwork(path, Network.Road);
+    A.buildPowerLine(path);
+    sim.advanceDay();
+    const extended = [...path, { x: 7, z: 5 }];
+    const budget = structuredClone(st.budget), funds = st.funds, rng = sim.rng.state;
+    expect(A.buildNetwork(extended, Network.Road, true).cost).toBe(20);
+    expect(A.buildPowerLine(extended, true).cost).toBe(5);
+    const rect = { x0: 5, z0: 5, x1: 8, z1: 6 };
+    expect(A.bulldoze(rect, true).cost).toBe(-12.5);
+    expect(st.funds).toBe(funds);
+    expect(st.budget).toEqual(budget);
+    expect(sim.rng.state).toBe(rng);
+    st.funds = 0;
+    expect(A.buildNetwork(extended, Network.Road).ok).toBe(false);
+    expect(A.buildPowerLine(extended).ok).toBe(false);
+    expect(A.bulldoze(rect).cost).toBe(-12.5);
+    expect(st.funds).toBe(12.5);
+  });
+
+  it('fresh cells are not saved or inherited across a same-day state replacement', () => {
+    const { st, sim, A } = makeCity();
+    const path = [{ x: 5, z: 5 }], rect = { x0: 5, z0: 5, x1: 6, z1: 6 };
+    A.buildNetwork(path, Network.Road);
+    A.buildPowerLine(path);
+    A.plop('util_coal_plant', 10, 10, 0);
+    expect(A.bulldoze(rect, true).cost).toBe(-25);
+    expect(new CityActions(sim).bulldoze(rect, true).cost).toBe(-6.25);
+    sim.replaceState(deserializeCity(serializeCity(st, { copy: true })));
+    expect(A.bulldoze(rect, true).cost).toBe(-6.25);
+    expect(A.bulldoze({ x0: 10, z0: 10, x1: 11, z1: 11 }, true).cost).toBe(-25000);
+    road(A, 7, 5, 7, 5);
+    expect(A.bulldoze(rect, true).cost).toBe(-6.25);
+  });
+
+  it('keeps growable, rubble, tree-clearing and underground demolition charges', () => {
+    const { st, sim, A } = makeCity();
+    const b = growable(st, 'res_shack.r1.1', 5, 5, 1, 1);
+    b.age = 0;
+    placeBuilding(sim, b);
+    expect(A.bulldoze({ x0: 5, z0: 5, x1: 6, z1: 6 }).cost).toBe(demolishFee(b));
+    st.trees[st.idx(10, 10)] = 3;
+    const plop = A.plop('util_coal_plant', 10, 10, 0);
+    expect(plop.cost).toBeGreaterThan(25000);
+    const coal = st.buildingAt(10, 10)!;
+    coal.flags |= BF.Burnt;
+    const fee = demolishFee(coal);
+    const refund = A.bulldoze({ x0: 10, z0: 10, x1: 11, z1: 11 });
+    expect(refund.cost).toBe(fee - 25000);
+    expect(refund.refund).toBe(25000); // gross credit, not the amount left after the rubble fee
+    expect(refund.refundNote).toBe('built today');
+    expect(st.budget.curExpense['oneoff:demolition']).toBe(demolishFee(b) + fee);
+    const subway = A.buildSubway([{ x: 20, z: 20 }]);
+    expect(A.bulldozeSubway({ x0: 20, z0: 20, x1: 21, z1: 21 }).cost).toBe(-subway.cost * 0.25);
   });
 });
 

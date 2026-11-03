@@ -10,13 +10,11 @@
  *    for this one facility); nobody without a road for a staffed service.
  */
 import type { Building, CityState } from '../../sim/CityState';
-import type { NeedTier } from '../../sim/CityState';
-import type { BuildingDef } from '../../sim/catalogTypes';
-import type { Simulation } from '../../sim/Simulation';
+import type { BuildingDef, ServiceKind } from '../../sim/catalogTypes';
 import { countFront, lotTouchesRoad } from '../../sim/economy/buildings';
 import { expectedUpkeep, opexActive, opexRateOf, opexTierOf } from '../../sim/economy/opex';
 import { newReachScratch, reachCells, tierLayer, tierProvider, type ReachScratch } from '../../sim/infra/catchments';
-import { REACH_METRICS, fundingFactor, infoOf, readEffects } from '../../sim/infra/common';
+import { REACH_METRICS, infoOf, readEffects } from '../../sim/infra/common';
 import { justiceFactors } from '../../sim/infra/justice';
 
 export type Rot = 0 | 1 | 2 | 3;
@@ -91,6 +89,23 @@ class LotTable {
 }
 const lots = new LotTable();
 
+/** fundingFactor's numbers without serviceEffectiveness's econData initialization/normalization on a read. */
+function upkeepFunding(st: CityState, service: ServiceKind | undefined): number {
+  if (!service) return 1;
+  const economy = st.systemData.economy as { v?: number; strikes?: Partial<Record<ServiceKind, number>> } | undefined;
+  const strikes = economy?.v === 1 ? economy.strikes : {};
+  const pct = st.budget?.funding?.[service];
+  if (strikes) {
+    if ((strikes[service] ?? 0) > 0) return 0;
+    const v = Math.pow(Math.max(0, (pct ?? 100) / 100), 0.7);
+    if (Number.isFinite(v)) return Math.max(0, v);
+  }
+  // The existing fallback also covers old v1 data without strikes and non-finite funding.
+  if (pct === undefined || pct === null || !isFinite(pct)) return 1;
+  const f = Math.max(0, pct) / 100;
+  return f <= 1 ? f : 1 + (1 - Math.exp(-(f - 1) * 2.5)) * 0.35;
+}
+
 /**
  * The people one more facility of `def` with footprint (x, z, w, d) would newly serve — the change in its tier's
  * stats.needs served, which the running costs are charged on (economy/opex.ts) — by the services tier engine's own
@@ -108,12 +123,9 @@ const lots = new LotTable();
  * this it lands within 3 % of the services pass on 330 sites of two bot cities, every running-cost def.
  * 0 for a staffed service without a road (it does not work), null without a need raster / tier (see upkeepHere).
  */
-export function servedHere(sim: Simulation, def: BuildingDef, x: number, z: number, w: number, d: number): number | null {
-  const st = sim.state;
+export function servedHere(st: CityState, def: BuildingDef, x: number, z: number, w: number, d: number, need: Float32Array | null): number | null {
   const tier = opexTierOf(def);
   if (!tier) return null;
-  const svc = sim.getSystem('services') as unknown as { needRaster?: (t: NeedTier) => Float32Array | null } | undefined;
-  const need = typeof svc?.needRaster === 'function' ? svc.needRaster(tier) : null;
   if (!need || need.length !== st.cells) return null;
   // (the services system's classification of the def: reach radius, metric, strength and capacity)
   const self = { def: def.id, x, z, w, d } as Building;
@@ -126,7 +138,7 @@ export function servedHere(sim: Simulation, def: BuildingDef, x: number, z: numb
   if (prov?.capacityOf) { const c = prov.capacityOf(st, self); if (c > 0) cap = c; }
   // quality (services opOf without the staffing / power / water factors of a running facility)
   const fx = readEffects(st);
-  let op = fundingFactor(st, inf.service);
+  let op = upkeepFunding(st, inf.service);
   if (tier === 'police') op *= fx.policeEffect * justiceFactors(st).policeMul;
   else if (tier === 'elementary' || tier === 'high' || tier === 'college') op *= fx.eduEffect;
   else if (tier === 'health') op *= fx.healthEffect;
@@ -193,11 +205,10 @@ export function servedHere(sim: Simulation, def: BuildingDef, x: number, z: numb
  * null when the def has a flat upkeep, the city charges no running costs, or the services system has no need raster
  * yet (the caller shows the city-wide estimate).
  */
-export function upkeepHere(sim: Simulation, def: BuildingDef, x: number, z: number, w: number, d: number): number | null {
-  const st = sim.state;
+export function upkeepHere(st: CityState, def: BuildingDef, x: number, z: number, w: number, d: number, need: Float32Array | null): number | null {
   const rate = opexRateOf(def);
   if (!rate || !opexActive(st)) return null;
-  const people = servedHere(sim, def, x, z, w, d);
+  const people = servedHere(st, def, x, z, w, d, need);
   if (people === null) return null;
   // (expectedUpkeep with nobody served = the building share)
   return expectedUpkeep(st, def, 0) + Math.max(0, people) * rate.rate;

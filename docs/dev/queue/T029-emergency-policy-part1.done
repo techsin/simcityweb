@@ -1,0 +1,1 @@
+part 1 (in range never slows; the 30 s cooldown): cloud/t029 (from local/T029-emg-policy, dev 923428d merged), report docs/dev/reports/local-T029-emg-policy.md; gates green (tsc, 2,031 tests with the fixtures, bot 196,101 = dev); browser counts on SwiftShader, slow-downs per 10 min 26->11 (bot256) and 39->17 (dense1m), 103->18 and 87->23 at the real cadence
