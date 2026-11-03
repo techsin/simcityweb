@@ -42,6 +42,8 @@ export interface CityObjectsViewContext {
   renderer: THREE.WebGLRenderer;
   canvas: HTMLCanvasElement;
   getTrafficRoutes?: (max: number) => TrafficRoute[];
+  /** FEEL-15: the plant's grid load from UtilitiesView (null until available). */
+  getPlantLoad?: (id: number) => number | null;
   /** WP8 emergency dispatch: vehicles, incidents and the continuous sim time (EmergencyVehicles) */
   getEmergency?: EmergencyFeed | null;
   /** returns the current CityState (used on 'reset' when the Simulation replaced its state) */
@@ -138,6 +140,7 @@ export class CityObjectsView implements CityObjectsViewApi {
       fill: () => fill,
     });
     this.buildings = new BuildingRenderer(state, this.culler);
+    this.buildings.plantLoad = ctx.getPlantLoad ?? null;
     this.buildings.onVisual = (v, id) => {
       this.effects.onBuilding(v, id);
       if (id === this.buildings.selected) this.previews.setSelection(v);
@@ -242,6 +245,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.subwayDirty = true;
     this.flushPower();
     this.launchSiteIndex = null;
+    this.effects.clear();
     this.buildings.rebuildAll();
     this.launchSiteIndex = new LaunchSiteIndex(this.launchSiteSource());
     this.effects.update();

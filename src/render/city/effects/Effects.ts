@@ -194,6 +194,8 @@ function findStacks(geo: THREE.BufferGeometry, key: string): V3[] {
 
 export interface Emit { x: number; y: number; z: number; kind: number; size: number; count: number; life: number; }
 
+interface PlumeState { key: string; step: number; month: number; count: number; }
+
 /**
  * Plume drift shared by every Effects instance (WP5): the simulation's prevailing wind (src/sim/infra/wind.ts
  * windVector, the same vector pollution.ts drifts smoke with and the Air legend's arrow shows). Default until the game
@@ -212,6 +214,7 @@ export class Effects {
   readonly smoke: THREE.Mesh;
   readonly flames: THREE.Mesh;
   private emitters = new Map<number, Emit[]>();
+  private plumes = new Map<number, PlumeState>();
   /** keyed transient emitter groups (disasters), with expiry time (s, effect clock) */
   private extras = new Map<string, { list: Emit[]; until: number }>();
   private clock = 0;
@@ -252,14 +255,30 @@ export class Effects {
   /** building visual changed (null = removed) */
   onBuilding(v: BuildingVisual | null, id: number): void {
     if (!v) {
+      this.plumes.delete(id);
       if (this.emitters.delete(id)) this.dirty = true;
       return;
+    }
+    const operating = !v.constructing && !v.abandoned && !v.burnt;
+    const step = operating && Number.isFinite(v.activity) ? Math.ceil(Math.max(0, Math.min(1, v.activity)) * 4) : 0;
+    const key = `${v.model}|${v.variant}|${v.cx},${v.cz},${v.baseY},${v.yaw},${v.sw},${v.sd}|${v.burning}|${v.burnt}|${v.constructing}|${v.abandoned}`;
+    const previous = this.plumes.get(id);
+    if (previous?.key === key) {
+      if (previous.step === step) return;
+      if (step === 0) {
+        // Stop immediately without reconstructing emitters; fire / dust in the same group keep running.
+        const old = this.emitters.get(id);
+        if (old) for (let i = 0; i < previous.count; i++) old[i].count = 0;
+        if (previous.count) this.dirty = true;
+        previous.step = 0;
+        return;
+      }
+      if (previous.month === v.activityMonth) return;
     }
     const list: Emit[] = [];
     const c = Math.cos(v.yaw), s = Math.sin(v.yaw);
     const toWorld = (lx: number, ly: number, lz: number): [number, number, number] => [v.cx + lx * c + lz * s, v.baseY + ly * v.sy, v.cz - lx * s + lz * c];
-    const operating = !v.constructing && !v.abandoned && !v.burnt;
-    if (operating && hasExported(v.model)) {
+    if (step > 0 && hasExported(v.model)) {
       const smoke = exportedEmitters(v.model, v.variant, 'smokeEmitters') ?? [];
       const steam = exportedEmitters(v.model, v.variant, 'steamEmitters') ?? [];
       const big = v.model === 'util_nuclear_plant';
@@ -273,7 +292,7 @@ export class Effects {
         const tall = p[1] > 25;
         list.push({ x, y, z, kind: v.model === 'util_gas_plant' ? 5 : 0, size: tall ? 8 : 4.5, count: tall ? 18 : 10, life: tall ? 13 : 8 });
       }
-    } else if (operating && v.model in SMOKY) {
+    } else if (step > 0 && v.model in SMOKY) {
       let pts: V3[] | null = null;
       if (this.geometryOf) pts = findStacks(this.geometryOf(v.model, v.variant), `${v.model}#${v.variant}`);
       const kind = SMOKY[v.model];
@@ -283,6 +302,9 @@ export class Effects {
         else list.push({ x, y, z, kind, size: kind === 5 ? 5 : 8, count: 18, life: 13 });
       }
     }
+    const plumeCount = list.length;
+    for (const e of list) e.count = Math.round(e.count * step / 4);
+    this.plumes.set(id, { key, step, month: plumeCount ? v.activityMonth : previous?.month ?? -1, count: plumeCount });
     if (v.burning) {
       const bb = v.bounds;
       const top = Math.max(2, bb.max.y);
@@ -310,6 +332,7 @@ export class Effects {
 
   clear(): void {
     this.emitters.clear();
+    this.plumes.clear();
     this.extras.clear();
     this.dirty = true;
   }
