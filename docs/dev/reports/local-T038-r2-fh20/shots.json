@@ -1,0 +1,212 @@
+[
+  {
+    "label": "standard",
+    "name": "fire",
+    "file": "emergency-standard-fire.jpg",
+    "overlay": 24,
+    "variant": 0,
+    "legend": [
+      {
+        "color": "#3fb45a",
+        "label": "Auto-dispatch"
+      },
+      {
+        "color": "#f0a030",
+        "label": "Just out of reach"
+      },
+      {
+        "color": "#c8322a",
+        "label": "Too far — fires burn down first"
+      },
+      {
+        "color": "#6a4c93",
+        "label": "No fire station"
+      }
+    ],
+    "notes": [
+      "Green: fire trucks are sent automatically in time — incidents there become statistics.",
+      "Amber: fires wait for your dispatch — a truck sent at once still makes it. Red: too far for fires; an industrial accident there is still saved by a fire truck sent within 3.0 min.",
+      "Red on a single building: no road reaches it — build one beside it."
+    ],
+    "legendDom": [
+      "Data viewsGrowthNoneZonesLand valueDesirabilityPeopleShopsTourismPrestigeServicesCrimePoliceFireHealthEducationParksEmergencyEnvironmentAir pollutionWater pollutionGarbageNoiseSoilUtilities & trafficTrafficTransitCommuteParkingPowerWaterViewUnderground viewShow subway tunnelsMore: Environment · Utilities & trafficShowFirePoliceMedicalEmergency · Fire legendAuto-dispatchJust out of reachToo far — fires burn down firstNo fire stationGreen: fire trucks are sent automatically in time — incidents there become statistics.Amber: fires wait for your dispatch — a truck sent at once still makes it. Red:"
+    ]
+  },
+  {
+    "label": "standard",
+    "name": "police",
+    "file": "emergency-standard-police.jpg",
+    "overlay": 24,
+    "variant": 1,
+    "legend": [
+      {
+        "color": "#3fb45a",
+        "label": "Auto-dispatch"
+      },
+      {
+        "color": "#f0a030",
+        "label": "Just out of reach"
+      },
+      {
+        "color": "#c8322a",
+        "label": "You must dispatch"
+      },
+      {
+        "color": "#6a4c93",
+        "label": "No police station"
+      }
+    ],
+    "notes": [
+      "Green: police cars are sent automatically in time — incidents there become statistics.",
+      "Amber / red: major emergencies there wait for your dispatch (live speed by default); minor ones get a slower unit.",
+      "Red on a single building: no road reaches it — build one beside it."
+    ],
+    "legendDom": [
+      "Data viewsGrowthNoneZonesLand valueDesirabilityPeopleShopsTourismPrestigeServicesCrimePoliceFireHealthEducationParksEmergencyEnvironmentAir pollutionWater pollutionGarbageNoiseSoilUtilities & trafficTrafficTransitCommuteParkingPowerWaterViewUnderground viewShow subway tunnelsMore: Environment · Utilities & trafficShowFirePoliceMedicalEmergency · Police legendAuto-dispatchJust out of reachYou must dispatchNo police stationGreen: police cars are sent automatically in time — incidents there become statistics.Amber / red: major emergencies there wait for your dispatch (live speed by default); mino"
+    ]
+  },
+  {
+    "label": "standard",
+    "errors": []
+  },
+  {
+    "label": "red-green",
+    "name": "fire",
+    "file": "emergency-red-green-fire.jpg",
+    "overlay": 24,
+    "variant": 0,
+    "legend": [
+      {
+        "color": "#2a7de1",
+        "label": "Auto-dispatch"
+      },
+      {
+        "color": "#f5a623",
+        "label": "Just out of reach"
+      },
+      {
+        "color": "#9b1d6a",
+        "label": "Too far — fires burn down first"
+      },
+      {
+        "color": "#c8ccd2",
+        "label": "No fire station"
+      }
+    ],
+    "notes": [
+      "Auto-dispatch: fire trucks are sent automatically in time — incidents there become statistics.",
+      "Just out of reach: fires wait for your dispatch — a truck sent at once still makes it. Too far: fires burn down before a truck arrives; an industrial accident there is still saved by a fire truck sent within 3.0 min.",
+      "A single building marked “Too far”: no road reaches it — build one beside it."
+    ],
+    "legendDom": [
+      "Data viewsGrowthNoneZonesLand valueDesirabilityPeopleShopsTourismPrestigeServicesCrimePoliceFireHealthEducationParksEmergencyEnvironmentAir pollutionWater pollutionGarbageNoiseSoilUtilities & trafficTrafficTransitCommuteParkingPowerWaterViewUnderground viewShow subway tunnelsMore: Environment · Utilities & trafficShowFirePoliceMedicalEmergency · Fire legendAuto-dispatchJust out of reachToo far — fires burn down firstNo fire stationAuto-dispatch: fire trucks are sent automatically in time — incidents there become statistics.Just out of reach: fires wait for your dispatch — a truck sent at once "
+    ]
+  },
+  {
+    "label": "red-green",
+    "name": "police",
+    "file": "emergency-red-green-police.jpg",
+    "overlay": 24,
+    "variant": 1,
+    "legend": [
+      {
+        "color": "#2a7de1",
+        "label": "Auto-dispatch"
+      },
+      {
+        "color": "#f5a623",
+        "label": "Just out of reach"
+      },
+      {
+        "color": "#9b1d6a",
+        "label": "You must dispatch"
+      },
+      {
+        "color": "#c8ccd2",
+        "label": "No police station"
+      }
+    ],
+    "notes": [
+      "Auto-dispatch: police cars are sent automatically in time — incidents there become statistics.",
+      "Just out of reach / You must dispatch: major emergencies there wait for your dispatch (live speed by default); minor ones get a slower unit.",
+      "A single building marked “You must dispatch”: no road reaches it — build one beside it."
+    ],
+    "legendDom": [
+      "Data viewsGrowthNoneZonesLand valueDesirabilityPeopleShopsTourismPrestigeServicesCrimePoliceFireHealthEducationParksEmergencyEnvironmentAir pollutionWater pollutionGarbageNoiseSoilUtilities & trafficTrafficTransitCommuteParkingPowerWaterViewUnderground viewShow subway tunnelsMore: Environment · Utilities & trafficShowFirePoliceMedicalEmergency · Police legendAuto-dispatchJust out of reachYou must dispatchNo police stationAuto-dispatch: police cars are sent automatically in time — incidents there become statistics.Just out of reach / You must dispatch: major emergencies there wait for your disp"
+    ]
+  },
+  {
+    "label": "red-green",
+    "errors": []
+  },
+  {
+    "label": "blue-yellow",
+    "name": "fire",
+    "file": "emergency-blue-yellow-fire.jpg",
+    "overlay": 24,
+    "variant": 0,
+    "legend": [
+      {
+        "color": "#2a7de1",
+        "label": "Auto-dispatch"
+      },
+      {
+        "color": "#f5a623",
+        "label": "Just out of reach"
+      },
+      {
+        "color": "#9b1d6a",
+        "label": "Too far — fires burn down first"
+      },
+      {
+        "color": "#c8ccd2",
+        "label": "No fire station"
+      }
+    ],
+    "notes": [
+      "Auto-dispatch: fire trucks are sent automatically in time — incidents there become statistics.",
+      "Just out of reach: fires wait for your dispatch — a truck sent at once still makes it. Too far: fires burn down before a truck arrives; an industrial accident there is still saved by a fire truck sent within 3.0 min.",
+      "A single building marked “Too far”: no road reaches it — build one beside it."
+    ],
+    "legendDom": [
+      "Data viewsGrowthNoneZonesLand valueDesirabilityPeopleShopsTourismPrestigeServicesCrimePoliceFireHealthEducationParksEmergencyEnvironmentAir pollutionWater pollutionGarbageNoiseSoilUtilities & trafficTrafficTransitCommuteParkingPowerWaterViewUnderground viewShow subway tunnelsMore: Environment · Utilities & trafficShowFirePoliceMedicalEmergency · Fire legendAuto-dispatchJust out of reachToo far — fires burn down firstNo fire stationAuto-dispatch: fire trucks are sent automatically in time — incidents there become statistics.Just out of reach: fires wait for your dispatch — a truck sent at once "
+    ]
+  },
+  {
+    "label": "blue-yellow",
+    "name": "police",
+    "file": "emergency-blue-yellow-police.jpg",
+    "overlay": 24,
+    "variant": 1,
+    "legend": [
+      {
+        "color": "#2a7de1",
+        "label": "Auto-dispatch"
+      },
+      {
+        "color": "#f5a623",
+        "label": "Just out of reach"
+      },
+      {
+        "color": "#9b1d6a",
+        "label": "You must dispatch"
+      },
+      {
+        "color": "#c8ccd2",
+        "label": "No police station"
+      }
+    ],
+    "notes": [
+      "Auto-dispatch: police cars are sent automatically in time — incidents there become statistics.",
+      "Just out of reach / You must dispatch: major emergencies there wait for your dispatch (live speed by default); minor ones get a slower unit.",
+      "A single building marked “You must dispatch”: no road reaches it — build one beside it."
+    ],
+    "legendDom": [
+      "Data viewsGrowthNoneZonesLand valueDesirabilityPeopleShopsTourismPrestigeServicesCrimePoliceFireHealthEducationParksEmergencyEnvironmentAir pollutionWater pollutionGarbageNoiseSoilUtilities & trafficTrafficTransitCommuteParkingPowerWaterViewUnderground viewShow subway tunnelsMore: Environment · Utilities & trafficShowFirePoliceMedicalEmergency · Police legendAuto-dispatchJust out of reachYou must dispatchNo police stationAuto-dispatch: police cars are sent automatically in time — incidents there become statistics.Just out of reach / You must dispatch: major emergencies there wait for your disp"
+    ]
+  },
+  {
+    "label": "blue-yellow",
+    "errors": []
+  }
+]
