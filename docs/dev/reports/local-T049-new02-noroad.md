@@ -1,5 +1,90 @@
 # T049: no-road model tint in the Emergency view
 
+## Round 2: T040 BudgetedWork integration
+
+Based on the worker's merged `f6d9ce1`, including T040 hook `6bf60ee` and committed round 1 (`e6378e3`;
+infra metadata is apart in `6b282da`). The round-2 changes are uncommitted. The migration and tint tests pass,
+but the requirement that T040's unchanged `buildingWork.test.ts` pass is blocked by two fixture assumptions below.
+
+### Round-2 changes by file
+
+- `src/render/city/buildings/BuildingRenderer.ts`: register `noRoadBudgetWork` from a field initializer beside
+  the no-road fields. `pending()` only checks the refresh iterator; `step()` advances one bounded unit through
+  `nextNoRoad()`. The work's `clear()` owns the original mask fill/upload flag, iterator and revision reset.
+  When T040 sets `disposed` before clearing works, the same callback releases the texture, shared uniform reference
+  and building-only material. Removed the lane's obsolete `noRoadFirst` scheduler flag.
+- Restored `drainBuilds()`, `clear()` and `dispose()` to **byte-identical method text from `6bf60ee`**. Also checked
+  byte identity of `addBudgetedWork`, `stepBudgetedWork` and `drainBudgetedWork`; no hook code changed. All other
+  source hunks remain as round 1, including model/proxy/fade shaders and readout wiring. T040 supplies alternation,
+  the single 2 ms deadline, work round-robin and lifecycle calls.
+- `tests/render/buildingNoRoad.test.ts`: added one regression that checks actual work registration and spies the
+  hook's pending/step calls. With queued geometry and 0.75 ms units, its first frame is build/mask/build = 2.25 ms;
+  later frames drain both queues under the same deadline and preserve the model masks. Existing 15 tests unchanged.
+- Updated this report. **No round-2 infra, outside-named-source, cloud-held-file or T040-test hunks.** The existing
+  round-1 infra hunk remains committed separately for B2; no new request for a cloud-held source file.
+
+### Round-2 checks
+
+TypeScript ran through the quiet gate and passed:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsc --noEmit
+```
+
+All eight requested test files ran separately, sequentially, through the same quiet-gated native-config/thread
+command recorded under round 1 (the known default-config `spawn EPERM` workaround; no config edits):
+
+| Test file | Round-2 result |
+|---|---|
+| `tests/render/buildingNoRoad.test.ts` | 16 passed |
+| `tests/render/buildingWork.test.ts` | 9 passed, **2 failed** |
+| `tests/render/buildingBudget.test.ts` | 22 passed |
+| `tests/render/lod.test.ts` | 35 passed |
+| `tests/infra/overlays.test.ts` | 22 passed |
+| `tests/render/overlaysCrisp.test.ts` | 5 passed |
+| `tests/render/overlayReadiness.test.ts` | 2 passed |
+| `tests/worker/hygiene.test.ts` | 17 passed, 1 existing W1.2 import-graph case skipped |
+
+Total: **128 passed, 2 failed, 1 skipped**. `git diff --check` and UTF-8/no-BOM checks pass. Neither T040 test file
+was edited. No full suite or browser/GPU process was run.
+
+Both failures are the parameterized `preserves build order, frame counts and clock checks with no registered work`
+cases (0.65 / 3.25 ms), at `tests/render/buildingWork.test.ts:112`. Their empty-drain assertion expects zero new
+clock reads; it observes one. Required field registration means `budgetedWorks.length` is 1 even while no-road work
+is idle. T040's unchanged `drainBuilds()` therefore selects `drainBudgetedWork()`, which reads the deadline before
+calling `pending()`. Our cheap `pending()` cannot change that earlier clock read. All nine actual hook scheduling
+and lifecycle tests, the new integration regression, and T040's geometry-budget tests pass.
+
+**Request for the T040 owner / lead:** isolate the genuinely unregistered path in those two compatibility fixtures
+(their `run()` helper), temporarily excluding automatic lane registrations and restoring them before teardown.
+That makes the stated fixture condition true after lanes adopt the mandatory hook. The alternative would require
+changing T040's hook contract. Neither is permitted by this round's unchanged-hook/unchanged-test instructions,
+so no workaround was added and the gate is explicitly left failing. This is the round's plan/code mismatch; the
+hook otherwise expresses every no-road ordering and priority requirement.
+
+The bot reran through the quiet gate using the already-established Node TypeScript fallback (`tsx` remains absent
+from the offline cache):
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --no-warnings --experimental-transform-types --experimental-loader file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T049/scratch/resolve-ts.mjs tools/simbot.ts --size 128 --years 15 --seed 7
+```
+
+Exit 0; Medium / plains; 2015 residents **[61124, 93804, 37971] = 192,899**, identical. Output is the assigned
+scratch directory's `simbot-128-y15-s7-round2-native.log`. No balance/RNG/simulation/readout changes in round 2;
+no separate Hard, 256x60 or two-process hash run. The prescribed tsx command and expected numbers remain recorded
+under round 1 below.
+
+Left for the lead: resolve the two T040 fixture failures, then full Vitest; real shader compilation, screenshots,
+GPU/frame cost and old-save playability. Browser acceptance checklist remains:
+
+- [ ] Roadless Obelisk red on its model in Emergency · Fire at 300 m and 700 m, including proxies and LOD fades.
+- [ ] Road-connected buildings unchanged in fixed-camera A/B screenshots at both distances, LOW/HIGH and day/night.
+- [ ] No misleading amber ring around the roadless lot and its auto-dispatch neighbors.
+- [ ] Switching views/responders, paused delivery, road edits and old-save load/reset leave no stale tint; geometry
+  and mask refresh keep progressing during growth/disaster bursts within the shared frame budget.
+
+## Round 1 report (historical)
+
 Implemented on `local/T049-new02-noroad`, based on T040 at `8ff4fd0`. Changes are uncommitted; no push,
 merge, branch change or `.done` file. No browser, full-suite run or GPU timing run was started.
 

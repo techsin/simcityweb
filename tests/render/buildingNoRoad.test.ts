@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { registerAllModels } from '../../src/assets/builders';
 import { CELL_SIZE } from '../../src/core/constants';
 import { Overlay } from '../../src/core/types';
-import { BuildingRenderer } from '../../src/render/city/buildings/BuildingRenderer';
+import { BuildingRenderer, type BudgetedWork } from '../../src/render/city/buildings/BuildingRenderer';
 import { TileCuller } from '../../src/render/city/common/batch';
 import { getCityMaterial, getGhostMaterial } from '../../src/render/city/common/cityMaterial';
 import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
@@ -22,6 +22,8 @@ type Internals = {
   noRoadData: Uint8Array;
   noRoadTex: THREE.DataTexture;
   noRoadWork: Iterator<BI> | null;
+  noRoadBudgetWork: BudgetedWork;
+  budgetedWorks: BudgetedWork[];
   fadeLayer: { mesh: THREE.BatchedMesh; n: number };
   refreshNoRoad(bi: BI): void;
   build(bi: BI): void;
@@ -321,6 +323,45 @@ describe('Emergency model tint', () => {
 });
 
 describe('Emergency model mask budget', () => {
+  it('registers model refreshes with the shared work hook and charges them to the queued-build deadline', () => {
+    const { st, br } = town();
+    const old = Array.from({ length: 8 }, (_, i) => add(st, br, 2 + (i % 4) * 5, 2 + Math.floor(i / 4) * 5));
+    for (let i = 0; i < 5; i++) add(st, br, 2 + i * 5, 20, {}, true);
+    const internal = inside(br), work = internal.noRoadBudgetWork;
+    expect(internal.budgetedWorks).toContain(work);
+    const pending = vi.spyOn(work, 'pending'), step = work.step.bind(work), build = internal.build.bind(br);
+    const trace: string[] = [];
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const stepped = vi.spyOn(work, 'step').mockImplementation(() => {
+      const progressed = step();
+      if (progressed) { trace.push('mask'); now += 0.75; }
+      return progressed;
+    });
+    vi.spyOn(internal, 'build').mockImplementation((bi) => {
+      build(bi);
+      trace.push('build');
+      now += 0.75;
+    });
+    setBuildingOverlay(st, Overlay.Emergency, EMG_FIRE, true, true);
+    for (let frame = 0; frame < 40; frame++) {
+      const start = now;
+      br.update(0);
+      expect(now - start).toBeLessThanOrEqual(2 + 0.75);
+      if (frame === 0) {
+        expect(trace).toEqual(['build', 'mask', 'build']);
+        expect(now).toBe(2.25);
+        expect(br.pendingBuilds).toBe(3);
+      }
+      if (!br.pendingBuilds && !internal.noRoadWork) break;
+    }
+    expect(pending).toHaveBeenCalled();
+    expect(stepped).toHaveBeenCalled();
+    expect(br.pendingBuilds).toBe(0);
+    expect(internal.noRoadWork).toBeNull();
+    for (const b of old) expectMask(st, br, b, 255);
+  });
+
   for (const maskCost of [0.65, 3.25]) it(`refreshes existing lots despite a sustained queue of expensive geometry (${maskCost} ms mask entries)`, () => {
     const { st, br } = town(64);
     const old = Array.from({ length: 15 }, (_, i) => add(st, br, 2 + (i % 5) * 5, 2 + Math.floor(i / 5) * 5));
