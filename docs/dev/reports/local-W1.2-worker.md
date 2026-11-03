@@ -131,8 +131,10 @@ timeout, raised in `796d1b9`).
 
 ### Left open
 
-- WASM_PLAN §7.8's worker-mode browser check with the kernels on (`?simworker=1&simwasm=…`).
-- The protector probe in the browser and the 10-minute run (decision 7); the held-brush check of §5.4.
+- *(Done in the fix round: qa-worker run B, below.)* WASM_PLAN §7.8's worker-mode browser check with the kernels on
+  (`?simworker=1&simwasm=…`).
+- *(Done in the fix round, decision 11 for the protector.)* The protector probe in the browser and the 10-minute run
+  (decision 7); the held-brush check of §5.4.
 - Real-GPU timings: the freeze test's 1 s, boot time, FPS with the worker (SwiftShader here).
 - T039 (W1.3): the worker's own IndexedDB, the journal and its boot replay; worker mode then drops `journal: false`.
 
@@ -142,7 +144,8 @@ timeout, raised in `796d1b9`).
    the worker's boot replay, and with T033's mirror bound here its journal-only unload write replaced the worker's
    snapshot in localStorage (the new hosts.test case). Worker mode keeps W1.2's snapshot-only recovery (up to 30 s of
    edits can be lost, as §6 says for this dev flag).
-2. **No hello deadline in the browser**: the App passes no `scriptLoaded`. The region screen's spawn is the prefetch,
+2. *(Superseded in the fix round: the region screen prefetches the chunk and the App passes `scriptLoaded`; decision
+   10.)* **No hello deadline in the browser**: the App passes no `scriptLoaded`. The region screen's spawn is the prefetch,
    and the page cannot see a module worker's download finish without a second fetch; the design forbids a deadline
    while the script may still be downloading. A script error still fails fast, and the 20 s boot deadline runs from
    the worker's hello.
@@ -151,12 +154,12 @@ timeout, raised in `796d1b9`).
 4. **"Continue on the main thread" holds for the rest of the visit** (no second crash loop); a reload returns to the
    worker. The crash choices skip the recovery prompt (the player already chose); "Restart from autosave" leaves a
    crash snapshot in place until the next save clears it, as an unsaved exit does.
-5. **The watchdog's stall rule** (`STALL_MS` = 1 s, above). A worker that is really silent is still caught at the
+5. *(Tightened in the fix round: a stall now counts as `STALL_MS` at most.)* **The watchdog's stall rule** (`STALL_MS` = 1 s, above). A worker that is really silent is still caught at the
    first poll on time after a stall; a main thread stalled for good keeps the verdict waiting, which is the page's
    problem, not the worker's.
 6. **The freeze test's 1 s** is real-GPU wall time: on SwiftShader a frame takes seconds and days come with frames,
    so qa-worker gates "no crash path, and the days resume" and reports the time to the first day with the frames.
-7. **Not run here**: the protector probe in the browser (both isolates) and its 10-minute run. The page's own
+7. *(Superseded in the fix round: the worker's probe and the 10-minute runs, below.)* **Not run here**: the protector probe in the browser (both isolates) and its 10-minute run. The page's own
    protector is invalidated by lodBuilder's transfer list today (tools/bench/trafficCore/protector.ts says so), and a
    worker-side probe needs a dev-only hook in simWorker. S1's tests/perf/protector.test.ts runs the production worker
    loop under worker_threads (60 days, both kernel modes, both negative controls). The latency is measured, not gated
@@ -166,6 +169,99 @@ timeout, raised in `796d1b9`).
    to the merge step, which gates the merged tree, rather than chasing dev with another full round here.
 9. **Left as the desktop listed it**: FallbackWorldView and FallbackObjectsView still rebuild from their first state on a
    `'reset'` (the degraded views miss a resync); NOTE-041 item 2 names WorldView only.
+10. *(Fix round.)* **The hello deadline waits for the prefetch 60 s at most** (`PREFETCH_WAIT_MS` in main.ts). §4.1 starts
+    the 10 s hello timeout when the prefetch has completed or the city is entered, whichever is later, and a download
+    that stalls without an error event never completes. So the deadline starts 60 s after entry at the latest: such a
+    city falls back to the main thread about 70 s after entry instead of showing the loading screen for good. 60 s is my
+    choice (a slow connection's worker chunk, 269 KB gzipped, should be in by then); the lead may prefer another figure.
+11. *(Fix round.)* **Risk 7 in Chromium 153: there is no ArrayBufferDetaching protector to keep intact.** In Playwright's
+    Chromium 153.0.8010.12 (V8 15.3), a detach deoptimizes no TurboFan typed-array loop, in fresh classic and module
+    workers and on the page, and V8 traces no invalidation of it, while a protector this V8 does have (ArraySpecies) is
+    traced on the right thread and deoptimizes the TurboFan code that depends on it (`local-W1.2/protector-chromium153.txt`;
+    node 22's V8 shows both effects for both protectors). So the probe of §5.4 reads intact whatever the worker does, and
+    "the worker's protector intact after 10 min" cannot be observed in this browser as written. The conservative reading:
+    qa-worker runs the probe's positive and negative controls first (its `control` step, every run) and gates the
+    worker's probe only where a detach deoptimizes it, so it gates on a V8 that has the protector (an older Chrome, or
+    the desktop's if it differs) with no change; here it checks that the worker isolate made its probe (natives syntax,
+    the dev flag and TurboFan code reached it) and logs a NOTE. What still holds here: the 10-minute soaks in both kernel
+    modes, the wasm heap that never grew (the one detach the worker could cause by itself), and S1's node test with the
+    protector, the production worker loop under worker_threads. Whether the J0 work (keeping the page's protector)
+    still pays on this V8, where every typed-array access may carry the check, is a real-GPU timing question for the lead.
+
+### Fix round after the review (Nov 3)
+
+Commits: `7cc9705` (the fixes), `91db55f` and `9c4438a` (dev `5b12abe` and `48991d7` merged in: T037d, T036 step 2, B3;
+one conflict, `main.ts`: dev's FH-21 `t0` and FEEL-05 founding day beside the worker boot), `9844af5` and `22339b4` (the
+probe in Chromium 153, below), `a8f3521`, `ffa2fa4`, `83a1636` and `e47f273` (qa-worker), and this report's commit. A correction to
+`9844af5`'s message: `%GetOptimizationStatus` 41 is TurboFan code in Chromium 153's V8 (its bit layout differs from node
+22's, where TurboFan reads 81), not Maglev; `22339b4` reads the tier with `%ActiveTierIsTurbofan`.
+
+| Finding | Severity | Change | Evidence |
+|---|---|---|---|
+| W1.2 acceptance: the worker's protector intact after 10 min (§5.4, risk 7) | major | `src/worker/protectorProbe.ts`: simWorker makes the probe first thing at boot when `init.flags.dev` is set (before the city is deserialized and before the wasm loader), reads it once per frame (sticky), and answers `debug.verify` (§2.2's debug op, acked in the command sequence) with it, the worker's wasm state and its digest: `WorkerSimHost.debugVerify()`. `&simdev=1` turns `flags.dev` on in a production build. qa-worker launches Chromium with `--js-flags=--allow-natives-syntax` and checks the probe after boot, after the freeze, after `--soak-min`, and in the founded city of the region step, with `?simwasm` unset and `=wasm`. Since `22339b4` the browser worker makes the probe when the bundle is evaluated (simWorker.ts imports protectorProbe.ts first), before every other module and the init. **Chromium 153's V8 has no ArrayBufferDetaching protector** (decision 11), so qa-worker first runs the probe's controls and gates the probe only where a detach deoptimizes it | Chromium 153: a detach deoptimizes the TurboFan probe loop in no isolate (fresh classic and module workers, the page) and V8 traces no invalidation, while ArraySpecies is traced on the worker thread and deoptimizes the code that depends on it (`local-W1.2/protector-chromium153.txt`; node 22 shows both). qa-worker's `control` step repeats it in every run. Both runs below: the worker made its probe after boot, after the freeze, after **10 minutes** at speed 3 and in the founded city (NOTE: not evidence in this V8); the soak alive and advancing; with `=wasm`, blur on wasm in the worker and its heap never grown, at boot and after the soak. S1's node test (V8 with the protector) passes in the full vitest |
+| G4: a pre-spawned port that queued an error before the host listened | minor | `WorkerLink.start()` listens after the boot assigned the link (and stops if a queued item closed it); the init is posted only if the boot is still running | workerTransport `a pre-spawned port that queued a failure delivers it inside listen()`: a script error, a wrong-version hello, a fatal after hello; each rejects with HostCrashed, calls `onCrash(…, true)` once, terminates the port and posts nothing. Fails on the old code with the reviewer's `ReferenceError: Cannot access 'link' before initialization`. In the browser: qa-worker's `region fallback` step (a worker that fails to load while the region screen shows) |
+| G6: a crash between `bootWorker` and the CityScene | minor | `enterCity` builds no scene on a host that closed meanwhile (it sets the city's host and lets the deferred crash dialog decide), and a crash while the scene starts (`start()`, `waitForScene`) is logged instead of thrown as a load error; the dialog then opens at the end of `enterCity` on `crashed` or `isDisposed` | code path only: the window is a paint and a chunk import, not reproduced in the browser (as the reviewer found) |
+| G7 / O6: main kept the generated CityState of a new city | minor | `startNewCity` passes the worker's replica to `enterCity` and drops its own state, as `playCity` does | qa-worker `region`: `sceneOnReplica: true` (the scene's `opts.state` is the host's replica), not dirty, "Saved" |
+| R11: no hello deadline, no prefetch | minor | `src/worker/simWorkerUrl.ts` (Vite's `?worker&url`: the same single worker chunk) gives the page the worker's URL; the region screen prefetches it (`<link rel=prefetch>`, or a fetch into a Blob where prefetch is unsupported), then spawns the worker from it. `bootWorker` passes `scriptLoaded`: the prefetch's end, which is never before entry; quickstart and Continue start the prefetch with the spawn. A download that stalls without an error starts the hello deadline 60 s after entry at the latest (decision 10) | qa-worker `region`: the prefetch link and exactly one worker on the region screen, the same worker for the founded city |
+| qa-worker against §5.4 | minor | Every tool op through the real tools (road, zone, power line, a park plopped where the tool's own preview is ok, dezone, bulldoze, trees, the held level brush, which must end on one release sound, no error sound and no toast); size 256 by default; the crash dialog's screenshot waits until its fade-in animations have finished; the region screen's prefetch, pre-spawn and Found City; a pre-spawned worker that fails to load; the protector checks above; `--simwasm` | runs below |
+| Host-driven scheduler mode untested | minor | `tests/infra/schedulerHostDriven.test.ts`: 12 frames of run() against a `beginFrame` / `stepOnce` drain on the same tasks (step order and credits equal frame by frame, the budget binding); the same with 5 ms between every two steps; `endFrame` abandons a frame | with `if (yielding) t0 += nowMs() - pause` turned into a no-op, the second case fails (`frame 0: expected [ 'edit', 'edit', 'edit' ] to deeply equal [ …, 'traffic' ]`) |
+| The watchdog's stall rule | minor | `WorkerLiveness.advance` counts at most `STALL_MS` of any gap, so after a stall the page needs (nearly) the full timeout of on-time silence again, not one ping's round trip | the watchdog test: a 30 s stall, then 8.5 s of on-time polls give no verdict and the next does (1 s of the stall counted); fails on the old code (`expected 250 to be null`). The boot-timeout and R11 ping tests now move their clocks in steps the 250 ms polls see as on time |
+| The done marker; two crash surfaces | minor | the `.done` marker names what stays open; `WorkerSimHost.crash` reports the crash to the error sink only when no `onCrash` takes it, so the App's crash dialog is the one surface | workerTransport `a fatal message from the worker after ready takes the crash path`: no `host` report with `onCrash`, one without. qa-worker `crash`: no `.err-card` under the dialog, and the dialog itself fully shown in the screenshot now (`local-W1.2/qa-fixround-a-06-crash-dialog.jpg`) |
+
+#### Gates of the fix round
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | clean (`22339b4` and after) |
+| Full vitest (`SIM_FIXTURES`, `SIM_SNAP` set), on `83a1636` (the code of `22339b4`; the later commits change `tools/qa-worker.mjs` only) | **220 files passed, 1 skipped; 2,174 tests passed, 3 skipped**; 508 s. It includes S1's protector test on the production worker loop (node's V8, which has the protector) and the new tests above |
+| The worker, probe and scheduler files alone (workerTransport, recovery, schedulerHostDriven, perf/protector, hygiene) | 5 files, 66 passed, 25 s |
+| A new test fails with its fix reverted (rerun here) | schedulerHostDriven, with `if (yielding) t0 += nowMs() - pause` turned into a no-op: `frame 0: expected [ 'edit', 'edit', 'edit' ] to deeply equal [ 'edit', 'edit', 'edit', 'traffic' ]` |
+| The bot, 128 x 15, seed 7, on `9844af5` with `22339b4`'s probe change in the working tree (the sim, worker host and save code of the final tree: the later commits change the probe's comments and `tools/qa-worker.mjs`) | `residents [ 61124, 93804, 37971 ]` = 192,899, dev's reference since B3 (NOTE-045) |
+| qa-worker run A: production build, size 256, quality low, `--soak-min 10`, `?simwasm` unset (`qa-worker-fixround-a.txt`) | **35 of 37**; both FAILs were the harness's own (fixed in `ffa2fa4`, passed in run B): the park's plop was acked ok (§152, at 104,127) but counted under `defId`, a field buildings do not have (`def`); the held brush reached flat (27 applications in 102 s, the 28th refused, one release sound, no error sound) and the one toast was the music player's "Now playing" |
+| qa-worker run B: the same with `--simwasm wasm`, on `83a1636`'s harness (`qa-worker-fixround-b.txt`) | **39 of 39 passed**, the park, the held brush and the two wasm checks included |
+
+**Run A, step by step** (Chromium 153.0.8010.12, SwiftShader; main-thread long tasks up to 40 s, the watchdog read none
+of them as a dead worker):
+- **control**: the technique works (ArraySpecies traced on the worker thread, its TurboFan user deoptimized); a detach
+  deoptimizes the probe: no, so the worker's probe is not evidence here (decision 11).
+- **boot**: quickstart on a worker host in 9.0 s, paused; the worker made its probe (`01-boot`).
+- **tools** (`02-tools`): road (41 cells), zone (180), power line (33), dezone (180 to 162), bulldoze (41 to 38), trees
+  (127,773 to 127,855), each acked with nothing pending; the park and the held brush as above.
+- **play, verify, save, hidden, load**: day 90 to 131 at speed 3; the worker's digest equals the replica's, twice;
+  Ctrl+S, "City saved"; a hidden tab's save replies in 124 ms; Continue boots a new worker on the save (day 131, the edits),
+  running at speed 1, to day 152 (`03-saved`, `04-loaded`).
+- **latency** (post to ack applied, 40 `setTax`, not gated): p50 0.6 ms, p95 2.9 ms, p99 3.1 ms.
+- **freeze**: 15 s frozen, then no crash path and the days resume (first day 466 ms after resume, with the first frame).
+- **soak**: 10 minutes at speed 3, day 217 to 479, the page heap steady at 141 MB, alive throughout
+  (`qa-fixround-a-05b-after-soak.jpg`).
+- **crash**: the fatal's dialog fully shown, no error card under it (`qa-fixround-a-06-crash-dialog.jpg`); Restart from
+  autosave on a new worker. **recover**: the dialog offers the snapshot; Recover restores tax 13.5 on a new worker.
+- **watchdog**: the dialog after 14.3 s (10 visible seconds of on-time silence, the stalls counted as 1 s each); Continue
+  on the main thread runs the save on a local host. **fallback**: the main thread and one toast.
+- **region**: the region screen has the prefetch link and exactly one worker (`qa-fixround-a-10-region-prespawned.jpg`);
+  Found City boots on that worker (still one), paused, "Saved", not dirty, the scene's state the replica; it runs
+  (`qa-fixround-a-11-region-founded.jpg`). **region fallback**: a pre-spawned worker that failed to load: the founded city
+  on the main thread, one toast, no page error.
+- **console**: no errors in normal play.
+
+**Run B** (`--simwasm wasm`; the app the same build, the harness with `ffa2fa4`'s two fixes and `83a1636`), where it
+differs from run A:
+- **boot**: quickstart in 7.0 s; the kernels load in the worker through the browser loader (simWasm.ts: fetch, then instantiateStreaming or its arrayBuffer() fallback):
+  `state: ready`, blur on wasm, a 64 MiB heap, `grows: 0` (WASM_PLAN §7.8's worker mode).
+- **tools**: all nine, the park counted (0 to 1, acked §152 at 104,127, "no road access" as its warning) and the held
+  level brush flat after 27 applications in 171 s, one release sound, no error sound, no toast.
+- **latency** p50 0.6 ms, p95 4.2 ms, p99 4.4 ms; a hidden tab's save in 143 ms; the freeze's first day 167 ms after resume.
+- **soak**: 10 minutes at speed 3, day 212 to 557, the page heap steady at 141 MB; after it the worker made its probe, and
+  the kernels still on wasm with the heap never grown (`qa-fixround-b-05b-after-soak.jpg`).
+- **watchdog**: 12.8 s (`qa-fixround-b-07b-watchdog-dialog.jpg`); **recover**: "Recovered Glengate (Aug 5, 2001)" on a new
+  worker with tax 13.5 (`qa-fixround-b-07d-recovered.jpg`); crash, fallback, region and region fallback as in run A.
+
+Every screenshot of both runs is in `scratchpad/t034work/qa-r3a/` and `qa-r3b/`; I looked at each. In both runs the
+crash-dialog screenshots waited out the 30 s settle limit (the modal's finished `pop` animation, fill `both`, stays in
+`getAnimations()`), and each shows the dialog fully drawn. `e47f273` fixes that wait; it has not run in the browser.
+
+**Not covered by the runs**: the G6 window (a crash between the worker's Ready and the scene: code path only); real-GPU
+numbers (SwiftShader: function, not timings).
 
 ## The rebuild on T032's code (the local worker)
 
