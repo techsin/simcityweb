@@ -128,3 +128,32 @@ tests check that its journal put starts synchronously. No timer sleeps establish
 
 Runtime behavior, the actual T032 packet integration, atomic W1.3 restore, real-worker recovery, and browser unload
 durability could not be verified here. None of those is presented as a completed runtime gate.
+
+## Cloud carry-over (Nov 3)
+
+The desktop stopped mid-integration. The cloud lane finisher took over on `cloud/t033`, from `local/W1.1b-recovery`
+(b777b79) with dev `923428d` merged in (no conflicts). Everything above was written before T031, T032 and T026 merged,
+against a base without `LoopbackSimHost`; it was re-run and re-checked here, not trusted.
+
+### Gap list (required versus done, before this carry-over)
+
+Read: the task file; NOTE-032, NOTE-037, NOTE-038 and NOTE-044 (the NOTEs that name T033); WORKER_DESIGN §4.1-§4.5,
+§5.3's `recovery.test.ts` row, §6's W1.1 and W1.3 rows, R7 and O6; POLISH_PLAN FH-07a with its Acceptance and Risk;
+the T031 and T032 reports' T033 hand-offs; this report; the diff against dev.
+
+| # | Required | State on the desktop branch |
+|---|---|---|
+| G1 | `SimHost.recovery` stays the page's narrow `writeNow` seam | **Broken.** The lane re-exported its whole mirror class as `SimHost.RecoveryMirror`; with T032 merged, tsc fails twice (PacketSimHost's writer, loopbackHost.test's stub). |
+| G2 | The mirror wired into the host: posts, acks, saves (`onSaving`, `saved`, failures), snapshots and resync | **Missing.** The mirror exists only as a unit; no host constructs or feeds it. In `?simworker=loopback` the page has no journal, and PacketSimHost's `snapped` handler writes localStorage without a journal (`storeRecoveryLs(marker, payload)`), which deletes any LS journal. |
+| G3 | The loopback core replays a journal bound to its loaded save after init and before the first tick (§4.3) | **Missing.** `SimCore.replayRecoveryJournal` exists, but nothing calls it; tests call it by hand. |
+| G4 | FH-07a: a bulldoze carries the refund it was charged | **Partial.** Written before T026: it keeps the ack's net `cost` only and books any difference on one line. With FH-07a merged the ack has `refund`; a replay at the base's day re-dates the refund rule (a day-20 bulldoze becomes a same-day one), so the gross refund must be carried and both budget lines reconciled. |
+| G5 | Excluded ops never journaled, including `holdCalendar` (NOTE-041 / T031: on the wire, not in `JournalOp`) | **Partial.** The whitelist excludes it, but no test names it. |
+| G6 | The snapshot budget reserves the journal through one shared constant | **Duplicated.** T032's ProtocolInbox builds snapshots with a literal `128 * 1024`; the lane added a second builder (`SimCore.copyRecoverySnapshot`) that no host uses. |
+| G7 | A save or snapshot reply in a packet dropped by a resync | **Gap (T032 x T033).** The resync rejects those requests as "interrupted" although the write happened: the mirror never learns the new base (its journal stays bound to a replaced save and is discarded at restore), and the app reports "Saving failed". |
+| G8 | Restoring: the localStorage journal is moved into IndexedDB at title time "as today" (§4.3 Restoring) | **Missing.** `findRecoverySnapshot` adopts only a payload and then clears the whole LS slot, journal included. |
+| G9 | `recovery.test.ts` as §5.3 lists it | **Unit level only**, all 17 against a hand-driven core; no case through `LoopbackSimHost`. Never run on the desktop (Vitest could not start there). |
+| G10 | tsc, the full vitest, the bot at 196,101 | **Not run** (tsc now fails, G1). |
+
+Out of scope, left to T039 (W1.3) as the plan rows say: the worker's own journal read and boot replay with the
+save-before-ready handshake, `LocalSimHost`'s boot replay, the title screen's journal-only offer, and the snapshot
+cadence of min(30 s, 90 sim days).

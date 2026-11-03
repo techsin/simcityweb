@@ -19,8 +19,7 @@
  * Pure codec (encodeCityDelta / applyCityDelta / packBytes / unpackBytes) is headless and unit-tested.
  */
 import { getCityRecord, getRecoveryBase, putCityRecord, cityKey } from './cities';
-import type { KV } from './db';
-import { openedKV, openKV } from './db';
+import { openedKV, openKV, type KV } from './db';
 import { buildRecoverySnapshot, rebuildRecoveredCity, type JournalBase, type PendingRecovery, type RecoveryCity, type RecoveryMarker, type RecoverySnapshot, type SnapshotInfo, type WriteResult } from './recoveryCodec';
 import * as idb from './recoveryIdb';
 import * as ls from './recoveryLs';

@@ -163,11 +163,12 @@ export class SimCore {
   /** FH-07a: the journal records the refund that was charged, not the rule. A replay at the base's day would re-date
    *  it (a day-20 bulldoze becomes a same-day one), so both budget lines and the funds move to the ack's amounts. */
   private keepCharge(cost: number, refund: number | undefined, replayCost: number, replayRefund = 0): void {
-    const st = this.sim.state, b = st.budget;
-    const charged = refund ?? replayRefund;
-    const refundDelta = charged - replayRefund, feeDelta = (cost + charged) - (replayCost + replayRefund);
-    if (refundDelta) b.curIncome['oneoff:refund'] = (b.curIncome['oneoff:refund'] ?? 0) + refundDelta;
-    if (feeDelta) b.curExpense['oneoff:demolition'] = (b.curExpense['oneoff:demolition'] ?? 0) + feeDelta;
+    const st = this.sim.state, b = st.budget, line = (to: Record<string, number>, key: string, d: number) => { if (d) to[key] = (to[key] ?? 0) + d; };
+    if (refund !== undefined) {
+      line(b.curIncome, 'oneoff:refund', refund - replayRefund);
+      line(b.curExpense, 'oneoff:demolition', (cost + refund) - (replayCost + replayRefund));
+    } else if (replayCost > cost) line(b.curIncome, 'oneoff:refund', replayCost - cost); // only the net charge is known
+    else line(b.curExpense, 'oneoff:demolition', cost - replayCost);
     if (!st.config.sandbox && st.config.difficulty !== 'sandbox') st.funds -= cost - replayCost;
   }
 
