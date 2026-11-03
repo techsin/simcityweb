@@ -1,5 +1,32 @@
 # local-W1.2-worker — T034, the simulation worker side
 
+## Cloud carry-over (Nov 3)
+
+Branch `cloud/t034` (worktree `scratchpad/co/t034`), from `local/W1.2-worker` (`ceff394`), with dev `98f4cf2` (T033
+merged) merged in (`26d2a57`). Read: the task file; NOTE-032, 035, 037, 038, 039, 040, 041 and 044 (the NOTEs that
+name T034); WORKER_DESIGN §2.10, §3.1, §4.1-§4.5, §5.4, §6 row W1.2 with its acceptance, R11, R14, R16, O6, O7; the
+T033 report's T034 hand-off (its decision 2); this report; the diff against dev.
+
+### Gap list (required versus done, before this carry-over)
+
+| # | Required (source) | State on `local/W1.2-worker` |
+|---|---|---|
+| G1 | Dev merged after T033 lands (NOTE-044's chain) | **Missing.** One conflict, `PacketSimHost.reply`: T034's `settle()` seam against T033's journal calls and its "no caller waits" rule. Beyond the conflict, T033's journal mirror binds in every packet host with persistence and localStorage, so it would bind in `WorkerSimHost` too, and its journal-only unload write replaces the snapshot that W1.2's `SnapshotMirror` keeps in localStorage (R14: no journal in W1.2). |
+| G2 | §6 W1.2, NOTE-044: the App runs the worker behind `?simworker=1` | **Missing.** The App always runs the local host (CityScene picks loopback for `?simworker=loopback`). |
+| G3 | §4.1 step 5: the CityScene is built from the ready host | **Missing.** CityScene builds its own host from a `CityState`. |
+| G4 | §4.1 step 1: the worker is pre-spawned on the region screen | **Missing.** `browserSimWorker()` exists; nothing calls it. |
+| G5 | §4.1 step 4, R11: a boot failure falls back to `LocalSimHost` with one toast; the loading screen shows the boot phase | **Missing** (the host's `onBoot` / `onCrash` hooks have no caller). |
+| G6 | §4.4: a crash in play writes recovery as a crash and offers restart from autosave, recover, continue on the main thread | **Missing** (no UI); the host wrote `why: 'exit'` (SnapshotWhy had no `'crash'`; T033 added it). |
+| G7 | O6, R14: main reads the record without deserializing it in worker mode | **Missing** on the App path (`loadCity`). |
+| G8 | §6 acceptance: `qa-worker.mjs` green without the journal check, the freeze test included; the browser checks of a real worker city (play, save, load, the crash path) | **Missing.** `tools/qa-worker.mjs` does not exist; no browser run. |
+| G9 | Vite bundles the worker (`new URL('./simWorker.ts')`) and its wasm URL | **Not verified** (browser only). |
+| G10 | §6 acceptance: the worker's protector intact after 10 minutes; latency measured | **Not run.** |
+| G11 | Gates: tsc, the full vitest, hosts.test, S1's protector on the real worker path, the bot | tsc, `tests/worker`, the protector and the bot ran on the desktop; **the full vitest never ran**; all of them must be re-run after G1. |
+| G12 | The desktop's mid-edit save (`bddba48`) | Four lines in `WorkerSimHost` (`isDisposed`, the closed check after the lazy modules load): read line by line, correct, kept. |
+| G13 | NOTE-039 (NaN in `exactDigest`), NOTE-041 items 1 and 2, NOTE-040 (which WorkerSimHost stays) | Done: canonical NaN came with T032's review (`998c6e5`); the worker's `holdCalendar` handler (`71866c4`); WorldView's resync rebuild (`9382870`); T032's host stays (above). |
+| G14 | The report says exactly what changed in `scheduler.ts`, for B2 (NOTE-044) | **Partial**: prose only. |
+
+
 ## The rebuild on T032's code (the local worker)
 
 Branch `local/W1.2-worker`, committed locally, no `.done`. I pushed nothing; a usage-limit snapshot (`bddba48`, not
