@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DevType } from '../../src/core/types';
 import type { GameContext } from '../../src/game/context';
 import { taxFactor } from '../../src/sim/economy/demand';
+import { TAX_GROWTH_WARNING_RATE } from '../../src/sim/economy/tuning';
 import { BudgetPanel } from '../../src/ui/panels/BudgetPanel';
 import { LocalSimHost } from '../../src/worker/SimHost';
 import { newState } from '../infra/cityGen';
@@ -92,8 +93,12 @@ describe('Budget tax effects (FH-09)', () => {
     }
   });
 
+  it('uses the signed NEW-05 sweep threshold for the red warning', () => {
+    expect(TAX_GROWTH_WARNING_RATE).toBe(14);
+  });
+
   it.each([
-    [9.5, false, false], [10, true, false], [13, true, false], [13.5, false, true], [14, false, true],
+    [9.5, false, false], [10, true, false], [13, true, false], [13.5, true, false], [14, false, true],
   ] as const)('at %s%%, individual and All sliders have warn=%s and bad=%s', (rate, warn, bad) => {
     const f = fixture();
     for (const master of f.masters) input(master, rate);

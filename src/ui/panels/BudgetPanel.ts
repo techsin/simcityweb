@@ -10,7 +10,7 @@ import { money, moneySigned, signClass, titleCase } from '../format';
 import { isOneOff, sumOneOff, sumRecurring } from '../TopBar';
 import { watchFor, type WatchHandle } from '../../worker/SimHost';
 import { taxFactor } from '../../sim/economy/demand';
-import { APPROVAL, TAX_NEUTRAL } from '../../sim/economy/tuning';
+import { APPROVAL, TAX_GROWTH_WARNING_RATE, TAX_NEUTRAL } from '../../sim/economy/tuning';
 
 const TAX_GROUPS: { label: string; color: string; devs: DevType[] }[] = [
   { label: 'Residential', color: 'var(--res)', devs: [DevType.R1, DevType.R2, DevType.R3] },
@@ -526,8 +526,8 @@ function serviceCost(expense: Record<string, number>, s: ServiceKind): number {
 type Forecast = { income: Record<string, number>; expense: Record<string, number>; totalIncome: number; totalExpense: number };
 
 function taxColor(sl: HTMLInputElement, rate: number): void {
-  toggleClass(sl, 'warn', rate > 9.5 && rate < 13.5);
-  toggleClass(sl, 'bad', rate >= 13.5);
+  toggleClass(sl, 'warn', rate > 9.5 && rate < TAX_GROWTH_WARNING_RATE);
+  toggleClass(sl, 'bad', rate >= TAX_GROWTH_WARNING_RATE);
 }
 
 /** The sim applies the tax slope to the resident-weighted average, not separately to each wealth tier. */
