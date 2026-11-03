@@ -1,363 +1,395 @@
-# T041 — gradual tax response, A/B review
+# T041 — gradual tax response, signed Option B
 
-**Recommend B for the lead's D2 decision.** B is installed and passes the bot gates, both actual balance Vitest
-checks under verified shadows, installed-source state-hash repeats, 152 focused cases and final typecheck.
-All three dev endpoints meet ±3%, every fixed-tax step loses 3–15%, and delayed 12% taxes reduce population 6.2326%.
-D2 approval, the full suite and browser checks remain with the lead.
+**Option B is signed under D2**, by [NOTE-050-new05-option-b.md](../queue/NOTE-050-new05-option-b.md), following
+[NOTE-048-desk-requests.md](../queue/NOTE-048-desk-requests.md). B's source, constants and bot strategy are unchanged.
+This round merges fresh dev, directly confirms all six base runs, explains the accepted annual-path and cash effects,
+and records signed B under `polish`. Rejected A remains archival only.
 
-Branch `local/T041-new05-tax`, based on `fb1531f`. A remains preserved in WIP commit `098d038`, the immutable
-scratch bundles and the fixture's `polish` arrays. B is recorded separately as active `polishB`; every prior
-array's values and source bytes are unchanged. Review changes remain uncommitted; no push or `.done` file.
+bot reference: residents [ 62577, 92903, 38351 ] = 193831
 
-**Annual-path limitation:** B's endpoints meet ±3%, but **95 of 135 annual population rows still differ by more
-than 3%** from dev. Per-run mean absolute deviations are **2.7951% / 4.8103% / 3.9649%**, with maxima
-**7.8926% / 10.6816% / 7.4622%**. A's corresponding means are 15.6010%/21.7405%/20.7406%, maxima
-35.2734%/38.6721%/37.3086%. B substantially improves the annual path; it does not leave that path unchanged.
+Branch `local/T041-new05-tax` includes dev `683d02b` and NOTE-050 through merge `3011ac8`. D2's comparator is fresh
+dev without T041, not rejected A or B's own recorded baseline. Since `fb1531f`, dev adds T038's fireworks/palette and
+T036 step 3's New Year/toast pacing plus documents; `src/sim/**`, tools/simbot.ts and dev's balance fixture are unchanged.
+Direct fresh runs confirm the recorded `b3` populations and funds. No retune was needed.
 
-`S` below means the lane scratch folder, and `Q` the shared quiet gate; full paths appear with the commands.
+## Fresh base gates and source provenance
 
-## Decision evidence
+All six fresh base drivers completed with `failures: []`. Every existing phase0 population floor, funds, EQ,
+unemployment/access, utilities and emergency gate remains in force. Minimum daily funds are positive in every run.
 
-| Gate | Dev / required result | Preserved A | Implemented B |
-|---|---|---:|---:|
-| 128 × 15 seed 7 | 192,899; ±3% range 187,112.03–198,685.97 | 228,544 (+18.4786%) | 193,831 (+0.4832%) |
-| 256 × 60 seed 7 | 1,513,835; range 1,468,419.95–1,559,250.05 | 1,654,270 | 1,511,394 (−0.1612%) |
-| 256 × 60 seed 11 | 1,427,340; range 1,384,519.80–1,470,160.20 | 1,632,302 | 1,468,252 (+2.8663%) |
-| Fixed10→14% one-point population losses | Every step 3–15% | 8.4152–13.0250%: pass | 3.2565–12.8503%: pass |
-| 12% from year 21, 256 × 30 seed 7 | At least 3% below same model's base | −12.6490%: pass | −6.2326%: pass |
-| Base phase0/funds/EQ/utilities/emergency driver gates | All existing gates retained | Pass | All genuine gates pass |
-| Actual balance/wrong-choice Vitest and final tsc | Required | Passed | Both verified shadows pass; installed-source tsc exit0 |
+| Run | Fresh dev population | Signed B population | B minus dev | Dev/B minimum daily funds |
+|---|---:|---:|---:|---:|
+| 128 × 15 seed 7 | 192,899 | 193,831 | +932 (+0.4832%) | 3,774 / 5,033 |
+| 256 × 60 seed 7 | 1,513,835 | 1,511,394 | −2,441 (−0.1612%) | 4,125 / 4,481 |
+| 256 × 60 seed 11 | 1,427,340 | 1,468,252 | +40,912 (+2.8663%) | 3,957 / 4,459 |
 
-B's short residents are **`[62577,92903,38351] = 193,831`**, versus dev `[61124,93804,37971] = 192,899`:
-`[+1453,−901,+380]`, total **+932 (+0.4831543968605332%)**. Its long deltas are **−2,441 (−0.16124610674214826%)**
-for seed 7 and **+40,912 (+2.866310759875012%)** for seed 11. The completed annual-path comparison below qualifies
-this endpoint agreement.
+Every endpoint is inside its ±3% D2 range: 187,112.03–198,685.97; 1,468,419.95–1,559,250.05; and
+1,384,519.80–1,470,160.20. Both seed-7 endpoints are also within ±1%; no retune is needed under the signed ±3% condition. The short resident change is `[+1453, −901, +380]` from dev's
+`[61124, 93804, 37971]`. The tiers are R$/R$$/R$$$, not residential/commercial/industrial families.
 
-## Formula and unchanged constants
+| Final canonical state | SHA-256 |
+|---|---|
+| Fresh dev 128 seed 7 | `946863a2eb877657b10fb336993f6a2e897ad1a8209b2d29ebd03487c029e0bd` |
+| Signed B 128 seed 7 | `02f7c8a16b7d5fbc91a5d7fc11fd672a7a1e423a5aaf9c43c5fe4f97271eb1f1` |
+| Fresh dev 256 seed 7 | `001b2df7fa1be7817c2f6167f348d2c39da55ac362e982478190cc0e473d4edf` |
+| Signed B 256 seed 7 | `c27a732ac985788aa61c7df651dc195ab7ad272867d591971117d5c7fd406ae9` |
+| Fresh dev 256 seed 11 | `f945aec1d89d111fa4126001585fa8c534c211a754682037078ed385f4e3bbc4` |
+| Signed B 256 seed 11 | `46a11ef1b6a52cbcf30cdc99c94a87bed161a11dc2ed8f9c4dfa146c2c565a2a` |
 
-Both models retain the existing wanted allowance `w[d]`, eligibility, carry/debt banking and building-size limits.
-For family `f`, `W = sum(w[d])` and `C = base[f] + frac * capacity / sqrt(1 + capacity / 25000)`.
-Let `M = sum(w[d] * min(1, demand[d] / full[f])) / W` for positive W. Each subtype receives
-`w[d] * min(1, C * response / W)`; empty families receive zero.
+Fresh dev came from native Git archive `S/round3-dev683d02b.tar`, revision
+`683d02b401716d96b2a512c88f31e65b7a08c810`, archive SHA-256
+`6208fa37d8a011391a6813379a46763129b16711702420087c8ff60e4fdff858`. The audits
+`S/round3-build-dev-683d02b.json` and `S/round3-build-ledger-dev-683d02b.json` both passed: each checks all 85 project
+inputs against archived dev, verifies project configuration and records dependencies. Exact archived bytes overlay the
+three economy modules, tools/simbot.ts and the fixture; every other loaded project source matches archived dev.
+Node's `spawnSync` call to Git hit EPERM; the root created the archive with native Git instead, and the audits
+verify its commit metadata, hash and all loaded project bytes. This creates no other worktree or branch change.
 
-| Parameter | Dev | Preserved A | Implemented B |
+Dev128's primary record is `S/round3-dev-base128.json`, produced by the audited ledger-dev driver. The long dev
+records use `round3-dev-gates/round3-dev-driver.js`. B uses `round3-B-gates/check-gates.js`. The six records are named
+`round3-{dev,B}-base128.json` and `round3-{dev,B}-base256-{s7,s11}.json`.
+
+## Formula and constants
+
+For eligible subtype d in family f, positive absolute demand a[d] and displayed demand[d] retain the original gates
+`a[d] > 0 && demand[d] > .01`. Existing wanted growth and the new family response are:
+
+```text
+w[d] = max(a[d] * .06, min(a[d], minimum[f]))
+W[f] = sum(w[d])
+M[f] = sum(w[d] * min(1, demand[d] / full[f])) / W[f]
+C[f] = base[f] + .0006 * capacity[f] / sqrt(1 + capacity[f] / 25000)
+response[f] = M[f] ** .1
+allowance[d] = w[d] * min(1, C[f] * response[f] / W[f])
+```
+
+Empty families receive zero. Capping each subtype before the wanted-weighted mean prevents hot demand masking weak
+demand. Family scaling preserves wanted subtype proportions. Small wanted growth below the reduced cap remains
+unchanged; weaker demand can bring that cap below previously uncapped growth. Existing carry/debt banking and the
+absolute-demand building-size limit remain intact.
+
+| Constant | Signed B | Dev |
+|---|---|---|
+| `GROWTH_DEMAND_FULL` | `{ R: 1, C: .1, I: .1 }` | No displayed-demand throughput response |
+| `GROWTH_DEMAND_EXPONENT` | `.1` | None |
+| `GROWTH_MAX_BASE` | `{ R: 19, C: 8, I: 9 }` | `{ R: 18, C: 7, I: 8 }` |
+| `GROWTH_MAX_FRAC` / `SCALE` | `.0006` / `25000` | Same |
+| `GROWTH_RESPONSE` / `MIN_ALLOW` | `.06` / `{ R: 25, C: 10, I: 10 }` | Same |
+| `TAX_NEUTRAL` / `TAX_DEMAND_PIVOT` | `9` / `11` | Neutral 9 |
+| `TAX_DEMAND_RESPONSE` | `.3`, above-pivot curvature | None |
+| `TAX_FACTOR_MIN` / `MAX` | `.05` / `1.5` | Same |
+
+`TAX_SENS` remains `[.35, .5, .8, .4, .5, .7, .55, .8, .3, .35, .45, .75]` in DevType order, including its
+use in desirability. Through 11%, taxFactor preserves the exact dev expression and clamp. Above 11%:
+
+```text
+delta = rate - 11
+F11 = 1 - TAX_SENS[d] * (11 - 9) / 9
+factor = clamp(F11 - (TAX_SENS[d] / 9) * delta / (1 + .3 * delta), .05, 1.5)
+```
+
+Value and first derivative match at 11%. The multiplication/division order matches calibration; no intermediate
+shape quotient changes rounding. The rational tail preserves demand headroom. The concave response and lower C/I
+thresholds moderate a second penalty on their already labor/headroom-filtered demand. Small additive startup
+compensation replaces A's large permanent capacity-fraction increase.
+
+No RNG draw sites or simulation save keys are added. Existing carry, smoothed demand and optional growth scan state
+load through the existing schema. Tax receipts, approval rules and default bot strategy remain unchanged.
+
+## Fixed-tax and late-tax acceptance
+
+All twelve rates stay fixed throughout each sweep run. Managed base is separate. All five fresh fixed-tax runs
+match the signed values and pass the monotonicity and 3–15% adjacent-loss gates.
+
+| 128 × 15 seed 7 | Fresh population | Adjacent loss | Loss from fixed 10% |
+|---|---:|---:|---:|
+| Managed base | 193,831 | — | — |
+| 10% | 193,860 | — | 0% |
+| 11% | 187,547 | 3.2565% | 3.2565% |
+| 12% | 173,781 | 7.3400% | 10.3575% |
+| 13% | 167,809 | 3.4365% | 13.4380% |
+| 14% | 146,245 | 12.8503% | 24.5615% |
+
+All populations decrease and every adjacent step costs 3–15%. The first adjacent loss exceeding 10% occurs at
+**14%**. NOTE-050 chooses that interpretation for taxColor; the earlier 12% cumulative-loss recommendation is obsolete.
+
+| 256 × 30 seed 7 | Fresh population | Fresh funds |
+|---|---:|---:|
+| Matching B base | 521,916 | 3,207,591 |
+| 12% from year 21 | 489,387 | 10,946,923 |
+| Difference | −32,529 (−6.2326121445%) | — |
+
+The matching B base is the 2030 prefix of its fresh 60-year seed-7 run; the horizon controls the loop, not the mayor strategy. The required late-tax population loss is at least 3%. `--tax-start-year 21` preserves normal management before year 21,
+then fixes every rate before its first simulation day. Finance changes the tax array at day 7200. Year-20 metrics
+and population therefore remain equal to base while its serialized boundary contains the new rates. Fresh evidence
+matches 20 annual metric objects and the first 19 full-state hashes exactly; the year-20 hash difference is the
+expected newly fixed tax array.
+
+Historical `population vs partB` misses remain in diagnostics, but that obsolete reference is not the current
+baseline gate. High fixed taxes intentionally lose population; their tax gates do not require obsolete partB floors.
+Actual base balance tests retain every threshold, independent phase0 floor and wrong-choice comparison.
+
+`S/round3-summary.json` passes: all 135 annual population comparisons and return years are recorded; all 135 B
+state hashes and full gate-year objects match signed B exactly; fresh dev has zero non-timing differences from b3.
+It also verifies the five fresh sweep runs and four adjacent steps, the late-tax loss of 6.232612144483021%, and the exact delayed/base prefix.
+Fresh sweep evidence is `S/round3-B-tax-{10..14}.json`; late evidence is `S/round3-B-tax12-from21-256.json`.
+
+## Accepted annual-path effects
+
+NOTE-050 explicitly signs 95 of 135 annual population rows moving more than ±3%. The fresh artifact
+`S/round3-summary.json` confirms those comparisons and return years against direct fresh dev; the earlier
+`S/review-ci-metrics.json` remains historical evidence. Endpoint agreement is not annual equivalence.
+
+| Run versus dev | Rows | Mean absolute population delta | Maximum / year | Rows outside ±3% |
+|---|---:|---:|---|---:|
+| 128 × 15 seed 7 | 15 | 2.7951% | 7.8926% / 2004 | 6 |
+| 256 × 60 seed 7 | 60 | 4.8103% | 10.6816% / 2008 | 47 |
+| 256 × 60 seed 11 | 60 | 3.9649% | 7.4622% / 2002 | 42 |
+| Total | 135 | 4.2107% | 10.6816% / 2008 | 95 |
+
+The requested first return within the band can be temporary, so the sustained return is also stated:
+
+| Run | First outside ±3% | First return within ±3% | Last outside ±3% | Within ±3% for every remaining year from |
+|---|---:|---:|---:|---:|
+| 128 × 15 seed 7 | 2002 | 2008 | 2007 | 2008 |
+| 256 × 60 seed 7 | 2002 | 2003, temporary | 2053 | 2054 |
+| 256 × 60 seed 11 | 2002 | 2004, temporary | 2053 | 2054 |
+
+These years were derived from the annual comparisons in the fresh summary, confirming the earlier
+`annualDeviation.yearsOutside3Percent` lists and fixture populations. At fixture precision, B changes these
+simulation columns against fresh dev:
+
+| Columns | 128 × 15 seed 7 years | 256 × 60 seed 7 years | 256 × 60 seed 11 years |
 |---|---|---|---|
-| Family response | Existing cap clipping | `M`, scalar full=.575 | `M ** .1`, full `{R:1,C:.1,I:.1}` |
-| Additive cap R/C/I | 18 / 7 / 8 | 24.15 / 9.2 / 10.35 | 19 / 8 / 9 |
-| Capacity fraction | .0006 | .000805 | .0006 |
-| Tax factor through 11% | Original linear, clamped | Original through9%; reciprocal above9% | **Exact dev expression through 11%** |
-| Higher-tax response | Original linear | Reciprocal coefficient.5 | C1 rational tail, coefficient.3 above 11% |
+| `pop,funds,approval,eq,commute,jobs,buildings` | 2001–2015 | 2001–2060 | 2001–2060 |
+| `unemployment` | 2011–2015 | 2042–2060 | 2042–2060 |
+| `access` | 2011–2015 | 2042–2056,2058–2060 | 2042–2049,2051–2060 |
 
-A above9% uses `clamp(1/(1+.5*TAX_SENS[d]*(rate−9)/9), MIN, MAX)`. B through 11% retains
-`clamp(1−TAX_SENS[d]*(rate−9)/9, MIN, MAX)`. Above11%, with `delta=rate−11` and
-`F11=1−TAX_SENS[d]*2/9`, B uses `clamp(F11−(TAX_SENS[d]/9)*delta/(1+.3*delta), MIN, MAX)`.
-Value and first derivative match at 11%; the bounded tail preserves demand headroom as rates rise.
+All 135 population rows move by design. Year remains unchanged. The two timing columns are remeasured for all
+135 rows; they are diagnostics, not evidence of a performance improvement. Exact earlier comparisons remain in
+`S/review-ci-metrics.json`; fresh dev reproduces its non-timing reference values exactly.
 
-Common unchanged constants: neutral 9%; `TAX_SENS=[.35,.5,.8,.4,.5,.7,.55,.8,.3,.35,.45,.75]` in DevType order;
-`TAX_FACTOR_MIN=.05`, `TAX_FACTOR_MAX=1.5`; `GROWTH_RESPONSE=.06`; `GROWTH_MIN_ALLOW={R:25,C:10,I:10}`;
-`GROWTH_MAX_SCALE=25000`. Desirability sensitivities, tax receipts and approval rules retain their existing rules.
-No RNG draw sites or simulation save keys are added. Existing carry and smoothed demand continue on later days.
+## Why short-run funds rise 22%
 
-B's concave response exposes demand gradually while C/I's lower threshold avoids double-penalizing their
-labor/headroom-filtered demand. Small additive startup compensation replaces A's large permanent capacity-fraction
-increase. A increases additive caps 34.17%/31.43%/29.38% and fraction 34.17% over dev; B increases only additive
-caps 5.56%/14.29%/12.50%, retaining the dev fraction. Neither changes a seed-specific or tax-start timing rule.
+**B ends with §32,394 more because it spends §65,636 less on one-off work, mainly §77,827 less construction,
+which outweighs §33,242 less recurring net cash.** The cash rise is a spending/layout effect; it is not an increase
+in operating surplus or a new grant.
 
-A's raw R cap is **1.341667 × dev at every capacity**, because its additive term and capacity fraction have that
-same ratio while the scale stays fixed. Controlled counterfactuals are **nonadditive**, not causal shares:
+`S/round3-cashflow-comparison.json` passes exact conservation for 180 monthly ledgers per model. Its B observer
+matches all 15 unobserved B yearly hashes and metric objects, with no residual. Both models start at §100,000.
 
-| A counterfactual, other terms held fixed | 2015 population | Difference from A 228,544 |
+| Cumulative 15-year cash flow | Fresh dev | Signed B | B minus dev |
+|---|---:|---:|---:|
+| Recurring income | 7,741,447 | 7,807,195 | +65,748 |
+| Recurring expense, including scheduled loan payments | 6,555,520 | 6,654,510 | +98,990 |
+| Recurring net | 1,185,927 | 1,152,685 | −33,242 |
+| One-off income | 120,000 | 120,000 | 0 |
+| One-off expense | 1,259,578 | 1,193,942 | −65,636 |
+| One-off net | −1,139,578 | −1,073,942 | +65,636 |
+| Closing funds | 146,349 | 178,743 | +32,394 |
+
+| One-off expense detail | Fresh dev | Signed B | B minus dev |
+|---|---:|---:|---:|
+| Construction | 1,046,280 | 968,453 | −77,827 |
+| Zoning | 207,628 | 220,426 | +12,798 |
+| Demolition | 5,670 | 5,063 | −607 |
+
+Tax receipts increase by §121,550, but other recurring income falls §55,802 and recurring costs rise §98,990.
+The table therefore does not attribute the final cash gain to stronger operating earnings. Both take §120,000 in
+loans and finish with zero loan balance; B's net loan cash is §1 worse, not a hidden funding source. The unchanged
+bot's affordability thresholds send the changed growth layout down a different spending path. Ledger evidence
+quantifies that effect without treating nonadditive layout outcomes as independent causal shares.
+
+| Endpoint funds | Fresh dev | Signed B | Difference | Change |
+|---|---:|---:|---:|---:|
+| 128 × 15 seed 7 | 146,349 | 178,743 | +32,394 | +22.1348% |
+| 256 × 60 seed 7 | 14,233,559 | 14,534,867 | +301,308 | +2.1169% |
+| 256 × 60 seed 11 | 16,451,097 | 16,910,754 | +459,657 | +2.7941% |
+
+Later SIM money comparisons must use signed B's recorded rows.
+
+## Rejected A remains archival
+
+NOTE-048 rejects A's +18.5% short uplift. A is retained only in commit `098d038`, immutable bundles and historical
+evidence, not the active fixture or a fallback recommendation.
+
+| Historical A base | Residents R$/R$$/R$$$ | Population | Funds | Evidence in S |
+|---|---|---:|---:|---|
+| 128 × 15 seed 7 | 73577 / 111744 / 43223 | 228,544 | 208,751 | `accepted-base-128.json` |
+| 256 × 60 seed 7 | 516391 / 775252 / 362627 | 1,654,270 | 23,961,672 | `accepted-base-256-s7.json` |
+| 256 × 60 seed 11 | 504458 / 770053 / 357791 | 1,632,302 | 24,659,932 | `accepted-base-256-s11.json` |
+
+A used scalar full=.575, linear family response M, bases 24.15/9.2/10.35, fraction .000805, and reciprocal
+`1 / (1 + .5 * SENS * (rate - 9) / 9)` above 9%. A retained growth response .06, minimum allowance
+`{ R: 25, C: 10, I: 10 }`, cap scale 25000, neutral 9%, the unchanged TAX_SENS array and .05/1.5 clamps listed above.
+Its raw R cap was 1.341667× dev at every capacity. Historical controlled counterfactuals on A produced:
+
+| A counterfactual, other terms fixed | 2015 population | Difference from A 228,544 |
 |---|---:|---:|
 | Restore dev R base and R fraction | 155,232 | −73,312 |
-| Restore dev C/I bases and C/I fractions | 220,020 | −8,524 |
+| Restore dev C/I bases and fractions | 220,020 | −8,524 |
 | Restore all dev caps/fractions | 136,851 | −91,693 |
 | Restore only dev linear tax factor | 197,272 | −31,272 |
 
-In particular, the dev-tax counterfactual is nonadditive: A's reciprocal target adds 31,272 with A's cap/response
-held fixed, not a general independent share of the total increase.
-Evidence: `S/ablation-{Rcap-dev,CIcap-dev,caps-dev,tax-dev}-128.json`.
+These are nonadditive layout/affordability responses, not independent causal shares. Evidence remains in
+`S/ablation-{Rcap-dev,CIcap-dev,caps-dev,tax-dev}-128.json`.
 
-## Complete tax sweep
+| Historical A fixed tax | Population | Adjacent loss |
+|---|---:|---:|
+| 10% | 247,701 | — |
+| 11% | 215,438 | 13.0250% |
+| 12% | 194,858 | 9.5526% |
+| 13% | 178,213 | 8.5421% |
+| 14% | 163,216 | 8.4152% |
 
-128 × 15 seed 7, Medium/plains/water .2; all twelve rates fixed from setup. The managed base mayor is a separate row.
+A's 256 × 30 seed-7 base was 717,660; 12% from year 21 gave 626,883, a loss of 90,777 (12.6490260012%).
+The sweep lives in `S/grid-capped-paired-M1.15-tax-{10..14}.json`; late evidence is
+`S/accepted-tax12-from21-256.json`, compared with the 2030 prefix of `S/accepted-base-256-s7.json`.
+Those tax passes did not justify A's broad base uplift. The bounded search found B; it does not establish globally
+minimal base change or complexity.
 
-| Tax | A population | A adjacent loss | B population | B adjacent loss | B loss from fixed10 |
-|---|---:|---:|---:|---:|---:|
-| Managed base | 228,544 | — | 193,831 | — | — |
-| 10% | 247,701 | — | 193,860 | — | 0% |
-| 11% | 215,438 | 13.0250% | 187,547 | 3.2565% | 3.2565% |
-| 12% | 194,858 | 9.5526% | 173,781 | 7.3400% | 10.3575% |
-| 13% | 178,213 | 8.5421% | 167,809 | 3.4365% | 13.4380% |
-| 14% | 163,216 | 8.4152% | 146,245 | 12.8503% | 24.5615% |
+## Fixture normalization and scope
 
-A funds/approval by managed,10,11,12,13,14 are respectively 208751/79.38,674628/78.29,714769/74.37,
-1182632/70.53,1145283/67.87,1605781/60.93. A cumulative losses from 10% are 0/13.0250/21.3334/28.0532/34.1077%.
-Both sweeps meet every 3–15% step. Fixed-tax records may miss obsolete partB population floors by the intended tax
-loss; managed bases must retain every genuine phase0/balance gate.
+Pre-T041 dev has five arrays per run—`preSpec`, `phase0`, `partB`, `b1`, `b3`—for **15 original historical arrays**.
+The prior count of 18 included A's three rejected `polish` arrays; adding review B made 21. The applied signed recording
+replaces A under `polish` and removes the duplicate B alias: **15 historical arrays + 3 signed B arrays = 18 total**.
+A remains in git and immutable evidence. `S/round3-record-polish-applied.json` reports `status: applied`, active
+reference `polish`, 135 fresh B rows, all 15 historical arrays byte-for-byte preserved and 18 total arrays. This is
+explicit rejection/normalization, not a new baseline hiding a miss.
 
-A evidence: `S/grid-capped-paired-results.json`, `S/grid-capped-paired-M1.15-tax-{10,11,12,13,14}.json`.
-B evidence: `S/review-ci-starter-R19-F0.0006-tax-{10,11}.json`,
-`S/review-ci-tax-rational-A0.3-tax-{12,13,14}.json`, `S/review-ci-tax-results.json`.
+Round 3 changes only the fixture and report. The economy implementation, simbot and tests are retained unchanged
+from signed B in `2521f5c`. The carried T041 implementation is:
 
-## Base and delayed-tax runs
+- `src/sim/economy/growth.ts`: capped wanted-weighted family response and scalar concavity; original bank/limits.
+- `src/sim/economy/tuning.ts`: family thresholds, exponent, startup caps and tax pivot/tail constants.
+- `src/sim/economy/demand.ts`: exact legacy through 11%, continuous rational tail above 11%.
+- `tools/simbot.ts`: optional fixed-tax start year, validation, usage and bot metadata.
+- `tests/sim/taxResponse.test.ts`: 51 response, bank, eligibility, RNG, old-save and tax-curve cases.
+- `tests/sim/botTaxStart.test.ts`: 15 parsing, persistence and exact year-21-boundary cases.
+- `tests/sim/balance.test.ts`: task-authorized hunk outside explicit owns; uses `baseline.reference` while retaining
+  every numeric threshold and independent phase0/wrong-choice gate.
+- `tests/sim/fixtures/balance-baseline.json`: task-authorized hunk outside explicit owns; signed `polish` rows,
+  15/60/60 years, D2 note, original 15 arrays preserved and rejected-A/duplicate-B cleanup.
+- `docs/dev/reports/local-T041-new05-tax.md`: signed decision, fresh comparison, cash/annual effects and verification.
 
-| Model/run | Residents R$/R$$/R$$$ | Population | Funds | Minimum sampled daily funds |
-|---|---|---:|---:|---:|
-| A128 × 15s7 | 73577/111744/43223 | 228,544 | 208,751 | 5,884 |
-| B128 × 15s7 | 62577/92903/38351 | 193,831 | 178,743 | 5,033 |
-| A256 × 60s7 | 516391/775252/362627 | 1,654,270 | 23,961,672 | 4,242 |
-| B256 × 60s7 | 409265/736035/366094 | 1,511,394 | 14,534,867 | 4,481 |
-| A256 × 60s11 | 504458/770053/357791 | 1,632,302 | 24,659,932 | 5,317 |
-| B256 × 60s11 | 407999/712764/347489 | 1,468,252 | 16,910,754 | 4,459 |
-| A256 × 30s7,12% from21 | 219855/288556/118472 | 626,883 | 12,199,843 | 4,242 |
-| B256 × 30s7,12% from21 | 150086/234328/104973 | 489,387 | 10,946,923 | 4,481 |
+There are no `src/sim/infra/*` hunks, worker/host/save implementation changes or cloud-held UI edits. No UI commits
+are made: the user's cloud ownership and no-commit instructions prevail over NOTE-050's suggested commit workflow.
 
-The three resident entries are **wealth tiers**, not residential/commercial/industrial families. Endpoint money
-also moves and must be reflected in later SIM comparisons:
+The final audit is recorded in `S/round3-final-audit.json`: nine task files are UTF-8 without BOM; the other seven task files retain their signed-B bytes; the 15 historical arrays retain exact fresh-dev bytes and values; `polish` contains the 135 fresh B rows and there are 18 arrays total. Native Git scope and whitespace checks cover the complete worktree diff.
 
-| Base endpoint | Dev funds | B funds | B minus dev | Change |
-|---|---:|---:|---:|---:|
-| 128 × 15 seed7 | 146,349 | 178,743 | +32,394 | +22.1348% |
-| 256 × 60 seed7 | 14,233,559 | 14,534,867 | +301,308 | +2.1169% |
-| 256 × 60 seed11 | 16,451,097 | 16,910,754 | +459,657 | +2.7941% |
+## Completed prior checks and fresh final validation
 
-Source: the dev/B endpoint funds in `S/review-ci-metrics.json`; no claim that money remains unchanged.
-
-A's short total changes +35,645 (+18.478582055894535%); maximum EQ by year 15 is 101.0318. Its long seed-7 run has
-199,510 in 2015 and 717,660 in 2030, funds 3,209,438. A's delayed 2030 tax loss is 90,777 (12.649026001170471%).
-Its strict seed-11 prefix has 195,471 in 2015 and 496,823 in 2025, residents `[172278,224208,100337]`, minimum
-funds 5,317 and maximum EQ 113.0006.
-
-B's 2030 base is **521,916**, funds **3,207,591**. Delayed 12% gives **489,387**, **32,529 fewer (6.232612144483021%)**,
-passing the ≥3% gate; taxed funds are 10,946,923. Only two obsolete partB population-floor misses occur in the late
-run, reflecting the intended tax loss. B's strict seed-11 prefix passes all genuine gates, with 385,542 in 2025,
-minimum funds 4,459 and 2015 residents `[61984,75306,34278] = 171,568`.
-
-All A long/late records are `S/accepted-{base-128,base-256-s7,base-256-s11,tax12-from21-256}.json`.
-B records are `S/review-ci-starter-R19-F0.0006-base128.json`, `S/review-ci-R19-base-256-{s7,s11}.json`,
-`S/review-ci-tax12-from21-256.json`. The high-tax tail leaves the managed 9–11% base path unchanged.
-
-`S/review-ci-metrics.json` validates all 135 rows against b3, both complete sweeps, both delayed comparisons and
-their exact prefixes. Annual ±3% is reported separately from the endpoint acceptance criterion. The artifact
-retains all per-year differences across all twelve fixture columns; timing columns are diagnostics, not balance parameters.
-
-| Run versus b3 | Rows | A mean absolute delta | A maximum / year | B mean absolute delta | B maximum / year | B rows outside±3% | B first/last outside year |
-|---|---:|---:|---|---:|---|---:|---|
-| 128 × 15s7 | 15 | 15.6010% | 35.2734% / 2003 | 2.7951% | 7.8926% / 2004 | 6 | 2002 / 2007 |
-| 256 × 60s7 | 60 | 21.7405% | 38.6721% / 2042 | 4.8103% | 10.6816% / 2008 | 47 | 2002 / 2053 |
-| 256 × 60s11 | 60 | 20.7406% | 37.3086% / 2042 | 3.9649% | 7.4622% / 2002 | 42 | 2002 / 2053 |
-| Total | 135 | 20.6139% | 38.6721% / 2042 | 4.2107% | 10.6816% / 2008 | 95 | 2002 / 2053 |
-
-A has 133 of 135 rows outside ±3% (15/15,59/60,59/60); B has 95 (6/15,47/60,42/60). This quantifies the improvement
-without claiming annual equivalence. The exact per-year records remain in the metrics artifact rather than expanding this report.
-
-## Determinism and save continuation
-
-A source/diagnostic processes match all 15 canonical yearly hashes. Hashing pins `Date.now()` to 0, sorts unordered
-object/Map/Set keys, preserves array order and hashes raw typed-array bytes. For **both A and B**, the metrics
-artifact verifies exact equality of the first 20 complete annual metric objects and first 19 yearly hashes between
-base and delayed-tax runs. Year-20 hashes differ as finance sets the day-7200 tax array, while that year's metrics
-remain identical. Each 60-year base prefix is valid for 2030 because the horizon only controls the loop, not mayor
-strategy. `S/review-B-source-proof.json` verifies independent installed-source base128 and fixed12% runs:
-all 15 annual full-state hashes and metric objects in each equal the prototypes. Populations are 193831/173781;
-the installed-source directory is `review-B-source-gates`. A evidence/source hashes remain unchanged.
-
-| Final state | SHA-256 |
-|---|---|
-| A128s7 | `a73525af96afe00b780aea3f616ef3cf0f24e91a209832af6595cdb2fc3d7b1b` |
-| A256s7 | `b977b3d40f7fd53f042a378b5e70f9580f7c921ccb7c1aedb0aace4ebe07c35c` |
-| A256s11 | `1f57eb2513b1f01192c095f9c2029c626a50933812db6d81fd9f49c6800d2f0b` |
-| B256s7 | `c27a732ac985788aa61c7df651dc195ab7ad272867d591971117d5c7fd406ae9` |
-| B256s11 | `46a11ef1b6a52cbcf30cdc99c94a87bed161a11dc2ed8f9c4dfa146c2c565a2a` |
-| B128 independent repeat | `02f7c8a16b7d5fbc91a5d7fc11fd672a7a1e423a5aaf9c43c5fe4f97271eb1f1` |
-| B128 fixed12% repeat | `1dffa8fc21247d1693ec4371fdada967abb1781c84606b1750249374e72bf8a8` |
-
-`--tax` already fixes every DevType through monthly management. New `--tax-start-year N` or `=N` keeps normal
-management before year N and fixes all twelve rates before its first day; year 21 starts at day 7200. Parsing requires
-`--tax` and a positive safe integer within the run. Optional bot metadata adds no simulation-state key.
-
-## Bounded calibration evidence
-
-These finite examples reject tested cells; they do not prove a model globally impossible. Incomplete runs are
-excluded. Full failed sweeps remain in the immutable scratch JSON rather than expanding this report chronologically.
-
-| Search family | Strongest limiting example | Evidence in S |
+| Check | Prior signed-B evidence | Fresh round 3 |
 |---|---|---|
-| Paired caps/full | M1 short/sweep pass but seed11 startup fails; M1.15 is preserved A, short+18.48% | `grid-capped-demand-results.json`, `grid-capped-paired-results.json` |
-| A additive caps, lower fraction | F.0007 short192157 passes;13→14loss15.4933% fails. Nearby fractions fail EQ or endpoint | `grid-option-b-startup-results.json`, `grid-option-b-near-results.json` |
-| Reciprocal coefficient | K.485 short197012;12→13loss2.6472% fails; K.510fails3steps | `grid-option-b-coefficient-results.json` |
-| Tail / R startup | F700tail.02 sweep passes,6phase0 years fail. R25/F675 short/prefix pass; long s11=1604128(+12.3858%) fails±3% | `grid-option-B-tail-results.json`, `grid-option-b-r-startup-results.json`, `review-B-R25-F675-base-256-s11.json` |
-| Wanted-family ramp | Five endpoint-eligible cells lose only.105–.748% on first step; K60p.1short178041 outside | `review-wanted-first-results.json` |
-| Concave / fraction / exponent maps | R19.2/F600 short/prefix pass,12% step2.5854% fails; long s11=1381566 below range. Scalar s7 F601/F603/F610=1451992/1368259/1293716 below range; Rpower.2/CIpower.05 map misses startup | `review-concave-{first,near,fine}-results.json`, `review-concave-F{601,603,610}-base-256-s7.json`, `review-family-exp-results.json` |
+| Six direct dev/B base drivers | Three B bases passed previously | All six passed, no failures |
+| Cash-flow attribution | Annual funds only | 180 months each; exact conservation and observer equivalence passed |
+| Fixed 10–14% / late 12% from 21 | Signed passes above | Fresh runs and complete summary passed |
+| Actual 128 balance/wrong choices | 1 passed / 1 skipped, verified shadow, 123.81s | Native pass, 80.696s |
+| Actual 256 seed-7 spec | 1 passed / 1 skipped, verified shadow, 185.64s | Native pass, 255.206s |
+| Nine focused files | 135 executed passed | Fresh taxResponse: 51 passed; botTaxStart: 15 passed |
+| Worker hygiene | 17 passed / 1 skipped | Fresh 17 passed / 1 skipped |
+| `npx tsc --noEmit` | Passed after B installation | Passed after fixture normalization, exit 0 |
+| Old serialization/save continuation | Passed in prior focused files | Historical evidence, not a new round-3 run |
 
-## Scope and verification
+The prior 135 focused cases were taxResponse 51, botTaxStart 15, botLongGame 28, growth 12, economy 12,
+balanceEconomy 10, serializePhase0 4, continuity 2 and grownCity 1. With 17 hygiene cases that was 152 executed
+cases. Evidence remains in `S/targeted-B-results.json`, `S/review-ci-shadow-balance{128,256}-proof.json`, and
+`S/review-B-source-proof.json`; it is distinguished from this round's validations.
 
-The original task touches nine files. This review changes six: growth, tuning, demand, taxResponse, fixture and report.
-The A commit's simbot, botTaxStart and balance-test changes remain intact.
+Canonical hashing fixes `Date.now()` to 0, sorts unordered object/Map/Set keys and preserves array order and raw
+typed-array bytes. The fresh summary verifies all 135 B annual hashes and full gate-year objects against the signed
+references, including the final hashes above. Prior independent installed-source base128 and fixed12 repeats matched all
+15 annual hashes and metrics. No new save fields were needed; interactive old-save checks remain with the lead.
 
-- `src/sim/economy/growth.ts`: wanted-weighted capped family demand response, raised to scalar power 0.1.
-- `src/sim/economy/tuning.ts`: family thresholds, scalar exponent and startup caps; dev capacity fraction retained.
-- `src/sim/economy/demand.ts`: exact legacy tax factor through 11%; continuous rational tail above 11%.
-- `tools/simbot.ts`: optional fixed-tax start year, validation, usage and save metadata.
-- `tests/sim/taxResponse.test.ts`: 51 response, bank, deterministic/save and tax-curve cases.
-- `tests/sim/botTaxStart.test.ts`: 15 parsing, all-rate persistence and exact day-7200 boundary cases.
-- `tests/sim/balance.test.ts`: task-authorized hunk outside the explicit owns list; reads `baseline.reference`
-  instead of hardcoded partB and retains independent phase0 gates.
-- `tests/sim/fixtures/balance-baseline.json`: task-authorized edit outside the explicit owns list; **135 new
-  `polishB` rows** (15/60/60), active reference `polishB` and one note. Recorder verification preserves every prior
-  array's values and source bytes, including A's 135 `polish` rows.
-- `docs/dev/reports/local-T041-new05-tax.md`: A/B decision, formula, evidence, limits and cloud/browser requests.
+Fresh validation passes **85 executed cases**, with one existing hygiene skip: native `balance.test.ts` with `BALANCE=256` runs both cases (2 passed, no test-name filter), taxResponse has 51 passed, botTaxStart has 15 passed, and hygiene has 17 passed / 1 skipped. The balance file takes 336.89s in total. JSON evidence is `round3-balance.json`, `round3-taxResponse.json`, `round3-botTaxStart.json` and `round3-hygiene.json`. Final `npx tsc --noEmit` exits 0 after fixture normalization. Full suite, browser and shared A/A-envelope runs remain with the lead.
 
-No `src/sim/infra/*` hunks or cloud-held file edits. A is also recoverable in `098d038`.
+## Reproduction commands
 
-Both options move all 135 annual population rows. A remains in `polish`; B adds `polishB` without replacing it.
-`review-ci-metrics.json` lists the exact simulation-column changes versus dev at fixture precision:
+All sim/test runs are serialized through the shared quiet gate. `npx tsx` is unavailable in the offline cache
+(`ENOTCACHED`); bundled drivers import real SimBot/botSystems and add diagnostic gates/hashes without gameplay changes.
+The native scratch Vitest config uses preserveSymlinks and the thread pool to avoid Windows Vite net-use spawn EPERM.
+No repository config change is needed.
 
-| Option / columns | 128seed7 years | 256seed7 years | 256seed11 years |
-|---|---|---|---|
-| A: `pop,funds,approval,commute,jobs,buildings` | 2001–2015 | 2001–2060 | 2001–2060 |
-| A: `eq` | 2001–2015 | 2001–2060 | 2001–2039,2041–2044,2046–2060 |
-| A: `unemployment` | 2008–2015 | 2006–2009,2018,2023–2060 | 2005–2008,2018,2022–2060 |
-| A: `access` | 2008–2015 | 2006,2018,2023–2060 | 2006–2008,2018,2022–2060 |
-| B: `pop,funds,approval,eq,commute,jobs,buildings` | 2001–2015 | 2001–2060 | 2001–2060 |
-| B: `unemployment` | 2011–2015 | 2042–2060 | 2042–2060 |
-| B: `access` | 2011–2015 | 2042–2056,2058–2060 | 2042–2049,2051–2060 |
-
-`year` remains unchanged. Separately, the diagnostic timing columns `totalMsPerDay` and `econMsPerDay` are newly
-measured in all 135 rows; they are not balance changes or evidence of a performance improvement. The metrics file
-retains every exact value rather than relying only on the ranges above.
-
-| Verification | Preserved A | Implemented B |
-|---|---|---|
-| Nine focused files |130passed |135passed: taxResponse51; other eight counts unchanged |
-| BALANCE1 base/wrong-choice Vitest |1passed/1skipped,80.19s |1passed/1skipped,123.81s; four-hook shadow proof |
-| BALANCE256 seed7 Vitest |1passed/1skipped,172.45s |1passed/1skipped,185.64s; four-hook shadow proof |
-| Final `npx tsc --noEmit` |Passed,exit0 |Passed after installation,exit0 |
-| Worker hygiene |17passed/1skipped |Rerun:17passed/1skipped |
-| Scope/encoding audit |diff--check;9expectedfiles;UTF8noBOM | Passed: nine task files UTF-8 without BOM; 18 historical arrays retain exact bytes and values; 135 added rows |
-| Full suite / browser / D2 decision | Lead | Lead |
-
-B passed **152 executed focused cases**: 135 across the original nine files plus 17 worker-hygiene cases (one
-hygiene case skipped). The nine counts are taxResponse51,botTaxStart15,botLongGame28,growth12,economy12,
-balanceEconomy10,serializePhase0 4,continuity2,grownCity1. Evidence: `S/targeted-B-results.json`; A's original
-130-case evidence remains unchanged in `S/targeted-results.json`. Legacy serialization and save/continue cases pass.
-Final file/fixture evidence is `S/review-B-file-audit.json`; six files differ from the A WIP commit.
-
-The actual balance Vitest ran before installation under verified B shadows. Both
-`review-ci-shadow-balance{128,256}-proof.json` files verify tuning/growth/demand/fixture hooks and executed cases,
-with no repository writes. B was then installed by the exact reviewed source/test patch and recorder; installed-source
-hash repeats confirm prototype equivalence. The unit tolerance `+1e-10` corrects 3.5e-15 roundoff; no numeric balance
-acceptance gate was relaxed.
-
-## Commands and environment limits
-
-Equivalent requested bot commands, all actual executions serialized through the quiet gate:
+The requested bot commands are the three bases, each fixed tax and the late-tax continuation:
 
 ```text
 npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
+npx tsx tools/simbot.ts --size 256 --years 60 --seed 7
+npx tsx tools/simbot.ts --size 256 --years 60 --seed 11
 npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --tax 10
 npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --tax 11
 npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --tax 12
 npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --tax 13
 npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --tax 14
-npx tsx tools/simbot.ts --size 256 --years 60 --seed 7
-npx tsx tools/simbot.ts --size 256 --years 60 --seed 11
-npx tsx tools/simbot.ts --size 256 --years 30 --seed 7
 npx tsx tools/simbot.ts --size 256 --years 30 --seed 7 --tax 12 --tax-start-year 21
 ```
 
-`npx tsx` is unavailable in the offline cache (`ENOTCACHED`), so measured runs use bundled drivers importing SimBot and
-botSystems. The driver records gates and hashes and pins `Date.now()` to 0 without gameplay changes. **A's
-`accepted-gates` bundle is immutable: never rebuild it from the current source.** Its retained driver commands are
-below. B was compiled into fresh `review-B-source-gates`; normal native-config balance commands reproduce the
-installed B implementation. Historical shadow commands require original A source frames and their proof files,
-and must not be rerun against current B source.
+Recorded fresh commands use these paths. The build helpers refuse existing artifacts; use new output names for reruns.
 
 ```powershell
 $T041Scratch = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T041/scratch'
 $T041Quiet = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs'
-node $T041Quiet node "$T041Scratch/accepted-gates/check-gates.js" "$T041Scratch/accepted-base-128.json" --size 128 --years 15 --seed 7 --quiet
-node $T041Quiet node "$T041Scratch/accepted-gates/check-gates.js" "$T041Scratch/accepted-base-256-s7.json" --size 256 --years 60 --seed 7 --quiet
-node $T041Quiet node "$T041Scratch/accepted-gates/check-gates.js" "$T041Scratch/accepted-base-256-s11.json" --size 256 --years 60 --seed 11 --quiet
-node $T041Quiet node "$T041Scratch/accepted-gates/check-gates.js" "$T041Scratch/accepted-tax12-from21-256.json" --size 256 --years 30 --seed 7 --quiet --tax 12 --tax-start-year 21
+# Native archive; the two round3-build-*-683d02b.json audits describe verified source overlays/bundles.
+git archive --format=tar --output="$T041Scratch/round3-dev683d02b.tar" 683d02b -- src tools tests/sim/fixtures/balance-baseline.json '*.json'
+# B was built freshly in its own directory; immutable A evidence is never rebuilt.
+node node_modules/rolldown/bin/cli.mjs "$T041Scratch/check-gates.ts" --platform node --format esm --dir "$T041Scratch/round3-B-gates"
+node "$T041Scratch/round3-build-dev.mjs"
+node node_modules/rolldown/bin/cli.mjs "$T041Scratch/round3-ledger-driver.ts" --platform node --format esm --dir "$T041Scratch/round3-ledger-B-gates"
+node "$T041Scratch/round3-build-dev.mjs" --ledger
+# Fresh dev's primary short run includes the observer; B's diagnostic repeat verifies observation leaves every yearly hash unchanged.
+node $T041Quiet node "$T041Scratch/round3-ledger-dev-gates/round3-ledger-dev-driver.js" "$T041Scratch/round3-dev-base128.json" --size 128 --years 15 --seed 7 --quiet
+node $T041Quiet node "$T041Scratch/round3-dev-gates/round3-dev-driver.js" "$T041Scratch/round3-dev-base256-s7.json" --size 256 --years 60 --seed 7 --quiet
+node $T041Quiet node "$T041Scratch/round3-dev-gates/round3-dev-driver.js" "$T041Scratch/round3-dev-base256-s11.json" --size 256 --years 60 --seed 11 --quiet
+node $T041Quiet node "$T041Scratch/round3-B-gates/check-gates.js" "$T041Scratch/round3-B-base128.json" --size 128 --years 15 --seed 7 --quiet
+node $T041Quiet node "$T041Scratch/round3-B-gates/check-gates.js" "$T041Scratch/round3-B-base256-s7.json" --size 256 --years 60 --seed 7 --quiet
+node $T041Quiet node "$T041Scratch/round3-B-gates/check-gates.js" "$T041Scratch/round3-B-base256-s11.json" --size 256 --years 60 --seed 11 --quiet
+node $T041Quiet node "$T041Scratch/round3-ledger-B-gates/round3-ledger-driver.js" "$T041Scratch/round3-B-ledger128.json" --size 128 --years 15 --seed 7 --quiet
 foreach ($T041Tax in 10..14) {
-  node $T041Quiet node "$T041Scratch/grid-capped-paired-M1.15/check-gates.js" "$T041Scratch/grid-capped-paired-M1.15-tax-$T041Tax.json" --size 128 --years 15 --seed 7 --quiet --tax $T041Tax
+  node $T041Quiet node "$T041Scratch/round3-B-gates/check-gates.js" "$T041Scratch/round3-B-tax-$T041Tax.json" --size 128 --years 15 --seed 7 --quiet --tax $T041Tax
 }
-# B prototype base class: tax10/11 and managed9–11% paths are unchanged by the selected high-tax tail.
-node $T041Quiet node "$T041Scratch/review-ci-starter-R19-F0.0006/check-gates.js" "$T041Scratch/review-ci-starter-R19-F0.0006-base128.json" --size 128 --years 15 --seed 7 --quiet
-node $T041Quiet node "$T041Scratch/review-ci-starter-R19-F0.0006/check-gates.js" "$T041Scratch/review-ci-R19-base-256-s7.json" --size 256 --years 60 --seed 7 --quiet
-node $T041Quiet node "$T041Scratch/review-ci-starter-R19-F0.0006/check-gates.js" "$T041Scratch/review-ci-R19-base-256-s11.json" --size 256 --years 60 --seed 11 --quiet
-foreach ($T041Tax in 10..11) {
-  node $T041Quiet node "$T041Scratch/review-ci-starter-R19-F0.0006/check-gates.js" "$T041Scratch/review-ci-starter-R19-F0.0006-tax-$T041Tax.json" --size 128 --years 15 --seed 7 --quiet --tax $T041Tax
-}
-foreach ($T041Tax in 12..14) {
-  node $T041Quiet node "$T041Scratch/review-ci-tax-rational-A0.3/check-gates.js" "$T041Scratch/review-ci-tax-rational-A0.3-tax-$T041Tax.json" --size 128 --years 15 --seed 7 --quiet --tax $T041Tax
-}
-node $T041Quiet node "$T041Scratch/review-ci-tax-rational-A0.3/check-gates.js" "$T041Scratch/review-ci-tax12-from21-256.json" --size 256 --years 30 --seed 7 --quiet --tax 12 --tax-start-year 21
-# Installed B: fresh directory; the immutable A directory above is retained.
-node node_modules/rolldown/bin/cli.mjs "$T041Scratch/check-gates.ts" --platform node --format esm --dir "$T041Scratch/review-B-source-gates"
-node $T041Quiet node "$T041Scratch/review-B-source-gates/check-gates.js" "$T041Scratch/review-B-source-base128.json" --size 128 --years 15 --seed 7 --quiet
-node $T041Quiet node "$T041Scratch/review-B-source-gates/check-gates.js" "$T041Scratch/review-B-source-tax12.json" --size 128 --years 15 --seed 7 --quiet --tax 12
-# Current installed-B balance reproduction; these are not the historical shadow invocations.
-$env:BALANCE = '1'
-node $T041Quiet npx vitest run tests/sim/balance.test.ts --maxWorkers=1 --config "$T041Scratch/vitest.config.mjs" --configLoader native
+node $T041Quiet node "$T041Scratch/round3-B-gates/check-gates.js" "$T041Scratch/round3-B-tax12-from21-256.json" --size 256 --years 30 --seed 7 --quiet --tax 12 --tax-start-year 21
+# Completed final validation. BALANCE=256 executes both actual cases; there is no test-name filter.
 $env:BALANCE = '256'
-node $T041Quiet npx vitest run tests/sim/balance.test.ts --maxWorkers=1 --config "$T041Scratch/vitest.config.mjs" --configLoader native --testNamePattern '256 x 60 seed 7: the spec gates'
+node $T041Quiet npx vitest run tests/sim/balance.test.ts --maxWorkers=1 --config "$T041Scratch/vitest.config.mjs" --configLoader native --reporter default --reporter json --outputFile "$T041Scratch/round3-balance.json"
+node $T041Quiet npx vitest run tests/sim/taxResponse.test.ts --maxWorkers=1 --config "$T041Scratch/vitest.config.mjs" --configLoader native --reporter default --reporter json --outputFile "$T041Scratch/round3-taxResponse.json"
+node $T041Quiet npx vitest run tests/sim/botTaxStart.test.ts --maxWorkers=1 --config "$T041Scratch/vitest.config.mjs" --configLoader native --reporter default --reporter json --outputFile "$T041Scratch/round3-botTaxStart.json"
+node $T041Quiet npx vitest run tests/worker/hygiene.test.ts --maxWorkers=1 --config "$T041Scratch/vitest.config.mjs" --configLoader native --reporter default --reporter json --outputFile "$T041Scratch/round3-hygiene.json"
 npx tsc --noEmit
 ```
 
-The nine focused files and hygiene reproduce one file at a time with that same quiet/native-config/one-worker
-invocation. Standard Vite hit Windows `net use` spawn EPERM; scratch preserveSymlinks/thread-pool configuration
-avoids repository config edits. Full suite, benchmark and browser runs remain with the lead.
+The three fresh-dev populations reproduce dev's durable b3 rows. Plan §8.0's durable checkpoint/frame/screenshot
+collection and the full suite are lead-owned; this lane does not claim to have completed those broader gates.
 
-Historical shadow commands below document the completed 123.81s/185.64s checks. They require the preserved
-A source frames described by the proof files; **do not run them against installed B**:
+## Plan differences, lead follow-up and cloud requests
 
-```powershell
-$env:T041_B_CONCAVE_SHADOW_INPUT = "$T041Scratch/review-ci-shadow-input.json"
-$env:BALANCE = '1'
-$env:T041_B_CONCAVE_SHADOW_LOG = "$T041Scratch/review-ci-shadow-balance128-proof.json"
-node $T041Quiet npx vitest run tests/sim/balance.test.ts --maxWorkers=1 --config "$T041Scratch/option-b-concave-shadow.config.mjs" --configLoader native
-$env:BALANCE = '256'
-$env:T041_B_CONCAVE_SHADOW_LOG = "$T041Scratch/review-ci-shadow-balance256-proof.json"
-node $T041Quiet npx vitest run tests/sim/balance.test.ts --maxWorkers=1 --config "$T041Scratch/option-b-concave-shadow.config.mjs" --configLoader native --testNamePattern '256 x 60 seed 7: the spec gates'
-```
+D2 is already signed. The plan's historical 194,627 reference predates branch dev 192,899. B uses an expressly
+reported third response beyond its linear-min/smoothstep examples; the finite search makes no global-minimality claim.
+T041 still merges first among SIM lanes after B2. T042–T045 then remeasure final relative gates on that merged dev.
 
-## Differences, cloud requests and lead checks
+NOTE-048's shared A/A rule requires dev and dev+T041 base versus +§1 once on day 1, all three runs, recording population,
+mean air at homes, approval and I-HT share of industrial jobs from year 10. Keep per-metric maxima and the systematic-
+shift check in `docs/dev/reports/sim-aa-envelope.md`. The shared envelope remains with the lead; it is not permission
+to retune signed B or replace its explicit D2 endpoint/sweep/late-tax requirements.
 
-The plan's 194,627 historical baseline predates branch dev 192,899. D14's partB assignment conflicts with the preceding
-NEW-05 lead answer. A's broad target/cap uplift changed the base by 18.48%; B preserves the dev tax expression through
-11% and dev capacity fraction while exposing a concave demand response. D2 and the lead's full suite/browser checks
-remain outstanding; no cloud-held change was made.
+No cloud-held files are edited or committed. Exact requests under NOTE-050 remain:
 
-**Plan deviation:** B's concave wanted-weighted demand response is a third form beyond the plan's linear-min and
-smoothstep examples. Its formula and measured acceptance results are explicit above. The bounded search selected
-a passing candidate; it does not establish a global minimum in base change or parameter complexity.
+- `src/ui/panels/BudgetPanel.ts`, `renderTaxes()`: remove the above-13% collapse claim; say taxes cost growth gradually.
+  Avoid promising the bot's specific loss percentage to every city.
+- The same file, `taxColor()`: red starts at **14%**, the first adjacent population loss above 10%
+  (13→14 = 12.8503%). The earlier red-12 cumulative interpretation is obsolete. Per FH-09, every numeric UI statement
+  must come from sim tuning; request the corresponding tuning export/test if no threshold is exposed.
+- `src/sim/economy/advisors.ts`, GUIDE `taxHigh`: wait for T037b to reach dev, then change only the collapse string
+  and its pinned sentence in `tests/sim/taxHighAdvice.test.ts`. Dev683d02b has no advisors rewrite since fb1531f;
+  this conditional owner request remains open. Preserve the honest-copy rule.
 
-Cloud request: `src/ui/panels/BudgetPanel.ts`, `renderTaxes()`, remove the claim that demand collapses above 13%;
-describe a gradual population cost measured **3.3–12.9% per point** across B's 10–14% sweep. `taxColor()` needs FH-09's
-reference clarified: B first exceeds 10% cumulative loss at **12%**, versus either fixed 10% (10.3575%) or managed
-base (10.3441%). Its first adjacent step ≥10% occurs at **14%** (12.8503%). Recommend red at 12% for the cumulative
-fixed-10% interpretation, subject to the lead. A's preserved interpretation differs: fixed 10% first crosses at 11%;
-managed base first at 12% (11%=−5.7346%,12%=−14.7394%). Neutral 9% approval remains unchanged.
+Browser acceptance checklist for the lead's real-GPU slot:
 
-Cloud request: `src/sim/economy/advisors.ts`, GUIDE `taxHigh`, replace the same collapse wording; its owner updates
-the pinned sentence in `tests/sim/taxHighAdvice.test.ts`. No cloud edits here.
+- [ ] From one developed checkpoint, fix all rates at 10%, 12% and 14% in separate continuations; observe gradual
+  demand/building response and persistence across month boundaries.
+- [ ] From a year-20 checkpoint, apply 12% for ten years against a matching base continuation.
+- [ ] Load old Medium/Hard saves; continue several months and check carry, smoothed demand, buildings and controls.
+- [ ] Check Budget/advisor copy and the red-14 boundary after owner changes.
+- [ ] Confirm the growth response with the worker host enabled.
 
-- [ ] Same developed checkpoint: fix all rates 10%,12%,14% in separate continuations; verify gradual demand/building
-  response and persistence across month boundaries.
-- [ ] Year-20 checkpoint: apply 12% for the next ten years and compare with matching base continuation.
-- [ ] Load old Medium/Hard saves and continue several months; carry, demand smoothing, buildings and controls work.
-- [ ] Check Budget/advisor/FH09 wording and boundary after cloud-owner changes.
-- [ ] Confirm growth response with the worker host enabled.
-
-## Decision for the lead
-
-Recommend **B**, with **D2 approval pending**. Its three endpoints, fixed sweep, late-tax gate, balance tests,
-save/worker checks, installed-source repeats, typecheck and final scope/UTF-8 audit pass. The full suite and
-browser checklist remain outstanding.
-
-B is a substantial improvement over A, not an unchanged dev trajectory: 95/135 annual population rows differ by
-more than 3%, and endpoint funds change +22.1348%/+2.1169%/+2.7941%. Subsequent SIM money comparisons should use
-the new recorded B rows. The finite search does not establish a globally minimal base change or complexity.
-A stays available in `098d038`, immutable evidence and preserved `polish` arrays.
+Full-suite, browser and shared-envelope checks remain with the lead. Source behavior remains signed B; this round's
+repository work is fixture normalization and its report only.
