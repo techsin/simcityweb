@@ -64,7 +64,7 @@ const proto = CityScene.prototype as unknown as Record<string, (this: Scene, ...
 function slowScene(quality = 'high') {
   const shown: { text: string; opts: { buttons?: { label: string; run(): void }[] } }[] = [];
   const scene: Scene = {
-    slow: [], settings: { quality }, camMemory: { placed: true }, ctxLost: null,
+    slow: [], settings: { quality }, firstFrame: true, ctxLost: null,
     toasts: { show: (text: string, _k: string, _c: unknown, _t: string, opts: never) => shown.push({ text, opts }) },
     applySettings: vi.fn((p: { quality?: string }) => Object.assign(scene.settings as object, p)),
   };
@@ -116,6 +116,20 @@ describe('FH-21: one offer to switch a slow city to Medium', () => {
     expect(shown).toHaveLength(0);
     tick(10, 5);
     expect(shown).toHaveLength(1);
+  });
+
+  it('the window starts with the first rendered frame: a slow first render behind the loading screen does not count', () => {
+    const { scene, shown, tick } = slowScene();
+    scene.firstFrame = false;
+    tick(1, 60);
+    expect(shown).toHaveLength(0);
+    scene.firstFrame = true;
+    tick(10, 19.5);
+    expect(shown).toHaveLength(0);
+    tick(10, 0.5);
+    expect(shown).toHaveLength(1);
+    const src = readFileSync(new URL('../../src/game/CityScene.ts', import.meta.url), 'utf8');
+    expect(src).toMatch(/this\.readyPending = false;\s*this\.firstFrame = true;\s*this\.resolveReady\(\);/);
   });
 
   it('a profile that saw it never gets it again (the scene starts without a window)', () => {

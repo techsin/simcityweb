@@ -166,6 +166,8 @@ export class CityScene {
   private ctxLost: { card: HTMLElement; restoring: boolean } | null = null;
   /** FH-21: fps samples (value, seconds) of the last SLOW_WINDOW_S on High / Ultra; null once the prompt was shown */
   private slow: { fps: number; dt: number }[] | null = loadPref<unknown>(SLOW_PREF, null) === null ? [] : null;
+  /** FH-21: the real views rendered their first frame (the app's loading screen goes then): the slow-frame window starts */
+  private firstFrame = false;
   /** FH-21: ms from "Found City" / "Play" to the first interactive frame (main.ts reports it), for the fps readout */
   private loadMs: number | null = null;
 
@@ -687,6 +689,7 @@ export class CityScene {
     }
     if (this.readyPending) {
       this.readyPending = false;
+      this.firstFrame = true;
       this.resolveReady();
     }
     const cameraStopped = this.minimap.frame(dt);
@@ -737,13 +740,16 @@ export class CityScene {
 
   /**
    * FH-21: a machine that cannot carry High or Ultra gets one offer, once per profile: after SLOW_WINDOW_S of play on the
-   * real views at a median under SLOW_FPS. Hidden tabs, a lost context and other qualities restart the window.
+   * real views (from their first rendered frame) at a median under SLOW_FPS. Hidden tabs, a lost context and other
+   * qualities restart the window.
    */
   private checkSlow(fps: number, dt: number): void {
     const w = this.slow;
     if (!w) return;
     const q = this.settings.quality;
-    if ((q !== 'high' && q !== 'ultra') || !this.camMemory.placed || this.ctxLost || (typeof document !== 'undefined' && document.hidden)) {
+    // (not before the first frame: a slow first render, behind the loading screen, filled the window and the question
+    // expired unseen)
+    if ((q !== 'high' && q !== 'ultra') || !this.firstFrame || this.ctxLost || (typeof document !== 'undefined' && document.hidden)) {
       w.length = 0;
       return;
     }
