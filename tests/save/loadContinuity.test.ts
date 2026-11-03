@@ -4,7 +4,8 @@
  * A small SimBot city (64², two years) is the uninterrupted game. It is saved as a file (serializeCity + encodeBundle)
  * on several days of a month — before and after the month tick, on the population sample days, on tourism's venue
  * day (26), on the advisors' scan days (28, 29) — and once right after a player edit between two days (a park
- * bulldozed, a street built and zoned: the land value queue, the swap-removed building lists, growth's candidates). Each
+ * bulldozed, a street built and zoned: the land value queue, the swap-removed building lists, growth's candidates; a tax
+ * rate and the parks funding changed the day before a save: desirability's shift, demand's context). Each
  * save is loaded into a new Simulation and both run 30 more days (the loaded games get the same edit on its day): the
  * whole serialized city must be equal right after the load and on every one of those days. The infrastructure systems
  * are not in this test: their continuity waits for B2's rewrite of src/sim/infra (docs/dev/reports/cloud-T057-save-load.md).
@@ -16,7 +17,7 @@ import { economySystems } from '../../src/sim/systems/economy';
 import { Simulation } from '../../src/sim/Simulation';
 import { CityActions } from '../../src/sim/actions';
 import { BF, type CityState } from '../../src/sim/CityState';
-import { Network, Zone } from '../../src/core/types';
+import { DevType, Network, Zone } from '../../src/core/types';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import { decodeBundle, encodeBundle } from '../../src/save/bundle';
 import { getDef } from '../../src/sim/catalog';
@@ -91,9 +92,18 @@ describe('T057: save / load continuity', () => {
       throw new Error('no room for the street');
     };
     let street = { x: -1, z: -1 };
+    // and a budget change on day 25, the day before a save: a tax rate (desirability's shift, taken at a sweep's start)
+    // and the parks funding (the parks' cap relief in demand's context, rebuilt monthly)
+    const budgetDay = t0 + 25;
+    const edit2 = (s: Simulation) => {
+      const A = new CityActions(s);
+      A.setTax(DevType.R1, s.state.budget.taxRates[DevType.R1] + 2);
+      A.setFunding('parks', 60);
+    };
     while (st.day < end) {
       sim.advanceDay();
       if (st.day === editDay) edit(sim);
+      if (st.day === budgetDay) edit2(sim);
       if (saveAt.includes(st.day)) saves.set(st.day, encodeBundle(serializeCity(st)));
       if (st.day >= Math.min(...saveAt)) want.set(st.day, digest(st));
     }
@@ -109,6 +119,7 @@ describe('T057: save / load continuity', () => {
       for (let k = 0; k < 30; k++) {
         sim2.advanceDay();
         if (copy.day === editDay) edit(sim2);
+        if (copy.day === budgetDay) edit2(sim2);
         expect(differing(want.get(copy.day)!, digest(copy)), `save on day ${day} (dom ${day % 30}): day ${copy.day}`).toEqual([]);
       }
     }

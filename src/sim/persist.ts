@@ -30,4 +30,4 @@ export function runSaveHooks(state: object): void {
  * systems, read back by their init() on a loaded city. A save from before T057 has none of them, and a city loaded
  * without them rebuilds that state at load, as it did before (recovery snapshots may leave them out: recoveryCodec).
  */
-export const CONTINUITY_RECORDS: readonly string[] = ['econLists', 'lvRun', 'popRun', 'approvalRun', 'growthRun'];
+export const CONTINUITY_RECORDS: readonly string[] = ['econLists', 'lvRun', 'desRun', 'popRun', 'demandRun', 'approvalRun', 'growthRun'];
