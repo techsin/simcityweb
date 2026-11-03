@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { BF, HISTORY_KEYS, YEAR_REVIEW_TERMS, padHistory, type HistorySeries, type YearReviewGoals } from '../../src/sim/CityState';
+import { BF, HISTORY_KEYS, YEAR_REVIEW_TERMS, padHistory, type CityState, type HistorySeries, type YearReviewGoals } from '../../src/sim/CityState';
+import { APPROVAL_LABELS } from '../../src/sim/economy/approval';
 import { historySystem, recordHistory, type YearReviewBaseline } from '../../src/sim/economy/history';
-import { Simulation } from '../../src/sim/Simulation';
+import { Simulation, type SimSystem } from '../../src/sim/Simulation';
 import { economySystems } from '../../src/sim/systems/economy';
 import { deserializeCity, serializeCity } from '../../src/save/serialize';
 import { buildYearReview, yearGradeInput } from '../../src/ui/YearReview';
@@ -75,6 +76,15 @@ describe('year review history telemetry', () => {
     expect(st.history.approval_tax).toEqual([-3.123456789, 5]);
     expect(HISTORY_KEYS).toContain('approval_base');
     expect(HISTORY_KEYS).toContain('approval_clamp');
+  });
+
+  it('records every approval term the tooltip labels and the approval system writes', () => {
+    const terms = [...YEAR_REVIEW_TERMS].sort();
+    expect(Object.keys(APPROVAL_LABELS).sort()).toEqual(terms);
+    const st = newState(16);
+    new Simulation(st, economySystems()).runDays(30);
+    const written = (st.systemData.economy as { approvalTerms?: Record<string, number> }).approvalTerms;
+    expect(Object.keys(written ?? {}).sort()).toEqual(terms);
   });
 
   it('records land exhaustion independently of demand-gated advice (stub LG-05 producer)', () => {
@@ -201,7 +211,7 @@ describe('year review history telemetry', () => {
     expect(buildYearReview(st, st.config.startYear + 1)?.since).toBeNull(); // a day-zero city's first year is whole
   });
 
-  it('silently seeds old goals on init and stamps newly reached goals only once', () => {
+  it('silently seeds old goals on init of a city without the record and stamps newly reached goals only once', () => {
     const st = reviewCity();
     st.stats.population = 5000;
     st.unlocked.add('mayor_house');
@@ -222,6 +232,39 @@ describe('year review history telemetry', () => {
     sim.systems[0].init?.(sim);
     expect(data.yearReviewGoals.completed).toEqual({ museum: 13, 'rank:small_city': 13 });
     expect(st.news).toHaveLength(0);
+    // With the record present, init leaves a goal reached since the last tick (here a reward unlocked on load) to
+    // the next monthly tick, which stamps it.
+    st.unlocked.add('statue');
+    sim.systems[0].init?.(sim);
+    expect(data.yearReviewGoals.seen).not.toContain('statue');
+    st.day = 450;
+    sim.systems[0].monthly?.(sim);
+    expect(data.yearReviewGoals.completed).toEqual({ museum: 13, 'rank:small_city': 13, statue: 15 });
+  });
+
+  it('stamps a goal reached in the partial month before a save in the same month as a continuous run', () => {
+    // Population crosses Village and Town mid-January of the second year (day 375); the save is at day 380.
+    const grow: SimSystem = { name: 'test.grow', daily({ state }) { state.stats.population = state.day >= 375 ? 5000 : 900; } };
+    const city = () => {
+      const st = newState(16);
+      st.systemData.economy = { resCrime: 0.1, resServices: 0.6, resParks: 0.9, approvalTerms: { tax: -1 } };
+      return st;
+    };
+    const goals = (st: CityState) => (st.systemData.economy as { yearReviewGoals: YearReviewGoals }).yearReviewGoals;
+    const a = city();
+    new Simulation(a, [grow, historySystem()]).runDays(720);
+    const b = city();
+    new Simulation(b, [grow, historySystem()]).runDays(380);
+    const loaded = deserializeCity(serializeCity(b));
+    new Simulation(loaded, [grow, historySystem()]).runDays(340);
+    expect(a.day).toBe(720);
+    expect(loaded.day).toBe(720);
+    expect(goals(a).completed).toEqual({ 'rank:village': 13, 'rank:town': 13 });
+    expect(goals(loaded)).toEqual(goals(a));
+    // The second year's card lists both; the first year's card (shown on day 360) does not.
+    const year2 = a.config.startYear + 2;
+    expect(buildYearReview(loaded, year2)?.completed).toEqual(['Town', 'Village']);
+    expect(buildYearReview(loaded, year2 - 1)?.completed).toEqual([]);
   });
 
   it('does not claim a previously reached rank again after a population drop and recovery', () => {

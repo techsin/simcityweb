@@ -148,11 +148,14 @@ function seedReviewTerms(st: CityState): void {
   st.history.reviewTermsSample[i] = 1;
 }
 
-/** Stamp new goals once; opening an existing city must not claim its old goals were completed this year. */
-function recordReviewGoals(st: CityState, initial = false): void {
+/**
+ * Stamp new goals once. The first call on a city without the record (a new city, or a save from before LG-21) seeds
+ * every goal already reached as seen, so opening an old city does not claim its old goals for this year.
+ */
+function recordReviewGoals(st: CityState): void {
   const data = st.systemData.economy as ReviewEconomy | undefined;
   if (!data) return;
-  const seed = initial || !data.yearReviewGoals;
+  const seed = !data.yearReviewGoals;
   const goals = data.yearReviewGoals ??= { seen: [], completed: {} };
   const seen = new Set(goals.seen);
   const add = (id: string) => {
@@ -204,7 +207,10 @@ export function historySystem(): SimSystem {
   return {
     name: 'economy.history',
     init(sim) {
-      recordReviewGoals(sim.state, true);
+      // Only seed a city without the record. With the record present, a goal reached since the last monthly tick
+      // (a rank crossed mid-month before a save, a reward rewards.init unlocks on load) is left for the next
+      // monthly tick to stamp, in the same month as a continuous run.
+      if (!(sim.state.systemData.economy as ReviewEconomy | undefined)?.yearReviewGoals) recordReviewGoals(sim.state);
       seedReviewBaseline(sim.state);
       seedReviewTerms(sim.state);
     },

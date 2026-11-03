@@ -134,7 +134,7 @@ export const YEAR_REVIEW_TERMS = [
 ] as const;
 export type YearReviewTerm = typeof YEAR_REVIEW_TERMS[number];
 
-/** Optional economy telemetry: completion months, with existing goals seeded silently when a city opens. */
+/** Optional economy telemetry: completion months; a city without the record seeds its goals reached so far silently. */
 export interface YearReviewGoals {
   seen: string[];
   completed: Record<string, number>;
