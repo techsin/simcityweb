@@ -17,6 +17,8 @@ import { money, num, pct } from '../format';
 import { emgTime, kindIcon, lossText, minText, missingResponders, placeText, stateText, windowText } from '../EmergencyBanner';
 import type { EmergencyView } from '../../worker/SimHost';
 import { DispatchOptionsWatches } from '../dispatchOptions';
+import { emergencyRebuildCosts } from '../../sim/economy/budget';
+import { emergencyMigrationImpact } from '../../sim/economy/tourism';
 
 type Tab = 'active' | 'fleet' | 'stats';
 const RESP_ICON: Record<Responder, string> = { fire: 'fire', police: 'police', medical: 'health' };
@@ -211,7 +213,9 @@ export class EmergenciesPanel extends Panel {
   // ---------------------------------------------------------------------------------------------- stats
   private renderStats(): void {
     const e = this.ctx.state.stats.emergency;
-    const sig = 's' + JSON.stringify(e.month) + JSON.stringify(e.year) + e.medScore.toFixed(3);
+    const rebuild = emergencyRebuildCosts(this.ctx.state).unansweredYear;
+    const cut = Math.round((1 - emergencyMigrationImpact(this.ctx.state).multiplier) * 100);
+    const sig = 's' + JSON.stringify(e.month) + JSON.stringify(e.year) + e.medScore.toFixed(3) + ':' + cut;
     if (sig === this.sig) return;
     this.sig = sig;
     this.live = null;
@@ -245,6 +249,7 @@ export class EmergenciesPanel extends Panel {
         chip('Medical response', pct(e.medScore), e.medScore < 0.8 ? 'bad' : ''),
       ),
       table,
+      h('div', { class: 'emg-rs', style: 'padding:8px 2px 0' }, `Cost of unanswered emergencies this year: ${money(rebuild)} rebuild${cut > 0 ? `; the safety record is cutting newcomers by ${cut} %` : ''}`),
       h('div', { class: 'emg-rs faint', style: 'padding:8px 2px 0' }, 'Incidents within a station’s reach (Fleet tab: “auto-dispatch within … min” of driving) are answered automatically along real roads and only show up here. Anything farther needs you to dispatch a unit. Build stations near the gaps (Fire / Police / Health data views), keep their budgets funded, and add more when all units are often busy.'),
     );
   }
