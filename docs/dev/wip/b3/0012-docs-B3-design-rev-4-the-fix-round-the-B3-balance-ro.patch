@@ -1,0 +1,387 @@
+From cf6af9a2278c622a30a0f39406a9c652ff5f0edd Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 05:10:59 +0000
+Subject: [PATCH 12/13] docs: B3 design rev 4 - the fix round; the B3 balance
+ rows
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Rev 4 records what the fix round changed (the tourism layer event and slice window, -0, the advisors'
+month scans in any list order, EM-1's towns), what it re-verified at 038100b (digests bit-identical to
+bed0ebf on both fixtures, tsc and vitest, the bot, the balance procedure), and why the rest is not
+changed in B3's files: the full-game save / load gate (pre-existing, in the base too), approval's resumed
+init (L7: a tested 4-line approval.ts patch for the lead) and the as-written timing reading (L0 / L1 / L2).
+
+tests/sim/fixtures/balance-baseline.json: the B3 rows (256x60 seeds 7 and 11, 128x15 seed 7, at 038100b)
+under a new "b3" key, as §8 asked; the other rows are untouched.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KT9tXthEhyzExdUuGEecAJ
+---
+ docs/dev/B3_DESIGN.md                    | 120 +++++++++++++++++--
+ tests/sim/fixtures/balance-baseline.json | 143 ++++++++++++++++++++++-
+ 2 files changed, 255 insertions(+), 8 deletions(-)
+
+diff --git a/docs/dev/B3_DESIGN.md b/docs/dev/B3_DESIGN.md
+index 6eb8a4a..cd87bf5 100644
+--- a/docs/dev/B3_DESIGN.md
++++ b/docs/dev/B3_DESIGN.md
+@@ -72,6 +72,65 @@ dropped on its own), and this revision.
+   - `tests/sim/desirability.test.ts`, "a loaded city reads the saved demographics sample": its sample days follow
+     `DEMO_PHASE` (days 49 and 81 instead of 64 and 96).
+ 
++**Rev 4 (fix round 1)** answers the gates' failed items and the two verifiers' findings. Commits: b5f5d94 (tourism),
++6d6fc5c and 2339b0c (advisors), 038100b (EM-1's towns), and this revision with the balance rows. Scratch:
++`b3work/implementer-fix/`.
++- **Fixed:**
++  - **The layer event** (verify-a minor 2). `venuePass` emits nothing; the daily, the tick's fallback, `refresh` and
++    `init` emit `layerUpdated` `'tourism'` as their last statement, and the daily starts the next slice window before
++    the pass. Before, a listener that threw (the Tourism overlay's rebuild, under the scene's guard) left last month's
++    pass in `systemData` next to this month's records and raster, and a save on dom 26–29 restored the old ones. No sim
++    system listens to that event, so the city is unchanged.
++  - **−0** (verify-a minor 3). The slice window of the days before a city's first `TOURISM_DAY` was −0; a save stores
++    0, so a structured-clone load and a file load differed in `tourismAcc.m`. `tourismWindow` adds 0.
++  - **The advisors' month scans in any list order** (verify-a minor 4; pre-existing, but in `advisors.ts`). The facility
++    scan lists its buildings in ascending id and `civicFirst` is the lowest unpowered civic id; the outage scan and the
++    bus-stop place take the lowest id among equals. A game loaded before the day-29 scan now predicts and posts the same
++    "Show me" places as the game it continues (§4). An advice's place changes only among equals or after a removal.
++  - **EM-1 normal play** (verify-a minor 5): a fixed list of towns instead of one (§7). The sweep behind it: over seeds
++    1–40 × 6 years the base and B3 both raise 86 prompts (2.15 a town; paired W − B +0.00, se 0.39; W above B in 14
++    towns, equal in 10, below in 16). Every town keeps its prompts (none lost beyond one, none counted unraised), and 14
++    (base) and 17 (B3) of the 40 towns raise fewer than the floor of 2 (`implementer-fix/em1/`).
++- **Tests added** (§7, tests 7, 8 and 14). Each fails on bed0ebf and passes now.
++- **Re-verified at 038100b** (2339b0c only skips a sort of lists already in order):
++  - The city digests after 120 days at design cadence (cityDigest's sha256) are unchanged from bed0ebf: dense1m
++    `75782c66…77b1` and bot256 `e3c73eca…4b67`, twice each in separate processes (the base: `a4821afc…`, `9f9a4666…`).
++    So the fix round is bit-identical on both fixtures.
++  - tsc is clean, and the full vitest suite passes: 137 files (1 skipped), 1,335 tests (18 skipped); rev 3 had 136 files
++    and 1,332 tests.
++  - The 128×15 seed-7 bot equals bed0ebf's line for line in every non-timing column: 195,597 [63452, 94452, 37693] in
++    2015 (a59f08f: 194,432 [63702, 93494, 37236]).
++  - The balance runs (256×60 seeds 7 and 11, 128×15 seed 7) equal the gates' W runs in every non-timing column.
++    Acceptance on 256 seed 7, against the lead's base runs of a59f08f:
++    - population 180,536 at year 15 and 1,475,500 at year 60, at least 0.976× the base in every year;
++    - approval at least 80.4 from year 30, funds at least 7,373;
++    - EQ 100 or more from 2018 (122.1 in 2030);
++    - `totalMsPerDay` 10.84 against the base's 12.74;
++    - tourism jobs as the gates measured on the same rows: within ±30 % from year 15, and outside the band in the young
++      town in the base as well.
++
++    The rows are now under a `b3` key in `tests/sim/fixtures/balance-baseline.json` (§8 asked for them; rev 3 had not
++    added them).
++  - The day-29 sort is small. dense1m's scan holds 467 ids (tiered 376) and bot256's 479. A sort call costs 0.03 ms warm
++    and up to 0.9 ms cold in a fresh process; 2339b0c skips it while a list is in order, as it is until a plopped
++    building is removed.
++- **Not changed, and why:**
++  - **The full-game save / load gate** (the gates' first item): it fails in the base and in B3 alike, on 24 of 24 saves,
++    because of keys that B3 neither adds nor moves (§4).
++  - **Approval's resumed init** (the gates' second item, verify-a minor 1). It recomputes the tourism pride from
++    today's tourists. That is display-only and lasts until the next tick, and the base shows it after any venue removal.
++    The fix is in `approval.ts`, outside B3's files: L7, with a tested 4-line patch (§4, §10).
++  - **The timing reading as written** (verify-b's blocker, the gates' third item). B3 cannot meet it on the first three
++    ticks after a load. Every hook is cold there, and the budget's cold cell loop (L1, `budget.ts`), population's post-load
++    refill (L2) and, in frames, the infra steps that share the month frame carry most of the excess. B3's own hooks
++    on those ticks (verify-b's per-hook medians): advisors +0.6 to +2.3 ms; tourism at most +0.5 ms on the 2nd and 3rd
++    ticks, and not among the six largest hooks on the 1st. L0 is the lead's decision (§8, §10).
++  - **128×15 tourism** (verify-b minor 7): no systematic shift. Over seeds 3, 5, 7, 9, 11, 13 and 21 the bot's tourism
++    jobs, summed over the 15 years, are W/B 0.764–1.343 (geometric mean 1.015; W above B in 4 of 7), its 2015 tourists
++    0.980 and its attractiveness +0.02 points (`implementer-fix/tj/`). Seed 7's 0.764 is the low end of the chaos.
++  - The other findings of verify-b (off-tick deopt days, max / p99, `totalMsPerDay`, tourism jobs in the young town, L4)
++    need no B3 change; their readings are the lead's (§8).
++
+ ## 1. The decision
+ 
+ Five commits, in this order. Each one can be reverted on its own; A1, the last, can be dropped without touching the
+@@ -204,11 +263,13 @@ City digests after 120 days of bot256 at design cadence are identical to the bas
+      `splat(acc, N, cx, cz, v)` and `raw[blockOf(cx, cz)] += v` per entry, then `visitorsLayer`, then `coarseBlur3`.
+      `blockOf` uses `floor(cx)`, which equals `b.x + (b.w >> 1)`, and the block centre for beaches. So the block sums are
+      the ones the present code makes.
+-  9. It updates the `TourismState` WeakMap, emits `layerUpdated` `'tourism'`, and **writes `systemData.tourismPass` as
+-     its last step** (determinism O2): a throw inside the guarded daily leaves the old pass, whose `m` is then stale, and
+-     the tick's fallback recomputes from scratch instead of reading a half-written pass. `ven` and `spl` are fresh
+-     arrays for every pass (O1): `serializeCity` without `copy` aliases `systemData`, so a reused buffer could rewrite a
+-     saved pass.
++  9. It updates the `TourismState` WeakMap and **writes `systemData.tourismPass` as its last step** (determinism O2): a
++     throw inside the guarded daily leaves the old pass, whose `m` is then stale, and the tick's fallback recomputes from
++     scratch instead of reading a half-written pass. It emits nothing (rev 4): the daily, the tick's fallback, `refresh`
++     and `init` emit `layerUpdated` `'tourism'` as their own last statement, as the base's update did. So a listener
++     that throws (the Tourism overlay's rebuild, under the scene's guard) cannot leave the saved pass, the slice window
++     or the attract step behind the state in memory. `ven` and `spl` are fresh arrays for every pass (O1):
++     `serializeCity` without `copy` aliases `systemData`, so a reused buffer could rewrite a saved pass.
+ - **The attract step** runs in `tourism.monthly()`.
+   1. If `tourismPass` is missing, invalid or **not fresh**, `venuePass(sim, null)` runs first. The pass is fresh when
+      `pass.m === ⌈st.day / 30⌉`, which equals `st.monthIndex` on a tick day (determinism R2). The fallback is defensive:
+@@ -263,7 +324,10 @@ interface TourismPass {
+ 1. A missing record, or a `v !== 2` one, becomes `{ v: 2, m: -1, done: 0, rooms: 0, hist: [] }`.
+ 2. When `m` differs, the sums start over.
+ 3. If slice `day % 30` is not done, it is added. (No early return: the pass below must run on a done slice too.)
+-4. On `TOURISM_DAY` it runs `venuePass(sim, window complete ? acc : null)`, then `a.m = m + 1` with the sums cleared.
++4. On `TOURISM_DAY` it takes the window's sums (when every slice is in), starts the next window (`a.m = m + 1`, the sums
++   cleared), runs `venuePass` on the sums it took (`null` otherwise: one full pass), and emits the layer event last (rev 4:
++   the window was reset after the pass, so a throwing listener left it un-reset in a save of that day).
++5. (Rev 4.) `tourismWindow` adds 0: the days before a city's first `TOURISM_DAY` gave −0, which a save stores as 0.
+ 
+ **`init()`:**
+ - **A loaded city with a valid `tourismPass`** takes the **restore path**. Valid (determinism O4): `v === 1`; `ven`
+@@ -483,6 +547,25 @@ Measured (rev 3):
+   day 31–60 in B3. The base fails right after the load on every save day (its approximate rebuild), and a B3 copy
+   without the id sort fails at the ticks.
+ - So §7's test 2 runs those three systems.
++- (Rev 4.) **Approval's resumed init** recomputes `approvalTerms` and `approvalRaw` at load, from a full survey and from
++  `econData.tourists`; the uninterrupted game keeps what its last tick scored. The tourism term therefore differs right
++  after a load whenever the tourists changed since the tick: after any venue removal in the base, and in B3 also after
++  the pass of day 26. In test 2's town (a removal on day 30) it differs right after 29 of the 30 loads, in the base and
++  in B3 alike. It is display-only (`approvalBreakdown`, the TopBar's "heading for" tooltip; `stats.approval` is kept)
++  and lasts until the next tick: in B3 the whole city on day 91 equals the uninterrupted game's from all 30 saves. The fix
++  belongs in `approval.ts` (L7: keep the saved tourism term on a resumed init; with it 0 of the 30 differ).
++- (Rev 4.) **The advisors' month scans do not depend on the order of `rt.plopped` / `rt.growables`** (swap-removes in a
++  running game, Map order after a load): the facility scan lists its buildings in ascending id and takes the lowest
++  unpowered civic id as `civicFirst`; the outage scan and the bus-stop place take the lowest id among equals. A game
++  loaded before the day-29 scan therefore predicts and posts the same "Show me" places. This was pre-existing; A1 made it
++  matter more, since the tick's places now come from that scan.
++- (Rev 4.) **The full game** (`createSystems` at design cadence; the gates' save / load gate, whole-city sha256 at day
++  120) does not continue exactly in the base or in B3: 24 of 24 saves differ in each tree, and right after the load 47–74
++  keys differ in both. They are the infra layers and building flags, approval's survey terms, emergency, `infraTransport`
++  and their stats, plus population's stats on 4–7 of 12 saves in B3 and 4–5 in the base (14–744 fewer residents right
++  after the load, with the same buildings). None of them is state that B3 adds or moves: the tourism pass and window,
++  the advisors' scans, the visitor raster and the tourism read-outs are equal right after all 24 loads in B3 (the base
++  differs on 22 of 24).
+ - **The budget inserts its income lines in `rt.plopped` order**, which a load rebuilds in Map order. The values are
+   equal and only the key order differs (budget.ts, outside B3), so the test compares the lines key by key.
+ 
+@@ -639,6 +722,11 @@ documented in the code:
+ 5. **Determinism.** Two runs of the same city give identical `serializeCity` digests after a year (12 passes, 12 ticks).
+ 6. **Slicing units.** The window month (`m = ⌈(day − 26)/30⌉`) covers each slice exactly once per window; the pass reads
+    the window only from the daily; the venue order is ascending id whatever the order of `rt.plopped`.
++7. (Rev 4.) **A save in the city's first month** (days 3 and 25: the slice window is 0, never −0), loaded through the
++   bundle codec and through a structured clone: the same city, and the whole city on day 91 is the uninterrupted game's.
++8. (Rev 4.) **A layer listener that throws on the pass day** (day 56, under a guard that runs the next day): the saved
++   pass is the new one and the slice record is the next window's; saves on days 56–59 continue field by field and by
++   digest. Tests 7 and 8 fail on bed0ebf.
+ 9. **P3.** Over days 1…960, no month tick is an employment or a demographics sample day, the samples still recur every 4
+    and 32 days, and the `'demographics'` event comes on dom 1. The existing save/load tests of `wfNow` and `popGrids`
+    stay green.
+@@ -660,6 +748,15 @@ documented in the code:
+    the uninterrupted one: the day-28 save predicts on day 29 itself. With `scan.places` deleted, the tick looks the place
+    up and, in a steady city, finds the same one. The existing "month scans are saved with the city" test covers `places`
+    in its `structuredClone` check.
++14. (Rev 4, tests/sim/advisorsScanOrder.test.ts.) **The scans in any list order:** a game whose `rt.plopped` and
++   `rt.growables` were reordered by swap-removes and its loaded copy give the same month scans and predicted places. The
++   facility lists are in ascending id, `civicFirst` is the lowest, and the outage place is the lowest id of equally
++   occupied homes. It fails on bed0ebf.
++
++**Changed in rev 4:** `tests/infra/emergencyBot.test.ts`, EM-1 normal play. The towns 3, 7, 11 and 13 (6 years each) run
++in that order until 2 prompts were raised in all, and each town's prompts must hold (every counted one raised, at most
++one lost). One town's count is chaotic: over seeds 1–40 the base and B3 both raise 86 prompts, and 14 and 17 of the 40
++towns raise fewer than 2 (§8). Seed 3 raises 3 (5 in the base), so the test still runs one town.
+ 
+ ## 8. Verification gates
+ 
+@@ -693,7 +790,7 @@ changes alone), run T2-only and P3-only to attribute it, and use seed 11 and 128
+ **The bot output changes by design** (T2, P3). Expect the change to stay within the run-to-run chaos margin. The new
+ 128×15 seed-7 2015 population goes in the hand-off report; docs/dev/STATUS.md (the 194,432 gate line) is the lead's and
+ is not edited here (gameplay R7). Add the B3 rows to tests/sim/fixtures/balance-baseline.json under a new key, leaving
+-the old rows untouched (the B1 precedent).
++the old rows untouched (the B1 precedent). (Rev 4: done, key `b3`, from the runs at 038100b.)
+ 
+ **Acceptance timing** with `monthbench` (§9) through `tgate.py`:
+ - B = b3base against W = b3 after T2 + P3 (and again with A1), ≥ 3 interleaved runs per side;
+@@ -723,6 +820,9 @@ Judge (gameplay R4, the statistic the lead is asked to approve):
+ - `src/sim/economy/population.ts`: `OCC_PHASE`, `DEMO_PHASE` and the `'demographics'` event day.
+ - The tests in §7, and `tests/sim/exact/j10Original.ts`; rev 3: `tests/infra/emergencyBot.test.ts` (EM-1's town) and
+   `tests/sim/desirability.test.ts` (the sample days).
++- Rev 4: `tourism.ts` (the layer event's place, the window reset, `tourismWindow`); `advisors.ts` (`scanFacilities`'
++  order and `civicFirst`, `scanOutages`' and the bus-stop place's tie-break); `tests/sim/advisorsScanOrder.test.ts`;
++  EM-1's towns.
+ 
+ **Not touched:**
+ - `budget.ts`, `demographics.ts`, `tuning.ts`, `params.ts`;
+@@ -786,3 +886,9 @@ Judge (gameplay R4, the statistic the lead is asked to approve):
+ - **L5, the autosave on the main-thread month frame.** 50–130 ms at 1M. This belongs to W1.3.
+ - **L6, small items.** Demand's caps refresh on dom 0 (0.4–1.5 ms, demand.ts). The inspector's "(next month)" wording
+   (facilities.ts).
++- **L7 (rev 4), approval's resumed init** (approval.ts; §4). On a resumed init keep the saved tourism pride instead of
++  recomputing it from today's tourists: `b3work/implementer-fix/approval/approval-resumed-tourism.patch`, 4 lines. In
++  test 2's town the approval terms right after a load then equal the uninterrupted game's on all 30 saves (29 of 30
++  differ without it, in the base and in B3), and the whole city on day 91 still does (`approval/out_*.txt`). The other
++  terms are recomputed from a full survey at load as before; keeping them too would need the survey's coverage, which
++  approval does not save.
+diff --git a/tests/sim/fixtures/balance-baseline.json b/tests/sim/fixtures/balance-baseline.json
+index 0f20b4e..5400eda 100644
+--- a/tests/sim/fixtures/balance-baseline.json
++++ b/tests/sim/fixtures/balance-baseline.json
+@@ -3,7 +3,7 @@
+  "recorded": "2026-09-23",
+  "command": "npx tsx tools/simbot.ts --size <size> --years <years> --seed <seed> --quiet  (tsx missing: bundle a driver that imports SimBot/botSystems with node_modules/.bin/rolldown --platform node --format esm --dir <out>, run with node)",
+  "reference": "partB",
+- "notes": ["partB = final fixes, round 2 (2026-10-19, tree 4ded35c+working-tree): the WP6b round-3 balance (452b66b) plus every final-fix lane change (round 1: sim-econ, sim-traffic-save, sim-feedback, emergency; round 2: sim-feedback, emergency (EM-1 prompt scoring), sim-econ (SE-3 slice buckets, bit-identical)); the same bot command. Round 3 is superseded: after round 1 seed 7 ran -11.5 % against it at 2060 (1.369M vs 1.547M; seed 11 -4.5 %), the full-map late-game stall (lead decision 20c: no round-1 change is a bug there; F4's tree belt only moves the chaotic bot onto another layout). Compare new work against partB; phase0 stays for the spec gates (pop >= 0.9 x phase0).", "preSpec = tree before any SIM_DEPTH_SPEC change (HEAD f835f06 + uncommitted audio/fireworks WIP, sim untouched).", "phase0 = after the Phase 0 contract commit. Its only numeric change is P0-9 (services WORK_PER_STEP 240k -> 120k, step estimate 0.1 + 2.3 x work share), which moves scheduler step boundaries; every other Phase 0 change was verified bit-identical (128x15 run with P0-9 reverted == preSpec).", "The bot is chaotic: a step-boundary change alone moves year-60 population by -9% (seed 11) / +15% (seed 7). Compare against phase0 with tolerances (spec: pop >= 0.9 x baseline) and prefer both seeds.", "P0b-1 (road table reorder) intentionally changes numbers; P0b-2 re-records these baselines after it.", "totalMsPerDay / econMsPerDay = CPU ms per sim day on a heavily shared 4-core box (load avg 10-25): noisy, +-20%."],
++ "notes": ["partB = final fixes, round 2 (2026-10-19, tree 4ded35c+working-tree): the WP6b round-3 balance (452b66b) plus every final-fix lane change (round 1: sim-econ, sim-traffic-save, sim-feedback, emergency; round 2: sim-feedback, emergency (EM-1 prompt scoring), sim-econ (SE-3 slice buckets, bit-identical)); the same bot command. Round 3 is superseded: after round 1 seed 7 ran -11.5 % against it at 2060 (1.369M vs 1.547M; seed 11 -4.5 %), the full-map late-game stall (lead decision 20c: no round-1 change is a bug there; F4's tree belt only moves the chaotic bot onto another layout). Compare new work against partB; phase0 stays for the spec gates (pop >= 0.9 x phase0).", "preSpec = tree before any SIM_DEPTH_SPEC change (HEAD f835f06 + uncommitted audio/fireworks WIP, sim untouched).", "phase0 = after the Phase 0 contract commit. Its only numeric change is P0-9 (services WORK_PER_STEP 240k -> 120k, step estimate 0.1 + 2.3 x work share), which moves scheduler step boundaries; every other Phase 0 change was verified bit-identical (128x15 run with P0-9 reverted == preSpec).", "The bot is chaotic: a step-boundary change alone moves year-60 population by -9% (seed 11) / +15% (seed 7). Compare against phase0 with tolerances (spec: pop >= 0.9 x baseline) and prefer both seeds.", "P0b-1 (road table reorder) intentionally changes numbers; P0b-2 re-records these baselines after it.", "totalMsPerDay / econMsPerDay = CPU ms per sim day on a heavily shared 4-core box (load avg 10-25): noisy, +-20%.", "b3 = WASM_PLAN B3 / WORKER_DESIGN S4, the month-boundary work spread over the month (docs/dev/B3_DESIGN.md: tourism's venue pass on day 26, the population samples on odd days, the advisors' places predicted on day 29), branch b3-month-spread at 038100b on a59f08f (partB's tree plus the J-fixes, LG-01 and the guide copy; its bot equals partB at 128x15). The same bot command (tools/balance-json.ts). The bot changes by design: 128x15 seed 7 ends 2015 at 195,597 (partB 194,432); 256x60 seed 7 at 1,475,500, seed 11 at 1,527,158. totalMsPerDay / econMsPerDay: one run each on the shared 4-core box, three in parallel."],
+  "columns": ["year", "pop", "funds", "approval", "eq", "unemployment", "commute", "totalMsPerDay", "econMsPerDay", "access", "jobs", "buildings"],
+  "runs": {
+   "256x60_seed7": {
+@@ -193,6 +193,68 @@
+     [2058, 1367066, 12555981, 80.42, 131.52, 0.0982, 10.933, 18.44, 9.106, 0.902, 579470, 10868],
+     [2059, 1375061, 12887174, 80.62, 131.68, 0.0917, 11.935, 20.71, 10.17, 0.908, 583877, 10825],
+     [2060, 1368806, 13223892, 81.5, 131.82, 0.0919, 11.721, 20.61, 10.016, 0.908, 587691, 10798]
++   ],
++   "b3": [
++    [2001, 3675, 35058, 54.01, 46.52, 0, 12.402, 11.27, 4.895, 1, 1605, 394],
++    [2002, 9535, 55501, 49.88, 47.42, 0, 10.548, 6.32, 2.699, 1, 4195, 782],
++    [2003, 17311, 14631, 52.84, 49.96, 0, 9.695, 6.67, 2.897, 1, 7561, 1109],
++    [2004, 26074, 7373, 50.7, 52.82, 0, 9.162, 4.81, 2.119, 1, 11586, 1500],
++    [2005, 35023, 7792, 47.22, 55.61, 0, 9.113, 5.57, 2.479, 1, 15602, 1966],
++    [2006, 44942, 34939, 50.64, 58.7, 0, 9.112, 6.57, 2.69, 1, 19142, 2164],
++    [2007, 56953, 45832, 54.23, 63.51, 0, 8.896, 10.57, 4.316, 1, 24495, 2518],
++    [2008, 69969, 53001, 57.83, 68.65, 0, 9.192, 6.34, 2.725, 1, 30866, 2875],
++    [2009, 83497, 25419, 63.67, 73.93, 0, 8.923, 6.55, 2.919, 1, 36969, 3486],
++    [2010, 96933, 30368, 61.47, 78.73, 0, 8.688, 6.78, 2.958, 1, 43265, 4147],
++    [2011, 110746, 69640, 60.46, 82.56, 0, 8.703, 7.92, 3.683, 1, 49573, 4695],
++    [2012, 127049, 87420, 62.55, 85.46, 0, 8.728, 9.47, 3.952, 1, 56565, 5020],
++    [2013, 144040, 103219, 63.29, 87.83, 0, 8.816, 8.68, 4.012, 1, 64956, 5371],
++    [2014, 161792, 117052, 64.48, 90.05, 0, 8.688, 9.69, 4.153, 1, 73262, 5769],
++    [2015, 180536, 134454, 68.82, 92.62, 0, 8.047, 9.06, 4.184, 1, 81144, 6196],
++    [2016, 200345, 149006, 69.18, 95.8, 0, 8.354, 8.41, 3.98, 1, 89467, 6448],
++    [2017, 219791, 173724, 70.35, 98.82, 0, 8.083, 8.75, 4.064, 1, 96638, 6952],
++    [2018, 240518, 179566, 70.7, 101.26, 0, 8.341, 9.37, 4.286, 1, 107879, 7493],
++    [2019, 262066, 213506, 72.45, 103.61, 0, 8.641, 9.21, 4.273, 1, 116491, 7957],
++    [2020, 285207, 240304, 73.4, 106.68, 0, 8.929, 8.73, 4.097, 1, 125854, 8450],
++    [2021, 307653, 302333, 75.7, 109.64, 0, 9.004, 9.45, 4.449, 1, 135648, 8901],
++    [2022, 330994, 231494, 76.64, 112.16, 0, 9.105, 10.37, 4.761, 1, 146741, 9332],
++    [2023, 355017, 523705, 76.41, 114.18, 0, 9.132, 10.34, 4.781, 1, 156195, 9782],
++    [2024, 379938, 893419, 77.07, 115.8, 0, 9.3, 10.01, 4.623, 1, 168690, 10207],
++    [2025, 405291, 1318303, 77.24, 117.09, 0, 9.456, 10.5, 4.819, 1, 181030, 10663],
++    [2026, 432209, 1790944, 77.04, 118.13, 0, 9.42, 11.15, 5.27, 1, 194125, 11172],
++    [2027, 459521, 2259557, 77.89, 119.2, 0, 9.361, 11.63, 5.491, 1, 206607, 11141],
++    [2028, 488663, 2911685, 78.01, 120.18, 0, 9.457, 11.84, 5.42, 1, 220019, 11117],
++    [2029, 519608, 3084411, 80.22, 121.09, 0, 9.692, 11.76, 5.498, 1, 233542, 11078],
++    [2030, 550457, 3447051, 81.15, 122.1, 0, 9.853, 13.38, 6.193, 1, 248783, 11050],
++    [2031, 581968, 3653008, 82.3, 123.03, 0, 9.873, 11.62, 5.36, 1, 263384, 11002],
++    [2032, 613348, 3891162, 82.19, 123.85, 0, 10.011, 11.79, 5.465, 1, 280092, 10972],
++    [2033, 646386, 4199580, 82.68, 124.62, 0, 10.351, 12.89, 6.025, 1, 297593, 10949],
++    [2034, 679619, 4534906, 82.37, 125.29, 0, 10.153, 13.59, 6.255, 1, 313393, 10925],
++    [2035, 712330, 4935788, 82.5, 125.91, 0, 10.635, 15.42, 6.604, 1, 330022, 10932],
++    [2036, 745507, 5387278, 82.43, 126.43, 0, 10.928, 12.93, 5.758, 1, 344805, 10959],
++    [2037, 779333, 5845995, 82.3, 126.95, 0, 11.258, 12.95, 5.823, 1, 358484, 10946],
++    [2038, 816040, 6373991, 82.03, 127.54, 0, 10.586, 13.5, 5.966, 1, 376418, 11023],
++    [2039, 851632, 6640882, 83.25, 128.02, 0, 10.684, 12.16, 5.548, 1, 394009, 11128],
++    [2040, 887643, 6903005, 83.06, 128.39, 0, 10.794, 12.07, 5.361, 1, 411673, 11235],
++    [2041, 918715, 7211829, 81.95, 128.71, 0, 11.555, 12.39, 5.484, 1, 430134, 11282],
++    [2042, 955532, 7574860, 82.13, 128.99, 0, 11.597, 12.67, 5.464, 1, 446672, 11254],
++    [2043, 992189, 7858138, 81.66, 129.18, 0, 12.431, 12.56, 5.55, 1, 462526, 11205],
++    [2044, 1029792, 8218135, 81.94, 129.3, 0, 12.509, 12.61, 5.548, 1, 482472, 11186],
++    [2045, 1067336, 8632733, 81.57, 129.48, 0, 11.897, 13.36, 5.895, 1, 500968, 11125],
++    [2046, 1101316, 9040332, 80.73, 129.67, 0, 11.965, 12.91, 5.651, 1, 516974, 11090],
++    [2047, 1140860, 9455244, 80.68, 129.75, 0.0081, 11.703, 12.88, 5.604, 0.992, 528680, 11079],
++    [2048, 1186665, 9849880, 81.39, 129.82, 0.0265, 11.952, 12.68, 5.467, 0.973, 539355, 11031],
++    [2049, 1226124, 10256112, 81.07, 129.9, 0.0415, 11.483, 12.02, 5.15, 0.959, 551242, 10981],
++    [2050, 1266826, 10631931, 81.23, 129.98, 0.0561, 11.699, 13.14, 5.656, 0.944, 562271, 10927],
++    [2051, 1306417, 11009285, 80.45, 130.06, 0.0641, 12.333, 12.1, 5.218, 0.936, 574085, 10864],
++    [2052, 1350233, 11395255, 80.37, 130.25, 0.0792, 11.741, 12.52, 5.271, 0.921, 587044, 10795],
++    [2053, 1376206, 11763975, 80.92, 130.45, 0.0802, 11.553, 12.73, 5.393, 0.92, 597550, 10751],
++    [2054, 1398683, 12179335, 80.83, 130.63, 0.0771, 12.011, 13.07, 5.538, 0.923, 611033, 10724],
++    [2055, 1417354, 12620884, 80.72, 130.83, 0.0768, 12.388, 13.12, 5.517, 0.923, 620650, 10702],
++    [2056, 1427162, 13094793, 80.45, 131.01, 0.072, 12.268, 11.71, 4.862, 0.928, 632075, 10671],
++    [2057, 1451831, 13603516, 80.85, 131.18, 0.0701, 12.509, 11.65, 4.856, 0.93, 642281, 10639],
++    [2058, 1463203, 14126617, 80.76, 131.31, 0.0658, 11.511, 12.01, 5.028, 0.934, 652350, 10627],
++    [2059, 1476581, 14687883, 80.6, 131.41, 0.0621, 12.241, 12.91, 5.437, 0.938, 658488, 10610],
++    [2060, 1475500, 15258300, 80.37, 131.51, 0.0646, 11.929, 11.42, 4.669, 0.935, 661682, 10598]
+    ]
+   },
+   "256x60_seed11": {
+@@ -382,6 +444,68 @@
+     [2058, 1489291, 13814113, 79.56, 131.56, 0.0771, 11.31, 20.14, 9.335, 0.923, 654872, 10607],
+     [2059, 1501089, 14306756, 79.84, 131.53, 0.0736, 11.474, 22.08, 10.07, 0.926, 662642, 10573],
+     [2060, 1500564, 14837192, 79.64, 131.5, 0.0711, 11.018, 21.5, 9.937, 0.929, 673032, 10566]
++   ],
++   "b3": [
++    [2001, 3669, 33615, 51.09, 46.52, 0, 12.779, 11.52, 4.872, 1, 1678, 407],
++    [2002, 9826, 53574, 48.58, 47.53, 0, 10.536, 6.4, 2.815, 1, 4074, 785],
++    [2003, 17580, 9066, 45.8, 50.1, 0, 9.996, 6.52, 2.95, 1, 7747, 1135],
++    [2004, 26583, 7566, 44.04, 53.37, 0, 8.948, 5.09, 2.228, 1, 12186, 1319],
++    [2005, 35141, 10906, 42.97, 56.37, 0, 8.969, 5.49, 2.622, 1, 15893, 1816],
++    [2006, 45329, 33634, 50.37, 59.26, 0, 8.857, 6.39, 2.656, 1, 20246, 2233],
++    [2007, 57863, 38829, 56.88, 63.4, 0, 8.511, 7.15, 3.072, 1, 25231, 2593],
++    [2008, 71108, 49498, 61.97, 69.19, 0, 8.72, 5.45, 2.401, 1, 31476, 3026],
++    [2009, 83920, 23827, 64.97, 74.71, 0, 8.524, 6.53, 2.9, 1, 37095, 3566],
++    [2010, 97794, 29815, 63.67, 79.51, 0, 8.263, 6.34, 2.856, 1, 43358, 4189],
++    [2011, 111955, 52450, 62.88, 83.43, 0, 8.324, 7.46, 3.395, 1, 49999, 4670],
++    [2012, 127557, 91702, 63.11, 86.62, 0, 8.257, 9.25, 3.758, 1, 56897, 5028],
++    [2013, 144916, 99398, 66.27, 89.33, 0, 8.192, 8.17, 3.699, 1, 64922, 5348],
++    [2014, 161925, 115429, 67.82, 91.36, 0, 8.555, 9.78, 4.177, 1, 73114, 5649],
++    [2015, 181625, 134766, 69.8, 93.52, 0, 8.163, 8.08, 3.737, 1, 81413, 5912],
++    [2016, 201473, 129486, 70.84, 96.22, 0, 8.379, 7.35, 3.255, 1, 89931, 6350],
++    [2017, 221293, 155969, 71.04, 98.85, 0, 8.25, 7.78, 3.564, 1, 99731, 6778],
++    [2018, 242069, 153688, 71.59, 101.06, 0, 8.682, 9.33, 3.93, 1, 109257, 7345],
++    [2019, 263888, 204261, 73.35, 102.95, 0, 8.853, 8.64, 3.929, 1, 119767, 7822],
++    [2020, 287656, 228550, 74.78, 105.2, 0, 9.11, 9.23, 4.028, 1, 127491, 8310],
++    [2021, 310256, 278380, 75.22, 108.06, 0, 9.088, 9.04, 4.125, 1, 137764, 8752],
++    [2022, 332685, 363560, 75.53, 110.69, 0, 9.275, 9.07, 4.035, 1, 146718, 9187],
++    [2023, 356715, 675513, 75.12, 112.84, 0, 9.334, 9.29, 4.25, 1, 158400, 9584],
++    [2024, 381659, 1060440, 75.36, 114.6, 0, 9.632, 9.06, 4.122, 1, 170513, 10001],
++    [2025, 406934, 1504102, 75.11, 116.06, 0, 9.618, 8.89, 4.127, 1, 182577, 10466],
++    [2026, 433326, 2009832, 75.33, 117.32, 0, 9.347, 10.27, 4.772, 1, 195093, 11094],
++    [2027, 459250, 2503249, 75.5, 118.32, 0, 9.304, 10.63, 4.999, 1, 206054, 11437],
++    [2028, 488840, 2971672, 78.23, 119.11, 0, 9.574, 11.79, 5.429, 1, 220658, 11388],
++    [2029, 519777, 2906011, 79.44, 119.84, 0, 9.547, 10.56, 4.825, 1, 233737, 11358],
++    [2030, 550552, 3066260, 79.67, 120.75, 0, 9.765, 10.63, 4.87, 1, 249251, 11342],
++    [2031, 582727, 3286546, 79.62, 121.79, 0, 9.922, 11.11, 5.125, 1, 265242, 11305],
++    [2032, 613793, 3550234, 79.24, 122.79, 0, 9.866, 12.11, 5.536, 1, 281632, 11270],
++    [2033, 646566, 3867103, 80.32, 123.68, 0, 10.162, 10.89, 4.948, 1, 297193, 11248],
++    [2034, 678815, 4243050, 80.63, 124.5, 0, 10.483, 10.97, 4.972, 1, 315482, 11241],
++    [2035, 712000, 4685577, 80.19, 125.19, 0, 10.414, 11.35, 5.21, 1, 331503, 11210],
++    [2036, 744798, 5075490, 80.85, 125.79, 0, 10.921, 15.99, 6.832, 1, 348189, 11185],
++    [2037, 779128, 5244951, 81, 126.32, 0, 11.437, 11.22, 5.027, 1, 363000, 11202],
++    [2038, 814333, 5477501, 80.05, 127.03, 0, 11.383, 11.34, 5.216, 1, 378017, 11198],
++    [2039, 852504, 5722884, 81.27, 127.63, 0, 10.24, 10.77, 4.952, 1, 398314, 11286],
++    [2040, 884693, 5996134, 80.97, 128.11, 0, 10.432, 11.08, 5.092, 1, 416664, 11387],
++    [2041, 924990, 6323296, 80.84, 128.48, 0, 10.394, 10.66, 4.962, 1, 435437, 11503],
++    [2042, 956613, 6697749, 79.51, 128.82, 0, 11.335, 10.76, 4.857, 1, 451998, 11469],
++    [2043, 994048, 7014959, 79.73, 129.09, 0, 11.742, 11.46, 5.135, 1, 472001, 11427],
++    [2044, 1030593, 7459000, 79.72, 129.23, 0, 11.573, 12.18, 5.476, 1, 489257, 11379],
++    [2045, 1066436, 7916429, 78.94, 129.31, 0, 10.971, 11.85, 5.288, 1, 510499, 11321],
++    [2046, 1106128, 8349936, 79.02, 129.53, 0, 11.602, 11.6, 5.194, 1, 523369, 11280],
++    [2047, 1144353, 8790526, 78.85, 129.9, 0, 11.64, 11.6, 5.155, 1, 539899, 11275],
++    [2048, 1187528, 9240066, 78.68, 130.17, 0.0087, 12.229, 12.85, 5.822, 0.991, 552799, 11262],
++    [2049, 1229486, 9719319, 77.92, 130.42, 0.0235, 11.859, 11.26, 4.987, 0.977, 563275, 11210],
++    [2050, 1271195, 10204052, 78.74, 130.57, 0.0391, 11.57, 11.02, 4.947, 0.961, 573170, 11140],
++    [2051, 1316303, 10612561, 78.68, 130.69, 0.0528, 11.655, 11.53, 5.088, 0.947, 585735, 11085],
++    [2052, 1357813, 10990313, 78, 131, 0.0633, 10.985, 10.91, 4.811, 0.937, 594969, 11007],
++    [2053, 1401184, 11358382, 79.05, 131.37, 0.0761, 10.876, 11.07, 4.833, 0.924, 607076, 10920],
++    [2054, 1441711, 11787136, 78.9, 131.62, 0.0901, 10.951, 10.69, 4.624, 0.91, 618467, 10849],
++    [2055, 1457977, 12229010, 78.71, 131.89, 0.0871, 11.136, 11, 4.763, 0.913, 627960, 10833],
++    [2056, 1473684, 12660859, 78.63, 132.12, 0.087, 11.286, 10.46, 4.406, 0.913, 635157, 10794],
++    [2057, 1480835, 13124266, 78.12, 132.27, 0.0827, 11.595, 11.6, 4.958, 0.917, 642343, 10760],
++    [2058, 1504431, 13617790, 78.52, 132.34, 0.0864, 11.324, 11.16, 4.816, 0.914, 652749, 10741],
++    [2059, 1510030, 14134308, 78.89, 132.38, 0.082, 10.577, 11.73, 5.051, 0.918, 658426, 10743],
++    [2060, 1527158, 14683456, 78.42, 132.46, 0.0828, 10.583, 10.87, 4.663, 0.917, 667495, 10726]
+    ]
+   },
+   "128x15_seed7": {
+@@ -436,6 +560,23 @@
+     [2013, 155651, 117115, 77.71, 94.3, 0.0526, 7.731, 9.82, 3.295, 0.947, 67763, 2818],
+     [2014, 174720, 143509, 78.65, 98.65, 0.0306, 7.645, 9.47, 3.278, 0.969, 76879, 2829],
+     [2015, 194432, 168308, 81.42, 103.02, 0.0325, 7.644, 9.85, 3.361, 0.967, 85686, 2814]
++   ],
++   "b3": [
++    [2001, 3567, 38692, 51.24, 46.44, 0, 9.235, 7.68, 2.577, 1, 1591, 397],
++    [2002, 9727, 50372, 48.92, 47.84, 0, 8.858, 3.87, 1.384, 1, 3997, 770],
++    [2003, 17672, 11361, 51.44, 50.76, 0, 8.862, 4.22, 1.469, 1, 7817, 1110],
++    [2004, 26541, 8657, 49.53, 53.7, 0, 8.822, 3.91, 1.207, 1, 12207, 1414],
++    [2005, 35462, 14621, 47.5, 56.39, 0, 8.828, 4.12, 1.284, 1, 16308, 1931],
++    [2006, 46019, 38208, 49.25, 59.02, 0, 8.565, 6.02, 1.87, 1, 19713, 2285],
++    [2007, 59111, 41216, 57.72, 63.42, 0, 8.794, 5.15, 1.358, 1, 25514, 2583],
++    [2008, 72349, 57327, 60.68, 68.94, 0, 8.346, 5.5, 1.665, 1, 31018, 2780],
++    [2009, 86617, 38256, 66.18, 75.1, 0, 8.359, 4.94, 1.53, 1, 38498, 2789],
++    [2010, 102464, 74619, 68.9, 80.68, 0, 8.237, 4.63, 1.412, 1, 45580, 2793],
++    [2011, 120043, 86023, 73.58, 85.75, 0.0178, 8.145, 7.29, 2.001, 0.982, 52593, 2802],
++    [2012, 137863, 110753, 75.55, 90.31, 0.0663, 7.658, 6.52, 1.732, 0.934, 59012, 2806],
++    [2013, 156379, 111258, 77.24, 94.36, 0.0342, 7.625, 5.65, 1.656, 0.966, 69236, 2797],
++    [2014, 176132, 128285, 78.29, 98.57, 0.0009, 7.647, 5.23, 1.522, 0.999, 78392, 2821],
++    [2015, 195597, 167632, 80.73, 103.54, 0, 7.646, 5.07, 1.528, 1, 87712, 2813]
+    ]
+   }
+  }
+-- 
+2.43.0
+

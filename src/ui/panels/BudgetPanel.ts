@@ -8,6 +8,9 @@ import { clear, h, setSlider, setText, slider, stepButtons, toggleClass } from '
 import { icon } from '../icons';
 import { money, moneySigned, signClass, titleCase } from '../format';
 import { isOneOff, sumOneOff, sumRecurring } from '../TopBar';
+import { watchFor, type WatchHandle } from '../../worker/SimHost';
+import { taxFactor } from '../../sim/economy/demand';
+import { APPROVAL, TAX_NEUTRAL } from '../../sim/economy/tuning';
 
 const TAX_GROUPS: { label: string; color: string; devs: DevType[] }[] = [
   { label: 'Residential', color: 'var(--res)', devs: [DevType.R1, DevType.R2, DevType.R3] },
@@ -98,7 +101,8 @@ export class BudgetPanel extends Panel {
   private tab: 'taxes' | 'services' | 'ledger' | 'loans' = 'taxes';
   private tabBtns: Record<string, HTMLButtonElement> = {};
   private content!: HTMLDivElement;
-  private taxSliders = new Map<DevType, { s: HTMLInputElement; v: HTMLElement; m: HTMLElement }>();
+  private taxSliders = new Map<DevType, { s: HTMLInputElement; v: HTMLElement; m: HTMLElement; effect: HTMLElement }>();
+  private taxMasters: { devs: DevType[]; s: HTMLInputElement; v: HTMLElement }[] = [];
   private fundSliders = new Map<ServiceKind, { s: HTMLInputElement; v: HTMLElement; m: HTMLElement; badge: HTMLElement; row: HTMLElement }>();
   private netEls!: { inc: HTMLElement; exp: HTMLElement; net: HTMLElement; note: HTMLElement; funds: HTMLElement };
   /** rates / funding in effect when last month's report was produced (for projections) */
@@ -148,10 +152,22 @@ export class BudgetPanel extends Panel {
     this.renderTab();
   }
 
+  /** show a tab (FH-06: the approval card's tax row opens Budget · Taxes); before the first open it is the tab it opens on */
+  showTab(t: 'taxes' | 'services' | 'ledger' | 'loans'): void {
+    this.tab = t;
+    if (this.content) this.renderTab();
+  }
+
+  override onClose(): void {
+    this.forecastWatch?.dispose();
+    this.forecastWatch = null;
+  }
+
   private renderTab(): void {
     for (const [id, b] of Object.entries(this.tabBtns)) toggleClass(b, 'on', id === this.tab);
     clear(this.content);
     this.taxSliders.clear();
+    this.taxMasters = [];
     this.fundSliders.clear();
     if (this.tab === 'taxes') this.renderTaxes();
     else if (this.tab === 'services') this.renderServices();
@@ -162,10 +178,9 @@ export class BudgetPanel extends Panel {
 
   private setTax(d: DevType, v: number): void {
     try {
-      this.ctx.actions.setTax(d, v);
+      this.ctx.host.act('setTax', [d, v]);
     } catch (e) {
       console.warn(e);
-      this.ctx.state.budget.taxRates[d] = v;
     }
   }
 
@@ -174,7 +189,7 @@ export class BudgetPanel extends Panel {
     const cols = h('div', { class: 'tax-cols' });
     TAX_GROUPS.forEach((g) => {
       const box = h('div', { class: 'tax-group' });
-      const avg = () => Math.round(g.devs.reduce((s, d) => s + b.taxRates[d], 0) / g.devs.length);
+      const avg = () => g.devs.reduce((s, d) => s + b.taxRates[d], 0) / g.devs.length;
       const mv = h('span', { class: 'tr-v' }, pctText(avg()));
       const master = slider({
         signal: this.ctx.signal,
@@ -185,6 +200,7 @@ export class BudgetPanel extends Panel {
           this.update();
         },
       });
+      this.taxMasters.push({ devs: g.devs, s: master, v: mv });
       box.append(
         h('div', { class: 'sec-title', html: `<span class="zdot" style="background:${g.color}"></span><span>${g.label}</span>` }),
         h('div', { class: 'tax-row master' }, h('span', { class: 'tr-l' }, 'All'), master, stepper(master, mv, `every ${g.label.toLowerCase()} tax`, this.ctx.signal), h('span', { class: 'tr-m' }, '')),
@@ -192,6 +208,7 @@ export class BudgetPanel extends Panel {
       for (const d of g.devs) {
         const v = h('span', { class: 'tr-v' });
         const m = h('span', { class: 'tr-m' });
+        const effect = h('div', { class: 'dim tax-effect', style: 'grid-column:1 / -1;font-size:11.5px;line-height:1.4;margin-bottom:4px' });
         const s = slider({
           signal: this.ctx.signal,
           min: 0, max: 20, step: 0.5, value: b.taxRates[d],
@@ -200,12 +217,13 @@ export class BudgetPanel extends Panel {
             this.update();
           },
         });
-        this.taxSliders.set(d, { s, v, m });
-        box.appendChild(h('div', { class: 'tax-row', title: `Last month: ${money(lookup(b.lastIncome, taxKeys(d)))}` }, h('span', { class: 'tr-l' }, DEV_TYPE_LABELS[d]), s, stepper(s, v, `the ${DEV_TYPE_LABELS[d]} tax`, this.ctx.signal), m));
+        this.taxSliders.set(d, { s, v, m, effect });
+        box.appendChild(h('div', { class: 'tax-row', title: `Last month: ${money(lookup(b.lastIncome, taxKeys(d)))}` }, h('span', { class: 'tr-l' }, DEV_TYPE_LABELS[d]), s, stepper(s, v, `the ${DEV_TYPE_LABELS[d]} tax`, this.ctx.signal), m, effect));
       }
+      if (g.devs[0] === DevType.R1) box.appendChild(h('div', { class: 'dim', style: 'font-size:11.5px;line-height:1.4;margin-top:4px' }, `Residential rows share the citywide tax effect vs ${TAX_NEUTRAL}%, weighted by residents. Other approval factors still apply.`));
       cols.appendChild(box);
     });
-    const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + '<span>Taxes above ~12% slow growth and hurt approval; below ~7% attract newcomers but strain the budget. Click a slider, then use the arrow keys (or − / +) for 0.5% steps.</span>' });
+    const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + `<span>${TAX_NEUTRAL}% is neutral. Each residential point above costs approval (−${-APPROVAL.taxPerPoint} a point); above 13% demand collapses. Each point below wins approval (+${APPROVAL.taxLowPerPoint}) but less income. Click a slider, then use the arrow keys (or − / +) for 0.5% steps.</span>` });
     this.content.append(cols, hint);
   }
 
@@ -221,9 +239,9 @@ export class BudgetPanel extends Panel {
         min: 0, max: 150, step: 5, value: b.funding[s.key] ?? 100,
         oninput: (val) => {
           try {
-            this.ctx.actions.setFunding(s.key, val);
-          } catch {
-            b.funding[s.key] = val;
+            this.ctx.host.act('setFunding', [s.key, val]);
+          } catch (e) {
+            console.warn(e);
           }
           this.update();
         },
@@ -315,9 +333,12 @@ export class BudgetPanel extends Panel {
     this.content.appendChild(h('div', { class: 'sec-title' }, 'Outstanding loans'));
     if (!b.loans.length) this.content.appendChild(h('div', { class: 'dim', style: 'font-size:12.5px;padding:4px 0 8px' }, 'No outstanding loans.'));
     b.loans.forEach((l, i) => {
+      const guard = { principal: l.principal, monthsLeft: l.monthsLeft };
       const repay = h('button', { class: 'btn sm' }, `Repay ${money(l.remaining)}`);
-      repay.addEventListener('click', () => {
-        const r = this.safeAct(() => this.ctx.actions.repayLoan(i));
+      repay.addEventListener('click', async () => {
+        repay.disabled = true;
+        const r = await this.safeAct(() => this.ctx.host.act('repayLoan', [i, guard]).done);
+        if (this.ctx.signal.aborted) return;
         // (null: the action threw and safeAct already showed its error - no cash register on top of the buzz)
         if (r?.ok) this.ctx.sound('money');
         else if (r) this.ctx.toast(r.reason ?? 'Cannot repay', 'error');
@@ -355,8 +376,10 @@ export class BudgetPanel extends Panel {
       const o = offer(amt);
       const bt = h('button', { class: 'btn', title: o ? `${money(o.monthlyPayment)}/mo for ${o.termMonths} months` : '', html: icon('plus', 14) + `<span>${money(amt)}</span>` + (o ? `<span class="dim" style="font-weight:500">· ${money(o.monthlyPayment)}/mo</span>` : '') });
       if (o && !o.ok) bt.setAttribute('disabled', '');
-      bt.addEventListener('click', () => {
-        const r = this.safeAct(() => this.ctx.actions.takeLoan(amt));
+      bt.addEventListener('click', async () => {
+        bt.disabled = true;
+        const r = await this.safeAct(() => this.ctx.host.act('takeLoan', [amt]).done);
+        if (this.ctx.signal.aborted) return;
         if (r?.ok) this.ctx.sound('money');
         else if (r) this.ctx.toast(r.reason ?? 'The bank declined the loan', 'error');
         this.renderTab();
@@ -366,43 +389,21 @@ export class BudgetPanel extends Panel {
     this.content.append(acts, h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px' }, 'Loans are repaid in monthly installments with interest.'));
   }
 
-  private safeAct<T>(f: () => T): T | null {
+  private async safeAct<T>(f: () => Promise<T>): Promise<T | null> {
     try {
-      return f();
+      return await f();
     } catch (e) {
       console.warn(e);
-      this.ctx.toast('Action unavailable', 'error');
+      if (!this.ctx.signal.aborted) this.ctx.toast('Action unavailable', 'error');
       return null;
     }
   }
 
-  /** sim-core's forecast at current rates / funding (null when unavailable) */
-  private forecastNow(): Forecast | null {
-    const f = this.ctx.mods.econ?.computeMonthlyBudget;
-    if (!f) return null;
-    try {
-      return f(this.ctx.state, null);
-    } catch (e) {
-      console.warn('[ui] computeMonthlyBudget failed', e);
-      return null;
-    }
-  }
-
-  /**
-   * the forecast, reused while the rates, funding, ordinances and loans stay the same — recomputed on a new sim day at
-   * most every FORECAST_MS of real time (final fixes A1: computeMonthlyBudget walks every cell of the map, and ran on
-   * every UI tick); a slider move recomputes it at once
-   */
-  private fcCache: { key: string; day: number; at: number; st: unknown; v: Forecast | null } | null = null;
+  /** The host refreshes after budget changes, subject to the real-time watch cap. */
+  private forecastWatch: WatchHandle<Forecast> | null = null;
   private forecast(): Forecast | null {
-    const st = this.ctx.state, b = st.budget;
-    const key = `${b.taxRates.join(',')}|${SERVICES.map((s) => b.funding[s.key] ?? 100).join(',')}|${b.ordinances.join(',')}|${b.loans.length}|${st.buildings.size}`;
-    const now = performance.now();
-    const c = this.fcCache;
-    if (c && c.st === st && c.key === key && (c.day === st.day || now - c.at < FORECAST_MS)) return c.v;
-    const v = this.forecastNow();
-    this.fcCache = { key, day: st.day, at: now, st, v };
-    return v;
+    this.forecastWatch ??= watchFor(this.ctx.host, 'computeMonthlyBudget', {}, 'daily', this.ctx.signal);
+    return this.forecastWatch.value ?? null;
   }
 
   /** projected monthly income / expense: sim-core forecast, else last month scaled by tax & funding changes */
@@ -454,12 +455,20 @@ export class BudgetPanel extends Panel {
     // recurring only: loan proceeds, construction and other one-offs are listed separately in the ledger
     const lastNet = sumRecurring(b.lastIncome) - sumRecurring(b.lastExpense);
     setText(this.netEls.note, hasLast ? `Last month ${moneySigned(lastNet)}` : fc ? 'Forecast at current rates' : 'Awaiting first report');
+    for (const r of this.taxMasters) {
+      const rates = r.devs.map((d) => b.taxRates[d]);
+      const rate = rates.reduce((sum, v) => sum + v, 0) / rates.length;
+      setSlider(r.s, rate);
+      setText(r.v, rates.every((v) => v === rates[0]) ? pctText(rate) : 'Mixed');
+      taxColor(r.s, rate);
+    }
+    const residential = residentialTaxEffect(b.taxRates, st.stats.residents, st.stats.population);
     for (const [d, r] of this.taxSliders) {
       const rate = b.taxRates[d];
       setSlider(r.s, rate);
       setText(r.v, `${rate % 1 ? rate.toFixed(1) : rate}%`);
-      toggleClass(r.s, 'warn', rate > 12 && rate <= 15);
-      toggleClass(r.s, 'bad', rate > 15);
+      taxColor(r.s, rate);
+      setText(r.effect, d <= DevType.R3 ? residential : `demand ×${Number(taxFactor(d, rate).toFixed(2))}`);
       let proj: number;
       if (fc) proj = lookup(fc.income, taxKeys(d));
       else {
@@ -515,8 +524,22 @@ function serviceCost(expense: Record<string, number>, s: ServiceKind): number {
 }
 
 type Forecast = { income: Record<string, number>; expense: Record<string, number>; totalIncome: number; totalExpense: number };
-/** min real ms between two forecasts while only the sim day moves on */
-const FORECAST_MS = 500;
+
+function taxColor(sl: HTMLInputElement, rate: number): void {
+  toggleClass(sl, 'warn', rate > 9.5 && rate < 13.5);
+  toggleClass(sl, 'bad', rate >= 13.5);
+}
+
+/** The sim applies the tax slope to the resident-weighted average, not separately to each wealth tier. */
+function residentialTaxEffect(rates: readonly number[], residents: readonly number[], population: number): string {
+  if (population <= 0) return 'Approval starts with your first residents';
+  const rate = (residents[0] * rates[0] + residents[1] * rates[1] + residents[2] * rates[2]) / population;
+  const effect = rate > TAX_NEUTRAL ? APPROVAL.taxPerPoint * (rate - TAX_NEUTRAL) : APPROVAL.taxLowPerPoint * (TAX_NEUTRAL - rate);
+  if (Math.abs(effect) < 1e-9) return `Citywide approval: neutral at ${TAX_NEUTRAL}%`;
+  const points = Math.abs(effect) < 0.01 ? '<0.01' : String(Number(Math.abs(effect).toFixed(2)));
+  const reached = Math.round((1 - (1 - APPROVAL.ema) ** 6) * 100);
+  return `Citywide: approval heads ${points} ${effect < 0 ? 'lower' : 'higher'} (${reached}% reached over 6 months)`;
+}
 
 /** "11%" / "11.5%" */
 function pctText(v: number): string {

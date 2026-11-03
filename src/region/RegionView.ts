@@ -282,6 +282,16 @@ export class RegionView {
     return this.selected;
   }
 
+  /** FH-11: outline the tile recommended for a first city (null: none) */
+  recommend(tile: RegionTile | null): void {
+    this.recommended = tile;
+    this.terrain.setRecommended(tile);
+  }
+  get recommendedTile(): RegionTile | null {
+    return this.recommended;
+  }
+  private recommended: RegionTile | null = null;
+
   /** (re)load founded-city thumbnails into the draped atlas and rebuild skyline hints */
   async refreshCities(): Promise<void> {
     this.terrain.updateTiles();

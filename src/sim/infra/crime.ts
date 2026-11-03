@@ -18,7 +18,7 @@ import { DevType, Zone } from '../../core/types';
 import type { Building, CityState } from '../CityState';
 import { BF } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
-import { blur3 } from './blur';
+import { blur3 } from '../../wasm/kernels/blur';
 import { Fam, infoOf, isFunctional, nowMs, readEffects, setFlagQuiet, wealthOf, buildingList, type DefInfo } from './common';
 import {
   CRIME_GARBAGE, CRIME_NIGHTLIFE, CRIME_SPILL, CRIME_THRESHOLD, LOCAL_UNEMP_CI, LOCAL_UNEMP_R, YOUTH_CRIME,

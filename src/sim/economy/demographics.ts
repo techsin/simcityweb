@@ -612,10 +612,9 @@ function lifeInto(damp: number, A: number, out: Float32Array): Float32Array {
 export function targetShares(st: CityState, b: Building, def: BuildingDef, i: number, out: Float32Array = new Float32Array(5), ctx?: DemographicsCtx): Float32Array {
   const c = ctx ?? demographicsCtx(st, CTX_TMP);
   const r = accessRecord(st, i, c.svc);
-  return targetFrom(b, def, r.fam, r.stud, r.sen, c, out);
+  return targetFrom(b, demoOf(def), r.fam, r.stud, r.sen, c, out);
 }
-function targetFrom(b: Building, def: BuildingDef, fam: number, stud: number, sen: number, c: DemographicsCtx, out: Float32Array): Float32Array {
-  const dd = demoOf(def);
+function targetFrom(b: Building, dd: DefDemo, fam: number, stud: number, sen: number, c: DemographicsCtx, out: Float32Array): Float32Array {
   const pm = dd.pm;
   lifeInto(dd.damp, b.age / 360, LIFE);
   const pullF = Math.max(PULL_MIN, 0.7 + 0.6 * fam);
@@ -668,7 +667,8 @@ export function updateDemographics(st: CityState, b: Building, def: BuildingDef,
     const r = accessRecord(st, i, c.svc);
     fam = r.fam; stud = r.stud; sen = r.sen; eduT = r.eduT; col = r.col;
   }
-  const t = targetFrom(b, def, fam, stud, sen, c, T);
+  const dd = demoOf(def);
+  const t = targetFrom(b, dd, fam, stud, sen, c, T);
   const pop1 = b.pop;
   let k0: number, k1: number, k2: number, k4: number;
   if (b.kids === undefined || b.teens === undefined || b.yad === undefined || b.srs === undefined) {
@@ -682,7 +682,7 @@ export function updateDemographics(st: CityState, b: Building, def: BuildingDef,
   }
   b.kids = k0 = Math.fround(k0); b.teens = k1 = Math.fround(k1); b.yad = k2 = Math.fround(k2); b.srs = k4 = Math.fround(k4);
   const adults = Math.max(0, 1 - k0 - k1 - k2 - k4);
-  const wf = (b.wf = Math.fround(wfShare(k1, k2, adults, k4, demoOf(def).wi, col, c.hqPart)));
+  const wf = (b.wf = Math.fround(wfShare(k1, k2, adults, k4, dd.wi, col, c.hqPart)));
   // education stock
   const mean = c.eduMean;
   let edu: number;

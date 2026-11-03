@@ -44,6 +44,8 @@ export interface NewYearDeps {
   audio?: () => unknown;
   /** element for the countdown overlay (the HUD root) */
   overlayRoot?: HTMLElement;
+  /** hold or release the calendar through the host (NOTE-041's holdCalendar command); without it the date runs on */
+  holdCalendar?: (on: boolean) => void;
 }
 
 export interface CelebrateOptions {
@@ -109,7 +111,7 @@ const DAYS_PER_YEAR = DAYS_PER_MONTH * MONTHS_PER_YEAR;
 /** at most this much real time (s) advances the celebration in one frame (a hidden tab or a long stall skips nothing) */
 const REAL_STEP_MAX = 1;
 /** keys the camera controller acts on: pressing one hands the camera back to the player */
-const CAMERA_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'pageup', 'pagedown', 'home', '+', '=', '-', '_']);
+const CAMERA_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'NumpadEqual']);
 const DEG = 180 / Math.PI;
 
 const nf = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
@@ -175,7 +177,7 @@ export class NewYearCelebration {
   /** real time (performance.now ms) of the last frame (the celebration's timer follows real elapsed time) */
   private lastNow = 0;
   /** the calendar hold during the time-lapse and the countdown: the sim's days-per-frame cap it replaced */
-  private dateHold: { prevMax: number; at: number } | null = null;
+  private dateHold: { at: number } | null = null;
   /** the sim speed when the celebration began: the player raising it ends the celebration (dev shows: -1 = off) */
   private speedAtStart = -1;
 
@@ -537,20 +539,17 @@ export class NewYearCelebration {
    * the city's frame-rate systems keep running
    */
   private holdDate(): void {
-    const sim = this.deps.sim as { maxDaysPerFrame?: unknown };
-    if (this.dateHold || typeof sim.maxDaysPerFrame !== 'number') return;
+    if (this.dateHold || !this.deps.holdCalendar) return;
     // (`at`: the first frame's clock after the hold began — frame() measures the watchdog on its own clock)
-    this.dateHold = { prevMax: sim.maxDaysPerFrame, at: -1 };
-    sim.maxDaysPerFrame = 0;
+    this.dateHold = { at: -1 };
+    this.deps.holdCalendar(true);
   }
 
   /** let the calendar run again (midnight, the end of the celebration, a cancel, dispose) */
   private releaseDate(): void {
-    const h = this.dateHold;
-    if (!h) return;
+    if (!this.dateHold) return;
     this.dateHold = null;
-    const sim = this.deps.sim as { maxDaysPerFrame?: unknown };
-    if (sim.maxDaysPerFrame === 0) sim.maxDaysPerFrame = h.prevMax > 0 ? h.prevMax : 4;
+    this.deps.holdCalendar?.(false);
   }
 
   /** hand the clock back to the settings */
@@ -704,7 +703,7 @@ export class NewYearCelebration {
     }
     if (typeof window !== 'undefined') {
       const kd = (e: KeyboardEvent) => {
-        if (CAMERA_KEYS.has(e.key.toLowerCase())) this.camUser = true;
+        if (CAMERA_KEYS.has(e.code)) this.camUser = true;
       };
       window.addEventListener('keydown', kd, { capture: true, signal: this.deps.signal });
       this.camOffs.push(() => window.removeEventListener('keydown', kd, true));

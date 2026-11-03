@@ -1,6 +1,7 @@
 /**
- * End-to-end: the real simulation (stress city, all infra systems) with src/sim/infra/blur.ts replaced by the wasm
- * bindings (vi.mock — no sim file is edited).
+ * End-to-end: the real simulation (stress city, all infra systems) on the blur bindings it imports
+ * (src/wasm/kernels/blur.ts, WASM_PLAN PI-6), shadowed through vi.mock. The call counts below prove the systems reach
+ * the mock, so the comparison cannot pass vacuously.
  *  1. shadow mode: every blur call the systems make (pollution, crime, ...) also runs the JS original on copies of
  *     the arguments; outputs must be bit-identical, call by call, on live data.
  *  2. determinism: a city simulated with preference 'js' and one simulated with the wasm kernels end up with
@@ -16,8 +17,8 @@ interface Shadow {
   mismatches: string[];
 }
 
-vi.mock('../../src/sim/infra/blur', async (importOriginal) => {
-  const orig = await importOriginal<typeof BlurModule>();
+vi.mock('../../src/wasm/kernels/blur', async () => {
+  const orig: typeof BlurModule = await import('../../src/sim/infra/blur');
   const { makeBlurKernels, BLUR_KERNEL } = await import('../../src/wasm/kernels/blurBind');
   const wasm = makeBlurKernels(orig);
   const shadow: Shadow = { enabled: false, calls: {}, wasmCalls: 0, mismatches: [] };
@@ -50,7 +51,7 @@ vi.mock('../../src/sim/infra/blur', async (importOriginal) => {
       return rw;
     };
   }
-  return api;
+  return { ...api, BLUR_KERNEL, makeBlurKernels };
 });
 
 // imported after the mock is registered (vitest hoists vi.mock)

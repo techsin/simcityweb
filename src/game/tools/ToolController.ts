@@ -35,6 +35,7 @@ export class ToolController {
 
   /** (re)bind pointer listeners to a canvas */
   attach(canvas: HTMLCanvasElement): void {
+    this.current.endGesture();
     for (const f of this.offs) f();
     this.offs = [];
     this.canvas = canvas;
@@ -42,12 +43,15 @@ export class ToolController {
       t.addEventListener(k, f as EventListener, { signal: this.ctx.signal });
       this.offs.push(() => t.removeEventListener(k, f as EventListener));
     };
+    const pending = this.ctx.host.pending;
+    if (pending) this.offs.push(pending.subscribe(() => this.refresh(), this.ctx.signal));
     on(canvas, 'pointerdown', (e) => {
       if (e.button === 2 || e.button === 1) {
         if (e.button === 2 && this.cancelDrag()) this.ctx.sound('cancel');
         return;
       }
       if (e.button !== 0) return;
+      this.current.beginGesture();
       this.leftDown = true;
       this.lastEvt = e;
       try {
@@ -82,6 +86,7 @@ export class ToolController {
     on(canvas, 'pointercancel', () => {
       this.leftDown = false;
       this.current.cancel();
+      this.current.endGesture();
     });
     on(canvas, 'pointerleave', () => {
       this.inside = false;
@@ -93,6 +98,7 @@ export class ToolController {
       if (this.leftDown) {
         this.leftDown = false;
         this.current.cancel();
+        this.current.endGesture();
       }
     });
     this.applyCursor();
@@ -108,7 +114,9 @@ export class ToolController {
     } catch {
       /* ignore */
     }
-    this.safeCall(() => this.current.up(this.pointer(e)!));
+    const tool = this.current;
+    this.safeCall(() => tool.up(this.pointer(e)!));
+    tool.endGesture();
   }
 
   get active(): Tool {
@@ -171,6 +179,7 @@ export class ToolController {
     if (next === this.current) return true;
     if (!opts.silent) this.playSelectSound(id, next === this.defaultTool);
     this.safeCall(() => this.current.deactivate());
+    this.current.endGesture();
     // restore the data view we switched on automatically (unless the player changed it meanwhile)
     if (this.autoOverlayOn !== null && this.ctx.overlay === this.autoOverlayOn && next.autoOverlay !== this.autoOverlayOn) {
       this.ctx.setOverlay(0 as Overlay);
@@ -223,7 +232,10 @@ export class ToolController {
   /** Esc: cancel the drag if any. Returns true if something was cancelled. */
   cancelDrag(): boolean {
     const r = this.current.cancel();
-    if (r) this.leftDown = false;
+    if (r) {
+      this.leftDown = false;
+      this.current.endGesture();
+    }
     return r;
   }
 
@@ -266,6 +278,7 @@ export class ToolController {
 
   dispose(): void {
     this.current.deactivate();
+    this.current.endGesture();
     for (const f of this.offs) f();
   }
 }

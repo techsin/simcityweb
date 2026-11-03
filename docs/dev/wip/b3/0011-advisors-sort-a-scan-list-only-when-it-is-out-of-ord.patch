@@ -1,0 +1,45 @@
+From 2339b0c54e36888b7eb6eb509b710f38d931c2e2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 05:10:16 +0000
+Subject: [PATCH 11/13] advisors: sort a scan list only when it is out of order
+ (B3 fix round)
+
+The facility scan's lists are almost always in id order already (rt.plopped keeps id order until a
+plopped building is removed), and a once-a-month sort call with a comparator cost up to 0.9 ms cold in
+a fresh process (0.03 ms warm; 467 ids on dense1m's day 29, 479 on bot256's). An O(n) check now skips it.
+The result is the same.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KT9tXthEhyzExdUuGEecAJ
+---
+ src/sim/economy/advisors.ts | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/sim/economy/advisors.ts b/src/sim/economy/advisors.ts
+index 0ec56b3..8ebcf0a 100644
+--- a/src/sim/economy/advisors.ts
++++ b/src/sim/economy/advisors.ts
+@@ -713,6 +713,11 @@ const OTHER_RUINS: ReadonlySet<string> = new Set(['reward', 'landmark', 'civic',
+ type FacScanData = { [K in IdKeys]: number[] } & { burntMW: number; civicUnpowered: number; civicFirst: number; liveMW: number; fireStations: number };
+ 
+ const idAsc = (a: number, b: number): number => a - b;
++/** sort ids ascending in place, unless they already are (the common case: rt.plopped stays in id order until a removal,
++ *  and a once-a-month sort call with a comparator costs up to ~0.9 ms cold) */
++function sortIds(ids: number[]): void {
++  for (let k = 1; k < ids.length; k++) if (ids[k] < ids[k - 1]) { ids.sort(idAsc); return; }
++}
+ function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
+   const f: FacScanData = {
+     plants: [], plantsBurnt: [], plantsIsolated: [], burntMW: 0, plantsDry: [], waterOk: [], waterBurnt: [], waterNoRoad: [], waterNoPower: [],
+@@ -757,7 +762,7 @@ function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
+   // swap-removes reorder it) while a loaded game rebuilds it in Map order, ascending id. The advice takes the first of a
+   // list as its "Show me" place (and A1 predicts it from this scan), so a game loaded before the scan finds the same
+   // buildings first. The counts and the MW sums (the catalog's integer MW) are the same in any order
+-  for (const k of ID_KEYS) if (f[k].length > 1) f[k].sort(idAsc);
++  for (const k of ID_KEYS) sortIds(f[k]);
+   return f;
+ }
+ 
+-- 
+2.43.0
+

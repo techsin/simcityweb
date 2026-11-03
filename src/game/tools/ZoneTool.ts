@@ -14,8 +14,8 @@ import { Zone } from '../../core/types';
 import type { ActionResult } from '../../sim/actions';
 import { rectFrom, type Cell } from '../geom';
 import type { GameContext } from '../context';
-import { FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
-import { buildingCells, bulldozeCut, bulldozeRemoval, demolishRisks, sideDemolishRisks, utilityCut, utilityCutQuick, type DemolishRisk, type Removal, type UtilityCut } from '../demolishRisk';
+import { commitAction, FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
+import { buildingCells, bulldozeCut, bulldozeRemoval, utilityCut, utilityCutQuick, type DemolishRisk, type Removal, type UtilityCut } from '../demolishRisk';
 import { confirmDialog } from '../../ui/Modals';
 import { escapeHtml } from '../../ui/dom';
 import { noAccessText, zonePlanNoAccess } from '../../ui/zoneStatus';
@@ -52,6 +52,8 @@ export class RectTool extends Tool {
   private lastKey = '';
   private lastRect: CellRect | null = null;
   private lastRes: ActionResult | null = null;
+  private riskRequest = 0;
+  private riskPending = false;
   /** the preview's warnings (made per rect with lastRes): buildings cut off the grid / pipes, tiles without road access */
   private lastCut: UtilityCut | null = null;
   private lastNoAccess = '';
@@ -77,10 +79,10 @@ export class RectTool extends Tool {
     return 0xff6a4d;
   }
 
-  private run(rect: CellRect, preview: boolean): ActionResult {
+  private run(rect: CellRect): ActionResult {
     const a = this.ctx.actions;
     const m = this.mode;
-    return safe(() => (m.kind === 'zone' ? a.zone(rect, m.zone, preview) : m.kind === 'dezone' ? a.dezone(rect, preview) : a.bulldoze(rect, preview)), FAIL);
+    return safe(() => (m.kind === 'zone' ? a.zone(rect, m.zone, true) : m.kind === 'dezone' ? a.dezone(rect, true) : a.bulldoze(rect, true)), FAIL);
   }
 
   /** rect for hovering (no drag): bulldoze snaps to the building under the cursor */
@@ -166,11 +168,11 @@ export class RectTool extends Tool {
     }
     const c = { x: p.hit.x, z: p.hit.z };
     const rect = this.start ? rectFrom(this.start, c) : this.hoverRect(c);
-    const key = `${rect.x0},${rect.z0},${rect.x1},${rect.z1},${!!this.start}`;
+    const key = `${rect.x0},${rect.z0},${rect.x1},${rect.z1},${!!this.start},${this.ctx.host.pending?.revision ?? 0}${this.mode.kind === 'bulldoze' ? `,${this.ctx.state.day}` : ''}`;
     if (key !== this.lastKey) {
       this.lastKey = key;
       this.lastRect = rect;
-      this.lastRes = this.run(rect, true);
+      this.lastRes = this.run(rect);
       this.ctx.world.setHighlightRect(rect, this.color(this.lastRes.ok));
       this.warnings(rect, key);
     }
@@ -193,6 +195,7 @@ export class RectTool extends Tool {
     this.lastKey = '';
   }
   override deactivate(): void {
+    this.riskRequest++; this.riskPending = false;
     this.start = null;
     this.clearPreview();
     this.ctx.tip.hide();
@@ -201,6 +204,7 @@ export class RectTool extends Tool {
     this.refresh(p);
   }
   override down(p: ToolPointer): void {
+    this.riskRequest++; this.riskPending = false;
     if (!p.hit) return;
     this.start = { x: p.hit.x, z: p.hit.z };
     if (this.mode.kind === 'bulldoze' && this.ctx.state.buildingAt(p.hit.x, p.hit.z)) {
@@ -225,49 +229,59 @@ export class RectTool extends Tool {
       const bull = this.mode.kind === 'bulldoze';
       const risk = bull ? this.bulldozeRisk(rect) : this.mode.kind === 'zone' ? this.rezoneRisk(rect) : null;
       if (risk) {
+        const request = ++this.riskRequest, gesture = this.gesture ?? undefined;
+        this.riskPending = true;
         this.clearPreview();
         this.ctx.tip.hide();
         this.lastKey = '';
         const msg = bull ? 'This demolition has consequences:' : 'Rezoning demolishes the buildings on these lots:';
-        void confirmDialog(this.ctx, { title: risk.title, message: msg, items: risk.items, confirm: bull ? 'Demolish' : 'Rezone & demolish', danger: true }).then((yes) => {
-          if (yes && this.ctx.tools.active === this) this.commit(rect);
+        const work = risk.then(async (risk) => {
+          if (this.ctx.signal.aborted || request !== this.riskRequest || this.ctx.tools.active !== this) return;
+          const yes = !risk || await confirmDialog(this.ctx, { title: risk.title, message: msg, items: risk.items, confirm: bull ? 'Demolish' : 'Rezone & demolish', danger: true });
+          if (this.ctx.signal.aborted || request !== this.riskRequest || this.ctx.tools.active !== this) return;
+          this.riskPending = false;
+          if (yes) await this.commitRect(rect, gesture).done;
+          if (this.ctx.signal.aborted || request !== this.riskRequest || this.ctx.tools.active !== this) return;
           this.lastKey = '';
           this.ctx.tools.refresh();
+        }).catch(() => {
+          if (this.ctx.signal.aborted || request !== this.riskRequest) return;
+          this.riskPending = false;
+          this.ctx.toast('Could not check demolition consequences', 'error');
         });
+        gesture?.track(work);
         // the dialog is modal: no hover preview / tip underneath it (the next frame after it closes refreshes them)
         return;
       }
-      this.commit(rect);
+      this.commitRect(rect);
     }
     this.lastKey = '';
     this.refresh(p);
   }
 
-  private bulldozeRisk(rect: CellRect): DemolishRisk | null {
-    const pre = this.run(rect, true);
+  private bulldozeRisk(rect: CellRect): Promise<DemolishRisk | null> | null {
+    const pre = this.run(rect);
     if (!pre.ok) return null;
-    return safe(() => demolishRisks(this.ctx.state, rect, pre.cost ?? 0, { sandbox: this.ctx.sandbox() }), null);
+    return this.ctx.host.query('demolishRisks', { rect, cost: pre.cost ?? 0, refund: pre.refund, refundNote: pre.refundNote, sandbox: this.ctx.sandbox() });
   }
 
   /** zoning over growables of another family demolishes them (ActionResult.demolished) */
-  private rezoneRisk(rect: CellRect): DemolishRisk | null {
-    const pre = this.run(rect, true);
+  private rezoneRisk(rect: CellRect): Promise<DemolishRisk | null> | null {
+    const pre = this.run(rect);
     if (!pre.ok || !pre.demolished?.length) return null;
-    return safe(() => sideDemolishRisks(this.ctx.state, pre.demolished, pre.demolishFee ?? 0, { sandbox: this.ctx.sandbox() }), null);
+    return this.ctx.host.query('sideDemolishRisks', { ids: pre.demolished, fee: pre.demolishFee ?? 0, refund: pre.refund, refundNote: pre.refundNote, sandbox: this.ctx.sandbox() });
   }
 
-  private commit(rect: CellRect): void {
-    const r = this.run(rect, false);
+  private commitRect(rect: CellRect, gesture = this.gesture ?? undefined) {
     // bigger rectangles sound bigger (intensity 0..1 from the area)
     const area = Math.max(1, (rect.x1 - rect.x0) * (rect.z1 - rect.z0));
-    if (r.ok) this.ctx.sound(this.mode.kind === 'bulldoze' ? 'bulldoze' : this.mode.kind === 'dezone' ? 'dezone' : 'zone', { intensity: Math.min(1, Math.log2(area) / 8) });
-    else {
-      this.ctx.sound('error');
-      if (r.reason) this.ctx.toast(r.reason, 'error');
-    }
+    const feedback = { ok: () => this.ctx.sound(this.mode.kind, { intensity: Math.min(1, Math.log2(area) / 8) }) };
+    if (this.mode.kind === 'zone') return commitAction(this.ctx, this, 'zone', [rect, this.mode.zone], feedback, gesture);
+    return commitAction(this.ctx, this, this.mode.kind, [rect], feedback, gesture);
   }
   override cancel(): boolean {
-    if (!this.start) return false;
+    if (!this.start && !this.riskPending) return false;
+    this.riskRequest++; this.riskPending = false;
     this.start = null;
     this.lastKey = '';
     this.clearPreview();

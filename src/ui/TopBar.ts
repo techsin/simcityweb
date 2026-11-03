@@ -1,11 +1,14 @@
 /** Top HUD bar: city, date & speed, funds, population, RCI demand, approval, panel buttons. */
 import { DEV_TYPE_LABELS, DevType } from '../core/types';
+import { watchFor, type WatchHandle, type QueryResult } from '../worker/SimHost';
 import type { GameContext } from '../game/context';
 import { clear, h, setText, toggleClass } from './dom';
 import { icon } from './icons';
 import { compact, dayLabel, hourLabel, money, moneySigned, num, signClass } from './format';
 import { approvalBreakdown } from '../sim/economy/approval';
 import { econData } from '../sim/economy/runtime';
+import type { PanelsApi } from '../game/context';
+import { NO_RESIDENTS_TEXT, approvalFix, approvalFixHint, approvalHud, newTownFooter } from './topbar/approvalGuide';
 
 export function sumValues(r: Record<string, number> | undefined): number {
   let s = 0;
@@ -83,17 +86,15 @@ export function capRatio(ctx: GameContext, d: DevType): number {
 function paintBar(el: HTMLElement, v: number, color: string): void {
   const fill = el.firstElementChild as HTMLElement;
   const a = Math.min(1, Math.abs(v));
-  if (v >= 0) {
-    fill.style.top = `${50 - a * 50}%`;
-    fill.style.height = `${a * 50}%`;
-    fill.style.background = color;
-    fill.style.opacity = '1';
-  } else {
-    fill.style.top = '50%';
-    fill.style.height = `${a * 50}%`;
-    fill.style.background = color;
-    fill.style.opacity = '0.45';
-  }
+  const scale = String(v >= 0 ? -a : a), opacity = v >= 0 ? '1' : '0.45';
+  if (fill.dataset.scale === scale && fill.dataset.color === color && fill.style.opacity === opacity) return;
+  fill.dataset.scale = scale;
+  fill.dataset.color = color;
+  fill.style.transform = `scaleY(${scale})`;
+  // Compensate the scaled corner radius so the settled fill keeps its original 2 px rounding.
+  fill.style.borderRadius = `2px / ${2 / (a || 1)}px`;
+  fill.style.background = color;
+  fill.style.opacity = opacity;
 }
 
 export class TopBar {
@@ -112,6 +113,8 @@ export class TopBar {
   private apprSeg!: HTMLElement;
   /** approval terms object the tooltip was built from (a new object each month) */
   private apprTerms: unknown = null;
+  /** population band the card was built for (FH-06: no residents yet / a new town / from 10,000) */
+  private apprBand = -1;
   private apprPop!: HTMLElement;
   private leftGlass!: HTMLElement;
   private cityName!: HTMLElement;
@@ -121,6 +124,7 @@ export class TopBar {
   private rciSeg!: HTMLElement;
   private capHintsEl!: HTMLElement;
   private capSig = '';
+  private hintsWatch: WatchHandle<QueryResult<'capHints'>> | null = null;
   /** RCI popover: what the neighbour cities add to demand (econData.regionTerms, WP4-1) */
   private regionEl!: HTMLElement;
   private regionSig = '';
@@ -152,7 +156,7 @@ export class TopBar {
       b.addEventListener('click', () => {
         // distinct sounds: pause (tape-stop), normal / fast / ultra (1-3 rising blips); re-clicking the active speed ticks
         this.ctx.sound(this.ctx.sim.speed === s ? 'tap' : s === 0 ? 'pause' : 'speed' + s);
-        this.ctx.sim.speed = s;
+        this.ctx.host.setSpeed(s, 'topbar');
         b.blur();
       }, { signal: this.ctx.signal });
       this.speedBtns.push(b);
@@ -191,8 +195,38 @@ export class TopBar {
     // hover card: why approval is where it is (approvalBreakdown, rebuilt monthly); the plain title is the fallback
     this.apprPop = h('div', { class: 'appr-pop mp-glass' });
     this.apprSeg = h('div', { class: 'hud-seg click approval', title: 'Mayor approval — advisors (N)' }, h('span', { class: 'ico-wrap', html: icon('smile', 20) }), h('div', { class: 'hud-stack' }, h('div', { class: 'hud-label' }, 'Approval'), this.apprEl), this.apprPop);
-    this.apprSeg.addEventListener('click', () => this.ctx.panels.toggle('advisors'), { signal: this.ctx.signal });
+    // FH-06: a card row with a fix opens it (one delegated listener: the rows are rebuilt monthly); anywhere else, the advisors
+    this.apprSeg.addEventListener('click', (e) => {
+      if (this.openApprovalFix(e.target)) return;
+      this.ctx.panels.toggle('advisors');
+    }, { signal: this.ctx.signal });
+    // a fix that opens a panel or a toolbar tab hides the card until the pointer leaves (it would cover what it opened)
+    this.apprSeg.addEventListener('pointerleave', () => { delete this.apprSeg.dataset.dismissed; }, { signal: this.ctx.signal });
     return h('div', { class: 'mp-glass' }, funds, pop, rciSeg, this.apprSeg);
+  }
+
+  /** FH-06: open the fix of the approval row under `target` (a data view, Budget · Taxes or the Parks tab); false: none */
+  private openApprovalFix(target: EventTarget | null): boolean {
+    let id: string | undefined;
+    for (let n = target as HTMLElement | null; n && n !== this.apprSeg; n = n.parentElement) {
+      if (n.dataset?.fix) { id = n.dataset.fix; break; }
+    }
+    const ctx = this.ctx;
+    const fix = id ? approvalFix(id, ctx.overlay) : null;
+    if (!fix) return false;
+    if (fix.kind === 'view') {
+      if (ctx.overlay !== fix.overlay) ctx.sound('overlay');
+      ctx.setOverlay(fix.overlay, fix.variant);
+    } else if (fix.kind === 'budget') {
+      ctx.panels.open('budget');
+      const budget = (ctx.panels as PanelsApi & { get?(id: string): unknown }).get?.('budget') as { showTab?(t: 'taxes'): void } | undefined;
+      budget?.showTab?.(fix.tab);
+      this.apprSeg.dataset.dismissed = '1';
+    } else {
+      ctx.openFlyout?.(fix.category);
+      this.apprSeg.dataset.dismissed = '1';
+    }
+    return true;
   }
 
   private buildRciPop(): HTMLElement {
@@ -233,14 +267,8 @@ export class TopBar {
   }
 
   private capHints(): { family: 'R' | 'C' | 'I'; devs: number[]; hint: string }[] {
-    const f = this.ctx.mods.econ?.capHints;
-    if (f) {
-      try {
-        return f(this.ctx.state);
-      } catch {
-        /* ignore */
-      }
-    }
+    const hints = this.hintsWatch?.value;
+    if (hints) return hints;
     const capped = this.cappedDevs();
     const fallback: Record<string, string> = {
       R: 'Build parks, plazas or landmarks to raise the residential cap.',
@@ -315,8 +343,11 @@ export class TopBar {
       const last = this.announced.get(f) ?? -1e9;
       if (st.day - last < 180) continue;
       this.announced.set(f, st.day);
-      const hint = this.capHints().find((x) => x.family === f)?.hint ?? '';
-      this.ctx.toast(`${FAMILY_NAMES[f]} growth is capped. ${hint}`, 'warning', undefined, 'Demand cap');
+      void this.ctx.host.query('capHints', {}).then((hints) => {
+        if (this.ctx.signal.aborted) return;
+        const hint = hints.find((x) => x.family === f)?.hint ?? '';
+        this.ctx.toast(`${FAMILY_NAMES[f]} growth is capped. ${hint}`, 'warning', undefined, 'Demand cap');
+      }).catch(() => {});
     }
   }
 
@@ -330,6 +361,8 @@ export class TopBar {
   private setRci(open: boolean): void {
     if (open !== this.rciOpen) this.ctx.sound(open ? 'flyout' : 'flyoutClose');
     this.rciOpen = open;
+    if (open) this.hintsWatch ??= watchFor(this.ctx.host, 'capHints', {}, 'daily', this.ctx.signal);
+    else { this.hintsWatch?.dispose(); this.hintsWatch = null; }
     toggleClass(this.rciPop, 'open', open);
     if (open) this.update();
   }
@@ -425,7 +458,8 @@ export class TopBar {
     const net = lastNet(ctx);
     const hasBudget = Object.keys(st.budget.lastIncome).length + Object.keys(st.budget.lastExpense).length > 0;
     setText(this.netEl, hasBudget ? `${moneySigned(net, Math.abs(net) >= 1e5)}/mo` : 'No report yet');
-    this.netEl.className = 'hud-sub ' + (hasBudget ? signClass(net) : 'faint');
+    const netClass = 'hud-sub ' + (hasBudget ? signClass(net) : 'faint');
+    if (this.netEl.className !== netClass) this.netEl.className = netClass;
 
     // population
     const pop = st.stats.population;
@@ -475,24 +509,34 @@ export class TopBar {
     // emergencies waiting for a player dispatch (WP8)
     this.setBadge('emergencies', st.stats.emergency?.manualActive ?? 0);
 
-    // approval
+    // approval (FH-06: "—" before the first residents; kinder faces in a new town)
     const ap = st.stats.approval ?? 50;
-    setText(this.apprEl, `${Math.round(ap)}%`);
-    const cls = ap >= 60 ? '' : ap >= 40 ? 'meh' : 'bad';
-    const want = `hud-seg click approval ${cls}`;
-    if (this.apprSeg.className !== want) {
+    const hud = approvalHud(ap, pop);
+    setText(this.apprEl, hud.value);
+    const want = `hud-seg click approval ${hud.cls}`;
+    if (this.apprSeg.className !== want || this.apprSeg.dataset.face !== hud.face) {
       this.apprSeg.className = want;
-      (this.apprSeg.firstElementChild as HTMLElement).innerHTML = icon(ap >= 60 ? 'smile' : ap >= 40 ? 'meh' : 'frown', 20);
+      this.apprSeg.dataset.face = hud.face;
+      (this.apprSeg.firstElementChild as HTMLElement).innerHTML = icon(hud.face, 20);
     }
     // why: the biggest approval terms of the last monthly update (sim-core approvalBreakdown, WP4), rebuilt monthly
     const eco = st.systemData.economy as { approvalTerms?: object; approvalRaw?: number } | undefined;
-    if (eco?.approvalTerms !== this.apprTerms) {
+    if (eco?.approvalTerms !== this.apprTerms || hud.band !== this.apprBand) {
       this.apprTerms = eco?.approvalTerms;
+      this.apprBand = hud.band;
       let tip = 'Mayor approval — advisors (N)';
       clear(this.apprPop);
       try {
         const br = approvalBreakdown(st).filter((t) => t.id !== 'clamp');
-        if (br.length > 1) {
+        if (hud.band === 0) {
+          // nobody to ask yet: no score and no rows, just what starts it
+          tip = '';
+          this.apprPop.append(
+            h('div', { class: 'ap-h' }, h('b', null, 'Approval —')),
+            h('div', { class: 'ap-note' }, `${NO_RESIDENTS_TEXT}.`),
+            h('div', { class: 'ap-f' }, 'Click for your advisors (N)'),
+          );
+        } else if (br.length > 1) {
           // the styled card replaces the native title (no double tooltip)
           tip = '';
           const top = br.slice(0, 10);
@@ -501,12 +545,15 @@ export class TopBar {
             h('div', { class: 'ap-h' }, h('b', null, `Approval ${Math.round(ap)}%`), h('span', { class: 'faint' }, ` heading for ${Math.round(eco?.approvalRaw ?? ap)}%`)),
             ...top.map((t) => {
               const a = Math.min(1, Math.abs(t.value) / max);
-              return h('div', { class: 'ap-r', title: t.detail ?? '' },
+              const hint = approvalFixHint(t.id);
+              return h('div', { class: 'ap-r' + (hint ? ' fix' : ''), title: hint ? `${t.detail ? t.detail + '. ' : ''}${hint}` : t.detail ?? '', dataset: hint ? { fix: t.id } : undefined },
                 h('span', { class: 'l' }, t.label),
                 h('span', { class: 't' }, h('i', { class: t.value >= 0 ? 'p' : 'n', style: { width: `${a * 50}%`, left: t.value >= 0 ? '50%' : `${50 - a * 50}%` } }), h('b')),
-                h('span', { class: 'v ' + (t.value >= 0 ? 'pos' : 'neg') }, `${t.value >= 0 ? '+' : '−'}${Math.abs(t.value).toFixed(1)}`));
+                h('span', { class: 'v ' + (t.value >= 0 ? 'pos' : 'neg') }, `${t.value >= 0 ? '+' : '−'}${Math.abs(t.value).toFixed(1)}`),
+                t.detail ? h('span', { class: 'd' }, t.detail) : null);
             }),
-            h('div', { class: 'ap-f' }, 'Click for your advisors (N)'),
+            ...(hud.band === 1 ? [h('div', { class: 'ap-note' }, newTownFooter(st.config.difficulty))] : []),
+            h('div', { class: 'ap-f' }, 'Click a row to open its fix; anywhere else for your advisors (N)'),
           );
         }
       } catch {

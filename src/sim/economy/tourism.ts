@@ -1,7 +1,11 @@
 /**
  * Attraction, tourism, hotels, attractiveness and regional migration (SIM_DEPTH_SPEC WP4). Headless: no DOM / three.js.
  *
- * Monthly (and synchronously in init(), because st.visitors is a derived layer that is not saved):
+ * Schedule (B3; WASM_PLAN B3 / WORKER_DESIGN S4: the month tick carried 12–28 ms of tourism at 1M): 1–3 are the VENUE
+ * PASS, which daily() runs on day TOURISM_DAY of the month (after that day's growables slice) and saves as
+ * systemData.tourismPass, from which init() restores a loaded city's venue records and visitor raster exactly
+ * (st.visitors is a derived layer that is not saved); 4 is the ATTRACT STEP of the month tick (monthly()): only what
+ * needs the month's resident survey. refresh(sim) runs both now (tests, tools; init() of a new city or an old save).
  *  1. VENUES (ATTRACTIONS table, no catalog edits): visits V = min(capacity, draw × (A/60)^1.3 × access × op × sizeF ×
  *     ordinance 'tourism.draw'). access = road / freight reach of the block + transit coverage; op = functional ×
  *     powered × road next to the lot × funding (a burnt, unpowered, unfunded, striking or road-less venue gets 0 — and
@@ -112,20 +116,67 @@ interface VenueRecord {
   capacity: number;
   draw: number;
   op: number;
-  access: number;
 }
+/** the venue records of the last venue pass, and that pass (the object saved as systemData.tourismPass) */
 interface TourismState {
-  day: number;
   venues: Map<number, VenueRecord>;
-  beach: number;
-  beachCells: number;
-  historic: number;
-  culture: number;
-  scores: number[][];
-  /** a toxic waste dump operated (clean-air image × (1 − APPROVAL_TERMS.dumpImage); final fixes V7) */
-  dump?: boolean;
+  pass: TourismPass;
 }
 const states = new WeakMap<CityState, TourismState>();
+
+/**
+ * systemData.tourismPass v1 (B3): the last venue pass — what the coming month tick scores (culture, conn, seats), the
+ * parts of the totals the summary shows, the venue records (ven) and the visitor splats (spl) a loaded city restores
+ * exactly — and what the last tick scored (tc, dump: the attractiveness breakdown's details, which stay with the tick's
+ * bars). Plain data with typed arrays; ven and spl are fresh arrays every pass (a save taken without copy aliases
+ * systemData). After the pass only onRemoved (culture, conn, tc) and the tick (tc, dump) change it.
+ */
+interface TourismPass {
+  v: 1;
+  /** the tick this pass feeds: ⌈day / 30⌉ on the pass's day, never monthIndex — written on TOURISM_DAY it equals the
+   *  coming tick's monthIndex; written on a tick (its fallback), monthIndex would make every later tick re-run the pass */
+  m: number;
+  /** Σ gross visits of the landmark / culture venues (onRemoved subtracts; ≥ 0) */
+  culture: number;
+  /** operating [large airports, small airports, train stations, seaports] (connIndex; onRemoved decrements; ≥ 0) */
+  conn: number[];
+  /** Σ college seats × op (migrants: students) */
+  seats: number;
+  /** effective / gross visits after the hotel limit */
+  kEff: number;
+  /** beach / historic visitors after the hotel limit, beach cells (tourismSummary) */
+  beach: number;
+  historic: number;
+  beachCells: number;
+  /** [id, gross, op] per venue record, in pass order (visits = gross × kEff; closed venues included) */
+  ven: Float64Array;
+  /** [cx, cz, v] per visitor splat (v > 0), in pass order: venues, historic sites, beach blocks */
+  spl: Float64Array;
+  /** the culture visits the last tick scored (onRemoved subtracts; ≥ 0) */
+  tc: number;
+  /** a toxic waste dump operated at the last tick (clean-air image × (1 − APPROVAL_TERMS.dumpImage); final fixes V7) */
+  dump: boolean;
+}
+const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+/** a saved pass a loaded city can restore from (Float64Array: building ids above 2^24 must stay exact). Its m is not
+ *  compared with the day: a pass that init() wrote on dom 1–25 legitimately carries monthIndex + 1 */
+function validPass(p: unknown): p is TourismPass {
+  if (!p || typeof p !== 'object') return false;
+  const q = p as Partial<TourismPass>;
+  return q.v === 1 && finite(q.m) && finite(q.culture) && finite(q.seats) && finite(q.kEff) && finite(q.beach)
+    && finite(q.historic) && finite(q.beachCells) && finite(q.tc) && typeof q.dump === 'boolean'
+    && Array.isArray(q.conn) && q.conn.length === 4 && q.conn.every(finite)
+    && q.ven instanceof Float64Array && q.ven.length % 3 === 0 && q.spl instanceof Float64Array && q.spl.length % 3 === 0;
+}
+/** the city's saved venue pass, if it is valid */
+function passOf(st: CityState): TourismPass | null {
+  const p = st.systemData.tourismPass;
+  return validPass(p) ? p : null;
+}
+/** TourismPass.conn index of a connection venue (the attractiveness 'connect' score; airports: the overnight share), −1 */
+function connIndex(def: string): number {
+  return def === 'tr_airport_large' ? 0 : def === 'tr_airport_small' ? 1 : def === 'tr_train_station' ? 2 : def === 'tr_seaport' ? 3 : -1;
+}
 
 /** duck-typed optional traffic API (WP7-6: stations / ferries that are not connected give no service) */
 interface TrafficApi { stopAttached?: (id: number) => boolean }
@@ -330,17 +381,125 @@ function splat(acc: Float32Array, N: number, cx: number, cz: number, v: number):
   }
 }
 
+// ------------------------------------------------------------------------------------------------ venue pass kernels
+// (PERF, B3: the per-venue and per-cell loops of the venue pass live in small top-level functions. Inside the big
+//  once-a-month update() closure V8 ran them in baseline code while it compiled the whole closure for OSR on a
+//  background thread (12-73 ms of compile), so a month tick cost 4-12 ms instead of 1-2 at 1M.)
+const byId = (a: Building, b: Building): number => a.id - b.id;
+const numAsc = (a: number, b: number): number => a - b;
+/**
+ * The plopped buildings the venue pass reads — the ATTRACTIONS venues and the colleges — in ascending building id. This
+ * is the canonical order of the pass (B3): the runtime swap-removes from rt.plopped while a loaded game rebuilds it in
+ * Map order, and the float sums and the splats are not order-free.
+ */
+function venueList(rt: EconRuntime): Building[] {
+  const out: Building[] = [];
+  const plopped = rt.plopped;
+  for (let k = 0; k < plopped.length; k++) {
+    const b = plopped[k];
+    if (ATTRACTIONS[b.def]) { out.push(b); continue; }
+    const def = rt.defOf(b);
+    if (def?.coverage?.tier === 'college' && def.coverage.capacity) out.push(b);
+  }
+  return out.sort(byId);
+}
+/** the venue loop of the pass over venueList(): the records (in list order) and their [id, gross, op] (ven), the
+ *  operating connection venues (conn), the gross and culture visits and the college seats */
+function venueLoop(st: CityState, rt: EconRuntime, inf: InfraFlags, traffic: TrafficApi | undefined, aF: number, sizeF: number, drawMul: number,
+  list: readonly Building[], venues: Map<number, VenueRecord>, ven: number[], conn: number[]): { gross: number; culture: number; seats: number } {
+  const N = st.size, cw = rt.cw;
+  let gross = 0, culture = 0, seats = 0;
+  for (let k = 0; k < list.length; k++) {
+    const b = list[k];
+    const def = rt.defOf(b);
+    if (!def) continue;
+    if (def.coverage?.tier === 'college' && def.coverage.capacity) seats += def.coverage.capacity * venueOp(st, b, def, inf);
+    const a = ATTRACTIONS[b.def];
+    if (!a) continue;
+    let op = venueOp(st, b, def, inf, TOURISM.opFundingMax);
+    if (op > 0 && (b.def === 'tr_train_station' || b.def === 'tr_ferry_terminal') && traffic?.stopAttached && !traffic.stopAttached(b.id)) op = 0;
+    if (op > 0) {
+      const ci = connIndex(b.def);
+      if (ci >= 0) conn[ci]++;
+    }
+    const c = centre(st, b);
+    const blk = ((((c / N) | 0) / COARSE) | 0) * cw + (((c % N) / COARSE) | 0);
+    const access = Math.min(TOURISM.accessMax, TOURISM.accessBase + TOURISM.accessFreight * (rt.coarseFreight[blk] ?? 0)
+      + TOURISM.accessTransit * st.transitCov[c]);
+    // parks, plazas and gardens are local leisure: residents visit them in any town; far-away tourists need a big city
+    const v = op > 0 ? Math.min(a.capacity, a.draw * aF * access * op * (a.kind === 'nature' ? 1 : sizeF) * drawMul) : 0;
+    venues.set(b.id, { id: b.id, def: b.def, kind: a.kind, visits: v, gross: v, capacity: a.capacity, draw: a.draw, op });
+    ven.push(b.id, v, op);
+    gross += v;
+    if (a.kind === 'landmark' || a.kind === 'culture') culture += v;
+  }
+  return { gross, culture, seats };
+}
+/**
+ * The visitor raster of a splat list ([cx, cz, v] …): the splats, 1 − exp(−Σ) per cell (st.visitors) and the coarse
+ * visitors (the 3×3 blur of the block sums). The pass and init's restore both build the raster here from the same list,
+ * so a loaded city gets the raster of the game it continues bit for bit. floor(cx), floor(cz) of a splat is its
+ * building's centre cell (b.x + (b.w >> 1), b.z + (b.d >> 1)) or a cell of its beach block.
+ */
+function rasterize(st: CityState, rt: EconRuntime, spl: Float64Array): void {
+  const N = st.size, cw = rt.cw;
+  const acc = scratchOf(st);
+  acc.fill(0);
+  const raw = new Float64Array(cw * cw);
+  for (let k = 0; k + 2 < spl.length; k += 3) {
+    const cx = spl[k], cz = spl[k + 1], v = spl[k + 2];
+    splat(acc, N, cx, cz, v);
+    raw[((Math.floor(cz) / COARSE) | 0) * cw + ((Math.floor(cx) / COARSE) | 0)] += v;
+  }
+  visitorsLayer(st.visitors, acc, st.cells);
+  const cv = rt.coarseVisitors;
+  if (cv && cv.length === cw * cw) coarseBlur3(cv, raw, cw);
+}
+/** the visitors layer of the splat sums: 1 − exp(−Σ) */
+function visitorsLayer(vis: Float32Array, acc: Float32Array, n: number): void {
+  for (let i = 0; i < n; i++) vis[i] = acc[i] > 0 ? 1 - Math.exp(-acc[i]) : 0;
+}
+/** coarse visitors: 3×3 blur of the raw block sums (centre 1, neighbours 0.5) */
+function coarseBlur3(cv: Float32Array, raw: Float64Array, cw: number): void {
+  for (let bz = 0; bz < cw; bz++) {
+    for (let bx = 0; bx < cw; bx++) {
+      let s = 0;
+      for (let dz = -1; dz <= 1; dz++) {
+        const z = bz + dz;
+        if (z < 0 || z >= cw) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const x = bx + dx;
+          if (x < 0 || x >= cw) continue;
+          s += raw[z * cw + x] * (dx === 0 && dz === 0 ? 1 : 0.5);
+        }
+      }
+      cv[bz * cw + bx] = s;
+    }
+  }
+}
+
 // ------------------------------------------------------------------------------------------------ monthly slices
 /**
- * The hotel rooms and historic buildings of the month are gathered in daily slices (growables with id % TOURISM_SLICES
- * === day % TOURISM_SLICES) into systemData.tourismAcc and read on the month tick (final fixes V5: one pass over every
- * growable with its def lookup sat on the month tick); a month with slices missing (a new or loaded city, a direct call)
- * takes one full pass.
+ * The hotel rooms and historic buildings the venue pass reads are gathered in daily slices (growables with id %
+ * TOURISM_SLICES === day % TOURISM_SLICES; final fixes V5: one pass over every growable with its def lookup sat on the
+ * month tick) into systemData.tourismAcc, over the 30 days up to and with the pass's day TOURISM_DAY. A window with slices
+ * missing (a new or loaded city before its first full window) and every pass outside the daily (init, the tick's
+ * fallback, refresh) take one full pass.
  */
-const TOURISM_SLICES = DAYS_PER_MONTH;
+export const TOURISM_SLICES = DAYS_PER_MONTH;
+/**
+ * The day of the month of the venue pass (B3): 4 days before the tick it feeds. Even, so population's odd sample days
+ * never coincide with it, and clear of the other month work (EQ / HQ on 25, the commercial core on 20, the advisors'
+ * scans on 28 and 29).
+ */
+export const TOURISM_DAY = 26;
 const TOURISM_ALL = (2 ** TOURISM_SLICES) - 1;
-/** systemData.tourismAcc: the month's sums so far, their month (m = ⌈day / TOURISM_SLICES⌉) and the slices done */
-interface TourismAcc { v: 1; m: number; done: number; rooms: number; hist: number[] }
+/** systemData.tourismAcc v2 (B3; v1's window ended on the month tick): the window's sums so far, its window
+ *  m = tourismWindow(day) and the slices done (bit k = slice k) */
+interface TourismAcc { v: 2; m: number; done: number; rooms: number; hist: number[] }
+/** the window of `day`: the days after one TOURISM_DAY up to and with the next (as demographics.ts' eqHqMonth). (+ 0:
+ *  the days before a city's first TOURISM_DAY would give −0, which a save stores as 0) */
+const tourismWindow = (day: number): number => Math.ceil((day - TOURISM_DAY) / TOURISM_SLICES) + 0;
 /** add the hotel rooms (Σ hotel jobs × HOTEL_ROOMS_PER_JOB) and historic building ids of a slice (−1 = all) */
 function growablesSlice(rt: EconRuntime, slice: number, out: { rooms: number; hist: number[] }): void {
   // (a slice: only its bucket, in list order — the same buildings and sums as the filtered full list; final fixes SE-3)
@@ -363,86 +522,68 @@ function growablesSlice(rt: EconRuntime, slice: number, out: { rooms: number; hi
 }
 
 // ------------------------------------------------------------------------------------------------ the system
-export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } {
-  const update = (sim: Simulation) => {
+export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; refresh(sim: Simulation): void } {
+  /**
+   * The VENUE PASS (1–3 of the header): venues, historic sites, hotel rooms, beaches, hotels, the totals, the venue
+   * records and the visitor raster, in ascending building id. `acc`: the window's sums (the daily on TOURISM_DAY, every
+   * slice in); null: one full growables pass. systemData.tourismPass is written last: a throw on the way leaves the old
+   * pass, whose stale m sends the tick to its fallback instead of a half-written pass. It emits nothing: every caller
+   * emits layerUpdated 'tourism' as its own last statement (as the base's update did), so a listener that throws cannot
+   * leave the saved pass, the slice window or the attract step behind the state in memory.
+   */
+  const venuePass = (sim: Simulation, acc: { rooms: number; hist: readonly number[] } | null): TourismPass => {
     const st = sim.state;
     rt.ensureLists();
+    const t0 = performance.now();
+    let tp = t0;
     const data = econData(st);
     const inf = infraFlags(st);
-    const N = st.size, cw = rt.cw;
+    const cw = rt.cw;
     const pop = st.stats.population;
-    let tp = performance.now();
-    const sv = residentSurvey(st, rt, inf);
-    rt.timing['tourism.survey'] = performance.now() - tp; tp = performance.now();
-    // attractiveness drives this month's visits: last month's value (a fresh city starts from a neutral guess)
+    // attractiveness drives this month's visits: the last tick's value (a fresh city starts from a neutral guess)
     const A = data.attractiveness > 0 ? data.attractiveness : MIG_NEUTRAL;
     const aF = Math.pow(Math.max(0, A) / TOURISM.aRef, TOURISM.aExp);
     const sizeF = TOURISM.sizeMin + (1 - TOURISM.sizeMin) * smoothstep(0, TOURISM.sizePop, pop);
     const drawMul = ordinanceEffect(st, 'tourism.draw');
     const traffic = sim.getSystem<SimSystem & TrafficApi>('traffic');
     const venues = new Map<number, VenueRecord>();
-    const blocks = new Float64Array(cw * cw);
-    let gross = 0, culture = 0;
-    let airportLarge = 0, airportSmall = 0, train = 0, seaport = 0, collegeSeats = 0;
-    for (const b of rt.plopped) {
-      const def = rt.defOf(b);
-      if (!def) continue;
-      if (def.coverage?.tier === 'college' && def.coverage.capacity) collegeSeats += def.coverage.capacity * venueOp(st, b, def, inf);
-      const a = ATTRACTIONS[b.def];
-      if (!a) continue;
-      let op = venueOp(st, b, def, inf, TOURISM.opFundingMax);
-      if (op > 0 && (b.def === 'tr_train_station' || b.def === 'tr_ferry_terminal') && traffic?.stopAttached && !traffic.stopAttached(b.id)) op = 0;
-      if (op > 0) {
-        if (b.def === 'tr_airport_large') airportLarge = 1;
-        else if (b.def === 'tr_airport_small') airportSmall = 1;
-        else if (b.def === 'tr_train_station') train = 1;
-        else if (b.def === 'tr_seaport') seaport = 1;
-      }
-      const c = centre(st, b);
-      const blk = ((((c / N) | 0) / COARSE) | 0) * cw + (((c % N) / COARSE) | 0);
-      const access = Math.min(TOURISM.accessMax, TOURISM.accessBase + TOURISM.accessFreight * (rt.coarseFreight[blk] ?? 0)
-        + TOURISM.accessTransit * st.transitCov[c]);
-      // parks, plazas and gardens are local leisure: residents visit them in any town; far-away tourists need a big city
-      const v = op > 0 ? Math.min(a.capacity, a.draw * aF * access * op * (a.kind === 'nature' ? 1 : sizeF) * drawMul) : 0;
-      venues.set(b.id, { id: b.id, def: b.def, kind: a.kind, visits: v, gross: v, capacity: a.capacity, draw: a.draw, op, access });
-      gross += v;
-      if (a.kind === 'landmark' || a.kind === 'culture') culture += v;
-    }
-    // historic districts + hotel rooms: the month's daily slices (growablesSlice in daily()) on a regular month tick,
-    // else one pass over the growables (final fixes V5)
-    let historicBase = 0, rooms = 0;
-    const historicB: Building[] = [];
-    const ta = st.systemData.tourismAcc as TourismAcc | undefined;
-    if (st.day % TOURISM_SLICES === 0 && ta && ta.v === 1 && ta.m === st.day / TOURISM_SLICES && ta.done === TOURISM_ALL
-      && Array.isArray(ta.hist)) {
-      rooms = ta.rooms;
-      for (const id of ta.hist) {
-        const b = st.buildings.get(id);
-        if (!b || !(b.flags & BF.Historic) || !isOpen(b)) continue;
-        historicBase += TOURISM.historicPerStage * (rt.defOf(b)?.stage ?? 1);
-        historicB.push(b);
-      }
-      ta.done = 0; ta.rooms = 0; ta.hist = [];
+    const ven: number[] = [];
+    const conn = [0, 0, 0, 0];
+    const vp = venueLoop(st, rt, inf, traffic, aF, sizeF, drawMul, venueList(rt), venues, ven, conn);
+    let gross = vp.gross;
+    // historic districts + hotel rooms: the window's daily slices, else one pass over the growables (final fixes V5);
+    // the historic sites in ascending id (a slice lists its bucket in the runtime's order, which a loaded game rebuilds)
+    let rooms: number, hist: number[];
+    if (acc) {
+      rooms = acc.rooms;
+      hist = acc.hist.slice();
     } else {
       const sums = { rooms: 0, hist: [] as number[] };
       growablesSlice(rt, -1, sums);
       rooms = sums.rooms;
-      for (const id of sums.hist) {
-        const b = st.buildings.get(id)!;
-        historicBase += TOURISM.historicPerStage * (rt.defOf(b)?.stage ?? 1);
-        historicB.push(b);
-      }
+      hist = sums.hist;
+    }
+    hist.sort(numAsc);
+    let historicBase = 0;
+    const historicB: Building[] = [];
+    for (const id of hist) {
+      const b = st.buildings.get(id);
+      if (!b || !(b.flags & BF.Historic) || !isOpen(b)) continue;
+      historicBase += TOURISM.historicPerStage * (rt.defOf(b)?.stage ?? 1);
+      historicB.push(b);
     }
     const historic = Math.min(TOURISM.historicMax, historicBase * aF * sizeF * drawMul);
-    // beaches
     rt.timing['tourism.venues'] = performance.now() - tp; tp = performance.now();
+    // beaches
+    const blocks = new Float64Array(cw * cw);
     const bch = beaches(st, blocks, cw);
     rt.timing['tourism.beach'] = performance.now() - tp; tp = performance.now();
     const beachScale = bch.visitors > 0 ? Math.min(TOURISM.beachMax, bch.visitors * aF * sizeF * drawMul) / bch.visitors : 0;
     const beach = bch.visitors * beachScale;
     gross += historic + beach;
-    // hotels
-    const overnight = gross * (TOURISM.overnightBase + TOURISM.overnightAirportLarge * airportLarge + TOURISM.overnightAirportSmall * airportSmall);
+    // hotels (an operating airport raises the overnight share)
+    const overnight = gross * (TOURISM.overnightBase + TOURISM.overnightAirportLarge * (conn[0] > 0 ? 1 : 0)
+      + TOURISM.overnightAirportSmall * (conn[1] > 0 ? 1 : 0));
     const shortage = Math.max(0, overnight - rooms);
     const eff = Math.max(0, gross - TOURISM.hotelLoss * shortage);
     const kEff = gross > 0 ? eff / gross : 0;
@@ -455,23 +596,18 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
     st.stats.tourists = Math.round(eff);
     st.stats.hotelRooms = Math.round(rooms);
     rt.timing['tourism.hotels'] = performance.now() - tp; tp = performance.now();
-    // ---- visitors raster + coarse visitors
-    const acc = scratchOf(st);
-    acc.fill(0);
-    const cv = rt.coarseVisitors;
-    const raw = new Float64Array(cw * cw);
+    // ---- the visitor splats (venues, historic sites, beach blocks; v > 0: splat() skips the others, and adding 0 to a
+    //      block sum changes nothing) and the raster
+    const spl: number[] = [];
     for (const r of venues.values()) {
       const b = st.buildings.get(r.id);
-      if (!b) continue;
-      splat(acc, N, b.x + b.w / 2, b.z + b.d / 2, r.visits);
-      raw[(((b.z + (b.d >> 1)) / COARSE) | 0) * cw + (((b.x + (b.w >> 1)) / COARSE) | 0)] += r.visits;
+      if (b && r.visits > 0) spl.push(b.x + b.w / 2, b.z + b.d / 2, r.visits);
     }
     if (historic > 0 && historicBase > 0) {
       const k = (historic * kEff) / historicBase;
       for (const b of historicB) {
         const v = TOURISM.historicPerStage * (rt.defOf(b)?.stage ?? 1) * k;
-        splat(acc, N, b.x + b.w / 2, b.z + b.d / 2, v);
-        raw[(((b.z + (b.d >> 1)) / COARSE) | 0) * cw + (((b.x + (b.w >> 1)) / COARSE) | 0)] += v;
+        if (v > 0) spl.push(b.x + b.w / 2, b.z + b.d / 2, v);
       }
     }
     if (beach > 0) {
@@ -479,33 +615,42 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
       for (let blk = 0; blk < blocks.length; blk++) {
         if (!blocks[blk]) continue;
         const v = blocks[blk] * k;
-        splat(acc, N, (blk % cw) * COARSE + COARSE / 2, ((blk / cw) | 0) * COARSE + COARSE / 2, v);
-        raw[blk] += v;
+        if (v > 0) spl.push((blk % cw) * COARSE + COARSE / 2, ((blk / cw) | 0) * COARSE + COARSE / 2, v);
       }
     }
-    const vis = st.visitors;
-    for (let i = 0; i < st.cells; i++) vis[i] = acc[i] > 0 ? 1 - Math.exp(-acc[i]) : 0;
-    if (cv && cv.length === cw * cw) {
-      for (let bz = 0; bz < cw; bz++) {
-        for (let bx = 0; bx < cw; bx++) {
-          let s = 0;
-          for (let dz = -1; dz <= 1; dz++) {
-            const z = bz + dz;
-            if (z < 0 || z >= cw) continue;
-            for (let dx = -1; dx <= 1; dx++) {
-              const x = bx + dx;
-              if (x < 0 || x >= cw) continue;
-              s += raw[z * cw + x] * (dx === 0 && dz === 0 ? 1 : 0.5);
-            }
-          }
-          cv[bz * cw + bx] = s;
-        }
-      }
-    }
-    rt.timing['tourism.splat'] = performance.now() - tp; tp = performance.now();
-    // ---- attractiveness
+    // (what the last tick scored stays with the new pass until the next tick)
+    const prev = states.get(st)?.pass ?? passOf(st);
+    const p: TourismPass = {
+      v: 1, m: Math.ceil(st.day / DAYS_PER_MONTH), culture: vp.culture, conn, seats: vp.seats, kEff,
+      beach: beach * kEff, historic: historic * kEff, beachCells: bch.cells, ven: new Float64Array(ven), spl: new Float64Array(spl),
+      tc: prev ? prev.tc : 0, dump: prev ? prev.dump : false,
+    };
+    rasterize(st, rt, p.spl);
+    rt.timing['tourism.splat'] = performance.now() - tp;
+    states.set(st, { venues, pass: p });
+    st.systemData.tourismPass = p;
+    rt.timing['tourism.pass'] = performance.now() - t0;
+    return p;
+  };
+
+  /**
+   * The ATTRACT STEP of the month tick (4 of the header): attractiveness and migration from this month's resident survey
+   * (tourism is its first monthly caller: this completes approval's slices) and the pass `p` that feeds this tick (its
+   * culture visits, connections and college seats). What it scored goes into p.tc / p.dump (the breakdown's details).
+   */
+  const attract = (sim: Simulation, p: TourismPass) => {
+    const st = sim.state;
+    rt.ensureLists();
+    const data = econData(st);
+    const inf = infraFlags(st);
+    const pop = st.stats.population;
+    let tp = performance.now();
+    const sv = residentSurvey(st, rt, inf);
+    rt.timing['tourism.survey'] = performance.now() - tp; tp = performance.now();
     const dump = toxicDumpOperating(rt);
-    const scores = attractScores(st, sv, inf, culture, { large: airportLarge, small: airportSmall, train, seaport }, dump ? 1 - APPROVAL_TERMS.dumpImage : 1);
+    const c = p.conn;
+    const scores = attractScores(st, sv, inf, p.culture, { large: c[0] > 0 ? 1 : 0, small: c[1] > 0 ? 1 : 0, train: c[2] > 0 ? 1 : 0, seaport: c[3] > 0 ? 1 : 0 },
+      dump ? 1 - APPROVAL_TERMS.dumpImage : 1);
     const aw: number[] = [0, 0, 0];
     for (let w = 0; w < 3; w++) {
       let a = 0;
@@ -532,15 +677,35 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
     data.migration = [0, 1, 2].map((w) => migrationFactor(aw[w], pop, w >= 1 ? unreached : 0, unemp));
     const green = sv.green > 0 ? sv.green : sv.park[3];
     const retirees = pop > 0 ? RETIREES * (0.5 + Math.min(1, st.stats.hq / 150)) * (0.5 + clamp(green, 0, 1)) : 0;
-    const students = STUDENTS_PER_SEAT * collegeSeats;
+    const students = STUDENTS_PER_SEAT * p.seats;
     data.migrants = [0, 1, 2].map((w) => retirees * RETIREE_SPLIT[w] + students * STUDENT_SPLIT[w]);
-    states.set(st, { day: st.day, venues, beach: beach * kEff, beachCells: bch.cells, historic: historic * kEff, culture, scores, dump });
+    p.tc = p.culture;
+    p.dump = dump;
     rt.timing['tourism.attract'] = performance.now() - tp;
+  };
+
+  /** a loaded city's venue records and visitor raster from its saved pass (B3): those of the game it continues. Ids that
+   *  no longer stand (bulldozed since the pass) or are no longer venues are skipped; the totals in econData are saved */
+  const restore = (sim: Simulation, p: TourismPass) => {
+    const st = sim.state;
+    const venues = new Map<number, VenueRecord>();
+    const ven = p.ven;
+    for (let k = 0; k + 2 < ven.length; k += 3) {
+      const id = ven[k];
+      const b = st.buildings.get(id);
+      const a = b ? ATTRACTIONS[b.def] : undefined;
+      if (!b || !a) continue;
+      const gross = ven[k + 1];
+      venues.set(id, { id, def: b.def, kind: a.kind, visits: gross * p.kEff, gross, capacity: a.capacity, draw: a.draw, op: ven[k + 2] });
+    }
+    rasterize(st, rt, p.spl);
+    states.set(st, { venues, pass: p });
     sim.events.emit('layerUpdated', 'tourism');
   };
 
-  /** a bulldozed (or otherwise removed) venue leaves the tourism totals at once: its visits stop feeding CS demand,
-   *  approval and the tourism income line; the visitor raster refreshes with the next monthly update */
+  /** a bulldozed (or otherwise removed) venue leaves the tourism totals at once — its visits stop feeding CS demand,
+   *  approval and the tourism income line — and the coming tick's culture and connection scores (the pass); the visitor
+   *  raster keeps its splat until the next venue pass */
   const onRemoved = (st: CityState, b: Building) => {
     const ts = states.get(st);
     const r = ts?.venues.get(b.id);
@@ -551,7 +716,13 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
     data.touristsGross = Math.max(0, (data.touristsGross ?? 0) - r.gross);
     data.tourism = data.tourists * CS_JOBS_PER_VISITOR;
     st.stats.tourists = Math.round(data.tourists);
-    if (r.kind === 'landmark' || r.kind === 'culture') ts.culture = Math.max(0, ts.culture - r.gross);
+    const p = ts.pass;
+    if (r.kind === 'landmark' || r.kind === 'culture') {
+      p.culture = Math.max(0, p.culture - r.gross);
+      p.tc = Math.max(0, p.tc - r.gross);
+    }
+    const ci = connIndex(r.def);
+    if (ci >= 0 && r.op > 0) p.conn[ci] = Math.max(0, p.conn[ci] - 1);
   };
   let subscribedTo: Simulation | null = null;
   let unsub: (() => void) | null = null;
@@ -559,19 +730,35 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
   return {
     name: 'economy.tourism',
     rt,
+    /** the whole update now — a venue pass with one full growables pass, then the attract step (tests, tools) */
+    refresh(sim) {
+      attract(sim, venuePass(sim, null));
+      sim.events.emit('layerUpdated', 'tourism');
+    },
     daily(sim) {
-      // the month's hotel rooms / historic buildings in daily slices (the month tick reads them)
+      // the window's hotel rooms / historic buildings in daily slices; the venue pass on TOURISM_DAY (after that day's
+      // slice: also when the slice is already done)
       const st = sim.state;
       rt.ensureLists();
       let a = st.systemData.tourismAcc as TourismAcc | undefined;
-      if (!a || a.v !== 1 || !Array.isArray(a.hist)) st.systemData.tourismAcc = a = { v: 1, m: -1, done: 0, rooms: 0, hist: [] };
-      // (a month whose tick did not read the sums starts over: no slice counts twice)
-      const m = Math.ceil(st.day / TOURISM_SLICES);
+      if (!a || a.v !== 2 || !finite(a.m) || !finite(a.done) || !finite(a.rooms) || !Array.isArray(a.hist)) {
+        st.systemData.tourismAcc = a = { v: 2, m: -1, done: 0, rooms: 0, hist: [] };
+      }
+      // (a window whose pass did not read the sums starts over: no slice counts twice)
+      const m = tourismWindow(st.day);
       if (a.m !== m) { a.m = m; a.done = 0; a.rooms = 0; a.hist = []; }
       const k = st.day % TOURISM_SLICES;
-      if (a.done & (1 << k)) return;
-      growablesSlice(rt, k, a);
-      a.done |= 1 << k;
+      if (!(a.done & (1 << k))) {
+        growablesSlice(rt, k, a);
+        a.done |= 1 << k;
+      }
+      if (k !== TOURISM_DAY) return;
+      // the window's sums go to the pass and the next window starts with the day after it, before the pass runs; its
+      // layer event goes out last (a listener that throws leaves the record and the saved pass complete)
+      const win = a.done === TOURISM_ALL ? { rooms: a.rooms, hist: a.hist } : null;
+      a.m = m + 1; a.done = 0; a.rooms = 0; a.hist = [];
+      venuePass(sim, win);
+      sim.events.emit('layerUpdated', 'tourism');
     },
     init(sim) {
       rt.attach(sim);
@@ -586,18 +773,31 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } 
         unsub = () => { for (const f of offs) f(); };
         subscribedTo = sim;
       }
-      // the visitor raster and venue records are derived (not saved): rebuild them now (WP4-5). A loaded city keeps
-      // last month's saved totals, attractiveness and migration until its next monthly update (save / load continuity).
+      // the venue records and the visitor raster are derived (st.visitors is not saved). A city with a saved venue pass
+      // restores both exactly from it (B3: a save on any day of the month continues the game it was taken from).
+      // Otherwise (a new city, a save from before B3) they are built now, with the attract step; a loaded city keeps its
+      // saved outputs: the attract outputs until its next tick, the totals until its next venue pass — which on dom
+      // 26–29 is this one, since it feeds the coming tick
       const st = sim.state;
+      const p = passOf(st);
+      if (p) { restore(sim, p); return; }
       const d = econData(st);
       const keep = st.day > 0 && Object.keys(d.attractTerms).length > 0 ? savedOutputs(st) : null;
-      update(sim);
-      if (keep) restoreOutputs(st, keep);
+      attract(sim, venuePass(sim, null));
+      if (keep) restoreOutputs(st, keep, st.day % DAYS_PER_MONTH < TOURISM_DAY);
+      sim.events.emit('layerUpdated', 'tourism');
     },
     monthly(sim) {
       const t0 = performance.now();
-      update(sim);
+      const st = sim.state;
+      // the pass of day TOURISM_DAY feeds this tick. A missing, invalid or stale one (its daily threw; a direct call on
+      // another day) is recomputed first. Fresh: m === ⌈day / 30⌉, which is monthIndex on a tick
+      const p = passOf(st);
+      const fresh = p !== null && p.m === Math.ceil(st.day / DAYS_PER_MONTH) && states.get(st)?.pass === p;
+      attract(sim, fresh ? p : venuePass(sim, null));
       rt.timing.tourism = performance.now() - t0;
+      // (a pass of its own: the layer event after the attract step)
+      if (!fresh) sim.events.emit('layerUpdated', 'tourism');
     },
   };
 }
@@ -612,12 +812,17 @@ function savedOutputs(st: CityState) {
     sTourists: s.tourists, sRooms: s.hotelRooms, sAttract: s.attractiveness, sAttractW: [...s.attractByWealth] as typeof s.attractByWealth,
   };
 }
-function restoreOutputs(st: CityState, o: ReturnType<typeof savedOutputs>): void {
+/** put an old save's outputs back after init's pass: the attract outputs; the totals unless that pass feeds the coming
+ *  tick (`totals` false on dom 26–29: they stay next to the pass's records, as in a game from after B3) */
+function restoreOutputs(st: CityState, o: ReturnType<typeof savedOutputs>, totals: boolean): void {
   const d = econData(st), s = st.stats;
-  d.tourists = o.tourists; d.touristsGross = o.touristsGross; d.overnight = o.overnight; d.hotelShortage = o.hotelShortage; d.tourism = o.tourism;
+  if (totals) {
+    d.tourists = o.tourists; d.touristsGross = o.touristsGross; d.overnight = o.overnight; d.hotelShortage = o.hotelShortage; d.tourism = o.tourism;
+    s.tourists = o.sTourists; s.hotelRooms = o.sRooms;
+  }
   d.attractiveness = o.attractiveness; d.attractByWealth = o.attractByWealth; d.attractTerms = o.attractTerms;
   d.migration = o.migration; d.migrants = o.migrants;
-  s.tourists = o.sTourists; s.hotelRooms = o.sRooms; s.attractiveness = o.sAttract; s.attractByWealth = o.sAttractW;
+  s.attractiveness = o.sAttract; s.attractByWealth = o.sAttractW;
 }
 
 /** attractiveness at which migration is neutral for a city of this size (UI: "cities your size average N") */
@@ -689,23 +894,24 @@ export function venueVisits(st: CityState, buildingId: number): { visits: number
   return r && live(st, r) ? { visits: r.visits, capacity: r.capacity, gross: r.gross, draw: r.draw, op: r.op } : null;
 }
 
-/** the venue of a record still stands (records live until the next monthly update; building ids are never reused) */
+/** the venue of a record still stands (records live until the next venue pass; building ids are never reused) */
 function live(st: CityState, r: VenueRecord): boolean {
   return st.buildings.get(r.id)?.def === r.def;
 }
 
-/** attractiveness terms (culture, parks, safety, clean, quiet, services, jobs, connect) in points; sum = attractiveness */
+/** attractiveness terms (culture, parks, safety, clean, quiet, services, jobs, connect) in points; sum = attractiveness.
+ *  The details are those of the last tick, like the terms (the pass's tc / dump) */
 export function attractivenessBreakdown(st: CityState): FactorTerm[] {
   const d = st.systemData.economy as { attractTerms?: Record<string, number> } | undefined;
   const T = d?.attractTerms;
   if (!T) return [];
-  const ts = states.get(st);
+  const p = states.get(st)?.pass;
   const out: FactorTerm[] = [];
   for (const id of ATTRACT_IDS) {
     if (T[id] === undefined) continue;
     let detail: string | undefined;
-    if (id === 'culture' && ts) detail = `${Math.round(ts.culture).toLocaleString('en-US')} landmark & culture visits / day`;
-    if (id === 'clean' && ts?.dump) detail = `the toxic waste dump costs ${Math.round(APPROVAL_TERMS.dumpImage * 100)}% of the city's clean-air image`;
+    if (id === 'culture' && p) detail = `${Math.round(p.tc).toLocaleString('en-US')} landmark & culture visits / day`;
+    if (id === 'clean' && p?.dump) detail = `the toxic waste dump costs ${Math.round(APPROVAL_TERMS.dumpImage * 100)}% of the city's clean-air image`;
     out.push({ id, label: ATTRACT_LABELS[id], value: T[id], detail });
   }
   return out;
@@ -730,8 +936,9 @@ export function tourismSummary(st: CityState): {
   const d = econData(st);
   const top = [...ts.venues.values()].filter((r) => r.visits > 0 && live(st, r)).sort((a, b) => b.visits - a.visits).slice(0, 8)
     .map((r) => ({ buildingId: r.id, def: r.def, visits: r.visits, capacity: r.capacity }));
+  const p = ts.pass;
   return {
     tourists: d.tourists, gross: d.touristsGross ?? d.tourists, overnight: d.overnight ?? 0, rooms: st.stats.hotelRooms,
-    hotelShortage: d.hotelShortage, beach: ts.beach, beachCells: ts.beachCells, historic: ts.historic, topVenues: top,
+    hotelShortage: d.hotelShortage, beach: p.beach, beachCells: p.beachCells, historic: p.historic, topVenues: top,
   };
 }

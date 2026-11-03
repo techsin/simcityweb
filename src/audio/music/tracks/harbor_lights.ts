@@ -188,39 +188,42 @@ const DOM_Q = new Set<string>(['7', '9', '13', '7b9', '7s9', '7s11', '7b13', '7a
  */
 const WAVE_KEYS = ['wave', 'sweep', 'sweep:wave'];
 function waveWash(env: MusicEnv, t: number, dur: number, vel: number, pan: number, off: number): void {
-  const { inst, ctx } = env;
-  if (!isFinite(t) || !(t < inst.cutoff) || (env.live && t < ctx.currentTime)) return;
-  if (WAVE_KEYS.some((k) => inst.mute.has(k)) || (inst.solo.size > 0 && !WAVE_KEYS.some((k) => inst.solo.has(k)))) return;
-  // offline excerpt renders drop notes that end before the excerpt (Instruments keeps this option private)
-  const skip = (inst as unknown as { skipBefore?: number }).skipBefore;
-  if (typeof skip === 'number' && t + dur < skip) return;
-  // the buffer source is not made by the counted node factory: count it (and the note) here
-  const st = inst.stats;
-  st.nodes++;
-  st.notes++;
-  if (st.perSec.length) {
-    const k = Math.max(0, Math.floor(t));
-    st.perSec[k] = (st.perSec[k] ?? 0) + 1;
-    st.notesPerSec[k] = (st.notesPerSec[k] ?? 0) + 1;
-  }
-  const src = ctx.createBufferSource();
-  src.buffer = env.noise;
-  src.loop = true;
-  src.playbackRate.value = 0.55;
-  const lp = inst.node.filter('lowpass', 260, 0.5);
-  lp.frequency.setValueAtTime(240, t);
-  lp.frequency.exponentialRampToValueAtTime(900, t + dur * 0.42);
-  lp.frequency.exponentialRampToValueAtTime(200, t + dur);
-  const g = inst.node.gain(0);
-  const pk = 0.2 * Math.pow(Math.max(0, Math.min(1, vel)), 1.5);
-  g.gain.setValueAtTime(0, t);
-  g.gain.linearRampToValueAtTime(pk, t + dur * 0.4);
-  g.gain.exponentialRampToValueAtTime(pk * 0.004, t + dur);
-  g.gain.linearRampToValueAtTime(0, t + dur + 0.02);
-  const pn = inst.node.panner(pan);
-  src.connect(lp).connect(g).connect(pn).connect(inst.channel('sweep:wave').input);
-  src.start(t, off * (env.noise.duration - 0.1));
-  src.stop(t + dur + 0.05);
+  return env.inst.oneShot((nodes) => {
+    const { inst, ctx } = env;
+    if (!isFinite(t) || !(t < inst.cutoff) || (env.live && t < ctx.currentTime)) return;
+    if (WAVE_KEYS.some((k) => inst.mute.has(k)) || (inst.solo.size > 0 && !WAVE_KEYS.some((k) => inst.solo.has(k)))) return;
+    // offline excerpt renders drop notes that end before the excerpt (Instruments keeps this option private)
+    const skip = (inst as unknown as { skipBefore?: number }).skipBefore;
+    if (typeof skip === 'number' && t + dur < skip) return;
+    // the buffer source is not made by the counted node factory: count it (and the note) here
+    const st = inst.stats;
+    st.nodes++;
+    st.notes++;
+    if (st.perSec.length) {
+      const k = Math.max(0, Math.floor(t));
+      st.perSec[k] = (st.perSec[k] ?? 0) + 1;
+      st.notesPerSec[k] = (st.notesPerSec[k] ?? 0) + 1;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = env.noise;
+    src.loop = true;
+    src.playbackRate.value = 0.55;
+    const lp = inst.node.filter('lowpass', 260, 0.5);
+    lp.frequency.setValueAtTime(240, t);
+    lp.frequency.exponentialRampToValueAtTime(900, t + dur * 0.42);
+    lp.frequency.exponentialRampToValueAtTime(200, t + dur);
+    const g = inst.node.gain(0);
+    const pk = 0.2 * Math.pow(Math.max(0, Math.min(1, vel)), 1.5);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(pk, t + dur * 0.4);
+    g.gain.exponentialRampToValueAtTime(pk * 0.004, t + dur);
+    g.gain.linearRampToValueAtTime(0, t + dur + 0.02);
+    const pn = inst.node.panner(pan);
+    src.connect(lp).connect(g).connect(pn).connect(inst.channel('sweep:wave').input);
+    src.start(t, off * (env.noise.duration - 0.1));
+    src.stop(t + dur + 0.05);
+    nodes.source(src, t + dur + 0.05);
+  });
 }
 
 export const track: MusicTrack = {

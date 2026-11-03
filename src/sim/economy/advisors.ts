@@ -45,7 +45,9 @@
  * pre-WP5 rules need (zoned blocks, plopped facilities) run on the last days of the month (MONTH_SCAN_DAYS) and are
  * saved with the city (AdvisorData.scan), so a game loaded mid-scan gives the same advice. The places of the rules
  * (unservedClusters / uncoveredHotspots / the worst home) are looked up only for advice that is announced or listed
- * (Advice.where); the Advisors panel reads advisorIssues (the month tick's list) while the game runs.
+ * (Advice.where); the Advisors panel reads advisorIssues (the month tick's list) while the game runs. B3 (A1): on the
+ * second scan day the coming tick's announcements are predicted with the tick's own test (announce) and their places
+ * looked up then (AdvisorData.scan.places); the tick takes a predicted place instead of a lookup.
  *
  * Flavour headlines: a shuffle bag over HEADLINES (each line once per cycle; lines that don't fit the city's size,
  * season, climate or buildings wait in the bag), and no line again within HEADLINE_REPEAT_DAYS (2 in-game years).
@@ -54,6 +56,7 @@
 import type { SimSystem, Simulation } from '../Simulation';
 import { BF, RESP_NONE, type Building, type CityState, type NeedStat, type NeedTier } from '../CityState';
 import { DEV_TYPE_COUNT, DEV_TYPE_LABELS, DevType, Network, Zone, zoneDensity } from '../../core/types';
+import { DAYS_PER_MONTH } from '../../core/constants';
 import { type EconRuntime, type InfraFlags, econData, infraFlags } from './runtime';
 import { capHints, regionInputs } from './demand';
 import { residentCoverage, residentSurvey } from './approval';
@@ -72,11 +75,13 @@ import type { BuildingDef } from '../catalogTypes';
 import { demolishFee, lotSlope } from './buildings';
 import { formatMoney } from './format';
 import { buildingPowered, buildingWatered } from './population';
-import { GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, TOURISM_INCOME_PER_VISITOR, WATER_REQUIRED_STAGE } from './tuning';
+import { APPROVAL, GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, TAX_NEUTRAL, TOURISM_INCOME_PER_VISITOR, WATER_REQUIRED_STAGE } from './tuning';
 import { buildingUpkeep } from './opex';
 import { getOrdinance, ordinanceAvailable, ordinanceEffect } from './ordinances';
 
 const ADVICE_PER_MONTH = 2;
+/** FH-09: taxHigh warns from this resident-weighted residential rate (approval falls 3.5 a point above 9%) */
+export const TAX_HIGH_ADVICE = 11;
 /** no advice repeats sooner than this (days) */
 const MIN_COOLDOWN = 60;
 const money = (v: number) => formatMoney(v);
@@ -118,12 +123,12 @@ const QUIET_DAYS = 90;
  * lazily loaded rewards chunk into the eager bundle (src/game/modules.ts loads it on demand)
  */
 export const WATER_TREATMENT_UNLOCK_POP = 6000;
-/** a news item matching `re` was posted within QUIET_DAYS */
-function recentNews(st: CityState, re: RegExp): boolean {
+/** a news item matching `re` was posted within QUIET_DAYS of `day` (today, or the coming month tick: A1) */
+function recentNews(st: CityState, re: RegExp, day = st.day): boolean {
   const news = st.news;
   for (let k = news.length - 1; k >= 0; k--) {
     const n = news[k];
-    if (st.day - n.day > QUIET_DAYS) break;
+    if (day - n.day > QUIET_DAYS) break;
     if (re.test(n.text)) return true;
   }
   return false;
@@ -164,18 +169,58 @@ export interface AdvisorData {
 }
 /** the month tick's map scans (AdvisorData.scan; each optional: a scan saved by an older version lacks the newer ones and
  *  the month tick then takes it fresh) — zone blocks (day 28), facilities + the worst jam + the residents beyond fire
- *  reach (day 29; resp null = the emergency layers were not ready) */
-interface MonthScans { zone?: ZoneScan; fac?: FacScanData; jam?: JamScan; resp?: { residents: number; fireOut: number } | null }
+ *  reach (day 29; resp null = the emergency layers were not ready) — and (B3 A1, day 29 after the scans) the places
+ *  [x, z] ([-1, -1]: none found) of the advice the coming tick is predicted to announce (absent: looked up on the tick) */
+interface MonthScans {
+  zone?: ZoneScan; fac?: FacScanData; jam?: JamScan; resp?: { residents: number; fireOut: number } | null;
+  places?: Record<string, [number, number]>;
+}
+/** a predicted place of MonthScans.places, if it is one (a saved record is data: anything else is looked up) */
+function savedPlace(places: MonthScans['places'], id: string): [number, number] | null {
+  const p = places && Object.prototype.hasOwnProperty.call(places, id) ? places[id] : undefined;
+  return Array.isArray(p) && p.length === 2 && Number.isInteger(p[0]) && Number.isInteger(p[1]) ? p : null;
+}
 /** a family whose ready lots wait this long (days) with demand and no growth at all: growthStalled */
 const STALL_DAYS = 330;
 /** advice posts kept in AdvisorData.posts (2 a month at most: two years) */
 const POSTS_KEPT = 48;
 
+/** the day the city was founded (FEEL-05: a player's city on day 90, 1 April; the bot and an old save on day 0) */
+const foundedDay = (st: CityState): number => (typeof st.systemData.foundedDay === 'number' ? st.systemData.foundedDay : 0);
+
+/**
+ * The month tick's announcement test (B3 A1: one function for monthly() and the day-29 prediction, so the two cannot
+ * drift). `list` in priority order, `day` the tick's day. An advice speaks when its confirm rule has held CONFIRM_DAYS
+ * (its first sighting in `seen`), its cooldown — doubled per repeat while its condition persists, at most × 8
+ * (`streak`) — is over, and its quietIf matches no news of the QUIET_DAYS before `day` nor an advice spoken earlier in
+ * this pass; at most ADVICE_PER_MONTH. `speak` runs for each in order before the next one is tested: on the tick it posts
+ * the advice, so its cooldown and its news item count for the rest of the pass, as they always did.
+ */
+function announce(st: CityState, list: readonly Advice[], day: number, cooldowns: Readonly<Record<string, number>>,
+  streak: Readonly<Record<string, number>>, seen: Readonly<Record<string, number>>, speak: (a: Advice) => void): void {
+  const spoken: Advice[] = [];
+  for (const a of list) {
+    if (spoken.length >= ADVICE_PER_MONTH) break;
+    if (a.confirm) {
+      const s0 = seen[a.id];
+      if (s0 === undefined || day - s0 < CONFIRM_DAYS) continue;
+    }
+    const last = cooldowns[a.id];
+    const cooldown = Math.max(MIN_COOLDOWN, a.cooldown) * 2 ** Math.min(3, streak[a.id] ?? 0);
+    if (last !== undefined && day - last < cooldown) continue;
+    if (spoken.some((o) => o.id === a.id)) continue;
+    if (a.quietIf && (recentNews(st, a.quietIf, day) || spoken.some((o) => a.quietIf!.test(o.text)))) continue;
+    spoken.push(a);
+    speak(a);
+  }
+}
+
 export function advisorData(st: CityState): AdvisorData {
   let a = st.systemData.advisors as AdvisorData | undefined;
   if (!a || a.v !== 1) {
-    // new city: first headline around day 45 (as before); an older save gets a calm first month
-    a = { v: 1, nextHeadline: st.day < 45 ? 45 : st.day + 30, bag: [], shown: {}, seen: {} };
+    // new city: first headline 45 days after founding (as before); an older save gets a calm first month
+    const f = foundedDay(st);
+    a = { v: 1, nextHeadline: st.day - f < 45 ? f + 45 : st.day + 30, bag: [], shown: {}, seen: {} };
     st.systemData.advisors = a;
   }
   a.bag ??= [];
@@ -268,36 +313,52 @@ interface ZoneScan {
   rubbleZ?: number[];
 }
 
+// (PERF, B3 A0: the month's map scans are small top-level kernels, with their rare branches in functions of their own and
+//  no per-call closures. A scan runs once a month: V8 optimized the big scan functions on their first runs, then threw
+//  the code away on the rare paths it had no feedback for — "insufficient type feedback", and "wrong call target" for a
+//  closure that is a new function object on every scan — so the day-28 scan cost 2–25 ms for the same city. Same
+//  operations in the same order, integer counts and cell indices only: bit-identical results.)
+
 /** growable lots in rubble (ZoneScan.rubbleLots / rubbleAt / rubbleZ): one pass over the buildings, a flag test each
  *  (the infra building snapshot, not the runtime's lists: their rebuild timing stays the population system's) */
 function scanRubble(st: CityState, rt: EconRuntime, r: ZoneScan): void {
-  const N = st.size;
   const lots: number[] = [0, 0, 0], at: number[] = [-1, -1, -1];
   const perZone: number[] = new Array(Zone.IndHigh + 1).fill(0);
   const list = buildingList(st);
   for (let k = 0; k < list.length; k++) {
     const b = list[k];
     if (!(b.flags & BF.Burnt) || b.flags & BF.Plopped) continue;
-    const dev = rt.defOf(b)?.devType;
-    const f = dev === undefined ? -1 : dev <= DevType.R3 ? 0 : dev <= DevType.CO3 ? 1 : 2;
-    const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
-    if (f >= 0) {
-      lots[f]++;
-      if (at[f] < 0) at[f] = i;
-    }
-    // (rubble on land still zoned for growth: room once cleared)
-    const zn = st.zone[i];
-    if (zn >= Zone.ResLow && zn <= Zone.IndHigh) perZone[zn] += b.w * b.d;
+    addRubble(st, rt, b, lots, at, perZone);
   }
   r.rubbleLots = [lots[0], lots[1], lots[2]];
   r.rubbleAt = [at[0], at[1], at[2]];
   r.rubbleZ = perZone;
 }
-
-/** occupied growables without power / water (ZoneScan.outP ... outWAt): one pass over the growables */
-function scanOutages(st: CityState, rt: EconRuntime, r: ZoneScan): void {
+/** scanRubble's rare branch: one growable in rubble */
+function addRubble(st: CityState, rt: EconRuntime, b: Building, lots: number[], at: number[], perZone: number[]): void {
   const N = st.size;
-  let pN = 0, pRes = 0, pJobs = 0, pAt = -1, pBig = 0, wN = 0, wRes = 0, wJobs = 0, wAt = -1, wBig = 0, pHomes = 0;
+  const dev = rt.defOf(b)?.devType;
+  const f = dev === undefined ? -1 : dev <= DevType.R3 ? 0 : dev <= DevType.CO3 ? 1 : 2;
+  const i = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
+  if (f >= 0) {
+    lots[f]++;
+    if (at[f] < 0) at[f] = i;
+  }
+  // (rubble on land still zoned for growth: room once cleared)
+  const zn = st.zone[i];
+  if (zn >= Zone.ResLow && zn <= Zone.IndHigh) perZone[zn] += b.w * b.d;
+}
+
+/** scanOutages' running counts (one per scan); pId / wId: the building at pAt / wAt */
+interface OutageCounts {
+  pN: number; pRes: number; pJobs: number; pAt: number; pBig: number; pId: number;
+  wN: number; wRes: number; wJobs: number; wAt: number; wBig: number; wId: number; pHomes: number;
+}
+/** occupied growables without power / water (ZoneScan.outP ... outWAt): one pass over the growables. outPAt / outWAt:
+ *  the centre of the most occupied one, of equals the lowest building id (B3: the same building in a loaded game, whose
+ *  rt.growables is in Map order, as in the running game, whose swap-removes reorder it) */
+function scanOutages(st: CityState, rt: EconRuntime, r: ZoneScan): void {
+  const o: OutageCounts = { pN: 0, pRes: 0, pJobs: 0, pAt: -1, pBig: 0, pId: -1, wN: 0, wRes: 0, wJobs: 0, wAt: -1, wBig: 0, wId: -1, pHomes: 0 };
   rt.ensureLists();
   const list = rt.growables;
   for (let k = 0; k < list.length; k++) {
@@ -305,27 +366,33 @@ function scanOutages(st: CityState, rt: EconRuntime, r: ZoneScan): void {
     const people = b.pop + b.jobs;
     if (!(people > 0) || b.flags & (BF.Abandoned | BF.Burnt)) continue;
     const p = buildingPowered(st, b, true);
-    let w = true;
-    if (!(b.flags & BF.Watered)) {
-      const def = rt.defOf(b);
-      const needWater = (def?.stage ?? 1) >= WATER_REQUIRED_STAGE || zoneDensity(st.zone[b.z * N + b.x]) >= 2;
-      w = !needWater || buildingWatered(st, b, true);
-    }
+    const w = (b.flags & BF.Watered) !== 0 || waterNeedMet(st, rt, b);
     if (p && w) continue;
-    const at = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
-    if (!p) {
-      pN++; pRes += b.pop; pJobs += b.jobs;
-      if (b.pop > 0) pHomes++;
-      if (people > pBig) { pBig = people; pAt = at; }
-    }
-    if (!w) {
-      wN++; wRes += b.pop; wJobs += b.jobs;
-      if (people > wBig) { wBig = people; wAt = at; }
-    }
+    addOutage(st, b, people, p, w, o);
   }
-  r.outP = pN; r.outPRes = Math.round(pRes); r.outPJobs = Math.round(pJobs); r.outPAt = pAt;
-  r.outW = wN; r.outWRes = Math.round(wRes); r.outWJobs = Math.round(wJobs); r.outWAt = wAt;
-  r.outPHomes = pHomes;
+  r.outP = o.pN; r.outPRes = Math.round(o.pRes); r.outPJobs = Math.round(o.pJobs); r.outPAt = o.pAt;
+  r.outW = o.wN; r.outWRes = Math.round(o.wRes); r.outWJobs = Math.round(o.wJobs); r.outWAt = o.wAt;
+  r.outPHomes = o.pHomes;
+}
+/** scanOutages: a building without BF.Watered has the water it needs (it needs none, or the network reaches it) */
+function waterNeedMet(st: CityState, rt: EconRuntime, b: Building): boolean {
+  const def = rt.defOf(b);
+  const needWater = (def?.stage ?? 1) >= WATER_REQUIRED_STAGE || zoneDensity(st.zone[b.z * st.size + b.x]) >= 2;
+  return !needWater || buildingWatered(st, b, true);
+}
+/** scanOutages' rare branch: an occupied building without power (`p` false) and / or water (`w` false) */
+function addOutage(st: CityState, b: Building, people: number, p: boolean, w: boolean, o: OutageCounts): void {
+  const N = st.size;
+  const at = Math.min(N - 1, b.z + (b.d >> 1)) * N + Math.min(N - 1, b.x + (b.w >> 1));
+  if (!p) {
+    o.pN++; o.pRes += b.pop; o.pJobs += b.jobs;
+    if (b.pop > 0) o.pHomes++;
+    if (people > o.pBig || (people === o.pBig && b.id < o.pId)) { o.pBig = people; o.pAt = at; o.pId = b.id; }
+  }
+  if (!w) {
+    o.wN++; o.wRes += b.pop; o.wJobs += b.jobs;
+    if (people > o.wBig || (people === o.wBig && b.id < o.wId)) { o.wBig = people; o.wAt = at; o.wId = b.id; }
+  }
 }
 
 /** "2 occupied buildings (83 residents, 12 jobs)" */
@@ -410,10 +477,18 @@ function lotFit(st: CityState, x: number, z: number, zn: number, s: number): 0 |
 function lotFitAny(st: CityState, x: number, z: number, zn: number, s: number): 0 | 1 | 2 {
   const first = lotFit(st, x, z, zn, s);
   if (first === 0 || s <= 1) return first;
+  return lotFitWide(st, x, z, zn, s, first === 2);
+}
+/** a road on cell (x, z), false outside the map */
+function roadAtXZ(net: Uint8Array, N: number, x: number, z: number): boolean {
+  return x >= 0 && z >= 0 && x < N && z < N && isRoadN(net[z * N + x]);
+}
+/** lotFitAny's wide search (its own kernel: the odd tiles reach it, open land does not); `steep0`: lotFit found only
+ *  too steep lots */
+function lotFitWide(st: CityState, x: number, z: number, zn: number, s: number, steep0: boolean): 0 | 1 | 2 {
   const N = st.size, net = st.network, zone = st.zone, bld = st.building, water = st.water, lines = st.powerLines;
   const maxSlope = GROW_MAX_SLOPE + GROW_MAX_SLOPE_PER_CELL * s;
-  const rd = (xx: number, zz: number) => xx >= 0 && zz >= 0 && xx < N && zz < N && isRoadN(net[zz * N + xx]);
-  let steep = first === 2;
+  let steep = steep0;
   for (let z0 = z - s + 1; z0 <= z; z0++) {
     for (let x0 = x - s + 1; x0 <= x; x0++) {
       if (x0 < 0 || z0 < 0 || x0 + s > N || z0 + s > N) continue;
@@ -432,7 +507,7 @@ function lotFitAny(st: CityState, x: number, z: number, zn: number, s: number): 
         for (let k = 0; k < s && all; k++) {
           const ex = side === 2 ? x0 - 1 : side === 3 ? x0 + s : x0 + k;
           const ez = side === 0 ? z0 - 1 : side === 1 ? z0 + s : z0 + k;
-          if (!rd(ex, ez)) all = false;
+          if (!roadAtXZ(net, N, ex, ez)) all = false;
         }
         edge = all;
       }
@@ -457,10 +532,13 @@ export function lotFitAt(st: CityState, x: number, z: number): -1 | 0 | 1 | 2 {
   return lotFitAny(st, x, z, zn, minLotSide(zn));
 }
 
+/** a growth zone (R / C / I), by zone value */
+function isGrowZone(z: number): boolean {
+  return z >= Zone.ResLow && z <= Zone.IndHigh;
+}
+
 /** one pass over the zoned tiles (4-connected blocks flood-filled for road access) */
 function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int32Array, lots: Int32Array): ZoneScan {
-  const N = st.size, C = st.cells;
-  const zone = st.zone, net = st.network, bld = st.building, powered = st.powered, watered = st.watered;
   const r: ZoneScan = {
     zoned: 0, front: 0, unpowered: 0, unpoweredAt: -1, needWater: 0, unwatered: 0, unwateredAt: -1, ready: 0, readyZones: 0, readyAt: -1, noAccess: 0, noAccessAt: -1,
     noAccessFam: [0, 0, 0], noAccessFamAt: [-1, -1, -1], unpoweredLots: 0, unwateredLots: 0,
@@ -469,18 +547,27 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
     lotOk: [0, 0, 0], lotOkAt: [-1, -1, -1], lotSmall: [0, 0, 0], lotSmallAt: [-1, -1, -1], lotSteep: [0, 0, 0], lotSteepAt: [-1, -1, -1],
     lotSmallZ: new Array(Zone.IndHigh + 1).fill(0), lotSmallZAt: new Array(Zone.IndHigh + 1).fill(-1),
   };
+  const nLots = fillZoneBlocks(st, util, visited, stack, lots, r);
+  classifyLots(st, lots, nLots, r);
+  return r;
+}
+
+/**
+ * scanZones' flood fill: every 4-connected block of zoned tiles — road access, the usable tiles and their utilities,
+ * what they can host — into `r`; the empty ready lots go to `lots` in the order found (returns their count)
+ */
+function fillZoneBlocks(st: CityState, util: boolean, visited: Uint8Array, stack: Int32Array, lots: Int32Array, r: ZoneScan): number {
+  const N = st.size, C = st.cells;
+  const zone = st.zone, net = st.network, bld = st.building, powered = st.powered, watered = st.watered;
   let lotsP = 0, lotsW = 0, nLots = 0;
   const des = st.desirability;
-  const host = r.host!, fit = r.fit!, fitEmpty = r.fitEmpty!, bestAt = r.bestAt!, emptyReady = r.emptyReady!, emptyReadyAt = r.emptyReadyAt!;
-  const lotOk = r.lotOk!, lotOkAt = r.lotOkAt!, lotSmall = r.lotSmall!, lotSmallAt = r.lotSmallAt!, lotSteep = r.lotSteep!, lotSteepAt = r.lotSteepAt!;
-  const lotSmallZ = r.lotSmallZ!, lotSmallZAt = r.lotSmallZAt!;
+  const host = r.host!, fit = r.fit!, bestAt = r.bestAt!, emptyReady = r.emptyReady!, emptyReadyAt = r.emptyReadyAt!;
   const bestDes = new Float32Array(DEV_TYPE_COUNT).fill(-Infinity);
-  const isZ = (i: number) => zone[i] >= Zone.ResLow && zone[i] <= Zone.IndHigh;
   // per block: tiles per family (0 R, 1 C, 2 I) and the first tile of each
   const fam = [0, 0, 0], famAt = [-1, -1, -1];
   visited.fill(0);
   for (let s = 0; s < C; s++) {
-    if (visited[s] || !isZ(s)) continue;
+    if (visited[s] || !isGrowZone(zone[s])) continue;
     let sp = 0, cells = 0, access = false;
     fam[0] = fam[1] = fam[2] = 0;
     famAt[0] = famAt[1] = famAt[2] = -1;
@@ -523,10 +610,10 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
           if (v > GROW_MIN_DESIR) fit[pd]++;
         }
       }
-      if (x > 0 && !visited[i - 1] && isZ(i - 1)) { visited[i - 1] = 1; stack[sp++] = i - 1; }
-      if (x < N - 1 && !visited[i + 1] && isZ(i + 1)) { visited[i + 1] = 1; stack[sp++] = i + 1; }
-      if (i >= N && !visited[i - N] && isZ(i - N)) { visited[i - N] = 1; stack[sp++] = i - N; }
-      if (i + N < C && !visited[i + N] && isZ(i + N)) { visited[i + N] = 1; stack[sp++] = i + N; }
+      if (x > 0 && !visited[i - 1] && isGrowZone(zone[i - 1])) { visited[i - 1] = 1; stack[sp++] = i - 1; }
+      if (x < N - 1 && !visited[i + 1] && isGrowZone(zone[i + 1])) { visited[i + 1] = 1; stack[sp++] = i + 1; }
+      if (i >= N && !visited[i - N] && isGrowZone(zone[i - N])) { visited[i - N] = 1; stack[sp++] = i - N; }
+      if (i + N < C && !visited[i + N] && isGrowZone(zone[i + N])) { visited[i + N] = 1; stack[sp++] = i + N; }
     }
     r.zoned += cells;
     if (!access) {
@@ -538,9 +625,21 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
       }
     }
   }
-  // the empty ready lots, in the order found (PERF: kept out of the fill loop, which stays lean): can a building stand
-  // there (lotFit: growth's placement rules for the zone's smallest building), and which DevTypes of its zone clear
-  // growth's desirability floor there
+  r.unpoweredLots = lotsP;
+  r.unwateredLots = lotsW;
+  return nLots;
+}
+
+/**
+ * scanZones' empty ready lots, in the order found (PERF: kept out of the fill loop, which stays lean): can a building
+ * stand there (lotFit: growth's placement rules for the zone's smallest building), and which DevTypes of its zone clear
+ * growth's desirability floor there
+ */
+function classifyLots(st: CityState, lots: Int32Array, nLots: number, r: ZoneScan): void {
+  const N = st.size, zone = st.zone, des = st.desirability;
+  const fitEmpty = r.fitEmpty!;
+  const lotOk = r.lotOk!, lotOkAt = r.lotOkAt!, lotSmall = r.lotSmall!, lotSmallAt = r.lotSmallAt!, lotSteep = r.lotSteep!, lotSteepAt = r.lotSteepAt!;
+  const lotSmallZ = r.lotSmallZ!, lotSmallZAt = r.lotSmallZAt!;
   for (let z = Zone.ResLow; z <= Zone.IndHigh; z++) lotSide[z] = minLotSide(z);
   for (let k = 0; k < nLots; k++) {
     const i = lots[k], zn = zone[i];
@@ -556,9 +655,6 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
       lotSmallZ[zn]++; if (lotSmallZAt[zn] < 0) lotSmallZAt[zn] = i;
     } else { lotSteep[f]++; if (lotSteepAt[f] < 0) lotSteepAt[f] = i; }
   }
-  r.unpoweredLots = lotsP;
-  r.unwateredLots = lotsW;
-  return r;
 }
 
 /** any 4-neighbour tile around the footprint (no corners) passes `test` */
@@ -622,6 +718,12 @@ const OTHER_RUINS: ReadonlySet<string> = new Set(['reward', 'landmark', 'civic',
 /** FacilityScan as plain data (building ids): saved in AdvisorData.scan */
 type FacScanData = { [K in IdKeys]: number[] } & { burntMW: number; civicUnpowered: number; civicFirst: number; liveMW: number; fireStations: number };
 
+const idAsc = (a: number, b: number): number => a - b;
+/** sort ids ascending in place, unless they already are (the common case: rt.plopped stays in id order until a removal,
+ *  and a once-a-month sort call with a comparator costs up to ~0.9 ms cold) */
+function sortIds(ids: number[]): void {
+  for (let k = 1; k < ids.length; k++) if (ids[k] < ids[k - 1]) { ids.sort(idAsc); return; }
+}
 function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
   const f: FacScanData = {
     plants: [], plantsBurnt: [], plantsIsolated: [], burntMW: 0, plantsDry: [], waterOk: [], waterBurnt: [], waterNoRoad: [], waterNoPower: [],
@@ -659,9 +761,14 @@ function scanFacilities(st: CityState, rt: EconRuntime): FacScanData {
       else f.waterOk.push(b.id);
     } else if (!burnt && (def.powerUse ?? 0) > 0 && !(b.flags & BF.Powered)) {
       f.civicUnpowered++;
-      if (f.civicFirst < 0) f.civicFirst = b.id;
+      if (f.civicFirst < 0 || b.id < f.civicFirst) f.civicFirst = b.id;
     }
   }
+  // (B3) the lists in ascending building id, and civicFirst the lowest: rt.plopped is in the running game's order (its
+  // swap-removes reorder it) while a loaded game rebuilds it in Map order, ascending id. The advice takes the first of a
+  // list as its "Show me" place (and A1 predicts it from this scan), so a game loaded before the scan finds the same
+  // buildings first. The counts and the MW sums (the catalog's integer MW) are the same in any order
+  for (const k of ID_KEYS) sortIds(f[k]);
   return f;
 }
 
@@ -1065,6 +1172,9 @@ interface Scans {
   /** a rule's map location (unservedClusters / uncoveredHotspots / the worst home), looked up lazily through
    *  Advice.where: fresh on the month tick, memoised for the Advisors panel (LOCATE_TTL) */
   locate: (key: string, f: () => { x: number; z: number } | undefined) => { x?: number; z?: number };
+  /** the day-29 prediction of the tick's announcements (B3 A1): the garbage rule takes no resident survey (off the month
+   *  tick one full pass over the homes), so it is not predicted (the tick looks its place up) */
+  predict?: boolean;
 }
 const pctS = (v: number) => `${Math.round(v * 100)}%`;
 const EDGE_NAME: Record<string, string> = { n: 'north', s: 'south', e: 'east', w: 'west' };
@@ -1290,7 +1400,7 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
   // garbage: ONE rule (critic item 31) — residents without pickup (approval's monthly survey), with the reason and
   // where; from 300 residents (QA)
   rt.ensureLists();
-  const survey = pop >= 300 ? residentSurvey(st, rt, inf) : null;
+  const survey = pop >= 300 && !sc.predict ? residentSurvey(st, rt, inf) : null;
   const garbageHomes = survey && survey.pop[3] > 0 ? survey.noGarbage[3] : 0;
   const legacyShort = !inf.pollution && pop > 2000 && s.garbageProduced > s.garbageCapacity * 1.02;
   if ((pop >= 300 && survey !== null && survey.pop[3] >= 200 && garbageHomes >= 0.2) || legacyShort) {
@@ -1355,8 +1465,10 @@ function depthRules(st: CityState, rt: EconRuntime, inf: InfraFlags, sc: Scans, 
     const mb = sim?.getSystem<SimSystem & { minibusInfo?: { stops: number; need: number } }>('traffic')?.minibusInfo;
     const stopAt = () => loc('busStop', () => {
       rt.ensureLists();
-      for (const b of rt.plopped) if (b.def === 'tr_bus_stop' || rt.defOf(b)?.model === 'tr_bus_stop') return at(b);
-      return undefined;
+      // (the lowest id: the same stop in a loaded game, whose rt.plopped is in Map order — see scanFacilities)
+      let stop: Building | null = null;
+      for (const b of rt.plopped) if ((!stop || b.id < stop.id) && (b.def === 'tr_bus_stop' || rt.defOf(b)?.model === 'tr_bus_stop')) stop = b;
+      return stop ? at(stop) : undefined;
     });
     if (!dep) {
       out.push({ id: 'busFleetShort', cooldown: 150, priority: 4, kind: 'warning', advisor: 'transport', where: stopAt,
@@ -1412,6 +1524,9 @@ export interface AdvisorsSystem extends SimSystem {
   /** advice whose condition holds right now, highest priority first (confirm rules once the monthly pass confirmed
    *  them). Evaluated on demand between the monthly passes; reads the city only (no rng, no state writes) */
   openAdvice(st: CityState): OpenAdvice[];
+  /** B3 A1: the places [x, z] ([-1, -1]: none) of the advice the coming month tick is predicted to announce, from the
+   *  month's saved scans (empty without them). Read-only: the day-29 daily stores them in AdvisorData.scan.places */
+  predictPlaces(st: CityState): Record<string, [number, number]>;
 }
 
 /** the open advice of `sim` (see AdvisorsSystem.openAdvice); [] without the advisors system */
@@ -1524,8 +1639,9 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     .replaceAll('{year}', String(st.year)).replaceAll('{pop}', int(st.stats.population));
 
   /** every rule's advice holding now; 'month' = the month tick (saved scans, fresh places), 'open' = the Advisors
-   *  panel (fresh scans, memoised places, reads the city only) */
-  const gather = (st: CityState, mode: 'month' | 'open', scans?: MonthScans): Advice[] => {
+   *  panel (fresh scans, memoised places, reads the city only), 'predict' = the day-29 prediction (saved scans, fresh
+   *  places, reads the city only, no garbage survey; B3 A1) */
+  const gather = (st: CityState, mode: 'month' | 'open' | 'predict', scans?: MonthScans): Advice[] => {
     const out: Advice[] = [];
     const s = st.stats;
     const d = econData(st);
@@ -1550,10 +1666,14 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       out.push({ id: 'surplus', cooldown: 360, priority: 1, kind: 'good', advisor: 'finance',
         text: `A healthy surplus of ${money(net)}/month! Lower taxes to boost growth, or invest in services and parks.` });
     }
-    const rTax = (st.budget.taxRates[0] + st.budget.taxRates[1] + st.budget.taxRates[2]) / 3;
-    if (rTax >= 12 && pop > 1000) {
+    // FH-09: the rate approval.ts charges (resident-weighted), warned from 11% with the approval it costs
+    const tr = st.budget.taxRates, rs = st.stats.residents;
+    const rPop = rs[0] + rs[1] + rs[2];
+    const rTax = rPop > 0 ? (rs[0] * tr[0] + rs[1] * tr[1] + rs[2] * tr[2]) / rPop : (tr[0] + tr[1] + tr[2]) / 3;
+    if (rTax >= TAX_HIGH_ADVICE - 1e-9 && pop > 1000) {
+      const cost = -APPROVAL.taxPerPoint * (rTax - TAX_NEUTRAL);
       out.push({ id: 'taxHigh', cooldown: 180, priority: 5, kind: 'warning', advisor: 'finance',
-        text: `Residential taxes average ${rTax.toFixed(1)}% — people are leaving for cheaper cities.` });
+        text: `Residential taxes average ${rTax.toFixed(1)}%. Each point above ${TAX_NEUTRAL}% costs ${-APPROVAL.taxPerPoint} approval, so approval heads ${Number(cost.toFixed(1))} points lower; above 13% demand collapses.` });
     }
     // ---------------- utilities
     let zoned = 0;
@@ -1562,7 +1682,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     const util = inf.utilities;
     const scan = scans?.zone ?? zoneScan(st, util);
     const fac = resolveFac(st, scans?.fac ?? scanFacilities(st, rt));
-    const loc = mode === 'month' ? freshLocate : memoLocate(st);
+    const loc = mode === 'open' ? memoLocate(st) : freshLocate;
     const at = (b: Building) => ({ x: b.x + (b.w >> 1), z: b.z + (b.d >> 1) });
     const cellAt = (i: number): { x?: number; z?: number } => (i >= 0 ? { x: i % N, z: (i / N) | 0 } : {});
     const burntWhat = (list: Building[], many: string) => (list.length > 1 ? `${list.length} ${many}` : `The ${nameOf(list[0])}`);
@@ -1794,7 +1914,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         text: 'Smog is choking our neighborhoods. Separate industry from homes, plant trees, or pass the Clean Air Act.' });
     }
     // ---------------- WP5: services, emergencies, justice, environment, tourism, region, transit (depthRules)
-    depthRules(st, rt, inf, { zone: scan, fac, noisy: noisyOf(st), resp: pop > 1500 ? (scans && scans.resp !== undefined ? scans.resp : respOut(st)) : null, locate: loc }, out);
+    depthRules(st, rt, inf, { zone: scan, fac, noisy: noisyOf(st), resp: pop > 1500 ? (scans && scans.resp !== undefined ? scans.resp : respOut(st)) : null, locate: loc, predict: mode === 'predict' }, out);
     // one fire advisor (critic item 31): a city without any fire station hears it once — noFireResponse names the
     // plants' accident risk too
     if (out.some((a) => a.id === 'noFireResponse')) {
@@ -2007,7 +2127,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
           : `${count(scan.noAccess, 'zoned tile')} ${scan.noAccess === 1 ? 'has' : 'have'} no road access and will never develop. Run a road into those zones.` });
     }
     const alive = rt.totals.growables - rt.totals.abandoned;
-    if (alive <= 0 && scan.ready > 0 && st.day >= 60) {
+    if (alive <= 0 && scan.ready > 0 && st.day - foundedDay(st) >= 60) {
       // zones face a road and have their utilities, yet not a single building stands
       let best = -1;
       for (let z = Zone.ResLow; z <= Zone.IndHigh; z++) if (scan.readyZones & (1 << z)) for (const dv of ZONE_DEVTYPES[z]) best = Math.max(best, s.demand[dv]);
@@ -2019,7 +2139,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         else if (famDemand(8, 11) > 0.1 && !(scan.readyZones & I_ZONES)) tip = 'Industry wants to move in — zone some industrial land.';
         out.push({ id: 'noDemand', cooldown: 90, priority: 7, kind: 'warning', advisor: 'planning', confirm: true, ...cellAt(scan.readyAt),
           text: `Nothing is growing: there is no demand for ${fams.join(' or ')} buildings right now (see the RCI meter). ${tip}` });
-      } else if (st.day >= 150 && scan.ready >= 12) {
+      } else if (st.day - foundedDay(st) >= 150 && scan.ready >= 12) {
         out.push({ id: 'growthStalled', cooldown: 120, priority: 6, kind: 'warning', advisor: 'planning', confirm: true, ...cellAt(scan.readyAt),
           text: 'Nothing is growing although there is demand and the zones have roads and utilities. The land may be too steep or too unattractive (pollution, noise, a power plant next door) — check the Desirability data view.' });
       }
@@ -2067,8 +2187,33 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     return out;
   };
 
+  /**
+   * B3 A1: the places of the advice the coming month tick is predicted to announce — the tick's rules on the saved scans
+   * (gather 'predict') through the tick's own test (announce) for the tick's day; for each with a lazy place, its lookup
+   * now ([-1, -1]: none found). Read-only. Without a saved zone scan (an older save loaded after day 28) none: gather would
+   * scan the zones now and the tick once more.
+   */
+  const predictPlaces = (st: CityState, scans: MonthScans): Record<string, [number, number]> => {
+    const places: Record<string, [number, number]> = {};
+    if (!scans.zone) return places;
+    const d = econData(st);
+    const seen = (st.systemData.advisors as AdvisorData | undefined)?.seen ?? {};
+    const tick = (Math.floor(st.day / DAYS_PER_MONTH) + 1) * DAYS_PER_MONTH;
+    const list = gather(st, 'predict', scans).sort((a, b) => b.priority - a.priority);
+    announce(st, list, tick, d.cooldowns, d.streak ?? {}, seen, (a) => {
+      if (!a.where || a.x !== undefined) return;
+      const p = a.where();
+      places[a.id] = p.x !== undefined && p.z !== undefined ? [p.x, p.z] : [-1, -1];
+    });
+    return places;
+  };
+
   return {
     name: 'economy.advisors',
+    predictPlaces(st) {
+      const sc = (st.systemData.advisors as AdvisorData | undefined)?.scan;
+      return sc && sc.month === st.monthIndex ? predictPlaces(st, sc) : {};
+    },
     init(sim) {
       rt.attach(sim);
       const d = econData(sim.state);
@@ -2110,6 +2255,8 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
           // (final fixes V5: the two typed-array passes the rules need, off the month tick)
           a0.scan.jam = scanJam(st);
           a0.scan.resp = st.stats.population > 1500 ? respOut(st) : null;
+          // (B3 A1: the coming tick's announcements, predicted on these scans, and their places: off the month tick)
+          a0.scan.places = predictPlaces(st, a0.scan);
         }
       }
       // population milestones
@@ -2147,23 +2294,20 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       const seen = advisorData(st).seen;
       for (const id of Object.keys(seen)) if (!active.has(id)) delete seen[id];
       for (const a of list) if (a.confirm) seen[a.id] ??= st.day;
-      let shown = 0;
-      for (const a of list) {
-        if (shown >= ADVICE_PER_MONTH) break;
-        if (a.confirm && st.day - seen[a.id] < CONFIRM_DAYS) continue;
-        const last = d.cooldowns[a.id];
-        const cooldown = Math.max(MIN_COOLDOWN, a.cooldown) * 2 ** Math.min(3, streak[a.id] ?? 0);
-        if (last !== undefined && st.day - last < cooldown) continue;
-        if (a.quietIf && recentNews(st, a.quietIf)) continue;
+      announce(st, list, st.day, d.cooldowns, streak, seen, (a) => {
         d.cooldowns[a.id] = st.day;
         streak[a.id] = (streak[a.id] ?? 0) + 1;
-        placed(a, a.where);
+        // its place: the day-29 prediction's when it made one (B3 A1; [-1, -1]: none, as a lookup that finds nothing),
+        // else looked up now
+        const pp = a.where && a.x === undefined ? savedPlace(ms?.places, a.id) : null;
+        if (pp) {
+          if (pp[0] >= 0 && pp[1] >= 0) { a.x = pp[0]; a.z = pp[1]; }
+        } else placed(a, a.where);
         sim.notify(a.text, a.kind === 'info' ? 'advisor' : a.kind, a.x, a.z, a.advisor);
         const posts = (advisorData(st).posts ??= []);
         posts.push({ day: st.day, id: a.id, text: a.text });
         if (posts.length > POSTS_KEPT) posts.splice(0, posts.length - POSTS_KEPT);
-        shown++;
-      }
+      });
       // every open issue for advisorIssues (the announced ones already know their place; the others look it up when read)
       const issues: OpenAdvice[] = [];
       for (const a of list) {

@@ -117,19 +117,37 @@ export function rebuildNimby(sim: Simulation): void {
   const lfDef = getDef('util_landfill_tile');
   const lfA = lfDef?.stigma?.amount ?? 0.35, lfR = lfDef?.stigma?.radius ?? 6;
   const zone = st.zone, net = st.network, flags = st.netFlags, lfFill = st.landfillFill;
-  for (let z = 0; z < N; z += 2) for (let x = 0; x < N; x += 2) {
-    let cnt = 0, fill = 0;
-    for (let dz = 0; dz < 2 && z + dz < N; dz++) for (let dx = 0; dx < 2 && x + dx < N; dx++) {
-      const i = (z + dz) * N + x + dx;
-      if (zone[i] !== Zone.Landfill) continue;
-      cnt++;
-      const f = lfFill ? lfFill[i] : 0;
-      fill += f > 0 ? (f < 1 ? f : 1) : 0;
+  let lfNext = zone.indexOf(Zone.Landfill);
+  for (let z = 0; z < N && lfNext >= 0; z += 2) {
+    const rowEnd = Math.min(z + 2, N) * N;
+    if (lfNext >= rowEnd) continue; // neither row contains landfill
+    for (let x = 0; x < N; x += 2) {
+      let cnt = 0, fill = 0;
+      for (let dz = 0; dz < 2 && z + dz < N; dz++) for (let dx = 0; dx < 2 && x + dx < N; dx++) {
+        const i = (z + dz) * N + x + dx;
+        if (zone[i] !== Zone.Landfill) continue;
+        cnt++;
+        const f = lfFill ? lfFill[i] : 0;
+        fill += f > 0 ? (f < 1 ? f : 1) : 0;
+      }
+      if (cnt > 0) touches += splatAdd(stig, N, x, z, 2, 2, lfA * (NIMBY_LANDFILL_IDLE + (1 - NIMBY_LANDFILL_IDLE) * (fill / cnt)) * cnt / 4, lfR);
     }
-    if (cnt > 0) touches += splatAdd(stig, N, x, z, 2, 2, lfA * (NIMBY_LANDFILL_IDLE + (1 - NIMBY_LANDFILL_IDLE) * (fill / cnt)) * cnt / 4, lfR);
+    lfNext = zone.indexOf(Zone.Landfill, rowEnd);
   }
   // network corridors (max-combined)
+  const wordEnd = (net.byteOffset & 3) === 0 ? Math.floor(Math.min(C, net.length) / 4) * 4 : 0;
+  const words = wordEnd > 0 ? new Uint32Array(net.buffer, net.byteOffset, wordEnd / 4) : null;
+  const highway = Network.Highway * 0x01010101, rail = Network.Rail * 0x01010101;
   for (let i = 0; i < C; i++) {
+    if (words && i < wordEnd && (i & 3) === 0) {
+      const word = words[i >>> 2], h = word ^ highway, r = word ^ rail;
+      // XOR each byte, then test for a zero byte: correct on little-endian targets (and byte-order independent).
+      // Only skip whole empty words; matching cells, tails and unaligned views keep the original index order.
+      if (((h - 0x01010101) & ~h & 0x80808080) === 0 && ((r - 0x01010101) & ~r & 0x80808080) === 0) {
+        i += 3;
+        continue;
+      }
+    }
     const t = net[i];
     if (t === Network.Highway) {
       const f = flags[i];

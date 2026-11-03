@@ -5,10 +5,9 @@ import { Panel } from '../Panel';
 import { h, setText } from '../dom';
 import { icon } from '../icons';
 import { compact, num, pct } from '../format';
-import { type Building, INCIDENT_KINDS } from '../../sim/CityState';
-import type { SimSystem } from '../../sim/Simulation';
-import type { EconRuntime } from '../../sim/economy/runtime';
-import { type GarageCounts, type GarageStates, commuteModes, countGarages, parkRideLine } from '../statsModel';
+import { INCIDENT_KINDS } from '../../sim/CityState';
+import { type GarageCounts, commuteModes, parkRideLine } from '../statsModel';
+import { watchFor, type WatchHandle } from '../../worker/SimHost';
 
 function sum(a: number[] | undefined, i0: number, i1: number): number {
   let s = 0;
@@ -30,28 +29,17 @@ export class StatsPanel extends Panel {
   private modeNote!: HTMLElement;
   private wealth!: HTMLElement;
   private wealthLegend!: HTMLElement;
-  /** parking garages by park & ride state, counted at most once a day (only while no park & ride room is open) */
-  private garages: { key: string; counts: GarageCounts } | null = null;
+  private garages: WatchHandle<GarageCounts> | null = null;
 
-  /** garages by their state in the last traffic assignment (the plopped list when the economy runtime has one) */
+  /** garages by their state in the last traffic assignment, watched only while the panel is open */
   private garageCounts(): GarageCounts {
-    const st = this.ctx.state;
-    const key = `${st.day}:${st.buildings.size}`;
-    if (this.garages?.key === key) return this.garages.counts;
-    const sim = this.ctx.sim;
-    let list: Iterable<Building> = st.buildings.values();
-    try {
-      const rt = sim.getSystem<SimSystem & { rt?: EconRuntime }>('economy.population')?.rt;
-      if (rt) {
-        rt.ensureLists();
-        list = rt.plopped;
-      }
-    } catch {
-      /* the whole city */
-    }
-    const counts = countGarages(list, sim.getSystem<SimSystem & GarageStates>('traffic'));
-    this.garages = { key, counts };
-    return counts;
+    this.garages ??= watchFor(this.ctx.host, 'garageStates', {}, 'daily', this.ctx.signal);
+    return this.garages.value ?? { total: 0, parkRide: 0, kept: 0, downtown: 0, noTransit: 0, pending: 0 };
+  }
+
+  override onClose(): void {
+    this.garages?.dispose();
+    this.garages = null;
   }
 
   protected build(): void {

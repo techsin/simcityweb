@@ -17,8 +17,15 @@ import { CityActions } from '../../src/sim/actions';
 import { expectedUpkeep, opexTierOf } from '../../src/sim/economy/opex';
 import { OPEX_BUILDING_SHARE, OPEX_PER_SERVED } from '../../src/sim/economy/tuning';
 import type { Simulation } from '../../src/sim/Simulation';
-import { servedHere, shoreFacesWater, shoreRotation, staffedService, upkeepHere, type Rot } from '../../src/game/tools/placement';
+import type { BuildingDef } from '../../src/sim/catalogTypes';
+import type { ServicesSystem } from '../../src/sim/infra/services';
+import { servedHere, shoreFacesWater, shoreRotation, staffedService, type Rot } from '../../src/game/tools/placement';
+import { runQuery } from '../../src/worker/queries';
 import { newSim, newState, place, roadLine } from '../infra/cityGen';
+
+function upkeepHere(sim: Simulation, def: BuildingDef, x: number, z: number, w: number, d: number): number | null {
+  return runQuery(sim, 'upkeepContext', { defId: def.id, x, z, w, d }).here;
+}
 
 /** water from x = 20 eastward, a road along x = 17 */
 function coast() {
@@ -149,7 +156,7 @@ describe('upkeep at the cursor (final fixes P3)', () => {
     const before = st.stats.needs[tier].served;
     const [w, d] = rotatedFootprint(def, 0);
     const here = upkeepHere(sim, def, x, z, w, d)!;
-    const served = servedHere(sim, def, x, z, w, d)!;
+    const served = servedHere(st, def, x, z, w, d, sim.getSystem<ServicesSystem>('services')!.needRaster(tier))!;
     const r = new CityActions(sim).plop(id, x, z, 0);
     expect(r.ok, `${id} at ${x},${z}: ${r.reason}`).toBe(true);
     const b = st.buildings.get(st.building[st.idx(x, z)])!;
@@ -187,7 +194,7 @@ describe('upkeep at the cursor (final fixes P3)', () => {
     // across the street 8 tiles up (out of its near field, in full reach): the police tier's need of the whole tower
     // (residents x (0.5 + crime)) at the station's strength — not just the front column's half (the cursor's old count)
     const s = def.coverage!.strength;
-    const p = servedHere(sim, def, 0, 22, 2, 2)!;
+    const p = servedHere(st, def, 0, 22, 2, 2, sim.getSystem<ServicesSystem>('services')!.needRaster('police'))!;
     expect(p).toBeGreaterThan(0.97 * 400 * 0.5 * s);
     expect(p).toBeLessThanOrEqual(400 * 0.5 * s * 1.0001);
     // ...which the services pass then counts as served

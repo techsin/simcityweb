@@ -20,7 +20,7 @@ import { BF, type Building } from '../CityState';
 import { clamp, smoothstep } from '../../core/rng';
 import { DevType } from '../../core/types';
 import {
-  APPROVAL, APPROVAL_TERMS as AT, COMMUTE_FALLBACK, COVERAGE_FALLBACK, EQ_BASE, EQ_RATE, EQ_SPAN, HQ_BASE, HQ_RATE, HQ_SPAN,
+  APPROVAL, APPROVAL_TERMS as AT, COMMUTE_FALLBACK, COVERAGE_FALLBACK, difficultyRules, EQ_BASE, EQ_RATE, EQ_SPAN, HQ_BASE, HQ_RATE, HQ_SPAN,
   NEEDS_POP_FULL, NEEDS_POP_START, TAX_NEUTRAL,
 } from './tuning';
 import { type EconRuntime, type InfraFlags, GROWABLE_SLICES, econData, infraFlags } from './runtime';
@@ -215,11 +215,11 @@ export function residentSurvey(st: CityState, rt: EconRuntime, inf: InfraFlags =
 // ------------------------------------------------------------------------------------------------ terms
 /** labels of the approval terms (stable ids; WP5 TopBar tooltip) */
 export const APPROVAL_LABELS: Record<string, string> = {
-  base: 'Baseline',
+  base: 'Starting approval',
   tax: 'Residential taxes',
   services: 'City services at homes',
   pollution: 'Air pollution',
-  crime: 'Crime',
+  crime: 'Crime at homes',
   commute: 'Commute times',
   unemployment: 'Unemployment',
   parks: 'Parks near homes',
@@ -310,6 +310,7 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
 
   const update = (sim: Simulation, first: boolean) => {
     const st = sim.state;
+    const rules = difficultyRules(st.config.difficulty);
     const data = econData(st);
     // init of a loaded city (terms from an earlier month): keep the saved, smoothed approval instead of snapping it
     // to this month's raw value (save / load continuity)
@@ -370,13 +371,18 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
     // the first power plant and clinic without the mayor being blamed); garbage fades in more slowly and unmet needs
     // follow WP1's expectation curve (tuning APPROVAL_TERMS / NEEDS_POP_*).
     const fadeIn = w > 0 ? smoothstep(AT.needsPop0, AT.needsPop1, w) : 0;
+    if (rules.fadeCrime) T.crime *= fadeIn;
     T.noise = w > 0 ? AT.noise * sv.noise[3] : 0;
     T.outages = fadeIn * (AT.unpowered * sv.unpowered[3] + AT.unwatered * sv.unwatered[3]);
     const g = serviceGaps(w, sv.noGarbage[3], w > 0 && inf.utilities ? s.tapWater ?? 1 : 1, s.needs);
     T.garbage = g.garbage;
     T.needs = g.needs;
     T.tapWater = g.tapWater;
-    T.tourism = Math.min(AT.tourismMax, (data.tourists ?? 0) / AT.tourismPerPoint);
+    // (a loaded city keeps the tourism pride its last tick scored, until its next tick: tourism's venue pass on day 26
+    //  changes the tourist totals 4 days before the tick that scores them — B3 — and a bulldozed venue leaves them at once)
+    const tourismSaved = resumed ? data.approvalTerms.tourism : undefined;
+    T.tourism = tourismSaved !== undefined && Number.isFinite(tourismSaved) ? tourismSaved
+      : Math.min(AT.tourismMax, (data.tourists ?? 0) / AT.tourismPerPoint);
     // HQ: a bonus for good health care; the penalty fades in with the city (no hamlet has a hospital)
     const hq = w > 0 ? clamp(AT.hq * (s.hq - AT.hqRef) / AT.hqSpan, -AT.hq, AT.hq) : 0;
     T.hq = hq < 0 ? hq * fadeIn : hq;
@@ -389,7 +395,11 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
       // + every prompt the mayor ignored (a unit could still have made it in time and nobody was sent): a fixed weight,
       // not diluted by the city's size (APPROVAL_TERMS.emIgnored)
       const remembered = fadeIn * (AT.emFailRate * (yr.failed ?? 0) / (yCount + AT.emFailN0) + AT.emIgnored * (yr.ignored ?? 0));
-      T.emergencies = -Math.min(AT.emergencyMax, AT.emFailed * lm.failed + AT.emLate * lm.late + AT.emDeaths * lm.deaths + AT.emRiotDays * lm.riotDays + remembered);
+      if (rules.fadeMonthlyEmergencies) {
+        T.emergencies = -Math.min(AT.emergencyMax, fadeIn * (AT.emFailed * lm.failed + AT.emLate * lm.late + AT.emDeaths * lm.deaths) + AT.emRiotDays * lm.riotDays + remembered);
+      } else {
+        T.emergencies = -Math.min(AT.emergencyMax, AT.emFailed * lm.failed + AT.emLate * lm.late + AT.emDeaths * lm.deaths + AT.emRiotDays * lm.riotDays + remembered);
+      }
     } else {
       T.emergencies = -Math.min(AT.fireMax, AT.firePer * firesMonth);
     }
@@ -443,17 +453,19 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
 
 /**
  * Approval terms of the last monthly update (sum = econData.approvalRaw within rounding; WP5 TopBar tooltip).
- * Ordered by |value|, the baseline first; zero terms are left out.
+ * Ordered by |value|, the baseline first; zero terms are left out except crime during Easy's new-town grace.
  */
 export function approvalBreakdown(st: CityState): FactorTerm[] {
   const d = st.systemData.economy as { approvalTerms?: Record<string, number> } | undefined;
   const T = d?.approvalTerms;
   if (!T) return [];
+  const crimeGrace = difficultyRules(st.config.difficulty).fadeCrime
+    && (surveys.get(st)?.pop[3] ?? st.stats.population) < AT.needsPop1;
   const out: FactorTerm[] = [];
   for (const id in T) {
     const v = T[id];
-    if (!v && id !== 'base') continue;
-    out.push({ id, label: APPROVAL_LABELS[id] ?? id, value: v, detail: approvalDetail(st, id, T) });
+    if (!v && id !== 'base' && !(id === 'crime' && crimeGrace)) continue;
+    out.push({ id, label: APPROVAL_LABELS[id] ?? id, value: v, detail: id === 'crime' && crimeGrace ? 'new-town grace' : approvalDetail(st, id, T) });
   }
   out.sort((a, b) => (a.id === 'base' ? -1 : b.id === 'base' ? 1 : Math.abs(b.value) - Math.abs(a.value)));
   return out;
@@ -463,12 +475,19 @@ function approvalDetail(st: CityState, id: string, T: Record<string, number>): s
   const s = st.stats;
   const pct = (v: number) => `${Math.round(v * 100)}%`;
   const n0 = (v: number) => Math.round(v).toLocaleString('en-US');
-  const d = st.systemData.economy as { tourists?: number } | undefined;
+  const d = st.systemData.economy as { tourists?: number; resCrime?: number } | undefined;
   const sv = surveys.get(st);
   // the three service gaps hit their common limit: say so
   const gapSum = (T.garbage ?? 0) + (T.needs ?? 0) + (T.tapWater ?? 0);
   const limit = gapSum < 0 && Math.abs(gapSum - AT.gapMax) < 1e-6 ? ` (garbage, schools / clinics and tap water together cost at most ${-AT.gapMax})` : '';
   switch (id) {
+    case 'base': return `every city starts at ${APPROVAL.base}`;
+    case 'crime': return `crime at homes ${pct(d?.resCrime ?? sv?.crime[3] ?? T.crime / APPROVAL.crime)} — low-wealth homes, uncollected garbage and low land value; police remove up to 85% where they patrol`;
+    case 'tax': {
+      // Describe the last monthly term, even if the sliders have moved since that report.
+      const rate = TAX_NEUTRAL + (T.tax < 0 ? T.tax / APPROVAL.taxPerPoint : -T.tax / APPROVAL.taxLowPerPoint);
+      return `homes are taxed ${Number(rate.toFixed(1))}% on average — each point above ${TAX_NEUTRAL}% costs ${-APPROVAL.taxPerPoint} approval; each point below adds ${APPROVAL.taxLowPerPoint}`;
+    }
     case 'tapWater': return `tap water ${pct(s.tapWater ?? 1)} clean${limit}`;
     case 'hq': return `HQ ${Math.round(s.hq)}`;
     case 'tourism': return `${n0(d?.tourists ?? 0)} tourists / day`;

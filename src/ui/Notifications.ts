@@ -30,10 +30,9 @@ export class NewsTicker {
   private view: HTMLDivElement;
   private x = 0;
   private hover = false;
-  /** the news log the track shows: newsMark and length of state.news at the last rebuild (final fixes N2: the log is
-   *  capped at 200 items, so its length alone stops changing) */
+  /** the news sequence at the last rebuild; newsMark also detects a cleared / replaced log */
   private shownMark = -1;
-  private shownLen = -1;
+  private shownNews = -1;
   private width = 0;
   /** the view's width, measured on rebuilds and resizes only (A1: frame() read clientWidth every frame) */
   private viewW = 0;
@@ -75,13 +74,13 @@ export class NewsTicker {
   /** the track must be rebuilt: a news item was added (also to a full log), or the log was cleared / replaced */
   private stale(): boolean {
     const news = this.ctx.state.news;
-    return news.length !== this.shownLen || newsMark(news) !== this.shownMark;
+    return this.ctx.host.newsSeq !== this.shownNews || newsMark(news) !== this.shownMark;
   }
 
   private rebuild(): void {
     const st = this.ctx.state;
     const items = tickerItems(st.news);
-    this.shownLen = st.news.length;
+    this.shownNews = this.ctx.host.newsSeq;
     this.shownMark = newsMark(st.news);
     this.track.innerHTML = '';
     if (!items.length) {
@@ -124,6 +123,13 @@ export class NewsTicker {
   }
 }
 
+/** an answer button on a question toast (Toasts.show opts.buttons) */
+export interface ToastButton {
+  label: string;
+  primary?: boolean;
+  run: () => void;
+}
+
 export class Toasts {
   /** multiplier for toast lifetimes (dev/screenshot tooling raises it) */
   static ttlScale = 1;
@@ -163,8 +169,10 @@ export class Toasts {
   /**
    * show a toast; plays the kind's sound (TOAST_SOUND) unless opts.silent or it merges into an identical live toast.
    * opts.action: a click runs it (instead of jumping to `cell`), with a small hint line under the text.
+   * opts.buttons: a question with answers (FH-21's slow-frame prompt): each button runs its answer and closes the toast;
+   * a click elsewhere on the toast does nothing. Without its own opts.ttl it stays until answered or closed.
    */
-  show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string, opts: { silent?: boolean; ttl?: number; action?: { hint: string; icon?: string; run: () => void } } = {}): void {
+  show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string, opts: { silent?: boolean; ttl?: number; action?: { hint: string; icon?: string; run: () => void }; buttons?: ToastButton[] } = {}): void {
     const now = performance.now();
     const key = kind + ':' + text;
     const meta = NEWS_META[kind] ?? NEWS_META.info;
@@ -198,12 +206,18 @@ export class Toasts {
     const x = h('button', { class: 'icon-btn t-x', html: icon('close', 12) });
     const badge = h('span', { class: 't-count', style: 'display:none' });
     const timerBar = h('div', { class: 't-timer', style: { animationDuration: ttl + 'ms' } });
+    const answers = opts.buttons?.length ? opts.buttons.map((b) => h('button', { class: `btn t-btn${b.primary ? ' primary' : ''}`, type: 'button' }, b.label)) : null;
+    // a question without its own ttl stays until it is answered or closed (on a machine at a few seconds a frame a timed
+    // question would expire before it could be read)
+    const sticky = !!answers && opts.ttl === undefined;
+    if (sticky) timerBar.style.display = 'none';
     const t = h('div', { class: 'toast mp-glass', style: { '--tc': meta.color } as Record<string, string> },
       h('div', { class: 't-ico', html: icon(meta.icon, 16) }),
       h('div', { class: 't-body' },
         h('div', { class: 't-title' }, title ?? meta.title, badge),
         h('div', { class: 't-text' }, text),
         opts.action ? h('div', { class: 't-go', html: icon(opts.action.icon ?? 'target', 12) + escapeHtml(opts.action.hint) }) : cell ? h('div', { class: 't-go', html: icon('target', 12) + 'Click to view' }) : null,
+        answers ? h('div', { class: 't-btns' }, ...answers) : null,
       ),
       x,
       timerBar,
@@ -223,6 +237,7 @@ export class Toasts {
       restart: (ms: number) => {
         clearTimeout(timer);
         this.timers.delete(timer);
+        if (sticky) return;
         timer = arm(kill, ms);
         timerBar.style.animation = 'none';
         void timerBar.offsetWidth;
@@ -241,18 +256,29 @@ export class Toasts {
       e.stopPropagation();
       kill();
     }, { signal: this.ctx.signal });
+    answers?.forEach((el, k) => el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      kill();
+      opts.buttons![k].run();
+    }, { signal: this.ctx.signal }));
     t.addEventListener('click', () => {
+      if (answers) return;
       if (opts.action) opts.action.run();
       else if (entry.cell) this.ctx.focusCell(entry.cell.x, entry.cell.z, 420);
       kill();
     }, { signal: this.ctx.signal });
-    timer = arm(kill, ttl);
+    if (!sticky) timer = arm(kill, ttl);
     this.live.set(key, entry);
+    if (answers) t.classList.add('question');
     this.el.prepend(t);
-    // at most 4 visible (3 on short screens, e.g. 1280×720: CityScene sets .short on the UI root)
+    // at most 4 visible (3 on short screens, e.g. 1280×720: CityScene sets .short on the UI root); the oldest goes first,
+    // but a question waits for its answer (or its own expiry): news must not push it out before it can be read
     const max = this.ctx.root.classList.contains('short') ? Math.min(3, Toasts.MAX) : Toasts.MAX;
     while (this.el.children.length > max) {
-      const last = this.el.lastElementChild as HTMLElement;
+      const kids = this.el.children;
+      let last: HTMLElement | null = null;
+      for (let k = kids.length - 1; k >= 0 && !last; k--) if (!kids[k].classList.contains('question')) last = kids[k] as HTMLElement;
+      if (!last) break;
       for (const [k, v] of this.live) if (v.el === last) this.live.delete(k);
       last.remove();
     }

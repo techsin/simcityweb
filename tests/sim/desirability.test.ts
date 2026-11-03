@@ -12,7 +12,7 @@ import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { Simulation } from '../../src/sim/Simulation';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import { DEV_WEALTH, ZONE_DEVTYPES, getDef } from '../../src/sim/catalog';
-import { conditionBreakdown, outageData } from '../../src/sim/economy/population';
+import { DEMO_AGG_DAYS, DEMO_PHASE, conditionBreakdown, outageData } from '../../src/sim/economy/population';
 import { sumTerms } from '../../src/sim/explain';
 import type { EconRuntime } from '../../src/sim/economy/runtime';
 import { DESIR_TERM_IDS, NT, T_ELEM, desirWeight, desirabilityBreakdown } from '../../src/sim/economy/desirability';
@@ -406,9 +406,10 @@ describe('desirability: save / load and early-game commute', () => {
   });
 
   it('a loaded city reads the saved demographics sample (customers by wealth, skills, kids, cohort shares), not a fresher one', { timeout: 300000 }, () => {
-    // homes placed on day 40 enter the day-64 sample; two more on day 66 are only in the next one (day 96). Saved on
-    // day 68: the game reads the day-64 sample, and so must the loaded copy — rebuilt at load, its shops / offices read
-    // fresher customers than the game it continues (grownCity's save / load divergence doubled)
+    // homes placed on day 40 enter the day-49 sample; two more on day 66 are only in the next one (day 81: the samples
+    // fall on days ≡ DEMO_PHASE 17 mod 32). Saved on day 68: the game reads the day-49 sample, and so must the loaded copy
+    // — rebuilt at load, its shops / offices read fresher customers than the game it continues (grownCity's save / load
+    // divergence doubled)
     const { st, sim, rt } = town(40);
     const N = st.size;
     const put = (homes: readonly (readonly [string, number, number])[]) => {
@@ -431,7 +432,7 @@ describe('desirability: save / load and early-game commute', () => {
     sim.runDays(26);
     expect(put([['res_cottage.r2.1', 15, 33], ['res_villa.r3.1', 21, 33]])).toBeGreaterThanOrEqual(1);
     sim.runDays(2);
-    expect(st.day % 32).not.toBe(0);
+    expect(st.day % DEMO_AGG_DAYS).not.toBe(DEMO_PHASE);
     const copy = deserializeCity(structuredClone(serializeCity(st, { copy: true })) as SerializedCity);
     const rt2 = rtOf(new Simulation(copy, createSystems()));
     const same = (a: Float32Array, b: Float32Array) => a.length === b.length && a.every((v, q) => v === b[q]);

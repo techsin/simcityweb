@@ -6,6 +6,7 @@
 import { CELL_SIZE } from '../core/constants';
 import type { CameraControllerApi } from '../render/contracts';
 import type { CityState } from '../sim/CityState';
+import type { SimHost } from '../worker/SimHost';
 
 /** persisted camera (state.systemData.camera): world focus x / z (m), distance (m), yaw / tilt (degrees) */
 export interface SavedCamera {
@@ -163,9 +164,9 @@ export class CameraMemory {
   }
 
   /** remember the current view in the save; a no-op before place() and on a stand-in view (`standIn`) */
-  store(st: CityState, c: CameraControllerApi | null | undefined, standIn = false): void {
+  store(host: Pick<SimHost, 'act'>, c: CameraControllerApi | null | undefined, standIn = false): void {
     if (!this.placed || standIn) return;
     const cam = readCamera(c);
-    if (cam) st.systemData.camera = cam;
+    if (cam) host.act('setCamera', [cam]);
   }
 }

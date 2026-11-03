@@ -20,8 +20,8 @@ export interface CellHit {
 export interface CameraControllerApi {
   /** enable / disable user input (e.g. while a modal is open) */
   enabled: boolean;
-  /** smoothly move focus to world position */
-  focusOn(worldX: number, worldZ: number, distance?: number): void;
+  /** smoothly move focus to world position; fly opts into a raised arc for trips over 500 m */
+  focusOn(worldX: number, worldZ: number, distance?: number, opts?: { fly?: boolean }): void;
   /** current focus point on the ground (world) */
   readonly target: THREE.Vector3;
   /** current distance / zoom (meters) */

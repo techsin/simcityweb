@@ -8,6 +8,7 @@ import type { CityObjectsViewApi, WorldViewApi } from '../render/contracts';
 import type { CityActionsApi } from '../sim/actions';
 import type { CityState } from '../sim/CityState';
 import type { Simulation } from '../sim/Simulation';
+import type { SimHost } from '../worker/SimHost';
 import type { GameModules } from './modules';
 import type { GameSettings } from './settings';
 import type { ToolController } from './tools/ToolController';
@@ -57,6 +58,7 @@ export interface PanelsApi {
 }
 
 export interface GameContext {
+  readonly host: SimHost;
   readonly state: CityState;
   readonly sim: Simulation;
   readonly actions: CityActionsApi;

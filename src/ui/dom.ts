@@ -84,6 +84,14 @@ export function isTyping(e?: Event): boolean {
 /** keys a focused range slider keeps for itself (stepping it; Tab and lone modifiers do nothing to the map) */
 export const SLIDER_KEYS: ReadonlySet<string> = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', 'Tab', 'Shift', 'Control', 'Alt', 'Meta']);
 
+/** Paint a range input from its own bounds and value, without a callback into its owner. */
+export function paintFill(el: HTMLInputElement): void {
+  // HTML's defaults for a range input without bounds: min 0, max 100
+  const min = Number(el.min), max = el.max === '' ? 100 : Number(el.max);
+  const t = (Number(el.value) - min) / (max - min || 1);
+  el.style.setProperty('--fill', `${(t * 100).toFixed(1)}%`);
+}
+
 /**
  * A range slider. It keeps the keyboard focus after a click or a drag, so the arrow keys (Home / End, Page Up / Down)
  * step it — final fixes P10: it blurred itself on pointerup, the arrows then panned the map and one 0.5 % tax step was
@@ -94,13 +102,9 @@ export const SLIDER_KEYS: ReadonlySet<string> = new Set(['ArrowLeft', 'ArrowRigh
 export function slider(opts: { min: number; max: number; step?: number; value: number; oninput: (v: number) => void; onchange?: (v: number) => void; class?: string; signal?: AbortSignal }): HTMLInputElement {
   const el = h('input', { type: 'range', min: opts.min, max: opts.max, step: opts.step ?? 1, class: opts.class ?? 'ui-range' }) as HTMLInputElement;
   el.value = String(opts.value);
-  const paint = () => {
-    const t = (Number(el.value) - opts.min) / (opts.max - opts.min || 1);
-    el.style.setProperty('--fill', `${(t * 100).toFixed(1)}%`);
-  };
-  paint();
+  paintFill(el);
   el.addEventListener('input', () => {
-    paint();
+    paintFill(el);
     opts.oninput(Number(el.value));
   }, { signal: opts.signal });
   el.addEventListener('change', () => opts.onchange?.(Number(el.value)), { signal: opts.signal });
@@ -127,11 +131,6 @@ export function slider(opts: { min: number; max: number; step?: number; value: n
   };
   el.addEventListener('focus', () => document.addEventListener('pointerdown', outside, { capture: true, signal: opts.signal }), { signal: opts.signal });
   el.addEventListener('blur', () => document.removeEventListener('pointerdown', outside, true), { signal: opts.signal });
-  // The paint closure shares opts with the callbacks into the city.
-  if (!opts.signal?.aborted) {
-    (el as any).__paint = paint;
-    opts.signal?.addEventListener('abort', () => { delete (el as any).__paint; }, { once: true });
-  }
   return el;
 }
 
@@ -175,7 +174,7 @@ export function setSlider(el: HTMLInputElement, v: number): void {
   if (document.activeElement === el) return;
   if (Number(el.value) !== v) {
     el.value = String(v);
-    (el as any).__paint?.();
+    paintFill(el);
   }
 }
 
