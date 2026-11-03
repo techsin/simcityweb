@@ -25,7 +25,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Network } from '../../src/core/types';
 import { Emitter } from '../../src/core/events';
-import { pendingCount, sendDays } from '../../src/game/emergencyPolicy';
+import { LIVE_COOLDOWN_MS, pendingCount, sendDays } from '../../src/game/emergencyPolicy';
 import { LivePolicy } from '../../src/worker/SimCore';
 import { queryHost } from './queryHost';
 import type { Command } from '../../src/worker/SimHost';
@@ -177,7 +177,7 @@ afterAll(() => {
 // ------------------------------------------------------------------------------------------------ harness
 interface Harness { banner: EmergencyBanner; policy: LivePolicy; sim: Simulation; root: FakeEl; toasts: string[]; abort: AbortController; tick(): void }
 const lifetimes: AbortController[] = [];
-afterEach(() => { for (const ac of lifetimes.splice(0)) ac.abort('dispose'); });
+afterEach(() => { for (const ac of lifetimes.splice(0)) ac.abort('dispose'); vi.restoreAllMocks(); });
 function harness(sim: Simulation): Harness {
   const root = new FakeEl('div');
   const toasts: string[] = [];
@@ -272,6 +272,8 @@ describe('EmergencyBanner on a live simulation', () => {
   });
 
   it('F2: a second uncovered major call of the same kind 7 days later still gets a banner and LIVE mode', () => {
+    let now = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
     const { st, sim } = medTown();
     const h = harness(sim);
     const em = emergencyOf(sim)!;
@@ -291,6 +293,7 @@ describe('EmergencyBanner on a live simulation', () => {
     expect(h.banner.liveActive).toBe(false);
     expect(sim.speed).toBe(3);
     expect(h.toasts.some((t) => /back to ultra speed/.test(t))).toBe(true);
+    now += LIVE_COOLDOWN_MS; // T029: the real-time speed cooldown has ended; the per-kind game-day limit has not.
     // 7 days after the first (inside the 15-day cooldown per kind): a second uncovered major medical call
     expect(7).toBeLessThan(KIND_COOLDOWN);
     const b = em.spawn(sim, 'medical', 52, 21, { buildingId: st.buildingAt(52, 21)!.id, major: true, severity: 4 });
@@ -570,6 +573,32 @@ describe('EmergencyBanner: final-fix round 2', () => {
     h.tick();
     expect([fire.state, fire.manualPossible, fire.canSend, fire.prompted]).toEqual(['uncovered', false, true, undefined]);
     expect(h.banner.liveActive).toBe(false);
+  });
+
+  it('T029: a major fire inside a busy station\'s range gets no banner, no LIVE mode and no place in the "N more" pill', () => {
+    // the far station (x = 4) has a free truck that can still make it; the near one (x = 56) has every truck out
+    const { st, sim, station } = fireTown();
+    const near = place(st, 't_fire', 56, 19);
+    sim.events.emit('buildingAdded', near);
+    const home = place(st, 't_r2', 60, 21, { pop: 60 });
+    const h = harness(sim);
+    const em = emergencyOf(sim)!;
+    sim.speed = 3;
+    sim.runDays(0.05); // the new station's fleet is up
+    h.tick();
+    const units = em.stationFleet(near.id)!.total;
+    expect(units).toBeGreaterThan(0);
+    (em as unknown as { out: Map<number, number> }).out.set(near.id, units);
+    (em as unknown as { stVer: number }).stVer++;
+    triggerDisaster(sim, 'fire', home.x, home.z);
+    const fire = em.incidents()[0];
+    h.tick();
+    expect([fire.state, fire.reason, fire.major, fire.manualPossible, fire.bestFrom]).toEqual(['uncovered', 'busy', true, true, station.id]);
+    expect(h.banner.bannerIds).toEqual([]);
+    expect(h.banner.liveActive).toBe(false);
+    expect([sim.speed, sim.liveSlowdown]).toEqual([3, 1]);
+    const more = (h.banner as unknown as { more: FakeEl }).more;
+    expect(shown(more)).toBe(false);
   });
 
   it('EM-4: the Send button keeps its label / ETA spans and the pill its text span: a press and release across the update still clicks', () => {
