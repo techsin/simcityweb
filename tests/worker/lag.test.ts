@@ -43,6 +43,7 @@ function commands(st: CityState, random: SeededLag, alerts: readonly { id: numbe
     [{ op: 'dismissAlert', args: [alerts[0]?.id ?? -1] }],
     [{ op: 'setCamera', args: [{ x: 80, z: 90, distance: 450, yaw: 20, tilt: 40 }] }],
     [{ op: 'setSettings', args: [{ emergencyUncovered: 'ignore', emergencyLiveSlowmo: 3, emergencyAlerts: 'major' }] }],
+    [{ op: 'holdCalendar', args: [true] }, { op: 'holdCalendar', args: [false] }],
   ];
   for (let i = groups.length - 1; i > 0; i--) { const j = Math.floor(random.random() * (i + 1)); [groups[i], groups[j]] = [groups[j], groups[i]]; }
   return groups.filter(() => random.random() < 0.85).flat();
@@ -121,7 +122,7 @@ describe('loopback lag properties', () => {
       // mirrored layers against what was last sent: a utilities pass may still be in flight (F6)
       checkReplica(host.harness.primary, host.replica, true, undefined, host.harness.delivered);
       expect(exactDigest(host.state)).toBe(exactDigest(host.harness.primary));
-      expect(ops.size).toBe(23); expect(replies).toBe(120); expect(packets).toBeGreaterThan(120);
+      expect(ops.size).toBe(24); expect(replies).toBe(120); expect(packets).toBeGreaterThan(120);
       expect(listenerChecks).toBeGreaterThan(120); expect(budgets).toBeGreaterThan(10);
       expect(errors).toEqual([]);
     } finally { for (const off of offs) off(); abort.abort('dispose'); await host.dispose(); }

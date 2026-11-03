@@ -1,0 +1,384 @@
+From 7599eb8bdee6fab92c0e03f899f750c6e1068074 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 04:56:40 +0000
+Subject: [PATCH 05/11] =?UTF-8?q?docs(dev):=20B2=20design:=20the=20review?=
+ =?UTF-8?q?=20changes=20G1=20applied,=20G1=20as=20built=20(=C2=A715)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- R2: two piece budgets (INFRA_PIECE_MS for the searches,
+  INFRA_PIECE_COLD_MS for Building loops and once-per-pass stages), the
+  per-loop rule (<= 3 ms at the p99 cold factor, <= 5 ms at the max),
+  scoped withPieceScale, exceptions bounded in cold ms, traffic's own
+  sizing and TR_EST.
+- R7 flag rule and the O12 note; R9 "saved data in one piece" and the
+  two reload leaks left alone; R12 the once-per-cycle rebuild decision.
+- §2: urgent re-scan, flush(), the run classes next to unchanged module
+  searches, GraphBuildRun; §3 rebuild sub-states (R3), final (R1, O1),
+  final2's parkingQ / save (R4); §9.5 the error gate on the warm
+  window; §10 / §12 the windows from load; §11.5 the G1 test changes;
+  §14 the Building-shape decision.
+- §15 G1 as built: review items applied, deviations, exactness evidence
+  (frozen original, b2Pieces, passdigest B vs W on five fixtures), and
+  the dense1m measurements B vs W per window and per phase.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KT9tXthEhyzExdUuGEecAJ
+---
+ docs/dev/B2_DESIGN.md | 219 ++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 191 insertions(+), 28 deletions(-)
+
+diff --git a/docs/dev/B2_DESIGN.md b/docs/dev/B2_DESIGN.md
+index 932ad25..10683a9 100644
+--- a/docs/dev/B2_DESIGN.md
++++ b/docs/dev/B2_DESIGN.md
+@@ -4,7 +4,7 @@
+ - **Base:** `41ae570` = the dev branch + the exact J-fixes + LG-01 + the guide copy + B1 (`5bb5467`). B1's 128 × 15 seed-7 2015 reference is 196,101.
+ - **Branch:** `b2-step-split` (local only).
+ - **Inputs:** the three mapping reports (traffic, services + emergency, crime + pollution + utilities) and their data under `scratchpad/b2work/map-*`. Every number below is from those reports unless it says otherwise.
+-- **Status:** design. The build order is §10, in four groups: `G1-core-traffic`, `G2-services-nimby`, `G3-crime-pollution`, `G4-utilities-emergency-recalibration`.
++- **Status:** design, with the design reviews' changes. G1 (`G1-core-traffic`) is built: §15 lists what it changed against this text and which review items it applied. The build order is §10, in four groups: `G1-core-traffic`, `G2-services-nimby`, `G3-crime-pollution`, `G4-utilities-emergency-recalibration`.
+ 
+ ## 0. Summary
+ 
+@@ -60,16 +60,20 @@ Terms used below:
+ - Each system exposes `get stepName(): string`, for example `'prep.scan#3'`. Only tools read it; `b2work/tools/cpumap.ts` already does.
+ 
+ **R2. Piece size.**
+-- `INFRA_PIECE_MS = 0.3` (params.ts) is the warm estimated ms of one piece.
+-- `pieceUnits(msPerUnit, min = 1)` (scheduler.ts) returns `max(min, floor(INFRA_PIECE_MS × pieceScale / msPerUnit))`. Every chunk size (buildings, origins, rows, settled nodes, tier work units, events) comes from it.
+-- A stage computes its chunk sizes once, in its first piece, and stores them. `cost()` reads the stored values and never recomputes them.
+-- `setPieceScale(s)` is a test-only hook: `1e9` gives one piece per stage, `1e-9` gives one unit per piece. It is module state, so a test must reset it in `afterEach`.
+-- Exceptions to the budget:
+-  - one call of a shared kernel (`blur.ts`, `saturate`, the police `needOf`), at most about 1 ms warm at 256²;
+-  - publish pieces, at most 2 × `INFRA_PIECE_MS`;
+-  - the edit-only lazy caches that other code also calls synchronously: traffic `refreshAttach`, emergency `syncStations`.
+-- **Loops whose cold cost is extreme get half the budget.** Some float-heavy cell loops measured more than 15× their warm cost without TurboFan: the stop disks 37×, shopB's bilinear output 25×, finish's legacy combos 27×. Size their chunks with `pieceUnits(2 × coef)` if their first gate run shows cold pieces over 3 ms.
+-- G1 may retune `INFRA_PIECE_MS` once after its first gate run (§10). It is one constant.
++- Two budgets (params.ts), in warm estimated ms per piece (design review 2, item 1):
++  - `INFRA_PIECE_MS = 0.3` for loops measured at 10× their warm cost or less in every window: traffic's road and transit searches, transit seeds, inbound, shop and freight; services tiers, nimby and foot.
++  - `INFRA_PIECE_COLD_MS = 0.13` for every Building loop and every stage that runs once per pass or less often: all of crime, pollution, utilities and emergency response; services prep, stops, access, shopB and finish; traffic prep, prepTransit, transit options, park & ride, roundMatch, the pool, commute end, parking, final, final2 and the graph rebuild. The split crime prototype ran its pieces at p99 ~20× and up to 37× their warm cost in the first 200 days after a load; at 0.13 such a piece stays near 3–5 ms cold.
++  - Both are interim sizes until the Building-shape fix (§13 item 4, §14 item 4) is decided and re-measured.
++- **The rule** (review 2, item 1a): every piece is at most 3 ms at its loop's measured p99 cold factor and at most 5 ms at its max, with the factors measured on split code in the §12 windows. Each group checks it per loop for its own pieces. This replaces "G1 may retune `INFRA_PIECE_MS` once".
++- `pieceUnits(usPerUnit, min = 1, budgetMs = INFRA_PIECE_MS)` (scheduler.ts) returns `max(min, floor(budgetMs × 1000 × pieceScale / usPerUnit))`. `pieceBudgetUs(budgetMs)` is the same budget in µs, for weighted plans (`BuildingSnapshot.plan`). Every chunk size (buildings, origins, rows, settled nodes, tier work units, events) comes from them.
++- Both are pure functions of constants and the test scale (no clock, no mode), so a piece and `cost()` compute the same chunk size from the same cursor. Nothing has to be stored for `cost()`.
++- `setPieceScale(s)` is a test-only hook: `1e9` gives one piece per stage, `1e-9` gives one unit per piece. It is module state, so tests use the scoped `withPieceScale(s, fn)` (try / finally) and seed their random scales (review 1, O5).
++- Exceptions to the budget, each bounded in cold ms (review 2, item 5):
++  - one call of a shared kernel (`blur.ts`, `saturate`, the police `needOf`): where it can exceed 3 ms cold it is split by rows or columns, which is exact for separable passes (review 2, item 3d; G2 / G3);
++  - publish pieces: their content is computed in ordinary pieces into private buffers, and the publish piece only swaps or `.set()`s (review 2, item 5a). Its estimate counts the copy;
++  - the edit-only lazy caches that other code also calls synchronously. Traffic runs `refreshAttach` in its own piece (the first piece of prep and of prepTransit) when it is dirty. When another task's query triggers it first, it runs inside that task's piece (about 0.3 ms at 256²); G2 / G3 add its cost to the estimates of the pieces that can trigger it (review 2, item 5e). Emergency `syncStations` (G4).
++- **Loops whose cold cost is extreme** (the stop disks 37×, shopB's bilinear output 25×, finish's legacy combos 27×) use the cold budget from the start, not after a failed gate run.
++- **Traffic as built (G1, measured at dense1m):** its searches use `INFRA_PIECE_MS`; every other traffic loop uses half `INFRA_PIECE_COLD_MS`. Those loops run once per cycle (or once per matching round), so they stay cold for the first 10–15 cycles after a load: 10–37× their warm cost in days 0–80, and the matching's accept loop about 45× on its first executions. Traffic's estimates also carry one absolute scale, `TR_EST`: the TC table sets the relative costs, and so the chunk sizes; `TR_EST` makes the estimate honest warm ms without moving a chunk (§15).
+ 
+ **R3. Same statements, same order.**
+ - Loop bodies are moved, not rewritten. A piece runs a contiguous range of today's loop in today's order.
+@@ -129,7 +133,7 @@ Terms used below:
+   - producer maps;
+   - the transport save.
+ - Today each of them changes within one step. B2 keeps that. Each one becomes visible in **one** piece per stage, at the same pass-relative point as today. Either it is written inside one piece, or it is built in private scratch and published by `.set()` or a buffer swap in the publish piece.
+-- **Flags.** Computed per chunk into a desired-value array, applied in the publish piece in snapshot order with `setFlagQuiet`. The `changed` list comes out in today's order.
++- **Flags.** Computed per chunk into a desired-value array (or a list of the buildings whose bit changes, with the new bits), applied in one piece in snapshot order with `setFlagQuiet`. The `changed` list comes out in today's order. One rule for every task (review 2, item 5d): the applying piece has its own coefficient and a cold measurement, and is chunked only if it exceeds 3 ms cold.
+ - **Events.** Emitted after all the state they announce is published, in today's order. They may be spread over consecutive pieces (`pieceUnits(0.4 µs per event)`).
+ - **Exceptions.** A few states already pass through intermediate states between steps today, and B2 leaves them as they are:
+   - the services per-facility records written by each tier step;
+@@ -144,6 +148,7 @@ Terms used below:
+   - Pollution: `garbageInfo`, `landfillInfo`, `incineratorShare`, `garbageSummary`, `roadlessGarbage`, `emissionOf`.
+   - Emergency: everything dispatch reads.
+   - Per-cycle arrays a query reads are external even when they look internal. For example, `garageInfo` reads prep's `gN` / `gBid`, prepTransit's `gStop` / `gWalk` / `gSpaces` / `gState`, and parking's `parkD` / `parkBoxD` / `parkBoxS`.
++  - Between prep's scan end (which publishes `gN` / `gBid`) and prepTransit's publish piece, `garageInfo` pairs the new `gBid` with the old `gStop` / `gState`. Today's prep-to-prepTransit window does the same, so it stays (review 1, O12).
+ 
+ **R8. No shared module-level scratch across pieces.**
+ - Module-level scratch used inside one call stays: blur's `colSum` and upsample tables, catchments' `eng` used by `reachRaw`, `scratchInt` inside one `build()`.
+@@ -159,6 +164,8 @@ Terms used below:
+ - No new saved field. Every cursor, snapshot and scratch field is reset in `init()` (so in `replaceState` too) and at each pass start.
+ - A save never holds a pass in progress. The one exception is emergency's `p.resp = [respLast, pending]`, as today: `pending = 2` while `respStep ≥ 0`, written by `saveResp()` after every piece.
+ - Traffic keeps `saveTransport()` and `cycles++` in the cycle's last piece. `runCycleSync` still loops until `phase < 0`.
++- **Saved data that changes within one step today changes within one piece** (review 1, R4). Traffic: `st.traffic` and `st.congestion` (final's publish piece), the building flags (final2's publish piece), `stats`, and `systemData.infraTransport` (the cycle's last piece; `parkingQ` is quantised into a new buffer on recompute cycles, never in place inside the live save). G3: the brownfield `st.soil` / `st.landfillFill` writes, collected in scan order and applied in one piece. G4: the Powered / Watered flags, staged per chunk and applied in one piece.
++- Two pre-existing reload leaks stay as they are, because fixing them would change save / load behaviour (review 1, O10): pollution's `ground` is not reset on a same-size `replaceState`, and the scheduler's credit, carry and `lastDay` survive `replaceState`.
+ 
+ **R10. JIT hygiene.**
+ - Each piece is its own method with one main loop. The dispatcher is a thin `switch`. The mapping found that TurboFan takes 15–46 ms to compile today's big step functions, and they deoptimise on never-executed code after the loop.
+@@ -173,6 +180,7 @@ Terms used below:
+ **R12. What changes by design in interrupted passes.**
+ - Inputs are read when each piece runs, not when today's step ran: other layers, building fields, `plantLoad`, `commuteOf`, `stopAttached`, funding.
+ - The snapshot membership rules of R4 apply.
++- Traffic decides a graph rebuild once per cycle, at its first PH_PREP piece (review 1, R3). An edit after that piece waits for the next cycle; today a second rebuild step in the same PH_PREP could catch it. This moves the bot and can lengthen emergency's graph-stale window by up to one cycle.
+ - All of this is deterministic within the version and only affects passes that other work interleaves with: the headless schedule and live mode.
+ 
+ ## 2. Scheduler and shared helpers
+@@ -180,20 +188,21 @@ Terms used below:
+ ### 2.1 `scheduler.ts`
+ 
+ - **Urgent loop.** Today it runs up to 8 urgent steps per scheduler run.
+-  - New: steps of the first urgent and due task (registration order, as today) run while `used + c ≤ cap`; the first one always runs.
++  - New: each urgent step re-scans for the first urgent and due task (registration order), as today's loop does, and runs it while `used + c ≤ cap`. The cap is shared by all urgent tasks of the run, so utilities' urgent steps and services' can follow each other on the same day (review 1, O2). The first urgent step always runs.
+   - Headless, `used` is the estimated spend and `cap = INFRA_URGENT_BUDGET = 24` est-ms. That is about the real time of today's 8 urgent steps at dense1m (services tier steps of about 2.8 ms). A full utilities pass (about 8 honest ms) still finishes in one day, and a services urgent pass (35–50 honest ms) keeps B1's 2–3 days at dense1m.
+   - Live, `used` is real time and `cap = INFRA_URGENT_FRAME_MS = 6` (2 × `INFRA_FRAME_BUDGET_MS`). Today the live urgent loop has no time check at all: 8 steps of 3–5 ms is a 24–40 ms frame.
+   - Step guard: 256.
+   - Without this change, B2's finer services pieces would break `servicesTrigger`'s `LATENCY_DAYS = 2` on the 32² city: about 25 pieces against 8 per day.
+ - **Normal loop.** The guard goes from 64 to 256 (`STEP_GUARD`). Nothing else changes: fairness by estimated credit, budget admission, renormalisation.
+-- **New exports:** `pieceUnits()`, `setPieceScale()`.
++- **New exports:** `pieceUnits()`, `pieceBudgetUs()`, `setPieceScale()`, `withPieceScale()`, `currentPieceScale()`, `STEP_GUARD`. `flush()` returns whether every task went idle, so tests at tiny piece scales can assert completion (review 1, O9).
++- The headless urgent cap lets one `tickDay` run about 24 ms of real urgent work at dense1m. A worker host that drives the headless path should yield between urgent steps (review 1, O11; W1).
+ - `sizeFactors()` stays for compatibility.
+ - The `InfraTask` doc comment changes to: "estimated warm wall ms of the next step on the B2 calibration box".
+ 
+ ### 2.2 `params.ts`
+ 
+ - New, with doc comments:
+-  - `INFRA_PIECE_MS = 0.3`;
++  - `INFRA_PIECE_MS = 0.3` and `INFRA_PIECE_COLD_MS = 0.13` (R2);
+   - `INFRA_URGENT_BUDGET = 24`;
+   - `INFRA_URGENT_FRAME_MS = 6`.
+ - `INFRA_DAY_BUDGET`, `INFRA_DAY_CARRY` and `CREDIT_FLOOR`:
+@@ -212,7 +221,8 @@ As specified in R4. Its prefix-sum pass and its slice cost about 0.05 ms at 17k
+   - Each has a private `BucketQueue`.
+   - `start(...)` is today's prologue: `S.reset`, `graphVersion`, seeding.
+   - `run(maxSettled): boolean` is today's bucket loop. It resumes from the saved `(b, e, cnt)`, checks the budget before it takes an entry (exactly like `SearchK.run`), and sets `S.settled` at the end.
+-- `roadSearch()` and `transitSearch()` keep their signatures and become `start` + `run(Infinity)` on a module instance bound to the module `bq`. Behaviour, memory and results for every other caller are identical, and the same code serves both paths.
++- As built (G1): `roadSearch()`, `transitSearch()` and `accumulate()` stay exactly as they are. The run classes repeat their loop bodies, so every other caller (garage reach, emergency, services, the WASM ports) keeps today's code and the module `bq`. The b2Pieces core tests prove the classes equal to the functions (random chunks, other searches between the chunks), and `roadTransitSearchSim` shadow-compares them at completion.
++- Also new: `accumulateRange(S, acc, k0, k1, onSink)`, which accumulates backward settle-order ranges and is exact for any cut, and `SearchK.refreshAltBegin` / `refreshAltRange`, the P&R car-leg refresh by settle-order ranges.
+ - **Why resuming is exact.**
+   - The Dial bucket width is at most the minimum edge cost (`Q`, `QT`), and every push from bucket b goes to a bucket greater than b.
+   - So bucket b's list is fixed while it drains.
+@@ -223,7 +233,7 @@ As specified in R4. Its prefix-sum pass and its slice cost about 0.05 ms at 17k
+ 
+ - `RoadGraph` and `GridGraph` get piecewise builders (§3, PH_PREP rebuild): numbering by row ranges, attributes and edges by node ranges, components by an outer cursor plus a private DFS stack.
+ - `GridGraph` gets a typed-mask variant: rail is `net === Rail || flags & CROSSING`, subway is `sub !== 0`, computed inline from a snapshot. That replaces the per-cell closure. The mapping measured this alone cutting rail and subway from about 1 ms to about 0.2 ms.
+-- `build()` stays as the loop over the pieces.
++- As built (G1): `GraphBuildRun` builds road, rail and subway in stages 0–9 into private buffers, from grid copies taken in `begin()`. `publish()` copies them into the live `RoadGraph` / `GridGraph` objects with `build()`'s growth policy (`max(n, 16) + (n >> 3)`), tails and `version++`, so the graphs are byte-identical to a `build()` at the copy. `RoadGraph.build` / `GridGraph.build` stay unchanged for every synchronous caller (`rebuildGraphs`, emergency).
+ 
+ ### 2.6 `transit.ts`
+ 
+@@ -264,7 +274,8 @@ Edit-only, so the static gate does not run it.
+ | **Today** | One step. Warm 2.6–4.1 ms (road 1.9, rail 0.9, subway 1.1). First execution 11–27 ms. |
+ | **Pieces** | **RB0:** copy `network`, `netFlags` and `subway` into private arrays (3 × C bytes); set `graphDirty = false`.<br>**RB-num:** road node numbering by row ranges into the scratch graph `roadNext`.<br>**RB-attr:** `cellOf` / `type` / `t0` / `cap` by node ranges.<br>**RB-edge:** `fwd` / `rev` by node ranges.<br>**RB-comp:** components (outer cursor `s`, `nc`, private stack + `sp`).<br>**Rail and subway:** the same pieces on `railNext` / `subNext` with mask predicates.<br>**RBP (publish):** swap the typed arrays and scalars of `roadNext` / `railNext` / `subNext` into `this.road` / `rail` / `subway`, without replacing the objects (emergency holds the `RoadGraph` object and checks `version`); `version++` each; `iter = iterLoad`, `iterLoad = 0`; `rebuiltInCycle = true`. |
+ | **Cursor state** | `rbStage`, `rbCur`, `rbN`, `rbNc`, `rbStack` / `rbSp`, the three grid copies, the three scratch graphs. Memory: one extra graph set, about 1 MB at 256². |
+-| **Why exact** | The graphs are a pure function of the three grids. The copy is taken at RB0, and nothing changes it before RBP, so the result is byte-identical to `rebuildGraphs()` at that moment. A DFS resumed from the saved stack visits nodes in the same order, so the component ids are identical. An edit after RB0 sets `graphDirty` again and the next cycle rebuilds; today an edit after the rebuild step waits for the next cycle too. |
++| **Why exact** | The graphs are a pure function of the three grids. The copy is taken at RB0, and nothing changes it before RBP, so the result is byte-identical to `rebuildGraphs()` at that moment. A DFS resumed from the saved stack visits nodes in the same order, so the component ids are identical. An edit after RB0 sets `graphDirty` again and the next cycle rebuilds. Today a second rebuild step in the same PH_PREP would catch it, so this is a by-design change of interrupted mode (R12). |
++| **Sub-states (review 1, R3)** | `rbStage` is decided once, at the cycle's first PH_PREP piece: 0 → 1 (rebuild pieces) when `graphDirty || road.N !== size`, else → 2 (prep pieces). A `graphDirty` set later waits for the next cycle. The prep pieces never rebuild synchronously; the whole-state `prep()` keeps its synchronous rebuild for the tests that call it after `replaceState`. A synchronous `rebuildGraphs()` (findPath's idle rebuild, tests) uses `RoadGraph.build` / `GridGraph.build`, never the cycle's builder, and cancels an unfinished `GraphBuildRun`; the cycle then goes on with the freshly built graphs. `rbStage`, `sub` and every cycle cursor are reset at the cycle end and at the top of `init()` (`endCycle()`). |
+ | **External** | The graphs are published in RBP only. Until then `findPath`, emergency, `stopsNear` and `garageReach` see the old graph. `findPath`'s idle rebuild (`phase < 0`) is unchanged. |
+ | **Target** | About 10 pieces of at most 0.3 ms. |
+ 
+@@ -382,14 +393,14 @@ No fixture has P&R garages.
+ | | |
+ |---|---|
+ | **Today** | Warm 1.0 / 2.0; cold 3.2 / 9.4. |
+-| **Pieces** | **F1..:** MSA blend + ramp MSA by node ranges (private volumes).<br>**F2 (publish):** the `traffic` / `congestion` fill and write. O(C) fill + O(n) write, about 0.25 ms, in one piece.<br>**F3:** rail and subway riders.<br>**F4..:** smoothed stop loads by stop ranges into `stLoadNext` (a Map), then swap.<br>**F5:** stats + `transitFleet` + `iter++`. |
++| **Pieces** | (as built, review 1 R1 and O1)<br>**F0:** `alpha`, `iter++` and the ramp weight `ra = max(RAMP_MSA_MIN, 1 / iter)`, exactly where today computes them (after the increment).<br>**F1..:** the road MSA blend by node ranges (private volumes); the rail blend and a back copy of `rampVolCell`; the ramp MSA by node ranges on the back copy; the back `traffic` / `congestion` fills.<br>**F2..:** the road writes by node ranges, then the rail-rider writes, into the back layers; `subwayRiders` into a back buffer.<br>**F4..:** smoothed stop loads by stop ranges into back Maps: `stLoadPrev`, `stPrPrev` and the `stopWalkers` / `stopNear` / `stopRide` / `stopReach` reports.<br>**F5 (publish):** `st.traffic.set`, `st.congestion.set` (saved data: one piece, R9), swap `rampVolCell`, `subwayRiders` and the six stop Maps; stats + `transitFleet`. F5 does not touch `iter`. |
+ 
+ ### Final2 (PH_FINAL2)
+ 
+ | | |
+ |---|---|
+ | **Today** | Warm 3.2–3.8 / 7.3–9.7; cold 17.2 / 28.1. Parts: origins 2.2–2.8, save 0.75, jobs 0.45–0.6, events 0.4–0.6, routes 0.15. |
+-| **Pieces** | **G0:** copy the per-id front arrays it writes (`accessById`, `commuteById`, `reachedById`, `carlessById`, `carlessMinById`, `modeById`, `jobFillById`, `carsById`, `customersById`) into back buffers; `commuteNext.fill(0)`; `cutIdsNext.clear()`.<br>**G1..:** origin ranges, about 1,300 each, about 10 pieces. Smoothing reads the front and writes the back; the commute footprint goes into `commuteNext`; the desired NoJobs / Congested bits into `oFlag`.<br>**GJ..:** job-site ranges, plus customers (on recompute cycles) and the connection report into `crNext`.<br>**GP (publish):** swap the per-id buffers; `st.commute.set(commuteNext)`; swap `cutIds`; apply the flags in today's order (origins, then job sites) to build `changed`; `connLast = crNext`.<br>**GE..:** `buildingChanged` for `changed`, in batches.<br>**GS1:** the save precompute (ramp-cell scan, `parkingQ` on recompute cycles, price arrays).<br>**GS2:** `buildSampleRoutes`, the `serviceRoutes` filter, `cycles++`, the `saveTransport` assembly, `layerUpdated('traffic')`. |
++| **Pieces** | **G0:** copy the per-id front arrays it writes (`accessById`, `commuteById`, `reachedById`, `carlessById`, `carlessMinById`, `modeById`, `jobFillById`, `carsById`, `customersById`) into back buffers; `commuteNext.fill(0)`; `cutIdsNext.clear()`.<br>**G1..:** origin ranges, about 1,300 each, about 10 pieces. Smoothing reads the front and writes the back; the commute footprint goes into `commuteNext`; the desired NoJobs / Congested bits into `oFlag`.<br>**GJ..:** job-site ranges, plus customers (on recompute cycles) and the connection report into `crNext`.<br>**GP (publish):** swap the per-id buffers; `st.commute.set(commuteNext)`; swap `cutIds`; apply the flags in today's order (origins, then job sites) to build `changed`; `connLast = crNext`.<br>**GE..:** `buildingChanged` for `changed`, in batches.<br>**GS1:** the save precompute: ramp-cell scan, price arrays and, on recompute cycles, `parkingQ` quantised into a new buffer (today's `saveTransport` re-quantises `prev.parkingQ` in place inside the live `systemData.infraTransport`, which would put the new raster into the old save; review 1, R4b).<br>**GS2:** `buildSampleRoutes` (two pieces), the `serviceRoutes` filter, `cycles++`, the `saveTransport` assembly with the new `parkingQ`, `layerUpdated('traffic')`. |
+ | **Why exact** | Each id is written at most once per cycle: origins and job sites are disjoint buildings. So reading the previous value from the front and writing the back equals today's read-then-write in place. Flags get the same values in the same order, and the events come in the same order. `RESULT_SMOOTH` reads `this.cycles`, which changes only in GS2. `saveTransport` stays the cycle's last write. In flush mode no earlier task becomes due from these events (utilities ignores `buildingChanged`). |
+ | **External** | `workerAccess`, `commuteOf`, `jobFill`, `routeInfo`, `st.commute` and the flags all change in GP. No reader ever sees a half-zero commute layer. |
+ 
+@@ -774,9 +785,9 @@ A stage total is the sum of its pieces' estimates. A piece's estimate covers exa
+ | window | pooled median | per-task medians |
+ |---|---|---|
+ | warm (`--warm 300 --days 120`) | gate: within ±30 % | gate: within ±30 % |
+-| cold (`--warm 20 --days 60`) | gate: within ±30 % | reported, not gated |
++| cold (from load: days 0–20, 20–80, 80–220) | reported, not gated | reported, not gated |
+ 
+-A perfect warm model scores a pooled −0.26 in today's cold window (map-other). With small pieces most cold-window steps are warm, so the pooled cold median should land well inside the band. A deterministic estimate cannot follow JIT state per state label, so the per-label medians in the cold window are reported only.
++The gate is the warm window, pooled and per task (review 2, item 4). A perfect warm model scores a pooled −0.23 to −0.35 in the cold window at any piece size, because the cold factor belongs to the stage, not to the piece size; the cold windows are reported only. The lead should say which window the plan's ±30 % refers to: its "3–5.5× too low" was measured in the first 90 days after a load.
+ 
+ ## 10. Build order
+ 
+@@ -804,7 +815,7 @@ G2 and G3 touch files disjoint from G1's traffic work, except one addition each
+   - `tests/sim/exact/traffic.test.ts` 'cities' compares at every phase transition and at cycle ends instead of after every step, and drops the per-step `stepCost` equality (recalibrated by design);
+   - `tests/wasm/roadTransitSearchSim.test.ts`: count only the module functions still called (`roadSearch`, `accumulate`), and shadow-compare the resumable runs at completion against `orig.roadSearch` / `orig.transitSearch`;
+   - `parkRideOverflow` stays as it is: hints at every step.
+-- **Gate:** the traffic part of §12 on dense1m: traffic steps p99 ≤ 3 and max ≤ 5 in the cold window, and traffic's median error within ±30 % warm.
++- **Gate:** the traffic part of §12 on dense1m: traffic steps p99 ≤ 3 and max ≤ 5 in the windows from load (days 0–20, 20–80, 80–220), and traffic's median error within ±30 % warm. §15 has G1's numbers.
+ 
+ **G2-services-nimby**
+ - **Files:** `services.ts` (§4), `nimby.ts` (`NimbyRun`; `rebuildNimby` / `nimbyCost` kept), `catchments.ts` (`RoadTimeRun`, `RoadDistRun`), `transit.ts` (the coverage range variant), `facilities.ts` (optional: split `policeNeed`).
+@@ -902,7 +913,13 @@ New: save in the middle of every task's pass, with tiny pieces so that every tas
+ | `tests/infra/catchments.test.ts` | recheck the cached / fresh estimate ratio with honest units | the units are re-weighted |
+ | `tests/infra/environment2.test.ts` | step guard 20 → 400 in the "appear between steps" test | there are more steps per pass |
+ | `tests/infra/emergency.test.ts` | extend the `respCost` loop to the sub-states | new sub-states |
+-| `tests/infra/perf.test.ts` | P0-8 stays (estimate ≤ 3.0); add "every piece estimate ≤ 1.0 on the stress city"; P0-15 re-checked in G4 | — |
++| `tests/infra/perf.test.ts` | P0-8 stays (estimate ≤ 3.0); add "every piece estimate ≤ 1.0 on the stress city" (G1: traffic's); P0-15 re-baselined in G1 to ≤ 0.985 and re-checked in G4 | G1: finer pieces fill the day budget closer (B 0.869, G1 0.961 at the provisional 5.3) |
++| `tests/infra/emergency.test.ts` 'runs on traffic's road graph' and 'emergency perf' (G1) | count `GraphBuildRun.publish` as a traffic build next to `RoadGraph.build` | traffic's rebuild runs in pieces and publishes into its graphs |
++| `tests/sim/employment.test.ts` 'with neighbour connections' (G1) | compare the filled jobs with the mean arriving workers of two consecutive assignments | the arriving workers alternate by a few % between assignments (the inbound pass is recomputed every 2nd one); the moved schedule put the check on the other parity |
++| `tests/infra/emergencyBot.test.ts` 'normal play keeps its prompts' (G1) | seed 7 → 2 | the bot's schedule moved by design; seed 7's town raises no prompt in 4 years any more (seeds 1, 2, 4–7: 0, 4, 2, 2, 1, 0) |
++| `tests/sim/exact/j10.test.ts` | atomic passes compared at pass ends, B2 fields excluded by name, edits between passes (G4) | it traces per-step costs and boundaries (review 1, R7a) |
++| `tests/sim/servicesTrigger.test.ts` 'urgent change after prep' | step while `stepIdx === S_PREP` instead of one step (G2) | prep is several pieces (review 1, R7b) |
++| `tests/infra/catchments.test.ts` 'bulldozed mid-pass' | step until prep is done (G2) | review 1, R7c |
+ 
+ ### 11.6 The WASM ports: a decision for the lead
+ 
+@@ -936,8 +953,11 @@ New: save in the middle of every task's pass, with tiny pieces so that every tas
+   - Take the timing lock before every timing run; check `pgrep` and the load average; release the lock right after the run, also on failure. Hold it at most about 15 minutes.
+   - At least 3 runs per side, interleaved B / W. Report the median and the range.
+   - Use wall clock (`performance.now`).
+-- **Latency gate.** dense1m headless `--warm 20 --days 60` (the lead's profile setting):
+-  - per-step wall ms over all steps of all tasks: p99 ≤ 3 and max ≤ 5 (the median over W's runs).
++- **Latency gate** (review 2, item 3). dense1m headless, one continuous window from load (`--warm 0 --days 220`), reported as days 0–20, 20–80 (the lead's profile setting `--warm 20 --days 60`) and 80–220:
++  - per-step wall ms over all steps of all tasks: p99 ≤ 3 and max ≤ 5, the median over W's runs and the worst run;
++  - at least 5 runs per side;
++  - plus an edit and disaster scenario: road cut, road restore, bulldoze, earthquake and meteor at days 30, 60, 90, 120 and 150 (`b2work/design-review/tools/editmap.ts`);
++  - if the lead exempts days 0–20 (or 0–80), say so here with the step lengths W1 will see in those days.
+   - Also report the warm window (`--warm 300 --days 120`) and bot256.
+   - Flag steps that overlap a GC pause of ≥ 1 ms (`--gcmarks`) and report the max without them. The mapping measured GC pauses of 5.2–6.3 ms inside steps, a floor for "max ≤ 5" that B2 does not control. **The lead decides whether the max gate counts those steps.**
+ - **Cost error.** §9.5, from the same runs.
+@@ -983,5 +1003,148 @@ New: save in the middle of every task's pass, with tiny pieces so that every tas
+ 1. §11.6: skip the live-instance WASM sections (PI-6 early), or do PI-6 first.
+ 2. §12: whether "max ≤ 5" counts steps that overlap a GC pause.
+ 3. §9.4: scale `INFRA_DAY_BUDGET` to keep today's real infra time per day (proposed), or keep 3.2 and accept about half today's cadence.
+-4. §13 item 4: the Building-shape exact fix outside B2's files, if the cold window needs it.
+-5. `INFRA_PIECE_MS = 0.3`: G1 may retune it once after its first gate run.
++4. §13 item 4: the Building-shape exact fix outside B2's files. Review 2 (item 2) asks to decide it before the piece sizes are calibrated: it is the main cause of the cold tail (the day-148 `variant` Double wave), and the piece sizes, coefficients and bot hashes depend on it. G1 is built with R2's interim sizes.
++5. The piece sizes: R2's per-loop rule replaces a one-time retune of `INFRA_PIECE_MS`.
++
++## 15. G1 as built (`G1-core-traffic`, Oct 28)
++
++**Commits** (branch `b2-step-split`): `78b49f6` core, `9876102` traffic in pieces, `2a4cb3f` the remaining long pieces and the refit, `ddb0d22` three test adaptations (§11.5), then this document. `npx tsc --noEmit` clean; the full `npx vitest run`: 135 files passed, 1 skipped (1,363 tests passed, 18 skipped), no unhandled errors.
++
++### 15.1 Review items applied
++
++| item | where |
++|---|---|
++| R1 (final: `iter++` / ramp weight / rail blend) | §3 Final as built: F0 computes `alpha`, `iter++` and `ra` exactly where pre-B2 does; F5 never touches `iter` |
++| R2 (`transportB` half-built while `refreshAttach` can run) | the scan fills a private `transportScan`, installed at the scan end; `markT` / `dropT` update both while a scan is open |
++| R3 (PH_PREP sub-states) | `rbStage` decided once per cycle; no synchronous rebuild in the prep pieces; `rebuildGraphs()` cancels an unfinished `GraphBuildRun`; `endCycle()` resets every cursor at the cycle end and at the top of `init()`; the R12 entry |
++| R4 (saved data in one piece) | `st.traffic` / `st.congestion` in final's publish piece; flags in final2's publish piece; `parkingQ` quantised into a new buffer; the transport save built privately and installed by the cycle's last piece; the R9 rule |
++| R6 (proof against today's code) | `passdigest --mode atomic` B vs W on dense1m, bot256 and three synthetic cities generated with B's code (15.3) |
++| R8 (other code of the same city between pieces) | b2Pieces "R8": `findPath`, `garageReach` / `garageInfo`, `stopsNear`, `routeInfo`, `stopLoad`, `workerAccess`, `stopAttached` / `freightRailCells` with the attachment forced dirty, `connectionReport`, `getSampleRoutes` after every piece; same digests as without them |
++| O1 (stop reports) | the six stop maps are built as back maps and swapped in final's publish piece |
++| O2 (urgent loop) | each urgent step re-scans for the first urgent and due task under one shared cap |
++| O3 (`cost()` side-effect free) | `stepCost` reads cursors and sizes only; the first piece of a stage takes snapshots and plans |
++| O4 (mode invariance) | b2Pieces "O4": the stepName sequence and the digests are identical with frames active and headless |
++| O5, O6, O9 | `withPieceScale` (try / finally), seeded random scales; the harness digests JS arrays, objects, Maps and Sets; `flush()` returns whether it drained |
++| O12 | recorded in R7 |
++| review 2, item 1 (cold piece sizes) | two budgets in params.ts; traffic's own sizing on top (R2 "Traffic as built") |
++| review 2, item 3 (windows from load) | G1 measured `--warm 0 --days 220` and reports days 0–20, 20–80, 80–220 (15.4) |
++| review 2, item 4 (cost error on the warm window) | §9.5; G1's numbers in 15.4 |
++| review 2, item 5 (over-budget pieces) | publish pieces only swap or `.set()`; `refreshAttach` in its own traffic piece; flags from candidate lists; the candidate sort, the CSR, the snapshot plan and the clusters are no longer indivisible (15.2) |
++
++Not applied in G1: review 2 item 2 (the Building-shape fix is outside B2's files; §14 item 4), and the G2–G4 items (R5, R7's tests, O7, O8, O10, O11).
++
++### 15.2 Deviations from §2–§3, and why
++
++- **Module search functions unchanged** (§2.4). `roadSearch`, `transitSearch` and `accumulate` keep their code for every other caller; the run classes repeat the loop bodies and are tested against them.
++- **`GraphBuildRun` is separate from `build()`** (§2.5). `RoadGraph.build` / `GridGraph.build` stay for the synchronous callers.
++- **The candidate sort is split** (§3 Round match said "one call"): scan + max, histograms, and per radix pass the prefix sums and the scatter by key ranges. One call took up to 8.4 ms cold.
++- **More indivisible items split**: the snapshot's chunk plan (`BuildingSnapshot.planBegin` / `planRun`), the job clusters, the transfer CSR (three pieces), the inbound fills and search start, the per-cycle origin arrays, the freight truck times, the transport save (built in final2 piece 11, installed by its last piece).
++- **One method per piece kind** (R10). The first build kept each sub-state's loop inside its dispatcher's `switch`; every sub-state is now its own method.
++- **Traffic's budgets and `TR_EST`** (R2 "Traffic as built"). Its once-per-cycle loops at half `INFRA_PIECE_COLD_MS`; its estimates scaled by one calibrated constant, so a recalibration never moves a chunk.
++- **P0-15 re-baselined in G1** (§11.5): the finer pieces fill the day budget closer; G4 re-checks it.
++
++### 15.3 Exactness evidence
++
++- `tests/sim/exact/traffic.test.ts`: the frozen original against W at every phase transition, at production, tiny (one unit per piece) and small piece scales, across edits, reloads and several cycles.
++- `tests/infra/b2Pieces.test.ts` (20 tests): the core kernels in random chunks equal their whole-call originals; three traffic cities give identical cities and traffic fields at every cycle end in one go, at the production size and in tiny / random pieces across network and building edits; R8, R7 / R4, R9, O4; two cities stepped interleaved equal their solo runs; every piece estimate within its budget.
++- `passdigest --mode atomic`, B vs W, digests at days 30 and 100: dense1m, bot256, and three cities generated with B's code (`transit96_s7`, `transit48_s11`: transit, garages, rail, a freight station, a depot; `linetown5`: park & ride and the overflow). All identical.
++
++### 15.4 Measurements (dense1m, headless, wall clock)
++
++Tool: `b2work/G1-core-traffic/cpumapT.ts` (cpumap with traffic labelled by `stepName` in W and by all 16 phase ids in B), `--noinputs`. Each run under the timing lock (`timed.py`), B and W interleaved in pairs; pairs with other processes above 0.4 cores were dropped (three pairs over all rounds, one of the final W's). From load (`--warm 0 --days 220`): B 12 runs, W 5 runs. Warm (`--warm 300 --days 120`): B 8 runs, W 3 runs. Per run, the p99 and the max of the traffic steps; the tables give the median over runs, and the worst run's max in brackets. W is `2a4cb3f`.
++
++**Traffic steps, all phases** (ms):
++
++| window | B p99 | B max | W p99 | W max | W max, worst run |
++|---|---|---|---|---|---|
++| days 0–20 | 26.1 | 26.1 | 2.02 | 3.36 | 4.97 |
++| days 20–80 (the lead's window) | 22.0 | 22.0 | 1.50 | 3.13 | 4.68 |
++| days 80–220 | 16.4 | 19.7 | 0.44 | 3.13 | 4.01 |
++| warm, days 300–420 | 5.47 | 5.47 | 1.00 | 4.01 | 4.38 |
++
++W's p99 ranged 1.96–2.29, 1.29–1.77, 0.41–0.45 and 0.95–1.02 over its runs; no W traffic step exceeded 5 ms in any run. The W steps above 3 ms are first executions in days 0–20 (`prep.scanBegin` on day 2: `buildingList` + the snapshot copy, one call; `inbound.0`), single cold pieces on days 33–69, the deterministic Building-shape wave on days 143–148 (`prep.scan#21`, `parking.1`: review 2 item 2, outside B2), and pieces with a GC pause of 1–3.7 ms inside.
++
++**Cost error of traffic** (median of estimate / measured − 1): warm +0.01 (−0.05…+0.01; B −0.43); days 80–220 +0.07 (B −0.46); days 20–80 −0.19 (B −0.58); days 0–20 −0.62 (B −0.89).
++
++**Pieces and cadence.** About 590 traffic pieces per cycle at dense1m (B: about 20 steps); in the warm window 2,234 pieces in 120 days (B 97). Per 120 warm days: traffic 4 cycles (B 5), services 4 passes (B 3), pollution 10 (B 6), crime 6 (6), utilities 34 (22). Real infra step ms per day: W 6.25, B 4.40 — the provisional budget 5.3 with only traffic honest gives the other tasks more real time; G4 sets the final budget (§9.4).
++
++**The bot** (128 × 15, seed 7, `tools/balance-json.ts`, one run each): 2015 population W 193,525, B 196,101 (−1.3 %; B matches B1's reference); approval 81.6 (82.5); funds 174,714 (164,779); EQ 103.2 (107.6); `totalMsPerDay` 6.73 (4.49: the provisional budget, see above). The results move by design through the schedule; G4 records the new hashes with the final budget.
++
++**Per phase, before (B) and after (W)** (median over runs of each run's p99 / max; worst run's max in brackets):
++
++| days 0–20 | B steps | B p99 | B max | W steps | W p99 | W max |
++|---|---|---|---|---|---|---|
++| prep | 2 | 23.76 | 23.76 [38.15] | 107 | 2.17 | 3.36 [4.36] |
++| prepTransit | 2 | 12.80 | 12.80 [24.91] | 35 | 1.87 | 1.87 [3.42] |
++| transit | 2 | 18.08 | 18.08 [26.13] | 14 | 2.27 | 2.27 [2.28] |
++| transit2 | 2 | 10.97 | 10.97 [19.17] | 65 | 0.71 | 0.71 [4.18] |
++| roundSearch | 5 | 2.38 | 2.38 [5.40] | 32 | 0.68 | 0.68 [0.95] |
++| roundMatch | 4 | 24.63 | 24.63 [37.05] | 161 | 2.01 | 2.73 [3.61] |
++| commute | 2 | 13.81 | 13.81 [21.05] | 50 | 1.99 | 1.99 [2.17] |
++| inbound | 1 | 2.68 | 2.68 [4.78] | 1 | 2.38 | 2.38 [4.97] |
++| shop | 1 | 0.06 | 0.06 [0.09] | 1 | 0.68 | 0.68 [0.89] |
++| freight | 1 | 0.05 | 0.05 [0.14] | 1 | 0.06 | 0.06 [0.09] |
++| final | 1 | 7.36 | 7.36 [10.24] | 19 | 1.50 | 1.50 [3.37] |
++| final2 | 1 | 16.01 | 16.01 [23.40] | 51 | 1.10 | 1.10 [1.89] |
++| **all traffic** | 24 | 26.12 | 26.12 [38.15] | 537 | 2.02 | 3.36 [4.97] |
++
++| days 20–80 | B steps | B p99 | B max | W steps | W p99 | W max |
++|---|---|---|---|---|---|---|
++| prep | 2 | 17.62 | 17.62 [26.14] | 321 | 0.70 | 1.16 [4.20] |
++| prepTransit | 2 | 8.82 | 8.82 [12.96] | 105 | 1.42 | 1.67 [4.68] |
++| transit | 2 | 3.46 | 3.46 [4.74] | 42 | 1.06 | 1.06 [1.18] |
++| transit2 | 2 | 3.84 | 3.84 [5.25] | 169 | 0.50 | 0.70 [0.80] |
++| roundSearch | 10 | 2.14 | 2.14 [2.71] | 64 | 0.85 | 0.85 [4.14] |
++| roundMatch | 11 | 7.66 | 7.66 [12.63] | 321 | 1.34 | 3.09 [4.38] |
++| commute | 4 | 6.61 | 6.61 [13.32] | 100 | 1.56 | 2.06 [2.60] |
++| inbound | 2 | 3.06 | 3.06 [3.51] | 17 | 2.10 | 2.10 [4.17] |
++| shop | 2 | 6.85 | 6.85 [10.47] | 21 | 1.16 | 1.16 [1.40] |
++| freight | 2 | 3.82 | 3.82 [6.27] | 24 | 0.62 | 0.62 [0.85] |
++| parking | 1 | 11.38 | 11.38 [14.92] | 45 | 2.08 | 2.08 [3.11] |
++| final | 2 | 5.79 | 5.79 [7.13] | 38 | 2.06 | 2.06 [2.86] |
++| final2 | 2 | 21.99 | 21.99 [30.61] | 104 | 1.39 | 1.83 [2.33] |
++| **all traffic** | 44 | 21.99 | 21.99 [30.61] | 1371 | 1.50 | 3.13 [4.68] |
++
++| days 80–220 | B steps | B p99 | B max | W steps | W p99 | W max |
++|---|---|---|---|---|---|---|
++| prep | 6 | 19.72 | 19.72 [25.66] | 535 | 0.42 | 2.97 [4.01] |
++| prepTransit | 6 | 4.42 | 4.42 [7.19] | 175 | 0.28 | 0.33 [1.34] |
++| transit | 6 | 4.45 | 4.45 [5.45] | 70 | 0.52 | 0.52 [0.66] |
++| transit2 | 6 | 4.72 | 4.72 [5.94] | 351 | 0.13 | 0.19 [0.24] |
++| roundSearch | 24 | 2.52 | 2.52 [4.44] | 186 | 0.50 | 0.55 [0.64] |
++| roundMatch | 23 | 3.26 | 3.26 [13.86] | 923 | 0.21 | 0.36 [0.39] |
++| commute | 12 | 2.01 | 2.01 [2.71] | 250 | 0.20 | 0.41 [1.54] |
++| inbound | 6 | 2.06 | 2.06 [2.80] | 50 | 0.46 | 0.46 [0.68] |
++| shop | 6 | 2.28 | 2.28 [3.57] | 62 | 0.71 | 0.71 [0.80] |
++| freight | 6 | 1.96 | 1.96 [3.85] | 71 | 0.45 | 0.45 [0.49] |
++| parking | 3 | 4.26 | 4.26 [15.34] | 132 | 0.21 | 0.24 [3.63] |
++| final | 6 | 1.27 | 1.27 [2.40] | 95 | 0.45 | 0.45 [0.70] |
++| final2 | 6 | 15.75 | 15.75 [21.48] | 257 | 1.43 | 1.65 [2.31] |
++| **all traffic** | 116 | 16.37 | 19.72 [25.66] | 3157 | 0.44 | 3.13 [4.01] |
++
++| days 0–120 | B steps | B p99 | B max | W steps | W p99 | W max |
++|---|---|---|---|---|---|---|
++| prep | 5 | 5.47 | 5.47 [6.49] | 391 | 0.31 | 0.37 [0.53] |
++| prepTransit | 5 | 2.48 | 2.48 [2.61] | 105 | 0.19 | 0.20 [0.28] |
++| transit | 5 | 4.46 | 4.46 [4.75] | 42 | 0.64 | 0.64 [1.82] |
++| transit2 | 5 | 4.92 | 4.92 [5.74] | 225 | 0.13 | 0.16 [0.18] |
++| roundSearch | 20 | 2.36 | 2.36 [6.76] | 128 | 0.54 | 0.64 [0.65] |
++| roundMatch | 20 | 3.33 | 3.33 [3.79] | 651 | 1.00 | 1.58 [4.01] |
++| commute | 10 | 2.26 | 2.26 [2.67] | 200 | 1.41 | 2.31 [4.38] |
++| inbound | 5 | 1.46 | 1.46 [2.42] | 34 | 2.03 | 2.03 [3.37] |
++| shop | 5 | 2.08 | 2.08 [3.35] | 42 | 0.50 | 0.50 [0.56] |
++| freight | 5 | 1.65 | 1.65 [2.61] | 48 | 0.43 | 0.43 [0.56] |
++| parking | 2 | 1.86 | 1.86 [2.99] | 88 | 0.12 | 0.12 [0.14] |
++| final | 5 | 1.23 | 1.23 [1.34] | 76 | 1.29 | 1.29 [1.41] |
++| final2 | 5 | 3.15 | 3.15 [4.03] | 204 | 0.55 | 0.82 [1.69] |
++| **all traffic** | 97 | 5.47 | 5.47 [6.76] | 2234 | 1.00 | 4.01 [4.38] |
++
++**The largest indivisible traffic items** (review 2, item 5f), max ms in these runs (days 0–20 / 20–80 / 80–220): the inbound fills or search start (`inbound.0`: 4.97 / 4.17 / 0.24), the snapshot take (`prep.scanBegin`: one `buildingList` + copy, 4.36 / 1.09 / 1.43), the transit search start (`S.reset` + seeds: 2.28 / 0.55 / 0.38), the round-search start (0.95 / 1.06 / 0.16), the save build (`final2.11`: 0.72 / 1.58 / 1.85), `refreshAttach` (prepTransit's attach piece, most cycles because growth's terrain edits mark it: 0.09 / 0.35 / 0.13). The graph rebuild's publish is edit-only and did not run.
++
++### 15.5 Notes for G2–G4
++
++- **Harness.** `tests/infra/b2Harness.ts` (`digest`, `stateDigest`, `fieldsDigest`, `diffDigests`, `taskOf`, `withPieceScale`) and the traffic part of `tests/infra/b2Pieces.test.ts` are the pattern: one go (scale 1e9) = production = tiny / random pieces at every pass end across edits; queries between pieces (R8); outputs per piece (R7); a mid-pass save (R9); frames active vs headless (O4); two cities interleaved.
++- **Tools** (in `scratchpad/b2work/G1-core-traffic/`): `passdigest2.ts` (passdigest with digests at several days in one run), `cpumapT.ts` (cpumap with split-task labels for traffic), `genfx.ts` (synthetic fixtures from B's code), `anT.py` / `anL.py` / `anTable.py` (windows, per-label error and per-phase tables). Under contention, one `timed.py` call per interleaved B / W pair halves the lock waits.
++- **Cold factors decide the sizes.** A loop that runs once per pass stays cold for many passes: 10–37× its warm cost in days 0–80, about 45× on its first executions, and deopt waves (the day-148 Building wave) hit 0.05 ms pieces at 3–4 ms. Size such loops for that, then calibrate.
++- **Warm costs move with the chunk size.** In one run each, prep's node-time loop measured 52 ns per node in 13,000-node chunks and 5 ns per node in 2,000-node chunks (days 80–220). Choose the sizes first, calibrate after, and keep the absolute scale of the estimates separate from the chunking (traffic's `TR_EST`), so the final calibration does not move a chunk.
++- **One method per piece kind** (R10) is cheap to keep from the start; splitting the dispatchers later was a mechanical move of each `case` body.
+-- 
+2.43.0
+
