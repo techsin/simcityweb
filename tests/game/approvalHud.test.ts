@@ -155,10 +155,17 @@ describe('TopBar approval segment (FH-06)', () => {
       f.clickOn(f.row('tax')!);
       expect(f.ctx.panels.open).toHaveBeenCalledExactlyOnceWith('budget');
       expect(f.showTab).toHaveBeenCalledExactlyOnceWith('taxes');
+      // the card would cover the panel it opened: hidden until the pointer leaves the segment
+      expect(f.seg.dataset.dismissed).toBe('1');
+      f.seg.fire('pointerleave');
+      expect(f.seg.dataset.dismissed).toBeUndefined();
       f.clickOn(f.row('pollution')!);
       expect(f.ctx.overlay).toBe(Overlay.AirPollution);
+      expect(f.seg.dataset.dismissed).toBeUndefined(); // a data view keeps the card (the services row steps on)
       f.clickOn(f.row('parks')!);
       expect(f.ctx.openFlyout).toHaveBeenCalledExactlyOnceWith('parks');
+      expect(f.seg.dataset.dismissed).toBe('1');
+      f.seg.fire('pointerleave');
       const seen: Overlay[] = [];
       for (let k = 0; k < 4; k++) { f.clickOn(f.row('services')!); seen.push(f.ctx.overlay); }
       expect(seen).toEqual([Overlay.Police, Overlay.Fire, Overlay.Health, Overlay.Police]);

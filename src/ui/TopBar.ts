@@ -200,6 +200,8 @@ export class TopBar {
       if (this.openApprovalFix(e.target)) return;
       this.ctx.panels.toggle('advisors');
     }, { signal: this.ctx.signal });
+    // a fix that opens a panel or a toolbar tab hides the card until the pointer leaves (it would cover what it opened)
+    this.apprSeg.addEventListener('pointerleave', () => { delete this.apprSeg.dataset.dismissed; }, { signal: this.ctx.signal });
     return h('div', { class: 'mp-glass' }, funds, pop, rciSeg, this.apprSeg);
   }
 
@@ -219,8 +221,10 @@ export class TopBar {
       ctx.panels.open('budget');
       const budget = (ctx.panels as PanelsApi & { get?(id: string): unknown }).get?.('budget') as { showTab?(t: 'taxes'): void } | undefined;
       budget?.showTab?.(fix.tab);
+      this.apprSeg.dataset.dismissed = '1';
     } else {
       ctx.openFlyout?.(fix.category);
+      this.apprSeg.dataset.dismissed = '1';
     }
     return true;
   }

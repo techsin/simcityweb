@@ -163,6 +163,8 @@
 .appr-pop::before { content: ''; position: absolute; left: 0; right: 0; top: -9px; height: 9px; }
 .approval.none .ico-wrap { color: var(--text-faint); }
 .hud-seg.approval:hover .appr-pop:not(.empty) { display: block; animation: panelIn 0.15s var(--ease); }
+/* FH-06: after a row opened a panel or a toolbar tab, until the pointer leaves the segment */
+.hud-seg.approval[data-dismissed]:hover .appr-pop:not(.empty) { display: none; }
 .appr-pop .ap-h { font-size: 12.5px; margin-bottom: 6px; }
 .appr-pop .ap-r { display: grid; grid-template-columns: minmax(0, 1fr) 86px 40px; gap: 8px; align-items: center; padding: 1.5px 0; }
 .appr-pop .ap-r .l { color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

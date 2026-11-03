@@ -2,7 +2,7 @@
  * FH-06 (GUIDE): what the top bar's approval segment tells a newcomer. Headless (no DOM), so tests pin it, and the
  * round-1 TopBar split can build the approval segment around it unchanged.
  *  - below APPROVAL_MIN_RESIDENTS the HUD shows "—": nobody lives here yet to approve of anything;
- *  - under NEW_TOWN_RESIDENTS the faces are kinder (a new town sits in the 40s and 50s while it plays correctly) and the
+ *  - under NEW_TOWN_RESIDENTS the faces are kinder (a town that plays well sits at 45–60% before its services arrive) and the
  *    hover card says what is usual; from NEW_TOWN_RESIDENTS today's thresholds apply;
  *  - each approval row with a fix names it, and the top bar opens it on click (a data view, Budget · Taxes or a
  *    toolbar tab). Everything here reads the replica only.
