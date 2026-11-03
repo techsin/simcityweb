@@ -89,7 +89,7 @@ and `capFrame` (`update()` calls the first two); `disasters.ts` gains the same `
 | The W1.2 worker files alone, after the merge (hygiene, hosts, workerTransport, worldResync, recovery, loopbackHost, holdCalendar) | 7 files, 80 passed, 25 s |
 | The bot, 128 x 15, seed 7, lane against a clean export of dev | **identical** apart from the timing (the ms columns and the "done in" line): `residents [ 59288, 95301, 41512 ]`, 196k in 2015, every year row equal. Twice: on `6b9dbfb` against dev `98f4cf2`, and on `0514a67` against dev `44f39b1` |
 | New tests fail with their fix reverted | 3 of 3: `journal: false` removed; `'crash'` back to `'exit'`; the stall rule removed |
-| §6 acceptance, `tools/qa-worker.mjs` on the production build (Playwright Chromium, SwiftShader, quality low, small city) | **20 of 20 passed** (log `docs/dev/reports/local-W1.2/qa-worker-prod.log`), below |
+| §6 acceptance, `tools/qa-worker.mjs` on the production build (Playwright Chromium, SwiftShader, quality low, small city) | **20 of 20 passed** (log `docs/dev/reports/local-W1.2/qa-worker-prod.txt`), below |
 
 ### Browser check: a real worker city (`node tools/qa-worker.mjs`, production build)
 
@@ -125,7 +125,7 @@ wasm in the worker is not exercised here. Each step through the App, the real to
 Not visible in the screenshots, though the checks read the DOM: the fatal's crash dialog is still fading in on the
 slow SwiftShader frames when `06-crash-dialog` and `07c-crash-dialog-recoverable` are taken (the error card shows,
 the dialog does not); the watchdog's dialog shows fully (`07b`). The first dev-mode run, before the stall fix, is
-`qa-worker-dev-before-stall-fix.log` (the false crash, the dialog in `qa-dev1/02-tools.png`). Full screenshots and logs
+`qa-worker-dev-before-stall-fix.txt` (the false crash, the dialog in `qa-dev1/02-tools.png`). Full screenshots and logs
 of every run: `scratchpad/t034work/qa-{dev1,dev2,prod1,prod2}/` (`prod1` stopped at the reload: a 30 s navigation
 timeout, raised in `796d1b9`).
 
