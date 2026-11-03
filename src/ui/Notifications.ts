@@ -170,7 +170,7 @@ export class Toasts {
    * show a toast; plays the kind's sound (TOAST_SOUND) unless opts.silent or it merges into an identical live toast.
    * opts.action: a click runs it (instead of jumping to `cell`), with a small hint line under the text.
    * opts.buttons: a question with answers (FH-21's slow-frame prompt): each button runs its answer and closes the toast;
-   * a click elsewhere on the toast does nothing.
+   * a click elsewhere on the toast does nothing. Without its own opts.ttl it stays until answered or closed.
    */
   show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string, opts: { silent?: boolean; ttl?: number; action?: { hint: string; icon?: string; run: () => void }; buttons?: ToastButton[] } = {}): void {
     const now = performance.now();
@@ -207,6 +207,10 @@ export class Toasts {
     const badge = h('span', { class: 't-count', style: 'display:none' });
     const timerBar = h('div', { class: 't-timer', style: { animationDuration: ttl + 'ms' } });
     const answers = opts.buttons?.length ? opts.buttons.map((b) => h('button', { class: `btn t-btn${b.primary ? ' primary' : ''}`, type: 'button' }, b.label)) : null;
+    // a question without its own ttl stays until it is answered or closed (on a machine at a few seconds a frame a timed
+    // question would expire before it could be read)
+    const sticky = !!answers && opts.ttl === undefined;
+    if (sticky) timerBar.style.display = 'none';
     const t = h('div', { class: 'toast mp-glass', style: { '--tc': meta.color } as Record<string, string> },
       h('div', { class: 't-ico', html: icon(meta.icon, 16) }),
       h('div', { class: 't-body' },
@@ -233,6 +237,7 @@ export class Toasts {
       restart: (ms: number) => {
         clearTimeout(timer);
         this.timers.delete(timer);
+        if (sticky) return;
         timer = arm(kill, ms);
         timerBar.style.animation = 'none';
         void timerBar.offsetWidth;
@@ -262,7 +267,7 @@ export class Toasts {
       else if (entry.cell) this.ctx.focusCell(entry.cell.x, entry.cell.z, 420);
       kill();
     }, { signal: this.ctx.signal });
-    timer = arm(kill, ttl);
+    if (!sticky) timer = arm(kill, ttl);
     this.live.set(key, entry);
     if (answers) t.classList.add('question');
     this.el.prepend(t);

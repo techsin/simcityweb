@@ -766,7 +766,6 @@ export class CityScene {
     savePref(SLOW_PREF, { shown: true, median: Math.round(median * 10) / 10 });
     const answer = (a: 'switch' | 'keep') => savePref(SLOW_PREF, { shown: true, answer: a });
     this.toasts.show('The city is running slowly — switch graphics to Medium?', 'warning', undefined, 'Graphics', {
-      ttl: 30000,
       buttons: [
         { label: 'Switch', primary: true, run: () => { answer('switch'); this.applySettings({ quality: 'medium' }); } },
         { label: 'Keep', run: () => answer('keep') },

@@ -158,6 +158,19 @@ describe('FH-21: one offer to switch a slow city to Medium', () => {
     expect(t.classList.contains('out')).toBe(true);
   });
 
+  it('a question stays until it is answered (no timer, no countdown bar); with its own ttl it expires', () => {
+    const root = new FEl('div');
+    const ctx = { signal: new AbortController().signal, sim: { events: { on: () => () => {} } }, settings: { toasts: true }, mods: {}, root, sound() {}, focusCell: vi.fn() } as unknown as GameContext;
+    const timers: number[] = [];
+    vi.stubGlobal('window', { setTimeout: (_f: () => void, ms: number) => (timers.push(ms), timers.length) });
+    const toasts = new Toasts(ctx, root as unknown as HTMLElement);
+    toasts.show('Question?', 'warning', undefined, 'Graphics', { buttons: [{ label: 'Yes', run() {} }] });
+    expect(timers).toEqual([]);
+    expect((toasts.el as unknown as FEl).querySelector('.t-timer')!.style.display).toBe('none');
+    toasts.show('Timed question?', 'warning', undefined, 'Graphics', { ttl: 5000, buttons: [{ label: 'Yes', run() {} }] });
+    expect(timers).toEqual([5000]);
+  });
+
   it('news toasts never push a question out (a busy city filled the stack within a second)', () => {
     const root = new FEl('div');
     root.classList.add('short');
