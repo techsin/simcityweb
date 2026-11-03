@@ -161,7 +161,9 @@ timeout, raised in `796d1b9`).
    worker-side probe needs a dev-only hook in simWorker. S1's tests/perf/protector.test.ts runs the production worker
    loop under worker_threads (60 days, both kernel modes, both negative controls). The latency is measured, not gated
    (§6). qa-worker's held-brush check (§5.4) is not written.
-8. **Dev moved during the lane** (T029 merged, `44f39b1`): merged clean (`0514a67`); both bots re-run on it.
+8. **Dev moved during the lane** (T029 merged, `44f39b1`): merged clean (`0514a67`); both bots re-run on it. Dev moved
+   again at the end (`5b12abe`, T037d merged); `git merge-tree` shows it merges cleanly with this branch, and it is left
+   to the merge step, which gates the merged tree, rather than chasing dev with another full round here.
 9. **Left as the desktop listed it**: FallbackWorldView and FallbackObjectsView still rebuild from their first state on a
    `'reset'` (the degraded views miss a resync); NOTE-041 item 2 names WorldView only.
 
