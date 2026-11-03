@@ -223,7 +223,7 @@ export class BudgetPanel extends Panel {
       if (g.devs[0] === DevType.R1) box.appendChild(h('div', { class: 'dim', style: 'font-size:11.5px;line-height:1.4;margin-top:4px' }, `Residential rows share the citywide tax effect vs ${TAX_NEUTRAL}%, weighted by residents. Other approval factors still apply.`));
       cols.appendChild(box);
     });
-    const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + `<span>${TAX_NEUTRAL}% is neutral. Higher taxes gradually slow growth. Each residential point above neutral costs approval (−${-APPROVAL.taxPerPoint} a point). Each point below wins approval (+${APPROVAL.taxLowPerPoint}) but less income. Use the arrow keys (or − / +) to adjust a selected slider.</span>` });
+    const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + `<span>${TAX_NEUTRAL}% is neutral. Higher taxes gradually slow growth. Each residential point above neutral costs approval (−${-APPROVAL.taxPerPoint} a point). Each point below wins approval (+${APPROVAL.taxLowPerPoint}) but less income. Use the arrow keys on a selected slider, or the − / + buttons beside it.</span>` });
     this.content.append(cols, hint);
   }
 

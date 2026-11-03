@@ -33,5 +33,7 @@ describe('Budget tax hint tuning (NEW-05)', () => {
     expect(hint).toContain(`approval (+${APPROVAL.taxLowPerPoint}) but less income`);
     expect(hint.match(/\d+(?:\.\d+)?/g)?.map(Number)).toEqual([TAX_NEUTRAL, -APPROVAL.taxPerPoint, APPROVAL.taxLowPerPoint]);
     expect(hint).not.toMatch(/collapse|\b(?:days|months|years)\b/i);
+    // the + / − keys blur a slider (dom.ts), so only the on-screen buttons step it besides the arrow keys
+    expect(hint).toContain('Use the arrow keys on a selected slider, or the − / + buttons beside it.');
   });
 });
