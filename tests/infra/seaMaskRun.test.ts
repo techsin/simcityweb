@@ -44,7 +44,8 @@ function masksOf(st: CityState): unknown {
 /** the run to its end at `units` per piece; the pieces taken */
 function runAll(r: SeaMaskRun, st: CityState, units: number | (() => number), between?: (k: number) => void): { sea: Uint8Array; pieces: number } {
   for (let k = 1; k < 1e7; k++) {
-    const m = r.run(st, typeof units === 'number' ? units : units());
+    // (a random size draws the checksum's and the rebuild's sizes apart)
+    const m = typeof units === 'number' ? r.run(st, units) : r.run(st, units(), units());
     if (m) return { sea: m, pieces: k };
     between?.(k);
   }

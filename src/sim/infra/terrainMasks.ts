@@ -151,8 +151,10 @@ const PHASE_NAMES = ['sum', 'copy', 'scan', 'depth', 'fix', 'comp'];
 export const SEA_POP_UNITS = 4;
 
 /**
- * seaMask(st) in pieces (B2 G4). `run(st, units)` does about `units` work units (a cell of a scan loop = 1, a dequeued
- * BFS cell = SEA_POP_UNITS) and returns the sea mask when it is done (the run is then idle again):
+ * seaMask(st) in pieces (B2 G4). `run(st, sumUnits, buildUnits)` does a checksum piece of `sumUnits` cells, or a rebuild
+ * piece of about `buildUnits` work units (a cell of a scan loop = 1, a dequeued BFS cell = SEA_POP_UNITS), and returns
+ * the sea mask when it is done (the run is then idle again). The checksum runs every pass (warm); a rebuild only after a
+ * water edit, so its loops run cold (interpreted at first: ~0.1 µs per cell at dense1m), hence the two sizes:
  *  sum    the checksum of st.water by cell ranges, against the cache: a hit returns the cached mask (masks());
  *  copy   a miss: a private copy of the water layer (one piece), which every later piece reads;
  *  scan   the land / shore scan (+ the copy's checksum), depth   the distance BFS (pieces of dequeued cells),
@@ -207,24 +209,24 @@ export class SeaMaskRun {
   }
 
   /**
-   * the estimated µs of the next piece of `units` (the cost model: O(1)): the checksum at `sumUs` per cell, the copy at
-   * `copyUs` per cell, the rebuild at `buildUs` per work unit (the BFS phases count a full piece)
+   * the estimated µs of the next piece (the cost model: O(1)): the checksum at `sumUs` per cell, the copy at `copyUs` per
+   * cell, the rebuild at `buildUs` per work unit (the BFS phases count a full piece)
    */
-  nextUs(cells: number, units: number, sumUs: number, copyUs: number, buildUs: number): number {
+  nextUs(cells: number, sumUnits: number, buildUnits: number, sumUs: number, copyUs: number, buildUs: number): number {
     switch (this.phase) {
-      case P_SUM: return Math.max(0, Math.min(units, cells - this.i)) * sumUs;
+      case P_SUM: return Math.max(0, Math.min(sumUnits, cells - this.i)) * sumUs;
       case P_COPY: return cells * copyUs;
-      case P_SCAN: case P_FIX: return Math.max(0, Math.min(units, cells - this.i)) * buildUs;
-      default: return units * buildUs;
+      case P_SCAN: case P_FIX: return Math.max(0, Math.min(buildUnits, cells - this.i)) * buildUs;
+      default: return buildUnits * buildUs;
     }
   }
 
-  /** one piece of about `units` work units; the sea mask when the run is done, else null */
-  run(st: CityState, units: number): Uint8Array | null {
-    const C = st.cells, N = st.size;
+  /** one piece (a checksum piece of `sumUnits` cells, a rebuild piece of `buildUnits`); the sea mask when the run is done */
+  run(st: CityState, sumUnits: number, buildUnits = sumUnits): Uint8Array | null {
+    const C = st.cells, N = st.size, units = buildUnits;
     switch (this.phase) {
       case P_SUM: {
-        const w = st.water, end = Math.min(C, this.i + Math.max(1, units));
+        const w = st.water, end = Math.min(C, this.i + Math.max(1, sumUnits));
         let s = this.sum, n = this.count;
         for (let i = this.i; i < end; i++) if (w[i]) { s += i + 1; n++; }
         this.sum = s; this.count = n; this.i = end;

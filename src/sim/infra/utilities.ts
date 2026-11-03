@@ -231,9 +231,10 @@ const UT = {
   /** the pass start (ensure, effects, the input swaps); the snapshot per building (the day's first buildingList rebuild
    *  + the copy + the jobs check), its plan per building */
   start: 25, snapTake: 0.0165, plan: 0.0087,
-  /** the sea mask: the masks' checksum per cell, their rebuild (after a water edit) per SeaMaskRun work unit and its
-   *  water copy per cell; the treatment prefix scan per building */
-  sea: 0.0015, seaBuild: 0.002, seaCopy: 0.0003, scan: 0.016,
+  /** the sea mask: the masks' checksum per cell, their rebuild (after a water edit; cold: it runs once per edit) per
+   *  SeaMaskRun work unit and its water copy per cell (dense1m's meteor: 0.03-0.09 µs per unit, the copy 0.001-0.003 µs
+   *  per cell); the treatment prefix scan per building */
+  sea: 0.0015, seaBuild: 0.03, seaCopy: 0.003, scan: 0.016,
   /** the uses chunks per building / footprint cell; their publish (fixed) + per patched (added / removed) building */
   usesB: 0.019, usesF: 0.0134, usesPub: 4, patch: 0.08,
   /** the labels per unit (a cell scanned or a cell taken off the BFS queue); a label's publish (fixed) */
@@ -255,9 +256,10 @@ const UT = {
 /**
  * the chunk sizes, in estimated µs per unit (pieceUnits / cellUnits; kept apart from the estimates' UT coefficients, so a
  * refit of the estimates never moves a piece boundary — traffic's TR_EST lesson): the plan per building, a label unit
- * (a cell scanned or dequeued), the cell loops (the cold cell floor), a brownout queue cell, an event
+ * (a cell scanned or dequeued), the cell loops (the cold cell floor), a brownout queue cell, an event, a work unit of
+ * the sea mask's rebuild (cold code: about 1,300 units per piece; the checksum takes the cell floor)
  */
-const US = { plan: 0.012, label: 0.007, cells: INFRA_CELL_SIZING_US, zoned: INFRA_CELL_SIZING_US, bfs: 0.027, wbfs: 0.085, event: 0.4 } as const;
+const US = { plan: 0.012, label: 0.007, cells: INFRA_CELL_SIZING_US, zoned: INFRA_CELL_SIZING_US, bfs: 0.027, wbfs: 0.085, event: 0.4, seaBuild: 0.05 } as const;
 /** the chunk plan of the pass snapshot (every building stage walks it): the cold Building floor per building + 20 ns per
  *  footprint cell (the results' footprint writes; sizing only — the estimates use each stage's own coefficients) */
 const UT_PLAN_B = INFRA_BLD_SIZING_US, UT_PLAN_F = 0.02;
@@ -503,7 +505,7 @@ export class UtilitiesSystem implements SimSystem {
       case S_START: return UT.start;
       case S_SNAP: return st.buildings.size * UT.snapTake;
       case S_PLAN: return Math.max(0, Math.min(pieceUnits(US.plan, 1, COLD), snap.n - snap.planned)) * UT.plan;
-      case S_SEA: return this.seaRun.nextUs(C, cellUnits(US.cells), UT.sea, UT.seaCopy, UT.seaBuild);
+      case S_SEA: return this.seaRun.nextUs(C, cellUnits(US.cells), pieceUnits(US.seaBuild, 1, COLD), UT.sea, UT.seaCopy, UT.seaBuild);
       case S_SCAN: return Math.max(0, Math.min(pieceUnits(UT_SCAN_SIZING, 1, COLD), snap.n - k)) * UT.scan;
       case S_USES:
         return snap.countOf(k) * UT.usesB + snap.cellsOf(k) * UT.usesF
@@ -576,7 +578,7 @@ export class UtilitiesSystem implements SimSystem {
         // cached and checksummed by terrainMasks, so taking it before the loop changes nothing. B2: the checksum by cell
         // ranges and, after a water edit, the rebuild in pieces over a copy of the water layer: terrainMasks.SeaMaskRun,
         // build()'s loops in its order, so with nothing in between it returns seaMask(st))
-        const m = this.seaRun.run(st, cellUnits(US.cells));
+        const m = this.seaRun.run(st, cellUnits(US.cells), pieceUnits(US.seaBuild, 1, COLD));
         if (m) {
           this.seaM = m;
           this.sub = S_SCAN;
