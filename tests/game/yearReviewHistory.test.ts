@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { BF, HISTORY_KEYS, YEAR_REVIEW_TERMS, padHistory, type HistorySeries, type YearReviewGoals } from '../../src/sim/CityState';
-import { historySystem, recordHistory } from '../../src/sim/economy/history';
+import { historySystem, recordHistory, type YearReviewBaseline } from '../../src/sim/economy/history';
 import { Simulation } from '../../src/sim/Simulation';
+import { economySystems } from '../../src/sim/systems/economy';
+import { deserializeCity, serializeCity } from '../../src/save/serialize';
+import { buildYearReview, yearGradeInput } from '../../src/ui/YearReview';
+import { growthScore, unemploymentScore, yearGrade } from '../../src/ui/yearGrade';
 import { newState, place } from '../infra/cityGen';
 
 function reviewCity() {
@@ -73,7 +77,7 @@ describe('year review history telemetry', () => {
     expect(HISTORY_KEYS).toContain('approval_clamp');
   });
 
-  it('uses only the optional advisor built-out flag', () => {
+  it('records the future LG-05 flag contract (synthetic producer)', () => {
     const st = reviewCity();
     recordHistory(st);
     st.systemData.advisors = { builtOut: true };
@@ -81,6 +85,17 @@ describe('year review history telemetry', () => {
     st.systemData.advisors = { builtOut: false };
     recordHistory(st);
     expect(st.history.builtOut).toEqual([0, 1, 0]);
+  });
+
+  it('follows the real economy advisor output, retaining growth scoring while LG-05 is absent', () => {
+    const st = newState(16);
+    const sim = new Simulation(st, economySystems());
+    sim.runDays(360);
+    const produced = (st.systemData.advisors as { builtOut?: boolean } | undefined)?.builtOut === true;
+    expect(st.history.builtOut.at(-1)).toBe(produced ? 1 : 0);
+    const input = yearGradeInput(st.history, 12)!;
+    expect(input.builtOut).toBe(produced);
+    expect(yearGrade(input).scores.growth).toBe(produced ? unemploymentScore(input.unemployment) : growthScore(input.growth));
   });
 
   it('does not count missing economy telemetry as a measured review sample', () => {
@@ -101,6 +116,71 @@ describe('year review history telemetry', () => {
     midyear.history.t.push(240); padHistory(midyear.history);
     new Simulation(midyear, [historySystem()]);
     expect(midyear.history.reviewTermsSample).toEqual([0]);
+  });
+
+  it('preserves a spring founding baseline through the real calendar and first New Year, including save/load', () => {
+    const st = reviewCity(); st.day = 90; st.systemData.foundedDay = 90;
+    st.stats.approval = st.stats.eq = st.stats.hq = 50;
+    const sim = new Simulation(st, [{
+      name: 'test.yearReviewGrowth',
+      daily({ state }) {
+        const months = (state.day - 90) / 30;
+        state.stats.population = Math.round(months * 100);
+        state.stats.approval = 50 + months;
+        state.stats.eq = 50 + months * 2;
+        state.stats.tourists = months * 10;
+        state.funds += 10;
+        (state.systemData.economy as { approvalTerms: Record<string, number> }).approvalTerms.parks = 2 + months;
+      },
+    }, historySystem()]);
+    const data = st.systemData.economy as { yearReviewBaseline: YearReviewBaseline };
+    const baseline = structuredClone(data.yearReviewBaseline);
+    expect(baseline).toMatchObject({ month: 3, values: { pop: 0, approval: 50, eq: 50, tourists: 0 }, approvalTerms: { parks: 2 } });
+    expect(st.history.t).toEqual([]);
+    let report: ReturnType<typeof buildYearReview> = null;
+    const off = sim.events.on('year', (year) => { report = buildYearReview(st, year); });
+    sim.runDays(270);
+    off();
+    const first = report as ReturnType<typeof buildYearReview>;
+    expect(st.history.t).toEqual([4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(first?.approvalChange).toBe(9);
+    expect(first?.termsMeasured).toBe(true);
+    expect(first?.terms.find((term) => term.id === 'parks')?.change).toBe(9);
+    expect(first?.records).toContain('Population: 900');
+    expect(first?.records).toContain('Approval: 59%');
+    expect(first?.records).toContain('EQ: 68');
+    expect(first?.populationChange).toBe(800); // Graphs starts at its first monthly sample, not founding day.
+    expect(first?.grade).toBeNull(); // The initial calendar year is nine months long.
+    expect(data.yearReviewBaseline).toEqual(baseline);
+    const loaded = deserializeCity(serializeCity(st));
+    new Simulation(loaded, [historySystem()]);
+    expect((loaded.systemData.economy as typeof data).yearReviewBaseline).toEqual(baseline);
+    expect(buildYearReview(loaded, st.year)).toEqual(first);
+  });
+
+  it('does not invent a founding baseline for a developed legacy save', () => {
+    const st = reviewCity(); st.day = 360;
+    st.history.t.push(12); padHistory(st.history);
+    new Simulation(st, [historySystem()]);
+    expect(st.systemData.economy).not.toHaveProperty('yearReviewBaseline');
+    const report = buildYearReview(st, st.year)!;
+    expect(report.approvalChange).toBeNull();
+    expect(report.termsMeasured).toBe(false);
+    expect(report.records).toEqual([]);
+    expect(st.history.reviewSample).toEqual([0]);
+  });
+
+  it('seeds a day-zero founding baseline once and copies its approval terms', () => {
+    const st = reviewCity();
+    const sim = new Simulation(st, [historySystem()]);
+    const data = st.systemData.economy as { yearReviewBaseline: YearReviewBaseline; approvalTerms: Record<string, number> };
+    const baseline = structuredClone(data.yearReviewBaseline);
+    expect(baseline.month).toBe(0);
+    data.approvalTerms.parks = 20; st.stats.approval = 90;
+    sim.systems[0].init?.(sim);
+    expect(data.yearReviewBaseline).toEqual(baseline);
+    expect(data.yearReviewBaseline.approvalTerms.parks).toBe(2);
+    expect(st.history.t).toEqual([]);
   });
 
   it('silently seeds old goals on init and stamps newly reached goals only once', () => {

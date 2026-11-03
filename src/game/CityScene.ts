@@ -568,6 +568,7 @@ export class CityScene {
     const lost = this.ctxLost;
     if (!lost || lost.restoring || this.disposed) return;
     lost.restoring = true;
+    this.newYear?.cancel();
     const cam = readCamera(this.world.controls) ?? validCamera(this.sim.state.systemData.camera, this.sim.state);
     // stop watching the old canvas first: disposing its views forces a (second) context loss on it
     this.ctxWatch?.abort();

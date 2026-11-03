@@ -32,11 +32,12 @@ function city(): CityState {
 }
 
 describe('year review model', () => {
-  it('compares January to January and averages/sums exactly the twelve completed months', () => {
+  it('matches the Graphs population interval and averages/sums the twelve completed months for grading', () => {
     const state = city(), report = buildYearReview(state, 2002)!;
     expect(report.population).toBe(1240);
-    expect(report.populationChange).toBe(120);
-    expect(report.growth).toBeCloseTo(120 / 1120, 12);
+    expect(report.populationChange).toBe(110);
+    expect(report.growth).toBeCloseTo(110 / 1130, 12);
+    expect(yearGradeInput(state.history, 24)?.growth).toBeCloseTo(120 / 1120, 12);
     expect(report.bankMonths).toBe(3);
     expect(report.recurringNet).toBe(2400);
     expect(report.incidents).toBe(120);
@@ -76,7 +77,7 @@ describe('year review model', () => {
     const old = buildYearReview(state, 2002)!;
     expect(old.grade).toBeNull();
     expect(old.answered).toBeNull();
-    expect(old.populationChange).toBe(120);
+    expect(old.populationChange).toBe(110);
     expect(old.pastGrades.map((g) => g.year)).toEqual([2000]);
     state.history.reviewSample[12] = 0;
     state.history.reviewTermsSample[12] = 0;
@@ -90,7 +91,7 @@ describe('year review model', () => {
     const state = city(), before = buildYearReview(state, 2002)!;
     for (const key of HISTORY_KEYS) state.history[key].splice(0, 10);
     expect(buildYearReview(state, 2002)?.grade).toEqual(before.grade);
-    expect(buildYearReview(state, 2002)?.populationChange).toBe(120);
+    expect(buildYearReview(state, 2002)?.populationChange).toBe(110);
     state.history.pop[state.history.t.indexOf(25)] = 999999;
     expect(before.population).toBe(1240);
     expect(buildYearReview(state, 2002)?.population).toBe(1240);

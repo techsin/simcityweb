@@ -1,94 +1,106 @@
-# T054 · LG-21 year in review
+# T054 - LG-21 year in review, review round 1
 
-Implemented the Gazette card and pure mayor-grade scoring. Changes are uncommitted; no push or `.done` file.
+The Gazette and pure mayor-grade scoring are in WIP `b7408fa`. The lead validated that WIP with tsc, the full Vitest suite (219 files, 2,197 tests), and the 192,899-resident bot baseline. The fixes below are uncommitted on top of that WIP; no push or `.done` file.
 
-## Changes by file
+## Changes this round, by file
 
-- `src/ui/YearReview.ts` (new): UI-side annual model, January-to-January population change, annual means/outcomes, approval term changes using the tooltip's labels, records, completed/next goals, regional connection/commuter line, weighted grade and a ten-year grade sparkline. Captures the boundary before the New Year show advances the calendar. Subscribes through `ctx.host`/`ctx.ui`; reads `ctx.state`; no simulation-system reads or replica writes. Waits for `NewYearCelebration.busy`, uses a save-stable 1/2/5-year cadence, never opens on load/reset, skips/dismisses LIVE, honors `yearReview`, and closes after 15 real seconds or map input. City AbortSignal removes all listeners, subscriptions, timer and DOM.
-- `src/ui/yearReview.css` (new): scoped Gazette layout, small-screen/short-screen rules; no render objects/draw calls or per-frame layout reads.
-- `src/ui/yearGrade.ts` (new): all six clamped linear scores, specified weights, built-out unemployment branch, finance penalty, crime multiplier and A/B/C/D/F cutoffs. Pure; no RNG.
-- `src/game/CityScene.ts`: one import and the CONTENT wiring block immediately after NewYear construction. `NewYear.ts` is untouched.
-- **Outside the named source files:** `src/sim/CityState.ts`: additive numeric review series in `HistorySeries`/`HISTORY_KEYS`, stable approval-term ids, optional goal-metadata type. Existing series retain their values and rounding.
-- **Outside the named source files:** `src/sim/economy/history.ts`: a separate monthly telemetry helper records recurring finances excluding `oneoff:*`, raw funds (preserves the `< 0` cutoff), resident crime, five-service coverage, fraction of occupied home buildings flagged Noisy, emergency outcomes, approval term snapshots and the optional built-out signal. A separate goal-stamping helper silently seeds existing goals at init and dates new completions once under optional `economy.yearReviewGoals`.
-- New tests: `tests/game/yearGrade.test.ts`, `yearReviewHistory.test.ts`, `yearReview.test.ts`.
-- **Infra hunks: none. Cloud-held files edited: none.**
+- `src/game/CityScene.ts`: **one-line exception in META's restore path**, `this.newYear?.cancel()` at the start of `restoreViews()`, before camera capture and old-view disposal. Cancelling while the old fireworks object is still live clears the celebration's busy state and restores the normal camera. A pending review can then open, and later New Years work. `NewYear.ts` and `Fireworks.ts` are untouched.
+- `src/ui/YearReview.ts`: population change and displayed growth now use exactly GraphsPanel's 1Y window: twelve samples, eleven intervals, ending at the captured January. Annual grade growth still uses twelve elapsed months, as specified by the scoring table. First-year approval/term changes and records use the optional founding snapshot when no prior January exists; developed old saves retain unavailable markers.
+- **Outside the originally named source files:** `src/sim/economy/history.ts`: an isolated init helper saves optional `economy.yearReviewBaseline` (month, six record values, approval terms) when the state is still at its founding day with no monthly history. Supports the application's April/day-90 start and day-zero starts. Copies the snapshot once, survives save/load, and adds no artificial history sample. The existing optional `advisors.builtOut` hook remains; a comment names its missing LG-05/T037b producer. No substitute map scan or guessed built-out rule.
+- `tests/game/yearReview.test.ts`: corrects the population-window expectations and separately asserts that annual grade growth keeps its twelve-month interval.
+- `tests/game/yearReviewHistory.test.ts`: adds a real economy producer-consumer check, spring founding through the first real New Year, baseline save/load and copy-once checks, and a developed legacy-save check. The existing true/false built-out injection is explicitly identified as a synthetic future-producer contract.
+- New `tests/game/yearReviewGraphs.test.ts`: compares the card against the actual GraphsPanel draw/header output for normal, capped and short histories. For population `1000 + 10t`, both show `+110`; annual growth scoring still uses `+120`.
+- New `tests/game/yearReviewRestore.test.ts`: runs the real NewYear celebration into its active fireworks show, restores through the real CityScene method with disposal preserving the stuck-running condition, then checks the pending card and the next year's card. Asserts cancellation before old-view disposal. Uses null rendering views; no GPU/browser.
+- **Infra hunks: none.** Other source files, including `yearGrade.ts`, `yearReview.css` and `CityState.ts`, are unchanged this round. No balance formula or RNG draw changed.
 
-The two supporting source hunks are necessary because the pre-existing history cannot reconstruct recurring annual net, historic approval term changes, Noisy-home shares, resident service coverage or failed emergencies. They store facts only: all scoring and card computation stay UI-side. The existing save codec and Worker's recorder/replica iterate `HISTORY_KEYS`; `economy` is already a mirrored systemData key, so no Worker/save changes are needed.
+The WIP's additive `HISTORY_KEYS` telemetry and goal metadata remain as implemented. The optional baseline uses the already serialized/mirrored `economy` object; no Worker or save-code change is needed.
 
-## Validation
+## Validation this round
 
-- `npx tsc --noEmit`: passed.
-- `tests/game/yearGrade.test.ts`: 23 passed. Includes every score's anchors, approval 55 → 50, weights, 84.9 → B / 85 → A, the debt/approval-30/20%-failed F fixture, built-out switch and determinism.
-- `tests/game/yearReviewHistory.test.ts`: 10 passed. Includes legacy padding, recurring-vs-one-off finances, sub-unit negative funds, Noisy fraction, service mean, exact term/outcome snapshots, optional built-out signal, missing economy data, silent old-goal seeding, rank recovery, once-only stamps and a saved January approval baseline.
-- `tests/game/yearReview.test.ts`: 19 passed. Includes year boundaries, means/sums, shared approval labels (including clamp), capped/missing histories, frozen replica reads, save equivalence, load/reset suppression, show-off and busy timing, speed cadence, LIVE, setting changes, the full 15-second timeout across an ineligible ultra New Year, map/minimap/keyboard input, idle hover, canvas replacement and teardown.
-- Existing regressions: `tests/sim/history.test.ts` 4 passed; `tests/game/cityTeardown.test.ts` 4 passed; `tests/game/cityDisposeCanvas.test.ts` 2 passed; `tests/worker/replicaLive.test.ts` 2 passed / 2 existing checks skipped; `tests/save/continuity.test.ts` 2 passed; `tests/save/serialize.test.ts` 13 passed.
-- `tests/worker/hygiene.test.ts`: 17 passed, 1 existing W1.2 check skipped.
-- Full Vitest suite: left to lead, per machine-sharing instruction.
-- Real-GPU/browser checks: left to lead; no browser or bench was launched.
+Quiet-gated `npx tsc --noEmit`: passed. Targeted files ran separately, one process at a time:
 
-Default Vitest invocation failed before tests with Vite config-loader `spawn EPERM`; native config loading avoided that, but its default forks pool also failed with `spawn EPERM`. The following quiet-gated invocation succeeded, run separately for each file above:
+| Test file | Result |
+| --- | --- |
+| `tests/game/yearGrade.test.ts` | 23 passed |
+| `tests/game/yearReview.test.ts` | 19 passed |
+| `tests/game/yearReviewHistory.test.ts` | 14 passed |
+| `tests/game/yearReviewGraphs.test.ts` | 3 passed |
+| `tests/game/yearReviewRestore.test.ts` | 1 passed |
+| `tests/game/graphicsFirstRun.test.ts` | 21 passed |
+| `tests/worker/hygiene.test.ts` | 17 passed, 1 existing skip |
+| `tests/sim/history.test.ts` | 4 passed |
+| `tests/save/serialize.test.ts` | 13 passed |
+| `tests/save/continuity.test.ts` | 2 passed |
+
+Total: **117 passed, 1 existing skip, 10 files**. Grade tests include all score anchors, approval 55 = 50 points, 84.9 = B / 85 = A, and the negative-funds/approval-30/20%-failed F fixture. `git diff --check` passed.
+
+The default runner hit config-loader/fork `spawn EPERM` during the original implementation. This round used the established native-config/thread runner throughout:
 
 ```powershell
-node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-transform-types node_modules/vitest/vitest.mjs run tests/game/yearGrade.test.ts --maxWorkers=1 --pool threads --configLoader native
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsc --noEmit
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-transform-types node_modules/vitest/vitest.mjs run tests/game/yearReviewRestore.test.ts --maxWorkers=1 --pool threads --configLoader native
 ```
 
-The initial check runner accidentally queued two quiet-gated tests while waiting for the timing lock. Both finished; the runner was corrected and all remaining checks ran one at a time. An added hover test initially omitted the event type in its fake DOM event; that fixture was corrected and the file reran green.
+Use the second command separately for each test file above. The full suite has **not** been rerun after these fixes; left to the lead per machine-sharing instructions. No browser, bench or real-GPU timing run was launched.
 
 ## Bot gates
 
-No balance formula, speed, action, RNG draw or infrastructure scheduler was changed.
+**128x15 seed 7 rerun passed:** residents `[61124, 93804, 37971]`, total **192899** in 2015, approval 81, 38 unlocks. Exactly the required baseline. Output is `bot128x15-s7-review1.log` under the task scratch directory:
 
-- **128×15 seed 7: passed.** Actual residents `[61124, 93804, 37971]`, total **192899** in 2015, exactly the supplied baseline. Output: `scratch/bot128x15-s7-native.log`.
-- **256×60 seed 7, 2010–2060 annual grade gate: passed.** All **51** years have complete inputs; **38 B / 13 A**, no C/D/F and no missing years. Minimum **73.53086362155412 (B)** in 2060. Final residents `[412608, 738176, 363051]`, total **1513835** in 2060. Outputs: `scratch/grades256x60-s7.json`, `grades256x60-s7-result.json`, `grade-run.log`.
-- Built-out metadata is absent on this base, so the measured 256 run uses growth scoring. The unemployment branch is unit-tested and awaits GUIDE's authoritative signal.
+`C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T054/scratch`.
 
-The requested runner is unavailable in this offline installation: `npx tsx` fails `ENOTCACHED` for `tsx`. The attempted command was:
+`tsx` is still absent from this offline installation (the original `npx tsx` attempt failed `ENOTCACHED`). Actual command this round, with raw output redirected to that log:
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-transform-types --loader file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T054/scratch/native-ts-loader.mjs tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
+```
+
+The scratch-only native loader resolves extensionless TypeScript imports and ignores CSS imports for headless probes; it does not replace simulation code. Conventional equivalent once `tsx` is available:
 
 ```powershell
 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
 ```
 
-A scratch-only native TypeScript loader resolves extensionless `.ts` imports and suppresses the UI CSS side-effect import for the headless grade probe. It does not replace or modify any simulation code. Both native runs use the quiet gate, serialized:
+**256x60 annual-grade gate: prior WIP result retained, not rerun this round.** The annual grade inputs/formulas are unchanged. The original full-infrastructure seed-7 base run had all **51** years 2010-2060 complete: **38 B / 13 A**, minimum **73.53086362155412 (B)** in 2060. Final residents `[412608, 738176, 363051]`, total **1513835**. Outputs remain `grades256x60-s7.json`, `grades256x60-s7-result.json` and `grade-run.log` in scratch. The absence of LG-05 metadata means this result uses growth scoring.
 
-```powershell
-node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-transform-types --loader file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T054/scratch/native-ts-loader.mjs tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
-
-node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-transform-types --loader file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T054/scratch/native-ts-loader.mjs C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T054/scratch/grade-run.ts
-```
-
-The grade probe invokes `parseArgs(['--size','256','--years','60','--seed','7','--quiet'])`, constructs `SimBot(opts, await botSystems(opts.noInfra))` (full infrastructure, normal base strategy), and enriches every yearly row with `yearGradeInput(history, JanuaryMonth)` and `yearGrade(input)`. Its assertion requires every row from 2010 to 2060 inclusive to exist and score at least 55 (C). Existing bot rows alone omit several necessary grade inputs.
-
-For a conventional rerun after `tsx` is available, use the same quiet-gated 128 command above and:
+Standard base-run command, if a fresh post-fix confirmation is wanted:
 
 ```powershell
 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 256 --years 60 --seed 7 --quiet
 ```
 
-This is the standard base-run command. Use the native grade-probe command above for the enriched yearly-grade assertion (its loader also handles the imported UI CSS). Do not run them concurrently.
+The yearly-grade acceptance needs the enriched probe because ordinary bot rows omit several inputs. Its exact command is:
 
-## Plan/code differences and owner requests
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-transform-types --loader file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T054/scratch/native-ts-loader.mjs C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T054/scratch/grade-run.ts
+```
 
-1. **META, `src/ui/panels/SettingsPanel.ts`, gameplay section in `build()`:** add a “Year in review” row using `this.sw('yearReview')`, explaining the yearly Gazette and grade. The schema/default already exists and the card responds to settings events, but no visible toggle exists on this base. File left untouched.
-2. **GUIDE, `src/sim/economy/advisors.ts`, `ZoneScan` / `scanZones` / `AdvisorData`:** implement LG-05's free-buildable-land criterion and expose optional top-level `systemData.advisors.builtOut: boolean` from that authoritative scan. The new monthly history consumes this field as `builtOut`; while absent it uses growth scoring. No guessed alternate definition was added. This branch is unit-tested but cannot activate on the current base.
-3. **SIM/Worker, `src/worker/replicaSafe.ts`, `REPLICA_SAFE`:** LG-01's implemented `listMilestones` helper is still absent from the audited registry. Add it and its replica-equivalence case in `tests/worker/replicaSafe.test.ts`. It reads only mirrored stats/unlocked/milestones; the review uses it for the next three goals. Both cloud-held Worker source and its existing tests are untouched here.
-4. `WORKER_DESIGN.md` lists `approvalBreakdown` as replica-safe; the actual `replicaSafe.ts` excludes it because detail lines read survey caches. No host query exists. The review needs only labels and values: it uses exported `APPROVAL_LABELS` and recorded/mirrored term values, with no survey/system read.
-5. Old saves have no prior detailed review telemetry or goal completion dates. Their new arrays pad with `reviewSample = 0`. Annual grades appear after twelve measured months; term deltas need measured start/end points; existing goals seed silently. A save opened exactly on January 1 seeds its saved approval baseline in `reviewTermsSample` without creating a new history point or fabricating a preceding grade. Midyear loads wait for recorded January endpoints. No invented historic grades/completions are displayed.
-6. Records are records within retained monthly history (600 samples), stated on the card. The grade sparkline shows the last ten reconstructible years. Founding from zero population shows new residents rather than dividing by zero; positive population from a zero baseline gets full growth points.
-7. The existing Graphs panel's 1Y control selects 12 samples (eleven intervals). The review uses the actual twelve-month January-to-January interval (13 endpoints). Compare matching January endpoints in Graphs when checking the 0.5% population acceptance; a direct comparison to its 1Y header delta may differ. GraphsPanel is untouched; GUIDE should confirm whether its 1Y range should include 13 points.
-8. Regional line uses current mirrored connection counts and regional job/worker slots, with the persistence region name when supplied. It does not read stale/unmirrored `systemData.region` or request a new Worker row.
+The probe uses `parseArgs(['--size','256','--years','60','--seed','7','--quiet'])`, `new SimBot(opts, await botSystems(opts.noInfra))`, and `yearGradeInput`/`yearGrade` for each January row. It requires every year from 2010 through 2060 to exist and score at least **55 (C)**. Run commands serially.
 
-## Browser acceptance checklist (lead, real GPU / worker, 20-year save)
+## Plan/code differences and cloud requests
 
-- [ ] Load, reset/resync and reopen the save: no Gazette until the next eligible New Year.
-- [ ] At 1×: exactly once after each show/burst; with celebration Off: on January 1.
-- [ ] At 2×: every second elapsed city year; at ultra: every fifth. Speed changes must not duplicate a year's card.
-- [ ] Pan/zoom during fireworks: the pending card still appears when `busy` clears.
-- [ ] Compare population and growth with the same January endpoints in Graphs; difference ≤0.5%.
-- [ ] Compare the largest approval term changes with the approval tooltip's labels.
-- [ ] Verify bank months, emergency response/losses, tourist yearly average, EQ/HQ, records, goals, grade and sparkline.
-- [ ] LIVE at the boundary, while waiting, or while visible: skip/remove the card with no replay after LIVE ends.
-- [ ] After META adds the toggle: switch `yearReview` off before and during a card; it disappears and future cards stay hidden.
-- [ ] Close button, map click/drag/wheel/touch and camera key dismiss without consuming map input; idle/paused card closes at 15 seconds.
-- [ ] At common laptop dimensions and enlarged UI, verify fit/scrolling, stacking, keyboard focus and readability.
-- [ ] Exit/reenter, replace a lost-context canvas and load another city: no retained card, subscriptions or timers.
-- [ ] Run full Vitest, default-runner bot confirmation if desired, and UI frame-cost/real-GPU checks. Medium/Hard/save continuation should retain simulation behavior.
+1. **GUIDE/T037b, `src/sim/economy/advisors.ts`, `ZoneScan` / `scanZones` / `AdvisorData`:** implement LG-05's authoritative built-out test (free buildable land below 1% and relevant family demand at least 0.5), publishing optional top-level `systemData.advisors.builtOut: boolean` before monthly history. No producer exists in this tree. There is no cheap exact local fallback without duplicating the authoritative scan, so growth scoring remains until it lands. The real-economy test follows actual producer output and today covers the absent/false path. The true unemployment path is covered only by the synthetic history contract and pure score tests; it is not an end-to-end built-out-city check.
+2. **META, `src/ui/panels/SettingsPanel.ts`, gameplay section in `build()`:** add the visible "Year in review" row with `this.sw('yearReview')`. The schema/default and card setting response exist; the UI toggle is still absent. File untouched.
+3. **SIM/Worker, `src/worker/replicaSafe.ts`, `REPLICA_SAFE`:** add the pure `listMilestones` helper and its replica-equivalence case in `tests/worker/replicaSafe.test.ts`. The card uses it for the next goals; it reads mirrored stats/unlocked/milestones. Both cloud-held files untouched.
+4. `WORKER_DESIGN.md` lists `approvalBreakdown` as replica-safe, but the actual registry excludes it because detail lines use survey caches. The card uses the shared `APPROVAL_LABELS` and raw mirrored term histories instead; no sim-system read or unsupported host query.
+5. GraphsPanel's 1Y population interval differs from a twelve-month grade interval. The displayed card delta now matches the actual Graphs control exactly; the grade uses the specified annual interval. No GraphsPanel edit or owner request is needed.
+6. Founding snapshots are optional. They seed only at the founding date with empty monthly history, including an unplayed save still at that date. Developed old saves do not acquire fabricated founding values; missing terms/records stay unavailable. An April founding has nine measured months at its first New Year: approval changes and records now work, while a complete annual grade still waits for enough telemetry. Existing January checkpoint seeding remains unchanged.
+7. Records cover retained monthly history (600 samples), with the founding snapshot as the first comparison when available. The sparkline uses reconstructible annual grades. The regional line still uses mirrored connection/job/worker values; no region or Worker source was changed.
+
+Unverified after this patch: full Vitest, real GPU/Worker behavior and visual fit, end-to-end true built-out scoring until its producer exists, and separate Medium/Hard two-process hashes. The 128 bot and save continuation regressions passed; simulation formulas and RNG are unchanged.
+
+## Browser acceptance checklist (lead, real GPU / Worker)
+
+- [ ] On a 20-year save, loading/resetting/resyncing never opens a card immediately.
+- [ ] At 1x, exactly one card per New Year after the show; with celebration Off, on January 1. A healthy show continues to delay the card.
+- [ ] At 2x, every second city year; at ultra, every fifth. Speed changes do not duplicate a card.
+- [ ] Lose/restore WebGL **during active fireworks**, not just before/after a show: camera returns correctly, the pending card appears after restore, and the following New Year's card also appears.
+- [ ] At the captured January, compare the card's population change and growth directly with GraphsPanel's **1Y** header; difference at most 0.5% (unit tests now show exact equality).
+- [ ] Compare approval term names with the tooltip. Found an April-start city and verify its first New Year includes approval change and records; a developed legacy save must not invent prior values.
+- [ ] Verify bank months, emergency outcomes/losses, tourism average, EQ/HQ, records, goals, grade and sparkline.
+- [ ] LIVE at the boundary, while waiting or while visible skips/removes the card with no replay after LIVE ends.
+- [ ] After META adds the toggle, switch `yearReview` off before and during a card; it disappears and future cards stay hidden.
+- [ ] Close button and map/minimap click/drag/wheel/touch/camera keys dismiss; idle/paused card closes after 15 real seconds.
+- [ ] Check laptop/short viewport, enlarged UI, scrolling, stacking, focus and readability.
+- [ ] Exit/reenter, replace a lost-context canvas and load another city: no retained DOM, timers or subscriptions.
+- [ ] Lead: rerun full Vitest and normal real-GPU/frame-cost gates; optionally refresh the 256x60 grade probe and separate difficulty hashes.

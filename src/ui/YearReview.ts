@@ -3,6 +3,7 @@ import './yearReview.css';
 import { YEAR_REVIEW_TERMS, type CityState, type HistorySeries, type YearReviewGoals } from '../sim/CityState';
 import { APPROVAL_LABELS } from '../sim/economy/approval';
 import { CITY_RANKS, listMilestones, REWARD_BY_ID } from '../sim/economy/rewards';
+import type { YearReviewBaseline } from '../sim/economy/history';
 import type { GameContext } from '../game/context';
 import { h, isTyping } from './dom';
 import { moneyCompact, num, pct, signedPct } from './format';
@@ -86,21 +87,28 @@ export function buildYearReview(state: CityState, year: number, regionName?: str
   const history = state.history, month = (year - state.config.startYear) * 12;
   const indices = yearWindow(history, month), end = history.t.indexOf(month), start = history.t.indexOf(month - 12);
   if (end < 0 || !indices.length) return null;
-  const population = history.pop[end], previous = start >= 0 ? history.pop[start] : month === 12 ? 0 : null;
+  // GraphsPanel.draw's 1Y view contains twelve samples (eleven intervals), ending at this review's January.
+  const population = history.pop[end], previous = history.pop[Math.max(0, end + 1 - 12)] ?? null;
+  const economy = state.systemData.economy as { yearReviewGoals?: YearReviewGoals; yearReviewBaseline?: YearReviewBaseline } | undefined;
+  const founding = economy?.yearReviewBaseline;
+  const baseline = founding && founding.month >= month - 12 && founding.month < month ? founding : undefined;
   const full = indices.length === 12 && indices.every((i, k) => history.t[i] === month - 11 + k && history.reviewSample?.[i] === 1);
   const expense = history.reviewSample?.[end] === 1 ? history.recurringExpense[end] : null;
-  const termsMeasured = start >= 0 && history.reviewTermsSample?.[start] === 1 && history.reviewTermsSample?.[end] === 1;
+  const previousTerms = start >= 0 && history.reviewTermsSample?.[start] === 1
+    ? Object.fromEntries(YEAR_REVIEW_TERMS.map((id) => [id, history[`approval_${id}`][start]])) : baseline?.approvalTerms;
+  const termsMeasured = previousTerms !== undefined && history.reviewTermsSample?.[end] === 1;
   const terms = termsMeasured
-    ? YEAR_REVIEW_TERMS.map((id) => ({ id, label: APPROVAL_LABELS[id] ?? id, change: history[`approval_${id}`][end] - history[`approval_${id}`][start] }))
+    ? YEAR_REVIEW_TERMS.map((id) => ({ id, label: APPROVAL_LABELS[id] ?? id, change: history[`approval_${id}`][end] - (previousTerms[id] ?? 0) }))
       .filter((term) => Math.abs(term.change) > 1e-9).sort((a, b) => Math.abs(b.change) - Math.abs(a.change)).slice(0, 3)
     : [];
   const records: string[] = [];
   const prior = history.t.map((t, i) => t <= month - 12 ? i : -1).filter((i) => i >= 0);
-  if (prior.length) for (const [key, label] of [['pop', 'Population'], ['funds', 'Treasury'], ['approval', 'Approval'], ['tourists', 'Tourists'], ['eq', 'EQ'], ['hq', 'HQ']] as const) {
+  for (const [key, label] of [['pop', 'Population'], ['funds', 'Treasury'], ['approval', 'Approval'], ['tourists', 'Tourists'], ['eq', 'EQ'], ['hq', 'HQ']] as const) {
     const best = Math.max(...indices.map((i) => history[key][i]));
-    if (best > Math.max(...prior.map((i) => history[key][i]))) records.push(`${label}: ${key === 'funds' ? moneyCompact(best) : num(best)}${key === 'approval' ? '%' : ''}`);
+    const previousBest = prior.length ? Math.max(...prior.map((i) => history[key][i])) : baseline?.values[key];
+    if (previousBest !== undefined && best > previousBest) records.push(`${label}: ${key === 'funds' ? moneyCompact(best) : num(best)}${key === 'approval' ? '%' : ''}`);
   }
-  const economy = state.systemData.economy as { yearReviewGoals?: YearReviewGoals } | undefined;
+  const previousApproval = start >= 0 ? history.approval[start] : baseline?.values.approval;
   const completed = Object.entries(economy?.yearReviewGoals?.completed ?? {})
     .filter(([, t]) => t > month - 12 && t <= month).sort(([a, ta], [b, tb]) => ta - tb || a.localeCompare(b, 'en'))
     .map(([id]) => goalName(id));
@@ -122,7 +130,7 @@ export function buildYearReview(state: CityState, year: number, regionName?: str
     funds: history.reviewSample?.[end] === 1 ? history.reviewFunds[end] : history.funds[end],
     bankMonths: expense === null ? null : expense > 0 ? history.reviewFunds[end] / expense : Infinity,
     recurringNet: full ? sum(history, 'recurringNet', indices) : null,
-    approval: history.approval[end], approvalChange: start >= 0 ? history.approval[end] - history.approval[start] : null,
+    approval: history.approval[end], approvalChange: previousApproval === undefined ? null : history.approval[end] - previousApproval,
     terms, termsMeasured, incidents: sum(history, 'incidents', indices), answered: full ? sum(history, 'emergencyAnswered', indices) : null,
     failed: full ? sum(history, 'emergencyFailed', indices) : null, lost: full ? sum(history, 'buildingsLost', indices) : null,
     deaths: sum(history, 'emergencyDeaths', indices), tourists: mean(history, 'tourists', indices), eq: history.eq[end], hq: history.hq[end],

@@ -13,7 +13,7 @@
  *   busLoad              busesNeeded / max(1, buses) · parkRide = transitFleet.parkRide
  */
 import type { SimSystem } from '../Simulation';
-import { BF, INCIDENT_KINDS, RESPONDERS, YEAR_REVIEW_TERMS, padHistory, type CityState, type HistorySeries, type NeedStat, type YearReviewGoals } from '../CityState';
+import { BF, INCIDENT_KINDS, RESPONDERS, YEAR_REVIEW_TERMS, padHistory, type CityState, type HistorySeries, type NeedStat, type YearReviewGoals, type YearReviewTerm } from '../CityState';
 import { DevType } from '../../core/types';
 import { getDef } from '../catalog';
 import { CITY_RANKS } from './rewards';
@@ -116,7 +116,26 @@ function recordDepthSeries(st: CityState, h: HistorySeries): void {
   h.parkRide.push(Math.round(fin(tf?.parkRide)));
 }
 
-type ReviewEconomy = Partial<EconData> & { yearReviewGoals?: YearReviewGoals };
+export interface YearReviewBaseline {
+  month: number;
+  values: Record<'pop' | 'funds' | 'approval' | 'tourists' | 'eq' | 'hq', number>;
+  approvalTerms: Partial<Record<YearReviewTerm, number>>;
+}
+
+type ReviewEconomy = Partial<EconData> & { yearReviewGoals?: YearReviewGoals; yearReviewBaseline?: YearReviewBaseline };
+
+/** The founding snapshot is separate from monthly history, so Graphs keeps its existing sample window. */
+function seedReviewBaseline(st: CityState): void {
+  const data = st.systemData.economy as ReviewEconomy | undefined;
+  const founded = typeof st.systemData.foundedDay === 'number' ? st.systemData.foundedDay : 0;
+  if (!data?.approvalTerms || data.yearReviewBaseline || st.day !== founded || st.history.t.length) return;
+  const s = st.stats;
+  data.yearReviewBaseline = {
+    month: st.monthIndex,
+    values: { pop: s.population, funds: Math.round(st.funds), approval: Math.round(s.approval), tourists: Math.round(s.tourists), eq: Math.round(s.eq), hq: Math.round(s.hq) },
+    approvalTerms: Object.fromEntries(YEAR_REVIEW_TERMS.map((id) => [id, fin(data.approvalTerms?.[id])])),
+  };
+}
 
 /** A January checkpoint supplies its saved approval baseline, without inventing the preceding year's inputs. */
 function seedReviewTerms(st: CityState): void {
@@ -162,6 +181,7 @@ function recordReviewSeries(st: CityState, h: HistorySeries): void {
     if (b.flags & BF.Noisy) noisy++;
   }
   const em = st.stats.emergency?.lastMonth;
+  // LG-05/T037b owns the producer; absent metadata deliberately keeps growth scoring.
   const advisors = st.systemData.advisors as { builtOut?: boolean } | undefined;
   h.reviewSample.push(data?.approvalTerms && Number.isFinite(data.resCrime)
     && Number.isFinite(data.resServices) && Number.isFinite(data.resParks) ? 1 : 0);
@@ -185,6 +205,7 @@ export function historySystem(): SimSystem {
     name: 'economy.history',
     init(sim) {
       recordReviewGoals(sim.state, true);
+      seedReviewBaseline(sim.state);
       seedReviewTerms(sim.state);
     },
     monthly(sim) {
