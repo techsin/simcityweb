@@ -1,4 +1,61 @@
-# T047 — FEEL-09, review round 4 (N5)
+# T047 report: FEEL-09, follow the truck you sent (desktop, real GPU)
+
+**Verdict: done; holds for B2.** Every FEEL-09 Acceptance line passes on the real GPU after the review rounds below.
+The lane's two `src/sim/infra/emergency.ts` commits hold for B2's merge (NOTE-046 Q1); everything else is ready.
+
+Branch `local/T047-feel09-follow`:
+- base dev `fb1531f`; dev `50a6b29` merged in as `733c5d7` (clean, CityScene.ts auto-merged);
+- `1d287f2` the lane, with `aece5b4` (infra, holds for B2);
+- `434e070` review round 1, with `7e611c7` (infra, holds for B2);
+- `2397ab6` review round 2; `7ccf3ed` the N5 round.
+
+**The infra hunks (hold for B2):** `EmergencySystem.afterDispatch` takes the ids of the vehicles a manual dispatch sent
+and puts them on the `dispatched` event as optional `sent`, also when only a supporting responder went (the ambulance
+of an industrial accident). Follow leads with the player's own unit from that list, never with an automatic one.
+No route, RNG draw, balance or save data changes; the bot is identical.
+
+## Real-GPU QA (RTX 5070 Ti, ANGLE D3D11, Chromium)
+
+| FEEL-09 Acceptance | Result | Measured |
+|---|---|---|
+| The truck stays in the central 30 % for the whole drive at LIVE, no step over 3 px at 60 fps | **PASS** | Round 4, from the settled camera: vet21 max 2.74 / p99 1.83 px, bot256 max 2.88 / p99 1.94 px, **0 frames over 3 px**; box \|NDC\| ≤ 0.05 × 0.02. Round 3: 0 frames over 3 px in all 6 runs at 720p and 1080p. |
+| Control returns 2 s after the unit is on scene; any drag ends Follow at once | **PASS** | 2 s timer release at 2001-2016 ms. An incident that resolves during the grace ends Follow on the next frame (1560 ms). Middle drag, Shift+right drag, wheel, W and touch end it in the same frame. |
+| Auto-dispatched units never show Follow | **PASS** | Send nearest and DispatchTool both lead with the player's truck, never the auto ambulance; the auto-dispatch case offers no Follow. |
+
+**Also checked:**
+- **Turn clearance (N1, N5):** on the real road mesh, every synthetic junction type (Road and Street L-bends, a Street
+  built across a Road, Road×Street, Street×Street, Road×Road) and the 418 real corners of vet21 and bot256 keep the
+  truck off the raised sidewalk (tangent at worst, ≤ 1 mm). Signal poles, streetlights and street-tree trunks
+  are ≥ 0.88 m clear.
+- **Road meshes:** byte-identical to dev on both cities (64 of 64 chunks).
+- No console or page errors.
+
+QA notes: scratchpad `qa/T047/qa.md`, rounds 1-4, with data and shots.
+
+## Gates
+
+| Gate | Result |
+|---|---|
+| tsc | clean |
+| Full vitest with the fixtures (`7ccf3ed`) | **223 files passed, 1 skipped; 2,241 tests passed, 7 skipped; 0 failing** |
+| 128×15 s7 bot with the action log | **identical to dev:** residents [ 61124, 93804, 37971 ] = 192,899 |
+
+## Left open, with their owners
+
+- **N2, the loopback clock at day boundaries** (`LoopbackSimHost.ts:398-401`): about a 4.7 m leap per sim day at LIVE,
+  5.2-9.0 px steps. The cloud's T061 item 2 owns it. The 3 px line above is measured on the default host.
+- **B3, pause snap-back** (`Simulation.ts:145-150`, `dayFraction` returns 0 while paused): the drawn truck and Follow
+  snap back to the day start. Sim clock owner.
+- **B5, a plain Query left click ends Follow** (`QueryTool.ts:111-114`): defer the cancel until the pointer
+  actually drags. Tools owner.
+- **N6, highway overpass turns** keep their pre-existing path: the truck leaves the deck sideways along the sim's
+  automatic ramp, which has no ramp mesh. Road render / transport owner.
+- **N7, the avenue lane offset** is in `docs/dev/POLISH_BACKLOG.md`: a fixed 1.9 m puts the truck's left side 0.37 m
+  over the avenue's median curb.
+
+The lane's own round notes follow.
+
+## The N5 round (7ccf3ed): the lane's notes
 
 Fixes on `local/T047-feel09-follow`, based on `2397ab6`. Changes remain **uncommitted**; no push, merge or `.done` file. Both remaining right-turn layouts are covered. TypeScript passes; **13 targeted files, 252 tests passed, 1 skipped**. New real-GPU verification remains with the lead.
 
