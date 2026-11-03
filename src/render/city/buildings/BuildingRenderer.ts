@@ -104,6 +104,13 @@ const PROXY_PAD = 0.6;
  *  p90 372, max 570, <= 200 triangles by tests/render/lod.test.ts) */
 const PROXY_VERTS = 256;
 
+/** A lane's bounded work queue, sharing the building geometry budget. */
+export interface BudgetedWork {
+  pending(): boolean;
+  step(): boolean;
+  clear(): void;
+}
+
 export interface BuildingVisual {
   id: number;
   model: string;
@@ -908,6 +915,10 @@ class LodFadeLayer {
 }
 
 export class BuildingRenderer {
+  /** Before other field initializers: lanes may register their work from their own fields. */
+  private budgetedWorks: BudgetedWork[] = [];
+  private budgetedWorkAt = 0;
+  private budgetedWorkTurn = false;
   readonly batch: DynamicBatch;
   private inst = new Map<number, BInst>();
   /** live adds / visual changes, keyed by object: building ids can be reused before a frame builds them */
@@ -1615,6 +1626,9 @@ export class BuildingRenderer {
   }
 
   clear(): void {
+    for (const work of this.budgetedWorks) work.clear();
+    this.budgetedWorkAt = 0;
+    this.budgetedWorkTurn = false;
     for (const bi of this.inst.values()) { if (bi.li >= 0) this.freeInstances(bi); bi.gone = true; }
     this.buildQueue.clear();
     this.buildOrder.length = 0;
@@ -1884,6 +1898,49 @@ export class BuildingRenderer {
         this.nextActivity();
         done++;
       }
+    }
+    if (!this.buildQueue.size) { this.buildOrder.length = 0; this.buildAt = 0; }
+  }
+
+  /** Each work gets one attempt per rotation; a stalled/cancelled unit cannot block another queue. */
+  private stepBudgetedWork(end: number, timed: boolean): boolean {
+    const works = this.budgetedWorks, n = works.length;
+    for (let i = 0; i < n; i++) {
+      const work = works[this.budgetedWorkAt];
+      this.budgetedWorkAt = (this.budgetedWorkAt + 1) % n;
+      if (work.pending()) {
+        if (work.step()) return true;
+        if (timed && performance.now() >= end) return false;
+      }
+    }
+    return false;
+  }
+
+  /** Alternate builds and work units across frames, with round-robin turns among the registered queues. */
+  private drainBudgetedWork(all: boolean): void {
+    if (this.disposed) return;
+    const end = performance.now() + BUILD_BUDGET_MS;
+    let done = 0;
+    while (!this.disposed) {
+      if (done > 0 && !all && performance.now() >= end) break;
+      if (this.budgetedWorkTurn || !this.buildQueue.size) {
+        if (this.stepBudgetedWork(end, done > 0 && !all)) {
+          done++;
+          this.budgetedWorkTurn = false;
+          continue;
+        }
+      }
+      if (!this.buildQueue.size) break;
+      if (done > 0 && !all && performance.now() >= end) break;
+      if (this.buildAt >= this.buildOrder.length) {
+        this.orderBuilds();
+        if (done > 0 && !all && performance.now() >= end) break;
+      }
+      const bi = this.buildOrder[this.buildAt++];
+      if (!this.buildQueue.has(bi)) continue;
+      this.buildNow(bi);
+      done++;
+      this.budgetedWorkTurn = true;
     }
     if (!this.buildQueue.size) { this.buildOrder.length = 0; this.buildAt = 0; }
   }
@@ -2728,6 +2785,9 @@ export class BuildingRenderer {
 
   dispose(): void {
     this.disposed = true;
+    for (const work of this.budgetedWorks) work.clear();
+    this.budgetedWorkAt = 0;
+    this.budgetedWorkTurn = false;
     this.buildQueue.clear();
     this.buildOrder.length = 0;
     this.buildAt = 0;
