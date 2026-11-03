@@ -66,3 +66,17 @@ Left for the lead:
   continuation were not run; no simulation formulas or save format changed in this task.
 - No browser checks appear in T062's acceptance/gates. Browser checklist: **N/A**.
 - Review/commit/push as desired. No commit, push, merge or `.done` file was made, per the session rules.
+
+
+## Round 2 — Fork-noise envelopes
+
+Report-only follow-up on committed `3833c8d`. [The new section](sim-aa-envelope.md#fork-noise-envelopes) records every first command/log fork, year-10-onward metric delta, cross-size range, exact command and source hash. Only this note and the report changed in the repository; diagnostic runners and output remain in the lane scratch. The original report bytes and all baseline fixtures are preserved. No production code, infra, cloud-held or outside-scope hunks; no cloud requests.
+
+- **17 runs completed**, sequentially through the quiet gate: three controls, +§10/+§100/+§1,000/+§10,000 on all three rows, and +§10 on days 1,800/4,320 of 128×15 s7.
+- **Recommend +§10 on day 1 as the minimal tested common probe**, with the reported directional-shift diagnostic retained. It first forks on days **3,720 / 4,260 / 4,590**. This is a tested-grid minimum, not a sub-§10 threshold search.
+- +§10 endpoints: **191,754 / 1,287,517 / 1,362,916**, against unchanged controls **192,899 / 1,513,835 / 1,427,340**. All three population losses exceed half the diagnostic bands: investigate before calling this unbiased noise. Larger-nudge envelopes are non-monotonic; do not choose a wider tolerance by endowment size.
+- Day 1,800 reproduces the 128×15 day-1 commands/logs/metrics; day 4,320 reproduces the unnudged commands/logs/metrics and retains exactly §10 more funds from year 12. No 256×60 timing probe was run.
+- Gates: `npx tsc --noEmit` passed; `tests/sim/botAaFundsNudge.test.ts` **11 passed** (quiet gate, native loader, threads). Independent scratch validator passed **705 annual observations, 135 unchanged control hashes/rows, 56 envelopes, first-action indices and timing comparisons**. Original flags-off 128×15 s7 stays **192,899**, residents `[61124,93804,37971]`.
+- Plan/code difference: the specified +§1 probe never forks; +§10 does, but its shared negative endpoint pattern means this calibration cannot be presented as proven unbiased noise. No balance calibration or baseline re-recording was made.
+- Left for the lead: the systematic-direction investigation and post-T041 remeasurement; full-suite/GPU/browser checks as usual. Browser Acceptance checklist: **N/A**. Hard/save-specific checks, negative nudges and exact sub-§10 thresholds were not measured.
+- Changes remain uncommitted; no push, merge or `.done` file.
