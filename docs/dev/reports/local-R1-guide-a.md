@@ -1,4 +1,101 @@
-# T037ar — onboarding review and local fixes
+# T037ar — onboarding round 2
+
+Round-2 base: b5580ff (dev 683d02b merged), after the user verified round 1 at 3dd3446: tsc, 221 Vitest files / 2,224 tests, and bot 192,899. Those results apply to round 1, not these uncommitted changes.
+
+**Current status:** changes 2, 4, 5 and 6 and the allowed Toolbar part of 3 are implemented. Change 1's typed op, snapshot sending and real-save tests are implemented, but **dirty tracking and journal enrollment remain pending the explicit save-path approval requested under NOTE-048**. No forbidden host files, save/journal/recovery source, infra files or .done files were edited.
+
+## Round-2 changes, numbered for separate commits
+
+Shared files deliberately contain separate hunks. Stage the named hunks, rather than whole shared files, for each number. The report itself can be committed last.
+
+Minimal additions outside the newly named source files: src/core/onboarding.ts shares the record/schema without importing UI code into the worker, and src/game/CityScene.ts adds only the Toolbar and E11 callbacks. Existing tests/worker/querySideEffects.test.ts and replicaSafe.test.ts get only the new query/registry coverage required by their exhaustive lists. No src/sim/infra/* hunk was needed.
+
+| # | Change | File list / hunk ownership |
+|---|---|---|
+| **1** | FH-22 typed, bounded setOnboarding op; detached copies; unchanged-snapshot suppression; tagged independent gestures for UI/hidden events; enrollment preserves old mature/suppressed cities. **Dirty/journal entries pending.** | New src/core/onboarding.ts; src/worker/SimHost.ts; src/worker/SimCore.ts; src/worker/protocol.ts **CommandOp + SYSTEM_KEYS only**; src/worker/queries.ts **absent-onboarding exactDigest hunk only**; src/ui/guide/progress.ts; src/ui/Onboarding.ts **enrolled/lastProgress/persistProgress and persistence calls only**; new tests/worker/onboardingPersistence.test.ts; tests/game/onboarding.test.ts **FH-22 persistence/enrollment/event cases only**. |
+| **2** | Cached authoritative guideFacts query/watch, canonical lot cells, resident-weighted police and automatic fire/all-fuel coverage in Overlay.None; guide consumes query result instead of replica rasters. | src/worker/queries.ts **guideFacts cache/handler/signature only**; src/worker/protocol.ts **QueryName entry only**; src/worker/replicaSafe.ts; src/ui/guide/goals.ts; src/ui/Onboarding.ts **coverageWatch field/disposal/frame hunk only**; new tests/worker/guideFacts.test.ts; tests/worker/querySideEffects.test.ts; tests/worker/replicaSafe.test.ts; tests/game/onboarding.test.ts **queried-coverage case only**. |
+| **3** | TopBar coach wiring waits. Toolbar exact item ids now pulse and survive flyout/tab rebuilds. | src/ui/Toolbar.ts **coachItems/setCoachItems/item class + data-tool-id only**; src/ui/guide/onboarding.css; src/game/CityScene.ts **mark callback only**; new tests/game/guideToolbarCoach.test.ts. No TopBar/topbar changes. |
+| **4** | Power-card MW output, wind flat/hill output and approximately 1 MW per 300 residents header; wind ghost's two-empty-tile Chebyshev spacing perimeter/conflicts, clipped at map edge. Existing footprint/target highlights and budget hints remain. | src/ui/Toolbar.ts **power imports/output/header only**; src/game/tools/PlopTool.ts; new tests/game/guidePowerUi.test.ts. Tool.ts is untouched. |
+| **5** | E11 appends to the existing year-end feedback through the existing Toasts route, once per profile. Full/silent/compact branches still emit exactly one toast; compact silence/lifetime and FEEL-02a budget behavior stay intact. Uses the active guide's profile object so subsequent minimise/explainer writes preserve E11 memory. | src/game/NewYear.ts; src/ui/Onboarding.ts **yearFeedback method only**; src/game/CityScene.ts **yearFeedback callback only**; new tests/game/guideNewYear.test.ts. Notifications.ts and tests/game/toastBudget.test.ts are unchanged. |
+| **6** | Nonblocking owner handoffs for structured LG-15/E10 damage and NEW-06/G9Next valid shore site. Existing hooks retained. | docs/dev/POLISH_BACKLOG.md, two added lines. |
+
+### Change 1: exact pending approval / code mismatch
+
+NOTE-048 says to ask first for anything in the save, journal or recovery path. The current code is not generic for these two requirements: recoveryCodec has an explicit JOURNAL_OPS whitelist; fingerprint has an explicit CHANGE_EVENTS list. An async approval question was sent for these exact minimal entries and is still pending:
+
+- src/save/recoveryCodec.ts, JOURNAL_OPS: add setOnboarding: true. Add setOnboarding to protocol.ts's JournalOp union in the same change.
+- src/save/fingerprint.ts, CHANGE_EVENTS: add savedDataChanged. Add the typed event in src/sim/Simulation.ts and emit it from SimCore only after a valid, changed record is installed. This updates both Local changeSequence and protocolInbox's existing shared change counter without editing protocolInbox.
+
+Until approved and applied, manual host save/reload uses the new record, but progress-only edits do **not** mark the save dirty and the recovery mirror does **not** journal them. Do not mark FH-22 complete. Add Local/packet dirty-counter assertions, unchanged/rejected-record assertions and recovery replay coverage with those entries. The existing tests/worker/recovery.test.ts every-whitelisted-op fixture must also include the new op; it currently assumes a truthy action result is an {ok:true} object, while setOnboarding returns boolean.
+
+No per-op change to WorkerSimHost.ts, LoopbackSimHost.ts or protocolInbox.ts was necessary in the implemented path, so no T034 skip was added. No save-path workaround or unrelated synthetic city event was used.
+
+The record is a strict complete v1 shape capped at 2 KiB. Unknown versions/fields, malformed numbers, unknown/duplicate IDs, sparse arrays and arrays with extra properties reject before cloning. Old tolerant save decoding remains in the UI. The exactDigest hunk skips **only absent onboarding** so adding the optional SYSTEM_KEYS entry does not hash a new undefined sentinel into every pre-op city. No sim balance or RNG behavior changes when the op is never sent.
+
+### Change 2: evaluation measurement and invalidation
+
+Authorized fixture read only: C:/Users/techsin/Desktop/projects/simcityweb-worker/tools/bench/.fixtures/fixtures/dense1m_s7.metropolis. No other worktree was edited. Fixture: **1,118,755 residents, 17,154 buildings**.
+
+- Final measured **one invalidated full aggregate evaluation: 0.1244 ms median**, 31 individual samples after 100 JIT warmups; min 0.1109 / max 0.1528 ms. This is a full sum, not a cache hit, and is below the 0.3 ms reevaluation target.
+- Cached access: **0.0023 ms**.
+- First call including lazy canonical-lot metadata hydration: **7.3309 ms**. This startup cost is separate and exceeds 0.3 ms; do not report the cold call as a target pass. Earlier unoptimized measurement was 0.1365 ms warm / 8.1613 ms cold.
+- Metadata updates are event-driven, with an allocation-free path for an unchanged building reference/definition/canonical cell. Query/watch signatures are constant-time. Full sums invalidate on building/network/zone/terrain edits, services/emergency refresh, reset, and day events. Daily invalidation is needed because population bands change b.pop without necessarily emitting buildingChanged; it keeps resident weighting current. Idle unchanged frames do not recompute.
+- Cold metadata and subsequent full sums stay in worker-owned transient caches; they do not add saved state or RNG draws.
+
+The requested npx tsx probe could not start because tsx is not cached and npm networking is restricted (ENOTCACHED). The same short probe was bundled with the installed rolldown and run through the quiet gate using node. Scripts and guide-facts-performance.json are in the assigned T037ar/scratch folder. Final command:
+
+~~~text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T037ar/scratch/guide-facts-probe.mjs
+~~~
+
+## Round-2 checks
+
+- **PASS:** npx tsc --noEmit after all source changes; git diff --check.
+- **PASS, limited source probe:** the repository hygiene scanner reports no systems/speed/replica violations in the seven changed UI/game sources; CityScene's static graph excludes sim/actions. round2-hygiene-probe.json records it. This does not substitute for full hygiene test execution.
+- **BLOCKED before collection:** all 19 targeted single-file Vitest attempts below used quietrun and --maxWorkers=1. Vite's config loader failed in externalize-deps/optimizeSafeRealPathSync with **spawn EPERM**. **Zero tests executed.** round2-test-startup.json records the per-file failures.
+
+~~~text
+tests/game/onboarding.test.ts
+tests/game/guideCopy.test.ts
+tests/game/guideTips.test.ts
+tests/game/guideWhy.test.ts
+tests/game/guideNewYear.test.ts
+tests/game/guidePowerUi.test.ts
+tests/game/guideToolbarCoach.test.ts
+tests/worker/onboardingPersistence.test.ts
+tests/worker/guideFacts.test.ts
+tests/worker/queries.test.ts
+tests/worker/querySideEffects.test.ts
+tests/worker/replicaSafe.test.ts
+tests/worker/hygiene.test.ts
+tests/game/toastBudget.test.ts
+tests/game/newYearPacing.test.ts
+tests/game/budgetPreview.test.ts
+tests/game/upkeepReads.test.ts
+tests/game/uiCardTip.test.ts
+tests/game/quakeShakePlop.test.ts
+~~~
+
+New tests cover real Local/packet G4 manual save/reload and continued updates; detached records; invalid/future/oversized inputs; optional old saves; no-op-never-sent save/exact/RNG equivalence; hidden tagged gestures; mature/suppressed-city enrollment; canonical coverage cells/weights/readiness; unchanged-frame caching; real normal-view packet station placement/removal; power-card output/header/spacing preview; exact toolbar coaching; and E11 single-toast/profile/disabled/compact behavior. Runtime assertions remain unverified here due EPERM.
+
+No bot or full suite was run this round. Expected default 128×15 seed-7 result remains **192,899**, residents **[61,124, 93,804, 37,971]**, with unchanged exact/determinism digests when setOnboarding is not sent. New no-op tests encode the invariant; it is not a fresh measured bot result. The prior report below retains the exact bot command for the lead.
+
+## Round-2 browser follow-up
+
+- [ ] Real Local and packet city: reach G4, save, reload, continue; dismiss/minimise and hidden power/budget updates survive. After the pending dirty/journal entries land, confirm a progress-only change marks Unsaved and survives recovery.
+- [ ] Mature old save and globally suppressed profile stay unguided and keep the key absent until Help opens it; subsequent enrolled city dismissal persists.
+- [ ] Overlay.None: add/remove police and fire stations, wait for actual layer completion, see G3/G4 update without switching overlays. Repeat after a resync.
+- [ ] At 1280×720, power cards show 3 MW flat / up to 7 on hills (catalog-derived), other plant output, and the 1 MW/300 estimate without clipping existing price/upkeep/budget text.
+- [ ] Turbine square ring shows the two-empty-tile clearance including diagonal conflicts and clips at map edges. Moving/rotating/changing tools/aborting clears it and keeps footprint/garage/ferry highlights intact.
+- [ ] Exact Road/Residential/Wind/Tower items pulse through tab rebuilds. TopBar coach controls remain deferred until its split reaches dev.
+- [ ] First enabled year-end feedback contains E11 once on the existing toast; later cities do not repeat it. Tips/toasts off do not consume it; ultra remains one silent compact toast. FEEL-02a pacing/toast budgets unchanged.
+- [ ] Repeat guide-only first city on Easy/Medium and 64 islands using the original acceptance checklist below. E10/G9Next handoffs are nonblocking owner work.
+
+All changes remain uncommitted. No commit, push, merge, .done update, browser/GPU run or unrelated process termination was performed.
+
+---
+
+## Round-1 review (historical, committed as 3dd3446)
 
 Reviewed on local/R1-guide-a at a7b130d with dev merged. Changes are uncommitted. **Not DONE:** actual FH-22 save/reload and current FH-02 police/fire facts need cloud-owned Worker changes. No .done file was edited, following the desktop rules.
 
