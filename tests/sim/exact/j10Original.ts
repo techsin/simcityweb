@@ -1,4 +1,6 @@
-// Frozen population.ts, demographics.ts and utilities.ts from 614609f; only import paths and names differ.
+// Frozen population.ts, demographics.ts and utilities.ts from 614609f; only import paths and names differ — and B3's
+// phases (docs/dev/B3_DESIGN.md §3.3, the live population.ts's OCC_PHASE 1, DEMO_PHASE 17, DEMOGRAPHICS_EVENT_PHASE 1):
+// the employment and demographics samples on odd days, the 'demographics' layer event on dom 1.
 /**
  * Population system: construction progress, daily aggregation of residents / jobs / cohorts (→ CityStats),
  * employment, the time-sliced occupancy pass (building health, fill / vacancy, hiring, demographics, abandonment,
@@ -322,8 +324,8 @@ export function populationSystemOriginal(rt: EconRuntime): SimSystem & { rt: Eco
     // employment sample (workforce x traffic access): every OCC_PERIOD days; cohort shares / coarse demographics
     // grids / city mean education: every DEMO_AGG_DAYS (the fields change slowly) — the cohort stats follow the daily
     // population at the sampled shares. A loaded city takes the saved sample (systemData.popGrids, see PopGrids)
-    const sample = first || st.day % OCC_PERIOD === 0;
-    const demo = first || st.day % DEMO_AGG_DAYS === 0;
+    const sample = first || st.day % OCC_PERIOD === 1;
+    const demo = first || st.day % DEMO_AGG_DAYS === 17;
     const saved = first && st.day > 0 && rt.coarsePopW[0].length === cc ? savedGrids(st, cc) : null;
     if (sample) cache.ensure(st.nextBuildingId);
     const mWf = cache.wf;
@@ -710,7 +712,7 @@ export function populationSystemOriginal(rt: EconRuntime): SimSystem & { rt: Eco
       rt.ensureLists();
       aggregate(sim, false);
       demographicsDataOriginal(sim.state).cursor = cursor;
-      if (sim.state.day % DEMOGRAPHICS_EVENT_DAYS === 0) sim.events.emit('layerUpdated', 'demographics');
+      if (sim.state.day % DEMOGRAPHICS_EVENT_DAYS === 1) sim.events.emit('layerUpdated', 'demographics');
       // (monthly, off the month tick) outage records of buildings that are gone
       if (sim.state.day % DAYS_PER_MONTH === 7) pruneOutages(sim.state);
       // EQ / HQ from the residents' education stock and health access, once a month (with sim-infra services; approval
