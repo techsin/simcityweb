@@ -2,7 +2,7 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { parseArgs, waitForAcks, poll, selectedChecks, CHECKS, brokenBuildVerdict, withCleanup, Report } from './harness.mjs';
+import { parseArgs, waitForAcks, poll, selectedChecks, CHECKS, brokenBuildVerdict, withCleanup, Report, validateSession } from './harness.mjs';
 import { installProbe, savedMarkers } from './page.mjs';
 import { breakAckPlugin } from './build.mjs';
 import { resumeDelay, restoreVisibility } from './freeze.mjs';
@@ -11,13 +11,15 @@ import { Driver } from './driver.mjs';
 const rows = (extra = {}) => [{ seq: 1, status: 'resolved', result: { ok: true }, ...extra }];
 afterEach(() => { globalThis.window?.__qaWorker?.dispose(); delete globalThis.window; delete globalThis.document; });
 
-test('CLI: defaults, host validation and explicit W1 gate', () => {
-  assert.deepEqual(parseArgs([]), { host: 'local', swiftshader: false, headed: false, w1: false, ackTimeout: 8000, bootTimeout: 180000 });
+test('CLI: loopback runs by default; worker shares the host switch; local W1 is optional', () => {
+  assert.deepEqual(parseArgs([]), { host: 'loopback', swiftshader: false, headed: false, w1: true, ackTimeout: 8000, bootTimeout: 180000 });
+  assert.equal(parseArgs(['--host', 'local']).w1, false);
+  assert.equal(parseArgs(['--host', 'loopback', '--break-ack', 'zone']).w1, true);
   assert.equal(parseArgs(['--help']).help, true);
   assert.equal(parseArgs(['--host', 'worker', '--w1', '--swiftshader']).host, 'worker');
   assert.equal(parseArgs(['--break-ack', 'zone']).only, 'zone');
   assert.equal(parseArgs(['--only', 'freeze']).only, 'freeze');
-  for (const args of [['--host', 'other'], ['--out'], ['--ack-timeout', '-1'], ['--boot-timeout', 'NaN'], ['--drop-ack', 'unknown'], ['--digest-module', 'x.ts'], ['--wat'], ['--only', 'typo'], ['--break-ack', 'zone', '--only', 'freeze'], ['--break-ack', 'zone', '--drop-ack', 'zone'], ['--break-ack', 'zone', '--host', 'worker']]) {
+  for (const args of [['--host', 'other'], ['--out'], ['--ack-timeout', '-1'], ['--boot-timeout', 'NaN'], ['--drop-ack', 'unknown'], ['--host', 'local', '--digest-module', 'x.ts'], ['--wat'], ['--only', 'typo'], ['--break-ack', 'zone', '--only', 'freeze'], ['--break-ack', 'zone', '--drop-ack', 'zone']]) {
     assert.throws(() => parseArgs(args));
   }
 });
@@ -215,7 +217,7 @@ test('broken build: production transform replaces the actual host done initializ
   assert.equal(plugin.transform(source, '/src/unrelated.ts'), null);
   const out = plugin.transform(source, '/repo/src/worker/SimHost.ts');
   plugin.generateBundle();
-  assert.deepEqual(evidence, { op: 'zone', rewrites: 1 });
+  assert.deepEqual(evidence, { op: 'zone', host: 'local', rewrites: 1 });
   const line = out.code.split('\n').find((s) => s.includes('const done =')).replace('<CommandResult<K>>', '');
   const actDone = new Function('op', 'predicted', `${line}\nreturn done;`);
   assert.deepEqual(await actDone('dezone', { ok: true }), { ok: true });
@@ -301,4 +303,52 @@ test('control reporting: report-write failure never announces a successful negat
   await report.finish({ breakAck: 'zone', out: new URL('./', import.meta.url) });
   assert.equal(logs.some((line) => line.startsWith('PASS broken-build control')), false);
   assert.equal(report.checks.find((c) => c.name === 'broken-build control').status, 'FAIL');
+});
+
+test('loopback oracle: exact unposted refusals are classified without satisfying transported ack coverage', async () => {
+  const refusal = rows({ seq: 0, exact: true, predicted: { ok: false }, result: { ok: false, reason: 'Nothing to change' } });
+  await waitForAcks(async () => refusal, 'terraform', 10, { allowFailure: true });
+  await assert.rejects(waitForAcks(async () => refusal, 'terraform', 10), /invalid ticket/);
+  await assert.rejects(waitForAcks(async () => rows({ ...refusal[0], exact: false }), 'terraform', 10, { allowFailure: true }), /invalid ticket/);
+  validateSession([...refusal, ...rows({ seq: 1 })]);
+  assert.throws(() => validateSession(rows({ seq: 0, exact: true, predicted: { ok: true } })), /unposted refusal/);
+});
+
+test('loopback oracle: only same-key sliders sharing the actual promise may coalesce sequences', () => {
+  const slider = { op: 'setTax', args: [0, 9], seq: 1, ticketId: 3 };
+  validateSession([slider, { ...slider, args: [0, 10] }, { op: 'zone', seq: 2 }]);
+  for (const changed of [{ ticketId: 4 }, { op: 'zone' }, { args: [1, 10] }]) {
+    assert.throws(() => validateSession([slider, { ...slider, ...changed }]), /coalesced/);
+  }
+  assert.throws(() => validateSession([{ op: 'zone', seq: 2 }, slider]), /did not increase/);
+});
+
+test('probe: forwards save reason and observes the real host save watermark', async () => {
+  const { host, scene } = fixture();
+  host.save = async (reason) => ({ cmd: 5, savedAt: 100, reason });
+  scene.save = function (...args) { this.args = args; return host.save(args[1]); };
+  installProbe();
+  await scene.save(false, 'exit');
+  assert.deepEqual(scene.args, [false, 'exit']);
+  assert.equal(window.__qaWorker.saves[0].reason, 'exit');
+  assert.equal(window.__qaWorker.hostSaves[0].ack.cmd, 5);
+  assert.equal(window.__qaWorker.hostSaves[0].reason, 'exit');
+});
+
+test('broken loopback build: only target settlement is withheld; packet mutation and other acks still complete', async () => {
+  const source = await readFile(new URL('../../src/worker/LoopbackSimHost.ts', import.meta.url), 'utf8');
+  const evidence = {}, plugin = breakAckPlugin('zone', evidence, 'loopback');
+  const out = plugin.transform(source, '/repo/src/worker/LoopbackSimHost.ts'); plugin.generateBundle();
+  assert.deepEqual(evidence, { op: 'zone', host: 'loopback', rewrites: 1 });
+  const body = out.code.split('private ack(seq: number, result: unknown): void {')[1].split('  beginGesture(')[0];
+  const ack = new Function('seq', 'result', body.slice(0, body.lastIndexOf('}')));
+  let resolved = 0, pendingCleared = 0;
+  const target = { tickets: new Map([[1, { resolve() { resolved++; } }], [2, { resolve() { resolved++; } }]]),
+    edits: new Map([[1, { op: 'zone' }], [2, { op: 'dezone' }]]), options: {}, controller: { pending: { ack() { pendingCleared++; } } } };
+  ack.call(target, 1, { ok: true });
+  assert.equal(resolved, 0); assert.equal(target.edits.has(1), false); assert.equal(pendingCleared, 1);
+  ack.call(target, 2, { ok: true });
+  assert.equal(resolved, 1); assert.equal(pendingCleared, 2);
+  assert.throws(() => breakAckPlugin('zone', {}, 'loopback').transform('drift', '/repo/src/worker/LoopbackSimHost.ts'), /acknowledgement changed/);
+  assert.equal(await readFile(new URL('../../src/worker/LoopbackSimHost.ts', import.meta.url), 'utf8'), source);
 });

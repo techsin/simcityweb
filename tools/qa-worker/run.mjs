@@ -16,10 +16,13 @@ export async function run(options, report, signal) {
   report.signal = signal;
   try { report.details.head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8', windowsHide: true }).trim(); }
   catch { report.details.head = 'unavailable'; }
-  if (options.host !== 'local' && !options.w1) {
-    const why = `${options.host} requires --w1 and ${options.host === 'worker' ? 'W1.2 WorkerSimHost' : 'W1.1b LoopbackSimHost'}; this base only has LocalSimHost`;
-    for (const n of ['production build', 'Chromium', ...BROWSER_CHECKS, 'console errors', 'cleanup']) report.add(n, 'SKIPPED', why);
-    return;
+  if (options.host === 'worker') {
+    try { await access(join(ROOT, 'src/worker/WorkerSimHost.ts')); }
+    catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+      for (const n of ['production build', 'Chromium', ...BROWSER_CHECKS, 'console errors', 'cleanup']) report.add(n, 'SKIPPED', 'worker host not in this build; requires T034 / W1.2 WorkerSimHost');
+      return;
+    }
   }
   let dir, server, browser, page, protectors;
   // Playwright must not exit the process before our finally removes the owned build.
@@ -39,11 +42,12 @@ export async function run(options, report, signal) {
       const config = { root: ROOT, logLevel: 'warn', build: { outDir, emptyOutDir: true } };
       if (options.breakAck) {
         report.details.brokenBuild = {};
-        config.plugins = [breakAckPlugin(options.breakAck, report.details.brokenBuild)];
+        config.plugins = [breakAckPlugin(options.breakAck, report.details.brokenBuild, options.host)];
       }
       let digestPath;
-      if (options.digestModule) {
-        digestPath = resolve(ROOT, options.digestModule);
+      const digestModule = options.digestModule ?? (options.w1 || options.host !== 'local' ? 'src/worker/queries.ts' : null);
+      if (digestModule) {
+        digestPath = resolve(ROOT, digestModule);
         await access(digestPath);
         config.build.rollupOptions = { preserveEntrySignatures: 'strict', input: { main: join(ROOT, 'index.html'), gallery: join(ROOT, 'gallery.html'), 'qa-digest': digestPath } };
       }
@@ -79,7 +83,7 @@ export async function run(options, report, signal) {
       });
       page.on('pageerror', (e) => errors.push({ type: 'pageerror', text: e.stack ?? e.message }));
       page.on('crash', () => errors.push({ type: 'crash', text: 'Chromium page crashed' }));
-      if (options.w1) protectors = await watchProtectors(page);
+      if (options.w1 || options.host !== 'local') protectors = await watchProtectors(page);
       report.details.browser = browser.version();
       return `${browser.version()}; ${options.swiftshader ? 'SwiftShader (not a real-GPU acceptance run)' : 'real GPU requested'}`;
     }, ['production build']);

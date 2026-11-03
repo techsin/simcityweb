@@ -5,9 +5,9 @@ export function installProbe({ dropAck = null } = {}) {
   if (!scene?.host || !scene.ctx?.signal) throw new Error('W0 host/context debug seam is unavailable');
   const { host, ctx } = scene;
   const restores = [];
-  const gestures = new WeakMap();
-  let current = null, dropped = false, saving = null;
-  const q = { commands: [], gestures: [], sounds: [], toasts: [], saves: [], freeze: null, disposed: false };
+  const gestures = new WeakMap(), tickets = new WeakMap(), tags = new Map();
+  let current = null, dropped = false, saving = null, postingTag = null, ticketId = 0;
+  const q = { commands: [], gestures: [], sounds: [], toasts: [], saves: [], hostSaves: [], ghosts: [], previews: [], events: [], packets: [], freeze: null, disposed: false };
   const copy = (v) => {
     try { return v === undefined ? null : structuredClone(v); }
     catch { return { uncloneable: true, type: typeof v }; }
@@ -19,45 +19,89 @@ export function installProbe({ dropAck = null } = {}) {
   };
   patch(host, 'beginGesture', (original) => function (owner) {
     const g = original.call(this, owner);
-    const row = { id: q.gestures.length + 1, owner: owner.id ?? owner.constructor.name, ended: false, settled: false, settledAt: null };
+    const row = { id: q.gestures.length + 1, owner: owner.id ?? owner.constructor.name, ended: false, settled: false, settledAt: null, failures: 0 };
     gestures.set(g, row); q.gestures.push(row); current = g;
     patch(g, 'end', (end) => function () { row.ended = true; if (current === g) current = null; return end.call(this); });
-    void g.settled.then(() => { if (!ctx.signal.aborted) { row.settled = true; row.settledAt = performance.now(); } });
+    if (typeof g.fail === 'function') patch(g, 'fail', (fail) => function (report) {
+      return fail.call(this, () => { row.failures++; return report(); });
+    });
+    void g.settled.then(() => { if (!ctx.signal.aborted) { row.settled = true; row.settledAt = performance.now(); row.mismatch = g.mismatch; } });
     return g;
   });
   patch(host, 'act', (original) => function (op, args, opts = {}) {
     const g = gestures.get(opts.gesture ?? current);
     const tool = ctx.tools.active;
     const row = { op, tool: tool.id, gesture: g?.id ?? 0, owner: g?.owner ?? null,
-      tagMatchesTool: opts.tag === tool, status: 'pending', at: performance.now(), save: saving };
+      tagMatchesTool: opts.tag === tool, status: 'pending', at: performance.now(), save: saving, pendingBefore: host.pending?.count ?? 0 };
     q.commands.push(row);
     let ticket;
+    const previousTag = postingTag; postingTag = opts.tag ?? null;
     try { ticket = original.call(this, op, args, opts); }
     catch (e) { row.status = 'threw'; row.error = String(e); throw e; }
+    finally { postingTag = previousTag; }
     row.args = copy(args);
     row.seq = ticket?.seq; row.exact = ticket?.exact;
+    row.predicted = copy(ticket?.predicted); row.pendingAfter = host.pending?.count ?? 0;
+    if (row.seq > 0) tags.set(row.seq, opts.tag ?? null);
     if (!ticket?.done || typeof ticket.done.then !== 'function') {
       row.status = 'invalid'; row.error = 'host did not return a ticket.done promise'; return ticket;
     }
-    if (!dropped && op === dropAck) {
+    if (!tickets.has(ticket.done)) tickets.set(ticket.done, ++ticketId);
+    row.ticketId = tickets.get(ticket.done);
+    if (!dropped && row.seq > 0 && op === dropAck) {
       dropped = true; row.dropped = true;
       ticket = { ...ticket, done: new Promise(() => {}) };
     }
     void ticket.done.then((r) => {
       if (ctx.signal.aborted || q.disposed) return;
-      row.result = copy(r); row.status = 'resolved'; row.ackAt = performance.now();
+      row.result = copy(r); row.status = 'resolved'; row.ackAt = performance.now(); row.applied = host.replica?.applied ?? null;
     }, (e) => {
       if (ctx.signal.aborted || q.disposed) return;
       row.status = 'rejected'; row.error = String(e);
     });
     return ticket;
   });
-  if (typeof scene.save === 'function') patch(scene, 'save', (original) => function (auto = false) {
-    const row = { id: q.saves.length + 1, auto, at: performance.now(), status: 'pending' };
+  for (const type of ['zoneChanged', 'networkChanged', 'buildingAdded', 'buildingRemoved', 'terrainChanged', 'emergency']) {
+    const off = host.events?.on(type, (event) => {
+      const cause = host.cause;
+      if (!cause) return;
+      q.events.push({ type, event: type === 'emergency' ? copy(event) : null, seq: cause.seq,
+        tagMatches: cause.tag != null && cause.tag === (tags.get(cause.seq) ?? postingTag), at: performance.now() });
+    });
+    if (off) restores.push(off);
+  }
+  if (typeof host.receive === 'function') patch(host, 'receive', (original) => function (message) {
+    const out = original.call(this, message);
+    if (message.t === 'pkt') q.packets.push({ seq: message.p.seq, cmd: message.p.cmd, applied: host.replica.applied,
+      replies: (message.p.replies ?? []).map((r) => ({ t: r.t, cmd: r.cmd })), causeCleared: host.cause === null });
+    else if (message.t === 'ready') q.packets.push({ resync: true, cmd: message.cmd, applied: host.replica.applied });
+    return out;
+  });
+  if (typeof ctx.world?.setPendingPreview === 'function') patch(ctx.world, 'setPendingPreview', (original) => function (seq, geometry) {
+    const out = original.call(this, seq, geometry);
+    const mesh = this.pendingPreviews?.get(seq);
+    q.ghosts.push({ seq, geometry: copy(geometry), at: performance.now(), pending: host.pending?.count ?? 0,
+      visible: !!mesh && mesh.visible && mesh.parent === this.scene, applied: host.replica?.applied ?? null,
+      remaining: this.pendingPreviews?.size ?? null });
+    return out;
+  });
+  if (typeof ctx.world?.setHighlightRect === 'function') patch(ctx.world, 'setHighlightRect', (original) => function (rect, color) {
+    if (rect && host.pending?.count) q.previews.push({ rect: copy(rect), pending: host.pending.count, claim: host.pending.claims(rect) });
+    return original.call(this, rect, color);
+  });
+  if (typeof host.save === 'function') patch(host, 'save', (original) => function (reason) {
+    const row = { reason, save: saving, status: 'pending', at: performance.now() }; q.hostSaves.push(row);
+    const out = original.call(this, reason);
+    void out.then((ack) => { row.status = 'resolved'; row.ack = copy(ack); row.applied = host.replica?.applied ?? null; },
+      (e) => { row.status = 'rejected'; row.error = String(e); });
+    return out;
+  });
+  if (typeof scene.save === 'function') patch(scene, 'save', (original) => function (...args) {
+    const row = { id: q.saves.length + 1, auto: args[0] ?? false, reason: args[1] ?? null, at: performance.now(), status: 'pending' };
     q.saves.push(row);
     const previous = saving; saving = row.id;
     let out;
-    try { out = original.call(this, auto); }
+    try { out = original.apply(this, args); }
     finally { saving = previous; }
     void Promise.resolve(out).then(() => { row.status = 'resolved'; row.settledAt = performance.now(); }, (e) => { row.status = 'rejected'; row.error = String(e); });
     return out;
@@ -99,16 +143,25 @@ export function installProbe({ dropAck = null } = {}) {
     if (q.disposed) return;
     q.disposed = true;
     // Plain diagnostics survive exit-to-region; no scene, listener or patch closure is retained.
-    window.__qaWorkerArchive = { commands: copy(q.commands), gestures: copy(q.gestures) };
+    window.__qaWorkerArchive = Object.fromEntries(['commands', 'gestures', 'ghosts', 'events', 'packets', 'hostSaves'].map((k) => [k, copy(q[k])]));
+    window.__qaWorkerArchive.teardown = { disposed: true, aborted: ctx.signal.aborted, pending: host.pending?.count ?? 0,
+      ghosts: ctx.world?.pendingPreviews?.size ?? 0 };
+    window.__qaWorkerArchive.abortReason = ctx.signal.reason;
+    const archive = window.__qaWorkerArchive;
+    // Abort listeners and the scene's synchronous dispose finish before these final resource counts are read.
+    queueMicrotask(() => { archive.teardown.pending = host.pending?.count ?? 0; archive.teardown.ghosts = ctx.world?.pendingPreviews?.size ?? 0; });
     for (const restore of restores.reverse()) restore();
     delete window.__qaWorker;
+    tags.clear();
   };
   // No global DOM listener retains this city. The freeze listener above belongs to the city's signal.
   patch(host, 'dispose', (original) => function (...args) {
-    q.dispose();
     try { return original.apply(this, args); }
-    finally { window.__qaWorkerArchive.abortReason = ctx.signal.reason; }
+    finally { q.dispose(); window.__qaWorkerArchive.abortReason = ctx.signal.reason; }
   });
+  const onAbort = () => q.dispose();
+  ctx.signal.addEventListener('abort', onAbort, { once: true });
+  restores.push(() => ctx.signal.removeEventListener('abort', onAbort));
   window.__qaWorker = q;
 }
 
