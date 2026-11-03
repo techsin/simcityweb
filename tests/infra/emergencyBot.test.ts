@@ -56,21 +56,28 @@ describe('EM-1: an earthquake in a bot town with an attentive player (verify-fac
 
 describe('EM-1: normal play keeps its prompts', () => {
   it('a bot town over 4 years (no disasters, nobody answers): the prompts counted at settle points are the prompts raised', { timeout: 900000 }, async () => {
-    // (seed 2: the scenario needs a few uncovered major incidents; B2's honest step estimates moved the bot's schedule,
-    // and seed 7's town now raises none in 4 years — seeds 1, 2, 4, 5, 6, 7 give 0, 4, 2, 2, 1, 0 prompts)
-    const bot = new SimBot({ size: 128, years: 4, seed: 2, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: true, noInfra: false, neglect: true }, await botSystems(false));
-    const sim = bot.sim;
-    // raised: an 'uncovered' event of a major incident with manualPossible (the old rule set prompted right then)
-    const raised = new Set<number>(), counted = new Set<number>();
-    sim.events.on('emergency', (e) => { if (e.type === 'uncovered' && e.major && e.manualPossible) raised.add(e.id); });
-    sim.events.on('day', () => { for (const i of emergencyOf(sim)!.incidents()) if (i.prompted) counted.add(i.id); });
-    bot.run(4);
-    const y = bot.st.stats.emergency.year;
-    console.log(`EM-1 normal play: ${raised.size} prompts raised, ${counted.size} counted, ignored (12 months) ${y.ignored ?? 0}`);
-    expect(raised.size).toBeGreaterThanOrEqual(2);
-    for (const id of counted) expect(raised.has(id)).toBe(true);
-    // without a disaster's burst a prompt loses its unit before the day ends at most rarely (a unit coming back the
-    // same day, or another incident taking it): normal play is unaffected
-    expect(raised.size - counted.size).toBeLessThanOrEqual(1);
+    // (the scenario needs a town with a few uncovered major incidents. B2's honest step estimates move the bot's schedule,
+    // so which seed has them moves too: G1 measured seeds 1, 2, 4, 5, 6, 7 at 0, 4, 2, 2, 1, 0 prompts and G2's tier
+    // pieces moved seed 2 to 1. The first town of these seeds that raises at least two is checked.)
+    let checked = 0;
+    for (const seed of [2, 4, 5, 6, 1, 3, 8]) {
+      const bot = new SimBot({ size: 128, years: 4, seed, difficulty: 'medium', terrain: 'plains', water: 0.2, quiet: true, noInfra: false, neglect: true }, await botSystems(false));
+      const sim = bot.sim;
+      // raised: an 'uncovered' event of a major incident with manualPossible (the old rule set prompted right then)
+      const raised = new Set<number>(), counted = new Set<number>();
+      sim.events.on('emergency', (e) => { if (e.type === 'uncovered' && e.major && e.manualPossible) raised.add(e.id); });
+      sim.events.on('day', () => { for (const i of emergencyOf(sim)!.incidents()) if (i.prompted) counted.add(i.id); });
+      bot.run(4);
+      const y = bot.st.stats.emergency.year;
+      console.log(`EM-1 normal play, seed ${seed}: ${raised.size} prompts raised, ${counted.size} counted, ignored (12 months) ${y.ignored ?? 0}`);
+      if (raised.size < 2) continue;
+      for (const id of counted) expect(raised.has(id)).toBe(true);
+      // without a disaster's burst a prompt loses its unit before the day ends at most rarely (a unit coming back the
+      // same day, or another incident taking it): normal play is unaffected
+      expect(raised.size - counted.size).toBeLessThanOrEqual(1);
+      checked++;
+      break;
+    }
+    expect(checked, 'a bot town with at least two prompts').toBe(1);
   });
 });
