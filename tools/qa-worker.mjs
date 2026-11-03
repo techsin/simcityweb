@@ -183,14 +183,14 @@ const counts = (page) => page.evaluate(() => {
   let roads = 0, zoned = 0, power = 0, trees = 0;
   for (let i = 0; i < st.network.length; i++) { if (st.network[i]) roads++; if (st.zone[i]) zoned++; if (st.powerLines[i]) power++; trees += st.trees[i]; }
   let parks = 0;
-  for (const b of st.buildings.values()) if (b.defId === 'park_small') parks++;
+  for (const b of st.buildings.values()) if (b.def === 'park_small') parks++;
   return { roads, zoned, power, trees, parks, buildings: st.buildings.size, pending: h.pending?.count ?? 0 };
 });
 /** acked: the replica's count moved the expected way and nothing is pending */
 const settled = (page, key, from, dir) => waitHost(page, ([k, n, d]) => {
   const st = window.__metropolis.city.host.state, h = window.__metropolis.city.host;
   let v = 0;
-  if (k === 'parks') { for (const b of st.buildings.values()) if (b.defId === 'park_small') v++; }
+  if (k === 'parks') { for (const b of st.buildings.values()) if (b.def === 'park_small') v++; }
   else { const a = k === 'roads' ? st.network : k === 'zoned' ? st.zone : k === 'power' ? st.powerLines : st.trees; for (let i = 0; i < a.length; i++) v += k === 'trees' ? a[i] : a[i] ? 1 : 0; }
   return (d > 0 ? v > n : v < n) && (h.pending?.count ?? 0) === 0;
 }, [key, from, dir], 60000).then(() => true, () => false);
@@ -379,7 +379,8 @@ async function heldBrush(page, cx, cy) {
   const r = await page.evaluate(() => {
     const t = window.__metropolis.city.scene.tools.current, sounds = window.__qaSounds;
     return { stroke: t.stroke, holdSounds: sounds.filter((s) => !s.up).length, release: sounds.filter((s) => s.up && !s.o).map((s) => s.n),
-      toasts: window.__qaToasts.slice(window.__qaToastsAt), pending: window.__metropolis.city.host.pending?.count ?? 0, funds: window.__metropolis.city.host.state.funds };
+      // the music player's "Now playing" pop-up comes with a new track, whatever the tool does
+      toasts: window.__qaToasts.slice(window.__qaToastsAt).filter((t) => !/Now playing/.test(t)), pending: window.__metropolis.city.host.pending?.count ?? 0, funds: window.__metropolis.city.host.state.funds };
   });
   await page.keyboard.press('Escape');
   for (let i = 0; i < 2; i++) await page.keyboard.press('BracketRight');
