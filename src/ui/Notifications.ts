@@ -5,7 +5,7 @@ import { escapeHtml, h } from './dom';
 import { icon } from './icons';
 import { dayLabel } from './format';
 import { newsMark, tickerItems } from './newsLog';
-import { newsAction } from './adviceActions';
+import { newsAction as adviceNewsAction } from './adviceActions';
 
 export const NEWS_META: Record<string, { color: string; icon: string; title: string }> = {
   info: { color: 'var(--accent)', icon: 'news', title: 'News' },
@@ -131,6 +131,37 @@ export interface ToastButton {
   run: () => void;
 }
 
+/** a click action on a toast (Toasts.show opts.action) */
+export interface ToastAction {
+  hint: string;
+  icon?: string;
+  run: () => void;
+}
+
+export interface ToastOptions {
+  silent?: boolean;
+  ttl?: number;
+  action?: ToastAction;
+  buttons?: ToastButton[];
+  /**
+   * FEEL-02a: the toast is news that shares the budget (Toasts.BUDGET_GAP_MS, BUDGET_PER_MIN). Over budget, one with an
+   * action waits in a queue and shows when the budget allows (at the latest QUEUE_MAX_MS after it arrived); one without
+   * is dropped: it is still in the ticker and the news feed
+   */
+  budget?: boolean;
+}
+
+/** a toast that waits for the budget (it carries an action) */
+interface QueuedToast {
+  text: string;
+  kind: string;
+  cell?: { x: number; z: number };
+  title?: string;
+  opts: ToastOptions;
+  key: string;
+  at: number;
+}
+
 export class Toasts {
   /** multiplier for toast lifetimes (dev/screenshot tooling raises it) */
   static ttlScale = 1;
@@ -143,7 +174,27 @@ export class Toasts {
    */
   static REPEAT_MS = 180000;
   static MAX = 4;
+  /**
+   * FEEL-02a's toast budget for news (advisor, warning, good and reward news, and the demand-cap warning): a budgeted
+   * toast shows only BUDGET_GAP_MS after the last toast and while fewer than BUDGET_PER_MIN showed in the last minute.
+   * Every new toast counts (a merge into a live one does not); bad news, disasters, errors, the player's own feedback and
+   * the yearly New Year toast are never budgeted, so they always show
+   */
+  static BUDGET_GAP_MS = 4000;
+  static BUDGET_PER_MIN = 8;
+  /** a queued toast (one with an action) shows at the latest this long after it arrived, whatever the budget */
+  static QUEUE_MAX_MS = 50000;
   readonly el: HTMLDivElement;
+  /**
+   * the action for a news toast, looked up by its NewsItem.ref (FH-03's "Zone homes", FEEL-06's "Place it"; set by the
+   * lane that adds the action map). A news toast with an action is queued over budget instead of dropped
+   */
+  newsAction: ((n: NewsItem) => ToastAction | undefined) | null = null;
+  /** performance.now() of every toast shown in the last minute (the budget's window), oldest first */
+  private shownAt: number[] = [];
+  /** budgeted toasts with an action that wait for the budget, oldest first */
+  private queue: QueuedToast[] = [];
+  private queueTimer = 0;
   /** performance.now() a message signature last sounded */
   private sounded = new Map<string, number>();
   private live = new Map<string, { el: HTMLElement; count: number; at: number; badge: HTMLElement; cell?: { x: number; z: number }; restart: (ms: number) => void }>();
@@ -153,21 +204,77 @@ export class Toasts {
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'toasts' });
     parent.appendChild(this.el);
+    // FH-03: the advice's button ("Zone homes", "Rezone"...), found by NewsItem.ref, never by the text (adviceActions.ts)
+    this.newsAction = (n) => {
+      const act = adviceNewsAction(n);
+      const cell = n.x !== undefined && n.z !== undefined ? { x: n.x, z: n.z } : null;
+      return act ? { hint: act.label, icon: act.icon, run: () => act.run(ctx, cell) } : undefined;
+    };
     ctx.signal?.addEventListener('abort', () => {
       for (const t of this.timers) clearTimeout(t);
       this.timers.clear();
       this.live.clear();
+      this.queue.length = 0;
     }, { once: true });
     ctx.sim.events.on('news', (n) => {
       if (!ctx.settings.toasts) return;
       if (n.kind === 'info') return;
       if (n.kind === 'advisor' && !/!|urgent|critical|warning/i.test(n.text)) return;
-      const cell = n.x !== undefined && n.z !== undefined ? { x: n.x, z: n.z } : undefined;
-      // (FH-03: an advice's button, found by NewsItem.ref — never by the text)
-      const act = newsAction(n);
-      // silent: GameSounds plays the (rate-limited) news sound even when toasts are off
-      this.show(n.text, n.kind, cell, n.advisor, { silent: true, action: act ? { hint: act.label, icon: act.icon, run: () => act.run(ctx, cell ?? null) } : undefined });
+      const action = this.newsAction?.(n);
+      // silent: GameSounds plays the (rate-limited) news sound even when toasts are off. FEEL-02a: bad news and disasters
+      // always show; every other kind shares the budget
+      this.show(n.text, n.kind, n.x !== undefined && n.z !== undefined ? { x: n.x, z: n.z } : undefined, n.advisor, {
+        silent: true, budget: n.kind !== 'bad' && n.kind !== 'disaster', ...(action ? { action } : {}),
+      });
     });
+  }
+
+  /** the budget allows a toast now: BUDGET_GAP_MS since the last toast and fewer than BUDGET_PER_MIN in the last minute */
+  private allows(now: number): boolean {
+    const a = this.shownAt;
+    while (a.length && now - a[0] >= 60000) a.shift();
+    return a.length < Toasts.BUDGET_PER_MIN && (!a.length || now - a[a.length - 1] >= Toasts.BUDGET_GAP_MS);
+  }
+
+  /** when the budget next allows a toast (performance.now ms) */
+  private nextAllowed(now: number): number {
+    const a = this.shownAt;
+    let t = a.length ? a[a.length - 1] + Toasts.BUDGET_GAP_MS : now;
+    if (a.length >= Toasts.BUDGET_PER_MIN) t = Math.max(t, a[a.length - Toasts.BUDGET_PER_MIN] + 60000);
+    return t;
+  }
+
+  /** show the queued toasts the budget allows now (the oldest first; one that waited QUEUE_MAX_MS shows anyway) */
+  private drain(): void {
+    const now = performance.now();
+    while (this.queue.length && (this.allows(now) || now - this.queue[0].at >= Toasts.QUEUE_MAX_MS)) {
+      const q = this.queue.shift()!;
+      this.show(q.text, q.kind, q.cell, q.title, { ...q.opts, budget: false });
+    }
+    this.schedule(now);
+  }
+
+  /** wake up when the head of the queue may show */
+  private schedule(now: number): void {
+    clearTimeout(this.queueTimer);
+    this.timers.delete(this.queueTimer);
+    this.queueTimer = 0;
+    if (!this.queue.length || this.ctx.signal?.aborted) return;
+    const at = Math.min(this.nextAllowed(now), this.queue[0].at + Toasts.QUEUE_MAX_MS);
+    this.queueTimer = this.arm(() => {
+      this.queueTimer = 0;
+      this.drain();
+    }, Math.max(16, at - now));
+  }
+
+  /** a timer kept in this.timers until it fires: the city's abort clears the pending ones */
+  private arm(f: () => void, ms: number): number {
+    const id = window.setTimeout(() => {
+      this.timers.delete(id);
+      f();
+    }, ms);
+    this.timers.add(id);
+    return id;
   }
 
   /**
@@ -176,7 +283,7 @@ export class Toasts {
    * opts.buttons: a question with answers (FH-21's slow-frame prompt): each button runs its answer and closes the toast;
    * a click elsewhere on the toast does nothing. Without its own opts.ttl it stays until answered or closed.
    */
-  show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string, opts: { silent?: boolean; ttl?: number; action?: { hint: string; icon?: string; run: () => void }; buttons?: ToastButton[] } = {}): void {
+  show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string, opts: ToastOptions = {}): void {
     const now = performance.now();
     const key = kind + ':' + text;
     const meta = NEWS_META[kind] ?? NEWS_META.info;
@@ -194,6 +301,15 @@ export class Toasts {
       if (this.el.firstElementChild !== live.el) this.el.prepend(live.el);
       return;
     }
+    // FEEL-02a: over budget, news with an action waits (the queue goes first), other news stays in the ticker only
+    if (opts.budget && (this.queue.length || !this.allows(now))) {
+      if (opts.action && !this.queue.some((q) => q.key === key)) {
+        this.queue.push({ text, kind, cell, title, opts, key, at: now });
+        this.drain();
+      } else if (this.queue.length) this.drain();
+      return;
+    }
+    this.shownAt.push(now);
     // no toast sound when the action that raised it just played its own (error buzz, reward fanfare...)
     const recent = (this.ctx.mods.audio as { sinceLastPlay?: () => number } | undefined)?.sinceLastPlay?.() ?? 1e9;
     // (a null TOAST_SOUND entry means silent - `??` would have turned it into 'notify')
@@ -228,14 +344,7 @@ export class Toasts {
     );
     let timer = 0;
     // (every timer is kept in this.timers until it fires: the city's abort clears the pending ones)
-    const arm = (f: () => void, ms: number): number => {
-      const id = window.setTimeout(() => {
-        this.timers.delete(id);
-        f();
-      }, ms);
-      this.timers.add(id);
-      return id;
-    };
+    const arm = (f: () => void, ms: number): number => this.arm(f, ms);
     const entry = {
       el: t, count: 1, at: now, badge, cell,
       restart: (ms: number) => {

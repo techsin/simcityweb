@@ -405,7 +405,8 @@ export class TopBar {
       void this.ctx.host.query('capHints', {}).then((hints) => {
         if (this.ctx.signal.aborted) return;
         const hint = hints.find((x) => x.family === f)?.hint ?? '';
-        this.ctx.toast(`${FAMILY_NAMES[f]} growth is capped. ${hint}`, 'warning', undefined, 'Demand cap');
+        // (FEEL-02a: it shares the news toasts' budget)
+        this.ctx.toast(`${FAMILY_NAMES[f]} growth is capped. ${hint}`, 'warning', undefined, 'Demand cap', { budget: true });
       }).catch(() => {});
     }
   }

@@ -6,7 +6,7 @@
  * edge. The Planning card of "no room to grow" says how many lots are left (emptyFrontTiles).
  */
 import { setMaxListeners } from 'node:events';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Emitter } from '../../src/core/events';
 import { Network, Overlay, Zone } from '../../src/core/types';
 import type { GameContext, UIEvents } from '../../src/game/context';
@@ -188,6 +188,9 @@ function builtOut(st: CityState) {
 }
 
 describe('the toast of an advice post (FH-03)', () => {
+  // FEEL-02a's toast budget (one news toast per 4 s, 8 a minute) runs on these clocks: the tests move them on
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] }); });
+
   /** Toasts on a stand-in news feed: post() emits a news item */
   function toasts() {
     let onNews: ((n: NewsItem) => void) | null = null;
@@ -199,17 +202,32 @@ describe('the toast of an advice post (FH-03)', () => {
     const shown = () => parent.children[0].children;
     return { ...h, post, shown };
   }
+  /** every toast that appeared on `parent`'s stack, with the page time it appeared (also those already gone) */
+  function appeared(parent: FEl) {
+    const el = parent.children[0];
+    const seen: { el: FEl; at: number }[] = [];
+    const prepend = el.prepend.bind(el);
+    el.prepend = (...cs: (FEl | string)[]) => {
+      for (const c of cs) if (c instanceof FEl && !el.children.includes(c)) seen.push({ el: c, at: performance.now() });
+      prepend(...cs);
+    };
+    return seen;
+  }
 
-  it('end to end: a town with no room gets the warning within one month tick, as a toast with "Zone homes"; a click selects zone:1', () => {
+  it('end to end: a town with no room gets the warning at the first month tick, as a toast with "Zone homes" (queued within the toast budget, never dropped); a click selects zone:1', () => {
     const { sim, tick } = citySim(noRoom);
     const h = harness(sim);
     const parent = new FEl('div');
     new Toasts(h.ctx, parent as unknown as HTMLElement);
+    const seen = appeared(parent);
     tick(30);
-    const t = parent.children[0].children.find((e) => textOf(e).includes('no room to grow'));
-    expect(t, 'toasted at the first month tick').toBeDefined();
-    expect(textOf(t!)).toContain('Zone homes');
-    t!.click();
+    const t0 = performance.now();
+    for (let k = 0; k < 60 && !seen.some((s) => textOf(s.el).includes('no room to grow')); k++) vi.advanceTimersByTime(1000);
+    const t = seen.find((s) => textOf(s.el).includes('no room to grow'));
+    expect(t, 'toasted for the first month tick').toBeDefined();
+    expect(t!.at - t0, 'within the queue\'s limit').toBeLessThanOrEqual(Toasts.QUEUE_MAX_MS);
+    expect(textOf(t!.el)).toContain('Zone homes');
+    t!.el.click();
     expect(h.calls.selected).toEqual(['zone:1']);
     expect(h.pulsing()).toEqual(['zones']);
   });
@@ -220,9 +238,26 @@ describe('the toast of an advice post (FH-03)', () => {
     expect(textOf(t.shown()[0])).toContain('Zone homes');
     t.shown()[0].click();
     expect(t.calls.selected).toEqual(['zone:1']);
+    vi.advanceTimersByTime(Toasts.BUDGET_GAP_MS + 100);
     t.post({ text: 'Residential demand is strong but there is no room to grow — zone more residential land along roads.' });
     expect(textOf(t.shown()[0])).toContain('no room to grow');
     expect(textOf(t.shown()[0])).not.toContain('Zone homes');
+  });
+
+  it('over the toast budget (FEEL-02a), the advice toast with its button waits and shows; the same words without a ref are dropped', () => {
+    const t = toasts();
+    const parent = t.shown;
+    t.post({ kind: 'good', advisor: undefined, text: 'A park opened' });
+    t.post({ text: 'Residential demand is strong but there is no room to grow — zone more residential land along roads.' });
+    t.post({ text: 'We need more homes — rezone along the avenue!', ref: { advice: 'zoneR' } });
+    expect(parent().map(textOf).join('|')).not.toContain('no room to grow');
+    expect(parent().map(textOf).join('|')).not.toContain('rezone along the avenue');
+    vi.advanceTimersByTime(Toasts.BUDGET_GAP_MS + 100);
+    expect(textOf(parent()[0])).toContain('rezone along the avenue');
+    expect(textOf(parent()[0])).toContain('Zone homes');
+    expect(parent().map(textOf).join('|')).not.toContain('no room to grow');
+    parent()[0].click();
+    expect(t.calls.selected).toEqual(['zone:1']);
   });
 
   it('a post with a place: its button goes there first (the click no longer only jumps)', () => {
