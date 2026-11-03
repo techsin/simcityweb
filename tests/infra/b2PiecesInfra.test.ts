@@ -145,7 +145,18 @@ function utilPass(c: UtCity, hook?: (c: UtCity, k: number, before: number) => vo
   return k;
 }
 
-interface RunOpts { orig?: boolean; hook?: (c: UtCity, k: number, before: number) => void; exclude?: string[]; drop?: string[]; initScale?: number; midWater?: boolean }
+interface RunOpts { orig?: boolean; hook?: (c: UtCity, k: number, before: number) => void; exclude?: string[]; drop?: string[]; initScale?: number; midWater?: boolean; water?: boolean }
+
+/** a water edit (the sea's edge moves: the sea mask's rebuild, terrainMasks.SeaMaskRun) on free cells by the east sea */
+function waterEdit(st: CityState, p: number): void {
+  const N = st.size;
+  for (let z = 6 + ((p * 7) % (N - 16)), z1 = z + 6; z < z1; z++) {
+    for (let x = N - 12; x < N - 8; x++) {
+      const i = z * N + x;
+      if (st.building[i] < 0 && st.network[i] === 0 && !st.powerLines[i]) st.water[i] ^= 1;
+    }
+  }
+}
 /** the utilities passes of a city at piece scale `scale` ('random': a random scale per pass); the digests after init and at
  *  every pass end. midWater: a road edit right before the water step (pre-B2's mid-pass water relabel) */
 function runPasses(mk: () => CityState, systems: 'infra' | 'all', passes: number, scale: number | 'random', opts: RunOpts = {}): Record<string, string>[] {
@@ -162,6 +173,7 @@ function runPasses(mk: () => CityState, systems: 'infra' | 'all', passes: number
   const out: Record<string, string>[] = [dig()];
   for (let p = 0; p < passes; p++) {
     utilEdit(c, p);
+    if (opts.water) waterEdit(c.st, p);
     c.st.day += 3 + (p % 4) * 5;
     let edited = false;
     withPieceScale(pick(), () => utilPass(c, (cc, k, before) => {
@@ -210,10 +222,13 @@ describe('B2 G4 utilities: a pass in one go = in pieces = the frozen pre-B2 pass
       // (a road edit between the power and the water step: the water step relabels the networks first)
       const refW = runPasses(mk, systems, 4, 1, { orig: true, midWater: true });
       expectSameRuns(refW, runPasses(mk, systems, 4, 0.05, { exclude: exW, midWater: true }), `${name} mid-pass water relabel vs original`);
+      // (water edits before every pass: the sea mask's rebuild in pieces)
+      const refS = runPasses(mk, systems, 4, 1, { orig: true, water: true });
+      expectSameRuns(refS, runPasses(mk, systems, 4, 'random', { exclude: exW, water: true }), `${name} water edits vs original`);
     }, 600_000);
   }
 
-  it('the edits reach every branch: both labels, the relabel of a soft pass, both brownouts, the results without one, the mid-pass water relabel, flag flips', () => {
+  it('the edits reach every branch: both labels, the relabel of a soft pass, both brownouts, the results without one, the mid-pass water relabel, flag flips, the sea mask rebuilt after a water edit', () => {
     const seen = new Set<string>();
     for (const [mk, midWater] of [[() => utilCity(48, 5, 'ok'), false], [() => utilCity(64, 9, 'short'), true], [() => utilCity(96, 7, 'island'), false]] as const) {
       // (small pieces: every label spans several, so the names after each piece show every sub-state)
@@ -222,10 +237,12 @@ describe('B2 G4 utilities: a pass in one go = in pieces = the frozen pre-B2 pass
       withPieceScale(0.05, () => {
         for (let p = 0; p < 7; p++) {
           utilEdit(c, p);
+          if (p % 3 === 2) waterEdit(c.st, p);
           c.st.day += 3 + (p % 4) * 5;
           let edited = false;
           utilPass(c, (cc, _k, before) => {
             const n = cc.ut.stepName.split('#')[0];
+            if (n === 'uses.sea.depth' && p > 0) seen.add('seaRebuild');
             if (n === 'label.plabel') seen.add(u.passFull ? 'powerLabel' : 'softRelabel');
             if (n === 'label.wlabel') seen.add('waterLabel');
             if (n === 'water.wlabel') seen.add('midWaterRelabel');
@@ -244,7 +261,7 @@ describe('B2 G4 utilities: a pass in one go = in pieces = the frozen pre-B2 pass
         }
       });
     }
-    expect([...seen].sort()).toEqual(['flagFlips', 'midWaterRelabel', 'powerBrownout', 'powerLabel', 'powerResults', 'softRelabel', 'waterBrownout', 'waterLabel', 'waterResults']);
+    expect([...seen].sort()).toEqual(['flagFlips', 'midWaterRelabel', 'powerBrownout', 'powerLabel', 'powerResults', 'seaRebuild', 'softRelabel', 'waterBrownout', 'waterLabel', 'waterResults']);
   }, 300_000);
 
   it('R8: queries of other systems between every two pieces change nothing', () => {
@@ -398,6 +415,7 @@ describe('B2 G4 utilities: a pass in one go = in pieces = the frozen pre-B2 pass
     const max = new Map<string, number>();
     for (let p = 0; p < 6; p++) {
       utilEdit(c, p);
+      if (p % 2) waterEdit(c.st, p);
       c.st.day += 5;
       utilPass(c, (cc) => {
         const name = cc.ut.stepName.replace(/#\d+$/, ''), e = cc.ut.stepCost(cc.sim);
@@ -411,6 +429,7 @@ describe('B2 G4 utilities: a pass in one go = in pieces = the frozen pre-B2 pass
       expect(e, `${name} estimate`).toBeLessThanOrEqual(cap);
     }
     expect(max.size).toBeGreaterThan(15);
+    for (const k of ['uses.sea', 'uses.sea.copy', 'uses.sea.scan', 'uses.sea.depth', 'uses.sea.fix', 'uses.sea.comp']) expect(max.has(k), k).toBe(true);
   }, 300_000);
 });
 

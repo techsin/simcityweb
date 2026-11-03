@@ -69,7 +69,7 @@ import {
 } from './params';
 import { pieceBudgetUs, pieceUnits, schedulerOf } from './scheduler';
 import { ordinanceEffect } from '../economy/ordinances';
-import { seaMask, waterNear } from './terrainMasks';
+import { SeaMaskRun, waterNear } from './terrainMasks';
 import { smoothstep } from '../../core/rng';
 import type { PollutionSystem } from './pollution';
 
@@ -231,8 +231,9 @@ const UT = {
   /** the pass start (ensure, effects, the input swaps); the snapshot per building (the day's first buildingList rebuild
    *  + the copy + the jobs check), its plan per building */
   start: 25, snapTake: 0.0165, plan: 0.0087,
-  /** the sea mask (the masks' checksum) per cell; the treatment prefix scan per building */
-  sea: 0.0015, scan: 0.016,
+  /** the sea mask: the masks' checksum per cell, their rebuild (after a water edit) per SeaMaskRun work unit and its
+   *  water copy per cell; the treatment prefix scan per building */
+  sea: 0.0015, seaBuild: 0.002, seaCopy: 0.0003, scan: 0.016,
   /** the uses chunks per building / footprint cell; their publish (fixed) + per patched (added / removed) building */
   usesB: 0.019, usesF: 0.0134, usesPub: 4, patch: 0.08,
   /** the labels per unit (a cell scanned or a cell taken off the BFS queue); a label's publish (fixed) */
@@ -371,6 +372,8 @@ export class UtilitiesSystem implements SimSystem {
   private season = 0;
   private climate = 1;
   private seaM: Uint8Array | null = null;
+  /** B2: the sea mask in pieces (the masks' checksum; their rebuild after a water edit: 11-13 ms in one go at 1M cells) */
+  private seaRun = new SeaMaskRun();
   private pollRef: PollutionSystem | null = null;
   /** the treatment prefix scan: its length and result */
   private nInfo = 0;
@@ -500,7 +503,7 @@ export class UtilitiesSystem implements SimSystem {
       case S_START: return UT.start;
       case S_SNAP: return st.buildings.size * UT.snapTake;
       case S_PLAN: return Math.max(0, Math.min(pieceUnits(US.plan, 1, COLD), snap.n - snap.planned)) * UT.plan;
-      case S_SEA: return C * UT.sea;
+      case S_SEA: return this.seaRun.nextUs(C, cellUnits(US.cells), UT.sea, UT.seaCopy, UT.seaBuild);
       case S_SCAN: return Math.max(0, Math.min(pieceUnits(UT_SCAN_SIZING, 1, COLD), snap.n - k)) * UT.scan;
       case S_USES:
         return snap.countOf(k) * UT.usesB + snap.cellsOf(k) * UT.usesF
@@ -534,6 +537,7 @@ export class UtilitiesSystem implements SimSystem {
   get stepName(): string {
     if (this.stepIdx < 0) return 'uses.start';
     const s = this.sub;
+    if (s === S_SEA && this.seaRun.phaseName !== 'sum') return 'uses.sea.' + this.seaRun.phaseName;
     return STATE_NAMES[this.stepIdx] + '.' + SUB_NAMES[s] + (CHUNKED.has(s) ? '#' + this.cur : '');
   }
 
@@ -567,13 +571,19 @@ export class UtilitiesSystem implements SimSystem {
       case S_PLAN:
         if (this.snap.planRun(pieceUnits(US.plan, 1, COLD))) this.sub = S_SEA;
         break;
-      case S_SEA:
+      case S_SEA: {
         // (pre-B2 took the sea mask at the first working water producer of the uses loop: a pure function of the water grid,
-        // cached and checksummed by terrainMasks, so taking it before the loop changes nothing)
-        this.seaM = seaMask(st);
-        this.sub = S_SCAN;
-        this.cur = 0;
+        // cached and checksummed by terrainMasks, so taking it before the loop changes nothing. B2: the checksum by cell
+        // ranges and, after a water edit, the rebuild in pieces over a copy of the water layer: terrainMasks.SeaMaskRun,
+        // build()'s loops in its order, so with nothing in between it returns seaMask(st))
+        const m = this.seaRun.run(st, cellUnits(US.cells));
+        if (m) {
+          this.seaM = m;
+          this.sub = S_SCAN;
+          this.cur = 0;
+        }
         break;
+      }
       case S_SCAN: this.scanPiece(st); break;
       case S_USES: this.usesPiece(st); break;
       case S_PLABEL: this.powerLabelPiece(st); break;
@@ -605,6 +615,7 @@ export class UtilitiesSystem implements SimSystem {
     this.cur = 0;
     this.snap.release();
     this.seaM = null;
+    this.seaRun.reset();
     this.pollRef = null;
     this.nuclearLost = 0;
     this.nInfo = 0;
