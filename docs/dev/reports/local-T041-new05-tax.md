@@ -1,7 +1,7 @@
 # T041 — gradual tax response, signed Option B
 
 **Option B is signed under D2**, by [NOTE-050-new05-option-b.md](../queue/NOTE-050-new05-option-b.md), following
-[NOTE-048-desk-requests.md](../queue/NOTE-048-desk-requests.md). B's source, constants and bot strategy are unchanged.
+[NOTE-048-desk-requests.md](../queue/NOTE-048-desk-requests.md). B's simulation calibration and bot strategy are unchanged.
 This round merges fresh dev, directly confirms all six base runs, explains the accepted annual-path and cash effects,
 and records signed B under `polish`. Rejected A remains archival only.
 
@@ -272,8 +272,9 @@ from signed B in `2521f5c`. The carried T041 implementation is:
   15/60/60 years, D2 note, original 15 arrays preserved and rejected-A/duplicate-B cleanup.
 - `docs/dev/reports/local-T041-new05-tax.md`: signed decision, fresh comparison, cash/annual effects and verification.
 
-There are no `src/sim/infra/*` hunks, worker/host/save implementation changes or cloud-held UI edits. No UI commits
-are made: the user's cloud ownership and no-commit instructions prevail over NOTE-050's suggested commit workflow.
+Round 3 had no `src/sim/infra/*` hunks, worker/host/save implementation changes or cloud-held UI edits. Round 4
+explicitly authorizes the BudgetPanel changes below; other cloud-held files remain untouched. All new changes stay
+uncommitted under the user's instructions.
 
 The final audit is recorded in `S/round3-final-audit.json`: nine task files are UTF-8 without BOM; the other seven task files retain their signed-B bytes; the 15 historical arrays retain exact fresh-dev bytes and values; `polish` contains the 135 fresh B rows and there are 18 arrays total. Native Git scope and whitespace checks cover the complete worktree diff.
 
@@ -366,18 +367,15 @@ D2 is already signed. The plan's historical 194,627 reference predates branch de
 reported third response beyond its linear-min/smoothstep examples; the finite search makes no global-minimality claim.
 T041 still merges first among SIM lanes after B2. T042–T045 then remeasure final relative gates on that merged dev.
 
-NOTE-048's shared A/A rule requires dev and dev+T041 base versus +§1 once on day 1, all three runs, recording population,
-mean air at homes, approval and I-HT share of industrial jobs from year 10. Keep per-metric maxima and the systematic-
-shift check in `docs/dev/reports/sim-aa-envelope.md`. The shared envelope remains with the lead; it is not permission
-to retune signed B or replace its explicit D2 endpoint/sweep/late-tax requirements.
+The shared A/A protocol now follows [NOTE-052](../queue/NOTE-052-aa-perturbation.md): symmetric funds nudges at the
+smallest size that forks all three rows, at day 1 and the start of year 5. T062 owns the table in
+`docs/dev/reports/sim-aa-envelope.md`, including its rerun on dev+T041. It does not replace this lane's signed D2
+endpoint/sweep/late-tax requirements.
 
-No cloud-held files are edited or committed. Exact requests under NOTE-050 remain:
+NOTE-050's BudgetPanel requests are completed in round 4; the advisor request remains pending:
 
-- `src/ui/panels/BudgetPanel.ts`, `renderTaxes()`: remove the above-13% collapse claim; say taxes cost growth gradually.
-  Avoid promising the bot's specific loss percentage to every city.
-- The same file, `taxColor()`: red starts at **14%**, the first adjacent population loss above 10%
-  (13→14 = 12.8503%). The earlier red-12 cumulative interpretation is obsolete. Per FH-09, every numeric UI statement
-  must come from sim tuning; request the corresponding tuning export/test if no threshold is exposed.
+- `src/ui/panels/BudgetPanel.ts`, `renderTaxes()`: gradual-growth wording with numeric copy imported from tuning.
+- The same file, `taxColor()`: red starts at **14%**, using `TAX_GROWTH_WARNING_RATE` from tuning. See round 4 below.
 - `src/sim/economy/advisors.ts`, GUIDE `taxHigh`: wait for T037b to reach dev, then change only the collapse string
   and its pinned sentence in `tests/sim/taxHighAdvice.test.ts`. Dev683d02b has no advisors rewrite since fb1531f;
   this conditional owner request remains open. Preserve the honest-copy rule.
@@ -391,5 +389,69 @@ Browser acceptance checklist for the lead's real-GPU slot:
 - [ ] Check Budget/advisor copy and the red-14 boundary after owner changes.
 - [ ] Confirm the growth response with the worker host enabled.
 
-Full-suite, browser and shared-envelope checks remain with the lead. Source behavior remains signed B; this round's
-repository work is fixture normalization and its report only.
+The worker reports round 3 at `46b20b2` passed the full suite (222 files, 2,263 tests) and the bot reference.
+Browser and shared-envelope checks remain with the lead. The measurements above describe round 3; round 4 follows.
+
+## Round 4 — GUIDE tax copy and colors
+
+Based on `60ca91d`, including dev `50a6b29` (docs only). NOTE-050 is read and B's simulation calibration stays fixed.
+The following two changes have separate source and test hunks so they can be committed independently. This report
+is their shared documentation; nothing is committed here.
+
+**Change 1 — gradual-growth copy.** Files: `src/ui/panels/BudgetPanel.ts` (`renderTaxes()` hint),
+`tests/game/budgetTaxes.test.ts` (the old collapse-copy assertion only), and new `tests/game/budgetTaxCopy.test.ts`.
+The hint says “Higher taxes gradually slow growth.” Its neutral rate and approval slopes come from imported
+`TAX_NEUTRAL` and `APPROVAL`; it names no response time or numeric growth loss. The new DOM test supplies non-default
+neutral/slopes (8.75, −4.125, +2.375) and checks every numeric token in the hint against those constants.
+
+**Change 2 — red threshold.** Files: `src/sim/economy/tuning.ts` (one new presentation constant),
+`src/ui/panels/BudgetPanel.ts` (import and `taxColor()`), `tests/game/budgetTaxes.test.ts` (constant import, threshold
+pin and 13.5% expectation), and new `tests/game/budgetTaxColor.test.ts`. `TAX_GROWTH_WARNING_RATE = 14` cites the
+signed 128×15 s7 sweep: 13→14% loses 12.8503%, the first one-point loss exceeding 10%. Warn still starts strictly above
+9.5%; 13.5% is now amber and 14% is red. Both individual and All sliders use the tuning constant. A DOM test moves it
+to 15.5% and verifies all 15 sliders, including red→amber→clear transitions. No simulation system consumes it.
+
+The existing `tests/game/budgetTaxes.test.ts` edits are minimal required hunks outside the task's explicit source
+file list: its previous assertions pinned the rejected collapse wording and old color boundary. No infra hunks,
+host/listener changes, save fields or RNG draws are added. `src/sim/economy/advisors.ts` and its pinned
+`tests/sim/taxHighAdvice.test.ts` sentence remain unchanged; the `taxHigh` wording waits for T037b.
+
+Quiet-gated verification passes: `npx tsc --noEmit` exits 0, and the following files run individually with one worker:
+
+| Test file | Passed | Skipped |
+|---|---:|---:|
+| `tests/game/budgetTaxCopy.test.ts` | 1 | 0 |
+| `tests/game/budgetTaxColor.test.ts` | 1 | 0 |
+| `tests/game/budgetTaxes.test.ts` | 13 | 0 |
+| `tests/game/panelCommands.test.ts` | 5 | 0 |
+| `tests/game/panelsMisc.test.ts` | 10 | 0 |
+| `tests/game/sliderRetention.test.ts` | 6 | 0 |
+| `tests/sim/taxResponse.test.ts` | 51 | 0 |
+| `tests/sim/botTaxStart.test.ts` | 15 | 0 |
+| `tests/sim/taxHighAdvice.test.ts` | 2 | 0 |
+| `tests/worker/hygiene.test.ts` | 17 | 1 |
+| Total | 121 | 1 |
+
+The fresh 128×15 s7 bot remains **residents [ 62577, 92903, 38351 ] = 193831**, funds §178,743, minimum sampled daily
+funds §5,033, with no gate failures. All 15 canonical yearly hashes, full annual gate objects and non-timing fixture
+rows exactly match signed B. Final hash remains `02f7c8a16b7d5fbc91a5d7fc11fd672a7a1e423a5aaf9c43c5fe4f97271eb1f1`.
+CPU timing columns are diagnostic measurements; no fixture rows are rewritten. `S/round4-proof.json` records the
+comparison, test counts, UTF-8/no-BOM checks and source/fixture hashes. The only tuning addition is the UI threshold;
+all previous tuning bytes and the growth/demand/bot source remain unchanged.
+
+Exact bot equivalent: `npx tsx tools/simbot.ts --size 128 --years 15 --seed 7`. The offline environment still uses
+the bundled SimBot driver described above. Recorded commands (with `S`/`Q` paths defined earlier):
+
+```powershell
+node $T041Quiet npx tsc --noEmit
+# Each file in the table is run separately, with its own round4-<name>.json output.
+node $T041Quiet npx vitest run tests/game/budgetTaxes.test.ts --maxWorkers=1 --config "$T041Scratch/vitest.config.mjs" --configLoader native --reporter default --reporter json --outputFile "$T041Scratch/round4-budgetTaxes.json"
+node node_modules/rolldown/bin/cli.mjs "$T041Scratch/check-gates.ts" --platform node --format esm --dir "$T041Scratch/round4-B-gates"
+node $T041Quiet node "$T041Scratch/round4-B-gates/check-gates.js" "$T041Scratch/round4-B-base128.json" --size 128 --years 15 --seed 7 --quiet
+```
+
+No full-suite, long-bot, benchmark or browser run is added in this UI-only round. Browser follow-up:
+
+- [ ] Check the short hint and keyboard/stepper controls in the Taxes tab.
+- [ ] Check amber at 13.5% and red at 14%, on individual and All sliders, in both directions.
+- [ ] After T037b, update and check the pending advisor wording separately.
