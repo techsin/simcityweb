@@ -1,4 +1,49 @@
-# T054 - LG-21 year in review, review round 2
+# T054 report: LG-21, the year in review (desktop, real GPU)
+
+**Verdict: done.** Every LG-21 acceptance line passes on the real GPU after one review round, on the default host and
+on `?simworker=loopback`. One follow-up waits for T037b: once it is in dev, the built-out grade reads the producer's
+`AdvisorData.full` (the reader and its stub test are in; see change 3 below). No infra hunk; nothing holds for B2.
+
+Branch `local/T054-lg21-year-review`:
+- `4f76944` the lane (round 1); `3ee51c0` dev `683d02b` merged in;
+- round 2, one commit per change: `4b5c99c` (1, the Settings switch), `2a44a8f` (2, listMilestones replica-safe,
+  identical to T053's line), `0c6ef5d` (3, the land-full reader), `c79a648` (B, Graphs' 1Y window is 13 samples),
+  `e2165e0` (A, C, D, E, the card), `9e67c6d` the report.
+
+**Reading of acceptance 2** (round 2, A): the card's figures are captured on 1 January and labelled "Figures on
+1 January <year>". Its population change equals Graphs' 1Y figure at that January, not a later live graph after the
+show has advanced the calendar.
+
+## Gates
+
+| Gate | Result |
+|---|---|
+| tsc | clean |
+| Full vitest with the fixtures (`9e67c6d`) | **227 files passed, 2 skipped; 2,268 tests passed, 11 skipped; 0 failing** |
+| 128×15 s7 bot with the action log | **identical to dev:** residents [ 61124, 93804, 37971 ] = 192,899 |
+
+## Real-GPU QA, round 2 (RTX 5070 Ti, driver 610.47, ANGLE D3D11, Chromium 141)
+
+| Item | Result | Measured |
+|---|---|---|
+| Acceptance 2 under the dated reading | **PASS** | At 1× and 2× full shows, ultra and the default pacing, every card is within 0.17 % of Graphs' 1Y at that January and equals history January to January exactly; all 24 cards carry the date line. After a 1× full show the card appears 2.3-5.4 s after the show phase ends (the clock-return phase), within one frame of `active` clearing. |
+| B: Graphs' 1Y is one year | **PASS** | 13 points, Jan to Jan; header delta and hover agree; 5Y, 10Y and All unchanged. The 2029 case now prints the true change (−1.2 %), where round 1 printed −2.1 %. |
+| C, D, E | **PASS** | "Emergencies" label, no base/clamp/±0.0 rows. Above Budget and Graphs, close button clickable by a real click. 1.2 px clear of the toolbar at 720p (round 1 overlapped it by 6.8 px). A city without residents shows "Approval —"; no empty Next goals. |
+| The Settings switch | **PASS** | In Gameplay, a `role="switch"` button; Tab and Enter work like its neighbours. Off survives a reload and no card shows at New Year; on comes back. |
+| Loopback, same state | **PASS** | The 2021 card text is identical on both hosts at the same state, down to grade A 89.4 and the sparkline. |
+| Round-1 lines again | **PASS** | Cadence (1× every year, 2× every second, ultra every fifth), never on load, LIVE skips, the 15 s close, a restore during the show, the grade (forced F 37.6; healthy A 89.2) and the founding card. |
+| Console and page errors | **PASS** | none in 12 result files. |
+
+Round 1 (on `3ee51c0`) passed 7 of 8 lines; the round-2 changes A-E fixed its findings. QA notes: scratchpad
+`qa/T054/qa.md` (rounds 1-2), with data and screenshots in `qa/T054/r2/`.
+
+**Two low notes outside this lane, in `docs/dev/POLISH_BACKLOG.md`:** Space on a focused Settings switch pauses the
+game instead of toggling it (every switch; `CityScene.ts:940`), and Graphs' 5Y and 10Y windows are still one month
+short (60 and 120 samples).
+
+The lane's own round notes follow.
+
+## Review round 2: the lane's notes
 
 Based on `3ee51c0` (round 1 `4f76944` plus dev `683d02b`). All changes below are uncommitted; no push or `.done` file. NOTE-048 authorizes the Settings, registry and Graphs changes. Each numbered/lettered group below identifies the files/hunks to stage separately.
 
