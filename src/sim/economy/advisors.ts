@@ -80,12 +80,14 @@ import type { BuildingDef } from '../catalogTypes';
 import { demolishFee, lotSlope } from './buildings';
 import { formatMoney } from './format';
 import { buildingPowered, buildingWatered } from './population';
-import { GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, TOURISM_INCOME_PER_VISITOR, WATER_REQUIRED_STAGE } from './tuning';
+import { APPROVAL, GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, TAX_NEUTRAL, TOURISM_INCOME_PER_VISITOR, WATER_REQUIRED_STAGE } from './tuning';
 import { buildingUpkeep } from './opex';
 import { getOrdinance, ordinanceAvailable, ordinanceEffect } from './ordinances';
 import type { RegionContext } from '../../region/regionEffects';
 
 const ADVICE_PER_MONTH = 2;
+/** FH-09: taxHigh warns from this resident-weighted residential rate (approval falls 3.5 a point above 9%) */
+export const TAX_HIGH_ADVICE = 11;
 /** no advice repeats sooner than this (days) */
 const MIN_COOLDOWN = 60;
 const money = (v: number) => formatMoney(v);
@@ -1737,10 +1739,14 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       out.push({ id: 'surplus', cooldown: 360, priority: 1, kind: 'good', advisor: 'finance',
         text: `A healthy surplus of ${money(net)}/month! Lower taxes to boost growth, or invest in services and parks.` });
     }
-    const rTax = (st.budget.taxRates[0] + st.budget.taxRates[1] + st.budget.taxRates[2]) / 3;
-    if (rTax >= 12 && pop > 1000) {
+    // FH-09: the rate approval.ts charges (resident-weighted), warned from 11% with the approval it costs
+    const tr = st.budget.taxRates, rs = st.stats.residents;
+    const rPop = rs[0] + rs[1] + rs[2];
+    const rTax = rPop > 0 ? (rs[0] * tr[0] + rs[1] * tr[1] + rs[2] * tr[2]) / rPop : (tr[0] + tr[1] + tr[2]) / 3;
+    if (rTax >= TAX_HIGH_ADVICE - 1e-9 && pop > 1000) {
+      const cost = -APPROVAL.taxPerPoint * (rTax - TAX_NEUTRAL);
       out.push({ id: 'taxHigh', cooldown: 180, priority: 5, kind: 'warning', advisor: 'finance',
-        text: `Residential taxes average ${rTax.toFixed(1)}% — people are leaving for cheaper cities.` });
+        text: `Residential taxes average ${rTax.toFixed(1)}%. Each point above ${TAX_NEUTRAL}% costs ${-APPROVAL.taxPerPoint} approval, so approval heads ${Number(cost.toFixed(1))} points lower; above 13% demand collapses.` });
     }
     // ---------------- utilities
     let zoned = 0;

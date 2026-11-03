@@ -11,9 +11,9 @@ import { attachOverlays, overlayDeps, overlayLayer, resolveVariant } from '../si
 import type { SampleRoute, TrafficSystem } from '../sim/infra/traffic';
 import {
   DefTable, EntryType, EVENT_NAMES, EVENT_TYPES, EXACT_FIELDS, PLAIN_KEYS, REC, REC_FIELDS, RecordBuffer, SYSTEM_KEYS,
-  copyOwned, encodeCell, encodeIncident, encodeLayer, encodeRoad, layerOf, plainEqual, rectArg, writeBuilding,
+  copyOwned, encodeAck, encodeCell, encodeIncident, encodeLayer, encodeRoad, layerOf, plainEqual, rectArg, writeBuilding,
   type CellLayer, type Clock, type EmergencyStream, type Entry, type EventName, type LayerName, type LayerPatch,
-  type Packet, type PlainPatch, type PolicyState, type RasterPatch, type Ready, type Streams, type ViewState,
+  type Packet, type PlainPatch, type PolicyState, type RasterPatch, type Ready, type Reply, type Streams, type ViewState, type WatchValue,
 } from './protocol';
 
 export interface RecorderOptions {
@@ -21,6 +21,7 @@ export interface RecorderOptions {
   now?: () => number;
   rollingCount?: number;
   measure?: boolean;
+  signal?: AbortSignal;
   policy?: () => PolicyState;
   onAuditError?: (id: number, field: string) => void;
 }
@@ -80,6 +81,9 @@ export class ChangeRecorder {
   private shadow = new Float64Array(0);
   private exact = new Float64Array(0);
   private constructing = new Set<number>();
+  /** FH-07a: a plopped building's bulldoze refund depends on its exact age until 30 (CityActions.buildingRefund), so
+   *  young plops are re-sent once a day, like buildings under construction. Rolling records cover the rest. */
+  private young = new Set<number>();
   private cursor = 0;
   private auditCursor = 0;
   private constructionDay = -1;
@@ -102,6 +106,31 @@ export class ChangeRecorder {
   /** Set by the command lane around a command; never contains a main-side tag object. */
   cause: number | undefined;
   private readonly now: () => number;
+  // W1.1b: acknowledgements stay in the log; reads and persistence finish after it.
+  private acks: unknown[] = [];
+  private replies: Reply[] = [];
+  private watches: WatchValue[] = [];
+  private command = 0;
+  private pong: number | undefined;
+  private abort = () => this.dispose();
+
+  get sequence(): number { return this.seq; }
+  /** The utilities layers as last sent. The utilities pass writes `powered` / `watered` in its early steps and emits
+   *  layerUpdated('utilities') only when it finishes (F6), so mid-pass the replica holds these, not the live arrays. */
+  sentUtilities(): { powered?: Uint8Array; watered?: Uint8Array } {
+    return { powered: this.sparse.get('powered'), watered: this.sparse.get('watered') };
+  }
+  ack(seq: number, result: unknown): void {
+    const index = this.acks.length;
+    this.acks.push(encodeAck(result));
+    this.log.push([EntryType.Ack, this.state.day, index, seq]);
+    this.command = seq;
+  }
+  reply(reply: Reply): void { this.replies.push(copyOwned(reply)); }
+  /** replies not yet flushed: a resync drops them with its fresh Ready (W1.1b's lost reads) */
+  get pendingReplies(): readonly Reply[] { return this.replies; }
+  watch(value: WatchValue): void { this.watches.push(copyOwned(value)); }
+  ping(n: number): void { this.pong = n; }
 
   constructor(readonly sim: Simulation, private opts: RecorderOptions = {}) {
     this.now = opts.now ?? (() => performance.now());
@@ -113,6 +142,8 @@ export class ChangeRecorder {
       this.captureMs += performance.now() - start;
     }));
     this.seed();
+    if (opts.signal?.aborted) this.dispose();
+    else opts.signal?.addEventListener('abort', this.abort, { once: true });
   }
   private get state(): CityState { return this.sim.state; }
   private emergency(): EmergencySystem | undefined { return this.sim.getSystem<EmergencySystem>('emergency'); }
@@ -125,14 +156,16 @@ export class ChangeRecorder {
     snapshot.data.systemData = this.systemData();
     if (this.state.systemData.camera !== undefined) (snapshot.data.systemData as Record<string, unknown>).camera = copyOwned(this.state.systemData.camera);
     this.seed(snapshot.buildings.defs);
+    this.command = cmd;
     const streams = this.streams(true, true);
     this.policy = copyOwned(this.opts.policy?.() ?? EMPTY_POLICY);
     return { t: 'ready', snapshot: copyOwned(snapshot), streams, policy: copyOwned(this.policy), clock: this.clock(live), savedAt: snapshot.savedAt, cmd };
   }
   private seed(defs: string[] = []): void {
+    this.acks = []; this.replies = []; this.watches = []; this.pong = undefined;
     this.defs = new DefTable(defs);
     this.records.clear(); this.endRecords.clear(); this.log = []; this.incidents = []; this.rects.clear(); this.dirty.clear();
-    this.sentAt.clear(); this.sparse.clear(); this.constructing.clear(); this.incidentRefs.clear();
+    this.sentAt.clear(); this.sparse.clear(); this.constructing.clear(); this.young.clear(); this.incidentRefs.clear();
     this.seq = 0; this.cursor = 0; this.auditCursor = 0; this.stationVersion = -1; this.routeRefs = [];
     this.shadow = new Float64Array(0); this.exact = new Float64Array(0);
     this.ensureShadow(this.state.nextBuildingId);
@@ -140,6 +173,7 @@ export class ChangeRecorder {
       this.noteRecord(b);
       this.noteExact(b);
       if (b.built < 1) this.constructing.add(b.id);
+      if (b.flags & BF.Plopped && b.age < 30) this.young.add(b.id);
     }
     this.defs.takeAppends();
     for (const inc of this.emergency()?.incidents() ?? []) this.incidentRefs.set(inc.id, inc);
@@ -168,6 +202,8 @@ export class ChangeRecorder {
       this.noteRecord(b); this.noteExact(b);
       if (name === 'buildingRemoved' || b.built >= 1 || (name === 'buildingChanged' && !(b.flags & BF.Constructing))) this.constructing.delete(b.id);
       else if (b.built < 1) this.constructing.add(b.id);
+      if (name === 'buildingRemoved') this.young.delete(b.id);
+      else if (b.flags & BF.Plopped && b.age < 30) this.young.add(b.id);
       if (this.view.overlay === Overlay.Demographics) this.rasterDirty = true;
     } else if (name === 'emergency') {
       const e = value as EmergencyEvent;
@@ -241,6 +277,12 @@ export class ChangeRecorder {
         const b = st.buildings.get(id);
         if (b) add(b);
         if (!b || b.built >= 1) this.constructing.delete(id);
+      }
+      for (const id of this.young) {
+        const b = st.buildings.get(id);
+        if (b) add(b);
+        // the record with age 30 goes out once, then the refund no longer depends on the age
+        if (!b || b.age >= 30) this.young.delete(id);
       }
       this.constructionDay = st.day;
     }
@@ -327,9 +369,13 @@ export class ChangeRecorder {
     const due = (group: string) => !(group === 'utilities' || group === 'traffic' || deps.includes(group)) || now - (this.sentAt.get(group) ?? -Infinity) >= 250;
     const logReady = this.log.some((e) => e[0] !== EntryType.LayerUpdated || due(e[2] as string));
     const rasterReady = this.rasterDirty && workerRaster(this.view) && now - this.rasterAt >= 500;
-    if (!opts.force && !logReady && ![...this.dirty].some(due) && !this.viewDirty && !this.focusDirty && !this.streamsDirty && !rasterReady && !dayPassed
+    if (!opts.force && !this.replies.length && !this.watches.length && this.pong === undefined && !logReady && ![...this.dirty].some(due) && !this.viewDirty && !this.focusDirty && !this.streamsDirty && !rasterReady && !dayPassed
       && plainEqual(this.policy, policy) && now - this.lastFlush < 250) return null;
-    const p: Packet = { seq: ++this.seq, cmd: opts.cmd ?? 0, clock: this.clock(opts.live ?? false), log: [] };
+    const p: Packet = { seq: ++this.seq, cmd: opts.cmd ?? this.command, clock: this.clock(opts.live ?? false), log: [] };
+    if (this.acks.length) { p.acks = this.acks; this.acks = []; }
+    if (this.replies.length) { p.replies = this.replies; this.replies = []; }
+    if (this.watches.length) { p.watch = this.watches; this.watches = []; }
+    if (this.pong !== undefined) { p.pong = this.pong; this.pong = undefined; }
     if (this.rects.size) p.cells = [...this.rects].map(([layer, rect]) => encodeCell(this.state, layer, rect));
     this.rects.clear();
     const delivered = new Set<string>(), layers = new Map<LayerName, LayerPatch>();
@@ -374,5 +420,9 @@ export class ChangeRecorder {
     this.viewDirty = false; this.focusDirty = false; this.streamsDirty = false; this.lastDay = this.state.day; this.lastFlush = now;
     return p;
   }
-  dispose(): void { for (const off of this.off) off(); this.off = []; this.incidentRefs.clear(); this.disposed = true; }
+  dispose(): void {
+    for (const off of this.off) off();
+    this.opts.signal?.removeEventListener('abort', this.abort);
+    this.off = []; this.incidentRefs.clear(); this.disposed = true;
+  }
 }

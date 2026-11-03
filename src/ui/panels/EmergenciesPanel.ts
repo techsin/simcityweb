@@ -117,7 +117,8 @@ export class EmergenciesPanel extends Panel {
       const inc = em.incident(r.inc.id) ?? r.inc;
       r.inc = inc;
       const waiting = inc.state === 'uncovered' || inc.state === 'queued';
-      setText(r.st, waiting && inc.note ? inc.note : stateText(inc, now, em));
+      setText(r.st, waiting && inc.reason === 'busy' ? `Waiting for a unit${inc.note ? ' — ' + inc.note : ''}` : waiting && inc.note ? inc.note : stateText(inc, now, em));
+      setText(r.disp, waiting && inc.reason === 'busy' ? 'Send' : 'Dispatch');
       setText(r.time, activeTimeText(inc, now));
       // (close-out c2 polish: a waiting incident no free unit can be sent to — every truck busy — gets no live Dispatch
       // button; its title says why)

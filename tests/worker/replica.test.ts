@@ -288,7 +288,7 @@ describe('replica design cadence', () => {
       const p = loop.recorder.flush({ force: true, cmd: 1 })!;
       p.policy = { alerts: [{ id: 1, wasPossible: true }], live: false };
       p.log.push([EntryType.Ack, st.day, 0, 1]); p.acks = [{ ok: true }];
-      p.watch = [{ id: 1, key: 'b:1', value: 3 }]; p.replies = [{ t: 'qres', id: 1, ok: true, value: 3 }];
+      p.watch = [{ id: 1, cmd: 0, key: 'b:1', value: 3 }]; p.replies = [{ t: 'qres', cmd: 0, id: 1, ok: true, value: 3 }];
       loop.replica.events.on('buildingChanged', (rb) => {
         expect(rb.flags & BF.Historic).toBeTruthy(); expect(rb.jobs).toBe(2);
         expect(loop.state.budget.taxRates[0]).toBe(4); expect(loop.replica.policy.alerts).toEqual([]);

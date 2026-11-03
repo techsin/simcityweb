@@ -215,11 +215,11 @@ export function residentSurvey(st: CityState, rt: EconRuntime, inf: InfraFlags =
 // ------------------------------------------------------------------------------------------------ terms
 /** labels of the approval terms (stable ids; WP5 TopBar tooltip) */
 export const APPROVAL_LABELS: Record<string, string> = {
-  base: 'Baseline',
+  base: 'Starting approval',
   tax: 'Residential taxes',
   services: 'City services at homes',
   pollution: 'Air pollution',
-  crime: 'Crime',
+  crime: 'Crime at homes',
   commute: 'Commute times',
   unemployment: 'Unemployment',
   parks: 'Parks near homes',
@@ -471,12 +471,19 @@ function approvalDetail(st: CityState, id: string, T: Record<string, number>): s
   const s = st.stats;
   const pct = (v: number) => `${Math.round(v * 100)}%`;
   const n0 = (v: number) => Math.round(v).toLocaleString('en-US');
-  const d = st.systemData.economy as { tourists?: number } | undefined;
+  const d = st.systemData.economy as { tourists?: number; resCrime?: number } | undefined;
   const sv = surveys.get(st);
   // the three service gaps hit their common limit: say so
   const gapSum = (T.garbage ?? 0) + (T.needs ?? 0) + (T.tapWater ?? 0);
   const limit = gapSum < 0 && Math.abs(gapSum - AT.gapMax) < 1e-6 ? ` (garbage, schools / clinics and tap water together cost at most ${-AT.gapMax})` : '';
   switch (id) {
+    case 'base': return `every city starts at ${APPROVAL.base}`;
+    case 'crime': return `crime at homes ${pct(d?.resCrime ?? sv?.crime[3] ?? T.crime / APPROVAL.crime)} — low-wealth homes, uncollected garbage and low land value; police remove up to 85% where they patrol`;
+    case 'tax': {
+      // Describe the last monthly term, even if the sliders have moved since that report.
+      const rate = TAX_NEUTRAL + (T.tax < 0 ? T.tax / APPROVAL.taxPerPoint : -T.tax / APPROVAL.taxLowPerPoint);
+      return `homes are taxed ${Number(rate.toFixed(1))}% on average — each point above ${TAX_NEUTRAL}% costs ${-APPROVAL.taxPerPoint} approval; each point below adds ${APPROVAL.taxLowPerPoint}`;
+    }
     case 'tapWater': return `tap water ${pct(s.tapWater ?? 1)} clean${limit}`;
     case 'hq': return `HQ ${Math.round(s.hq)}`;
     case 'tourism': return `${n0(d?.tourists ?? 0)} tourists / day`;

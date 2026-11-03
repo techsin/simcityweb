@@ -1,7 +1,7 @@
 From 6c0d1ed5bd59f05deb02a2d73fac8314a75a4aee Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 22:25:25 +0000
-Subject: [PATCH 3/4] tourism: the venue pass on day 26, the attract step on
+Subject: [PATCH 03/13] tourism: the venue pass on day 26, the attract step on
  the tick (B3 T2)
 
 The month tick carried tourism's whole update. It is split in two:

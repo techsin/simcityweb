@@ -1,4 +1,4 @@
-/** W1.1a harness: W0.1's SimCore plus the clone-only protocol, with no command / query host yet. */
+/** The clone-only protocol in one thread, retaining W1.1a's deterministic replica harness. */
 import type { RegionContext } from '../region/regionEffects';
 import { CityActions } from '../sim/actions';
 import type { CityState } from '../sim/CityState';
@@ -6,7 +6,14 @@ import { createSystems } from '../sim/systems';
 import { SimCore, type SimErrors, type SimFlags, type SimModules } from './SimCore';
 import { ChangeRecorder, type RecorderOptions } from './recorder';
 import { Replica, type ReplicaHooks } from './replica';
-import { cloneMessage, type M2W, type Packet, type Ready, type ViewState, type W2M } from './protocol';
+import { cloneMessage, errorText, type Journal, type M2W, type Packet, type Ready, type ViewState, type W2M, type Reply } from './protocol';
+import type { CityPersistence } from './SimHost';
+import { SeededLag, type LagProfile } from './lag';
+import { ProtocolInbox, type InboxStore } from './protocolInbox';
+import { getRecoveryBase } from '../save/cities';
+import { openKV } from '../save/db';
+import { readRecoveryJournal, storeRecoveryIdb } from '../save/recoveryIdb';
+import type { JournalBase, RecoveryJournal } from '../save/recoveryCodec';
 
 export interface LoopbackOptions {
   cadence?: 'design' | 'live';
@@ -18,8 +25,40 @@ export interface LoopbackOptions {
   recorder?: Omit<RecorderOptions, 'now'>;
   replica?: ReplicaHooks;
   onPacket?: (packet: Packet, loopback: LoopbackCore) => void;
+  /** Main-side packet plumbing can be shared with a real worker. */
+  receive?: (message: W2M) => void;
+  replicaInstance?: Replica;
+  signal?: AbortSignal;
+  persistence?: CityPersistence;
+  now?: () => number;
+  lag?: LagProfile;
+  /** T033 (§4.3): a journal bound to the loaded save, replayed after init and before the first tick */
+  journal?: BootJournal;
 }
+export interface BootJournal { journal: RecoveryJournal; base: JournalBase }
 export interface ProtocolTiming { flushMs: number; cloneMs: number; applyMs: number; packets: number }
+
+/** T033: as the worker reads `recovery/<key>#journal` itself (§4.3): the journal bound to the save the page loaded
+ *  (its recovery base), or none. One bound to another save or snapshot is deleted on the way. */
+export async function bootJournal(persistence: CityPersistence | undefined): Promise<BootJournal | undefined> {
+  if (!persistence) return undefined;
+  const record = getRecoveryBase(persistence.regionId, persistence.tileKey);
+  if (!record) return undefined;
+  const kv = await openKV();
+  if (!kv.persistent) return undefined;
+  const base: JournalBase = { regionId: record.regionId, tileKey: record.tileKey, savedAt: record.savedAt };
+  const journal = await readRecoveryJournal(kv, base);
+  return journal ? { journal, base } : undefined;
+}
+
+/** The loopback writes IndexedDB itself, as LocalSimHost does (and the worker will, in W1.3). */
+function idbStore(core: SimCore): InboxStore {
+  return {
+    putSave: async (copy) => ({ recoveryDropped: await core.putSave(copy) }),
+    putSnapshot: async ({ marker, payload }) => { const kv = await openKV(); await storeRecoveryIdb(kv, marker, payload); return kv.persistent; },
+    recoveryBase: getRecoveryBase,
+  };
+}
 
 export class LoopbackCore {
   readonly core: SimCore;
@@ -30,18 +69,76 @@ export class LoopbackCore {
   private tick = 0;
   private disposed = false;
   private readonly live: boolean;
+  readonly inbox: ProtocolInbox;
+  private abort = new AbortController();
+  private queue: M2W[] = [];
+  private outgoing: { at: number; message: W2M }[] = [];
+  private processing: Promise<void> | null = null;
+  private scheduled = false;
+  private busyUntil = 0;
+  private transportTick = 0;
+  private lag: SeededLag | null;
+  /** the traffic layers as last sent: a traffic pass writes them one step before it announces them (F6) */
+  private sentRoad = { traffic: new Float32Array(0), congestion: new Float32Array(0) };
+  private stop = () => this.dispose();
 
   constructor(state: CityState, private opts: LoopbackOptions = {}) {
     this.live = opts.cadence === 'live';
-    this.core = new SimCore(state, opts.errors, opts.flags);
+    this.lag = opts.lag ? new SeededLag(opts.lag) : null;
+    const bootErrors: Reply[] = [];
+    this.core = new SimCore(state, { report: (title, e, details) => {
+      if (!opts.receive) opts.errors?.report(title, e, details);
+      if (this.inbox) { this.inbox.error(details?.key ?? title, title, e, details?.sim); return; }
+      const reply: Reply = { t: 'error', cmd: 0, key: details?.key ?? title, title, message: errorText(e), stack: e instanceof Error ? e.stack : undefined, sim: details?.sim ?? false };
+      if (this.recorder) this.recorder.reply(reply); else bootErrors.push(reply);
+    } }, opts.flags, () => this.now());
     this.core.sim.speed = opts.initialSpeed ?? 1;
     this.core.boot(opts.rctx ?? null, opts.modules ?? { createSystems, CityActions });
-    this.recorder = new ChangeRecorder(this.core.sim, { ...opts.recorder, now: () => this.elapsedMs });
-    this.replica = new Replica(opts.replica);
-    this.deliver(this.recorder.ready(0, this.live));
+    this.recorder = new ChangeRecorder(this.core.sim, { policy: () => {
+      const { alerts, live, toast, warn } = this.core.livePolicy.view;
+      return { alerts: alerts.map((a) => ({ ...a })), live, toast, warn };
+    }, ...opts.recorder, now: () => this.now(), signal: this.abort.signal });
+    this.replica = opts.replicaInstance ?? new Replica(opts.replica);
+    this.inbox = new ProtocolInbox(this.core, this.recorder, { now: () => this.now(), flush: (force) => this.flush(force),
+      signal: this.abort.signal, persistence: opts.persistence, store: idbStore(this.core), fatal: (e) => this.fatal(e) });
+    // after init, before the first tick; the inbox counts the replay's change events, so the city reads as unsaved
+    const carried = opts.journal ? this.replay(opts.journal) : undefined;
+    const ready = this.ready();
+    if (carried) ready.journal = carried;
+    this.deliver(ready);
+    for (const reply of bootErrors) this.recorder.reply(reply);
+    opts.signal?.addEventListener('abort', this.stop, { once: true });
+    if (opts.signal?.aborted) this.dispose();
+  }
+  private now(): number { return this.opts.now?.() ?? this.elapsedMs; }
+  /** §4.3's boot replay. The loopback's Ready is synchronous, so no save can precede it: the replayed edits ride in
+   *  it renumbered with seqs ≤ 0 (the design's failed-save path). The page's mirror starts from them, its journal
+   *  stays bound to the loaded save, and the session's first save, which contains them, trims them. */
+  private replay({ journal, base }: BootJournal): Journal | undefined {
+    let result: ReturnType<SimCore['replayRecoveryJournal']> = null;
+    try { result = this.core.replayRecoveryJournal(journal, base); }
+    catch (e) { this.core.report('Recovery journal could not be replayed', e, { key: 'recovery' }); return undefined; }
+    if (!result?.applied.length) return undefined;
+    const applied = new Set(result.applied), ops = journal.ops.filter((entry) => applied.has(entry.seq)), n = ops.length;
+    return { v: 1, regionId: base.regionId, tileKey: base.tileKey, at: Math.max(Date.now(), base.savedAt),
+      base: { kind: 'save', savedAt: base.savedAt }, fromCmd: -n, ops: ops.map((entry, i) => ({ ...entry, seq: i + 1 - n })) };
+  }
+  private ready(): Ready {
+    const ready = this.recorder.ready(this.inbox.cmd, this.live), p = this.opts.persistence;
+    if (p) ready.savedAt = getRecoveryBase(p.regionId, p.tileKey)?.savedAt ?? 0;
+    ready.changes = this.inbox.changes;
+    this.sentRoad = { traffic: this.primary.traffic.slice(), congestion: this.primary.congestion.slice() };
+    return ready;
   }
   get state(): CityState { return this.replica.state; }
   get primary(): CityState { return this.core.sim.state; }
+  /** The authoritative state as the replica should see it: the live state, with the utilities and traffic layers as
+   *  last sent (a pass in flight has written them but not yet announced them). For the harness's comparisons. */
+  get delivered(): CityState {
+    const sent = this.recorder.sentUtilities(), st = this.primary;
+    return Object.assign(Object.create(st) as CityState, { powered: sent.powered ?? st.powered, watered: sent.watered ?? st.watered,
+      traffic: this.sentRoad.traffic, congestion: this.sentRoad.congestion });
+  }
   /** Harness clock used to verify the recorder's 4-per-second group throttle independently. */
   get elapsedTimeMs(): number { return this.elapsedMs; }
 
@@ -53,6 +150,7 @@ export class LoopbackCore {
       // Design cadence has no real-time throttle pressure: one completed day and packet per step.
       this.elapsedMs += 250;
       this.core.sim.advanceDay();
+      this.inbox.refresh();
       this.flush();
     }
   }
@@ -64,6 +162,7 @@ export class LoopbackCore {
     this.elapsedMs += m.dt * 1000;
     // beginTick / nextUnit and explicit live mode are not present in W0.1. Do not emulate that scheduler here.
     this.core.frame(m.dt);
+    this.inbox.refresh();
     this.flush();
   }
   setView(view: ViewState): void {
@@ -73,10 +172,15 @@ export class LoopbackCore {
   }
   flush(force = false, rollingCount?: number): Packet | null {
     this.assertOpen();
+    // §2.10's backpressure, measured on this transport: packets still in flight. Main applies a packet as it arrives,
+    // and its acks ride on ticks, which stop with the tab hidden while the hidden path's save reply must still go out.
+    if (this.opts.receive && this.inFlight() > 4) return null;
     const start = performance.now();
     const packet = this.recorder.flush({ live: this.live, force, rollingCount });
     this.timing.flushMs += performance.now() - start;
     if (!packet) return null;
+    packet.changes = this.inbox.changes;
+    for (const patch of packet.layers ?? []) if (patch.name === 'traffic' || patch.name === 'congestion') this.sentRoad[patch.name].set(this.primary[patch.name]);
     const message = this.deliver({ t: 'pkt', p: packet });
     return message.t === 'pkt' ? message.p : null;
   }
@@ -91,14 +195,40 @@ export class LoopbackCore {
   resync(): Ready {
     this.assertOpen();
     cloneMessage<M2W>({ t: 'resync' });
-    const ready = this.recorder.ready(0, this.live);
+    // replies in packets still in flight, and those not yet flushed, are dropped with them. Reads are lost: main rejects
+    // only these. A save or snapshot was written, so its outcome goes out again after the Ready (T033): the page's
+    // journal must rebind to the save that replaced its base, and the app must not report a written save as failed.
+    const dropped = [...this.outgoing.flatMap((o) => o.message.t === 'pkt' ? o.message.p.replies ?? [] : []), ...this.recorder.pendingReplies];
+    const lost = dropped.flatMap((r) => r.t === 'qres' ? [r.id] : []);
+    const writes = dropped.filter((r) => r.t === 'saved' || r.t === 'snapped');
+    this.outgoing = [];
+    this.inbox.resetWatches();
+    const ready = this.ready();
+    if (lost.length) ready.lost = lost;
     this.deliver(ready);
+    for (const reply of writes) this.recorder.reply(reply);
+    if (writes.length) this.flush();
     return ready;
+  }
+  private inFlight(): number {
+    let n = 0;
+    for (const o of this.outgoing) if (o.message.t === 'pkt') n++;
+    return n;
+  }
+  private fatal(e: unknown): void {
+    if (!this.disposed) this.deliver({ t: 'fatal', message: errorText(e), stack: e instanceof Error ? e.stack : undefined });
   }
   private deliver(message: W2M): W2M {
     let start = performance.now();
     const received = cloneMessage(message);
     this.timing.cloneMs += performance.now() - start;
+    if (this.opts.receive) {
+      const delay = received.t === 'pkt' ? this.lag?.packet(!!received.p.acks?.length) ?? 0 : 0;
+      const at = Math.max(this.transportTick + delay, this.outgoing.at(-1)?.at ?? 0);
+      this.outgoing.push({ at, message: received });
+      this.deliverDue();
+      return received;
+    }
     start = performance.now();
     if (received.t === 'ready') this.replica.adopt(received);
     else if (received.t === 'pkt') {
@@ -109,6 +239,64 @@ export class LoopbackCore {
     }
     return received;
   }
+  /** Posting never runs a command inline: HostActions must register its reservation before Ack replay. */
+  post(message: M2W): void {
+    this.assertOpen();
+    const received = cloneMessage(message);
+    if (received.t === 'tick') this.advanceTransport(received.dt * 1000);
+    this.queue.push(received);
+    if (!this.scheduled) {
+      this.scheduled = true;
+      queueMicrotask(() => { this.scheduled = false; if (!this.disposed) void this.pump(); });
+    }
+  }
+  advanceTransport(ms = 16): void {
+    this.transportTick++; this.elapsedMs += ms;
+    this.deliverDue();
+    if (!this.disposed) void this.pump();
+  }
+  private deliverDue(force = false): void {
+    while (!this.disposed && this.outgoing.length && (force || this.outgoing[0].at <= this.transportTick)) {
+      const message = this.outgoing.shift()!.message;
+      this.opts.receive!(message);
+      if (message.t === 'pkt') {
+        this.timing.packets++;
+        this.opts.onPacket?.(message.p, this);
+      }
+    }
+  }
+  private pump(force = false): Promise<void> {
+    if (this.processing) return this.processing;
+    const run = async () => {
+      while (!this.disposed && this.queue.length && (force || this.elapsedMs >= this.busyUntil)) {
+        const m = this.queue.shift()!;
+        if (m.t === 'tick') {
+          if (this.live) this.core.frame(m.dt);
+          this.inbox.refresh(); this.flush();
+        } else if (m.t === 'resync') this.resync();
+        else if (m.t === 'dispose') this.dispose();
+        else this.inbox.handle(m);
+        this.busyUntil = this.elapsedMs + (this.lag?.unit() ?? 0);
+      }
+    };
+    this.processing = run().catch((e) => this.fatal(e)).finally(() => {
+      this.processing = null;
+      if (!this.disposed && this.queue.length && this.elapsedMs >= this.busyUntil) queueMicrotask(() => { if (!this.disposed) void this.pump(); });
+    });
+    return this.processing;
+  }
+  /** Test/harness barrier: finish FIFO work and deliveries, without advancing a simulated day. */
+  async drain(): Promise<void> {
+    this.assertOpen();
+    await this.processing;
+    do {
+      this.deliverDue(true);
+      await this.pump(true);
+      await this.inbox.idle; // saves and snapshots reply when their writes settle
+      this.deliverDue(true);
+      this.flush(); this.deliverDue(true);
+    } while (this.queue.length || this.outgoing.length);
+  }
   resetTiming(): void {
     this.timing.flushMs = 0; this.timing.cloneMs = 0; this.timing.applyMs = 0; this.timing.packets = 0;
     this.recorder.captureMs = 0;
@@ -117,6 +305,10 @@ export class LoopbackCore {
   dispose(): void {
     if (this.disposed) return;
     cloneMessage<M2W>({ t: 'dispose' });
-    this.recorder.dispose(); this.replica.events.clear(); this.core.dispose(); this.disposed = true;
+    this.disposed = true;
+    this.opts.signal?.removeEventListener('abort', this.stop);
+    this.abort.abort('dispose');
+    this.queue = []; this.outgoing = [];
+    this.recorder.dispose(); this.replica.events.clear(); this.core.dispose();
   }
 }

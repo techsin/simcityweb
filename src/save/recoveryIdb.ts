@@ -1,7 +1,7 @@
 /** Recovery records in IndexedDB; localStorage adoption is supplied by the page-side composition. */
 import type { KV } from './db';
 import { cityKey, type CityRecord } from './cities';
-import type { PendingRecovery, RecoveryCity, RecoveryMarker } from './recoveryCodec';
+import { journalMatches, type JournalBase, type RecoveryJournal, type PendingRecovery, type RecoveryCity, type RecoveryMarker } from './recoveryCodec';
 import type { Journal } from '../worker/protocol';
 
 export interface IdbRecoveryRecord { marker: RecoveryMarker; payload: Uint8Array }
@@ -15,6 +15,26 @@ export function storeRecoveryIdb(kv: KV, marker: RecoveryMarker, payload: Uint8A
 
 export function storeJournalIdb(kv: KV, journal: Journal): Promise<void> {
   return kv.put('recovery', journal, recKey(journal) + '#journal');
+}
+
+// W1.1b: independent of title-screen snapshot restoration and safe in the authoritative isolate.
+export async function readRecoveryJournal(kv: KV, base: JournalBase): Promise<RecoveryJournal | null> {
+  const key = recKey(base) + '#journal';
+  const journal = await kv.get<RecoveryJournal>('recovery', key);
+  if (!journal) return null;
+  if (journalMatches(journal, base)) return journal;
+  await kv.delete('recovery', key);
+  return null;
+}
+
+/** Adopt an unload copy only after its loaded record/snapshot has been identified. A newer IndexedDB copy stays, even
+ *  one bound to another base: it is the later write. */
+export async function adoptRecoveryJournal(kv: KV, journal: RecoveryJournal, base: JournalBase): Promise<boolean> {
+  if (!journalMatches(journal, base)) return false;
+  const current = await kv.get<RecoveryJournal>('recovery', recKey(base) + '#journal');
+  if (current && current.at > journal.at) return false;
+  await storeJournalIdb(kv, journal);
+  return true;
 }
 
 export async function peekRecoveryMarker(kv: KV, city: RecoveryCity): Promise<RecoveryMarker | null> {

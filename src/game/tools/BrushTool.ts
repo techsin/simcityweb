@@ -64,7 +64,7 @@ export class BrushTool extends Tool {
       this.ctx.tip.hide();
       return;
     }
-    const key = `${p.hit.x},${p.hit.z},${brush.radius},${brush.strength}`;
+    const key = `${p.hit.x},${p.hit.z},${brush.radius},${brush.strength},${this.ctx.host.pending?.revision ?? 0}`;
     if (key !== this.lastKey && !p.down) {
       this.lastKey = key;
       this.preview = this.apply(p, true);

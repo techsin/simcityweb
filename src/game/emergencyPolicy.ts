@@ -13,6 +13,8 @@ export const FOLLOW_GRACE = 0.75;
 export const FOLLOW_MAX_MIN = 15;
 /** 'live': less real time than this (seconds at live speed) to dispatch the most urgent alert pauses the game */
 export const LIVE_PAUSE_SEC = 8;
+/** Real milliseconds between emergency speed-policy episodes; paused time does not count. */
+export const LIVE_COOLDOWN_MS = 30_000;
 
 // ------------------------------------------------------------------------------------------------ pure policy
 /** LIVE-mode bookkeeping between host ticks */
@@ -104,9 +106,9 @@ export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, sp
 }
 
 /**
- * Which incidents get a banner: queue limit, major-only mode, per-kind cooldown, small-town filter — except a major
- * incident a player dispatch can still save (manualPossible): that one always gets one (shown compact beyond
- * MAX_BANNERS). It holds the LIVE / pause policy and scores as an ignored Dispatch prompt when nobody answers (WP6b),
+ * Which non-busy incidents get a banner: queue limit, major-only mode, per-kind cooldown, small-town filter — except a
+ * major incident a player dispatch can still save (manualPossible): that one always gets one (shown compact beyond
+ * MAX_BANNERS). It can hold the LIVE / pause policy and scores as an ignored Dispatch prompt when nobody answers (WP6b),
  * so the player must see it: a second uncovered medical call 7 days after the first used to get no banner and no
  * slow-down, and still cost approval as "ignored".
  */
@@ -116,8 +118,8 @@ export class AlertQueue {
   constructor(public max = MAX_BANNERS, public cooldown = KIND_COOLDOWN, public minPop = ALERT_MIN_POP) {}
 
   /** would / does this incident get a banner now (and records it) */
-  offer(e: { id: number; kind: IncidentKind; major: boolean; manualPossible?: boolean }, day: number, population: number, mode: 'major' | 'all'): boolean {
-    if (this.shown.includes(e.id)) return false;
+  offer(e: { id: number; kind: IncidentKind; major: boolean; manualPossible?: boolean; reason?: Incident['reason'] }, day: number, population: number, mode: 'major' | 'all'): boolean {
+    if (e.reason === 'busy' || this.shown.includes(e.id)) return false;
     if (!(e.major && e.manualPossible === true)) {
       if (mode === 'major' && !e.major) return false;
       if (population < this.minPop && e.kind !== 'fire') return false;
@@ -173,13 +175,14 @@ type SendDays = (inc: Incident) => number;
 
 /** Major prompts never lose their policy just because their event preceded the alert owner. */
 export function unbanneredPrompt(inc: Incident, alerts: Alerts, dismissed: ReadonlySet<number>, send: SendDays): boolean {
-  return inc.state === 'uncovered' && inc.major && inc.manualPossible && !alerts.has(inc.id) && !dismissed.has(inc.id) && !Number.isNaN(send(inc));
+  return inc.reason !== 'busy' && inc.state === 'uncovered' && inc.major && inc.manualPossible && !alerts.has(inc.id) && !dismissed.has(inc.id) && !Number.isNaN(send(inc));
 }
 
 /** Waiting prompts plus the primary unit the player sent; an expired unanswered prompt makes the episode neutral. */
 export function pendingCount(policy: EmergencyPolicy, alerts: Alerts, incidents: readonly Incident[], dismissed: ReadonlySet<number>, now: number, send: SendDays): { count: number; bad: boolean } {
   let count = 0, bad = false;
   for (const inc of incidents) {
+    if (inc.reason === 'busy') continue;
     const alert = alerts.get(inc.id);
     if (!alert) {
       if (unbanneredPrompt(inc, alerts, dismissed, send)) count++;
@@ -198,6 +201,7 @@ export function urgentSeconds(alerts: Alerts, incidents: readonly Incident[], di
   const secPerDay = SECONDS_PER_DAY[1] * Math.max(1, slowmo || 1);
   let best = Infinity;
   for (const inc of incidents) {
+    if (inc.reason === 'busy') continue;
     if (!alerts.has(inc.id) && (inc.state !== 'uncovered' || !inc.major || dismissed.has(inc.id))) continue;
     const eta = send(inc);
     if (Number.isNaN(eta)) continue;

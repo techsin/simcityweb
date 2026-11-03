@@ -14,6 +14,8 @@ import { sumTerms } from '../../src/sim/explain';
 
 const difficulties = ['easy', 'medium', 'hard', 'sandbox'] as const;
 const fades = [[124, 0], [2000, 0], [3500, 0.15625], [5000, 0.5], [6500, 0.84375], [8000, 1], [12000, 1]] as const;
+/** FH-06's crime detail; Easy's grace note replaces it while the fade lasts */
+const CRIME_DETAIL = expect.stringMatching(/^crime at homes \d+% — /);
 
 /** One occupied home with fixed resident experience; only approval and budget advance in these tests. */
 function town(difficulty: Difficulty, pop = 5000): CityState {
@@ -131,8 +133,8 @@ describe('difficulty approval fades', () => {
       const value = difficulty === 'easy' && fade === 0 ? 0 : -15 * (difficulty === 'easy' ? fade : 1);
       expect(econData(st).approvalTerms.crime, `population ${pop}`).toBe(value);
       expect(approvalBreakdown(st).find((t) => t.id === 'crime')).toEqual({
-        id: 'crime', label: 'Crime', value,
-        detail: difficulty === 'easy' && fade < 1 ? 'new-town grace' : undefined,
+        id: 'crime', label: 'Crime at homes', value,
+        detail: difficulty === 'easy' && fade < 1 ? 'new-town grace' : CRIME_DETAIL,
       });
       expect(sumTerms(approvalBreakdown(st))).toBeCloseTo(econData(st).approvalRaw, 12);
     }
@@ -150,7 +152,7 @@ describe('difficulty approval fades', () => {
     expect(approvalBreakdown(st).find((t) => t.id === 'crime')?.detail).toBe('new-town grace');
     sim.runDays(30);
     expect(econData(st).approvalTerms.crime).toBe(-15);
-    expect(approvalBreakdown(st).find((t) => t.id === 'crime')?.detail).toBeUndefined();
+    expect(approvalBreakdown(st).find((t) => t.id === 'crime')?.detail).toEqual(CRIME_DETAIL);
   });
 
   it.each(difficulties)('%s: failed, late and deaths fade only on Easy', (difficulty) => {
@@ -239,7 +241,7 @@ describe('old difficulty saves load and continue', () => {
       expect(st.stats.approval).toBe(42.25); // loading keeps the saved EMA even though Easy's raw terms change at once
       expect(econData(st).approvalTerms).toEqual(expectedTerms);
       expect(econData(st).approvalRaw).toBe(raw);
-      expect(approvalBreakdown(st).find((t) => t.id === 'crime')?.detail).toBe(difficulty === 'easy' ? 'new-town grace' : undefined);
+      expect(approvalBreakdown(st).find((t) => t.id === 'crime')?.detail).toEqual(difficulty === 'easy' ? 'new-town grace' : CRIME_DETAIL);
       let approval = 42.25;
       const income = { easy: 2160, medium: 1800, hard: 1530, sandbox: 0 }[difficulty];
       for (let month = 1; month <= 3; month++) {
