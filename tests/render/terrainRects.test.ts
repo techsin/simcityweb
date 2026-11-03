@@ -171,6 +171,20 @@ describe('TerrainRenderer dirty rectangles', () => {
     expect(touched({ x0: 20, z0: N - 1, x1: 21, z1: N })).toEqual([3]);
     expect(touched({ x0: 0, z0: N - 1, x1: 1, z1: N })).toEqual([0, 3]);
     expect(touched({ x0: 0, z0: 0, x1: N, z1: N })).toEqual([0, 1, 2, 3]);
+    // the boundary on every side: an edit in the third ring still refreshes its row (the one-cell pad reaches the
+    // second ring, so an emitter off by one is still covered), and one in the fourth ring refreshes none
+    expect(touched({ x0: 2, z0: 20, x1: 3, z1: 21 })).toEqual([0]);
+    expect(touched({ x0: 20, z0: 2, x1: 21, z1: 3 })).toEqual([2]);
+    expect(touched({ x0: 20, z0: N - 3, x1: 21, z1: N - 2 })).toEqual([3]);
+    expect(touched({ x0: 3, z0: 20, x1: 4, z1: 21 })).toEqual([]);
+    expect(touched({ x0: N - 4, z0: 20, x1: N - 3, z1: 21 })).toEqual([]);
+    expect(touched({ x0: 20, z0: 3, x1: 21, z1: 4 })).toEqual([]);
+    expect(touched({ x0: 20, z0: N - 4, x1: 21, z1: N - 3 })).toEqual([]);
+    // the fourth ring again, in a union that refreshes the exits for another edge
+    expect(touched({ x0: 3, z0: N - 1, x1: 4, z1: N })).toEqual([3]);
+    expect(touched({ x0: N - 4, z0: 0, x1: N - 3, z1: 1 })).toEqual([2]);
+    expect(touched({ x0: 0, z0: 3, x1: 1, z1: 4 })).toEqual([0]);
+    expect(touched({ x0: N - 1, z0: N - 4, x1: N, z1: N - 3 })).toEqual([1]);
     expect(exit.updateRanges).toEqual([]);
     expect(driver.upload(exit)).toEqual([{ x: 0, y: 0, width: N, height: 4 }]);
     expect(driver.read(exit)).toEqual(E);
