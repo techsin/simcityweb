@@ -365,6 +365,10 @@ function clearArea(st: CityState, x0: number, z0: number, w: number, d: number, 
 }
 
 /** B2 piece state and scratch whose content depends on where the pieces fall (not results) */
+/** the cycle's piece cursors and stage flags (endCycle() resets them; R9) */
+const CYCLE_CURSORS = ['phase', 'rbStage', 'pSub', 'pCur', 'tSub', 'tCur', 'trSub', 'trCur', 'otSub', 'otCur', 'prSub', 'prCur', 'rsSub', 'mSub',
+  'mCur', 'srtStage', 'clStage', 'pArr', 'csrStage', 'cmSub', 'cmCur', 'cmFlowing', 'ceSub', 'ceCur', 'olCur', 'ovFlow', 'sfSub', 'sfCur', 'pkSub',
+  'pkCur', 'fiSub', 'fiCur', 'f2Sub', 'f2Cur', 'flPhase', 'scanOpen', 'snapOk'];
 const TRAFFIC_SCRATCH = ['snap', 'gb', 'task', 'unsub', 'lastState', 'transportFor', 'attachFor', 'phaseMs', 'lastCycleMs', 'lastCycleMs0', 'heap'];
 /** the query-owned scratch and caches (findPath's BFS, garageReach's search and cache): queries change them by design */
 const QUERY_SCRATCH = ['SP', 'SR', 'reachCache'];
@@ -437,7 +441,9 @@ describe('B2 G1 traffic: a cycle in one go = in pieces', () => {
 
   it('the test cities exercise the WP7b stages: park & ride, the overflow, the freight sinks, parking, the depot BFS, rebuilds', () => {
     for (const k of ['parkRide.search', 'parkRide.options', 'overflow.alloc', 'overflow.rest', 'sinks.2', 'parking.8', 'prepTransit.depotBfs',
-      'prep.rb3', 'prep.rbPublish', 'freight.5', 'commute.ovLegs', 'transit.search', 'roundMatch.accept', 'final2.5']) expect(visited.has(k), k).toBe(true);
+      'prep.rb3', 'prep.rbPublish', 'freight.5', 'commute.ovLegs', 'transit.search', 'roundMatch.accept', 'final2.5',
+      // (B2 fix round: the cached inbound / shop / freight pieces by ranges, and the pool's car flows)
+      'inbound.cachedSites', 'inbound.cachedVol', 'inbound.cachedRamp', 'shop.cached', 'freight.cached', 'commute.poolFlows']) expect(visited.has(k), k).toBe(true);
   });
 
   it('R8: cross-system queries between every two pieces change nothing (findPath, garageReach, stopsNear, routeInfo, stopAttached / freightRailCells with the attachment forced dirty)', () => {
@@ -525,6 +531,58 @@ describe('B2 G1 traffic: a cycle in one go = in pieces', () => {
     };
     expect(diffDigests(load(), load())).toEqual([]);
   }, 300_000);
+
+  it('R9: replaceState at the first piece of every piece kind = replaceState between cycles (no cursor or stage flag survives init)', () => {
+    // (B2 fix round, verify-code: cmFlowing survived a replaceState in the middle of the pool's car flows, so the new
+    // city's warm-start cycle skipped the pooled match. The R9 tests above load into a new Simulation, which hides it.)
+    type T = { phase: number; lastCycleStart: number; step(s: Simulation): void; stepName: string };
+    const S = 0.05;
+    /** city A for `c` whole cycles, then cycle c up to its piece `cut` (cut 0: between cycles), then replaceState onto
+     *  city B and two cycles there; the digests (and, with `names`, the piece kinds of cycle c in order) */
+    const run = (c: number, cut: number, names?: string[]) => {
+      const st = lineTown([48, 60, 72], 2).st;
+      const tr = new TrafficSystem();
+      const sim = new Simulation(st, [tr]);
+      const t = tr as unknown as T;
+      withPieceScale(S, () => {
+        for (let k = 0; k <= c; k++) {
+          st.day += 2;
+          t.phase = 0; t.lastCycleStart = st.day;
+          let i = 0;
+          while (t.phase >= 0) {
+            if (k === c && i === cut && !names) break;
+            if (k === c) names?.push(t.stepName.replace(/#\d+$/, ''));
+            t.step(sim);
+            i++;
+          }
+        }
+      });
+      const stB = transitCity(48, 17);
+      sim.replaceState(stB);
+      // (every piece cursor and stage flag right after init — its warm start ran a whole cycle of city B — then city B's
+      // state after two more cycles. Not the other fields: the per-cycle arrays' tails beyond city B's sizes and the
+      // write-before-read context fields (pcCarT, prPend, ovCur, ...) keep city A's values from wherever its cycle was
+      // cut, which nothing reads.)
+      const f = tr as unknown as Record<string, unknown>;
+      const cur: Record<string, string> = {};
+      for (const k of CYCLE_CURSORS) cur['tr.' + k] = String(f[k]);
+      for (let k = 0; k < 2; k++) { stB.day += 2; withPieceScale(S, () => trafficCycle(sim)); }
+      return { ...stateDigest(stB), ...cur };
+    };
+    const kinds = new Set<string>();
+    for (const c of [1, 2]) {
+      const names: string[] = [];
+      run(c, -1, names);
+      const ref = run(c, 0);
+      const first = new Map<string, number>();
+      names.forEach((n, i) => { if (!first.has(n)) first.set(n, i); });
+      for (const [n, i] of first) {
+        kinds.add(n);
+        if (i > 0) expect(diffDigests(ref, run(c, i)), `cycle ${c}: replaceState before the first '${n}' piece (#${i})`).toEqual([]);
+      }
+    }
+    for (const k of ['commute.poolFlows', 'inbound.cachedSites', 'inbound.cachedVol', 'shop.cached', 'freight.cached', 'roundMatch.flows', 'final2.5']) expect(kinds.has(k), k).toBe(true);
+  }, 600_000);
 
   it('O4: the piece sequence and the results do not depend on the host mode (frames active or headless)', () => {
     const run = (live: boolean) => {

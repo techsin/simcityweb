@@ -266,7 +266,20 @@ const EMPTY_F32: Float32Array<ArrayBuffer> = new Float32Array(0);
  * and the accept loop's first executions ~45 x). R2's per-loop rule (at most 3 ms at the p99 factor, 5 ms at the max)
  * needs the half budget there.
  */
-const COLD = INFRA_PIECE_COLD_MS / 2, WARM = INFRA_PIECE_MS;
+const COLD = INFRA_PIECE_COLD_MS / 4, WARM = INFRA_PIECE_MS;
+/**
+ * the sizing floor of the cold loops, in estimated µs per unit (chunk sizes only; the estimates keep the loops' own
+ * coefficients): a cold piece holds at most coldUnits(TR_COLD_FLOOR) units (~3,250) however cheap the loop is
+ * warm. B2 fix round (the gates' and the verify runs from a load at dense1m): at half INFRA_PIECE_COLD_MS and without a
+ * floor, traffic's once-per-cycle loops ran at 50-130 x their warm cost in days 0-80 (traffic runs 2-3 cycles there), so
+ * pieces of 13,000 cells or nodes took up to 7.7 ms (parking.2: ~0.6 µs per cell) and the matching's accept, keys and
+ * flows pieces 4-7.4 ms; hence a quarter of INFRA_PIECE_COLD_MS and this floor (G2's cold cell floor, x 2.5).
+ */
+const TR_COLD_FLOOR = 0.01;
+/** units of one piece of a cold traffic loop costing `us` per unit (COLD, with the cold sizing floor) */
+function coldUnits(us: number): number {
+  return pieceUnits(us > TR_COLD_FLOOR ? us : TR_COLD_FLOOR, 1, COLD);
+}
 /**
  * the absolute scale of the estimates: stepCost = TR_EST x (TC.piece + the piece's units x TC) / 1000. TC sets the
  * relative costs, so (with the budgets above) the chunk sizes; TR_EST turns the estimate into honest warm wall ms without
@@ -1270,7 +1283,7 @@ export class TrafficSystem implements SimSystem {
     const st = sim.state, g = this.road, n = g.n, C = st.cells;
     const ph = this.phase < 0 ? PH_PREP : this.phase;
     const attachUs = this.attachDirty || this.attachFor !== st ? TC.attach * C : 0;
-    const chunk = (us: number, left: number, budget = COLD) => Math.max(0, Math.min(pieceUnits(us, 1, budget), left)) * us;
+    const chunk = (us: number, left: number, budget = COLD) => Math.max(0, Math.min(budget === COLD ? coldUnits(us) : pieceUnits(us, 1, budget), left)) * us;
     switch (ph) {
       case PH_PREP: {
         if (this.phase < 0 || this.rbStage === 0) {
@@ -1292,7 +1305,7 @@ export class TrafficSystem implements SimSystem {
           case 7: return (this.scO + this.scJ) * TC.scanEnd + this.conns.length * 0.5;
           case 8: return this.pCur === 0 && !this.pArr ? this.oN * TC.cycleArrays + 20 : chunk(TC.originInit, this.oN - this.pCur);
           case 9: return this.jN * TC.siteNoise;
-          default: return this.clStage === 0 ? n * TC.fill + 20 : chunk(TC.clusters, this.jN - this.clCur) + (this.clCur + pieceUnits(TC.clusters, 1, COLD) >= this.jN ? this.jN * TC.fill * 8 + 10 : 0);
+          default: return this.clStage === 0 ? n * TC.fill + 20 : chunk(TC.clusters, this.jN - this.clCur) + (this.clCur + coldUnits(TC.clusters) >= this.jN ? this.jN * TC.fill * 8 + 10 : 0);
         }
       }
       case PH_PREP2: {
@@ -1352,9 +1365,9 @@ export class TrafficSystem implements SimSystem {
         if (this.ovFlow === 1) return this.rfPieceUs();
         if (this.ovStage === 1) {
           const S = this.ov[this.ovSlot]?.S;
-          return chunk(TC.ovState, S ? Math.max(1, S.K * n - S.settled) : pieceUnits(TC.ovState, 1, COLD));
+          return chunk(TC.ovState, S ? Math.max(1, S.K * n - S.settled) : coldUnits(TC.ovState));
         }
-        return chunk(TC.ovRec, this.pnN - this.ovCur) + (this.ovCur + pieceUnits(TC.ovRec, 1, COLD) >= this.pnN ? TC.ovPlan : 0);
+        return chunk(TC.ovRec, this.pnN - this.ovCur) + (this.ovCur + coldUnits(TC.ovRec) >= this.pnN ? TC.ovPlan : 0);
       }
       case PH_COMMUTE: {
         if (this.commuteStage === 0) {
@@ -1388,7 +1401,7 @@ export class TrafficSystem implements SimSystem {
       }
       case PH_INBOUND: {
         switch (this.sfSub) {
-          case 0: return !this.sfRecompute ? this.jB * TC.inCached + n * TC.fill * 4 : this.sfCur === 0 ? n * 2 * TC.fill + this.jB * TC.fill * 4 : n * TC.rdStart + (this.jN - this.jB) * TC.rdSeed;
+          case 0: return !this.sfRecompute ? this.inCachedUs() : this.sfCur === 0 ? n * 2 * TC.fill + this.jB * TC.fill * 4 : n * TC.rdStart + (this.jN - this.jB) * TC.rdSeed;
           case 1: return chunk(TC.rdNodeB, n - this.runB.settled, WARM);
           case 2: return this.jB * TC.inDesire;
           case 3: return n * TC.fill + this.jB * TC.inFlow;
@@ -1398,7 +1411,7 @@ export class TrafficSystem implements SimSystem {
       }
       case PH_SHOP: {
         switch (this.sfSub) {
-          case 0: return this.sfRecompute ? n * (TC.fill + TC.rdStart) + this.sN * 0.02 : n * TC.fill * 4;
+          case 0: return this.sfRecompute ? n * (TC.fill + TC.rdStart) + this.sN * 0.02 : chunk(TC.fill * 2, n - this.sfCur);
           case 1: return chunk(TC.rdNodeB, n - this.runB.settled, WARM) + n * TC.fill;
           case 2: return chunk(TC.shopOrigin, this.oN - this.sfCur);
           default: return this.flowPieceUs();
@@ -1406,7 +1419,7 @@ export class TrafficSystem implements SimSystem {
       }
       case PH_FREIGHT: {
         switch (this.sfSub) {
-          case 0: return this.sfRecompute ? n * TC.fill + this.kN * 0.02 + this.fN * TC.fill : n * TC.fill * 4;
+          case 0: return this.sfRecompute ? n * TC.fill + this.kN * 0.02 + this.fN * TC.fill : chunk(TC.fill * 2, n - this.sfCur);
           case 1: return this.sfCur < 0 ? n * TC.rdStart + this.seeds.n * TC.rdSeed : chunk(TC.truckTime, n - this.sfCur);
           case 2: return chunk(TC.rdNodeB, n - this.runB.settled, WARM);
           case 3: return n * TC.fill + this.fN * TC.frSource;
@@ -1424,7 +1437,7 @@ export class TrafficSystem implements SimSystem {
           case 2: return chunk(TC.parkSupply, C - this.pkCur);
           case 3: return this.gN * TC.parkGarage;
           case 4: case 5: case 7: {
-            const N = st.size, rows = Math.max(1, Math.floor(pieceUnits(TC.parkBox, 1, COLD) / Math.max(1, N)));
+            const N = st.size, rows = Math.max(1, Math.floor(coldUnits(TC.parkBox) / Math.max(1, N)));
             const done = this.bxStage === 0 ? this.bxRow : this.boxV.z;
             return Math.max(1, Math.min(rows, N - done)) * N * TC.parkBox + (this.pkSub === 7 && this.bxStage === 1 && done + rows >= N ? C * TC.fill * 2 : 0);
           }
@@ -1469,16 +1482,25 @@ export class TrafficSystem implements SimSystem {
     const total = this.tnet ? this.tnet.total : this.road.n;
     switch (this.otSub) {
       case 0: return total * TC.otFill + this.stops.n * TC.fill * 5;
-      case 1: { const us = this.otOriginUs(); return Math.max(0, Math.min(pieceUnits(us, 1, COLD), this.oN - this.otCur)) * us; }
+      case 1: { const us = this.otOriginUs(); return Math.max(0, Math.min(coldUnits(us), this.oN - this.otCur)) * us; }
       default: return (this.road.n + total) * TC.fill;
     }
+  }
+
+  /** the cached inbound piece's estimate (inboundCachedPiece: the job sites, the cached volumes, the ramp flows) */
+  private inCachedUs(): number {
+    const n = this.road.n, jB = this.jB, c = this.sfCur;
+    if (c < jB) return Math.min(coldUnits(TC.inCached), jB - c) * TC.inCached;
+    const end = jB + n + (this.rampSF.length >= n ? n : 0);
+    const e = Math.min(end, c + coldUnits(TC.fill * 2));
+    return (c - jB < n ? Math.min(e, jB + n) - c : e - c) * TC.fill * 2;
   }
 
   private flowPieceUs(): number {
     const S = this.flS;
     if (!S) return 0;
-    if (this.flPhase === 0) return Math.min(pieceUnits(TC.accumulate, 1, COLD), this.flCur) * TC.accumulate;
-    return Math.min(pieceUnits(TC.commit, 1, COLD), Math.max(0, S.settled - this.flCur)) * TC.commit;
+    if (this.flPhase === 0) return Math.min(coldUnits(TC.accumulate), this.flCur) * TC.accumulate;
+    return Math.min(coldUnits(TC.commit), Math.max(0, S.settled - this.flCur)) * TC.commit;
   }
 
   private rfPieceUs(): number {
@@ -1507,9 +1529,9 @@ export class TrafficSystem implements SimSystem {
         if (this.commuteStage === 0) return this.cmFlowing ? 'commute.poolFlows' : 'commute.pool' + this.cmSub;
         if (this.ceSub === 0 && (this.olF || this.ov.some((x) => x.dirty))) return 'commute.ovLegs';
         return 'commute.end' + this.ceSub;
-      case PH_INBOUND: return 'inbound.' + this.sfSub;
-      case PH_SHOP: return 'shop.' + this.sfSub;
-      case PH_FREIGHT: return 'freight.' + this.sfSub;
+      case PH_INBOUND: return this.sfSub === 0 && !this.sfRecompute ? (this.sfCur < this.jB ? 'inbound.cachedSites' : this.sfCur < this.jB + this.road.n ? 'inbound.cachedVol' : 'inbound.cachedRamp') : 'inbound.' + this.sfSub;
+      case PH_SHOP: return this.sfSub === 0 && !this.sfRecompute ? 'shop.cached' : 'shop.' + this.sfSub;
+      case PH_FREIGHT: return this.sfSub === 0 && !this.sfRecompute ? 'freight.cached' : 'freight.' + this.sfSub;
       case PH_SINKS: return 'sinks.' + this.sfSub;
       case PH_PARKING: return 'parking.' + this.pkSub;
       case PH_FINAL: return 'final.' + this.fiSub;
@@ -2126,7 +2148,9 @@ export class TrafficSystem implements SimSystem {
     this.srtStage = 0; this.srtFrom = this.srtTo = EMPTY_F64;
     this.clStage = 0; this.pArr = false;
     this.csrStage = 0; this.csrTo = EMPTY_I32; this.csrCost = EMPTY_F32;
-    this.cmSub = 0; this.cmCur = 0;
+    // (cmFlowing too: a replaceState in the middle of the pool's car flows must not carry it into the new city's first
+    // cycle, where it would skip the pooled match — fix round, verify-code; an uninterrupted cycle ends with it false)
+    this.cmSub = 0; this.cmCur = 0; this.cmFlowing = false;
     this.ceSub = 0; this.ceCur = 0;
     this.olF = null; this.olCur = 0;
     this.ovFlow = 0;
@@ -2315,7 +2339,7 @@ export class TrafficSystem implements SimSystem {
     const g = this.road;
     // node times from smoothed volumes (state.traffic per cell), into the back buffer
     const n = g.n, traffic = st.traffic, cellOf = g.cellOf, cap = g.cap, t0 = g.t0, nt = this.nodeTimeB;
-    const v0 = this.pCur, v1 = Math.min(n, v0 + pieceUnits(TC.nodeTime, 1, COLD));
+    const v0 = this.pCur, v1 = Math.min(n, v0 + coldUnits(TC.nodeTime));
     for (let v = v0; v < v1; v++) {
       const r = traffic[cellOf[v]] / cap[v];
       let f = 1 + BPR_ALPHA * r * r * r * r;
@@ -2355,7 +2379,7 @@ export class TrafficSystem implements SimSystem {
   private prepPiece4(sim: Simulation): boolean {
     const g = this.road;
     const n = g.n, type = g.type, rv = this.rampVolCell, cellOf = g.cellOf, rt = this.rampT;
-    const v0 = this.pCur, v1 = Math.min(n, v0 + pieceUnits(TC.rampT, 1, COLD));
+    const v0 = this.pCur, v1 = Math.min(n, v0 + coldUnits(TC.rampT));
     for (let v = v0; v < v1; v++) rt[v] = type[v] === Network.Highway ? RAMP_PENALTY : rampTime(type[v], rv[cellOf[v]]);
     this.pCur = v1;
     if (v1 < n) return false;
@@ -2378,7 +2402,7 @@ export class TrafficSystem implements SimSystem {
       this.pCur = 1;
       return false;
     }
-    if (!this.snap.planRun(pieceUnits(TC.scanPlan, 1, COLD))) return false;
+    if (!this.snap.planRun(coldUnits(TC.scanPlan))) return false;
     this.pSub = this.snap.chunks > 0 ? 6 : 7;
     this.pCur = 0;
     return false;
@@ -2405,7 +2429,7 @@ export class TrafficSystem implements SimSystem {
   /** prepPiece, sub-state 8 (B2 R10: one small method per piece kind) */
   private prepPiece8(sim: Simulation): boolean {
     if (this.pCur === 0 && !this.pArr) { this.prepCycleArrays(); this.pArr = true; return false; }
-    const oN = this.oN, o0 = this.pCur, o1 = Math.min(oN, o0 + pieceUnits(TC.originInit, 1, COLD));
+    const oN = this.oN, o0 = this.pCur, o1 = Math.min(oN, o0 + coldUnits(TC.originInit));
     for (let o = o0; o < o1; o++) {
       this.oU[o] = this.oW[o];
       this.oAsg[o] = 0; this.oTimeSum[o] = 0; this.oCarW[o] = 0; this.oTrW[o] = 0; this.oWalkW[o] = 0; this.oClX[o] = 0;
@@ -2793,13 +2817,13 @@ export class TrafficSystem implements SimSystem {
 
   /** prepTransitPiece, sub-state 2 (B2 R10: one small method per piece kind) */
   private prepTransitPiece2(st: CityState): boolean {
-    if (this.stopCol.buildings(st, this.snap.list, pieceUnits(TC.stopB, 1, COLD))) this.tSub = 3;
+    if (this.stopCol.buildings(st, this.snap.list, coldUnits(TC.stopB))) this.tSub = 3;
     return false;
   }
 
   /** prepTransitPiece, sub-state 3 (B2 R10: one small method per piece kind) */
   private prepTransitPiece3(st: CityState): boolean {
-    if (!this.stopCol.cells(st, pieceUnits(TC.stopCell, 1, COLD))) return false;
+    if (!this.stopCol.cells(st, coldUnits(TC.stopCell))) return false;
     this.stopCol.end();
     this.tSub = 4;
     return false;
@@ -2828,7 +2852,7 @@ export class TrafficSystem implements SimSystem {
 
   /** prepTransitPiece, sub-state 6 (B2 R10: one small method per piece kind) */
   private prepTransitPiece6(st: CityState): boolean {
-    if (this.depotBfsRun(pieceUnits(TC.depotBfs, 1, COLD))) this.tSub = 7;
+    if (this.depotBfsRun(coldUnits(TC.depotBfs))) this.tSub = 7;
     return false;
   }
 
@@ -2867,7 +2891,7 @@ export class TrafficSystem implements SimSystem {
     const g = this.road, N = st.size;
     const stops = this.stopsB, nR = this.tNR, nRail = this.tNRail, nGrid = this.tNGrid;
     const tmp = this.tTmp6, nD = this.depotsB.length, dRiders = this.tDRiders, dStops = this.tDStops;
-    const s0 = this.tCur, s1 = Math.min(stops.n, s0 + pieceUnits(TC.stopAttach, 1, COLD));
+    const s0 = this.tCur, s1 = Math.min(stops.n, s0 + coldUnits(TC.stopAttach));
     let an = this.tAn;
     for (let s = s0; s < s1; s++) {
       this.stAttS[s] = an;
@@ -2950,7 +2974,7 @@ export class TrafficSystem implements SimSystem {
   /** prepTransitPiece, sub-state 10 (B2 R10: one small method per piece kind) */
   private prepTransitPiece10(st: CityState): boolean {
     const stops = this.stopsB, nD = this.depotsB.length, rhoOf = this.tRhoOf;
-    const s0 = this.tCur, s1 = Math.min(stops.n, s0 + pieceUnits(TC.stopWait, 1, COLD));
+    const s0 = this.tCur, s1 = Math.min(stops.n, s0 + coldUnits(TC.stopWait));
     for (let s = s0; s < s1; s++) {
       const mode = stops.mode[s];
       if (this.stRhoB[s] < 0) this.stRhoB[s] = rhoOf[this.stDepotB[s] >= 0 ? this.stDepotB[s] : nD];
@@ -3005,7 +3029,7 @@ export class TrafficSystem implements SimSystem {
     const g = this.road, N = st.size;
     // transfers between stops of different modes within walking distance
     const stops = this.stopsB, trFrom = this.trFrom, trTo = this.trTo, trCost = this.trCost, wait = this.stWaitB;
-    const s0 = this.tCur, s1 = Math.min(stops.n, s0 + pieceUnits(TC.transfer, 1, COLD));
+    const s0 = this.tCur, s1 = Math.min(stops.n, s0 + coldUnits(TC.transfer));
     for (let s = s0; s < s1; s++) {
       if (this.stAttC[s] === 0) continue;
       const x = this.stX[s], z = this.stZ[s];
@@ -3052,7 +3076,7 @@ export class TrafficSystem implements SimSystem {
     const trStart = this.trStartA;
     if (this.csrStage === 1) {
       const to = this.csrTo, cost = this.csrCost;
-      const e0 = this.csrCur, e1 = Math.min(trFrom.length, e0 + pieceUnits(TC.csrEdge, 1, COLD));
+      const e0 = this.csrCur, e1 = Math.min(trFrom.length, e0 + coldUnits(TC.csrEdge));
       for (let e = e0; e < e1; e++) {
         // trStart[f+1] (= end of f's bucket) used as a decrementing cursor
         const f = trFrom[e];
@@ -3378,7 +3402,7 @@ export class TrafficSystem implements SimSystem {
         return false;
       }
       case 1: {
-        const o0 = this.otCur, o1 = Math.min(this.oN, o0 + pieceUnits(this.otOriginUs(), 1, COLD));
+        const o0 = this.otCur, o1 = Math.min(this.oN, o0 + coldUnits(this.otOriginUs()));
         this.originTransitRange(o0, o1);
         this.otCur = o1;
         if (o1 >= this.oN) this.otSub = 2;
@@ -3491,7 +3515,7 @@ export class TrafficSystem implements SimSystem {
         this.prCur = 0;
         return CONT;
       case 1:
-        if (!this.SPK.run(pieceUnits(TC.prState, 1, COLD))) return CONT;
+        if (!this.SPK.run(coldUnits(TC.prState))) return CONT;
         this.prKey = this.prKeyNow;
         this.prSearched = this.cycles;
         this.prStage = 2;
@@ -3503,7 +3527,7 @@ export class TrafficSystem implements SimSystem {
           this.prCur = 0;
         }
         if (this.prSub === 1) {
-          const k0 = this.prCur, k1 = Math.min(this.SPK.settled, k0 + pieceUnits(TC.prRefresh, 1, COLD));
+          const k0 = this.prCur, k1 = Math.min(this.SPK.settled, k0 + coldUnits(TC.prRefresh));
           this.SPK.refreshAltRange(k0, k1);
           this.prCur = k1;
           if (k1 < this.SPK.settled) return CONT;
@@ -3514,7 +3538,7 @@ export class TrafficSystem implements SimSystem {
         return CONT;
       }
       default: {
-        const o0 = this.prCur, o1 = Math.min(this.oN, o0 + pieceUnits(TC.prOption, 1, COLD));
+        const o0 = this.prCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.prOption));
         this.prOptions(o0, o1);
         this.prCur = o1;
         if (o1 < this.oN) return CONT;
@@ -3804,7 +3828,7 @@ export class TrafficSystem implements SimSystem {
     }
     const nodeQ = this.nodeQ;
     let qN = this.clQN;
-    const j0 = this.clCur, j1 = Math.min(jN, j0 + pieceUnits(TC.clusters, 1, COLD));
+    const j0 = this.clCur, j1 = Math.min(jN, j0 + coldUnits(TC.clusters));
     for (let j = j0; j < j1; j++) {
       this.jQ[j] = -1;
       if (this.jEntC[j] === 0) continue;
@@ -3891,7 +3915,7 @@ export class TrafficSystem implements SimSystem {
       this.srtStage = 1;
     }
     if (this.srtStage === 1) {
-      const k0 = this.srtCur, k1 = Math.min(nc, k0 + pieceUnits(TC.sortScan, 1, COLD));
+      const k0 = this.srtCur, k1 = Math.min(nc, k0 + coldUnits(TC.sortScan));
       let max = this.srtMax;
       for (let k = k0; k < k1; k++) {
         const v = key[k];
@@ -3911,7 +3935,7 @@ export class TrafficSystem implements SimSystem {
     }
     if (this.srtStage === 2) {
       const passes = this.srtPasses;
-      const k0 = this.srtCur, k1 = Math.min(nc, k0 + pieceUnits(TC.sortHist, 1, COLD));
+      const k0 = this.srtCur, k1 = Math.min(nc, k0 + coldUnits(TC.sortHist));
       for (let k = k0; k < k1; k++) {
         const v = key[k], l = v >>> 0, h = Math.floor(v / 4294967296);
         hist[l & 2047]++;
@@ -3947,7 +3971,7 @@ export class TrafficSystem implements SimSystem {
     }
     // stage 4: the scatter of pass srtP by key ranges
     const from = this.srtFrom, to = this.srtTo, row = this.srtP * 2048, div = 2 ** (11 * this.srtP);
-    const k0 = this.srtCur, k1 = Math.min(nc, k0 + pieceUnits(TC.sortScatter, 1, COLD));
+    const k0 = this.srtCur, k1 = Math.min(nc, k0 + coldUnits(TC.sortScatter));
     for (let k = k0; k < k1; k++) {
       const v = from[k];
       to[hist[row + (((v / div) >>> 0) & 2047)]++] = v;
@@ -3963,7 +3987,7 @@ export class TrafficSystem implements SimSystem {
 
   /** µs of the next sort piece (stepCost) */
   private sortPieceUs(nc: number): number {
-    const chunk = (us: number, left: number) => Math.max(0, Math.min(pieceUnits(us, 1, COLD), left)) * us;
+    const chunk = (us: number, left: number) => Math.max(0, Math.min(coldUnits(us), left)) * us;
     switch (this.srtStage) {
       case 0: return nc < 64 ? nc * 0.05 : chunk(TC.sortScan, nc);
       case 1: return chunk(TC.sortScan, nc - this.srtCur);
@@ -4006,7 +4030,7 @@ export class TrafficSystem implements SimSystem {
     // candidates: origins with unassigned workers -> best entry node
     const dist = SA.dist, done = SA.done, key = this.candKey, cnode = this.candNode;
     let nc = this.mNc, maxD = this.mMaxD, noRoad = this.mNoRoad;
-    const o0 = this.mCur, o1 = Math.min(oN, o0 + pieceUnits(TC.mCand, 1, COLD));
+    const o0 = this.mCur, o1 = Math.min(oN, o0 + coldUnits(TC.mCand));
     for (let o = o0; o < o1; o++) {
       if (this.oU[o] < 0.01) continue;
       let best = -1, bd = Infinity;
@@ -4038,7 +4062,7 @@ export class TrafficSystem implements SimSystem {
     }
     const dist = SA.dist, src = SA.src, key = this.candKey, cnode = this.candNode, M = this.mM, q = this.mQ;
     const qN0 = this.qNoise, qP0 = this.qPrice, nc = this.mNc;
-    const k0 = this.mCur, k1 = Math.min(nc, k0 + pieceUnits(TC.mKey, 1, COLD));
+    const k0 = this.mCur, k1 = Math.min(nc, k0 + coldUnits(TC.mKey));
     for (let k = k0; k < k1; k++) {
       const o = key[k];
       const node = cnode[o];
@@ -4092,7 +4116,7 @@ export class TrafficSystem implements SimSystem {
 
   /** roundMatchPiece, sub-state 4 (B2 R10: one small method per piece kind) */
   private roundMatchPiece4(): number {
-    const k0 = this.mCur, k1 = Math.min(this.mNc, k0 + pieceUnits(TC.mAccept, 1, COLD));
+    const k0 = this.mCur, k1 = Math.min(this.mNc, k0 + coldUnits(TC.mAccept));
     this.acceptRange(k0, k1);
     this.mCur = k1;
     if (k1 >= this.mNc) { this.mSub = 5; this.mCur = 0; }
@@ -4289,7 +4313,7 @@ export class TrafficSystem implements SimSystem {
   private flowPiece(): boolean {
     const S = this.flS!;
     if (this.flPhase === 0) {
-      const k1 = this.flCur, k0 = Math.max(0, k1 - pieceUnits(TC.accumulate, 1, COLD));
+      const k1 = this.flCur, k0 = Math.max(0, k1 - coldUnits(TC.accumulate));
       accumulateRange(S, this.flAcc, k0, k1);
       this.flCur = k0;
       if (k0 > 0) return false;
@@ -4298,7 +4322,7 @@ export class TrafficSystem implements SimSystem {
       return false;
     }
     if (this.flPhase === 1) {
-      const k0 = this.flCur, k1 = Math.min(S.settled, k0 + pieceUnits(TC.commit, 1, COLD));
+      const k0 = this.flCur, k1 = Math.min(S.settled, k0 + coldUnits(TC.commit));
       this.commitRange(S, this.flAcc, this.flCopy, this.flRamp, k0, k1);
       this.flCur = k1;
       if (k1 < S.settled) return false;
@@ -4405,7 +4429,7 @@ export class TrafficSystem implements SimSystem {
 
   /** poolPiece, sub-state 2 (B2 R10: one small method per piece kind) */
   private poolPiece2(): boolean {
-    const o0 = this.cmCur, o1 = Math.min(this.oN, o0 + pieceUnits(TC.poolOrigin, 1, COLD));
+    const o0 = this.cmCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.poolOrigin));
     this.poolRange(o0, o1);
     this.cmCur = o1;
     if (o1 >= this.oN) this.cmSub = 3;
@@ -4808,14 +4832,14 @@ export class TrafficSystem implements SimSystem {
     if (this.ovStage === 1) {
       const S = this.ov[this.ovSlot].S;
       // (a cached forest keeps its result only)
-      if (S.run(pieceUnits(TC.ovState, 1, COLD))) { S.releaseScratch(); this.ovStartPass(); }
+      if (S.run(coldUnits(TC.ovState))) { S.releaseScratch(); this.ovStartPass(); }
       return CONT;
     }
     if (this.ovStage === 3) {
       const f = this.ov[this.ovSlot];
       // (a kept forest's car-leg minutes of this assignment: renewed along the labels the records read, altAt)
       if (f.alt !== this.cycles) { f.S.markAlt(this.nodeTime, this.rampT); f.alt = this.cycles; }
-      const end = Math.min(this.pnN, this.ovCur + pieceUnits(TC.ovRec, 1, COLD));
+      const end = Math.min(this.pnN, this.ovCur + coldUnits(TC.ovRec));
       this.ovAlloc(this.ovCur, end);
       this.ovCur = end;
       if (end < this.pnN) return CONT;
@@ -4826,7 +4850,7 @@ export class TrafficSystem implements SimSystem {
       else { this.ovStage = 4; this.ovCur = 0; }
       return CONT;
     }
-    const end = Math.min(this.pnN, this.ovCur + pieceUnits(TC.ovRec, 1, COLD));
+    const end = Math.min(this.pnN, this.ovCur + coldUnits(TC.ovRec));
     this.ovRest(this.ovCur, end);
     this.ovCur = end;
     if (end < this.pnN) return CONT;
@@ -5323,7 +5347,7 @@ export class TrafficSystem implements SimSystem {
       }
       const f = this.olF;
       if (f !== null) {
-        const k1 = this.olCur, k0 = Math.max(0, k1 - pieceUnits(TC.commitK, 1, COLD));
+        const k1 = this.olCur, k0 = Math.max(0, k1 - coldUnits(TC.commitK));
         this.commitKRange(f.S, f.acc, k0, k1);
         this.olCur = k0;
         if (k0 > 0) return CONT;
@@ -5421,7 +5445,7 @@ export class TrafficSystem implements SimSystem {
 
   /** commuteEndPiece, sub-state 2 (B2 R10: one small method per piece kind) */
   private commuteEndPiece2(): boolean {
-    const k1 = this.ceCur, k0 = Math.max(0, k1 - pieceUnits(TC.commitK, 1, COLD));
+    const k1 = this.ceCur, k0 = Math.max(0, k1 - coldUnits(TC.commitK));
     this.commitKRange(this.SPK, this.prAcc, k0, k1);
     this.ceCur = k0;
     if (k0 > 0) return false;
@@ -5434,7 +5458,7 @@ export class TrafficSystem implements SimSystem {
   /** commuteEndPiece, sub-state 3 (B2 R10: one small method per piece kind) */
   private commuteEndPiece3(): boolean {
     // (the reach snapshot's road cells — not node ids: the hint still finds them after a graph rebuild, routed 53)
-    const oN = this.oN, o0 = this.ceCur, o1 = Math.min(oN, o0 + pieceUnits(TC.snapGather, 1, COLD));
+    const oN = this.oN, o0 = this.ceCur, o1 = Math.min(oN, o0 + coldUnits(TC.snapGather));
     let E = this.ceE;
     for (let o = o0; o < o1; o++) E += this.oEntC[o];
     this.rsEntSB = growI32(this.rsEntSB, oN);
@@ -5463,7 +5487,7 @@ export class TrafficSystem implements SimSystem {
 
   /** commuteEndPiece, sub-state 5 (B2 R10: one small method per piece kind) */
   private commuteEndPiece5(): boolean {
-    const k1 = this.ceCur, k0 = Math.max(0, k1 - pieceUnits(TC.trAccumulate, 1, COLD));
+    const k1 = this.ceCur, k0 = Math.max(0, k1 - coldUnits(TC.trAccumulate));
     accumulateRange(this.ST, this.tAcc, k0, k1, this.stopSink);
     this.ceCur = k0;
     if (k0 > 0) return false;
@@ -5489,7 +5513,7 @@ export class TrafficSystem implements SimSystem {
     const nR = this.road.n, nRail = T.nRail, nGrid = nR + nRail + T.nSub;
     const nodeStop = this.nodeStop, volNew = this.volNew, busCell = this.busCellB, ferryBy = this.ferryRidersByB;
     const type = this.road.type, cellOf = this.road.cellOf, next = ST.next, rampNew = this.rampNew, HW = Network.Highway;
-    const k0 = this.ceCur, k1 = Math.min(ST.settled, k0 + pieceUnits(TC.trFlow, 1, COLD));
+    const k0 = this.ceCur, k1 = Math.min(ST.settled, k0 + coldUnits(TC.trFlow));
     let ferry = this.ceFerry;
     for (let k = k0; k < k1; k++) {
       const v = ST.order[k];
@@ -5535,7 +5559,7 @@ export class TrafficSystem implements SimSystem {
 
   /** commuteEndPiece, sub-state 9 (B2 R10: one small method per piece kind) */
   private commuteEndPiece9(): boolean {
-    const o0 = this.ceCur, o1 = Math.min(this.oN, o0 + pieceUnits(TC.cutOff, 1, COLD));
+    const o0 = this.ceCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.cutOff));
     this.markCutOffRange(o0, o1);
     this.ceCur = o1;
     if (o1 >= this.oN) { this.ceSub = 10; this.ceCur = 0; }
@@ -5545,7 +5569,7 @@ export class TrafficSystem implements SimSystem {
   /** commuteEndPiece, sub-state 10 (B2 R10: one small method per piece kind) */
   private commuteEndPiece10(): boolean {
     const cut = this.oCut;
-    const o0 = this.ceCur, o1 = Math.min(this.oN, o0 + pieceUnits(TC.ceOrigin, 1, COLD));
+    const o0 = this.ceCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.ceOrigin));
     let tripsC = this.ceTripsC, tripsT = this.ceTripsT, tripsW = this.ceTripsW, cSum = this.ceCSum, cW = this.ceCW;
     for (let o = o0; o < o1; o++) {
       const a = this.oAsg[o];
@@ -5593,7 +5617,7 @@ export class TrafficSystem implements SimSystem {
     // the 5 minutes to the one job on their road (nor services' milder unreached-cell minutes, ACCESS_UNREACHED x the
     // city average, which still scores as a fair commute next to the inspector's "No route to work")
     const cut = this.oCut;
-    const o0 = this.ceCur, o1 = Math.min(this.oN, o0 + pieceUnits(TC.cutMin, 1, COLD));
+    const o0 = this.ceCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.cutMin));
     for (let o = o0; o < o1; o++) if (cut[o] === 1) this.oTime[o] = MAX_COMMUTE;
     this.ceCur = o1;
     if (o1 < this.oN) return false;
@@ -5608,7 +5632,7 @@ export class TrafficSystem implements SimSystem {
     // F6: the mean commute of each mode's commuters (cut-off homes left out, like the city average) and what transit
     // saves its riders against driving the same trip (stats.commuteByMode)
     const cut = this.oCut;
-    const o0 = this.ceCur, o1 = Math.min(this.oN, o0 + pieceUnits(TC.byMode, 1, COLD));
+    const o0 = this.ceCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.byMode));
     let mc = this.bmMc, mt = this.bmMt, mw = this.bmMw, ac = this.bmAc, at = this.bmAt, aw = this.bmAw, nC = this.bmNC, nT = this.bmNT, nW = this.bmNW;
     for (let o = o0; o < o1; o++) {
       if (cut[o] === 1 || !(this.oAsg[o] > 0)) continue;
@@ -5745,22 +5769,7 @@ export class TrafficSystem implements SimSystem {
   /** inboundPiece, sub-state 0 (B2 R10: one small method per piece kind) */
   private inboundPiece0(): boolean {
     const g = this.road;
-    if (!this.sfRecompute) {
-      // cached: last inflows by building (capped by this cycle's vacancies) + cached volumes
-      let tot = 0;
-      for (let j = 0; j < this.jB; j++) {
-        const spare = this.jSlots[j] - Math.min(this.jSlots[j], this.jAsg[j]);
-        const v = Math.min(spare, this.inboundById[this.jBid[j]]);
-        this.jInbound[j] = v > 0 ? v : 0;
-        this.jCar[j] += this.jInbound[j];
-        tot += this.jInbound[j];
-      }
-      this.tripsInbound = tot;
-      this.addCached(this.volInbound);
-      // ramp flows of the cached inbound / shop / freight passes
-      if (this.rampSF.length >= g.n) { const rn = this.rampNew, rs = this.rampSF; for (let v = 0; v < g.n; v++) rn[v] += rs[v]; }
-      return true;
-    }
+    if (!this.sfRecompute) return this.inboundCachedPiece();
     // (two pieces: the fills, then the seeds + the search start; sfCur = -1 between them)
     if (this.sfCur === 0) {
       this.volInbound = growF32(this.volInbound, g.n);
@@ -5786,6 +5795,61 @@ export class TrafficSystem implements SimSystem {
     this.runB.start(g, g.fwd, this.nodeTime, this.SB, seeds, REGIONAL_TIME + 90, this.rampT);
     this.sfSub = 1;
     return false;
+  }
+
+  /**
+   * inboundPiece, sub-state 0 of a cached cycle, by ranges (B2 fix round: in one piece it ran 2.2-5.8 ms on its first
+   * executions after a load, cached cycles being every other one): sfCur walks the job sites [0, jB) — the last inflows
+   * by building, capped by this cycle's vacancies; the sum in sfTot, a double as pre-B2's local; tripsInbound in the
+   * range's last piece — then the cached volumes [jB, jB + n), then the ramp flows of the cached inbound / shop / freight
+   * passes [jB + n, jB + 2n) when they exist. Element-wise loops in pre-B2's order: a whole stage = pre-B2's piece.
+   */
+  private inboundCachedPiece(): boolean {
+    const n = this.road.n, jB = this.jB, c0 = this.sfCur;
+    // (no job sites: pre-B2's empty loop still set tripsInbound = 0)
+    if (c0 === 0 && jB === 0) this.tripsInbound = 0;
+    if (c0 < jB) {
+      if (c0 === 0) this.sfTot = 0;
+      const j1 = Math.min(jB, c0 + coldUnits(TC.inCached));
+      let tot = this.sfTot;
+      for (let j = c0; j < j1; j++) {
+        const spare = this.jSlots[j] - Math.min(this.jSlots[j], this.jAsg[j]);
+        const v = Math.min(spare, this.inboundById[this.jBid[j]]);
+        this.jInbound[j] = v > 0 ? v : 0;
+        this.jCar[j] += this.jInbound[j];
+        tot += this.jInbound[j];
+      }
+      this.sfTot = tot;
+      this.sfCur = j1;
+      if (j1 === jB) this.tripsInbound = tot;
+      if (j1 < jB || n > 0) return false;
+      this.sfCur = 0;
+      return true;
+    }
+    const ramp = this.rampSF.length >= n;
+    const end = jB + n + (ramp ? n : 0);
+    const v0 = c0 - jB, v1 = Math.min(end, c0 + coldUnits(TC.fill * 2)) - jB;
+    if (v0 < n) {
+      const v1c = Math.min(n, v1);
+      this.addCachedRange(this.volInbound, v0, v1c);
+      this.sfCur = jB + v1c;
+    } else {
+      const rn = this.rampNew, rs = this.rampSF;
+      for (let v = v0 - n, e = v1 - n; v < e; v++) rn[v] += rs[v];
+      this.sfCur = jB + v1;
+    }
+    if (this.sfCur < end) return false;
+    this.sfCur = 0;
+    return true;
+  }
+
+  /** shop / freight, sub-state 0 of a cached cycle: the cached volumes by node ranges (B2 fix round; sfCur) */
+  private cachedVolPiece(v: Float32Array): boolean {
+    const n = this.road.n, v0 = this.sfCur, v1 = Math.min(n, v0 + coldUnits(TC.fill * 2));
+    this.addCachedRange(v, v0, v1);
+    if (v1 < n) { this.sfCur = v1; return false; }
+    this.sfCur = 0;
+    return true;
   }
 
   /** inboundPiece, sub-state 1 (B2 R10: one small method per piece kind) */
@@ -5888,8 +5952,13 @@ export class TrafficSystem implements SimSystem {
   // ------------------------------------------------------------------------------------------ SHOP
   /** add cached per-node volumes into this cycle's volumes (shop / freight skipped this cycle) */
   private addCached(v: Float32Array): void {
-    const n = this.road.n, volNew = this.volNew;
-    for (let i = 0; i < n; i++) volNew[i] += v[i];
+    this.addCachedRange(v, 0, this.road.n);
+  }
+
+  /** addCached over the nodes [i0, i1) (B2 fix round: the cached pieces by ranges; element-wise, so exact) */
+  private addCachedRange(v: Float32Array, i0: number, i1: number): void {
+    const volNew = this.volNew;
+    for (let i = i0; i < i1; i++) volNew[i] += v[i];
   }
 
   private shopping(): void {
@@ -5911,7 +5980,7 @@ export class TrafficSystem implements SimSystem {
   /** shopPiece, sub-state 0 (B2 R10: one small method per piece kind) */
   private shopPiece0(): boolean {
     const g = this.road;
-    if (!this.sfRecompute) { this.addCached(this.volShop); return true; }
+    if (!this.sfRecompute) return this.cachedVolPiece(this.volShop);
     this.volShop = growF32(this.volShop, g.n);
     this.volShop.fill(0, 0, g.n);
     const seeds = this.seeds;
@@ -5935,7 +6004,7 @@ export class TrafficSystem implements SimSystem {
     const S = this.SB, dist = S.dist, src = S.src, done = S.done, acc = this.acc;
     const pcu = SHOP_PCU_WEIGHT / CAR_OCCUPANCY;
     let tot = this.sfTot;
-    const o0 = this.sfCur, o1 = Math.min(this.oN, o0 + pieceUnits(TC.shopOrigin, 1, COLD));
+    const o0 = this.sfCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.shopOrigin));
     for (let o = o0; o < o1; o++) {
       let bd = Infinity, bn = -1;
       for (let e = this.oEntS[o], e1 = e + this.oEntC[o]; e < e1; e++) {
@@ -5993,7 +6062,7 @@ export class TrafficSystem implements SimSystem {
   /** freightPiece, sub-state 0 (B2 R10: one small method per piece kind) */
   private freightPiece0(): boolean {
     const g = this.road;
-    if (!this.sfRecompute) { this.addCached(this.volFreight); return true; }
+    if (!this.sfRecompute) return this.cachedVolPiece(this.volFreight);
     this.volFreight = growF32(this.volFreight, g.n);
     this.volFreight.fill(0, 0, g.n);
     this.sfVersion = g.version;
@@ -6024,7 +6093,7 @@ export class TrafficSystem implements SimSystem {
     // trucks prefer highways (WP7-10): truck time x TRUCK_LOCAL_FACTOR off highways, congestion-priced ramps
     if (this.sfCur === 0) this.truckTime = growF32(this.truckTime, g.n);
     const tt = this.truckTime, type = g.type, nt = this.nodeTime;
-    const v0 = this.sfCur, v1 = Math.min(g.n, v0 + pieceUnits(TC.truckTime, 1, COLD));
+    const v0 = this.sfCur, v1 = Math.min(g.n, v0 + coldUnits(TC.truckTime));
     for (let v = v0; v < v1; v++) tt[v] = type[v] === Network.Highway ? nt[v] : nt[v] * TRUCK_LOCAL_FACTOR;
     this.sfCur = v1 < g.n ? v1 : -1;
     return false;
@@ -6228,7 +6297,7 @@ export class TrafficSystem implements SimSystem {
     const st = sim.state, N = st.size, C = st.cells;
     // demand: job sites, then shops
     const D = this.parkDB, inv = 1 / CAR_OCCUPANCY, jB = this.jB, sN = this.sN;
-    const u0 = this.pkCur, u1 = Math.min(jB + sN, u0 + pieceUnits(TC.parkDemand, 1, COLD));
+    const u0 = this.pkCur, u1 = Math.min(jB + sN, u0 + coldUnits(TC.parkDemand));
     for (let u = u0; u < u1; u++) {
       if (u < jB) { const b = this.jObj[u]; if (b) addFootprint(N, b, this.jCar[u] * inv, D); }
       else { const s = u - jB, b = this.sObj[s]; if (b) addFootprint(N, b, PARKING_SHOP_W * this.sCar[s] * inv, D); }
@@ -6241,7 +6310,7 @@ export class TrafficSystem implements SimSystem {
   /** parkingPiece, sub-state 2 (B2 R10: one small method per piece kind) */
   private parkingPiece2(sim: Simulation): boolean {
     const st = sim.state, N = st.size, C = st.cells;
-    const i0 = this.pkCur, i1 = Math.min(C, i0 + pieceUnits(TC.parkSupply, 1, COLD));
+    const i0 = this.pkCur, i1 = Math.min(C, i0 + coldUnits(TC.parkSupply));
     baseSupplyRange(st, this.parkS, i0, i1);
     this.pkCur = i1;
     if (i1 >= C) this.pkSub = 3;
@@ -6332,7 +6401,7 @@ export class TrafficSystem implements SimSystem {
   private parkingPiece8(sim: Simulation): boolean {
     const st = sim.state, N = st.size, C = st.cells;
     const prev = this.parkHas ? this.parkPrev : null;
-    const i0 = this.pkCur, i1 = Math.min(C, i0 + pieceUnits(TC.parkBlend, 1, COLD));
+    const i0 = this.pkCur, i1 = Math.min(C, i0 + coldUnits(TC.parkBlend));
     parkingFromBoxesRange(N, this.parkDB, this.parkS, this.parkBoxDB, this.parkBoxSB, this.parkNext, prev, PARKING_BLEND, i0, i1, this.pkSums);
     this.pkCur = i1;
     if (i1 >= C) this.pkSub = 9;
@@ -6364,7 +6433,7 @@ export class TrafficSystem implements SimSystem {
   }
 
   private boxPiece(N: number): boolean {
-    const rows = Math.max(1, Math.floor(pieceUnits(TC.parkBox, 1, COLD) / Math.max(1, N)));
+    const rows = Math.max(1, Math.floor(coldUnits(TC.parkBox) / Math.max(1, N)));
     if (this.bxStage === 0) {
       const z0 = this.bxRow, z1 = Math.min(N, z0 + rows);
       boxHRows(this.bxSrc, this.parkTmpA, N, PARKING_BOX_R, z0, z1);
@@ -6567,7 +6636,7 @@ export class TrafficSystem implements SimSystem {
         // ramp flows live on road cells only: scan the road nodes, not the map
         const rc = this.svRc, rv = this.svRv, rvc = this.rampVolCell;
         if (g.N === st.size) {
-          const v0 = this.f2Cur, v1 = Math.min(g.n, v0 + pieceUnits(TC.saveRamp, 1, COLD));
+          const v0 = this.f2Cur, v1 = Math.min(g.n, v0 + coldUnits(TC.saveRamp));
           for (let v = v0; v < v1; v++) { const c = g.cellOf[v]; if (rvc[c] > 0.5) { rc.push(c); rv.push(rvc[c]); } }
           this.f2Cur = v1;
           if (v1 < g.n) return;
@@ -6584,7 +6653,7 @@ export class TrafficSystem implements SimSystem {
         const pq = this.svPq;
         if (pq) {
           const P = st.parking, C = st.cells;
-          const i0 = this.f2Cur, i1 = Math.min(C, i0 + pieceUnits(TC.saveParking, 1, COLD));
+          const i0 = this.f2Cur, i1 = Math.min(C, i0 + coldUnits(TC.saveParking));
           for (let i = i0; i < i1; i++) pq[i] = Math.round(Math.max(0, Math.min(1, P[i])) * 255);
           this.f2Cur = i1;
           if (i1 < C) return;
@@ -6710,7 +6779,7 @@ export class TrafficSystem implements SimSystem {
     const n = g.n;
     const traffic = st.traffic;
     const alpha = this.fiAlpha, blended = this.acc, cellOf = g.cellOf, volNew = this.volNew; // (acc reused)
-    const v0 = this.fiCur, v1 = Math.min(n, v0 + pieceUnits(TC.finBlend, 1, COLD));
+    const v0 = this.fiCur, v1 = Math.min(n, v0 + coldUnits(TC.finBlend));
     for (let v = v0; v < v1; v++) {
       const c = cellOf[v];
       blended[v] = traffic[c] * (1 - alpha) + volNew[v] * alpha;
@@ -6725,7 +6794,7 @@ export class TrafficSystem implements SimSystem {
     const st = sim.state;
     const traffic = st.traffic;
     const alpha = this.fiAlpha, railN = this.rail.n, rcell = this.rail.cellOf, railNew = this.railNew;
-    const v0 = this.fiCur, v1 = Math.min(railN, v0 + pieceUnits(TC.finBlend, 1, COLD));
+    const v0 = this.fiCur, v1 = Math.min(railN, v0 + coldUnits(TC.finBlend));
     for (let v = v0; v < v1; v++) railNew[v] = traffic[rcell[v]] * (1 - alpha) + railNew[v] * alpha;
     this.fiCur = v1;
     if (v1 >= railN) {
@@ -6747,7 +6816,7 @@ export class TrafficSystem implements SimSystem {
     const n = g.n;
     const C = st.cells;
     const rv = this.rampVolB, rn = this.rampNew, cellOf = g.cellOf, type = g.type, ra = this.fiRa;
-    const v0 = this.fiCur, v1 = Math.min(n, v0 + pieceUnits(TC.finRamp, 1, COLD));
+    const v0 = this.fiCur, v1 = Math.min(n, v0 + coldUnits(TC.finRamp));
     for (let v = v0; v < v1; v++) {
       if (type[v] === Network.Highway) continue;
       const c = cellOf[v];
@@ -6774,7 +6843,7 @@ export class TrafficSystem implements SimSystem {
     const net = st.network;
     const blended = this.acc, cellOf = g.cellOf, cap = g.cap, tB = this.trafficB, cB = this.congestionB;
     let congSum = this.fiCongSum, congN = this.fiCongN;
-    const v0 = this.fiCur, v1 = Math.min(n, v0 + pieceUnits(TC.finWrite, 1, COLD));
+    const v0 = this.fiCur, v1 = Math.min(n, v0 + coldUnits(TC.finWrite));
     for (let v = v0; v < v1; v++) {
       const c = cellOf[v];
       if (!(net[c] >= Network.Street && net[c] <= Network.Highway)) continue;
@@ -6798,7 +6867,7 @@ export class TrafficSystem implements SimSystem {
     const net = st.network;
     // rail riders
     const tB = this.trafficB, cB = this.congestionB, railNew = this.railNew, rcell = this.rail.cellOf, railN = this.rail.n;
-    const v0 = this.fiCur, v1 = Math.min(railN, v0 + pieceUnits(TC.finWrite, 1, COLD));
+    const v0 = this.fiCur, v1 = Math.min(railN, v0 + coldUnits(TC.finWrite));
     for (let v = v0; v < v1; v++) {
       const c = rcell[v];
       if (net[c] !== Network.Rail) continue;
@@ -6826,7 +6895,7 @@ export class TrafficSystem implements SimSystem {
     const old = this.stLoadPrev, oldPr = this.stPrPrev, next = this.stLoadPrevB, nextPr = this.stPrPrevB;
     const doneT = this.ST.done;
     const sN = this.stops.n, hasN = this.stNearW.length > sN;
-    const s0 = this.fiCur, s1 = Math.min(sN, s0 + pieceUnits(TC.finStop, 1, COLD));
+    const s0 = this.fiCur, s1 = Math.min(sN, s0 + coldUnits(TC.finStop));
     for (let s = s0; s < s1; s++) {
       const bid = this.stops.bid[s];
       const key = bid >= 0 ? bid : -1 - this.stops.cell[s];
@@ -6979,7 +7048,7 @@ export class TrafficSystem implements SimSystem {
     const g = this.road;
     const n = g.n, N = st.size, congestion = st.congestion, commute = this.commuteB;
     const accessB = this.accessB, commuteB = this.commuteIdB, reachedB = this.reachedB, carlessB = this.carlessB, carlessMinB = this.carlessMinB, modeB = this.modeB;
-    const o0 = this.f2Cur, o1 = Math.min(this.oN, o0 + pieceUnits(TC.f2Origin, 1, COLD));
+    const o0 = this.f2Cur, o1 = Math.min(this.oN, o0 + coldUnits(TC.f2Origin));
     for (let o = o0; o < o1; o++) {
       const bid = this.oBid[o];
       const b = st.buildings.get(bid);
@@ -7024,7 +7093,7 @@ export class TrafficSystem implements SimSystem {
     const st = sim.state;
     const g = this.road;
     const congestion = st.congestion, jobFillB = this.jobFillB, reachedB = this.reachedB, carsB = this.carsB, commuteB = this.commuteIdB, modeB = this.modeB;
-    const j0 = this.f2Cur, j1 = Math.min(this.jB, j0 + pieceUnits(TC.f2Site, 1, COLD));
+    const j0 = this.f2Cur, j1 = Math.min(this.jB, j0 + coldUnits(TC.f2Site));
     for (let j = j0; j < j1; j++) {
       const bid = this.jBid[j];
       const b = st.buildings.get(bid);
@@ -7111,7 +7180,7 @@ export class TrafficSystem implements SimSystem {
   private final2Piece5(sim: Simulation): boolean {
     const st = sim.state;
     const changed = this.f2Changed;
-    const k0 = this.f2Cur, k1 = Math.min(changed.length, k0 + pieceUnits(TC.event, 1, COLD));
+    const k0 = this.f2Cur, k1 = Math.min(changed.length, k0 + coldUnits(TC.event));
     for (let k = k0; k < k1; k++) {
       const b = changed[k];
       // (a building removed since the publish piece gets no event — interrupted mode only)
