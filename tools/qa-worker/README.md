@@ -1,6 +1,6 @@
 # Worker acceptance harness (T028r)
 
-Reviewed at **28a4862**, branch `local/T028-qa-worker`. Implements WORKER_DESIGN §5.4 and R16 against
+Review round 1 at **8ef8f7c**, branch `local/T028-qa-worker`. Implements WORKER_DESIGN §5.4 and R16 against
 production assets. **Loopback runs now and is the default.** `--host` selects local, loopback or worker;
 the URL uses `simworker=0`, `simworker=loopback` or `simworker=1` respectively. A requested host must actually
 boot; local fallback cannot pass a loopback/worker gate. No files under `src/` are modified.
@@ -66,9 +66,16 @@ PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tools/qa-worker.mjs --host loopba
 SwiftShader uses §5.4's flags and is marked in the report; it cannot establish the desktop GPU gate. Both modes
 include `--js-flags=--allow-natives-syntax`. One browser runs at a time. No normal browser profile is used.
 
-Freeze runs last: CDP frozen for **at least 15000 ms** measured outside the page, then active. Chromium may leave
-the page hidden after active: headed uses `bringToFront`; headless restores minimized/normal window bounds.
-Polling visibility never depends on rAF. The first new sim day must arrive **within 1000 ms of the later of resume
+Freeze runs last. Playwright 1.56.1 keeps pages visible through focus emulation on its owning CDP session; a separate
+session cannot release that handle. `lifecycle.mjs` uses the installed in-process bridge to disable focus emulation
+on that owner, validates the version/shape, then minimizes and confirms real hidden visibility. An unsupported
+Playwright version fails with an adapter diagnostic. No dependency or application code is patched.
+
+The harness requires a **trusted DOM freeze event**, received through a CDP Runtime binding, before starting the
+**at least 15000 ms** external hold. It then sends active, requires trusted resume, restores normal window bounds
+(plus `bringToFront` when headed), and restores focus emulation in cleanup. Polling visibility never depends on rAF.
+CDP acknowledgement alone cannot pass as a freeze; no lifecycle events or timestamps are synthesized.
+The first new sim day must arrive **within 1000 ms of the later of resume
 and visible**, with **0 frames during freeze**, **0 crash overlays** and an intact protector afterwards.
 The JSON includes external timestamps, page lifecycle timestamps, frame counts and resume delay.
 
@@ -102,6 +109,11 @@ No test calls tool methods, mutates city state, patches a picker or uses host co
 | Consumers | Onboarding Play, keys 1/2/3, Space, PauseMenu resume, InfoPanel Historic/Demolish; graphs, stats, advisors, data views, demographics, emergencies, rewards; Power view then None |
 | Freeze/errors | >= **15000 ms** frozen, <= **1000 ms** visible resume, **0** frozen frames, **0** overlays/console errors/page exceptions/crashes |
 
+Onboarding Play first hovers its step row to expose NOTE-042's hidden action, then performs a trial click before
+the observed real click. Query selection uses the actual `query` tool and its intentional null `activeId`.
+Dispatch input waits for its packet-backed options and initial automatic camera fit before focusing the station;
+camera timeouts include actual/expected coordinates and use the acknowledgement deadline, not the boot deadline.
+
 The probe forwards original arguments, tags, gestures and promises (apart from the explicit observer fault).
 It records predictions separately from acknowledgements, observes real pending mesh creation/removal, packets,
 replayed causes, save replies and gesture settlement. It attaches after real views replace loading views;
@@ -111,11 +123,18 @@ subscriptions end with `ctx.signal`, patches restore on abort/dispose, and archi
 
 ```powershell
 node "$root/tools/qa-worker/selftest.mjs"
+node --allow-natives-syntax "$root/tools/qa-worker/protector-selftest.mjs"
+node "$root/tools/qa-worker/protector-selftest.mjs"
 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tools/qa-worker/fixture.test.ts --maxWorkers=1
 npx tsc --noEmit
 ```
 
-The Node selftest tests the oracle/control/probe without Vite or a browser. The Vitest fixture is in normal test
+The Node selftest tests the oracle/control/probe without Vite or a browser. It covers the pending-ticket polling
+deadline, real UI action preparation, packet-watch camera race, required sim-only protector gate, and actual-freeze
+setup/cleanup. The native selftest checks clone success, transfer invalidation and failure without native syntax.
+The protector warms synchronously before application imports, records V8 optimization statuses, and remains strict
+for main and the worker named `sim`; independent `lod-proxies-*` workers do not belong to the simulation gate.
+The Vitest fixture is in normal test
 discovery and validates real local/loopback growth and dispatch plus provisional dependencies, ghosts, tagged replay,
 query read-after-write, correction deduplication and abort cleanup. It uses deterministic design cadence only in
 the node fixture; the browser uses live frames. Current results are in the [report](../../docs/dev/reports/local-T028-qa-worker.md).
@@ -124,8 +143,26 @@ Error-overlay Pause remains explicitly SKIPPED in the healthy fixture and needs 
 Close-page worker journal restoration is explicitly SKIPPED until W1.3/T039. `holdCalendar` is an additional
 automatic New Year op: any observed ticket must settle, but this short command fixture does not force midnight.
 Full visual parity of every overlay variant, New Year and other Appendix A consumers remains manual QA.
-No browser, build, perf run, full Vitest suite or bot was launched for T028r. No balance, simulation or RNG code changes;
+Round 1 Node results: **40 passed, 0 failed**, plus both native-probe commands passed. The supplied RTX 5070 Ti
+logs at 8ef8f7c establish the previous failures, not results for these fixes. No browser/build/perf/Vitest/bot was
+launched during this review round. No balance, simulation or RNG code changes;
 the supplied seed-7 reference remains residents **[61124, 93804, 37971] = 192899** in 2015, unverified here.
 
 `tools/bench/browser-check.mjs` already supports production assets and is unchanged. No source/infra/cloud-held
 files were edited; no commit, push or DONE marker was made.
+
+## Round 1 classification and rerun
+
+The observed Onboarding, Query/InfoPanel, LOD-probe, freeze setup, broken-control classification, and loopback-only
+dispatch failures were harness issues. Dispatch had **zero issued tickets** in loopback: its asynchronous options
+fit overwrote station focus before any pointer input. No dispatch packet/ack or T029 host bug is demonstrated.
+The isolated freeze had advanced to day 91 and then recorded 1369 frames without freeze/resume events; failed
+Onboarding Play does not explain it. Missing setHistoric/all-command coverage was a consequence of Query selection.
+
+Keep the main protector gate strict: `src/render/city/buildings/lodBuilder.ts:138` still transfers buffers from main,
+contrary to J0. The report requests the lead's clone-only fix. The old LOD initialization failure masked main status;
+the GPU rerun must determine whether it now reports this separate render-side protector regression.
+
+Rerun the exact desktop commands above, especially local, local --w1, loopback, isolated freeze, both broken-zone
+controls and --drop-ack dispatch. Require only the target pending-ack failure and PASS broken-build control
+for each real negative control; unrelated read errors still invalidate it.

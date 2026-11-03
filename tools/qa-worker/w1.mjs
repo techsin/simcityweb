@@ -5,17 +5,32 @@ export function installProtector() {
   try {
     const a = new Float32Array(64);
     const loop = new Function('a', 'let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s;');
-    const prepare = new Function('f', 'a', '%PrepareFunctionForOptimization(f); f(a); f(a); %OptimizeFunctionOnNextCall(f); f(a);');
+    const prepare = new Function('f', '%PrepareFunctionForOptimization(f);');
+    const optimize = new Function('f', 'a', '%OptimizeFunctionOnNextCall(f); f(a);');
     const status = new Function('f', 'return %GetOptimizationStatus(f);');
-    prepare(loop, a);
-    const initial = status(loop);
-    if (!(initial & 16)) throw new Error('typed-array probe did not optimize');
+    prepare(loop);
+    // Chromium's cold worker contexts may need more feedback than the child-process test's two calls. Do this
+    // synchronously before imports: waiting until application code runs would establish a possibly invalid baseline.
+    const attempts = [];
+    let initial;
+    for (const calls of [2, 32, 256, 2048]) {
+      for (let i = 0; i < calls; i++) loop(a);
+      optimize(loop, a);
+      const s = status(loop); attempts.push(s);
+      if (s & 16) { initial = s; break; }
+    }
+    if (initial === undefined) throw new Error(`typed-array probe did not optimize after warm-up (V8 statuses: ${attempts.join(', ')}); require Chromium --js-flags=--allow-natives-syntax with optimizing compilers enabled`);
     let intact = true;
-    globalThis.__qaProtector = () => { loop(a); intact = intact && status(loop) === initial; return { intact }; };
+    globalThis.__qaProtector = () => {
+      loop(a);
+      const current = status(loop);
+      intact = intact && current === initial;
+      return { intact, initial, status: current };
+    };
   } catch (e) { globalThis.__qaProtector = () => ({ intact: false, error: String(e) }); }
 }
 
-/** Pause each dedicated worker at birth, including the sim worker, before its first import executes. */
+/** Pause dedicated workers at birth; only the simulation isolate belongs to this protector gate. */
 export async function watchProtectors(page) {
   await page.addInitScript(installProtector);
   const cdp = await page.context().newCDPSession(page);
@@ -42,6 +57,11 @@ export async function watchProtectors(page) {
         if (targetInfo.type !== 'worker') return;
         assert(waitingForDebugger, 'worker was not paused at startup; cannot establish an initial protector baseline');
         await send(sessionId, 'Runtime.enable');
+        const identity = await send(sessionId, 'Runtime.evaluate', { expression: 'self.name', returnByValue: true });
+        assert(!identity.exceptionDetails && typeof identity.result?.value === 'string', `worker identity unavailable: ${JSON.stringify(identity)}`);
+        // The LOD pool is an independent rendering pipeline. Its workers transfer geometry by design; requiring
+        // their probe to optimize or stay intact would fail the sim gate even for LocalSimHost.
+        if (identity.result.value !== 'sim') return;
         const r = await send(sessionId, 'Runtime.evaluate', {
           expression: `(${installProtector.toString()})(); ({name: self.name, probe: self.__qaProtector()})`, returnByValue: true,
         });
@@ -59,9 +79,10 @@ export async function watchProtectors(page) {
   return {
     async check(requireWorker) {
       await Promise.all([...jobs]);
-      assert(!failures.length, failures.join('; '));
       const main = await page.evaluate(() => window.__qaProtector?.());
-      assert(main?.intact === true, `main protector unavailable/invalidated: ${JSON.stringify(main)}`);
+      const issues = [...failures];
+      if (main?.intact !== true) issues.push(`main protector unavailable/invalidated: ${JSON.stringify(main)}`);
+      assert(!issues.length, issues.join('; '));
       const sims = [...workers.entries()].filter(([, w]) => w.name === 'sim');
       if (requireWorker) assert(sims.length === 1, `expected one dedicated worker named sim; found ${JSON.stringify([...workers.values()])}`);
       for (const [session] of sims) {

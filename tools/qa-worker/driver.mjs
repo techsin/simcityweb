@@ -1,6 +1,22 @@
 import { assert, poll, sleep, waitForAcks, withCleanup } from './harness.mjs';
 import { installProbe, pointForCell, pointer } from './page.mjs';
 
+export function toolSelected(id) {
+  const tools = window.__metropolis.city.scene.tools;
+  return tools.active.id === id && (id !== 'query' || tools.activeId === null);
+}
+
+export function dispatchState({ incident, station }) {
+  const s = window.__metropolis.city.scene, t = s.tools.active, c = s.ctx.world.controls;
+  const value = t.optionsWatch?.value, options = t.opts ?? [];
+  return { id: t.id, incident: t.inc, fitPending: t.fitPending, version: t.optionsWatch?.version,
+    error: t.optionsWatch?.error ? String(t.optionsWatch.error) : null,
+    watchStations: value?.map((o) => o.stationId), stations: options.map((o) => o.stationId),
+    camera: { x: c.target.x, z: c.target.z, distance: c.distance },
+    ready: t.id === 'dispatch' && t.inc === incident && t.fitPending === false && Array.isArray(value)
+      && value.some((o) => o.stationId === station) && options.some((o) => o.stationId === station) };
+}
+
 export class Driver {
   constructor(page, options) { this.page = page; this.options = options; this.sessions = []; this.archives = []; this.dropAckUsed = false; this.cleanupErrors = []; }
   async ready({ pauseOnArrival = false } = {}) {
@@ -57,7 +73,7 @@ export class Driver {
     await this.page.waitForFunction(() => !document.querySelector('.panel.closing, .modal-back.closing'));
   }
   async select(id) {
-    if (await this.page.evaluate((id) => window.__metropolis.city.scene.tools.activeId === id, id)) return;
+    if (id !== 'query' && await this.page.evaluate(toolSelected, id)) return;
     const routes = {
       'zone:1': ['Zones', 'Residential', 'Low density'], 'zone:4': ['Zones', 'Commercial', 'Low density'],
       'zone:8': ['Zones', 'Industrial', 'Medium density'], dezone: ['Zones', 'Other', 'De-zone'],
@@ -82,8 +98,22 @@ export class Driver {
       }
       await scope.locator('.fly-item').filter({ has: p.locator('.fly-name').filter({ hasText: exact(label) }) }).click();
     }
-    assert(await p.evaluate((id) => window.__metropolis.city.scene.tools.activeId === id, id), `toolbar did not select ${id}`);
+    assert(await p.evaluate(toolSelected, id), `toolbar did not select ${id}`);
     await p.locator('.mp-canvas').focus();
+  }
+  async onboardingPlay() {
+    const p = this.page, card = p.locator('.onboard.show');
+    if (await p.locator('.onboard.show.min').count()) await card.locator('.ob-pill').click();
+    const row = card.locator('.ob-step').filter({ has: p.locator('button').filter({ hasText: /^Play$/ }) });
+    // Non-current step actions intentionally appear only while their row is hovered (NOTE-042).
+    await row.hover();
+    const button = row.locator('button').filter({ hasText: /^Play$/ });
+    await button.click({ trial: true });
+    return this.command('setSpeed', () => button.click());
+  }
+  waitForDispatch(incident, station) {
+    return poll(() => this.page.evaluate(dispatchState, { incident, station }), (s) => s.ready,
+      this.options.ackTimeout, `incident ${incident}: DispatchTool options/initial camera fit not ready for station ${station}`);
   }
   async speed(value) {
     const title = ['Pause (Space)', 'Normal speed (1)', 'Fast (2)', 'Ultra (3)'][value];
@@ -102,10 +132,11 @@ export class Driver {
     const x = (a[0] + b[0]) / 2, z = (a[1] + b[1]) / 2;
     const distance = Math.max(520, Math.hypot(a[0] - b[0], a[1] - b[1]) * 16 * 2.8 + 300);
     await this.page.evaluate(({ x, z, distance }) => window.__metropolis.city.scene.ctx.focusCell(x, z, distance), { x, z, distance });
-    await this.page.waitForFunction(({ x, z, distance }) => {
+    await poll(() => this.page.evaluate(() => {
       const c = window.__metropolis.city.scene.ctx.world.controls;
-      return Math.hypot(c.target.x - (x + .5) * 16, c.target.z - (z + .5) * 16) < .5 && Math.abs(c.distance - distance) < 2;
-    }, { x, z, distance }, { timeout: this.options.bootTimeout });
+      return { x: c.target.x, z: c.target.z, distance: c.distance };
+    }), (c) => Math.hypot(c.x - (x + .5) * 16, c.z - (z + .5) * 16) < .5 && Math.abs(c.distance - distance) < 2,
+    this.options.ackTimeout, `camera did not settle at x=${(x + .5) * 16}, z=${(z + .5) * 16}, distance=${distance}`);
   }
   point(cell) { return poll(() => this.page.evaluate(pointForCell, cell), Boolean, this.options.ackTimeout, `cannot project/pick cell ${cell}`); }
   async stroke(id, a, b = a, hold = 0) {

@@ -122,22 +122,33 @@ export function installProbe({ dropAck = null } = {}) {
     }
     return out;
   });
-  const armFreeze = () => {
-    q.freeze = { day: host.state.day, requestedAt: performance.now(), frozenAt: null, resumedAt: null, visibleAt: null, advancedAt: null, frames: 0, framesDuringFreeze: [] };
-    document.addEventListener('freeze', () => {
-      q.freeze.frozenAt = performance.now(); q.freeze.framesAtFreeze = q.freeze.frames;
-    }, { once: true, signal: ctx.signal });
-    document.addEventListener('resume', () => {
-      q.freeze.day = host.state.day; q.freeze.resumedAt = performance.now();
-      q.freeze.framesAtResume = q.freeze.frames;
-      q.freeze.visibilityAtResume = document.visibilityState;
+  const armFreeze = ({ bindingName = null } = {}) => {
+    if (bindingName && typeof window[bindingName] !== 'function') throw new Error('freeze: CDP lifecycle binding is unavailable');
+    const f = q.freeze = { day: host.state.day, requestedAt: performance.now(), frozenAt: null, resumedAt: null, visibleAt: null, advancedAt: null, frames: 0, framesDuringFreeze: [], events: [] };
+    const record = (event) => {
+      const row = { type: event.type, at: performance.now(), trusted: event.isTrusted, visibility: document.visibilityState, day: host.state.day };
+      f.events.push(row);
+      if (bindingName) window[bindingName](JSON.stringify(row));
+      return row;
+    };
+    document.addEventListener('freeze', (event) => {
+      const row = record(event);
+      f.frozenAt = row.at; f.framesAtFreeze = f.frames; f.visibilityAtFreeze = row.visibility;
+    }, { once: true, capture: true, signal: ctx.signal });
+    document.addEventListener('resume', (event) => {
+      const row = record(event);
+      f.day = host.state.day; f.resumedAt = row.at;
+      f.framesAtResume = f.frames;
+      f.visibilityAtResume = document.visibilityState;
       q.markVisible();
-    }, { once: true, signal: ctx.signal });
-    document.addEventListener('visibilitychange', () => q.markVisible(), { signal: ctx.signal });
+    }, { once: true, capture: true, signal: ctx.signal });
+    document.addEventListener('visibilitychange', (event) => { record(event); q.markVisible(); }, { capture: true, signal: ctx.signal });
   };
   q.markVisible = () => {
     const f = q.freeze;
-    if (f?.resumedAt != null && f.visibleAt == null && document.visibilityState === 'visible') f.visibleAt = performance.now();
+    if (f?.resumedAt != null && f.visibleAt == null && document.visibilityState === 'visible') {
+      f.day = host.state.day; f.visibleAt = performance.now();
+    }
   };
   q.armFreeze = armFreeze;
   q.dispose = () => {

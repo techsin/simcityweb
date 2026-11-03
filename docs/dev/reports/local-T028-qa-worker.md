@@ -1,5 +1,124 @@
 # T028r: worker acceptance harness review and loopback enablement
 
+## Review round 1 — 8ef8f7c
+
+Read all eight `.log`/`.json` pairs in
+`C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/t028/`:
+loopback, freeze, broken-zone, broken-local-zone, probe-control, local, local-verify and worker.
+These are the lead's **Chromium 141 / RTX 5070 Ti** results from the pre-fix build; no browser was launched here.
+
+| Supplied run | PASS / FAIL / SKIPPED | Evidence |
+| --- | --- | --- |
+| loopback | 42 / 8 / 6 | Ghosts, brush, replica verify, journal, save/Continue and exit passed; dispatch never issued a ticket. |
+| local | 42 / 5 / 9 | Same Onboarding/Query failures; both dispatch commands passed; freeze failed. |
+| local-verify | 43 / 7 / 6 | Same reference failures, plus unrelated LOD probe initialization failures. |
+| freeze | 7 / 1 / 48 | Day **91** before arming, **1369** later frames; no freeze/resume/visible timestamps despite 15004 ms external sleep. |
+| broken-zone | 8 / 2 / 47 | One transform; real pending zone **seq 4**; poll deadline misclassified it as missing-command. |
+| broken-local-zone | 8 / 2 / 47 | One transform; real pending zone **seq 5**; same poll bug. |
+| probe-control | 42 / 8 / 6 | Dispatch never posted, so its observer fault was not consumed; not yet a valid negative control result. |
+| worker | 0 / 0 / 55 | Expected absent-host skip; exit 3. |
+
+### Classification, fixes and exact source evidence
+
+| Severity / classification | Location | Finding and fix |
+| --- | --- | --- |
+| High / harness | `tools/qa-worker/driver.mjs:104`; `src/ui/hud.css:407-415` | Play exists but its non-current step action intentionally has opacity 0 and pointer-events none until the row is hovered. Hover the actual Play row, wait with a trial click for actionability, then observe the real click. No forced click, style mutation or direct command. |
+| High / harness | `tools/qa-worker/driver.mjs:4,76,101`; `src/game/tools/ToolController.ts:130,170` | Query is the default tool and intentionally has activeId null; the old assertion demanded string query even after a successful toolbar click. Validate actual tool.id query plus null activeId. This fixes the shared InfoPanel Demolish/setHistoric failures; missing historic ack coverage was consequential. |
+| High / harness | `tools/qa-worker/w1.mjs:16,60-64,82`; `tools/qa-worker/run.mjs:87` | Chromium already receives --allow-natives-syntax; the old error means native syntax parsed but optimization was not established. LOD render workers were wrongly required to pass the simulation-isolate gate. Probe only main and the dedicated worker named sim, resume LOD workers, warm synchronously before application imports, retain status diagnostics and fail closed. The precise Chromium cold/debugger optimization cause remains unverified without a rerun. |
+| High / harness, loopback-only race | `tools/qa-worker/checks.mjs:361`; `tools/qa-worker/driver.mjs:114,139` | Async dispatchOptions caused DispatchTool.refreshOptions (`src/game/tools/DispatchTool.ts:205-212`) to run its initial fitCamera (`:179`) after harness station focus. Wait for the intended incident, station in watch and rendered options, and fitPending false before station focus. Camera settling now uses the 8-second ack deadline with actual/expected coordinates, not the 180-second boot deadline. |
+| High / harness | `tools/qa-worker/harness.mjs:119-133` | poll slept the final remaining interval, then launched another healthy page read with about 1 ms left. That read raced its deadline and changed an issued pending ticket into missing-command. End polling after the final sleep, recheck the deadline after any oversleep, and allow one polling interval of read grace at the boundary. Genuine stalled/failed reads remain distinct and cannot pass a control. Retain the pending seq in the acknowledgement-deadline diagnostic and the unchanged strict broken-build verdict. |
+| High / harness | `tools/qa-worker/lifecycle.mjs:8`; `tools/qa-worker/freeze.mjs:14,56-101`; `tools/qa-worker/page.mjs:125` | Playwright 1.56.1 enables focus emulation on its owning CDP session (`node_modules/playwright-core/lib/server/chromium/crPage.js:438`), holding a stay-visible capture handle. A new CDP session cannot release that owner's handle. A version/shape-guarded adapter disables it on the actual owner; minimize and confirm hidden, require a trusted native DOM freeze via Runtime binding, hold >=15000 ms, require trusted resume, restore visible, then require progress <=1000 ms. Restore focus/visibility in cleanup. No synthetic lifecycle event/timestamp or relaxed threshold. |
+
+Dispatch is **not a demonstrated host bug**. In both loopback runs there are **zero dispatch/dispatchBest tickets**
+and **89 resolved setCamera tickets** while the active tool is dispatch, all at `{x:1544,z:2032,distance:1447}`.
+The requested station focus was `{x:1128,z:2024,distance:520}`. Timeout happened before pointer input and before
+`DispatchTool.ts:358` could call host.act. Local's initial watch is synchronous, so it fits before the harness focuses:
+dispatch returned **sent 1 / ETA 5.1**, dispatchBest **sent 1 / ETA 5.3**. Reviewed queued transport, packet watch
+production/reception, T029 policy and dispatch acknowledgements; no worker/query/ack source change is warranted.
+
+Failed Onboarding Play does **not** explain the isolated/reference freeze failures: explicit TopBar setSpeed(3)
+acknowledged, the pre-freeze progress check passed, and freeze.json already shows day 91 (spring start is day 90).
+Local/local-verify also reached CDP freeze and recorded 1349/1381 frames without lifecycle events. Full loopback's
+before-freeze failure followed its undelivered dispatch input and waiting fires; it is not evidence of a lost host
+speed ack. New JSON records preFreezeDay/runningDay and the real native lifecycle separately.
+
+Primary Chromium explanation: [EmulationHandler focus emulation](https://chromium.googlesource.com/chromium/src/+/main/content/browser/devtools/protocol/emulation_handler.cc)
+holds a non-hidden capturer. Installed Playwright source establishes ownership. The adapter uses
+`page._connection.toImpl(page).delegate._mainFrameSession._client`; it fails explicitly if version 1.56.1 or that
+shape changes. It does not patch Playwright or application files. This version-specific harness dependency and the
+actual minimize/freeze behavior must be verified on the lead's GPU rerun.
+
+### Separate source finding / request to the lead
+
+**High, render-side J0 divergence, not an observed dispatch/LoopbackSimHost bug:**
+`src/render/city/buildings/lodBuilder.ts:138`, **LodProxyBuilder.post(job)**, still calls
+`postMessage(msg, [msg.position.buffer, msg.color.buffer, msg.surf.buffer])` from main. The arrays are already
+slice copies, so change that call to **`this.workers[k].postMessage(msg)`**, retaining all surrounding behavior.
+WORKER_DESIGN J0 requires clone-only main posts to keep main's detachment protector intact. The Node native control
+confirms a transfer invalidates the probe. The old LOD initialization failure stopped check() before it read main;
+the supplied output therefore does not establish main's status. The fixed harness keeps the main gate strict and
+will report that status even alongside worker failures. Route this minimal hunk to the render owner; **no src file
+was edited here**. `lodWorker.ts` transfers affect only that independent render isolate and need no sim-gate change.
+No change request for src/worker/**, App wiring, or another cloud-held file.
+
+### Round 1 files and validation
+
+| File | Change this round |
+| --- | --- |
+| `tools/qa-worker/driver.mjs` | Hover/trial-click Play; default Query identity; await packet options/initial fit; bounded diagnostic camera polling. |
+| `tools/qa-worker/checks.mjs` | Use the Play helper and await/record dispatch readiness before station input. |
+| `tools/qa-worker/harness.mjs` | Current review base and final-interval polling fix; strict control classification retained. |
+| `tools/qa-worker/w1.mjs` | Main/sim-only protector, synchronous warm-up, optimization-status diagnostics, main failure collection. |
+| `tools/qa-worker/lifecycle.mjs` (new) | Guarded adapter for the installed Playwright owner's focus emulation. |
+| `tools/qa-worker/freeze.mjs` | Real hidden/freeze/resume handshake through native CDP binding; progress evidence and restored visibility/focus. |
+| `tools/qa-worker/page.mjs` | Capture lifecycle data, emit native binding evidence, reset progress baseline on real visibility return. |
+| `tools/qa-worker/selftest.mjs` | Ten new browser-free regressions and updated visibility restoration test. |
+| `tools/qa-worker/protector-selftest.mjs` (new) | Native clone/transfer and unavailable-native-syntax controls. |
+| `tools/qa-worker/README.md`, this report | Current behavior, classifications, exact commands and rerun requirements. |
+
+**40 Node selftests passed, 0 failed**. Added names:
+
+- broken controls: healthy asynchronous pending reads end as ack timeout, with the actual ticket seq
+- broken controls: an overslept polling interval never starts a fresh read after the deadline
+- Query toolbar: null activeId is the selected default QueryTool, never a failed selection
+- Onboarding Play: hover the row, wait for a real actionable button, then issue the click
+- Dispatch input waits for packet watch data and the initial tool camera fit before station focus
+- protector gate: LOD workers resume without a sim probe; missing sim and invalid main still fail
+- protector gate: the sim worker is probed before startup and initialization failure stays a failure
+- freeze adapter: disable focus emulation on Playwright owning session, failing closed on API or version drift
+- freeze setup: requires a genuinely hidden page before attempting frozen lifecycle
+- freeze control: a CDP frozen acknowledgement without a real DOM freeze fails and restores focus/visibility
+
+Both commands also passed:
+
+```powershell
+node --allow-natives-syntax C:/Users/techsin/Desktop/projects/simcityweb-T028/tools/qa-worker/protector-selftest.mjs
+node C:/Users/techsin/Desktop/projects/simcityweb-T028/tools/qa-worker/protector-selftest.mjs
+```
+
+The first proves initial warm-up and clones pass while a transfer negative control fails; the second proves
+unsupported native syntax fails closed. No browser, production build, Vitest, perf run or bot was launched in this
+round. No TypeScript/simulation/balance/RNG changes. The earlier typecheck/fixture limitations below remain historical;
+this review's requested validation is Node-only. `node --check tools/qa-worker/checks.mjs` also passed;
+the browser-free `--host worker` preflight still exits **3**. `git diff --check` passed and all 11 changed files
+are valid UTF-8 without a BOM. All changes remain uncommitted.
+**Infra/outside-owned source hunks: none.**
+
+Round 1 rerun checklist (exact commands remain in README):
+
+- [ ] Local and local --w1: Play emits `(1,onboarding)` after actual hover/actionability; Query reaches both inspector actions and setHistoric acknowledges.
+- [ ] Loopback: dispatch readiness JSON precedes station focus; actual dispatch and dispatchBest tickets appear, sent>0/finite ETA; packet/cause gates run. No 180-second camera wait.
+- [ ] Main protector remains strict; report a main invalidation separately from the removed LOD false gate. Worker named sim still requires pre-import initialization when T034 exists.
+- [ ] Isolated headless/headed freeze and full-run freeze: actual hidden state, trusted native freeze/resume, >=15000 ms external and document intervals, 0 frozen frames, visible progress <=1000 ms, 0 overlays/errors, focus restored.
+- [ ] Both real broken-zone controls: exit 1, one target `ack-timeout` with seq>0, **PASS broken-build control**, no unrelated errors. A true read timeout still invalidates a control.
+- [ ] Probe-control: the first actual dispatch consumes the observer fault; its pending ticket fails the ack check after session replacement.
+- [ ] Full loopback retains 23-op coverage, ghosts/brush/save/reload/region teardown and zero-console-error gates; worker remains 55 skips / exit 3 until T034.
+
+No bot rerun is needed for these harness changes; the unchanged expected seed-7 128x15 residents remain
+**[61124, 93804, 37971] = 192899**. The exact optional quiet-gated command remains in the initial report below.
+
+## Initial implementation record (before the lead's GPU review)
+
 Date: 2026-11-03. Worktree/branch: `simcityweb-T028`, `local/T028-qa-worker`. Reviewed HEAD: **28a4862**.
 Read the full task and WORKER_DESIGN (including §5.4, Appendix A and R16), the previous report, the harness,
 and current T031 HostActions/PendingEdits/tool commits, T032 packet host/replica/replies/resyncs, T033

@@ -2,11 +2,14 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
 import { parseArgs, waitForAcks, poll, selectedChecks, CHECKS, brokenBuildVerdict, withCleanup, Report, validateSession } from './harness.mjs';
 import { installProbe, savedMarkers } from './page.mjs';
 import { breakAckPlugin } from './build.mjs';
-import { resumeDelay, restoreVisibility } from './freeze.mjs';
-import { Driver } from './driver.mjs';
+import { freeze, hideForFreeze, resumeDelay, restoreVisibility } from './freeze.mjs';
+import { owningLifecycleSession } from './lifecycle.mjs';
+import { Driver, toolSelected, dispatchState } from './driver.mjs';
+import { watchProtectors } from './w1.mjs';
 
 const rows = (extra = {}) => [{ seq: 1, status: 'resolved', result: { ok: true }, ...extra }];
 afterEach(() => { globalThis.window?.__qaWorker?.dispose(); delete globalThis.window; delete globalThis.document; });
@@ -258,24 +261,24 @@ test('freeze oracle: deadline starts at later resume/visible; hidden, delayed an
   assert.throws(() => resumeDelay({ ...f, framesDuringFreeze: [1] }), /frames while frozen/);
 });
 
-test('freeze restore: headless minimizes/normalizes, headed brings to front, hidden timeout is specific', async () => {
+test('freeze restore: normalize the hidden window, bring headed pages forward, and report persistent hidden state', async () => {
   globalThis.document = { visibilityState: 'hidden' };
   globalThis.window = { __qaWorker: { markVisible() {}, dispose() {} } };
-  const calls = [], evidence = {};
+  const calls = [], evidence = {}; let restore = true;
   const page = { evaluate: async (fn) => fn(), bringToFront: async () => { calls.push('front'); document.visibilityState = 'visible'; } };
   const cdp = { send: async (method, args) => {
     calls.push([method, args]);
     if (method === 'Target.getTargetInfo') return { targetInfo: { targetId: 'page' } };
     if (method === 'Browser.getWindowForTarget') return { windowId: 42 };
-    if (args?.bounds?.windowState === 'normal') document.visibilityState = 'visible';
+    if (restore && args?.bounds?.windowState === 'normal') document.visibilityState = 'visible';
   } };
   await restoreVisibility(page, cdp, false, 50, evidence);
   assert.equal(evidence.visibilityAfterActive, 'hidden');
-  assert.deepEqual(calls.slice(2).map(([, a]) => a.bounds.windowState), ['minimized', 'normal']);
+  assert.deepEqual(calls.slice(2).map(([, a]) => a.bounds.windowState), ['normal']);
   document.visibilityState = 'hidden'; calls.length = 0;
   await restoreVisibility(page, cdp, true, 50, {});
-  assert.deepEqual(calls, ['front']);
-  document.visibilityState = 'hidden'; page.bringToFront = async () => {};
+  assert.equal(calls.at(-1), 'front');
+  document.visibilityState = 'hidden'; page.bringToFront = async () => {}; restore = false;
   await assert.rejects(restoreVisibility(page, cdp, true, 10, {}), /page stayed hidden after active/);
 });
 
@@ -386,4 +389,175 @@ test('probe control: an exact unposted refusal cannot consume the dropped transp
   await host.act('zone', []).done; host.act('zone', []);
   assert.equal(window.__qaWorker.commands[0].dropped, undefined);
   assert.equal(window.__qaWorker.commands[1].dropped, true);
+});
+
+test('broken controls: healthy asynchronous pending reads end as ack timeout, with the actual ticket seq', async () => {
+  let reads = 0;
+  await assert.rejects(waitForAcks(async () => {
+    reads++; await new Promise((r) => setTimeout(r, 2));
+    return rows({ seq: 4, status: 'pending' });
+  }, 'zone', 15), (e) => {
+    assert.equal(e.code, 'poll-timeout');
+    assert.deepEqual(e.failure, { op: 'zone', kind: 'ack-timeout', seqs: [4] });
+    return true;
+  });
+  assert.equal(reads, 1, 'expiry must not launch a new browser read with a fractional remaining budget');
+});
+
+test('broken controls: an oversleep cannot launch a one-millisecond browser read after the ack deadline', async (t) => {
+  let now = 0, reads = 0;
+  const original = globalThis.setTimeout;
+  t.mock.method(performance, 'now', () => now);
+  t.mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => original(() => {
+    if (ms === 50) now = 101;
+    fn(...args);
+  }, ms === 50 ? 1 : ms));
+  await assert.rejects(waitForAcks(async () => { reads++; return rows({ seq: 5, status: 'pending' }); }, 'zone', 100),
+    (e) => e.failure.kind === 'ack-timeout' && e.failure.seqs[0] === 5 && e.code === 'poll-timeout');
+  assert.equal(reads, 1);
+});
+
+test('Query toolbar: null activeId is the selected default QueryTool, never a failed selection', () => {
+  const { ctx, scene } = fixture();
+  ctx.tools.active = { id: 'query' }; ctx.tools.activeId = null; scene.tools = ctx.tools;
+  assert.equal(toolSelected('query'), true);
+  assert.equal(toolSelected('bulldoze'), false);
+  ctx.tools.active = { id: 'bulldoze' }; ctx.tools.activeId = 'bulldoze';
+  assert.equal(toolSelected('query'), false);
+});
+
+test('Onboarding Play: hover the row, wait for a real actionable button, then issue the click', async () => {
+  const order = [];
+  const button = { filter() { return this; }, async click(opts) { order.push(opts?.trial ? 'trial' : 'click'); } };
+  const row = { filter() { return this; }, async hover() { order.push('hover'); }, locator() { return button; } };
+  const card = { locator() { return row; } };
+  const page = { locator(selector) {
+    if (selector === '.onboard.show.min') return { count: async () => 0 };
+    if (selector === '.onboard.show') return card;
+    return button;
+  } };
+  const d = new Driver(page, {});
+  d.command = async (op, input) => { assert.equal(op, 'setSpeed'); order.push('observe'); await input(); return rows(); };
+  await d.onboardingPlay();
+  assert.deepEqual(order, ['hover', 'trial', 'observe', 'click']);
+});
+
+test('Dispatch input waits for packet watch data and the initial tool camera fit before station focus', async () => {
+  const { scene, ctx } = fixture();
+  const t = { id: 'dispatch', inc: 1, fitPending: true, opts: [], optionsWatch: { value: undefined, version: 0 } };
+  scene.tools = { active: t }; ctx.world = { controls: { target: { x: 1544, z: 2032 }, distance: 1447 } };
+  assert.equal(dispatchState({ incident: 1, station: 6 }).ready, false);
+  t.optionsWatch.value = [{ stationId: 6 }]; t.optionsWatch.version++; t.opts = t.optionsWatch.value;
+  assert.equal(dispatchState({ incident: 1, station: 6 }).ready, false, 'watch data alone does not finish initial camera fitting');
+  t.fitPending = false;
+  const d = new Driver({ evaluate: async (fn, arg) => fn(arg) }, { ackTimeout: 100 });
+  const ready = await d.waitForDispatch(1, 6);
+  assert.equal(ready.ready, true); assert.equal(ready.version, 1);
+  assert.equal(dispatchState({ incident: 1, station: 7 }).ready, false);
+});
+
+function protectorPage() {
+  const cdp = new EventEmitter(), sent = [], names = new Map(), probes = new Map();
+  let main = { intact: true };
+  cdp.send = async (method, params) => {
+    if (method === 'Target.sendMessageToTarget') {
+      const m = JSON.parse(params.message); sent.push({ session: params.sessionId, ...m });
+      let result = {};
+      if (m.method === 'Runtime.evaluate') {
+        const value = m.params.expression === 'self.name' ? names.get(params.sessionId)
+          : m.params.expression === 'self.__qaProtector()' ? probes.get(params.sessionId)
+          : { name: names.get(params.sessionId), probe: probes.get(params.sessionId) };
+        result = { result: { value } };
+      }
+      queueMicrotask(() => cdp.emit('Target.receivedMessageFromTarget', { message: JSON.stringify({ id: m.id, result }) }));
+    }
+    return {};
+  };
+  cdp.detach = async () => {};
+  return { cdp, sent, page: { addInitScript: async () => {}, context: () => ({ newCDPSession: async () => cdp }), evaluate: async () => main },
+    setMain(value) { main = value; }, attach(session, name, probe = { intact: true }) {
+      names.set(session, name); probes.set(session, probe);
+      cdp.emit('Target.attachedToTarget', { sessionId: session, waitingForDebugger: true, targetInfo: { type: 'worker', url: 'test-worker' } });
+    } };
+}
+
+test('protector gate: LOD workers resume without a sim probe; missing sim and invalid main still fail', async () => {
+  const f = protectorPage(), gate = await watchProtectors(f.page);
+  try {
+    f.attach('lod', 'lod-proxies-0', { intact: false, error: 'cold render worker' });
+    assert.match(await gate.check(false), /main intact/);
+    assert(!f.sent.some((s) => s.session === 'lod' && s.params?.expression?.includes('installProtector')));
+    assert(f.sent.some((s) => s.session === 'lod' && s.method === 'Runtime.runIfWaitingForDebugger'));
+    await assert.rejects(gate.check(true), /expected one dedicated worker named sim/);
+    f.setMain({ intact: false, status: 1 });
+    await assert.rejects(gate.check(false), /main protector unavailable\/invalidated/);
+  } finally { await gate.dispose(); }
+});
+
+test('protector gate: the sim worker is probed before startup and initialization failure stays a failure', async () => {
+  const f = protectorPage(), gate = await watchProtectors(f.page);
+  try {
+    f.attach('sim', 'sim'); assert.match(await gate.check(true), /sim worker intact/);
+    assert(f.sent.some((s) => s.session === 'sim' && s.params?.expression?.includes('installProtector')));
+  } finally { await gate.dispose(); }
+  const bad = protectorPage(), badGate = await watchProtectors(bad.page);
+  try {
+    bad.attach('sim', 'sim', { intact: false, error: 'did not optimize' });
+    await assert.rejects(badGate.check(true), /worker protector could not initialize/);
+    assert(bad.sent.some((s) => s.method === 'Runtime.runIfWaitingForDebugger'));
+  } finally { await badGate.dispose(); }
+});
+
+test('freeze adapter: disable focus emulation on Playwright owning session, failing closed on API or version drift', async () => {
+  const calls = [], owner = { send: async (...args) => calls.push(args) };
+  const page = { _connection: { toImpl(p) { assert.equal(p, page); return { delegate: { _mainFrameSession: { _client: owner } } }; } } };
+  await owningLifecycleSession(page, '1.56.1').send('Emulation.setFocusEmulationEnabled', { enabled: false });
+  assert.deepEqual(calls, [['Emulation.setFocusEmulationEnabled', { enabled: false }]]);
+  assert.throws(() => owningLifecycleSession(page, '2.0.0'), /supports Playwright 1.56.1/);
+  assert.throws(() => owningLifecycleSession({}, '1.56.1'), /owning CDP session is unavailable/);
+});
+
+test('freeze setup: requires a genuinely hidden page before attempting frozen lifecycle', async () => {
+  globalThis.document = { visibilityState: 'visible' };
+  const calls = [], evidence = {}, page = { evaluate: async (fn) => fn() };
+  const cdp = { send: async (method, args) => {
+    calls.push([method, args]);
+    if (method === 'Target.getTargetInfo') return { targetInfo: { targetId: 'page' } };
+    if (method === 'Browser.getWindowForTarget') return { windowId: 42 };
+    if (args?.bounds?.windowState === 'minimized') document.visibilityState = 'hidden';
+  } };
+  await hideForFreeze(page, cdp, 20, evidence);
+  assert.equal(evidence.windowId, 42); assert.equal(document.visibilityState, 'hidden');
+  assert.equal(calls.at(-1)[1].bounds.windowState, 'minimized');
+  document.visibilityState = 'visible'; cdp.send = async () => ({ targetInfo: { targetId: 'page' }, windowId: 42 });
+  await assert.rejects(hideForFreeze(page, cdp, 10, {}), /page did not become hidden/);
+});
+
+test('freeze control: a CDP frozen acknowledgement without a real DOM freeze fails and restores focus/visibility', async () => {
+  const { host } = fixture();
+  globalThis.document = new EventTarget(); document.visibilityState = 'visible';
+  installProbe();
+  const cdp = new EventEmitter(), calls = [], owner = { send: async (method, args) => calls.push([method, args]) };
+  cdp.send = async (method, args) => {
+    calls.push([method, args]);
+    if (method === 'Target.getTargetInfo') return { targetInfo: { targetId: 'page' } };
+    if (method === 'Browser.getWindowForTarget') return { windowId: 42 };
+    if (method === 'Runtime.addBinding') window[args.name] = (payload) => cdp.emit('Runtime.bindingCalled', { name: args.name, payload });
+    if (method === 'Runtime.removeBinding') delete window[args.name];
+    if (method === 'Browser.setWindowBounds') {
+      document.visibilityState = args.bounds.windowState === 'minimized' ? 'hidden' : 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+    }
+    return {};
+  };
+  cdp.detach = async () => calls.push(['detach']);
+  const page = { evaluate: async (fn, arg) => { host.state.day++; return fn(arg); }, context: () => ({ newCDPSession: async () => cdp }),
+    _connection: { toImpl: () => ({ delegate: { _mainFrameSession: { _client: owner } } }) }, isClosed: () => false };
+  const d = { page, options: { ackTimeout: 10 }, clean: async () => {}, speed: async () => {}, cleanupErrors: [] };
+  const report = { details: {} };
+  await assert.rejects(freeze(d, report), /browser did not emit a real document freeze event/);
+  assert.deepEqual(calls.filter(([m]) => m === 'Emulation.setFocusEmulationEnabled').map(([, a]) => a.enabled), [false, true]);
+  assert.deepEqual(calls.filter(([m]) => m === 'Page.setWebLifecycleState').map(([, a]) => a.state), ['frozen', 'active']);
+  assert.equal(document.visibilityState, 'visible'); assert.equal(calls.at(-1)[0], 'detach');
+  assert.equal(report.details.freeze.frozenForMs, undefined, '15-second hold must not start without real freeze evidence');
 });

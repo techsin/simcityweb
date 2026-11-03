@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 
-export const BASE = '28a4862';
+export const BASE = '8ef8f7c';
 export const COMMANDS = [
   'zone', 'dezone', 'bulldoze', 'buildNetwork', 'buildPowerLine', 'buildSubway', 'plop', 'terraform', 'plantTrees',
   'setTax', 'setFunding', 'setHistoric', 'setOrdinance', 'takeLoan', 'repayLoan', 'setSpeed', 'resume',
@@ -114,12 +114,20 @@ export async function deadline(promise, ms, reason) {
 
 export async function poll(read, accept, timeout, reason, interval = 50) {
   const end = performance.now() + timeout;
-  let value;
+  let value, first = true;
   do {
-    value = await deadline(Promise.resolve().then(read), Math.max(1, end - performance.now()), `${reason} (read timed out)`);
+    const budget = end - performance.now();
+    if (!first && budget <= 0) break;
+    first = false;
+    // One polling interval of read grace avoids treating a healthy CDP read as stalled at the boundary.
+    value = await deadline(Promise.resolve().then(read), Math.max(Math.min(interval, timeout), budget), `${reason} (read timed out)`);
     if (accept(value)) return value;
-    if (performance.now() >= end) break;
-    await sleep(Math.min(interval, Math.max(1, end - performance.now())));
+    const remaining = end - performance.now();
+    if (remaining <= 0) break;
+    // Do not start a final browser read with the fractional millisecond left after the last sleep.
+    // A healthy read may take longer than that; only an actual failed read is a read timeout.
+    if (remaining <= interval) { await sleep(remaining); break; }
+    await sleep(interval);
   } while (true);
   throw Object.assign(new Error(`${reason}; last=${JSON.stringify(value)}`), { code: 'poll-timeout' });
 }
@@ -133,6 +141,7 @@ export async function waitForAcks(read, op, timeout, { gesture = false, tag = fa
     const pending = last.filter((r) => r.status === 'pending' && Number.isSafeInteger(r.seq) && r.seq > 0);
     // A missing input, failed browser read or rejected command is not evidence of a disabled acknowledgement.
     e.failure = { op, kind: pending.length && e.code === 'poll-timeout' ? 'ack-timeout' : 'missing-command', seqs: pending.map((r) => r.seq) };
+    if (e.failure.kind === 'ack-timeout') e.message = `${op}: ticket.done acknowledgement deadline expired; pending seq ${e.failure.seqs.join(', ')}`;
     throw e;
   }
   for (const r of rows) {

@@ -42,7 +42,7 @@ export async function runChecks(page, options, report, protectors, signal) {
   };
   await protector('protector at boot');
   await report.check(CHECKS.onboarding, async () => {
-    const rows = await d.command('setSpeed', () => page.locator('.onboard.show button').filter({ hasText: /^Play$/ }).click());
+    const rows = await d.onboardingPlay();
     assert(rows.some((r) => r.args[0] === 1 && r.args[1] === 'onboarding'), 'Onboarding Play lost its speed/source');
     await d.speed(0);
     return 'Onboarding Play sends setSpeed(1, onboarding) and acknowledges';
@@ -358,6 +358,7 @@ export async function runChecks(page, options, report, protectors, signal) {
       return { id: t.id, incident: t.inc };
     }), (t) => t.id === 'dispatch' && t.incident === fixture.incident, options.ackTimeout, 'Choose station did not activate DispatchTool for the banner incident');
     const b = fixture.station;
+    report.details.dispatchReady = await d.waitForDispatch(fixture.incident, b.id);
     const rows = await d.command('dispatch', () => d.strokeActive([b.x, b.z]), { tag: true });
     assert(rows[0].args[0] === fixture.incident, 'DispatchTool sent to the wrong incident');
     assert(rows[0].result.sent > 0 && Number.isFinite(rows[0].result.etaMin), 'dispatch ack did not send a unit on a route');
