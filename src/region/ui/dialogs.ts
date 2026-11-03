@@ -9,7 +9,8 @@ import { drawRegionMap } from '../mapPreview';
 import { randomRegionName } from '../names';
 import { Modal, segmented, slider, toggle, confirmDialog, toast } from './modal';
 import { button, formatMoney, formatPop, h, icon, timeAgo } from './dom';
-import { deleteRegion, downloadBlob, exportRegion, importRegion, listRegions, safeFileName, type RecoveryMarker } from '../../save';
+import { importRegion, listRegions, type RecoveryMarker } from '../../save';
+import { deleteStorageRegion, exportStorageRegion } from '../../ui/StorageDialog';
 import { EMBLEM_SVG } from './emblem';
 
 // ------------------------------------------------------------------ settings
@@ -65,7 +66,7 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
     h(
       'div',
       { class: 'field' },
-      h('label', {}, 'Autosave · game time'),
+      h('label', {}, 'Every N game months, at most once a minute'),
       segmented({
         chips: true,
         items: [
@@ -387,7 +388,7 @@ export function openLoadRegion(onOpen: (r: RegionData) => void): Modal {
               title: 'Export .metropolis file',
               onClick: async () => {
                 try {
-                  downloadBlob(await exportRegion(r.id), safeFileName(r.name));
+                  await exportStorageRegion(r);
                   toast('Region exported', 'good');
                 } catch (e) {
                   toast(`Export failed: ${(e as Error).message}`, 'bad');
@@ -400,7 +401,7 @@ export function openLoadRegion(onOpen: (r: RegionData) => void): Modal {
               title: 'Delete region',
               onClick: async () => {
                 if (await confirmDialog({ title: 'Delete region?', message: `“${r.name}” and all of its cities will be permanently deleted.`, confirm: 'Delete', danger: true })) {
-                  await deleteRegion(r.id);
+                  if (!(await deleteStorageRegion(r.id))) { toast('This region is open in another tab. Close it there before deleting it.', 'bad'); return; }
                   audio.play('bulldoze');
                   render();
                 }

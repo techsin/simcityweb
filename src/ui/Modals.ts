@@ -4,6 +4,7 @@ import { Panel } from './Panel';
 import { escapeHtml, h } from './dom';
 import { icon } from './icons';
 import { dayLabel, num } from './format';
+import { regionSaveAccess, watchRegionSaveAccess } from '../save/db';
 
 export class PauseMenu {
   private back: HTMLDivElement | null = null;
@@ -23,19 +24,28 @@ export class PauseMenu {
       b.addEventListener('click', fn, { signal: ctx.signal });
       return b;
     };
+    const save = item('save', 'Save city', async () => {
+      await ctx.save();
+    }, 'Ctrl S');
+    const exit = item('region', 'Save & exit to region', async () => {
+      this.close(false);
+      await ctx.exitToRegion();
+    });
+    const syncSave = () => {
+      const writable = regionSaveAccess();
+      save.disabled = !writable;
+      exit.innerHTML = icon('region', 17) + `<span>${writable ? 'Save & exit to region' : 'Exit to region'}</span>`;
+    };
+    syncSave();
+    const unwatch = watchRegionSaveAccess(undefined, syncSave, ctx.signal);
     const menu = h('div', { class: 'modal mp-glass pause-menu' },
       h('div', { class: 'pm-head' },
         h('div', { class: 'city-badge', html: icon('resHigh', 24) }),
         h('h2', null, st.config.name),
         h('div', { class: 'dim' }, `${dayLabel(st.day, st.config.startYear)} · Population ${num(st.stats.population)}`)),
       item('play', 'Resume', () => this.close(), 'Esc', 'primary'),
-      item('save', 'Save city', async () => {
-        await ctx.save();
-      }, 'Ctrl S'),
-      item('region', 'Save & exit to region', async () => {
-        this.close(false);
-        await ctx.exitToRegion();
-      }),
+      save,
+      exit,
       h('div', { class: 'pm-sep' }),
       // (silent close: the panel that replaces the menu plays its own open sound)
       item('settings', 'Settings', () => {
@@ -48,6 +58,8 @@ export class PauseMenu {
       }, 'F1'),
     );
     this.back = h('div', { class: 'modal-back' }, menu);
+    this.offSaveAccess?.();
+    this.offSaveAccess = unwatch;
     this.back.addEventListener('pointerdown', (e) => {
       if (e.target === this.back) this.close();
     }, { signal: ctx.signal });
@@ -60,11 +72,14 @@ export class PauseMenu {
     const b = this.back;
     if (!b) return;
     this.back = null;
+    this.offSaveAccess?.();
+    this.offSaveAccess = null;
     b.classList.add('closing');
     setTimeout(() => b.remove(), 150);
     if (resume) this.ctx.host.resume('pause');
     if (!silent) this.ctx.sound('dialogClose');
   }
+  private offSaveAccess: (() => void) | null = null;
 }
 
 export interface ConfirmOptions {
@@ -288,17 +303,21 @@ export class SavePill {
   readonly el: HTMLDivElement;
   private label: HTMLSpanElement;
   private t = 0;
+  private auto = false;
   constructor(parent: HTMLElement) {
     this.label = h('span', null, 'Saving…');
     this.el = h('div', { class: 'save-pill mp-glass' }, h('span', { class: 'spin' }), h('span', { class: 'ok ico-wrap', html: icon('check', 14) }), this.label);
     parent.appendChild(this.el);
   }
   saving(auto: boolean): void {
+    this.auto = auto;
+    if (auto) return;
     clearTimeout(this.t);
-    this.label.textContent = auto ? 'Autosaving…' : 'Saving…';
+    this.label.textContent = 'Saving…';
     this.el.className = 'save-pill mp-glass show';
   }
   done(ok: boolean, msg?: string): void {
+    if (this.auto) return;
     this.label.textContent = ok ? msg ?? 'City saved' : msg ?? 'Save failed';
     this.el.className = 'save-pill mp-glass show done';
     if (!ok) (this.el.querySelector('.ok') as HTMLElement).innerHTML = icon('alert', 14);

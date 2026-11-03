@@ -81,7 +81,7 @@ export class SettingsPanel extends Panel {
       this.row('Day / night cycle', 'Time of day follows the calendar', this.autoSw),
       this.hourRow,
       sec('gameplay', 'Gameplay'),
-      this.row('Autosave', 'Saves every N game months', autosave),
+      this.row('Autosave', 'Every N game months, at most once a minute', autosave),
       this.row('New Year celebration', 'Fireworks every January 1st — Cinematic switches to night first', newYear),
       this.row('New Year show camera', 'Cinematic: frame the show from the skyline, then return (any camera move takes over)', this.sw('newYearCamera')),
       this.row('Pause when hidden', 'Pause the simulation when the tab is in the background', this.sw('pauseWhenHidden')),
