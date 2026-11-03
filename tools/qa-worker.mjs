@@ -175,6 +175,8 @@ async function main() {
     } catch { /* no longtask timing */ }
   });
   const page = await ctx.newPage();
+  // a navigation away from a city waits for the frame in progress (seconds on SwiftShader) and the unload handlers
+  page.setDefaultNavigationTimeout(READY_MS);
   let expectErrors = false;
   const errors = [], workers = [];
   page.on('console', (m) => {
@@ -405,6 +407,7 @@ async function main() {
     });
   });
   const fpage = await fctx.newPage();
+  fpage.setDefaultNavigationTimeout(READY_MS);
   await enterCity(fpage, `${base}/?quickstart=1&size=${SIZE}&seed=7&simworker=1`, 'fallback');
   const finfo = await hostInfo(fpage);
   const toasts = await fpage.evaluate(() => window.__qaToasts);
