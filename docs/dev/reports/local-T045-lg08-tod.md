@@ -1,14 +1,85 @@
 # T045 — LG-08 transit-oriented development
 
 Branch `local/T045-lg08-tod`; current merged base is `683d02b` via merge `b5577e5`. The user committed the original
-implementation as WIP `731fffa` and the recovery as `6e62a61`. Current round-2 changes remain uncommitted; no
-`.done` file is written. Historical evidence against `fb1531f` is retained below and is not the fresh gate matrix.
+implementation as WIP `731fffa`, the recovery as `6e62a61`, and round 3 as `ed20c0a`; `7fbb0f4` isolates the backlog
+line. Round-4 test/report changes remain uncommitted; no `.done` file is written. Historical evidence against
+`fb1531f` is retained below and is not the fresh gate matrix.
 
 **The implementation fails NOTE-048's annual base-population rule on all three rows.** All nine fresh bot cases
 are complete. Peak annual population drift is **+1.34464%** on 128×15 s7, **+1.92675%** on 256×60 s7 and
 **−12.29426%** on 256×60 s11; the shared A/A envelopes are zero. The amended transit-loss, station tower-share
 and commute-activation gates pass, as does the same-strategy year-60 subway floor. Approval of start 8/−0.25 did
 not waive the annual rule. The approved constants remain fixed; no compensating growth or weaker cost is added.
+
+## Round 4: old-save difficulty regression
+
+**Old saves adopt LG-08's current commute rule when the simulation initializes.** There is no new load-only grace
+or grandfathered threshold. The existing resident-population grace still applies to commute on every difficulty;
+Easy's crime and emergency fades remain separate difficulty rules. The base-row/fork-noise question stays with
+the lead under NOTE-052; this round changes no production code or balance.
+
+The failing fixture has one occupied R$$ home with **5,000 residents** and explicitly disables the traffic layer.
+Its survey therefore uses **`COMMUTE_FALLBACK = 25` minutes**, rather than a measured commute cell:
+
+```text
+resident-weighted commute = 25 × 5000 / 5000 = 25 minutes
+population grace = smoothstep(2000, 8000, 5000) = 0.5
+commute term = −0.25 × max(0, 25 − 8) × 0.5 = −4.25 × 0.5 = −2.125
+```
+
+`deserializeCity` alone preserves the historical saved `commute: 0`. Constructing `Simulation` calls
+`approvalSystem.init`, which surveys the loaded home and recomputes raw terms immediately using the current
+constants. The fixture is a resumed city (day 45 with saved terms), so initialization keeps its saved approval
+EMA **42.25**. At day 60, after the first 15 simulated days, and each following month, approval moves toward the
+new raw total by `approval += (raw − approval) × APPROVAL.ema`, currently **0.3**. Immediate raw-term adoption does
+not mean an immediate jump in the displayed approval. No save migration, new setting or additional grace is added.
+
+`tests/sim/difficultyRules.test.ts` retains the historical fixture and derives only the expected commute term
+from `APPROVAL`, `COMMUTE_FALLBACK`, the fixture's resident count and the existing grace constants. It does not
+hard-code −2.125. New assertions pin the saved zero term, fallback survey and negative term after initialization.
+The full term-object equality, exact raw sum, saved EMA, three monthly EMA updates, income, saved configuration /
+disasters and untouched serialized payload checks remain. Both hunks stay entirely inside the old-save test
+block; local dynamic imports avoid a separate import hunk, leaving T042's lines 62–80 untouched.
+
+Round-4 checks ran one process at a time; every test and bot command passed through the quiet gate:
+
+| Test file | Passed | Existing skipped |
+|---|---:|---:|
+| `tests/sim/difficultyRules.test.ts` | 32, including all eight old-save cases | 0 |
+| `tests/sim/transitDevelopment.test.ts` | 19 | 0 |
+| `tests/game/transitInspector.test.ts` | 2 | 0 |
+| `tests/game/inspectorModel.test.ts` | 11 | 0 |
+| `tests/game/inspectorNotes.test.ts` | 10 | 0 |
+| `tests/worker/hygiene.test.ts` | 17 | 1 |
+
+**91 passed, one existing W1.2 skip, zero failures.** `npx tsc --noEmit` passes. The fresh 128×15 s7 bot remains
+**193,844**, residents **[66507, 90953, 36384]**. Its final normalized state hash is unchanged from round 3:
+`dc0ca8e04309ea12a4d4c26f09a549dd14d5c467a39411e347a604e5510e92ba`.
+The fresh capture contains the same 84 production modules, aggregate SHA256
+`5e8c06796d9c95ae27133c60e44354cd11fd026fd0bd561fb0ee6549031aa884`, as the previous measured capture.
+The 256×60 rows below were not rerun for this test-only correction and remain the prior evidence.
+
+Actual commands, using the absolute `$taskRoot`, `$taskScratch` and `$taskQuiet` values defined below:
+
+```powershell
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/sim/difficultyRules.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/round4-difficulty-rules-vitest.json"
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/sim/transitDevelopment.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/round4-transit-development-vitest.json"
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/game/transitInspector.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/round4-transit-inspector-vitest.json"
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/game/inspectorModel.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/round4-inspector-model-vitest.json"
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/game/inspectorNotes.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/round4-inspector-notes-vitest.json"
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/worker/hygiene.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/round4-worker-hygiene-vitest.json"
+npx tsc --noEmit
+node "$taskScratch/round2-launch.mjs" --capture --name production --revision round4-oldsave --source-commit 7fbb0f437560f1cc6644aa422ad9ac07cd1c2ebc --expect-commute-start 8
+node $taskQuiet node "$taskScratch/round2-launch.mjs" --name production --revision round4-oldsave --size 128 --years 15 --seed 7 --out "$taskScratch/round2/round4-oldsave/production/s7-128-base.json"
+```
+
+The last command's ordinary CLI equivalent is
+`node $taskQuiet npx tsx "$taskRoot/tools/simbot.ts" --size 128 --years 15 --seed 7`.
+As before, tsx is unavailable here; the actual launcher uses the unchanged SimBot entry points with local
+Rolldown. No infra or Worker hunk, cloud-held file change or new owner request is needed for round 4. Full Vitest
+and browser checks remain with the lead. In the browser, verify that loading an old city shows current raw
+commute pressure with the existing population grace, preserves the saved approval initially, and moves the EMA
+on the following month ticks. Earlier owner requests and the broader browser checklist remain below.
 
 ## Round 2: approved criteria and fresh evidence
 

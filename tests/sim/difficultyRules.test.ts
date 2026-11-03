@@ -225,11 +225,17 @@ function oldSave(difficulty: Difficulty, disasters: boolean) {
 
 describe('old difficulty saves load and continue', () => {
   for (const difficulty of difficulties) {
-    it.each([false, true])(`${difficulty}: saved disasters=%s survives loading and three month ticks`, (disasters) => {
+    it.each([false, true])(`${difficulty}: saved disasters=%s survives loading and three month ticks`, async (disasters) => {
+      const { APPROVAL, APPROVAL_TERMS, COMMUTE_FALLBACK } = await import('../../src/sim/economy/tuning');
+      const { smoothstep } = await import('../../src/core/rng');
       const saved = oldSave(difficulty, disasters);
       const st = deserializeCity(saved);
       const originalTerms = { ...econData(st).approvalTerms };
       const expectedTerms = { ...originalTerms };
+      // LG-08 applies on resume too: this traffic-free fixture surveys the fallback, with the existing population grace.
+      const residents = [...st.buildings.values()].reduce((sum, b) => sum + b.pop, 0);
+      expectedTerms.commute = APPROVAL.commute * Math.max(0, COMMUTE_FALLBACK - APPROVAL.commuteStart)
+        * smoothstep(APPROVAL_TERMS.needsPop0, APPROVAL_TERMS.needsPop1, residents);
       if (difficulty === 'easy') {
         expectedTerms.crime = -7.5;
         expectedTerms.emergencies = -(0.5 * (1.2 * 2 + 0.4 + 0.3 * 3) + 0.1 * 5 + 0.5 * (100 / 39 + 1.5));
@@ -238,7 +244,10 @@ describe('old difficulty saves load and continue', () => {
       const initialFunds = st.funds;
       const sim = start(st);
       expect(st.config).toEqual(saved.config);
-      expect(st.stats.approval).toBe(42.25); // loading keeps the saved EMA even though Easy's raw terms change at once
+      expect(originalTerms.commute).toBe(0);
+      expect(econData(st).resCommute).toBe(COMMUTE_FALLBACK);
+      expect(econData(st).approvalTerms.commute).toBeLessThan(originalTerms.commute);
+      expect(st.stats.approval).toBe(42.25); // loading keeps the saved EMA while current raw terms apply at once
       expect(econData(st).approvalTerms).toEqual(expectedTerms);
       expect(econData(st).approvalRaw).toBe(raw);
       expect(approvalBreakdown(st).find((t) => t.id === 'crime')?.detail).toEqual(difficulty === 'easy' ? 'new-town grace' : CRIME_DETAIL);
