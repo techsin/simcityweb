@@ -203,6 +203,36 @@ the lane's scratch dir, `t033work/mutate.py`, `muts1.log`):
 | Full vitest, `SIM_FIXTURES` set (the grown-fixture cases run) | **203 files passed, 1 skipped; 2,038 tests passed, 4 skipped**; 427 s |
 | The bot, 128x15 seed 7, lane vs a clean export of dev `923428d` | **identical** apart from the ms/day timing line: `residents [ 59288, 95301, 41512 ]`, 196k residents in 2015, every year row equal |
 | New tests fail with their fix reverted | 13 of 13 reverts fail (list above) |
+| Browser, `?simworker=loopback` (Playwright Chromium on SwiftShader, own vite on :5533) | **journal-only and snapshot-plus-journal recovery both pass**; details below |
+
+### Browser check (not a task gate; the lane's real-page proof of the wiring)
+
+Scenario `/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t033work/harness/recovery2.mjs` (runner `run.mjs`), log `/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t033work/browser2.log`. A quickstart city (small, seed 7)
+in loopback mode; edits go through `host.act`, as the tools post them. The tab is closed for real
+(`page.close({ runBeforeUnload: true })`, so the app's visibilitychange, beforeunload and pagehide handlers run) with
+the host's asynchronous `snapshot` held, since an async write started during unload dies (and in the worker cannot run
+at all); only the unload handlers' synchronous writes can land. The app's 30 s periodic snapshot is held off by
+stamping its `lastSnap` before each set of edits (SwiftShader's slow city load otherwise used up the window).
+
+1. **Journal only: PASS.** Tax R1 9 to 13, fire funding 100 to 130, a 6x4 residential zone (24 cells); close. The title
+   shows no recovery dialog; IndexedDB holds the journal bound to the save, ops `[4 setTax, 5 zone, 6 setFunding]`
+   (localStorage held the same). Continue: the loopback boot replays it; the city has tax 13, fire 130, 24 zoned
+   cells, and reads as unsaved (`changes` 1). Screenshots: `/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t033work/shots2/11-journal-edited.png` (before),
+   `12-journal-title.png` (title, no offer), `13-journal-replayed.png` (the zone back, §99,880, "Unsaved changes").
+2. **Snapshot plus later edits: PASS.** A hidden-tab snapshot is taken; then tax 15 and a second zone; close. The title
+   offers the snapshot (`22-snapshot-offered.png`); IndexedDB has the snapshot (cut at cmd 3) and the journal bound
+   to it with ops `[4 setTax, 5 zone]`. Recover: the record is replaced, the journal is re-bound to it, and the next
+   boot replays it: tax 15, both zones (`21-snapshot-then-edited.png` before, `23-snapshot-recovered-journal-replayed.png`
+   after; the second zone is not in the snapshot, so it came from the journal).
+3. **The first save: PASS on its data** (IndexedDB journal gone, the localStorage slot empty, the saved record has tax
+   15); its last screenshot timed out under SwiftShader, so the run ends "failed" on that screenshot only.
+
+Earlier runs, kept as evidence of the app's own behaviour: closing the tab without holding the snapshot lets the
+loopback's same-thread hidden-tab snapshot finish, and the title then offers it (`/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t033work/shots/02-title-after-close.png`;
+the journal was adopted bound to that snapshot, with no ops left); a run where the periodic snapshot fired after the
+edits shows the same (`/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t033work/shots2-run1-periodic-snapshot/12-journal-title.png`). CDP `Page.crash` did not crash the
+headless shell's page (`/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t033work/browser2-run2.log`), hence the held snapshot instead. The scenario prints its collected page
+errors only at its end, which the screenshot timeout skipped, so this run says nothing about console errors.
 
 ### Decisions (conservative readings, for the lead)
 
