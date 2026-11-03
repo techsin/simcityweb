@@ -66,7 +66,7 @@ function simChain(value: unknown): boolean {
   return n.type === 'CallExpression' && simChain(n.callee);
 }
 
-export type ScanRule = 'isolate' | 'speed' | 'liveSlowdown' | 'systems' | 'replica';
+export type ScanRule = 'isolate' | 'speed' | 'liveSlowdown' | 'maxDaysPerFrame' | 'systems' | 'replica';
 
 export function scan(file: string, source: string, rule: ScanRule = 'isolate'): Violation[] {
   const parsed = parseSync(file, source, { sourceType: 'module' });
@@ -109,7 +109,7 @@ export function scan(file: string, source: string, rule: ScanRule = 'isolate'): 
     }
 
     const target = n.type === 'AssignmentExpression' ? n.left : n.type === 'UpdateExpression' ? n.argument : undefined;
-    if ((rule === 'speed' || rule === 'liveSlowdown') && member(target) && name(target) === rule) report(n, `${rule} writer`);
+    if ((rule === 'speed' || rule === 'liveSlowdown' || rule === 'maxDaysPerFrame') && member(target) && name(target) === rule) report(n, `${rule} writer`);
   });
   return out;
 }
@@ -253,19 +253,32 @@ export function staticImportGraph(entry: string): string[] {
     found.add(file);
     const parsed = parseSync(file, readFileSync(join(ROOT, file), 'utf8'), { sourceType: 'module' });
     if (parsed.errors.length) throw new Error(`${file}: ${JSON.stringify(parsed.errors)}`);
-    for (const n of (parsed.program as unknown as Node).body as Node[]) {
-      if (!['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'].includes(n.type)) continue;
-      if (n.importKind === 'type' || n.exportKind === 'type') continue;
-      const specs = n.specifiers as Node[] | undefined;
-      if (specs?.length && specs.every((s) => s.importKind === 'type' || s.exportKind === 'type')) continue;
-      const spec = name(n.source);
-      if (!spec?.startsWith('.')) continue;
+    const follow = (spec: string | undefined) => {
+      if (!spec?.startsWith('.')) return;
       const base = resolve(ROOT, dirname(file), spec);
       const target = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, join(base, 'index.ts')]
         .find((p) => /\.[cm]?[jt]sx?$/.test(p) && existsSync(p));
       if (target) pending.push(local(target));
       else if (!/\.[^/]+$/.test(spec)) throw new Error(`Unresolved import: ${file} → ${spec}`);
+    };
+    const program = parsed.program as unknown as Node;
+    for (const n of program.body as Node[]) {
+      if (!['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'].includes(n.type)) continue;
+      if (n.importKind === 'type' || n.exportKind === 'type') continue;
+      const specs = n.specifiers as Node[] | undefined;
+      if (specs?.length && specs.every((s) => s.importKind === 'type' || s.exportKind === 'type')) continue;
+      follow(name(n.source));
     }
+    // Vite bundles an eager import.meta.glob as static imports: follow its literal, wildcard-free paths
+    walk(program, (n) => {
+      const callee = member(n.callee);
+      if (n.type !== 'CallExpression' || !callee || name(callee) !== 'glob' || node(callee.object)?.type !== 'MetaProperty') return;
+      const [patterns, options] = n.arguments as Node[];
+      const eager = (node(options)?.properties as Node[] | undefined)?.some((p) => name(p.key) === 'eager' && node(p.value)?.value === true);
+      if (!eager) return;
+      const list = node(patterns)?.type === 'ArrayExpression' ? (node(patterns)!.elements as Node[]) : [patterns];
+      for (const p of list) { const spec = name(p); if (spec && !spec.includes('*')) follow(spec); }
+    });
   }
   return [...found].sort();
 }

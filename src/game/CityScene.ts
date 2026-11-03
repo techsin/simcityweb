@@ -288,6 +288,8 @@ export class CityScene {
       audio: () => this.mods.audio,
       overlayRoot: this.uiRoot,
       signal: this.abort.signal,
+      // NOTE-041: a command, so a worker's clock holds too (the host is already gone when the scene disposes)
+      holdCalendar: (on) => { if (!this.disposed) this.host.act('holdCalendar', [on], { tag: this.newYear }); },
     });
     // event-driven sounds (news, disasters, rewards, budget ticks, construction) + generic control feedback
     this.gameSounds = new GameSounds({ sim: this.sim, sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox() });

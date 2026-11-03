@@ -15,7 +15,7 @@ import type { SampleRoute } from '../sim/infra/traffic';
 export const PROTOCOL_VERSION = 1;
 export type CommandOp = 'zone' | 'dezone' | 'bulldoze' | 'buildNetwork' | 'buildPowerLine' | 'buildSubway' | 'plop'
   | 'terraform' | 'plantTrees' | 'setTax' | 'setFunding' | 'setHistoric' | 'setOrdinance' | 'takeLoan' | 'repayLoan'
-  | 'setSpeed' | 'resume' | 'dispatch' | 'dispatchBest' | 'dismissAlert' | 'triggerDisaster' | 'setCamera' | 'setSettings'
+  | 'setSpeed' | 'resume' | 'dispatch' | 'dispatchBest' | 'dismissAlert' | 'triggerDisaster' | 'setCamera' | 'setSettings' | 'holdCalendar'
   | 'debug.runDays' | 'debug.verify' | 'debug.setStepBudget' | 'debug.setTrafficMinCycle';
 export type QueryName = 'inspectBuilding' | 'inspectCell' | 'dispatchOptions' | 'routePreview' | 'emergencyReport'
   | 'demolishRisks' | 'sideDemolishRisks' | 'stopsNear' | 'ferryPartnersFor' | 'openAdvice' | 'advisorIssues'

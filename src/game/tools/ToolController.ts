@@ -43,6 +43,8 @@ export class ToolController {
       t.addEventListener(k, f as EventListener, { signal: this.ctx.signal });
       this.offs.push(() => t.removeEventListener(k, f as EventListener));
     };
+    const pending = this.ctx.host.pending;
+    if (pending) this.offs.push(pending.subscribe(() => this.refresh(), this.ctx.signal));
     on(canvas, 'pointerdown', (e) => {
       if (e.button === 2 || e.button === 1) {
         if (e.button === 2 && this.cancelDrag()) this.ctx.sound('cancel');
