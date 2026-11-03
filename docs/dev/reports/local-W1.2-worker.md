@@ -27,6 +27,59 @@ T033 report's T034 hand-off (its decision 2); this report; the diff against dev.
 | G14 | The report says exactly what changed in `scheduler.ts`, for B2 (NOTE-044) | **Partial**: prose only. |
 
 
+### What the carry-over did
+
+Commits on `cloud/t034`: `26d2a57` (dev merged in), `4860e35` (the App wiring, the crash dialog, the R14 test,
+`tools/qa-worker.mjs`), `1aa1c49` (crash ordering, qa on low quality), `77db22e` (the watchdog and main-thread stalls),
+`6b9dbfb` (the crash indicator, qa's recover path), and the report commits.
+
+| Gap | Change |
+|---|---|
+| G1 | `PacketSimHost.reply` keeps T034's `protected settle(reply, wait)` seam with T033's journal calls inside it, and `wait` is now `Settle \| undefined` (T033: a reply updates recovery state whether or not a caller waits). `WorkerSimHost` stores a worker save or snapshot even with no waiter, and passes `journal: false` (also dropped from its options type): W1.2 has no journal (R14), the worker replays none at boot, and the journal's unload write would replace the snapshot that `SnapshotMirror` keeps. T039 (W1.3) brings the journal to the worker. |
+| G2, G3, G7 | `src/main.ts`: behind `?simworker=1`, `playCity` boots `loadWorkerSimHost` on the stored record (read, not deserialized) and `startNewCity` boots it on the record it just saved (then drops main's recovery base, O6); `enterCity` takes the booted host and builds the CityScene from it (its `state` is the replica). `CityScene` takes `host?: WorkerSimHost`: the worker boots paused, and the scene applies its own initial-speed rule to it as a `setSpeed(…, 'initial')` command (a new city stays paused, a saved one runs). The scene's `ErrorOverlay` becomes the booted host's error sink (`ErrorSink` in main.ts: the console until the scene exists). `WorkerSimHost.start()` returns its `ready`. |
+| G4 | The region screen pre-spawns the next city's worker (`browserSimWorker()`, loaded with the WorkerSimHost chunk) once it is shown; the city takes it, and the title screen terminates an unused one. Quickstart and Continue from the title spawn at entry. |
+| G5 | The loading screen shows the worker's boot phases. Any boot failure (a script error, messageerror, a version mismatch, a fatal message, 20 s without progress) falls back to the main thread with one toast ("The simulation worker could not start: the city runs on the main thread."); a missing record keeps the local path's own message. |
+| G6 | A crash during play (`onCrash(…, false)`) opens `openSimCrashDialog` (src/region/ui/dialogs.ts, not closable): **Restart from autosave** (a new worker on the save), **Recover unsaved progress** (only when a snapshot exists: `restoreRecoverySnapshot`, then a new worker), **Continue on the main thread** (the local host on the save, for the rest of the visit). The host writes its recovery first, now with `why: 'crash'`. A crash that comes while the city is still being entered waits for `enterCity` to finish; the App skips its save and snapshot paths for a crashed city. |
+| G8, G9 | `tools/qa-worker.mjs` (§5.4): production build plus `vite preview` (or `--dev`), one Chromium on SwiftShader, quality low; boot, tools, play, latency, verify, save, hidden-tab save, reload and Continue, freeze, crash and restart, recover, watchdog and main thread, fallback, console. Runs below. |
+| G11 | All re-run (below). |
+| G14 | Below, "scheduler.ts for B2". |
+
+**A bug the browser found** (`77db22e`): the first real worker city took the crash path while the worker was alive.
+SwiftShader's main thread runs long tasks (10.8 s and 21.8 s, logged by qa-worker's long-task observer: blocking GPU
+readbacks while the scene starts). Such a task holds back the worker's queued packets as well as the page's 250 ms
+poll, and the poll that ran first after it counted the whole stall as worker silence ("The simulation worker stopped
+responding", `qa-dev1`). R11 counts visible, unfrozen time; a page that is not running is not evidence against the
+worker. `WorkerLiveness.poll` now gives no verdict on the poll after a gap of more than `STALL_MS` (1 s, four poll
+intervals): the packets queued behind the stall are read first, and a silent worker is caught at the next poll on
+time. The watchdog test gained both cases and fails without the change.
+
+**New and changed tests** (each fails with its fix reverted, checked here):
+- hosts.test, `with localStorage, the unload write keeps the worker's last snapshot and no journal; a crash writes it
+  as such`: fails with `journal: false` removed (the slot becomes T033's journal-only marker) and with `'exit'`
+  instead of `'crash'`.
+- workerTransport.test, `counts visible, unfrozen time only (the watchdog)`: the stall cases (no verdict on the poll
+  after a 30 s stall; the next poll on time is one); fails without the change ("the poll right after a 30 s stall:
+  expected true to be false").
+
+### scheduler.ts for B2 (NOTE-044: T034 makes `run()` a generator)
+
+Exactly what `src/sim/infra/scheduler.ts` gains against dev, and nothing else changes:
+1. O7: a public field `live: boolean | undefined`; `framesActive` is `this.live ?? nowMs() - this.lastFrameMs < 750`.
+2. A public field `hostDriven = false`. `tickFrame` still stamps `lastFrameMs`, then returns without running steps when
+   `hostDriven` is set (the worker sets it).
+3. `beginFrame(sim)` (ends any frame in progress, then opens `steps(sim, INFRA_FRAME_BUDGET_MS, true, true)`),
+   `stepOnce()` (one step; false once the frame's selection is done) and `endFrame()` (`return()`s the open
+   generator), over a private `frameSteps: Generator<void, number> | null`.
+4. `run(sim, budget, realTime)`'s body moved unchanged into a private generator `*steps(sim, budget, realTime,
+   yielding = false)`; `run` drains it in a loop and returns its value, so local and headless runs do exactly what
+   they did. Inside `steps`, `const t0` became `let t0`, and both selection loops (urgent-first, then least-served)
+   `yield` after each step they run; with `yielding`, the time between the yield and the resume (the worker's
+   commands and other units) is added to `t0`, so it is not charged to the frame budget. The renormalisation after
+   the loops is unchanged.
+For B2's rebase: keep B2's piece budgets and resumable steps, put the same `yield` (with the `t0` adjustment) after
+every step B2's loops run, and keep `run()` a full drain. `Simulation.ts` gains `frameHooks`, `accumulate`, `stepDay`
+and `capFrame` (`update()` calls the first two); `disasters.ts` gains the same `live` field in `daily()`.
+
 ## The rebuild on T032's code (the local worker)
 
 Branch `local/W1.2-worker`, committed locally, no `.done`. I pushed nothing; a usage-limit snapshot (`bddba48`, not
