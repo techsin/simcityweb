@@ -30,10 +30,9 @@ export class NewsTicker {
   private view: HTMLDivElement;
   private x = 0;
   private hover = false;
-  /** the news log the track shows: newsMark and length of state.news at the last rebuild (final fixes N2: the log is
-   *  capped at 200 items, so its length alone stops changing) */
+  /** the news sequence at the last rebuild; newsMark also detects a cleared / replaced log */
   private shownMark = -1;
-  private shownLen = -1;
+  private shownNews = -1;
   private width = 0;
   /** the view's width, measured on rebuilds and resizes only (A1: frame() read clientWidth every frame) */
   private viewW = 0;
@@ -75,13 +74,13 @@ export class NewsTicker {
   /** the track must be rebuilt: a news item was added (also to a full log), or the log was cleared / replaced */
   private stale(): boolean {
     const news = this.ctx.state.news;
-    return news.length !== this.shownLen || newsMark(news) !== this.shownMark;
+    return this.ctx.host.newsSeq !== this.shownNews || newsMark(news) !== this.shownMark;
   }
 
   private rebuild(): void {
     const st = this.ctx.state;
     const items = tickerItems(st.news);
-    this.shownLen = st.news.length;
+    this.shownNews = this.ctx.host.newsSeq;
     this.shownMark = newsMark(st.news);
     this.track.innerHTML = '';
     if (!items.length) {

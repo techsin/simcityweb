@@ -3,7 +3,7 @@
  * Units: money $, time in days unless noted, population in residents, jobs in jobs.
  * Index order of per-DevType arrays: [R$, R$$, R$$$, CS$, CS$$, CS$$$, CO$$, CO$$$, I-Ag, I-D, I-M, I-HT].
  */
-import { Network, Zone } from '../../core/types';
+import { Network, Zone, type Difficulty } from '../../core/types';
 
 // ============================================================================ calendar / slicing
 /** land value: full-map refresh period (days); rows are processed in bands */
@@ -568,13 +568,37 @@ export const HQ_BASE = 25;
 export const HQ_SPAN = 115;
 export const HQ_RATE = 0.08;
 
+// ============================================================================ DIFFICULTY
+export interface DifficultyRules {
+  /** multiplier on tax income */
+  income: number;
+  /** approval fades over APPROVAL_TERMS.needsPop0..needsPop1 residents */
+  fadeCrime: boolean;
+  fadeMonthlyEmergencies: boolean;
+  defaultDisasters: boolean;
+  /** the New City dialog's one-line description, shown after the difficulty's name (FH-11) */
+  blurb: string;
+}
+/** FH-04: only Easy adds new-town grace; the other modes keep their original approval formulas. */
+export const DIFFICULTY_RULES: Readonly<Record<Difficulty, DifficultyRules>> = {
+  easy: {
+    income: 1.2, fadeCrime: true, fadeMonthlyEmergencies: true, defaultDisasters: false,
+    blurb: '§250k, +20% taxes, forgiving first years · Recommended for your first city',
+  },
+  medium: { income: 1.0, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true, blurb: '§100k, the intended balance' },
+  hard: { income: 0.85, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true, blurb: '§40k, −15% taxes, tight from day one' },
+  sandbox: { income: 1.0, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true, blurb: 'unlimited money, everything unlocked' },
+};
+/** a city's rules; an unknown difficulty gets Medium's, as the income multiplier always fell back to 1 */
+export function difficultyRules(difficulty: string): DifficultyRules {
+  return DIFFICULTY_RULES[difficulty as Difficulty] ?? DIFFICULTY_RULES.medium;
+}
+
 // ============================================================================ BUDGET
 /** monthly residential tax per resident per 1% rate */
 export const TAX_PER_RES: readonly [number, number, number] = [0.022, 0.04, 0.078];
 /** monthly tax per filled job per 1% rate (index = DevType; R entries unused) */
 export const TAX_PER_JOB: readonly number[] = [0, 0, 0, 0.025, 0.034, 0.048, 0.04, 0.058, 0.014, 0.025, 0.035, 0.058];
-/** difficulty multiplier on tax income */
-export const DIFFICULTY_INCOME: Record<string, number> = { easy: 1.2, medium: 1.0, hard: 0.85, sandbox: 1.0 };
 /** network maintenance $ per cell per month (× roads funding for road types, × transit funding for rail/subway) */
 export const NETWORK_UPKEEP: Record<number, number> = {
   [Network.Street]: 0.2,

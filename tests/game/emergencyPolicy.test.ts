@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { AlertQueue, FOLLOW_GRACE, FOLLOW_MAX_MIN, LIVE_IDLE, LIVE_PAUSE_SEC, emgTime, followingDispatch, lossText, speedPolicy, stateText, type LiveState } from '../../src/ui/EmergencyBanner';
+import { pendingCount, sendDays, unbanneredPrompt, urgentSeconds, type PolicyAlert } from '../../src/game/emergencyPolicy';
 import type { Incident } from '../../src/sim/infra/emergency';
 
 describe('speedPolicy', () => {
@@ -147,6 +148,7 @@ describe('incident state text', () => {
   it("a fresh incident waiting for the search budget reads 'Dispatch pending', not 'waiting for a unit'", () => {
     expect(stateText(inc({}), 0)).toBe('Dispatch pending');
     expect(stateText(inc({ reason: 'busy' }), 0)).toBe('Waiting for a unit to come back');
+    expect(stateText(inc({ state: 'uncovered', reason: 'busy', manualPossible: true }), 0)).toBe('Waiting for a unit');
     expect(stateText(inc({ state: 'uncovered', manualPossible: true }), 0)).toMatch(/dispatch a unit/);
     expect(stateText(inc({ state: 'uncovered', canSend: true }), 0)).toMatch(/too far to make it in time/);
     expect(stateText(inc({ state: 'uncovered' }), 0)).toBe('Nobody can reach it');
@@ -154,6 +156,14 @@ describe('incident state text', () => {
 });
 
 describe('AlertQueue', () => {
+  it.each(['major', 'all'] as const)('busy majors never take a banner slot or a per-kind cooldown in %s mode', (mode) => {
+    const q = new AlertQueue();
+    const busy = { id: 1, kind: 'medical' as const, major: true, manualPossible: true, reason: 'busy' as const };
+    expect(q.offer(busy, 10, 50000, mode)).toBe(false);
+    expect(q.shown).toEqual([]);
+    expect(q.offer({ ...busy, reason: 'outOfRange', manualPossible: false }, 10, 50000, mode)).toBe(true);
+  });
+
   it('at most 3 banners, major only by default, 15-day cooldown per kind (fires always alert)', () => {
     const q = new AlertQueue();
     const pop = 50000;
@@ -192,6 +202,31 @@ describe('AlertQueue', () => {
     // minor ones keep the old rules
     expect(q.offer({ id: 8, kind: 'medical', major: false, manualPossible: true }, 913, pop, 'major')).toBe(false);
     expect(q.shown).toEqual([1, 3, 4, 5, 7]);
+  });
+});
+
+describe('coverage-gap prompts', () => {
+  const inc = (reason: Incident['reason']): Incident => ({ id: 1, kind: 'fire', state: 'uncovered', major: true, reason, manualPossible: true, deadline: 4 }) as Incident;
+  const alerts = new Map<number, PolicyAlert>([[1, { id: 1, wasPossible: true }]]);
+  const dismissed = new Set<number>();
+  const send = () => 1;
+
+  it('a busy incident is dispatchable but never pending or urgent, even with an old alert', () => {
+    const busy = inc('busy');
+    expect(sendDays(busy, 0, () => [{ stationId: 1, name: 'Fire', responder: 'fire', free: 1, total: 1, etaDays: 1, etaMin: 1, inRange: false }])).toBe(1);
+    expect(unbanneredPrompt(busy, new Map(), dismissed, send)).toBe(false);
+    for (const shown of [new Map<number, PolicyAlert>(), alerts]) {
+      expect(pendingCount('live', shown, [busy], dismissed, 0, send)).toEqual({ count: 0, bad: false });
+      expect(pendingCount('pause', shown, [busy], dismissed, 0, () => NaN)).toEqual({ count: 0, bad: false });
+      expect(urgentSeconds(shown, [busy], dismissed, 0, 3, send)).toBe(Infinity);
+    }
+  });
+
+  it.each(['outOfRange', 'noStation'] as const)('%s keeps the pending and urgent policy when help can arrive', (reason) => {
+    const gap = inc(reason);
+    expect(unbanneredPrompt(gap, new Map(), dismissed, send)).toBe(true);
+    expect(pendingCount('live', alerts, [gap], dismissed, 0, send)).toEqual({ count: 1, bad: false });
+    expect(urgentSeconds(alerts, [gap], dismissed, 0, 3, send)).toBeLessThan(LIVE_PAUSE_SEC);
   });
 });
 

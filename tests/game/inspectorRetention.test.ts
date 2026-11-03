@@ -15,6 +15,7 @@ import { createSystems } from '../../src/sim/systems/index';
 import { listRewards } from '../../src/sim/economy/rewards';
 import { normalizeReward } from '../../src/game/modules';
 import type { GameContext } from '../../src/game/context';
+import { queryHost } from './queryHost';
 import { InfoPanel } from '../../src/ui/panels/InfoPanel';
 import { thumbs } from '../../src/ui/thumbs';
 import { newState, place, roadLine } from '../infra/cityGen';
@@ -54,6 +55,8 @@ function ctxOf(sim: Simulation): GameContext {
   return {
     get state() { return sim.state; },
     sim,
+    host: queryHost(sim),
+    signal: new AbortController().signal,
     mods: { listRewards: (s: CityState) => listRewards(s).map(normalizeReward) },
     actions: { bulldoze: () => ({ ok: true, cost: 0 }) },
     objects: { setSelected: () => undefined },

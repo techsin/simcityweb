@@ -493,6 +493,8 @@ export class TrafficSystem implements SimSystem {
   private stopBins: Int32Array<ArrayBuffer> = new Int32Array(0);
   private stopBinStart: Int32Array<ArrayBuffer> = new Int32Array(0);
   private stopBinFill: Int32Array<ArrayBuffer> = new Int32Array(0);
+  /** stop x / z, parallel to this.stops as of the last stop-bin build (prepTransit); only nearStops and the transfer
+   *  pass read them, and every cycle rebuilds the bins before either runs */
   private stX: Float64Array<ArrayBuffer> = new Float64Array(0);
   private stZ: Float64Array<ArrayBuffer> = new Float64Array(0);
   private binN = 0;
@@ -1511,18 +1513,23 @@ export class TrafficSystem implements SimSystem {
   ferryRidersAt(id: number): number {
     return this.ferryRidersBy.get(id) ?? 0;
   }
-  /** plop preview: partners a ferry terminal at (x, z, w, d, rot) would link to */
-  ferryPartnersFor(st: CityState, x: number, z: number, w: number, d: number, rot: number): FerryPartner[] {
-    this.refreshAttach(st);
+  /**
+   * plop preview: partners a ferry terminal at (x, z, w, d, rot) would link to. `refresh: false` (queries and previews)
+   * reads the last refresh's terminals: a read must not move when this system recomputes its attachments, or the
+   * simulation's own later passes would depend on when the player looked (W1.1b querySideEffects)
+   */
+  ferryPartnersFor(st: CityState, x: number, z: number, w: number, d: number, rot: number, refresh = true): FerryPartner[] {
+    if (refresh) this.refreshAttach(st);
     return ferryPartnersAt(st, this.ferryTerms, x, z, w, d, rot);
   }
   /**
    * attached stops within r cells (+ half the footprint) of a footprint (garage preview), nearest first; ride = a
    * transit path from the stop rides a vehicle in the last assignment (false: its riders walk to jobs beside it — a
-   * garage there is parking only, no park & ride; undefined: not assessed yet)
+   * garage there is parking only, no park & ride; undefined: not assessed yet). `refresh: false` (queries and previews):
+   * the attachments of the last refresh, as ferryPartnersFor
    */
-  stopsNear(st: CityState, x: number, z: number, w: number, d: number, r = PR_STOP_RADIUS): { id: number; mode: number; dist: number; ride?: boolean }[] {
-    this.refreshAttach(st);
+  stopsNear(st: CityState, x: number, z: number, w: number, d: number, r = PR_STOP_RADIUS, refresh = true): { id: number; mode: number; dist: number; ride?: boolean }[] {
+    if (refresh) this.refreshAttach(st);
     const cx = x + (w >> 1), cz = z + (d >> 1), R = r + (Math.max(w, d) >> 1);
     const out: { id: number; mode: number; dist: number; ride?: boolean }[] = [];
     // stops of the last assignment (a stop placed since shows after the next one; previews run on every mouse move)
@@ -2837,10 +2844,12 @@ export class TrafficSystem implements SimSystem {
     roadSearch(this.road, this.road.rev, this.nodeTime, this.SA, this.heap, seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME + 2 * MATCH_PRICE_MAX, this.rampT);
   }
 
-  /** Stable 11-bit LSD radix sort of the packed (cost, origin) keys; keep the native order outside safe integers. */
+  /** Stable 11-bit LSD radix sort of the packed (cost, origin) keys; keep the native order outside safe integers.
+   *  Below 1024 keys the native sort is faster: the radix path pays up to 5 × 2048 histogram clears and prefix sums
+   *  per call (measured crossover 700-1024 keys); both paths give the same bytes. */
   private sortCandidates(nc: number): Float64Array {
     const key = this.candKey, sorted = key.subarray(0, nc);
-    if (nc < 64) return sorted.sort();
+    if (nc < 1024) return sorted.sort();
     let max = 0;
     for (let k = 0; k < nc; k++) {
       const v = key[k];

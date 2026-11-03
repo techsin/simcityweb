@@ -1,5 +1,6 @@
 import type { Climate, Difficulty, TerrainPreset } from '../core/types';
 import { START_YEAR } from '../core/constants';
+import { difficultyRules } from './economy/tuning';
 
 /** Everything chosen in the "new city" dialog. Serializable. */
 export interface CityConfigData {
@@ -49,7 +50,7 @@ export function defaultCityConfig(partial: Partial<CityConfigData> = {}): CityCo
     waterAmount: 0.3,
     hilliness: 0.4,
     treeDensity: 0.45,
-    disasters: true,
+    disasters: difficultyRules(difficulty).defaultDisasters,
     startFunds: DIFFICULTY_FUNDS[difficulty],
     startYear: START_YEAR,
     sandbox: difficulty === 'sandbox',

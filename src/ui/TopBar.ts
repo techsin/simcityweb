@@ -1,5 +1,6 @@
 /** Top HUD bar: city, date & speed, funds, population, RCI demand, approval, panel buttons. */
 import { DEV_TYPE_LABELS, DevType } from '../core/types';
+import { watchFor, type WatchHandle, type QueryResult } from '../worker/SimHost';
 import type { GameContext } from '../game/context';
 import { clear, h, setText, toggleClass } from './dom';
 import { icon } from './icons';
@@ -83,17 +84,15 @@ export function capRatio(ctx: GameContext, d: DevType): number {
 function paintBar(el: HTMLElement, v: number, color: string): void {
   const fill = el.firstElementChild as HTMLElement;
   const a = Math.min(1, Math.abs(v));
-  if (v >= 0) {
-    fill.style.top = `${50 - a * 50}%`;
-    fill.style.height = `${a * 50}%`;
-    fill.style.background = color;
-    fill.style.opacity = '1';
-  } else {
-    fill.style.top = '50%';
-    fill.style.height = `${a * 50}%`;
-    fill.style.background = color;
-    fill.style.opacity = '0.45';
-  }
+  const scale = String(v >= 0 ? -a : a), opacity = v >= 0 ? '1' : '0.45';
+  if (fill.dataset.scale === scale && fill.dataset.color === color && fill.style.opacity === opacity) return;
+  fill.dataset.scale = scale;
+  fill.dataset.color = color;
+  fill.style.transform = `scaleY(${scale})`;
+  // Compensate the scaled corner radius so the settled fill keeps its original 2 px rounding.
+  fill.style.borderRadius = `2px / ${2 / (a || 1)}px`;
+  fill.style.background = color;
+  fill.style.opacity = opacity;
 }
 
 export class TopBar {
@@ -121,6 +120,7 @@ export class TopBar {
   private rciSeg!: HTMLElement;
   private capHintsEl!: HTMLElement;
   private capSig = '';
+  private hintsWatch: WatchHandle<QueryResult<'capHints'>> | null = null;
   /** RCI popover: what the neighbour cities add to demand (econData.regionTerms, WP4-1) */
   private regionEl!: HTMLElement;
   private regionSig = '';
@@ -152,7 +152,7 @@ export class TopBar {
       b.addEventListener('click', () => {
         // distinct sounds: pause (tape-stop), normal / fast / ultra (1-3 rising blips); re-clicking the active speed ticks
         this.ctx.sound(this.ctx.sim.speed === s ? 'tap' : s === 0 ? 'pause' : 'speed' + s);
-        this.ctx.sim.speed = s;
+        this.ctx.host.setSpeed(s, 'topbar');
         b.blur();
       }, { signal: this.ctx.signal });
       this.speedBtns.push(b);
@@ -233,14 +233,8 @@ export class TopBar {
   }
 
   private capHints(): { family: 'R' | 'C' | 'I'; devs: number[]; hint: string }[] {
-    const f = this.ctx.mods.econ?.capHints;
-    if (f) {
-      try {
-        return f(this.ctx.state);
-      } catch {
-        /* ignore */
-      }
-    }
+    const hints = this.hintsWatch?.value;
+    if (hints) return hints;
     const capped = this.cappedDevs();
     const fallback: Record<string, string> = {
       R: 'Build parks, plazas or landmarks to raise the residential cap.',
@@ -315,8 +309,11 @@ export class TopBar {
       const last = this.announced.get(f) ?? -1e9;
       if (st.day - last < 180) continue;
       this.announced.set(f, st.day);
-      const hint = this.capHints().find((x) => x.family === f)?.hint ?? '';
-      this.ctx.toast(`${FAMILY_NAMES[f]} growth is capped. ${hint}`, 'warning', undefined, 'Demand cap');
+      void this.ctx.host.query('capHints', {}).then((hints) => {
+        if (this.ctx.signal.aborted) return;
+        const hint = hints.find((x) => x.family === f)?.hint ?? '';
+        this.ctx.toast(`${FAMILY_NAMES[f]} growth is capped. ${hint}`, 'warning', undefined, 'Demand cap');
+      }).catch(() => {});
     }
   }
 
@@ -330,6 +327,8 @@ export class TopBar {
   private setRci(open: boolean): void {
     if (open !== this.rciOpen) this.ctx.sound(open ? 'flyout' : 'flyoutClose');
     this.rciOpen = open;
+    if (open) this.hintsWatch ??= watchFor(this.ctx.host, 'capHints', {}, 'daily', this.ctx.signal);
+    else { this.hintsWatch?.dispose(); this.hintsWatch = null; }
     toggleClass(this.rciPop, 'open', open);
     if (open) this.update();
   }
@@ -425,7 +424,8 @@ export class TopBar {
     const net = lastNet(ctx);
     const hasBudget = Object.keys(st.budget.lastIncome).length + Object.keys(st.budget.lastExpense).length > 0;
     setText(this.netEl, hasBudget ? `${moneySigned(net, Math.abs(net) >= 1e5)}/mo` : 'No report yet');
-    this.netEl.className = 'hud-sub ' + (hasBudget ? signClass(net) : 'faint');
+    const netClass = 'hud-sub ' + (hasBudget ? signClass(net) : 'faint');
+    if (this.netEl.className !== netClass) this.netEl.className = netClass;
 
     // population
     const pop = st.stats.population;

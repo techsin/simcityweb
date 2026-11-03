@@ -14,6 +14,7 @@
  */
 import { CityState, HISTORY_KEYS, defaultStats, type Building, type CityStats, type HistorySeries } from '../sim/CityState';
 import type { CityConfigData } from '../sim/config';
+import { assertSavableCity, type SavableCityState } from './state';
 
 export const CITY_SAVE_FORMAT = 'metropolis-city';
 export const CITY_SAVE_VERSION = 1;
@@ -217,7 +218,8 @@ export function deserializeBuildings(sb: SerializedBuildings, copyExtra = true):
   return map;
 }
 
-export function serializeCity(state: CityState, opts: SerializeOptions = {}): SerializedCity {
+export function serializeCity(state: SavableCityState, opts: SerializeOptions = {}): SerializedCity {
+  assertSavableCity(state);
   const copy = !!opts.copy;
   const out: SerializedCity = {
     format: CITY_SAVE_FORMAT,
