@@ -244,6 +244,10 @@ export interface EmergencyMonth {
   buildingsLost: number;
   /** damage in § */
   damage: number;
+  /** damage while nobody had answered the call, and the rounded monthly rebuilding charges (LG-06; optional in old saves) */
+  unansweredDamage?: number;
+  rebuildCost?: number;
+  unansweredRebuildCost?: number;
   arrests: number;
   riotDays: number;
 }

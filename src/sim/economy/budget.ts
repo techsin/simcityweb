@@ -19,6 +19,7 @@
  *           'transport:bridges' 'transport:rail' 'transport:subway'
  *           'utilities:powerlines' 'utilities:landfill'
  *           'ordinance:<id>'    'loan' (all loan payments)
+ *           'emergency:rebuild' Rebuilding after emergencies (15% of the month's damage)
  *           'oneoff:construction' 'oneoff:zoning' 'oneoff:demolition' 'oneoff:terraform' 'oneoff:loanRepay'
  *  'oneoff:*' entries were paid / received immediately when the action happened; everything else is settled on
  *  the first day of the month. Σ lastIncome − Σ lastExpense = change of funds over the month.
@@ -30,7 +31,7 @@ import type { ServiceKind } from '../catalogTypes';
 import { getDef } from '../catalog';
 import {
   BANKRUPT_MONTHS, BANKRUPT_WARN_MONTHS, BRIDGE_UPKEEP_MUL, difficultyRules, LANDFILL_UPKEEP, NETWORK_UPKEEP, OPEX_BUILDING_SHARE,
-  POWERLINE_UPKEEP, RECYCLING_INCOME_PER_T, STRIKE_FUNDING, SUBWAY_UPKEEP, TAX_NEUTRAL, TAX_PER_JOB, TAX_PER_RES, TOURISM,
+  POWERLINE_UPKEEP, REBUILD_SHARE, RECYCLING_INCOME_PER_T, STRIKE_FUNDING, SUBWAY_UPKEEP, TAX_NEUTRAL, TAX_PER_JOB, TAX_PER_RES, TOURISM,
   TOURISM_INCOME_PER_VISITOR, UTIL_FIXED, VENUE_INCOME,
 } from './tuning';
 import { OPEX_SERVICE, opexActive, opexTierOf, tierOperatingCosts } from './opex';
@@ -122,6 +123,22 @@ export interface BudgetBreakdown {
   totalExpense: number;
 }
 
+/** city-funded rebuilding, rounded once per month; independent of funding sliders and difficulty */
+export function emergencyRebuildCost(damage: number): number {
+  return Math.round(Math.max(0, damage) * REBUILD_SHARE);
+}
+
+/** current estimate and actual settled rebuild charges from mirrored stats; old months had no rebuild charge */
+export function emergencyRebuildCosts(st: CityState): { month: number; lastMonth: number; year: number; unansweredYear: number } {
+  const e = st.stats.emergency;
+  return {
+    month: emergencyRebuildCost(e?.month?.damage ?? 0),
+    lastMonth: e?.lastMonth?.rebuildCost ?? emergencyRebuildCost(e?.lastMonth?.damage ?? 0),
+    year: e?.year?.rebuildCost ?? 0,
+    unansweredYear: e?.year?.unansweredRebuildCost ?? 0,
+  };
+}
+
 /** Compute the recurring monthly budget at current state (does not mutate). Used by the UI for forecasts too. */
 export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): BudgetBreakdown {
   const income: Record<string, number> = {};
@@ -204,6 +221,7 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
   let loan = 0;
   for (const l of st.budget.loans) loan += Math.min(l.monthlyPayment, l.remaining * (1 + l.rate / 12));
   add(expense, 'loan', loan);
+  add(expense, 'emergency:rebuild', emergencyRebuildCosts(st).month);
   for (const k in income) income[k] = Math.round(income[k]);
   for (const k in expense) expense[k] = Math.round(expense[k]);
   let ti = 0, te = 0;
@@ -218,6 +236,11 @@ export function budgetSystem(rt: EconRuntime): SimSystem {
     const data = econData(st);
     if (!infraFlags(st).utilities) estimateUtilities(st, rt);
     const bd = computeMonthlyBudget(st, rt);
+    // Infrastructure has rolled the completed month before the economy settles it. The forecast above reads the
+    // current month; charge only the completed month's damage, once, alongside the other recurring expenses.
+    delete bd.expense['emergency:rebuild'];
+    const rebuild = emergencyRebuildCosts(st).lastMonth;
+    if (rebuild) bd.expense['emergency:rebuild'] = rebuild;
     // actual loan payments (amortization mutates loans)
     delete bd.expense.loan;
     const paid = payLoansMonthly(st);

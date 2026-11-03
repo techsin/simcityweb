@@ -4,6 +4,7 @@
  * Index order of per-DevType arrays: [R$, R$$, R$$$, CS$, CS$$, CS$$$, CO$$, CO$$$, I-Ag, I-D, I-M, I-HT].
  */
 import { Network, Zone, type Difficulty } from '../../core/types';
+import { DAYS_PER_MONTH } from '../../core/constants';
 
 // ============================================================================ calendar / slicing
 /** land value: full-map refresh period (days); rows are processed in bands */
@@ -622,6 +623,10 @@ export const STRIKE_FUNDING = 50;
 /** months of negative funds before the bankruptcy warning escalates / the game-over state */
 export const BANKRUPT_WARN_MONTHS = [1, 3, 6];
 export const BANKRUPT_MONTHS = 12;
+/** share of monthly emergency damage paid by the city to rebuild */
+export const REBUILD_SHARE = 0.15;
+/** unanswered fires leave a neighbourhood scar for 18 months */
+export const EM_SCAR = { amount: 0.15, radius: 3, days: 18 * DAYS_PER_MONTH };
 /**
  * OPERATING COSTS (WP6b, economy/opex.ts): a school, clinic, police / fire station or park (no income) pays
  * OPEX_BUILDING_SHARE of its catalog upkeep for the building, plus running costs per person its tier serves
@@ -967,7 +972,8 @@ export const TOURISM_INCOME_PER_VISITOR = 0.25;
 export const RECYCLING_INCOME_PER_T = 0.5;
 /**
  * Attractiveness 0..100 = 100 × Σ weight × score (culture, parks, safety, clean, quiet, services, jobs, connect).
- * Scores: safety 1 − 1.6·crime, clean 1 − 1.4·air, quiet 1 − 1.2·noise, jobs 1 − 2.5·max(0, unemployment − .05),
+ * Scores: safety 1 − 1.6·crime − emergency reputation (EM_REP, last 12 months), clean 1 − 1.4·air,
+ * quiet 1 − 1.2·noise, jobs 1 − 2.5·max(0, unemployment − .05),
  * services = need-weighted served share (elementary, high school, health) × (0.8 + 0.2·min(1, HQ/120)),
  * connect = min(1, .1·connections + .3·large airport + .1·small airport + .1·train station + .1·seaport).
  * Per wealth: R$ cares for jobs and services, R$$$ for culture / prestige, safety and clean air.
@@ -980,6 +986,10 @@ export const ATTRACT_WEIGHTS: readonly (readonly [number, number, number, number
 ];
 export const ATTRACT_CITY_WEIGHTS: readonly number[] = [0.18, 0.14, 0.14, 0.14, 0.1, 0.1, 0.1, 0.1];
 export const ATTRACT_SCALES = { crime: 1.6, air: 1.4, noise: 1.2, unemp: 2.5, unempFree: 0.05, hqRef: 120 };
+/** safety lost to failed / (incidents + EM_REP_N0), and deaths per 1,000 current residents, over approval's year */
+export const EM_REP = 4;
+export const EM_REP_N0 = 30;
+export const EM_DEATHS_PER_1000 = 0.002;
 export const ATTRACT_CONNECT = { perConnection: 0.1, airportLarge: 0.3, airportSmall: 0.1, trainStation: 0.1, seaport: 0.1 };
 // §TOURISM end ---------------------------------------------------------------------------------------------------
 

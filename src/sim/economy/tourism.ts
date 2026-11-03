@@ -39,7 +39,7 @@ import { residentSurvey, toxicDumpOperating, type ResidentSurvey } from './appro
 import { lotTouchesRoad } from './buildings';
 import { shoreCells } from '../infra/terrainMasks';
 import {
-  APPROVAL_TERMS, ATTRACT_CITY_WEIGHTS, ATTRACT_CONNECT, ATTRACT_SCALES, ATTRACT_WEIGHTS, COARSE, COVERAGE_FALLBACK, CS_JOBS_PER_VISITOR, MIG_GAIN,
+  APPROVAL_TERMS, ATTRACT_CITY_WEIGHTS, ATTRACT_CONNECT, ATTRACT_SCALES, ATTRACT_WEIGHTS, COARSE, COVERAGE_FALLBACK, CS_JOBS_PER_VISITOR, EM_DEATHS_PER_1000, EM_REP, EM_REP_N0, MIG_GAIN,
   MIG_BIG_POP, MIG_MAX, MIG_MIN, MIG_NEUTRAL, MIG_NEUTRAL_BIG, MIG_POP, MIG_SCHOOL, MIG_SPAN, MIG_UNEMP_SPAN, RETIREE_SPLIT, RETIREES,
   STUDENT_SPLIT, STUDENTS_PER_SEAT, TOURISM, UNEMP_NEUTRAL,
 } from './tuning';
@@ -123,6 +123,8 @@ interface TourismState {
   pass: TourismPass;
 }
 const states = new WeakMap<CityState, TourismState>();
+/** optional monthly outputs within the already mirrored systemData.economy */
+interface SafetyMigrationData { safetyMigrationLoss?: number[] }
 
 /**
  * systemData.tourismPass v1 (B3): the last venue pass — what the coming month tick scores (culture, conn, seats), the
@@ -675,6 +677,15 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
     const unreached = pupils > 0 ? clamp(((nd?.elementary?.unreached ?? 0) + (nd?.high?.unreached ?? 0)) / pupils, 0, 1) : 0;
     const unemp = st.stats.unemployment;
     data.migration = [0, 1, 2].map((w) => migrationFactor(aw[w], pop, w >= 1 ? unreached : 0, unemp));
+    // The same city's migration with crime-only safety: a current target shortfall, not a count of actual arrivals.
+    const citySafety = clamp(1 - ATTRACT_SCALES.crime * sv.crime[3], 0, 1);
+    (data as typeof data & SafetyMigrationData).safetyMigrationLoss = [0, 1, 2].map((w) => {
+      const t = sv.pop[w] / (sv.pop[w] + 300);
+      const own = clamp(1 - ATTRACT_SCALES.crime * sv.crime[w], 0, 1);
+      const safety = citySafety + (own - citySafety) * t;
+      const without = aw[w] + 100 * ATTRACT_WEIGHTS[w][2] * (safety - scores[w][2]);
+      return Math.max(0, migrationFactor(without, pop, w >= 1 ? unreached : 0, unemp) - data.migration[w]);
+    });
     const green = sv.green > 0 ? sv.green : sv.park[3];
     const retirees = pop > 0 ? RETIREES * (0.5 + Math.min(1, st.stats.hq / 150)) * (0.5 + clamp(green, 0, 1)) : 0;
     const students = STUDENTS_PER_SEAT * p.seats;
@@ -809,6 +820,7 @@ function savedOutputs(st: CityState) {
     tourists: d.tourists, touristsGross: d.touristsGross, overnight: d.overnight, hotelShortage: d.hotelShortage, tourism: d.tourism,
     attractiveness: d.attractiveness, attractByWealth: d.attractByWealth.slice(), attractTerms: { ...d.attractTerms },
     migration: d.migration.slice(), migrants: d.migrants?.slice(),
+    safetyMigrationLoss: (d as typeof d & SafetyMigrationData).safetyMigrationLoss?.slice(),
     sTourists: s.tourists, sRooms: s.hotelRooms, sAttract: s.attractiveness, sAttractW: [...s.attractByWealth] as typeof s.attractByWealth,
   };
 }
@@ -822,6 +834,9 @@ function restoreOutputs(st: CityState, o: ReturnType<typeof savedOutputs>, total
   }
   d.attractiveness = o.attractiveness; d.attractByWealth = o.attractByWealth; d.attractTerms = o.attractTerms;
   d.migration = o.migration; d.migrants = o.migrants;
+  const safety = d as typeof d & SafetyMigrationData;
+  if (o.safetyMigrationLoss) safety.safetyMigrationLoss = o.safetyMigrationLoss;
+  else delete safety.safetyMigrationLoss;
   s.attractiveness = o.sAttract; s.attractByWealth = o.sAttractW;
 }
 
@@ -845,6 +860,28 @@ export function migrationFactor(attractiveness: number, population: number, unre
   return f;
 }
 
+/** safety from crime at homes and approval's last 12 rolled emergency months; reads mirrored stats only */
+export function emergencySafety(st: CityState, crime: number): number {
+  const year = st.stats.emergency?.year;
+  let incidents = 0;
+  if (year?.count) for (const n of Object.values(year.count)) incidents += n;
+  const deaths = st.stats.population > 0 ? (year?.deaths ?? 0) * 1000 / st.stats.population : 0;
+  return clamp(1 - ATTRACT_SCALES.crime * crime - EM_REP * (year?.failed ?? 0) / (incidents + EM_REP_N0)
+    - EM_DEATHS_PER_1000 * deaths, 0, 1);
+}
+
+/** estimated current residential target lost to the safety record; no arrival flow is modelled by migration */
+export function emergencyMigrationImpact(st: CityState): { multiplierLoss: number[]; targetResidents: number } {
+  const d = st.systemData.economy as (SafetyMigrationData & { migration?: number[]; rawTarget?: number[] }) | undefined;
+  const loss = [0, 1, 2].map((w) => d?.safetyMigrationLoss?.[w] ?? 0);
+  let target = 0;
+  for (let w = 0; w < 3; w++) {
+    const m = d?.migration?.[w] ?? 1;
+    if (m > 0) target += Math.max(0, d?.rawTarget?.[w] ?? 0) * loss[w] / m;
+  }
+  return { multiplierLoss: loss, targetResidents: Math.round(target) };
+}
+
 /** scores 0..1 [culture, parks, safety, clean, quiet, services, jobs, connect] per wealth (0..2) and city-wide (3);
  *  `image` scales the clean-air score (a toxic waste dump: 1 − APPROVAL_TERMS.dumpImage) */
 function attractScores(
@@ -865,7 +902,7 @@ function attractScores(
   const connect = Math.min(1, C.perConnection * st.neighborConnections.length + C.airportLarge * conn.large + C.airportSmall * conn.small
     + C.trainStation * conn.train + C.seaport * conn.seaport);
   const res = (k: number) => {
-    const safety = clamp(1 - ATTRACT_SCALES.crime * sv.crime[k], 0, 1);
+    const safety = emergencySafety(st, sv.crime[k]);
     const clean = clamp(1 - ATTRACT_SCALES.air * sv.air[k], 0, 1) * image;
     const quiet = clamp(1 - ATTRACT_SCALES.noise * sv.noise[k], 0, 1);
     const parks = clamp(inf.services ? sv.park[k] : 0.3, 0, 1);
