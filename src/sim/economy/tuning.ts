@@ -688,6 +688,8 @@ export const TREE_PLANT_COST = 3;
 export const ZONE_COST: readonly number[] = [0, 5, 10, 20, 5, 10, 20, 2, 10, 20, 15];
 /** plop: max corner height difference (m) over the footprint (it is leveled) */
 export const PLOP_MAX_SLOPE = 14;
+/** min Chebyshev distance between wind turbine cells */
+export const WIND_SPACING = 3;
 /** terraform cost per m³ moved */
 export const TERRAFORM_COST_M3 = 0.02;
 export const TERRAFORM_MIN_H = -40;

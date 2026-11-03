@@ -6,6 +6,7 @@ import { Panel } from '../Panel';
 import { h, segmented, setSlider, setText, setToggle, slider, toggle } from '../dom';
 import { asMusicAudio, MusicPlayer } from '../MusicPlayer';
 import { hourLabel } from '../format';
+import { getGuideTips, setGuideTips, watchGuideTips } from '../guide/tips';
 
 export class SettingsPanel extends Panel {
   readonly id = 'settings';
@@ -17,6 +18,7 @@ export class SettingsPanel extends Panel {
   private hourSlider!: HTMLInputElement;
   private hourVal!: HTMLElement;
   private autoSw!: HTMLElement;
+  private tipsSw!: HTMLElement;
   /** music player + sound toggles (filled once the optional audio module has loaded) */
   private musicHost!: HTMLElement;
   private player: MusicPlayer | null = null;
@@ -43,6 +45,11 @@ export class SettingsPanel extends Panel {
     return toggle(!!this.ctx.settings[key], (v) => this.ctx.applySettings({ [key]: v } as Partial<GameSettings>), false, this.ctx.signal);
   }
 
+  private syncTips(on: boolean): void {
+    setToggle(this.tipsSw, on);
+    this.tipsSw.setAttribute('aria-checked', String(on));
+  }
+
   protected build(): void {
     const s = this.ctx.settings;
     const pctf = (v: number) => Math.round(v * 100) + '%';
@@ -58,6 +65,8 @@ export class SettingsPanel extends Panel {
       setToggle(this.autoSw, false);
     } });
     this.hourRow = this.row('Fixed time', 'Drag to set the hour (turns off the day cycle)', h('div', { class: 'sr-c' }, this.hourSlider, this.hourVal));
+    this.tipsSw = toggle(getGuideTips(), setGuideTips, false, this.ctx.signal);
+    watchGuideTips((on) => this.syncTips(on), this.ctx.signal);
     const newYear = segmented<NewYearMode>([{ value: 'cinematic', label: 'Cinematic' }, { value: 'fireworks', label: 'Fireworks' }, { value: 'off', label: 'Off' }], s.newYear ?? 'cinematic', (v) => this.ctx.applySettings({ newYear: v }), this.ctx.signal);
     const autosave = segmented<number>([{ value: 0, label: 'Off' }, { value: 3, label: '3 mo' }, { value: 6, label: '6 mo' }, { value: 12, label: '1 yr' }], s.autosaveMonths, (v) => this.ctx.applySettings({ autosaveMonths: v }), this.ctx.signal);
     // sections (Gameplay — autosave / New Year — sits right under Graphics so it is reachable without scrolling far;
@@ -95,6 +104,7 @@ export class SettingsPanel extends Panel {
       sec('interface', 'Interface'),
       this.row('UI scale', 'On top of automatic resolution scaling', this.range('uiScale', UI_SCALE.min, UI_SCALE.max, UI_SCALE.step, pctf)),
       this.row('Notifications', 'Pop-up toasts for important events', this.sw('toasts')),
+      this.row('Tips', 'First-time tips and explainers, remembered for all your cities', this.tipsSw),
       this.row('Show FPS', null, this.sw('showFps')),
       sec('audio', 'Audio & music'),
       this.row('Master volume', null, this.range('masterVolume', 0, 1, 0.05, pctf)),
@@ -156,6 +166,7 @@ export class SettingsPanel extends Panel {
     this.buildAudioExtras();
     const s = this.ctx.settings;
     setToggle(this.autoSw, s.autoTime);
+    this.syncTips(getGuideTips());
     this.hourRow.style.opacity = s.autoTime ? '0.55' : '1';
     let hr = s.fixedHour;
     if (s.autoTime) {

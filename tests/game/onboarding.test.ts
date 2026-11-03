@@ -12,13 +12,14 @@ import { WIND_TURBINE_BASE, WIND_TURBINE_GAIN } from '../../src/sim/infra/params
 import { LocalSimHost } from '../../src/worker/SimHost';
 import { Onboarding } from '../../src/ui/Onboarding';
 import { guideCopy } from '../../src/ui/guide/copy';
-import type { GuideHooks } from '../../src/ui/guide/coach';
+import { approvalAction, type GuideHooks } from '../../src/ui/guide/coach';
 import { edgeHint } from '../../src/ui/guide/edgeHint';
 import { ExplainerQueue } from '../../src/ui/guide/explainers';
 import { accessibleZones, foundingDone, WIND_START, zoneTargets } from '../../src/ui/guide/founding';
 import { advanceGoals, goalAppears, goalDone, goalFacts, goalPresentation, landfillSites, taxPointIncome, trackBudget, trackPower, visibleGoals,
   type GoalInputs } from '../../src/ui/guide/goals';
 import { FOUNDING_IDS, GOAL_IDS, loadGuideProfile, newProgress, readProgress, saveGuideProfile } from '../../src/ui/guide/progress';
+import { setGuideTips } from '../../src/ui/guide/tips';
 import { newState, place, roadLine } from '../infra/cityGen';
 import { scan } from '../worker/hygieneScan';
 import { FEl, installFakeDom, textOf } from './fakeDom';
@@ -84,7 +85,7 @@ function yearState(): CityState {
 }
 function input(): GoalInputs {
   return { state: newState(128), progress: newProgress(0), landfill: [], viewSeconds: 0,
-    facts: { noGarbage: false, brownout: false, fuelPlants: 0, services: 0, policeAtHomes: 0, fireCovered: 0, fuelCovered: true } };
+    facts: { noGarbage: false, brownout: false, fuelPlants: 0, services: 0, policeAtHomes: 0, fireCovered: 0, fuelCovered: true, elementarySchool: false } };
 }
 
 describe('FH-01 founding predicates and card', () => {
@@ -134,6 +135,18 @@ describe('FH-01 founding predicates and card', () => {
     expect(foundingDone(st, 0, zoneTargets(st))).toMatchObject({ power: true, water: true });
   });
 
+  it('does not count a powered or watered roadless zone, even with fallback facilities', () => {
+    const st = newState(128);
+    zoned(st, false);
+    place(st, 'util_wind_turbine', 85, 10, { flags: BF.Plopped });
+    place(st, 'util_water_tower', 90, 10, { flags: BF.Plopped });
+    st.powered.fill(1); st.watered.fill(1);
+    for (const infra of [undefined, 1]) {
+      st.systemData.infraVersion = infra;
+      expect(foundingDone(st, 0, zoneTargets(st))).toMatchObject({ power: false, water: false });
+    }
+  });
+
   it('preselects the wind turbine, tower, residential zone and road tools', () => {
     const f = setup();
     for (const [id, tool] of [['power', 'plop:util_wind_turbine'], ['water', 'plop:util_water_tower'], ['zones', 'zone:1'], ['road', 'net:2']]) {
@@ -161,6 +174,37 @@ describe('FH-01 founding predicates and card', () => {
     f.row('play').querySelector('button')!.click();
     expect(speed).toHaveBeenCalledWith(1, 'onboarding');
     expect(f.card.progress.completed).not.toContain('play');
+  });
+
+  it('revokes founding ticks when zones, the region connection or utilities are removed', () => {
+    for (const remove of [
+      (st: CityState) => st.zone.fill(Zone.None),
+      (st: CityState) => { st.neighborConnections = []; },
+      (st: CityState) => st.powered.fill(0),
+      (st: CityState) => st.watered.fill(0),
+    ]) {
+      const f = setup(); ready(f.st); tick(f);
+      expect(f.row('play').querySelector('button')).not.toBeNull();
+      remove(f.st); tick(f);
+      expect(f.row('play').querySelector('button')).toBeNull();
+    }
+  });
+
+  it('revalidates Play on the click, between card polls', () => {
+    const f = setup(); ready(f.st); tick(f);
+    const play = f.row('play').querySelector('button')!;
+    f.st.powered.fill(0); play.click();
+    expect(f.host.speed).toBe(0);
+    expect(f.row('play').querySelector('button')).toBeNull();
+  });
+
+  it('starts a spring city on its founding day and waits one further day for Play', () => {
+    const st = newState(128); st.day = 90; st.systemData.foundedDay = 90;
+    const f = setup(st); ready(st); tick(f);
+    expect(f.card.progress.startDay).toBe(90);
+    expect(f.card.progress.completed).not.toContain('play');
+    st.day = 91; tick(f);
+    expect(f.card.progress.phase).toBe('year');
   });
 
   it('switches to G1 after one day, with a single completion sound and no global dismissal', () => {
@@ -240,6 +284,7 @@ describe('FH-02 goal predicates', () => {
   it('G6 appears at 100 unreached pupils and completes strictly below half unreached', () => {
     const i = input(), n = i.state.stats.needs.elementary;
     n.need = 200; n.unreached = 100; expect(goalAppears('G6', i)).toBe(true); expect(goalDone('G6', i)).toBe(false);
+    i.facts.elementarySchool = true; expect(goalAppears('G6', i)).toBe(false);
     n.unreached = 99; expect(goalDone('G6', i)).toBe(true);
     n.need = 0; n.unreached = 0; expect(goalDone('G6', i)).toBe(false);
   });
@@ -331,6 +376,18 @@ describe('FH-02 goal predicates', () => {
     f.card.whyExpanded(home.id); tick(f);
     expect(f.card.progress.completed).toContain('G8');
     expect(f.card.progress.budgetOpened).toBe(true);
+  });
+
+  it('opens Taxes from G5 and reuses the approval rows fixes for E8', () => {
+    const f = setup(yearState()), showTab = vi.fn();
+    Object.assign(f.ctx.panels, { get: () => ({ showTab }) });
+    goalPresentation('G5', f.st, undefined, { coach() {} }).action.run(f.ctx);
+    expect(showTab).toHaveBeenCalledWith('taxes');
+    expect(f.ctx.panels.open).toHaveBeenCalledWith('budget');
+    approvalAction('tax', Overlay.None)!.run(f.ctx);
+    approvalAction('crime', Overlay.None)!.run(f.ctx);
+    expect(f.ctx.setOverlay).toHaveBeenCalledWith(Overlay.Police, undefined);
+    expect(approvalAction('base', Overlay.None)).toBeNull();
   });
 
   it('groups landfill tiles and completes from host query data, ignoring a late reply after disposal', async () => {
@@ -439,8 +496,34 @@ describe('explainer framework and teardown', () => {
     g.host.setSpeed(3, 'keyboard'); button(g.el, guideCopy.actions.GotIt()).click(); expect(g.host.speed).toBe(3);
   });
 
+  it('updates tips from Settings immediately and releases only a guide-owned pause', () => {
+    const st = newState(128); st.config.difficulty = 'easy';
+    const f = setup(st, { celebrating: () => false }); f.host.setSpeed(2, 'topbar');
+    // Optimistic packet-host events have no cause until their authoritative replay.
+    const cause = vi.spyOn(f.host, 'cause', 'get').mockReturnValue(null);
+    f.card.offerExplainer({ id: 'E7', text: ['Cap'] }); tick(f);
+    expect(f.host.speed).toBe(0);
+    // A packet host replays this speed event after act() has returned.
+    cause.mockReturnValue({ seq: 20, tag: f.card });
+    f.host.events.emit('speedChanged', 0);
+    cause.mockRestore();
+    setGuideTips(false);
+    expect(f.host.speed).toBe(2);
+    expect(hidden(f.el.querySelector('.ob-tip')!)).toBe(true);
+    expect(loadGuideProfile()).toMatchObject({ tips: false, seenExplainers: ['E7'] });
+    setGuideTips(true); st.day = 60;
+    f.card.offerExplainer({ id: 'E12', text: ['Power'] }); tick(f);
+    f.card.setMinimised(true);
+    expect(f.host.speed).toBe(2);
+    f.card.setMinimised(false); st.day = 120;
+    f.card.offerExplainer({ id: 'E8', text: ['Approval'] }); tick(f);
+    f.host.setSpeed(3, 'keyboard'); setGuideTips(false);
+    expect(f.host.speed).toBe(3);
+  });
+
   it('shows the spend guard once, from the founding-day ledger, without counting loan proceeds', () => {
-    const f = setup(undefined, { celebrating: () => false });
+    const st = newState(128); st.day = 90; st.systemData.foundedDay = 90;
+    const f = setup(st, { celebrating: () => false });
     f.st.budget.curExpense['oneoff:construction'] = f.st.config.startFunds * 0.41;
     f.st.budget.curIncome['oneoff:loan'] = 50000;
     tick(f);
@@ -459,6 +542,15 @@ describe('explainer framework and teardown', () => {
     celebrating = false; tick(f);
     expect(f.toast).toHaveBeenCalledTimes(1);
     expect(f.el.classList.contains('show')).toBe(true);
+  });
+
+  it('defers goal completion chimes until the New Year show ends', () => {
+    let celebrating = false;
+    const f = setup(yearState(), { celebrating: () => celebrating });
+    celebrating = true; f.st.stats.population = 500; tick(f);
+    expect(f.sound).not.toHaveBeenCalledWith('stepDone');
+    celebrating = false; tick(f); tick(f);
+    expect(f.sound.mock.calls.filter(([name]) => name === 'stepDone')).toHaveLength(1);
   });
 
   it('removes DOM, UI and host listeners on abort and never calls a disposed host', () => {

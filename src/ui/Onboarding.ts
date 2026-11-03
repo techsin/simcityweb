@@ -8,13 +8,14 @@ import { watchFor, type QueryResult, type WatchHandle } from '../worker/SimHost'
 import { h, setText, toggleClass } from './dom';
 import { icon } from './icons';
 import { guideCopy, type ZoneTargets } from './guide/copy';
-import { type GuideAction, type GuideHooks, toolAction, viewAction } from './guide/coach';
+import { approvalAction, type GuideAction, type GuideHooks, toolAction, viewAction } from './guide/coach';
 import { edgeHint } from './guide/edgeHint';
 import { ExplainerQueue, type Explainer } from './guide/explainers';
 import { accessibleZones, foundingDone, fuelPlant, hasCategory, WIND_START, zoneTargets } from './guide/founding';
 import { advanceGoals, approvalTerms, goalFacts, goalPresentation, landfillSites, trackBudget, trackPower, visibleGoals, type GoalFacts } from './guide/goals';
 import { FOUNDING_IDS, GOAL_IDS, loadGuideProfile, newProgress, readProgress, saveGuideProfile,
   type FoundingId, type GoalId, type GuideId, type GuideProgress } from './guide/progress';
+import { setGuideTips, watchGuideTips } from './guide/tips';
 import './guide/onboarding.css';
 
 interface Row {
@@ -56,6 +57,7 @@ export class Onboarding {
   private hintShown = false;
   private pauseRestore: number | null = null;
   private changingSpeed = false;
+  private stepPending = false;
   private completions: { text: string; title: string; cell?: { x: number; z: number }; reward?: boolean }[] = [];
 
   constructor(private ctx: GameContext, parent: HTMLElement, private hooks: GuideHooks) {
@@ -70,11 +72,17 @@ export class Onboarding {
     parent.prepend(this.el);
     this.build();
     this.setMinimised(this.p.minimised, false);
+    this.viewSince = ctx.overlay === Overlay.None ? null : performance.now();
     const offs = [
       ctx.host.events.on('day', () => trackPower(ctx.host.state, this.p)),
       ctx.host.events.on('month', () => trackBudget(ctx.host.state, this.p)),
-      ctx.host.events.on('speedChanged', () => { if (!this.changingSpeed) this.pauseRestore = null; }),
+      ctx.host.events.on('speedChanged', () => { if (!this.changingSpeed && ctx.host.cause?.tag !== this) this.pauseRestore = null; }),
+      watchGuideTips((on) => {
+        this.profile.tips = on;
+        if (!on) { this.closeExplainer(); this.explainers.clear(); this.caps?.dispose(); this.caps = undefined; }
+      }, ctx.signal),
       ctx.host.events.on('zoneChanged', () => { this.landfillEpoch++; this.landfill = []; }),
+      ctx.host.events.on('networkChanged', () => { this.landfillEpoch++; this.landfill = []; }),
       ctx.host.events.on('terrainChanged', () => { this.targets = zoneTargets(ctx.host.state); this.clearHint(); }),
       // ToolController has already cleared the old tool and drawn the next preview when this event arrives.
       ctx.ui.on('tool', () => { this.hintShown = false; }),
@@ -95,6 +103,7 @@ export class Onboarding {
       this.landfillEpoch++;
       this.explainers.clear();
       this.completions = [];
+      this.stepPending = false;
       this.clearHint();
       this.coach(null);
     };
@@ -104,7 +113,7 @@ export class Onboarding {
     if (!ctx.signal.aborted && !this.profile.dismissedAll && !this.profile.veteran && !this.p.dismissed && (saved || young)) this.show(false);
   }
 
-  /** Detached data for FH-22's host command (not yet present on the W0.3–5 base). No replica writes here. */
+  /** Detached data for FH-22's pending host command. No replica writes here. */
   get progress(): GuideProgress { return structuredClone(this.p); }
   get isMinimised(): boolean { return this.p.minimised; }
   get isVisible(): boolean { return this.visible; }
@@ -120,6 +129,7 @@ export class Onboarding {
   }
 
   hide(remember: boolean): void {
+    if (this.ctx.signal.aborted) return;
     this.visible = false;
     if (remember) this.p.dismissed = true;
     this.el.classList.remove('show');
@@ -134,10 +144,11 @@ export class Onboarding {
   }
 
   setMinimised(on: boolean, remember = true): void {
+    if (this.ctx.signal.aborted) return;
     this.p.minimised = on;
     toggleClass(this.el, 'min', on);
     if (remember) { this.profile.min = on; saveGuideProfile(this.profile); }
-    if (on) { this.clearHint(); this.coach(null); }
+    if (on) { this.closeExplainer(); this.clearHint(); this.coach(null); }
   }
 
   /** Inspector owner calls this after expanding Why?, not merely after a Query click. */
@@ -152,9 +163,7 @@ export class Onboarding {
 
   setTips(on: boolean): void {
     if (this.ctx.signal.aborted) return;
-    this.profile.tips = on;
-    saveGuideProfile(this.profile);
-    if (!on) { this.closeExplainer(); this.explainers.clear(); this.caps?.dispose(); this.caps = undefined; }
+    setGuideTips(on);
   }
 
   private coach(action: GuideAction | null): void {
@@ -191,7 +200,8 @@ export class Onboarding {
         action: toolAction(a.Wind(), 'power', 'plop:util_wind_turbine', 'utilities', 'power') };
       case 'water': return { title: b.B4Title(), text: [b.B4(), b.B4Pipes()], action: toolAction(a.Water(), 'waterTower', 'plop:util_water_tower', 'utilities', 'water') };
       case 'play': return { title: b.B5Title(), text: [b.B5()], action: { label: a.Play(), icon: 'play', coach: { categories: [], play: true }, run: (ctx) => {
-        if (!FOUNDING_IDS.slice(0, 4).every((step) => this.p.completed.includes(step))) return;
+        const done = foundingDone(ctx.host.state, this.p.startDay, this.targets);
+        if (!FOUNDING_IDS.slice(0, 4).every((step) => done[step])) { this.acc = 1; this.frame(0); return; }
         if (ctx.host.speed !== 1) ctx.sound('speed1');
         ctx.host.setSpeed(1, 'onboarding');
       } } };
@@ -231,8 +241,8 @@ export class Onboarding {
     this.tip.hidden = true;
     this.dismissal = h('div', { class: 'ob-dismiss' }, h('p', null, 'Hide the guide for this city or all your cities?'),
       button('This city', () => this.hide(true)), button('All cities', () => {
+        this.setTips(false);
         this.profile.dismissedAll = true;
-        this.profile.tips = false;
         saveGuideProfile(this.profile);
         this.hide(true);
       }), button('Cancel', () => { this.dismissal.hidden = true; }));
@@ -324,13 +334,13 @@ export class Onboarding {
       const family = capped.family;
       const action: GuideAction = family === 'R'
         ? { label: a.Parks(), icon: 'park', coach: { categories: ['parks'], control: 'rci', family }, run: (ctx) => ctx.openFlyout?.('parks') }
-        : { label: a.Rewards(), icon: 'reward', coach: { categories: ['landmarks'], control: 'rci', family }, run: (ctx) => ctx.panels.open('rewards') };
+        : { label: 'Open transport', icon: 'transport', coach: { categories: ['transport'], control: 'rci', family }, run: (ctx) => ctx.openFlyout?.('transport') };
       this.offerExplainer({ id: 'E7', text: [family === 'R' ? d.E7Homes() : family === 'C' ? d.E7Shops() : d.E7Industry()], action,
         relevant: () => !!this.caps?.value?.some((hint) => hint.family === family) });
     }
     if (st.stats.approval < 45 && st.stats.population >= 300) {
       const drag = Object.entries(approvalTerms(st)).filter(([, value]) => value < 0).sort((a, b) => a[1] - b[1])[0];
-      const action = drag && this.hooks.approvalFix?.(drag[0]);
+      const action = drag && (this.hooks.approvalFix?.(drag[0]) ?? approvalAction(drag[0], this.ctx.overlay));
       if (drag && action) this.offerExplainer({ id: 'E8', text: [d.E8(st.stats.approval, { label: APPROVAL_LABELS[drag[0]] ?? drag[0], value: drag[1] }), d.E8Risk()], action,
         relevant: () => this.ctx.host.state.stats.approval < 45 });
     }
@@ -341,7 +351,13 @@ export class Onboarding {
     this.tip.hidden = true;
     const restore = this.pauseRestore;
     this.pauseRestore = null;
-    if (restore !== null && !this.ctx.signal.aborted && this.ctx.host.speed === 0) this.ctx.host.setSpeed(restore, 'onboarding');
+    if (restore !== null && !this.ctx.signal.aborted && this.ctx.host.speed === 0) this.guideSpeed(restore);
+  }
+
+  private guideSpeed(value: number): void {
+    this.changingSpeed = true;
+    try { this.ctx.host.act('setSpeed', [value, 'onboarding'], { tag: this }); }
+    finally { this.changingSpeed = false; }
   }
 
   /** Cheap frame gate: predicates run twice per second; building counters and landfill queries once. */
@@ -363,7 +379,10 @@ export class Onboarding {
     let action: GuideAction | null = null, fresh = false;
     if (this.p.phase === 'founding') {
       const done = foundingDone(st, this.p.startDay, this.targets);
-      for (const id of FOUNDING_IDS) if (done[id] && !this.p.completed.includes(id)) { this.p.completed.push(id); fresh = true; }
+      for (const id of FOUNDING_IDS) {
+        if (done[id] && !this.p.completed.includes(id)) { this.p.completed.push(id); fresh = true; }
+        else if (!done[id]) this.p.completed = this.p.completed.filter((step) => step !== id);
+      }
       if (FOUNDING_IDS.every((id) => this.p.completed.includes(id))) {
         this.p.phase = 'year';
         this.clearHint();
@@ -399,7 +418,8 @@ export class Onboarding {
       setText(this.progressText, `${count} / ${GOAL_IDS.length}`);
       setText(this.pillText, guideCopy.phaseC.CProgress(count, GOAL_IDS.length, goals.length ? this.rows.get(goals[0])!.title.textContent ?? '' : guideCopy.phaseC.CTitle()));
     }
-    if (fresh && this.primed && !celebrating) this.ctx.sound('stepDone');
+    if (fresh && this.primed) this.stepPending = true;
+    if (this.stepPending && !celebrating) { this.ctx.sound('stepDone'); this.stepPending = false; }
     if (!celebrating) for (const completion of this.completions.splice(0)) {
       if (completion.reward) this.ctx.sound('reward');
       this.ctx.toast(completion.text, 'good', completion.cell, completion.title);
@@ -415,8 +435,7 @@ export class Onboarding {
       this.tip.hidden = false;
       if (st.config.difficulty === 'easy' || tip.id === 'E1a') {
         this.pauseRestore = this.ctx.host.speed > 0 ? this.ctx.host.speed : null;
-        this.changingSpeed = true;
-        try { this.ctx.host.setSpeed(0, 'onboarding'); } finally { this.changingSpeed = false; }
+        this.guideSpeed(0);
       }
     }
     const shown = !celebrating && (this.p.phase !== 'complete' || goals.length > 0 || !!this.explainers.current);

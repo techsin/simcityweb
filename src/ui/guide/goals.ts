@@ -7,7 +7,7 @@ import type { BudgetBreakdown } from '../../sim/economy/budget';
 import type { LandfillInfo } from '../../sim/infra/pollution';
 import type { SimHost } from '../../worker/SimHost';
 import { guideCopy } from './copy';
-import { toolAction, viewAction, type GuideAction, type GuideHooks } from './coach';
+import { openTaxes, toolAction, viewAction, type GuideAction, type GuideHooks } from './coach';
 import { isFuelPlant } from './founding';
 import { GOAL_IDS, type GoalId, type GuideProgress } from './progress';
 
@@ -19,12 +19,13 @@ export interface GoalFacts {
   policeAtHomes: number;
   fireCovered: number;
   fuelCovered: boolean;
+  elementarySchool: boolean;
 }
 
 /** Refreshed at most once a second, including the NoGarbage counter. */
 export function goalFacts(host: Pick<SimHost, 'state' | 'emergency'>): GoalFacts {
   const st = host.state;
-  let noGarbage = false, brownout = false, fuelPlants = 0, services = 0;
+  let noGarbage = false, brownout = false, fuelPlants = 0, services = 0, elementarySchool = false;
   let residents = 0, police = 0, buildings = 0, covered = 0, fuelCovered = true;
   const fireReady = host.emergency.active && host.emergency.layersReady;
   for (const b of st.buildings.values()) {
@@ -37,13 +38,14 @@ export function goalFacts(host: Pick<SimHost, 'state' | 'emergency'>): GoalFacts
       if (!(b.flags & BF.Powered)) brownout = true;
     }
     if (def?.coverage && b.flags & BF.Plopped) services++;
+    if (b.def === 'civ_elementary_school') elementarySchool = true;
     buildings++;
     const fire = fireReady && st.respFire[cell] >= 0;
     if (fire) covered++;
     if (isFuelPlant(b)) { fuelPlants++; if (!fire) fuelCovered = false; }
   }
   return { noGarbage, brownout, fuelPlants, services, policeAtHomes: residents ? police / residents : 0,
-    fireCovered: buildings ? covered / buildings : 0, fuelCovered };
+    fireCovered: buildings ? covered / buildings : 0, fuelCovered, elementarySchool };
 }
 
 export interface GoalInputs {
@@ -70,7 +72,7 @@ export function goalAppears(id: GoalId, { state: st, facts: f, progress: p }: Go
     case 'G3': return (approvalTerms(st).crime ?? 0) <= -4 || st.stats.population >= 400;
     case 'G4': return f.fuelPlants > 0 || st.stats.population >= 800;
     case 'G5': return monthlyNet(st) < 0 || f.services >= 2;
-    case 'G6': return st.stats.needs.elementary.unreached >= 100;
+    case 'G6': return st.stats.needs.elementary.unreached >= 100 && !f.elementarySchool;
     case 'G7': return st.stats.population >= 1500;
     case 'G8': return p.completed.includes('G7');
     case 'G9': return p.completed.includes('G1');
@@ -149,7 +151,7 @@ export function goalPresentation(id: GoalId, st: CityState, budget: BudgetBreakd
     case 'G5': {
       const gain = taxPointIncome(st, budget);
       return { title: c.G5Title(), text: [gain === null ? 'Check your budget before building more services.' : c.G5(gain)],
-        action: { label: a.Taxes(), icon: 'budget', coach: { categories: [], control: 'budget' }, run: (ctx) => ctx.panels.open('budget') } };
+        action: { label: a.Taxes(), icon: 'budget', coach: { categories: [], control: 'budget' }, run: openTaxes } };
     }
     case 'G6': return { title: c.G6Title(), text: [c.G6(st.stats)], action: viewAction(a.Education(), 'education', 'civic', 'education', Overlay.Education) };
     case 'G7': return { title: c.G7Title(), text: [c.G7()], action: {

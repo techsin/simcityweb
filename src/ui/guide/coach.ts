@@ -1,6 +1,7 @@
 /** Coach targets for the CityScene / TopBar / inspector owners to connect without DOM reach-ins. */
-import type { GameContext } from '../../game/context';
+import type { GameContext, PanelsApi } from '../../game/context';
 import type { Overlay } from '../../core/types';
+import { approvalFix } from '../topbar/approvalGuide';
 
 export interface CoachTarget {
   categories: string[];
@@ -27,6 +28,23 @@ export interface GuideAction {
   icon: string;
   coach: CoachTarget;
   run: (ctx: GameContext) => void;
+}
+
+/** Reuse the approval rows' mapping so the explainer opens the same fix. */
+export function approvalAction(term: string, current: Overlay): GuideAction | null {
+  const fix = approvalFix(term, current);
+  if (!fix) return null;
+  return { label: `Open ${fix.label}`, icon: 'approval', coach: { categories: [], control: 'approval' }, run: (ctx) => {
+    if (fix.kind === 'view') ctx.setOverlay(fix.overlay, fix.variant);
+    else if (fix.kind === 'flyout') ctx.openFlyout?.(fix.category);
+    else openTaxes(ctx);
+  } };
+}
+
+export function openTaxes(ctx: GameContext): void {
+  const panel = (ctx.panels as PanelsApi & { get?(id: string): unknown }).get?.('budget') as { showTab?(tab: 'taxes'): void } | undefined;
+  panel?.showTab?.('taxes');
+  ctx.panels.open('budget');
 }
 
 export function toolAction(label: string, icon: string, tool: string, category: string, tab?: string): GuideAction {

@@ -49,9 +49,14 @@ export function fuelPlant(st: CityState): Building | undefined {
 }
 
 export function zoneServed(st: CityState, kind: 'power' | 'water'): boolean {
-  if (!infraFlags(st).utilities) return hasCategory(st, kind);
+  const utilities = infraFlags(st).utilities;
+  if (!utilities && !hasCategory(st, kind)) return false;
   const flags = kind === 'power' ? st.powered : st.watered;
-  for (let i = 0; i < st.cells; i++) if (isGrowZone(st.zone[i]) && utilityReaches(st, flags, i, kind)) return true;
+  for (let i = 0; i < st.cells; i++) {
+    if (!isGrowZone(st.zone[i]) || st.water[i]) continue;
+    const access = lotAccess(st, i % st.size, Math.floor(i / st.size));
+    if ((access === 'front' || access === 'yard') && (!utilities || utilityReaches(st, flags, i, kind))) return true;
+  }
   return false;
 }
 

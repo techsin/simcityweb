@@ -2,7 +2,6 @@
 import { MONTHS_PER_YEAR } from '../../core/constants';
 import { Zone } from '../../core/types';
 import type { Building, CityStats } from '../../sim/CityState';
-import { WIND_SPACING } from '../../sim/actions';
 import { getDef } from '../../sim/catalog';
 import { DIFFICULTY_FUNDS } from '../../sim/config';
 import { CONN_MIN_CELLS, CONN_MIN_DEPTH } from '../../sim/economy/connections';
@@ -28,7 +27,7 @@ type LoanTerms = Pick<LoanOffer, 'monthlyPayment' | 'termMonths'>;
 const decimal = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 1 });
 /** "1 point" / "2 points" (the count as `decimal` prints it) */
 const points = (n: number) => decimal(n) + (n === 1 ? ' point' : ' points');
-const windGap = () => WIND_SPACING - 1; // cell distance -> empty tiles between footprints
+const windGap = () => tuning.WIND_SPACING - 1; // cell distance -> empty tiles between footprints
 const incomeBonus = (multiplier: number) => pct(Math.abs(multiplier - 1));
 const loanYears = (offer: LoanTerms) => decimal(offer.termMonths / MONTHS_PER_YEAR);
 

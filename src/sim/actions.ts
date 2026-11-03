@@ -33,7 +33,7 @@ import { smoothstep } from '../core/rng';
 import {
   BRIDGE_COST_MUL, MAX_BRIDGE_SPAN, NETWORK_INFO, NETWORK_REFUND, PLOP_MAX_SLOPE, POWERLINE_COST, POWERLINE_MAX_SPAN,
   POWERLINE_WATER_MUL, SUBWAY_COST, TERRAFORM_COST_M3, TERRAFORM_MAX_H, TERRAFORM_MIN_H, TREE_CLEAR_COST, TREE_PLANT_COST,
-  ZONE_COST, ZONE_FAMILY_OF,
+  WIND_SPACING, ZONE_COST, ZONE_FAMILY_OF,
 } from './economy/tuning';
 import { countFront, demolishFee, levelLot, lotSlope, lotTouchesRoad, placeBuilding, removeBuilding } from './economy/buildings';
 import { updateNeighborConnections } from './economy/connections';
@@ -42,7 +42,7 @@ import { MANIFEST_BY_ID } from '../assets/manifest';
 import { blockedByOrdinance, getOrdinance, setOrdinanceEnabled } from './economy/ordinances';
 import { takeLoanNow } from './economy/loans';
 import { formatMoney } from './economy/format';
-export { networkCellCost, zoneCellCost, POWERLINE_COST, SUBWAY_COST, BRIDGE_COST_MUL } from './economy/tuning';
+export { networkCellCost, zoneCellCost, POWERLINE_COST, SUBWAY_COST, BRIDGE_COST_MUL, WIND_SPACING } from './economy/tuning';
 export { CURRENCY, formatMoney } from './economy/format';
 
 export interface ActionResult {
@@ -135,8 +135,6 @@ export const NET_ONEWAY_MASK = 0b1100;
 export const NET_BUS_STOP = 1 << 4;
 export const NET_CROSSING = 1 << 5;
 const WIND_TURBINE = 'util_wind_turbine';
-/** min Chebyshev distance between wind turbine cells */
-export const WIND_SPACING = 3;
 /** land tiles within this many path steps of a bridge's water tiles are its approach (slope ≥ the road limit) */
 export const BRIDGE_APPROACH = 2;
 

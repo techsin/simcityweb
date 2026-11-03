@@ -50,8 +50,6 @@ export interface GameSettings {
   textSize: TextSize;
   /** colour vision palette (FH-20) */
   colourVision: ColourVision;
-  /** first-time tips and explainers (§4.1 "Tips on/off") */
-  tips: boolean;
   /** spotlight camera for the city's firsts (FEEL-07) */
   cameraMoments: boolean;
   /** New Year show: a full show for milestones only, or every year (today's pacing) — FEEL-02a, D17 */
@@ -107,7 +105,6 @@ export const DEFAULT_SETTINGS: GameSettings = {
   motion: APP_DEFAULTS.motion,
   textSize: APP_DEFAULTS.textSize,
   colourVision: APP_DEFAULTS.colourVision,
-  tips: true,
   cameraMoments: true,
   newYearPacing: 'milestones',
   problemIcons: 'query',

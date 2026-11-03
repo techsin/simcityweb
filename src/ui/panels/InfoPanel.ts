@@ -106,6 +106,7 @@ export class InfoPanel extends Panel {
    *  layout of everything the other panels had just changed in the same UI tick) */
   private scrollY = 0;
   private open: Record<SectionId, boolean> = { ...SECTIONS };
+  private guideWhyExpanded: ((buildingId: number) => void) | null = null;
 
   override defaultPos(w: number): { x: number; y: number } {
     return { x: w - this.width - 14, y: 72 };
@@ -114,6 +115,15 @@ export class InfoPanel extends Panel {
   protected build(): void {
     for (const k of Object.keys(SECTIONS) as SectionId[]) this.open[k] = loadPref<boolean>('inspector.sec.' + k, SECTIONS[k]);
     this.body.addEventListener('scroll', () => (this.scrollY = this.body.scrollTop), { passive: true, signal: this.ctx.signal });
+    this.ctx.signal.addEventListener('abort', () => { this.guideWhyExpanded = null; }, { once: true });
+  }
+
+  /** Arm the next growable's Why? section; acknowledge only its rendered report. */
+  guideWhy(onExpanded: (buildingId: number) => void): void {
+    if (this.ctx.signal.aborted) return;
+    this.guideWhyExpanded = onExpanded;
+    this.sig = '';
+    if (this.isOpen) this.update();
   }
 
   show(t: QueryTarget): void {
@@ -140,6 +150,8 @@ export class InfoPanel extends Panel {
     if (!t) return;
     const st = this.ctx.state;
     const b = t.buildingId != null ? st.buildings.get(t.buildingId) : undefined;
+    const def = b && getDef(b.def);
+    if (this.guideWhyExpanded && b && (!def || def.category === 'growable')) this.open.why = true;
     const ci = st.idx(t.x, t.z);
     const sections = (Object.keys(this.open) as SectionId[]).filter((k) => this.open[k]);
     let building: InspectBuilding | null | undefined, cell: InspectCell | null | undefined;
@@ -452,7 +464,15 @@ export class InfoPanel extends Panel {
     if (growable) {
       // (rubble has no condition: the summary names what the section shows)
       const whySum = [des ? 'desirability' : '', cond || !rubble ? 'condition' : '', 'growth'].filter(Boolean).join(' · ');
-      this.body.appendChild(this.section('why', 'Why?', 'help', whySum, () => this.whyBuilding(b, report, des, cond)));
+      const why = this.section('why', 'Why?', 'help', whySum, () => this.whyBuilding(b, report, des, cond));
+      this.body.appendChild(why);
+      if (this.guideWhyExpanded && this.open.why && report.building.id === b.id && !this.ctx.signal.aborted) {
+        const expanded = this.guideWhyExpanded;
+        this.guideWhyExpanded = null;
+        why.classList.add('guide-why');
+        why.style.animation = 'pulse 1.6s ease-in-out 2';
+        expanded(b.id);
+      }
     }
     if (isRes && b.pop > 0) {
       const needs = report.needs;

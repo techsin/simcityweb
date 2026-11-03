@@ -285,6 +285,8 @@ export class CityScene {
     this.uiRoot.appendChild(tl);
     this.toasts = new Toasts(ctx, tl);
     this.onboarding = new Onboarding(ctx, tl, {
+      celebrating: () => this.newYear?.busy ?? false,
+      openWhy: () => this.info?.guideWhy((id) => this.onboarding.whyExpanded(id)),
       coach: (cats, play) => {
         this.toolbar.setCoach(cats);
         this.topBar.setCoachPlay(play);
