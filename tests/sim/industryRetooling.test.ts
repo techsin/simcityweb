@@ -72,7 +72,7 @@ describe('LG-07 industry retooling', () => {
     expect(industrialStrategy(policy.st)!.refused).toBeCloseTo(loss, 8);
   });
 
-  it('gates retooled high-tech strictly above EQ 70 and raises the native educated-city target', () => {
+  it('gates retooled high-tech strictly above EQ 70 and keeps the native industry mix', () => {
     const low = fixture(false, [], 70), high = fixture(false, [], 70.01);
     low.sim.runDays(360); high.sim.runDays(360);
     expect(industrialStrategy(low.st)!.retooledIM).toBeGreaterThan(0);
@@ -80,8 +80,9 @@ describe('LG-07 industry retooling', () => {
     expect(industrialStrategy(high.st)!.retooledIHT).toBeGreaterThan(0);
     const educated = fixture(true, [], 110);
     const raw = econData(educated.st).rawTarget;
-    const total = raw.slice(DevType.IA).reduce((a, b) => a + b, 0);
-    expect(raw[DevType.IHT] / total).toBeGreaterThanOrEqual(0.25);
+    const total = raw[DevType.ID] + raw[DevType.IM] + raw[DevType.IHT];
+    expect(raw[DevType.IHT] / total).toBeCloseTo(0.2, 3);
+    expect(industrialStrategy(educated.st)!.retooledIHT).toBe(0);
   });
 
   it('applies receiving-sector taxes and ordinances to the replacement demand', () => {

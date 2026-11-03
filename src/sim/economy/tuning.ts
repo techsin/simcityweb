@@ -118,8 +118,8 @@ export const IA_BASE = 250;
 export const IA_PER_RES = 0.004;
 /**
  * EQ → industry mix: dirty share = ID_SHARE_AT_EQ0 − (EQ − ID_EQ_START) × slope (≥ min); high-tech share rises above
- * IHT_EQ_START; manufacturing takes the rest. LG-07's floor reaches 30% at EQ 110; the native share resumes at EQ 130.
- * EQ 50: 70/30/0 (D/M/HT) · EQ 100: 42/43/15 · EQ 110: 37/33/30 · EQ 130: 26/44/30 · EQ 150: 14/46/40
+ * IHT_EQ_START; manufacturing takes the rest.
+ * EQ 50: 70/30/0 (D/M/HT) · EQ 100: 42/43/15 · EQ 110: 37/43/20 · EQ 130: 26/44/30 · EQ 150: 14/46/40
  */
 export const ID_SHARE_AT_EQ0 = 0.7;
 export const ID_EQ_START = 50;
@@ -128,10 +128,6 @@ export const ID_SHARE_MIN = 0.12;
 export const IHT_EQ_START = 70; // IHT demand starts above this EQ
 export const IHT_SHARE_PER_EQ = 1 / 200;
 export const IHT_SHARE_MAX = 0.45;
-/** LG-07: mature export demand favours high-tech; young towns keep their original mix. */
-export const RETOOL_IHT_SHARE = 0.3;
-export const RETOOL_IHT_EQ0 = 90;
-export const RETOOL_IHT_EQ1 = 110;
 /** Refused dirty job targets reach their clean replacements after a full year, without new random draws. */
 export const RETOOL_MONTHS = 12;
 export const RETOOL_IM = 0.5;

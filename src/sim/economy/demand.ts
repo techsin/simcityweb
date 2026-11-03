@@ -38,7 +38,7 @@ import {
   ID_SHARE_AT_EQ0, ID_SHARE_EQ_SLOPE, ID_SHARE_MIN, IHT_EQ_START, IHT_SHARE_MAX, IHT_SHARE_PER_EQ, JOB_MIX_AVG, JOB_SLACK,
   JOB_WEALTH_MIX, LABOUR_MIN_HEAD, LABOUR_POP0, LABOUR_POP1, LABOUR_UNEMP0, LABOUR_VAC0, R_BASE, R_JOB_SLACK, REGION_WEALTH_MIX,
   RG_CAP, RG_CI, RG_CI_SPLIT, RG_CS, RG_CS_MAX, RG_MARKET, RG_MARKET_POP, RG_R, TAX_FACTOR_MAX, TAX_FACTOR_MIN, TAX_NEUTRAL, TAX_SENS, TOURISM_CS_PER_POINT, TOURISM_CS_SPLIT, UNEMP_CI_BOOST,
-  RETOOL_IHT, RETOOL_IHT_EQ0, RETOOL_IHT_EQ1, RETOOL_IHT_SHARE, RETOOL_IM, RETOOL_MONTHS,
+  RETOOL_IHT, RETOOL_IM, RETOOL_MONTHS,
   UNEMP_NEUTRAL, UNEMP_R_PENALTY, WORKFORCE_RATIO,
 } from './tuning';
 import { type EconData, type EconRuntime, type RegionTerms, econData, infraFlags } from './runtime';
@@ -316,8 +316,7 @@ export function demandSystem(rt: EconRuntime): SimSystem {
     raw[DevType.CO3] = co * f3;
     const iTotal = (I_BASE + W * lerp(I_SHARE_MAX, I_SHARE_MIN, logF)) * ctx.connI * (1 + ctx.freightBoost);
     const sID = clamp(ID_SHARE_AT_EQ0 - Math.max(0, EQ - ID_EQ_START) * ID_SHARE_EQ_SLOPE, ID_SHARE_MIN, 1);
-    const sIHT = clamp(Math.max((EQ - IHT_EQ_START) * IHT_SHARE_PER_EQ,
-      RETOOL_IHT_SHARE * smoothstep(RETOOL_IHT_EQ0, RETOOL_IHT_EQ1, EQ)), 0, IHT_SHARE_MAX);
+    const sIHT = clamp((EQ - IHT_EQ_START) * IHT_SHARE_PER_EQ, 0, IHT_SHARE_MAX);
     const sIM = Math.max(0.1, 1 - sID - sIHT);
     raw[DevType.ID] = iTotal * sID;
     raw[DevType.IM] = iTotal * sIM;
