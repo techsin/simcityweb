@@ -59,9 +59,13 @@ class MainStore implements InboxStore {
 /** W1.3 (§4.2, §4.3): 'worker-idb' writes this realm's IndexedDB; the Ready names the save the worker loaded. */
 class WorkerIdbStore implements InboxStore {
   private store: InboxStore;
-  constructor(core: SimCore, private loaded: CityRecord) { this.store = idbStore(core); }
+  constructor(core: SimCore, private loaded: CityRecord, private nextUnit: () => Promise<void>) { this.store = idbStore(core); }
   get savedAt(): number { return getRecoveryBase(this.loaded.regionId, this.loaded.tileKey)?.savedAt ?? this.loaded.savedAt; }
-  putSave(copy: CitySaveCopy) { return this.store.putSave(copy); }
+  /** §4.2's two units: save:copy ran in the inbox's unit; save:put (the put's synchronous clone, about 10-15 ms at 1M)
+   *  waits for the next unit to finish, so the worker never blocks for both at once and work queued meanwhile runs first */
+  async putSave(copy: CitySaveCopy) { await this.nextUnit(); return this.store.putSave(copy); }
+  /** the boot's save, before the Ready: no unit runs yet */
+  bootSave(copy: CitySaveCopy) { return this.store.putSave(copy); }
   putSnapshot(snapshot: Parameters<InboxStore['putSnapshot']>[0]) { return this.store.putSnapshot(snapshot); }
   recoveryBase(regionId: string, tileKey: string) { return this.store.recoveryBase(regionId, tileKey); }
 }
@@ -83,6 +87,9 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
   let unacked: { seq: number; ids: number[]; saves: number[]; writes: Reply[] }[] = [];
   /** dev: this isolate's protector probe (§5.4, risk 7), read by debug.verify and once per frame (it is sticky) */
   let protector: (() => boolean) | null = null;
+  /** W1.3: work that waits for the next unit to finish (a save's put, §4.2) */
+  let afterUnit: (() => void)[] = [];
+  const nextUnit = () => new Promise<void>((resolve) => { afterUnit.push(resolve); kick(); });
 
   function post(message: WorkerOutput): void {
     if (abort.signal.aborted) return;
@@ -151,7 +158,7 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
       const { alerts, live, toast, warn } = c.livePolicy.view;
       return { alerts: alerts.map((a) => ({ ...a })), live, toast, warn };
     } });
-    const inboxStore = store = m.city.kind === 'idb' ? new WorkerIdbStore(c, record) : new MainStore(m.city);
+    const inboxStore = store = m.city.kind === 'idb' ? new WorkerIdbStore(c, record, nextUnit) : new MainStore(m.city);
     const p = { regionId: m.city.regionId, tileKey: m.city.tileKey, regionName: m.regionName };
     const inbox = protocol = new ProtocolInbox(c, recorder, {
       now: () => performance.now(), signal: abort.signal, store: inboxStore, fatal, persistence: p,
@@ -171,7 +178,7 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
       if (replayed.applied && m.city.kind === 'idb') {
         // §4.3: saved before the Ready, so the replayed edits are durable and the old journal is deleted with the put
         try {
-          await inboxStore.putSave(c.copySave(p.regionId, p.tileKey));
+          await (inboxStore as WorkerIdbStore).bootSave(c.copySave(p.regionId, p.tileKey));
           inbox.changes = 0;
         } catch (e) {
           // the journal record still matches the old save: the Ready carries the edits, and a second crash loses nothing
@@ -334,6 +341,8 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
   function unit(): void {
     scheduled = false;
     if (abort.signal.aborted) return;
+    // their continuations run once this unit's task is done
+    for (const resolve of afterUnit.splice(0)) resolve();
     try {
       drain();
       if (abort.signal.aborted || !protocol) return;
@@ -360,7 +369,7 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
     loop.port1.close(); loop.port2.close();
     if (core) { schedulerOf(core.sim).endFrame(); core.dispose(); core.sim.events.clear(); }
     core = null; recorder = null; protocol = null; store = null; run = null; frame = null;
-    inbox.length = 0; unacked = [];
+    inbox.length = 0; unacked = []; afterUnit = [];
   }
   loop.port1.onmessage = unit;
   scope.listen(receive, fatal, abort.signal);

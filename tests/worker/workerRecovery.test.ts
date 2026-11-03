@@ -78,6 +78,8 @@ describe('W1.3: the worker\'s own IndexedDB', () => {
     const init = posted.find((m) => m.t === 'init');
     expect(init).toMatchObject({ city: { kind: 'idb', ...CITY }, persistence: 'worker-idb' });
     expect(host.persistence).toBe('worker-idb');
+    const loaded = (await record()).savedAt;
+    expect((await host.snapshot('hidden'))?.marker.baseSavedAt, 'a delta of the record the worker loaded').toBe(loaded);
     await send(host, 'setTax', [DevType.R1, 12]);
     const ack = await host.save('manual');
     const rec = await record();
@@ -100,10 +102,14 @@ describe('W1.3: the worker\'s own IndexedDB', () => {
     expect(await send(first, 'zone', [rect, Zone.ResLow])).toMatchObject({ ok: true });
     const zones = zoned(first.state);
     expect(zones).toBeGreaterThan(0);
+    await first.runDays(4);
+    const day = first.state.day, name = first.state.config.name;
     await close(first);
+    expect(await stored(KEY + '#journal'), 'its IndexedDB copy describes the city as the page last saw it')
+      .toMatchObject({ info: { cityName: name, day, why: 'pagehide' }, base: { kind: 'save', savedAt: saved.savedAt } });
     expect(await hasRecoverySnapshot(CITY), 'a journal alone counts').toBe(true);
     const offer = (await findRecoverySnapshot())!;
-    expect(offer.marker).toMatchObject({ kind: 'journal', bytes: 0, baseSavedAt: saved.savedAt, cityName: first.state.config.name, why: 'pagehide' });
+    expect(offer.marker).toMatchObject({ kind: 'journal', bytes: 0, baseSavedAt: saved.savedAt, cityName: name, day, why: 'pagehide' });
     expect(offer.journal?.ops.map((o) => o.op)).toEqual(['setTax', 'zone']);
     await restoreRecoverySnapshot(offer);
     expect((await record()).savedAt, 'nothing is rebuilt for a journal').toBe(saved.savedAt);
@@ -204,6 +210,29 @@ describe('W1.3: the worker\'s own IndexedDB', () => {
   });
 });
 
+describe('W1.3: the worker\'s save as two units (§4.2)', () => {
+  it('save:copy and save:put are separate worker units: a command that arrives after the copy runs before the put', async () => {
+    const city = initialCity();
+    await kv.put('cities', { key: 'units:0', regionId: 'units', tileKey: '0', savedAt: city.savedAt, city } satisfies CityRecord, 'units:0');
+    const order: string[] = [], put = kv.put.bind(kv);
+    vi.spyOn(kv, 'put').mockImplementation(async (store, value, key) => { if (store === 'cities') order.push('put'); return put(store, value, key); });
+    let saving = false;
+    const w = inProcess([], { deterministic: true, idb: true, tap: (m, send) => {
+      if (m.t !== 'pkt') return;
+      if (m.p.acks?.length) order.push('ack');
+      // the save's boundary packet, posted inside its copy unit: a command arrives as that task ends
+      if (saving) { saving = false; order.push('copy'); queueMicrotask(() => send({ t: 'cmd', seq: 1, op: 'setTax', args: [DevType.R1, 9] })); }
+    } });
+    try {
+      await w.until((m) => m.t === 'ready', 'ready');
+      saving = true;
+      w.send({ t: 'save', id: 1, reason: 'manual' });
+      await w.until((m) => m.t === 'pkt' && !!m.p.replies?.some((r) => r.t === 'saved'), 'the saved reply');
+      expect(order).toEqual(['copy', 'ack', 'put']);
+    } finally { w.dispose(); }
+  });
+});
+
 describe('W1.3: LocalSimHost replays the journal too (§4.3, "in either host")', () => {
   it('replays the journal bound to its loaded save at start, unless told not to; its first save deletes it', async () => {
     await savedJournal([{ seq: 1, op: 'setTax', args: [DevType.R1, 18] }, { seq: 2, op: 'zone', args: [rect, Zone.ResLow] }]);
@@ -235,6 +264,7 @@ describe('W1.3: the title screen\'s offer of a journal alone (§4.3 Restoring)',
     expect(await stored(KEY + '#journal')).toBeUndefined();
     // with a restorable snapshot of the same city, the snapshot is the offer (its restore takes the journal bound to it)
     await savedJournal([{ seq: 1, op: 'setTax', args: [0, 9] }]);
+    expect(await hasRecoverySnapshot(CITY), 'IndexedDB holds a journal alone, and no localStorage slot').toBe(true);
     const state = deserializeCity(rec.city); state.day += 3;
     const snap = buildRecoverySnapshot(REGION, TILE, state, rec, { at: rec.savedAt + 5, cityName: 'x', population: 0, funds: 0 });
     await storeRecoveryIdb(kv, snap.marker, snap.payload);

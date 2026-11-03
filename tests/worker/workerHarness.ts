@@ -64,7 +64,9 @@ export async function waitFor(test: () => boolean, what: string, ms = 5000): Pro
 
 /** The production worker loop in this thread, behind a cloning scope, with test systems (no worker_threads). It acks
  *  each packet as main does, unless `ack` is false. */
-export function inProcess(systems: SimSystem[], init: { deterministic?: boolean; initialSpeed?: number; ack?: boolean; idb?: boolean } = {}) {
+export function inProcess(systems: SimSystem[], init: { deterministic?: boolean; initialSpeed?: number; ack?: boolean; idb?: boolean;
+  /** sees each message as the worker posts it, inside the worker's unit (W1.3: to post into the unit's queue) */
+  tap?: (m: WorkerOutput, send: (m: WorkerInput) => void) => void } = {}) {
   let receive!: (m: WorkerInput) => void, epoch = 0;
   const messages: WorkerOutput[] = [];
   const runtime = installSimWorker({
@@ -72,6 +74,7 @@ export function inProcess(systems: SimSystem[], init: { deterministic?: boolean;
     postMessage(message) {
       const m = structuredClone(message);
       messages.push(m);
+      init.tap?.(m, (input) => receive(input));
       if (m.t === 'ready') epoch++;
       else if (m.t === 'pkt' && init.ack !== false) queueMicrotask(() => receive({ t: 'ack', ack: m.p.seq, epoch }));
     },

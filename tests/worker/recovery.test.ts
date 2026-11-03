@@ -462,6 +462,14 @@ describe('RecoveryMirror through LoopbackSimHost (T033 carry-over)', () => {
     expect(peekRecoveryMarker()).toBeNull();
   });
 
+  it('W1.3: a tax-only journal replayed at boot reads as unsaved (no change event comes with it)', async () => {
+    const savedAt = await savedCity(); now = 1100;
+    await storeJournalIdb(kv, { v: 1, ...city, at: 1050, base: { kind: 'save', savedAt }, fromCmd: 0, ops: [{ seq: 1, op: 'setTax', args: [DevType.R1, 14] }] });
+    const host = await openHost();
+    expect(host.state.budget.taxRates[DevType.R1]).toBe(14);
+    expect(host.changes, 'the App compares this with its clean count, and the fingerprint is taken after the replay').toBeGreaterThan(0);
+  });
+
   it('keeps the payload and the journal of one base in localStorage through host snapshots and saves', async () => {
     const savedAt = await savedCity(); now = 1100;
     const host = await openHost();
