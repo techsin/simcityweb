@@ -400,6 +400,31 @@ describe('FH-03: "no room to grow" a young town cannot miss', () => {
     expect(econData(c.st).streak?.zoneR).toBe(1);
   });
 
+  it('the day-29 prediction (B3) agrees with the tick after the player zones more: the reset applies to its copy', () => {
+    const c = city({ clusters: { high: [{ x: 40, z: 44, people: 700 }] } });
+    const st = c.st;
+    roadLine(st, 2, 20, 60, 20, Network.Road);
+    for (let x = 3; x < 7; x++) { st.zone[st.idx(x, 21)] = Zone.ResLow; place(st, 't_r1', x, 21, { pop: 10 }); }
+    st.stats.population = 5000;
+    st.stats.demand[0] = 0.8;
+    st.neighborConnections.push({ edge: 'w', x: 0, z: 20, type: Network.Road }); // (connected: no noConnection advice)
+    const { sim, adv } = start(c);
+    monthTick(sim, adv, 30); // zoneR speaks; the zoned tiles per family are recorded
+    expect(zonePosts(st)).toHaveLength(1);
+    // the next month: 4 more homes zoned (built on by the scan), a deficit, and teens without a high school
+    for (let x = 7; x < 11; x++) { st.zone[st.idx(x, 21)] = Zone.ResLow; place(st, 't_r1', x, 21, { pop: 10 }); }
+    st.budget.lastIncome = {};
+    st.budget.lastExpense = { 'service:police': 1000 };
+    st.funds = 6000;
+    st.stats.needs.high = { need: 2000, served: 1000, capacity: 1000, unreached: 600, overcrowded: 0 };
+    for (const d of MONTH_SCAN_DAYS) { st.day = 30 + d; adv.daily!(sim); }
+    // the deficit and zoneR (its cooldown starts over at the tick) take the month's two posts: noHigh's place is not
+    // looked up for a post that will not come
+    expect(advisorData(st).scan?.places).toEqual({});
+    monthTick(sim, adv, 60);
+    expect(st.news.filter((n) => n.day === 60 && n.ref?.advice).map((n) => n.ref!.advice)).toEqual(['deficit', 'zoneR']);
+  });
+
   it('a variant whose fix is not more land names that fix: roadless zones → noRoadAccess (the Road tool)', () => {
     const c = city();
     for (let x = 10; x < 20; x++) c.st.zone[c.st.idx(x, 40)] = Zone.ResLow; // 10 tiles no road reaches
