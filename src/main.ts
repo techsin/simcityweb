@@ -853,7 +853,6 @@ class App {
     if (!c || !model || c.host !== host || c.crashed || !c.entered) return;
     c.crashed = true;
     clearInterval(c.ticker);
-    c.status?.set('error', c.lastSave);
     console.error('[main] the simulation worker crashed', error);
     const city = { regionId: model.data.id, tileKey: c.tile.key };
     const recoverable = this.persistent && (await hasRecoverySnapshot(city).catch(() => false));
