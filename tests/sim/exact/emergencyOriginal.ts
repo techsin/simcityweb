@@ -1,0 +1,3367 @@
+/**
+ * FROZEN emergency.ts at 41ae570 (B2's base: the pre-B2 response sequence, 5-6 steps). Only import paths and the class
+ * name differ. B2 (G4) compares the split EmergencySystem with it at sequence ends (tests/infra/b2PiecesInfra.test.ts).
+ */
+/**
+ * Emergency dispatch (SIM_DEPTH_SPEC WP8). Headless: no DOM / three.js.
+ *
+ * INCIDENTS  fires (fire.ts ignitions become cluster incidents), industrial accidents, hazardous spills, crime sprees,
+ *            riots, medical emergencies, building collapses (earthquakes) and prison riots (WP7 justice). Generated
+ *            deterministically from the city (own RNG, state saved in systemData.emergency): monthly cumulative weight
+ *            arrays over candidate buildings, a daily Poisson draw per kind. Early-game grace: no accident at a
+ *            thermal plant / incinerator before the first funded fire station, for at most EMERG_PLANT_GRACE_DAYS.
+ * FLEETS     every fire / police / medical station has a fleet (FLEET; effective units scale with funding) and an auto
+ *            range RANGE = coverage radius x ROAD_RADIUS_FACTOR x NET_TIME[Road] x EMERG_RANGE_K (minutes).
+ * DISPATCH   a reverse road search from the incident (siren link times: t0 x (1 + 0.3 (bpr - 1))) settles stations in
+ *            order of travel time. Auto: the nearest station of the needed type with a free unit whose travel time is
+ *            within its own range (a real road route, driven by a vehicle). Otherwise the incident is 'queued' (a unit
+ *            of an in-range station comes back before the grace time) or 'uncovered' (reason busy / outOfRange /
+ *            noStation) and the player can dispatch any station city-wide (dispatchOptions / dispatch);
+ *            manualPossible = a free unit can still arrive before the deadline, sent within the player's window
+ *            (dispatchWindowEnd: an industrial accident's plant ignites EMERG_GRACE.industrial days after the start)
+ *            (LIVE mode), canSend = a free unit can be sent at all (banner without LIVE). Both rest on units free at the
+ *            moment of the decision: a dispatch that takes a station's last free unit re-validates the waiting incidents
+ *            that counted on it (revalidate: a disaster's burst dispatches its incidents one after the other), and a
+ *            prompt counts as given (prompted; ignored when nobody answers) only at the day's settle point (EM-1), and
+ *            no longer once the unit it rests on is gone (final fixes r3).
+ *            An incident's state follows its PRIMARY responder (INCIDENT_RESPONDERS[kind][0]): the ambulance of an
+ *            industrial accident or a collapse, sent automatically, leaves it waiting for its fire truck (and answers
+ *            nothing). Minor incidents (and supporting responders) that are not covered are sent the nearest free unit
+ *            that can arrive in time (slower, no alert). Daily search budget: the first EMERG_SEARCHES_PER_DAY
+ *            searches, then up to EMERG_SEARCH_NODES_PER_DAY settled road nodes; the rest ('Dispatch pending') go the
+ *            next day, fires first, then major incidents. Coverage promise: a building never burns down while the
+ *            first truck sent from inside its station's range is on its way.
+ * GRAPH      the searches run on traffic's road graph (TrafficSystem.road, rebuilt in traffic's own scheduled step
+ *            after network edits, so road edits never cost a graph build here); a private graph only when traffic has
+ *            none for the map (no traffic system; or a new city's first day, before traffic's first build — a tiny
+ *            network). Until traffic catches up with an edit a brand-new road is unknown: such sites are 'Dispatch
+ *            pending', not "no road". Node-indexed data (station nodes, siren times, caches, layer sequence) follow the
+ *            graph epoch, which moves only when the graph's content changes (graphSig: traffic rebuilding the very same
+ *            network — a load's reset, a subway edit — is no retry wave).
+ * SAVE/LOAD  a loaded game keeps every dispatch decision: it decides with the original's siren times (Persist.siren)
+ *            until its own traffic layer updates, continues its station version (and retries once if the network
+ *            changed after the original's graph was built: Persist.gSig).
+ * TIME       one game-minute of siren driving = EMERG_DAYS_PER_MIN sim days. Vehicles carry their route (corner cells)
+ *            with cumulative minutes; position = interpolate(times, (simTime - legStart) / EMERG_DAYS_PER_MIN).
+ * OUTCOMES   per kind (grace G / deadline): late (answered after G), failed (deadline passed), deaths / injured /
+ *            rescued, buildings lost + damage, arrests, riot days -> stats.emergency (month, lastMonth, 12-month year),
+ *            medScore (12-month EMA of medical response quality, read by WP1 HQ), approval (WP4 reads lastMonth).
+ *            Unattended incidents escalate: fires spread and burn down, riots grow (health damage, ignitions, crime),
+ *            industrial accidents ignite, spills pollute, medical calls lose patients.
+ * LAYERS     st.respFire / respPolice / respMedical: auto-dispatch slack in minutes (>= 0 reached within a station's
+ *            range, < 0 minutes beyond it, RESP_NONE = no station of that type). Scheduler task 'emergency.response'
+ *            (3 forward station searches in chunks of EMERG_SEARCH_CHUNK nodes, a land fill, building fills in chunks
+ *            of EMERG_FILL_CHUNK), every EMERG_RESP_PERIOD days, right after station / fleet changes, within
+ *            EMERG_RESP_NET_DAYS of a road-graph change in live play, and synchronously in init() (derived, not saved).
+ * EVENTS     sim.events 'emergency' (new / queued / dispatched / arrived / escalated / resolved / failed / uncovered),
+ *            news via sim.notify (advisors 'safety' / 'health'; its per-key throttle is saved), BF.Incident on every
+ *            building an incident lists, while it lists it (the site; the burning buildings of a fire cluster).
+ */
+import { RNG } from '../../../src/core/rng';
+import { Network } from '../../../src/core/types';
+import {
+  BF, INCIDENT_KINDS, RESPONDERS, RESP_NONE, emptyEmergencyMonth,
+  type Building, type CityState, type EmergencyMonth, type EmergencyStats, type IncidentKind, type Responder,
+} from '../../../src/sim/CityState';
+import type { EmergencyEvent, SimSystem, Simulation } from '../../../src/sim/Simulation';
+import { getDef } from '../../../src/sim/catalog';
+import type { BuildingDef, ServiceKind } from '../../../src/sim/catalogTypes';
+import { cohortShares } from '../../../src/sim/economy/demographics';
+import { facilityLoad } from '../../../src/sim/infra/catchments';
+import { Fam, buildingList, centerCell, fundingFactor, infoOf, isFunctional } from '../../../src/sim/infra/common';
+import { RoadGraph, perimeterNodes } from '../../../src/sim/infra/graph';
+import {
+  BPR_ALPHA, BPR_MAX_FACTOR, CRIME_MAJOR, CRIME_SPREE_MIN, CRIME_SPREE_RATE, EMERG_DAYS_PER_MIN, EMERG_DEADLINE,
+  EMERG_FILL_BLD_COST, EMERG_FILL_CELLS_COST, EMERG_FILL_CHUNK, EMERG_GRACE, EMERG_HOSPITAL_MAX, EMERG_MANUAL_MAX, EMERG_MAX_PATH, EMERG_PLANT_P, EMERG_RANGE_K, EMERG_RESP_PERIOD,
+  EMERG_RESP_NET_DAYS, EMERG_RMAX, EMERG_SEARCHES_PER_DAY, EMERG_SEARCH_CHUNK, EMERG_SEARCH_COST, EMERG_SEARCH_FINISH_COST, EMERG_SEARCH_NODES_PER_DAY,
+  EMERG_SIREN_CONG, EMERG_SLOW_MARGIN, EMERG_TRUCK_SHARE,
+  EMERG_UNPOWERED_TURNOUT, EMERG_WORK_DAYS, FIRE_BURN_DAYS, FIRE_CLUSTER_R, FIRE_DRY_WORK, FIRE_HOLD_PER_UNIT,
+  FIRE_SPREAD_DRY, FIRE_SPREAD_ONSCENE, FIRE_SPREAD_P, FIRE_WORK_PER_AREA, INDUSTRIAL_POLL, IND_ACCIDENT_RATE,
+  MED_BASE, MED_DELAY_LOSS, MED_MAJOR, MED_RATE, MED_SENIOR, MED_SURVIVE, NET_TIME, PRISON_ESCAPE, RAMP_PENALTY,
+  RIOT_AFTER_BOOST, RIOT_AFTER_DAYS, RIOT_APPROVAL, RIOT_CRIME, RIOT_CRIME_BOOST, RIOT_HEALTH, RIOT_IGNITE_P,
+  RIOT_MIN_POP, RIOT_P, RIOT_R_GROW, RIOT_R_MAX, ROAD_RADIUS_FACTOR, SPILL_HWY_RATE, SPILL_POLL, SPILL_RATE_ID,
+  SPILL_SITE_P, SPREE_FAIL_BOOST, SPREE_FAIL_DAYS,
+} from '../../../src/sim/infra/params';
+import { schedulerOf } from '../../../src/sim/infra/scheduler';
+import { Seeds } from '../../../src/sim/infra/search';
+import type { FireSystem } from '../../../src/sim/infra/fire';
+import type { TrafficSystem } from '../../../src/sim/infra/traffic';
+
+export type IncidentState = 'queued' | 'uncovered' | 'dispatched' | 'onScene' | 'resolved' | 'failed';
+export type UncoveredReason = 'noStation' | 'outOfRange' | 'busy';
+
+export interface Incident {
+  id: number;
+  kind: IncidentKind;
+  /** site cell */
+  x: number;
+  z: number;
+  /** building at the site, -1 = none */
+  buildingId: number;
+  major: boolean;
+  state: IncidentState;
+  /** sim time (days, fractional) the incident started, and its deadline */
+  start: number;
+  deadline: number;
+  /** kind-specific severity (burning buildings, riot radius, injured, ...) */
+  severity: number;
+  /** units needed per responder */
+  need: Partial<Record<Responder, number>>;
+  /** assigned vehicle ids */
+  units: number[];
+  reason?: UncoveredReason;
+  /** a free unit of the needed type can still arrive before the deadline (the player's dispatch matters: LIVE mode) */
+  manualPossible: boolean;
+  /** a free unit of the needed type can be sent at all (by road), even if it only arrives after the deadline */
+  canSend?: boolean;
+  /** WP6b: the player was prompted (a major incident uncovered while a free unit could still make it in time): if it
+   *  fails with nobody answering, it counts as ignored (stats.emergency month.ignored; approval remembers). Set only at
+   *  a settle point (the end of a day's dispatch work, EM-1), never the moment a dispatch decision makes it possible: a
+   *  disaster's next incident may take the very unit that decision counted on. Cleared again when that unit is gone
+   *  (revalidate / noFreeUnit, final fixes r3): only a prompt the player could still answer counts */
+  prompted?: boolean;
+  /** ETA (game minutes incl. turnout) of the nearest free unit the last dispatch attempt found beyond the stations'
+   *  ranges (undefined = none within the time left): manualPossible lapses once the time left drops below it */
+  bestEta?: number;
+  /** station id of that unit (EM-1: once it is taken elsewhere the prompt is re-validated) */
+  bestFrom?: number;
+  /** expected arrival of the first unit (game minutes after dispatch) */
+  etaMin?: number;
+  // ---- WP8 details (all plain data, saved in systemData.emergency)
+  /** place label for the UI (building name) */
+  place: string;
+  /** why it is not covered, for the banner ("All 2 trucks of Fire Station #3 are busy") */
+  note: string;
+  /** grace days (answered later = late) */
+  grace: number;
+  /** sim time the first unit reached the scene (-1 = none yet), and per responder */
+  arrived: number;
+  firstAt: Partial<Record<Responder, number>>;
+  /** 0 not answered yet, 1 auto-dispatch, 2 player dispatch */
+  answered: number;
+  /** remaining on-scene work (unit-days) for the non-fire kinds */
+  work: number;
+  /** people injured / trapped, and the deaths so far */
+  injured: number;
+  deaths: number;
+  /** riot radius (cells) */
+  radius: number;
+  /** fire: burning building ids of the cluster, buildings lost / saved */
+  fires: number[];
+  lost: number;
+  saved: number;
+  /** earliest sim day of the next automatic dispatch attempt */
+  retry: number;
+  /** stations version seen by the last attempt (uncovered incidents retry when stations change) */
+  stVer: number;
+}
+
+export type EmergencyVehicleModel = 'fire_truck' | 'car_police' | 'ambulance';
+export interface EmergencyVehicle {
+  id: number;
+  responder: Responder;
+  model: EmergencyVehicleModel;
+  stationId: number;
+  incidentId: number;
+  /** transport = a clinic ambulance taking the patient to a hospital */
+  state: 'outbound' | 'onScene' | 'returning' | 'transport';
+  /** route cells (i = z*N + x; corner cells only, <= EMERG_MAX_PATH) from the route start to its end */
+  path: number[];
+  /** cumulative game minutes at each path cell (rounded to 0.01) */
+  times: number[];
+  /** sim time (days, fractional) the current leg started (outbound: after the turnout) */
+  legStart: number;
+  /** current leg along the path, in path minutes: m0 -> m1 (outbound 0 -> T, returning T -> 0, recall m -> 0) */
+  m0: number;
+  m1: number;
+  /** sim time the current leg ends */
+  arrive: number;
+  /** sim time on-scene work was last credited */
+  workFrom: number;
+  /** transport: destination hospital station id (-1 none) */
+  hospital: number;
+  /** sent from inside its station's auto range (on time up to max(grace, range + turnout); a fire it drives to does
+   *  not burn down before it arrives) */
+  cover?: boolean;
+}
+
+export interface StationFleet {
+  type: Responder;
+  total: number;
+  free: number;
+  out: number;
+}
+export interface DispatchOption {
+  stationId: number;
+  name: string;
+  responder: Responder;
+  free: number;
+  /** travel + turnout (game minutes); Infinity = no road route */
+  etaMin: number;
+  etaDays: number;
+  /** effective units (funding) */
+  total: number;
+  /** within the station's auto range */
+  inRange: boolean;
+}
+export interface DispatchResult {
+  ok: boolean;
+  reason?: string;
+  etaMin?: number;
+  /** units sent */
+  sent?: number;
+  /** dispatchBest: the responder of the reported dispatch, and the needed responders it could not send a unit for */
+  responder?: Responder;
+  missing?: Responder[];
+}
+export interface SpawnOptions {
+  major?: boolean;
+  buildingId?: number;
+  severity?: number;
+}
+
+/** units per station def (effective units scale with funding: 0 below 25 %, else max(1, round(units x min(1.2, f)))) */
+export const FLEET: Readonly<Record<string, { responder: Responder; units: number }>> = {
+  civ_fire_station: { responder: 'fire', units: 2 },
+  civ_fire_hq: { responder: 'fire', units: 5 },
+  civ_police_kiosk: { responder: 'police', units: 1 },
+  civ_police_station: { responder: 'police', units: 2 },
+  civ_police_hq: { responder: 'police', units: 6 },
+  civ_clinic: { responder: 'medical', units: 1 },
+  civ_hospital: { responder: 'medical', units: 3 },
+  civ_medical_center: { responder: 'medical', units: 6 },
+};
+
+export const INCIDENT_LABEL: Readonly<Record<IncidentKind, string>> = {
+  fire: 'Fire',
+  industrial: 'Industrial accident',
+  spill: 'Hazardous spill',
+  crime: 'Crime spree',
+  riot: 'Riot',
+  medical: 'Medical emergency',
+  collapse: 'Building collapse',
+  prisonRiot: 'Prison riot',
+};
+export const INCIDENT_COLOR: Readonly<Record<IncidentKind, string>> = {
+  fire: '#e8542c',
+  industrial: '#e89a2c',
+  spill: '#8fbf2a',
+  crime: '#3d6fd8',
+  riot: '#9b3dd8',
+  medical: '#e8e8e8',
+  collapse: '#a08060',
+  prisonRiot: '#5a3dd8',
+};
+/** UI icon (src/ui/icons.ts) per kind */
+export const INCIDENT_ICON: Readonly<Record<IncidentKind, string>> = {
+  fire: 'fire', industrial: 'factory', spill: 'smog', crime: 'crime', riot: 'riot', medical: 'health', collapse: 'quake', prisonRiot: 'police',
+};
+/** responders an incident needs (primary first) */
+export const INCIDENT_RESPONDERS: Readonly<Record<IncidentKind, readonly Responder[]>> = {
+  fire: ['fire'], industrial: ['fire', 'medical'], spill: ['fire'], crime: ['police'], riot: ['police'], medical: ['medical'],
+  collapse: ['fire', 'medical'], prisonRiot: ['police'],
+};
+export const RESPONDER_LABEL: Readonly<Record<Responder, string>> = { fire: 'Fire', police: 'Police', medical: 'Medical' };
+/** unit nouns [singular, plural] */
+export const RESPONDER_UNIT: Readonly<Record<Responder, readonly [string, string]>> = {
+  fire: ['fire truck', 'fire trucks'], police: ['police car', 'police cars'], medical: ['ambulance', 'ambulances'],
+};
+export const RESPONDER_MODEL: Readonly<Record<Responder, EmergencyVehicleModel>> = { fire: 'fire_truck', police: 'car_police', medical: 'ambulance' };
+
+/**
+ * Sim time until which a dispatch of the incident's PRIMARY responder (INCIDENT_RESPONDERS[kind][0]) still changes its
+ * outcome: the window of the player's Dispatch prompt (manualPossible, LIVE mode, the banner's "min left"). An
+ * industrial accident ignites its plant at the first day tick EMERG_GRACE.industrial days after it started unless a
+ * fire truck is on its way — its ambulance does not count; a truck sent in time saves the plant and the accident then
+ * waits for it until its deadline — so its window ends at that tick. Every other incident runs until its deadline.
+ */
+export function dispatchWindowEnd(inc: Pick<Incident, 'kind' | 'start' | 'deadline'>): number {
+  if (inc.kind !== 'industrial') return inc.deadline;
+  const G = EMERG_GRACE.industrial;
+  // the first day tick d with d - start >= G (the ignition test in workStep)
+  let d = Math.ceil(inc.start + G);
+  if (d - 1 - inc.start >= G) d--;
+  else if (d - inc.start < G) d++;
+  return Math.min(inc.deadline, d);
+}
+const RESPONDER_SERVICE: Readonly<Record<Responder, ServiceKind>> = { fire: 'fire', police: 'police', medical: 'health' };
+const RESPONDER_STATION: Readonly<Record<Responder, string>> = { fire: 'fire station', police: 'police station', medical: 'clinic or hospital' };
+const RESPONDER_STATIONS: Readonly<Record<Responder, string>> = { fire: 'fire stations', police: 'police stations', medical: 'clinics and hospitals' };
+/** note of an incident waiting for today's (used-up) dispatch-search budget or for the road graph to catch up */
+const PENDING_NOTE = 'Dispatch pending';
+const DEFAULT_RADIUS: Readonly<Record<Responder, number>> = { fire: 24, police: 26, medical: 16 };
+/** kinds that are always major (alert the player when not covered); medical / crime are major per incident */
+const MAJOR_KINDS: ReadonlySet<IncidentKind> = new Set<IncidentKind>(['fire', 'industrial', 'spill', 'riot', 'collapse', 'prisonRiot']);
+const R_INDEX: Readonly<Record<Responder, number>> = { fire: 0, police: 1, medical: 2 };
+const EPS = 1e-6;
+const MIN_T = Math.min(NET_TIME[1], NET_TIME[2], NET_TIME[3], NET_TIME[4], NET_TIME[5]);
+const QB = MIN_T * 0.999;
+
+/** pollution source of an active incident (spills, industrial fires) — splatted by pollution.ts like plopped emitters */
+export interface EmergencyPollutionSource {
+  x: number;
+  z: number;
+  air: number;
+  water: number;
+  radius: number;
+}
+/** crime boost of an active / failed incident (riots, unresolved crime) — splatted by crime.ts into raw crime */
+export interface CrimeBoost {
+  x: number;
+  z: number;
+  radius: number;
+  amount: number;
+}
+
+// ------------------------------------------------------------------------------------------------ helpers
+function smoothstep(e0: number, e1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
+const r2 = (v: number) => Math.round(v * 100) / 100;
+const cap1 = (s: string) => s[0].toUpperCase() + s.slice(1);
+/** n busy units: "the only fire truck<tail> is busy", "both fire trucks<tail> are busy" (final fixes r4: "all 2 fire
+ *  trucks"), "all 4 fire trucks<tail> are busy" — the busy notes' one wording (the Dispatch tool's says the same) */
+function unitsBusy(n: number, unit: readonly [string, string], tail = ''): string {
+  return n === 1 ? `the only ${unit[0]}${tail} is busy` : n === 2 ? `both ${unit[1]}${tail} are busy` : `all ${n} ${unit[1]}${tail} are busy`;
+}
+/** "All 3 fire trucks of Fire Station #3 are busy", "Both fire trucks of Fire Station #1 are busy", or with a single
+ *  unit "The only ambulance of Medical Clinic #15 is busy" (final fixes r3: "All 1 ambulance of … are busy"; r4: "All 2
+ *  fire trucks of …") */
+function stationBusyText(s: { units: number; responder: Responder; name: string }): string {
+  return cap1(unitsBusy(s.units, RESPONDER_UNIT[s.responder], ` of ${s.name}`));
+}
+
+/** station fleet of a def: FLEET by def id, else by model (test / mod defs reusing a station model) */
+const fleetCache = new Map<string, { responder: Responder; units: number } | null>();
+export function fleetOfDef(defId: string): { responder: Responder; units: number } | null {
+  let f = fleetCache.get(defId);
+  if (f !== undefined) return f;
+  f = FLEET[defId] ?? null;
+  if (!f) {
+    const d = getDef(defId);
+    if (d) f = FLEET[d.model] ?? null;
+    else return null; // catalog not loaded: do not cache
+  }
+  fleetCache.set(defId, f);
+  return f;
+}
+
+/** auto-dispatch range (game minutes) of a station def */
+export function stationRange(def: BuildingDef | undefined, r: Responder): number {
+  const radius = def?.coverage?.radius ?? DEFAULT_RADIUS[r];
+  return Math.min(EMERG_RMAX, radius * ROAD_RADIUS_FACTOR * NET_TIME[Network.Road] * EMERG_RANGE_K);
+}
+
+function isHospitalDef(def: BuildingDef | undefined): boolean {
+  if (!def) return false;
+  if (def.coverage?.tier === 'hospital') return true;
+  if (def.coverage?.tier === 'clinic') return false;
+  return (def.coverage?.radius ?? 0) > 20;
+}
+
+/** vehicle position at sim time t: cell coords (x, z at cell centres = +0.5), unit heading, moving flag */
+export interface VehiclePos { x: number; z: number; hx: number; hz: number; moving: boolean }
+export function vehiclePosition(v: EmergencyVehicle, t: number, N: number, out: VehiclePos = { x: 0, z: 0, hx: 1, hz: 0, moving: false }): VehiclePos {
+  const p = v.path, tm = v.times;
+  const n = p.length;
+  if (n === 0) return out;
+  let m: number;
+  let moving = false;
+  const fwd = v.m1 >= v.m0;
+  if (v.state === 'onScene') m = v.m1;
+  else {
+    const el = (t - v.legStart) / EMERG_DAYS_PER_MIN;
+    const span = Math.abs(v.m1 - v.m0);
+    const s = el <= 0 ? 0 : el >= span ? span : el;
+    moving = el > 0 && el < span;
+    m = fwd ? v.m0 + s : v.m0 - s;
+  }
+  // segment k with times[k] <= m <= times[k+1]
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (tm[mid] <= m) lo = mid;
+    else hi = mid;
+  }
+  const a = p[lo], b = p[Math.min(n - 1, lo + 1)];
+  const ax = a % N, az = (a - ax) / N, bx = b % N, bz = (b - bx) / N;
+  const span = tm[Math.min(n - 1, lo + 1)] - tm[lo];
+  const f = span > 1e-9 ? Math.max(0, Math.min(1, (m - tm[lo]) / span)) : 0;
+  out.x = ax + (bx - ax) * f + 0.5;
+  out.z = az + (bz - az) * f + 0.5;
+  let hx = bx - ax, hz = bz - az;
+  const l = Math.hypot(hx, hz);
+  if (l > 0) {
+    hx /= l; hz /= l;
+    if (!fwd) { hx = -hx; hz = -hz; }
+    out.hx = hx; out.hz = hz;
+  }
+  out.moving = moving;
+  return out;
+}
+
+// ------------------------------------------------------------------------------------------------ dispatch search
+/**
+ * Reverse road search (travel times TO the seeds = the incident's road nodes) with Dial buckets and early exit.
+ * `visit(u, d)` is called for settled nodes that have station entries (stHead[u] >= 0); returning true stops.
+ * Settling also stops once labels exceed `this.stop` (the visitor may lower it).
+ */
+class DispatchSearch {
+  dist: Float64Array<ArrayBuffer> = new Float64Array(0);
+  next: Int32Array<ArrayBuffer> = new Int32Array(0);
+  /** per-node stamps: mark[v] === stamp -> dist / next are valid for this run; done[v] === stamp -> settled */
+  private mark: Uint32Array<ArrayBuffer> = new Uint32Array(0);
+  private done: Uint32Array<ArrayBuffer> = new Uint32Array(0);
+  private stampV = 0;
+  private head: Int32Array<ArrayBuffer> = new Int32Array(0);
+  /** bucket entries (singly linked per bucket). A run pushes at most ns + 4 x settled entries (seeds + one per
+   *  improving relaxation, 4 out-edges per settled node), so 4n + ns never overflows: no growth checks in the loop */
+  private enext: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private enode: Int32Array<ArrayBuffer> = new Int32Array(0);
+  stop = Infinity;
+  settled = 0;
+
+  /** distance label of node v from the last run (Infinity = not reached) */
+  d(v: number): number {
+    return this.mark[v] === this.stampV ? this.dist[v] : Infinity;
+  }
+  /** next node towards the seeds (-1 = seed / not reached) */
+  nx(v: number): number {
+    return this.mark[v] === this.stampV ? this.next[v] : -1;
+  }
+
+  run(g: RoadGraph, tm: Float32Array, seeds: Int32Array, ns: number, limit: number, stHead: Int32Array | null, visit: ((u: number, d: number) => boolean) | null): void {
+    const n = g.n;
+    if (this.dist.length < n) {
+      const c = n + (n >> 2) + 16;
+      this.dist = new Float64Array(c);
+      this.next = new Int32Array(c);
+      this.mark = new Uint32Array(c);
+      this.done = new Uint32Array(c);
+      this.stampV = 0;
+    }
+    if (++this.stampV >= 0xfffffff0) {
+      this.mark.fill(0);
+      this.done.fill(0);
+      this.stampV = 1;
+    }
+    const S = this.stampV;
+    const dist = this.dist, next = this.next, mark = this.mark, done = this.done;
+    this.settled = 0;
+    if (!(limit < 2000)) limit = 2000;
+    const invQ = 1 / QB;
+    const nb = Math.ceil(limit * invQ) + 2;
+    if (this.head.length < nb) this.head = new Int32Array(nb + 64).fill(-1);
+    const head = this.head;
+    const cap = 4 * n + ns + 64;
+    if (this.enext.length < cap) {
+      const c = cap + (cap >> 2);
+      this.enext = new Int32Array(c);
+      this.enode = new Int32Array(c);
+    }
+    const enext = this.enext, enode = this.enode;
+    let en = 0;
+    let maxB = 0;
+    for (let s = 0; s < ns; s++) {
+      const v = seeds[s];
+      if (v < 0 || v >= n || (mark[v] === S && dist[v] === 0)) continue;
+      mark[v] = S;
+      dist[v] = 0;
+      next[v] = -1;
+      enode[en] = v;
+      enext[en] = head[0];
+      head[0] = en++;
+    }
+    const adj = g.rev, type = g.type;
+    const HW = Network.Highway, RP = RAMP_PENALTY;
+    let cnt = 0;
+    let b = 0;
+    outer: for (; b < nb; b++) {
+      let e = head[b];
+      while (e >= 0) {
+        const u = enode[e];
+        e = enext[e];
+        if (done[u] === S) continue;
+        const key = dist[u];
+        if (key > this.stop) break outer;
+        done[u] = S;
+        cnt++;
+        if (visit && (!stHead || stHead[u] >= 0) && visit(u, key)) break outer;
+        const tu = tm[u];
+        const hu = type[u] === HW;
+        const base = u * 4;
+        for (let k = 0; k < 4; k++) {
+          const v = adj[base + k];
+          if (v < 0 || done[v] === S) continue;
+          let c = 0.5 * (tu + tm[v]);
+          if (hu !== (type[v] === HW)) c += RP;
+          const nd = key + c;
+          if ((mark[v] !== S || nd < dist[v]) && nd <= limit) {
+            mark[v] = S;
+            dist[v] = nd;
+            next[v] = u;
+            const bi = (nd * invQ) | 0;
+            const bb = bi > b ? bi : b + 1;
+            if (bb > maxB) maxB = bb;
+            enode[en] = v;
+            enext[en] = head[bb];
+            head[bb] = en++;
+          }
+        }
+      }
+      head[b] = -1;
+    }
+    // clear the buckets that still hold entries (early exit)
+    for (let q = b; q <= maxB && q < nb; q++) head[q] = -1;
+    this.settled = cnt;
+  }
+}
+
+/**
+ * Resumable forward multi-source road search for the response layers: exactly roadSearch's model (search.ts: Dial
+ * buckets of width QB, edge a->b = (t[a] + t[b]) / 2 + RAMP_PENALTY on highway <-> road, seed labels, `limit`) and
+ * therefore the same labels, but settled in chunks of at most `maxSettle` nodes, so one scheduler step stays bounded
+ * on any graph size (a fully paved 256² map has 65k road nodes).
+ */
+export class ChunkedSearch {
+  dist: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private done: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  private head: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private enext: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private enode: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private en = 0;
+  private b = 0;
+  private nb = 0;
+  private limit = 0;
+  private n = 0;
+  /** nodes settled so far by this search */
+  settled = 0;
+
+  start(n: number, seeds: Seeds, limit: number): void {
+    this.n = n;
+    if (this.dist.length < n) {
+      const c = n + (n >> 3) + 16;
+      this.dist = new Float64Array(c);
+      this.done = new Uint8Array(c);
+    }
+    this.dist.fill(Infinity, 0, n);
+    this.done.fill(0, 0, n);
+    if (!(limit < 2000)) limit = 2000;
+    this.limit = limit;
+    const invQ = 1 / QB;
+    this.nb = Math.ceil(limit * invQ) + 2;
+    if (this.head.length < this.nb) this.head = new Int32Array(this.nb + 64);
+    this.head.fill(-1, 0, this.nb);
+    // entries: seeds + one per improving relaxation (<= 4 per settled node)
+    const cap = 4 * n + seeds.n + 64;
+    if (this.enext.length < cap) {
+      const c = cap + (cap >> 2);
+      this.enext = new Int32Array(c);
+      this.enode = new Int32Array(c);
+    }
+    this.en = 0;
+    this.b = 0;
+    this.settled = 0;
+    const dist = this.dist, head = this.head, enext = this.enext, enode = this.enode;
+    for (let s = 0; s < seeds.n; s++) {
+      const v = seeds.node[s];
+      const l = seeds.label[s];
+      if (v < 0 || v >= n || !(l <= limit)) continue;
+      if (l < dist[v]) {
+        dist[v] = l;
+        const bi = (l * invQ) | 0;
+        enode[this.en] = v;
+        enext[this.en] = head[bi];
+        head[bi] = this.en++;
+      }
+    }
+  }
+
+  /** settle up to `maxSettle` more nodes; true when the search is complete */
+  step(g: RoadGraph, adj: Int32Array, time: Float32Array, maxSettle: number): boolean {
+    const nb = this.nb, limit = this.limit, n = this.n;
+    const dist = this.dist, done = this.done, head = this.head, enext = this.enext, enode = this.enode;
+    const invQ = 1 / QB;
+    const type = g.type;
+    const HW = Network.Highway, RP = RAMP_PENALTY;
+    let en = this.en;
+    let cnt = this.settled;
+    const stopAt = cnt + maxSettle;
+    let b = this.b;
+    outer: for (; b < nb; b++) {
+      let e = head[b];
+      while (e >= 0) {
+        if (cnt >= stopAt) { head[b] = e; break outer; } // resume here (pushes never land in the current bucket)
+        const u = enode[e];
+        e = enext[e];
+        if (u >= n || done[u] === 1) continue;
+        done[u] = 1;
+        cnt++;
+        const key = dist[u];
+        const tu = time[u];
+        const hu = type[u] === HW;
+        const base = u * 4;
+        for (let k = 0; k < 4; k++) {
+          const v = adj[base + k];
+          if (v < 0 || done[v] === 1) continue;
+          let c = 0.5 * (tu + time[v]);
+          if (hu !== (type[v] === HW)) c += RP;
+          const nd = key + c;
+          if (nd < dist[v] && nd <= limit) {
+            dist[v] = nd;
+            const bi = (nd * invQ) | 0;
+            const bb = bi > b ? bi : b + 1;
+            enode[en] = v;
+            enext[en] = head[bb];
+            head[bb] = en++;
+          }
+        }
+      }
+      head[b] = -1;
+    }
+    this.b = b;
+    this.en = en;
+    this.settled = cnt;
+    return b >= nb;
+  }
+}
+
+// ------------------------------------------------------------------------------------------------ system
+interface Station {
+  id: number;
+  def: string;
+  name: string;
+  responder: Responder;
+  hospital: boolean;
+  /** FLEET units and effective units (funding) */
+  base: number;
+  units: number;
+  /** auto range (minutes) */
+  range: number;
+  /** extra turnout (days): unpowered stations */
+  turnout: number;
+  x: number;
+  z: number;
+  /** road entry nodes on the current graph */
+  nodes: number[];
+}
+
+interface Effect {
+  kind: 'crime' | 'poll';
+  x: number;
+  z: number;
+  radius: number;
+  a: number;
+  b: number;
+  until: number;
+}
+
+interface Persist {
+  v: number;
+  nextId: number;
+  nextVid: number;
+  rng: number;
+  incidents: Incident[];
+  vehicles: EmergencyVehicle[];
+  effects: Effect[];
+  months: EmergencyMonth[];
+  medQ: [number, number];
+  /** daily dispatch-search budget (day, searches that always run, settled road nodes left) */
+  searchDay: number;
+  searchesLeft: number;
+  nodesLeft?: number;
+  /** generation weights per kind: [block indices, monthly rates] (built at the month start) + the plant factor */
+  gen?: Partial<Record<GenKind, [number[], number[]]>> & { plantF?: number };
+  /** station-set version seen by the incidents (restored so a loaded game does not retry uncovered incidents early) */
+  stVer?: number;
+  /** monthly weight pass in progress: next slice (of `n`), plant factor, dense per-block sums per kind */
+  genBuild?: { slice: number; n?: number; plantF: number; acc: [number[], number[], number[], number[]] };
+  /** response-layer refresh schedule [last refresh day, pending: 0 none / 1 road-graph change / 2 due now]: the layers
+   *  are derived (recomputed in init), but a loaded game keeps the original's refresh days, so the shared scheduler
+   *  runs the same layer steps and the other tasks' timing (and the city) continue the same way */
+  resp?: [number, number];
+  /** news throttle: the day each news key ('uncovered:fire', 'failed:medical', ...) was last posted, so a loaded game
+   *  words its news feed like the original (absent in older saves: nothing throttled yet) */
+  news?: Record<string, number>;
+  /** content signature of the road graph the incidents' dispatch decisions were made on (graphSig): a loaded game
+   *  whose graph differs (a network edit the original's graph did not have yet when it was saved) retries them, as
+   *  the original does once its graph catches up */
+  gSig?: string;
+  /** the siren link times (per road node of the graph with signature `sig`) the dispatch searches use: a loaded game
+   *  decides with exactly these until its own traffic layer next updates (its warm-started traffic differs a little:
+   *  a fire 3.92 min from a 3.90-min station must not become "covered" by a reload). Absent while no link is
+   *  congested (the times are the free-flow ones then) */
+  siren?: { sig: string; t?: Float32Array };
+  /** the early-game plant grace is over: the city had a funded fire station, or EMERG_PLANT_GRACE_DAYS passed */
+  plantGraceOver?: boolean;
+  /** EM-1: incidents whose "uncovered" news is posted at the day's settle point, worded by their state then (a burst's
+   *  later incident may take the unit a "Send help with the Dispatch tool!" counted on) */
+  newsDue?: number[];
+}
+
+/** early-game grace: no thermal-plant / incinerator accidents (EMERG_PLANT_P) before the first funded fire station,
+ *  for at most the city's first three years */
+export const EMERG_PLANT_GRACE_DAYS = 3 * 360;
+
+/** generated kinds (daily Poisson draw over monthly candidate weights) */
+const GEN_KINDS = ['medical', 'crime', 'industrial', 'spill'] as const;
+type GenKind = (typeof GEN_KINDS)[number];
+/** generation blocks (cells): monthly weights are summed per block (saved, so a loaded game draws the same incidents);
+ *  the building inside the drawn block is picked from its current weights */
+const GEN_B = 16;
+/** the monthly weight pass is spread over this many days (building-list ranges + highway row bands): ~2.5k
+ *  buildings a day on a 20k-building city, so no single day carries the whole pass */
+const GEN_SLICES = 8;
+
+/** per-block monthly incident rates of one kind (sparse, block index ascending); saved as [blocks[], weights[]] */
+class BlockWeights {
+  blk: number[] = [];
+  w: number[] = [];
+  cum: Float64Array<ArrayBuffer> = new Float64Array(0);
+  total = 0;
+  set(blk: number[], w: number[]): void {
+    this.blk = blk;
+    this.w = w;
+    if (this.cum.length < w.length) this.cum = new Float64Array(w.length + 16);
+    let t = 0;
+    for (let k = 0; k < w.length; k++) { t += w[k]; this.cum[k] = t; }
+    this.total = t;
+  }
+  fromDense(acc: ArrayLike<number>): void {
+    const blk: number[] = [], w: number[] = [];
+    for (let k = 0; k < acc.length; k++) if (acc[k] > 0) { blk.push(k); w.push(Math.fround(acc[k])); }
+    this.set(blk, w);
+  }
+  /** block index for a uniform r in [0, 1) (-1 = none) */
+  pick(r: number): number {
+    const n = this.w.length;
+    if (n === 0 || !(this.total > 0)) return -1;
+    const x = r * this.total;
+    let lo = 0, hi = n - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.cum[mid] <= x) lo = mid + 1;
+      else hi = mid;
+    }
+    return this.blk[lo];
+  }
+}
+
+export class EmergencySystemOriginal implements SimSystem {
+  readonly name = 'emergency';
+  /** the emergency system handles fires / incidents (false only for the Phase 0 stub) */
+  readonly active: boolean = true;
+  protected sim: Simulation | null = null;
+  private list: Incident[] = [];
+  private byId = new Map<number, Incident>();
+  private vlist: EmergencyVehicle[] = [];
+  private vById = new Map<number, EmergencyVehicle>();
+  private stations: Station[] = [];
+  private stById = new Map<number, Station>();
+  private out = new Map<number, number>();
+  private stDirty = true;
+  /** station power / funding may have changed (updateUnits re-reads them; otherwise it skips the station loop) */
+  private unitsDirty = true;
+  private lastFund = [NaN, NaN, NaN];
+  /** incremented whenever the station set / units change (uncovered incidents retry) */
+  private stVer = 0;
+  /** the road graph the searches run on: traffic's (TrafficSystem.road) or `ownG` (see ensureGraph) */
+  private g = new RoadGraph();
+  private ownG = new RoadGraph();
+  /** the network changed since ownG was built */
+  private ownDirty = true;
+  /** graph version the node-indexed data were derived for, and the epoch (bumped whenever the graph's content changes) */
+  private gVer = -1;
+  private gEpoch = 0;
+  /** content signature (graphSig) of that graph: a rebuild of the very same network keeps every node-indexed datum */
+  private gSig = '';
+  /** traffic's graph version at the last network edit: that graph misses the edit until traffic rebuilds it */
+  private staleVer = -1;
+  /** last day whose incidents were processed (a fire lit before today's processing burns a day sooner) */
+  private processedDay = -1;
+  /** inside dailyWork's generation / processing: new incidents are dispatched by the day's prioritised pass */
+  private batch = false;
+  /** EM-1: stations that just gave away their last free unit (sendUnit): the waiting incidents whose prompt counted on
+   *  a free unit of their responder are re-validated (revalidate) before the dispatch call returns, or after the day's
+   *  dispatch passes */
+  private drained: number[] = [];
+  /** inside the daily dispatch passes (re-validation runs once after them) */
+  private inPasses = false;
+  /** a re-validation left an incident to be re-decided by another dispatch pass today */
+  private redo = false;
+  private tm: Float32Array<ArrayBuffer> = new Float32Array(0);
+  /** siren link times are refreshed when the traffic layer updates (or the graph changes) */
+  private tmDirty = true;
+  private tmVer = -1;
+  private ds = new DispatchSearch();
+  private seedBuf = new Int32Array(64);
+  private tmpNodes = new Int32Array(64);
+  /** node -> station entry lists */
+  private nodeHead = new Int32Array(0);
+  private entSt = new Int32Array(0);
+  private entNext = new Int32Array(0);
+  private seen = new Int32Array(0);
+  private stamp = 0;
+  private rng = new RNG(1);
+  private p: Persist = EmergencySystemOriginal.emptyPersist();
+  private unsub: (() => void)[] = [];
+  private inDaily = false;
+  // generation
+  private gw: Record<GenKind, BlockWeights> = { medical: new BlockWeights(), crime: new BlockWeights(), industrial: new BlockWeights(), spill: new BlockWeights() };
+  private shares = new Float32Array(5);
+  private plantF = 0;
+  private pickIds: number[] = [];
+  private pickW: number[] = [];
+  // response layers
+  private respStep = -1;
+  private respVer = -1;
+  private respLast = -1e9;
+  private respDirty = true;
+  private respNetOnly = false;
+  private nodeSlack: Float32Array<ArrayBuffer>[] = [new Float32Array(0), new Float32Array(0), new Float32Array(0)];
+  private hasStation = [false, false, false];
+  private respComputed = false;
+  /** response refresh: siren link times frozen for the whole sequence, the chunked station search of the current
+   *  responder (started or not), the building-fill cursor */
+  private respTm: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private cs = new ChunkedSearch();
+  private csActive = false;
+  private respBCur = 0;
+  private seeds = new Seeds();
+  // caches
+  private boosts: CrimeBoost[] = [];
+  /** state the boosts / pollution caches were built for */
+  private cacheState: CityState | null = null;
+  private polls: EmergencyPollutionSource[] = [];
+  private optCache = new Map<number, { day: number; ver: number; stVer: number; eta: Map<number, number> }>();
+  /** per-responder on-scene unit-days of the incident being processed (scratch) */
+  private udBuf = new Float64Array(3);
+  /** building ids of the fire cluster being synced (scratch) */
+  private clusterSeen = new Set<number>();
+  /** profiling: ms spent in daily() (last / total) */
+  lastDailyMs = 0;
+
+  private static emptyPersist(): Persist {
+    return {
+      v: 1, nextId: 1, nextVid: 1, rng: 0, incidents: [], vehicles: [], effects: [], months: [], medQ: [0, 0],
+      searchDay: -1, searchesLeft: EMERG_SEARCHES_PER_DAY, nodesLeft: EMERG_SEARCH_NODES_PER_DAY,
+    };
+  }
+
+  // ------------------------------------------------------------------------------------------ lifecycle
+  init(sim: Simulation): void {
+    this.sim = sim;
+    const st = sim.state;
+    for (const u of this.unsub) u();
+    this.unsub = [
+      sim.events.on('networkChanged', () => this.markNet()),
+      sim.events.on('terrainChanged', () => this.markNet()),
+      sim.events.on('layerUpdated', (k) => {
+        if (k === 'traffic') this.tmDirty = true;
+      }),
+      sim.events.on('buildingAdded', (b) => this.onBuildingEvent(b)),
+      sim.events.on('buildingRemoved', (b) => this.onBuildingEvent(b)),
+      sim.events.on('buildingChanged', (b) => {
+        // a known station: rebuild the list only when it stops working, else just re-read power / funding
+        if (this.stById.has(b.id)) {
+          if (isFunctional(b)) this.unitsDirty = true;
+          else this.stDirty = true;
+        } else if (b.built >= 1 && fleetOfDef(b.def) && isFunctional(b)) this.stDirty = true;
+      }),
+    ];
+    this.load(st);
+    this.ownDirty = true;
+    // re-derive the node-indexed data even when the graph object (or its content) is the same
+    this.gVer = -1;
+    this.gSig = '';
+    this.staleVer = -1;
+    this.stDirty = true;
+    this.tmDirty = true;
+    this.batch = false;
+    this.drained = [];
+    this.inPasses = false;
+    this.redo = false;
+    // a loaded game sits between two days: today's incidents were already processed
+    this.processedDay = st.day;
+    this.optCache.clear();
+    this.ensureGraph(st);
+    this.refreshStations(sim);
+    // the stations of a loaded game are the ones its incidents already saw: continue the saved station version ...
+    if (typeof this.p.stVer === 'number') this.stVer = this.p.stVer;
+    // ... unless the network changed after the original's road graph was built (an edit saved before traffic rebuilt
+    // its graph): this graph already has the edit, so the waiting incidents retry now (the original does once its
+    // graph catches up)
+    if (typeof this.p.gSig === 'string' && this.p.gSig !== this.gSig) this.stVer++;
+    // the siren times the original's searches use (Persist.siren), when they belong to this very graph: the loaded
+    // game decides exactly like the original until its own traffic layer updates
+    const sv = this.p.siren;
+    if (sv && sv.sig === this.gSig && (!sv.t || sv.t.length === this.g.n)) {
+      const n = this.g.n;
+      if (this.tm.length < n) this.tm = new Float32Array(n + (n >> 3) + 16);
+      this.tm.set(sv.t ?? this.g.t0.subarray(0, n));
+      this.tmDirty = false;
+      this.tmVer = this.gEpoch;
+    }
+    if (!this.restoreWeights(st)) {
+      this.p.genBuild = undefined;
+      this.buildWeights(sim);
+    }
+    // derived layers: compute synchronously
+    const rs = this.p.resp; // (read before the refresh below overwrites it)
+    this.respStep = -1;
+    this.respDirty = true;
+    do this.respTaskStep(sim); while (this.respStep >= 0);
+    // a loaded game continues the saved refresh schedule (same scheduler work as the original from here on)
+    if (Array.isArray(rs) && Number.isFinite(rs[0]) && rs[0] <= st.day) {
+      this.respLast = rs[0];
+      this.respDirty = rs[1] > 0;
+      this.respNetOnly = rs[1] === 1;
+    }
+    this.saveResp();
+    this.rebuildCaches(st);
+    this.writeStats(st);
+    const self = this;
+    schedulerOf(sim).register({
+      name: 'emergency.response',
+      due: (s) => self.respDue(s),
+      urgent: () => false,
+      cost: () => self.respCost(),
+      step: (s) => self.respTaskStep(s),
+    });
+  }
+
+  private onBuildingEvent(b: Building): void {
+    if (this.stById.has(b.id) || fleetOfDef(b.def)) this.stDirty = true;
+  }
+
+  /** network / terrain edit: the private graph is rebuilt on its next use; traffic's graph (the usual one) is rebuilt
+   *  by traffic's own scheduled step, until then it misses the edit (graphStale) — the node-indexed data, option
+   *  cache and response layers follow when its version changes (ensureGraph) */
+  private markNet(): void {
+    this.ownDirty = true;
+    const tg = this.sim ? this.trafficGraph(this.sim.state) : null;
+    this.staleVer = tg ? tg.version : -1;
+    this.optCache.clear();
+  }
+
+  private load(st: CityState): void {
+    const raw = st.systemData.emergency as Partial<Persist> | undefined;
+    const p = EmergencySystemOriginal.emptyPersist();
+    if (raw && typeof raw === 'object' && raw.v === 1) {
+      p.nextId = raw.nextId ?? 1;
+      p.nextVid = raw.nextVid ?? 1;
+      p.rng = raw.rng ?? 0;
+      p.incidents = Array.isArray(raw.incidents) ? raw.incidents : [];
+      p.vehicles = Array.isArray(raw.vehicles) ? raw.vehicles : [];
+      p.effects = Array.isArray(raw.effects) ? raw.effects : [];
+      p.months = Array.isArray(raw.months) ? raw.months : [];
+      p.medQ = Array.isArray(raw.medQ) ? [raw.medQ[0] ?? 0, raw.medQ[1] ?? 0] : [0, 0];
+      p.searchDay = raw.searchDay ?? -1;
+      p.searchesLeft = raw.searchesLeft ?? EMERG_SEARCHES_PER_DAY;
+      p.nodesLeft = typeof raw.nodesLeft === 'number' ? raw.nodesLeft : EMERG_SEARCH_NODES_PER_DAY;
+      if (raw.gen && typeof raw.gen === 'object') p.gen = raw.gen;
+      if (typeof raw.stVer === 'number') p.stVer = raw.stVer;
+      if (Array.isArray(raw.resp) && raw.resp.length === 2) p.resp = [Number(raw.resp[0]), Number(raw.resp[1]) | 0];
+      if (raw.news && typeof raw.news === 'object' && !Array.isArray(raw.news)) {
+        const news: Record<string, number> = {};
+        for (const [k, d] of Object.entries(raw.news)) if (typeof d === 'number' && Number.isFinite(d)) news[k] = d;
+        p.news = news;
+      }
+      const gb = raw.genBuild;
+      // a pass saved with another slice count is dropped (the saved weights of the last complete pass stay in use)
+      if (gb && typeof gb === 'object' && gb.n === GEN_SLICES && Array.isArray(gb.acc) && gb.acc.length === 4 && gb.acc.every((a) => Array.isArray(a))) p.genBuild = gb;
+      if (typeof raw.gSig === 'string') p.gSig = raw.gSig;
+      const sv = raw.siren;
+      if (sv && typeof sv === 'object' && typeof sv.sig === 'string' && (sv.t === undefined || sv.t instanceof Float32Array)) p.siren = sv.t ? { sig: sv.sig, t: sv.t } : { sig: sv.sig };
+      if (raw.plantGraceOver === true) p.plantGraceOver = true;
+      if (Array.isArray(raw.newsDue)) p.newsDue = raw.newsDue.filter((id) => typeof id === 'number');
+    }
+    this.p = p;
+    this.rng = new RNG(((st.config.seed ^ 0x3e41c) >>> 0) || 1);
+    if (p.rng) this.rng.state = p.rng;
+    else p.rng = this.rng.state;
+    this.list = p.incidents;
+    this.vlist = p.vehicles;
+    this.byId.clear();
+    // a save from before the duplicate-fire fix can list a burning building twice, in one fire incident or in two:
+    // keep its first listing (in list order that is the incident its fire joined), so each fire is stepped once a day
+    const listed = new Set<number>();
+    for (const inc of this.list) {
+      inc.fires ??= [];
+      inc.firstAt ??= {};
+      inc.units ??= [];
+      inc.need ??= {};
+      const fl = inc.fires;
+      let n = 0;
+      for (let k = 0; k < fl.length; k++) {
+        if (listed.has(fl[k])) continue;
+        listed.add(fl[k]);
+        fl[n++] = fl[k];
+      }
+      fl.length = n;
+      this.byId.set(inc.id, inc);
+    }
+    // BF.Incident marks exactly the listed buildings (sites and burning cluster members). A save from before the
+    // stale-flag fix carries it on buildings that left a fire cluster part-way (put out, burnt down): repair it here,
+    // without events (the game is being (re)loaded). A save written since then is unchanged by this.
+    for (const inc of this.list) if (inc.buildingId >= 0) listed.add(inc.buildingId);
+    for (const b of st.buildings.values()) {
+      if (((b.flags & BF.Incident) !== 0) !== listed.has(b.id)) b.flags ^= BF.Incident;
+    }
+    this.vById.clear();
+    for (const v of this.vlist) this.vById.set(v.id, v);
+    this.recountOut();
+    st.systemData.emergency = p;
+  }
+
+  private saveResp(): void {
+    const pending = this.respStep >= 0 || (this.respDirty && !this.respNetOnly) ? 2 : this.respDirty ? 1 : 0;
+    const r = this.p.resp;
+    if (r && r[0] === this.respLast && r[1] === pending) return;
+    this.p.resp = [this.respLast, pending];
+  }
+
+  private recountOut(): void {
+    this.out.clear();
+    for (const v of this.vlist) this.out.set(v.stationId, (this.out.get(v.stationId) ?? 0) + 1);
+  }
+
+  private persist(): void {
+    this.p.rng = this.rng.state;
+    this.p.stVer = this.stVer;
+    this.p.gSig = this.gSig;
+    this.saveResp();
+    const sd = this.sim?.state.systemData;
+    if (sd && sd.emergency !== this.p) sd.emergency = this.p;
+  }
+
+  /** current sim time: the day inside daily(), continuous time for player / disaster actions between days */
+  private now(sim: Simulation): number {
+    return this.inDaily ? sim.state.day : sim.simTime();
+  }
+
+  // ------------------------------------------------------------------------------------------ graph / stations
+  /** traffic's road graph when it covers this map, else null */
+  private trafficGraph(st: CityState): RoadGraph | null {
+    const tg = this.sim?.getSystem<TrafficSystem>('traffic')?.road;
+    return tg && tg.N === st.size ? tg : null;
+  }
+
+  /**
+   * Point the searches at the current road graph and re-derive the node-indexed data when it changed. Traffic's graph
+   * is only read here, never built (traffic rebuilds it in its own scheduled step, so road edits never put a graph
+   * build into this system's daily work or a UI call); the private graph is built on demand only while traffic has
+   * none for this map (no traffic system, or a new city before traffic's first build — a tiny network). True when
+   * the graph changed.
+   */
+  private ensureGraph(st: CityState): boolean {
+    let g = this.trafficGraph(st);
+    if (g) {
+      if (this.ownG.N > 0) this.ownG = new RoadGraph(); // no longer needed: free it
+    } else {
+      g = this.ownG;
+      if (this.ownDirty || g.N !== st.size) {
+        g.build(st);
+        this.ownDirty = false;
+      }
+    }
+    if (g === this.g && g.version === this.gVer) return false;
+    this.g = g;
+    this.gVer = g.version;
+    const sig = graphSig(g);
+    // rebuilt with the very same road network (traffic's rebuild after a load's 'reset', a subway or rail edit): node
+    // ids and every node-indexed datum stay valid — no retry wave, no layer refresh, so a loaded game keeps the
+    // original's dispatch decisions and scheduler work
+    if (sig === this.gSig) return false;
+    this.gSig = sig;
+    this.gEpoch++;
+    this.stVer++; // uncovered incidents retry on the new graph
+    this.optCache.clear();
+    this.stationNodes(st);
+    // the response layers follow the new graph (a network-only change is throttled headless, see respDue)
+    if (!this.respDirty) this.respNetOnly = true;
+    this.respDirty = true;
+    return true;
+  }
+
+  /** the network changed after the graph the searches use was built (traffic catches up within a few days) */
+  private graphStale(): boolean {
+    return this.g !== this.ownG && this.g.version === this.staleVer;
+  }
+
+  /** siren link times t0 x (1 + EMERG_SIREN_CONG x (bpr - 1)) from the traffic layer (same BPR as traffic.ts) */
+  private ensureTimes(st: CityState): void {
+    const g = this.g;
+    if (!this.tmDirty && this.tmVer === this.gEpoch) return;
+    this.tmDirty = false;
+    this.tmVer = this.gEpoch;
+    const n = g.n;
+    if (this.tm.length < n) this.tm = new Float32Array(n + (n >> 3) + 16);
+    const traffic = st.traffic, cellOf = g.cellOf, cap = g.cap, t0 = g.t0, tm = this.tm;
+    const A = BPR_ALPHA, MAXF = BPR_MAX_FACTOR, K = EMERG_SIREN_CONG;
+    let free = true;
+    for (let v = 0; v < n; v++) {
+      const c = cap[v];
+      const r = c > 0 ? traffic[cellOf[v]] / c : 0;
+      const r2v = r * r;
+      let f = 1 + A * r2v * r2v;
+      if (f > MAXF) f = MAXF;
+      tm[v] = t0[v] * (1 + K * (f - 1));
+      if (free && tm[v] !== t0[v]) free = false;
+    }
+    // the saved copy a loaded game decides with (Persist.siren; free-flow times need no copy)
+    this.p.siren = free ? { sig: this.gSig } : { sig: this.gSig, t: tm.slice(0, n) };
+  }
+
+  private refreshStations(sim: Simulation): void {
+    const st = sim.state;
+    this.stDirty = false;
+    const prev = this.stById;
+    const list: Station[] = [];
+    const count = new Map<string, number>();
+    for (const b of buildingList(st)) {
+      const f = fleetOfDef(b.def);
+      if (!f || !isFunctional(b)) continue;
+      const def = getDef(b.def);
+      const k = (count.get(b.def) ?? 0) + 1;
+      count.set(b.def, k);
+      const old = prev.get(b.id);
+      list.push({
+        id: b.id, def: b.def, name: `${def?.name ?? 'Station'} #${k}`, responder: f.responder, hospital: f.responder === 'medical' && isHospitalDef(def),
+        base: f.units, units: old?.units ?? f.units, range: stationRange(def, f.responder), turnout: 0, x: b.x, z: b.z, nodes: [],
+      });
+    }
+    list.sort((a, b) => a.id - b.id);
+    this.stations = list;
+    this.stById = new Map(list.map((s) => [s.id, s]));
+    this.stationNodes(st);
+    this.updateUnits(st, true);
+    this.stVer++;
+    this.respDirty = true;
+    this.respNetOnly = false;
+    this.optCache.clear();
+  }
+
+  private stationNodes(st: CityState): void {
+    const g = this.g;
+    const N = st.size;
+    let total = 0;
+    for (const s of this.stations) {
+      const b = st.buildings.get(s.id);
+      s.nodes.length = 0;
+      if (!b || g.N !== N) continue;
+      const c = perimeterNodes(g.nodeOfCell, N, b, this.tmpNodes, 0, this.tmpNodes.length);
+      for (let k = 0; k < c; k++) if (!s.nodes.includes(this.tmpNodes[k])) s.nodes.push(this.tmpNodes[k]);
+      total += s.nodes.length;
+    }
+    if (this.nodeHead.length < g.n) this.nodeHead = new Int32Array(g.n + (g.n >> 3) + 16);
+    this.nodeHead.fill(-1, 0, g.n);
+    if (this.entSt.length < total) {
+      this.entSt = new Int32Array(total + 16);
+      this.entNext = new Int32Array(total + 16);
+    }
+    if (this.seen.length < this.stations.length) this.seen = new Int32Array(this.stations.length + 16);
+    let e = 0;
+    this.stations.forEach((s, k) => {
+      for (const v of s.nodes) {
+        this.entSt[e] = k;
+        this.entNext[e] = this.nodeHead[v];
+        this.nodeHead[v] = e;
+        e++;
+      }
+    });
+  }
+
+  /** effective units from funding, turnout from power; returns true if any station's reach changed */
+  private updateUnits(st: CityState, force = false): boolean {
+    let changed = false;
+    const fund = [fundingFactor(st, RESPONDER_SERVICE.fire), fundingFactor(st, RESPONDER_SERVICE.police), fundingFactor(st, RESPONDER_SERVICE.medical)];
+    const lf = this.lastFund;
+    if (!force && !this.unitsDirty && fund[0] === lf[0] && fund[1] === lf[1] && fund[2] === lf[2]) return false;
+    this.unitsDirty = false;
+    lf[0] = fund[0]; lf[1] = fund[1]; lf[2] = fund[2];
+    for (const s of this.stations) {
+      const b = st.buildings.get(s.id);
+      if (!b) continue;
+      const f = fund[R_INDEX[s.responder]];
+      const u = f < 0.25 ? 0 : Math.max(1, Math.round(s.base * Math.min(1.2, f)));
+      if ((u > 0) !== (s.units > 0)) changed = true;
+      if (u !== s.units) this.stVer++;
+      s.units = u;
+      const inf = infoOf(st, b);
+      s.turnout = inf.usesPower && !(b.flags & BF.Powered) ? EMERG_UNPOWERED_TURNOUT : 0;
+    }
+    if (changed && !force) {
+      this.respDirty = true;
+      this.respNetOnly = false;
+    }
+    return changed;
+  }
+
+  private freeOf(s: Station): number {
+    return Math.max(0, s.units - (this.out.get(s.id) ?? 0));
+  }
+
+  // ------------------------------------------------------------------------------------------ public API
+  /** active incidents (id order) */
+  incidents(): readonly Incident[] {
+    return this.list;
+  }
+  incident(id: number): Incident | undefined {
+    return this.byId.get(id);
+  }
+  /** vehicles on the road / on scene */
+  vehicles(): readonly EmergencyVehicle[] {
+    return this.vlist;
+  }
+  /** emergency stations (fire / police / medical) with their fleets */
+  stationList(): readonly { id: number; name: string; responder: Responder; units: number; base: number; free: number; range: number; x: number; z: number; powered: boolean; hospital: boolean }[] {
+    return this.stations.map((s) => ({ id: s.id, name: s.name, responder: s.responder, units: s.units, base: s.base, free: this.freeOf(s), range: s.range, x: s.x, z: s.z, powered: s.turnout === 0, hospital: s.hospital }));
+  }
+  /** fleet of a station building, null when it is not an emergency station */
+  stationFleet(buildingId: number): StationFleet | null {
+    const s = this.stById.get(buildingId);
+    if (!s) {
+      const b = this.sim?.state.buildings.get(buildingId);
+      const f = b ? fleetOfDef(b.def) : null;
+      return f ? { type: f.responder, total: 0, free: 0, out: 0 } : null;
+    }
+    const out = this.out.get(s.id) ?? 0;
+    return { type: s.responder, total: s.units, free: Math.max(0, s.units - out), out };
+  }
+  /** station display name ("Fire Station #3") */
+  stationName(buildingId: number): string {
+    return this.stById.get(buildingId)?.name ?? 'Station';
+  }
+
+  /** player dispatch options for an incident: every station of a needed type city-wide (ETA from a full-map search, cached 3 days) */
+  dispatchOptions(sim: Simulation, incidentId: number): DispatchOption[] {
+    const inc = this.byId.get(incidentId);
+    if (!inc) return [];
+    const st = sim.state;
+    this.syncStations(sim);
+    const ver = this.gEpoch;
+    let c = this.optCache.get(incidentId);
+    if (!c || st.day - c.day > 3 || c.ver !== ver || c.stVer !== this.stVer) {
+      const eta = new Map<number, number>();
+      const ns = this.siteSeeds(st, inc);
+      if (ns > 0) {
+        this.ensureTimes(st);
+        this.ds.stop = Infinity;
+        const stamp = ++this.stamp;
+        this.ds.run(this.g, this.tm, this.seedBuf, ns, 2000, this.nodeHead, (u, d) => {
+          for (let e = this.nodeHead[u]; e >= 0; e = this.entNext[e]) {
+            const k = this.entSt[e];
+            if (this.seen[k] === stamp) continue;
+            this.seen[k] = stamp;
+            eta.set(this.stations[k].id, d);
+          }
+          return false;
+        });
+      }
+      c = { day: st.day, ver, stVer: this.stVer, eta };
+      this.optCache.set(incidentId, c);
+    }
+    const need = INCIDENT_RESPONDERS[inc.kind];
+    const outL: DispatchOption[] = [];
+    for (const s of this.stations) {
+      if (!need.includes(s.responder)) continue;
+      const t = c.eta.get(s.id);
+      const etaMin = t === undefined ? Infinity : r2(t + s.turnout / EMERG_DAYS_PER_MIN);
+      outL.push({ stationId: s.id, name: s.name, responder: s.responder, free: this.freeOf(s), total: s.units, etaMin, etaDays: etaMin * EMERG_DAYS_PER_MIN, inRange: t !== undefined && t <= s.range + EPS });
+    }
+    outL.sort((a, b) => (a.free > 0 ? 0 : 1) - (b.free > 0 ? 0 : 1) || a.etaMin - b.etaMin || a.stationId - b.stationId);
+    return outL;
+  }
+
+  /** send `units` free units of a station to an incident (player dispatch) */
+  dispatch(sim: Simulation, incidentId: number, stationId: number, units = 1): DispatchResult {
+    const inc = this.byId.get(incidentId);
+    if (!inc) return { ok: false, reason: 'This emergency is already over' };
+    this.syncStations(sim);
+    const s = this.stById.get(stationId);
+    if (!s) return { ok: false, reason: 'Not an emergency station' };
+    if (!INCIDENT_RESPONDERS[inc.kind].includes(s.responder)) return { ok: false, reason: `${s.name} can't help with a ${INCIDENT_LABEL[inc.kind].toLowerCase()}` };
+    if (s.units <= 0) return { ok: false, reason: `${s.name} has no funded ${RESPONDER_UNIT[s.responder][1]} — raise the ${RESPONDER_SERVICE[s.responder]} budget` };
+    const free = this.freeOf(s);
+    if (free <= 0) return { ok: false, reason: stationBusyText(s) };
+    const st = sim.state;
+    const ns = this.siteSeeds(st, inc);
+    if (ns === 0) return { ok: false, reason: 'No road leads to this place' };
+    this.ensureTimes(st);
+    const k = this.stations.indexOf(s);
+    let found = -1, fd = 0;
+    this.ds.stop = Infinity;
+    this.ds.run(this.g, this.tm, this.seedBuf, ns, 2000, this.nodeHead, (u, d) => {
+      for (let e = this.nodeHead[u]; e >= 0; e = this.entNext[e]) {
+        if (this.entSt[e] === k) { found = u; fd = d; return true; }
+      }
+      return false;
+    });
+    if (found < 0) return { ok: false, reason: `No road route from ${s.name}` };
+    const now = this.now(sim);
+    const n = Math.max(1, Math.min(free, units | 0));
+    const route = this.extractPath(found);
+    for (let q = 0; q < n; q++) this.sendUnit(sim, inc, s, route, fd, now, true);
+    this.afterDispatch(sim, inc);
+    // (the station's last free unit may have been the one another waiting incident's prompt counted on)
+    this.revalidate(sim);
+    this.persist();
+    return { ok: true, etaMin: r2(fd + s.turnout / EMERG_DAYS_PER_MIN), sent: n };
+  }
+
+  /** road route (corner cells, station -> site) a unit of `stationId` would drive to the incident (Dispatch tool preview) */
+  routePreview(sim: Simulation, incidentId: number, stationId: number): number[] | null {
+    const inc = this.byId.get(incidentId);
+    if (!inc) return null;
+    this.syncStations(sim);
+    const s = this.stById.get(stationId);
+    if (!s) return null;
+    const st = sim.state;
+    const ns = this.siteSeeds(st, inc);
+    if (ns === 0) return null;
+    this.ensureTimes(st);
+    const k = this.stations.indexOf(s);
+    let found = -1;
+    this.ds.stop = Infinity;
+    this.ds.run(this.g, this.tm, this.seedBuf, ns, 2000, this.nodeHead, (u) => {
+      for (let e = this.nodeHead[u]; e >= 0; e = this.entNext[e]) if (this.entSt[e] === k) { found = u; return true; }
+      return false;
+    });
+    return found >= 0 ? this.extractPath(found).cells : null;
+  }
+
+  /** dispatch from the fastest station with a free unit ("Send nearest" / bot), for every responder the incident still
+   *  misses (primary first). The result is the first dispatch (`responder`); `missing` lists the needed responders no
+   *  free unit could be sent for (an industrial accident's fire truck when only an ambulance can go) */
+  dispatchBest(sim: Simulation, incidentId: number): DispatchResult {
+    const inc = this.byId.get(incidentId);
+    if (!inc) return { ok: false, reason: 'This emergency is already over' };
+    if (!this.missingAny(inc)) {
+      // everything it needs is assigned (e.g. a unit came back and was sent automatically a moment ago)
+      return { ok: false, reason: this.onSceneAny(inc) ? 'Responders are already on scene' : 'Help is already on the way' };
+    }
+    const opts = this.dispatchOptions(sim, incidentId).filter((o) => o.free > 0 && Number.isFinite(o.etaMin));
+    let res: DispatchResult | null = null;
+    const missingR: Responder[] = [];
+    for (const r of INCIDENT_RESPONDERS[inc.kind]) {
+      let missing = (inc.need[r] ?? 0) - this.assigned(inc, r);
+      if (missing <= 0) continue;
+      let sentR = false;
+      for (const o of opts) {
+        if (missing <= 0) break;
+        if (o.responder !== r) continue;
+        const d = this.dispatch(sim, incidentId, o.stationId, missing);
+        if (d.ok) {
+          missing -= d.sent ?? 1;
+          res ??= { ...d, responder: r };
+          sentR = true;
+        }
+      }
+      if (!sentR) missingR.push(r);
+    }
+    // EM-1: no free unit of the primary responder could be sent at all (all busy): the Dispatch prompt is over right
+    // away — the banner's "Send nearest" and LIVE mode / the urgent pause end, a failure no longer scores as ignored
+    const primary = INCIDENT_RESPONDERS[inc.kind][0];
+    if (missingR.includes(primary) && !opts.some((o) => o.responder === primary) && (inc.state === 'uncovered' || inc.state === 'queued') && (inc.manualPossible || inc.canSend)) {
+      this.noFreeUnit(sim, inc, primary, this.siteSeeds(sim.state, inc));
+      this.writeStats(sim.state);
+      this.persist();
+    }
+    if (res) {
+      if (missingR.length) res.missing = missingR;
+      return res;
+    }
+    return { ok: false, reason: `No free ${RESPONDER_UNIT[missingR[0] ?? primary][0]} can reach this place`, missing: missingR };
+  }
+
+  /** would an incident needing responder r at (x, z) be auto-dispatched now? (inspector / tests; no unit is sent) */
+  probe(sim: Simulation, r: Responder, x: number, z: number): { auto: boolean; etaMin: number; stationId: number; reason?: UncoveredReason } {
+    const st = sim.state;
+    this.syncStations(sim);
+    const b = st.buildingAt(x, z);
+    const fake = { x, z, buildingId: b ? b.id : -1 } as Incident;
+    const ns = this.siteSeeds(st, fake);
+    const any = this.stations.some((s) => s.responder === r && s.units > 0);
+    if (!any || ns === 0) return { auto: false, etaMin: Infinity, stationId: -1, reason: 'noStation' };
+    this.ensureTimes(st);
+    const res = this.searchUnits(st, r, ns, 1, false, EMERG_MANUAL_MAX);
+    if (res.picks.length) return { auto: true, etaMin: r2(res.picks[0].t), stationId: res.picks[0].s.id };
+    return { auto: false, etaMin: res.manual ? r2(res.manual.t) : Infinity, stationId: res.manual?.s.id ?? -1, reason: res.inRangeBusy.length || (!res.manual && res.busy) ? 'busy' : res.manual ? 'outOfRange' : 'noStation' };
+  }
+
+  /** create an incident (disasters, justice prison riots, sandbox, tests); returns its id or -1 */
+  spawn(sim: Simulation, kind: IncidentKind, x: number, z: number, opts: SpawnOptions = {}): number {
+    const st = sim.state;
+    x = Math.floor(x);
+    z = Math.floor(z);
+    if (!st.inBounds(x, z)) return -1;
+    const b = opts.buildingId !== undefined ? st.buildings.get(opts.buildingId) : st.buildingAt(x, z);
+    if (kind === 'fire') {
+      const fire = sim.getSystem<FireSystem>('fire');
+      if (!b || !fire) return -1;
+      if (!fire.ignite(sim, b)) {
+        const f = fire.fires.get(b.id);
+        return f && f.incidentId !== undefined ? f.incidentId : -1;
+      }
+      return fire.fires.get(b.id)?.incidentId ?? -1;
+    }
+    const inc = this.create(sim, kind, b ? b.x : x, b ? b.z : z, b ?? null, opts);
+    return inc ? inc.id : -1;
+  }
+
+  /** the active incident at / covering cell (x, z), if any (inspector) */
+  report(sim: Simulation, x: number, z: number): Incident | null {
+    const bid = sim.state.inBounds(x, z) ? sim.state.building[sim.state.idx(x, z)] : -1;
+    for (const inc of this.list) {
+      if (inc.x === x && inc.z === z) return inc;
+      if (bid >= 0 && (inc.buildingId === bid || inc.fires.includes(bid))) return inc;
+      if (inc.kind === 'riot' && Math.hypot(inc.x - x, inc.z - z) <= inc.radius) return inc;
+    }
+    return null;
+  }
+
+  /** outcome statistics (stats.emergency) */
+  stats(sim: Simulation): EmergencyStats {
+    return sim.state.stats.emergency;
+  }
+
+  /** a building ignited (fire.ts). true = the emergency system handles it (joins / starts a fire incident) */
+  onFire(sim: Simulation, b: Building, spread: boolean): boolean {
+    if (!this.active || !this.sim) return false;
+    const st = sim.state;
+    const fire = sim.getSystem<FireSystem>('fire');
+    const f = fire?.fires.get(b.id);
+    if (!fire || !f) return false;
+    // join a fire incident within FIRE_CLUSTER_R cells. A building is listed by at most one incident, once: if an
+    // incident still lists it (its old fire ended outside that incident's step — the incident drops it only at its next
+    // sync), the new fire joins that incident and keeps the one entry
+    const inc = this.listingFire(b.id) ?? this.nearFire(st, b);
+    if (inc) {
+      if (!inc.fires.includes(b.id)) inc.fires.push(b.id);
+      f.incidentId = inc.id;
+      this.setIncidentFlag(sim, b, true);
+      inc.severity = inc.fires.length;
+      inc.need.fire = 1 + Math.floor(inc.fires.length / FIRE_HOLD_PER_UNIT);
+      this.emit(sim, inc, 'escalated');
+      if (inc.need.fire > this.assigned(inc, 'fire')) inc.retry = Math.min(inc.retry, st.day);
+      if (!this.inDaily) this.tryDispatch(sim, inc);
+      this.persist();
+      return true;
+    }
+    const created = this.create(sim, 'fire', b.x, b.z, b, { major: true });
+    if (!created) return false;
+    f.incidentId = created.id;
+    void spread;
+    return true;
+  }
+
+  /** the active fire incident whose cluster lists building `id`, if any */
+  private listingFire(id: number): Incident | undefined {
+    for (const inc of this.list) {
+      if (inc.kind === 'fire' && inc.state !== 'resolved' && inc.state !== 'failed' && inc.fires.includes(id)) return inc;
+    }
+    return undefined;
+  }
+
+  /** the first active fire incident within FIRE_CLUSTER_R cells of building b, if any */
+  private nearFire(st: CityState, b: Building): Incident | undefined {
+    for (const inc of this.list) {
+      if (inc.kind !== 'fire' || inc.state === 'resolved' || inc.state === 'failed') continue;
+      if (this.nearCluster(st, inc, b)) return inc;
+    }
+    return undefined;
+  }
+
+  // ------------------------------------------------------------------------------------------ incidents
+  private nearCluster(st: CityState, inc: Incident, b: Building): boolean {
+    const R = FIRE_CLUSTER_R;
+    const gap = (o: { x: number; z: number; w: number; d: number }) => {
+      const dx = Math.max(0, o.x - (b.x + b.w), b.x - (o.x + o.w));
+      const dz = Math.max(0, o.z - (b.z + b.d), b.z - (o.z + o.d));
+      return Math.max(dx, dz);
+    };
+    if (gap({ x: inc.x, z: inc.z, w: 1, d: 1 }) <= R) return true;
+    for (const id of inc.fires) {
+      const o = st.buildings.get(id);
+      if (o && gap(o) <= R) return true;
+    }
+    return false;
+  }
+
+  private create(sim: Simulation, kind: IncidentKind, x: number, z: number, b: Building | null, opts: SpawnOptions): Incident | null {
+    const st = sim.state;
+    if (b) for (const o of this.list) if (o.kind === kind && o.buildingId === b.id) return null; // one per kind and building
+    const now = this.now(sim);
+    const rng = this.rng;
+    const def = b ? getDef(b.def) : undefined;
+    const major = opts.major ?? (MAJOR_KINDS.has(kind) || (kind === 'medical' ? rng.next() < MED_MAJOR : kind === 'crime' ? rng.next() < CRIME_MAJOR : false));
+    const inc: Incident = {
+      id: this.p.nextId++, kind, x, z, buildingId: b ? b.id : -1, major, state: 'queued', start: now,
+      deadline: kind === 'fire' ? this.fireDeadline(st) : now + EMERG_DEADLINE[kind], severity: 1, need: {}, units: [], manualPossible: false,
+      place: def?.name ?? placeName(st, x, z), note: '', grace: EMERG_GRACE[kind], arrived: -1, firstAt: {}, answered: 0, work: 0,
+      injured: 0, deaths: 0, radius: 0, fires: [], lost: 0, saved: 0, retry: Math.floor(now), stVer: -1,
+    };
+    const occ = b ? b.pop + b.jobs : 0;
+    switch (kind) {
+      case 'fire':
+        if (b) inc.fires.push(b.id);
+        inc.need = { fire: 1 };
+        inc.severity = 1;
+        break;
+      case 'medical':
+        inc.injured = opts.severity ?? (major ? rng.int(3, 8) : 1);
+        inc.need = { medical: major ? 2 : 1 };
+        break;
+      case 'industrial':
+        inc.injured = opts.severity ?? rng.int(1, 4);
+        inc.need = { fire: 1, medical: 1 };
+        break;
+      case 'collapse':
+        inc.injured = opts.severity ?? Math.max(1, Math.min(30, Math.round(occ * 0.03)));
+        inc.need = { fire: 1, medical: 1 };
+        break;
+      case 'crime':
+        inc.need = { police: major ? 2 : 1 };
+        break;
+      case 'riot':
+        inc.radius = 2;
+        inc.need = { police: 2 };
+        break;
+      case 'prisonRiot':
+        inc.need = { police: 3 };
+        break;
+      case 'spill':
+        inc.need = { fire: 1 };
+        break;
+    }
+    if (kind !== 'fire') inc.severity = kind === 'riot' ? inc.radius : Math.max(1, inc.injured);
+    const primary = INCIDENT_RESPONDERS[kind][0];
+    inc.work = (EMERG_WORK_DAYS[kind] ?? 1) * (inc.need[primary] ?? 1);
+    this.list.push(inc);
+    this.byId.set(inc.id, inc);
+    const m = st.stats.emergency.month;
+    m.count[kind]++;
+    m.injured += inc.injured;
+    if (b) this.setIncidentFlag(sim, b, true);
+    this.emit(sim, inc, 'new');
+    // inside the daily generation / processing the day's prioritised dispatch pass sends it (fires first); anything
+    // else (ignitions in fire.daily, disasters, the player, monthly riots) is dispatched right away
+    if (!this.batch) this.tryDispatch(sim, inc);
+    this.rebuildCaches(st); // crime boosts / pollution sources of the new incident right away
+    this.persist();
+    return inc;
+  }
+
+  /** the day a new fire burns down without a crew: FIRE_BURN_DAYS burn steps, the first one at the next incident
+   *  processing — today's if it has not run yet (ignitions in fire.daily, riots), else tomorrow's (disasters, UI) */
+  private fireDeadline(st: CityState): number {
+    const first = this.processedDay < st.day ? st.day : st.day + 1;
+    return first + FIRE_BURN_DAYS - 1;
+  }
+
+  private setIncidentFlag(sim: Simulation, b: Building, on: boolean): void {
+    if (!on) {
+      for (const o of this.list) if (o.buildingId === b.id || o.fires.includes(b.id)) return;
+    }
+    const has = (b.flags & BF.Incident) !== 0;
+    if (has === on) return;
+    b.flags = on ? b.flags | BF.Incident : b.flags & ~BF.Incident;
+    sim.events.emit('buildingChanged', b);
+  }
+
+  /**
+   * BF.Incident marks the buildings an incident lists: its site, and the burning buildings of a fire cluster. A
+   * building that leaves a cluster part-way (put out, burnt down, its fire ended outside the step) loses the flag right
+   * then unless it is still listed — finalize() only sees the site and the ids listed at the end, so such a building
+   * used to keep "Emergency here" for good. These two run after / before the building leaves `inc.fires`.
+   */
+  private unlisted(sim: Simulation, id: number): void {
+    const b = sim.state.buildings.get(id);
+    if (b) this.setIncidentFlag(sim, b, false);
+  }
+
+  /** `b` is put out / burnt down in its cluster's step: drop BF.Incident unless it stays listed (the site of `inc`, or
+   *  another incident's). No event of its own: the putOut / burnDown right after emits buildingChanged with it. */
+  private leaveCluster(inc: Incident, b: Building): void {
+    if (!(b.flags & BF.Incident) || inc.buildingId === b.id) return;
+    for (const o of this.list) if (o !== inc && (o.buildingId === b.id || o.fires.includes(b.id))) return;
+    b.flags &= ~BF.Incident;
+  }
+
+  private assigned(inc: Incident, r: Responder): number {
+    let n = 0;
+    for (const id of inc.units) {
+      const v = this.vById.get(id);
+      if (v && v.responder === r && (v.state === 'outbound' || v.state === 'onScene')) n++;
+    }
+    return n;
+  }
+
+  private onSceneCount(inc: Incident, r: Responder): number {
+    let n = 0;
+    for (const id of inc.units) {
+      const v = this.vById.get(id);
+      if (v && v.responder === r && v.state === 'onScene') n++;
+    }
+    return n;
+  }
+
+  /** road nodes of the incident site into seedBuf; returns the count */
+  private siteSeeds(st: CityState, inc: Pick<Incident, 'x' | 'z' | 'buildingId'>): number {
+    const g = this.g;
+    const N = st.size;
+    if (g.N !== N) return 0;
+    const b = inc.buildingId >= 0 ? st.buildings.get(inc.buildingId) : undefined;
+    if (b) {
+      if (this.seedBuf.length < 2 * (b.w + b.d) + 8) this.seedBuf = new Int32Array(2 * (b.w + b.d) + 8);
+      return perimeterNodes(g.nodeOfCell, N, b, this.seedBuf, 0, this.seedBuf.length);
+    }
+    return cellSeeds(g, N, inc.x, inc.z, this.seedBuf);
+  }
+
+  /** path (node ids) from station node u to the site along the last search's tree */
+  private extractPath(u: number): { cells: number[]; times: number[] } {
+    const g = this.g, ds = this.ds;
+    const nodes: number[] = [];
+    for (let v = u, guard = 0; v >= 0 && guard < 100000; v = ds.nx(v), guard++) nodes.push(v);
+    const t0 = ds.d(u);
+    const N = g.N;
+    const cells: number[] = [], times: number[] = [];
+    for (let k = 0; k < nodes.length; k++) {
+      const c = g.cellOf[nodes[k]];
+      if (k > 0 && k < nodes.length - 1) {
+        const a = g.cellOf[nodes[k - 1]], b = g.cellOf[nodes[k + 1]];
+        const d1x = (c % N) - (a % N), d1z = Math.floor(c / N) - Math.floor(a / N);
+        const d2x = (b % N) - (c % N), d2z = Math.floor(b / N) - Math.floor(c / N);
+        if (d1x === d2x && d1z === d2z) continue; // straight: keep corners only
+      }
+      cells.push(c);
+      times.push(r2(t0 - ds.d(nodes[k])));
+    }
+    if (cells.length > EMERG_MAX_PATH) {
+      // extremely winding route: keep an evenly spaced subset (the renderer interpolates between the kept cells)
+      const step = cells.length / EMERG_MAX_PATH;
+      const c2: number[] = [], t2: number[] = [];
+      for (let k = 0; k < EMERG_MAX_PATH - 1; k++) { const q = Math.floor(k * step); c2.push(cells[q]); t2.push(times[q]); }
+      c2.push(cells[cells.length - 1]); t2.push(times[times.length - 1]);
+      return { cells: c2, times: t2 };
+    }
+    return { cells, times };
+  }
+
+  private sendUnit(sim: Simulation, inc: Incident, s: Station, route: { cells: number[]; times: number[] }, t: number, now: number, manual: boolean): EmergencyVehicle {
+    const T = route.times.length ? route.times[route.times.length - 1] : r2(t);
+    const legStart = now + s.turnout;
+    const v: EmergencyVehicle = {
+      id: this.p.nextVid++, responder: s.responder, model: RESPONDER_MODEL[s.responder], stationId: s.id, incidentId: inc.id,
+      state: 'outbound', path: route.cells.slice(), times: route.times.slice(), legStart, m0: 0, m1: T,
+      arrive: legStart + T * EMERG_DAYS_PER_MIN, workFrom: 0, hospital: -1, cover: t <= s.range + EPS,
+    };
+    this.vlist.push(v);
+    this.vById.set(v.id, v);
+    inc.units.push(v.id);
+    this.out.set(s.id, (this.out.get(s.id) ?? 0) + 1);
+    if (this.freeOf(s) <= 0 && !this.drained.includes(s.id)) this.drained.push(s.id);
+    // the incident counts as answered (auto / by the player), and its ETA is, by its primary responder: the ambulance of
+    // an industrial accident answers nothing while no fire truck is on its way
+    if (s.responder !== INCIDENT_RESPONDERS[inc.kind][0]) return v;
+    const eta = r2(T + s.turnout / EMERG_DAYS_PER_MIN);
+    if (inc.etaMin === undefined || inc.state === 'uncovered' || inc.state === 'queued' || eta < inc.etaMin) inc.etaMin = eta;
+    if (inc.answered === 0) {
+      inc.answered = manual ? 2 : 1;
+      const m = sim.state.stats.emergency.month;
+      if (manual) m.manual++;
+      else m.auto++;
+    } else if (manual && inc.answered === 1 && (inc.state === 'uncovered' || inc.state === 'queued')) {
+      inc.answered = 2;
+    }
+    return v;
+  }
+
+  private afterDispatch(sim: Simulation, inc: Incident): void {
+    const wasWaiting = inc.state === 'uncovered' || inc.state === 'queued';
+    const primary = INCIDENT_RESPONDERS[inc.kind][0];
+    if (wasWaiting && this.assigned(inc, primary) === 0) {
+      // only a supporting responder was sent (the ambulance of an industrial accident or a collapse): the incident keeps
+      // waiting for its primary one — state, reason, note and the player's prompt (manualPossible / canSend) stay, so
+      // the banner and LIVE mode stay until a fire truck is on its way (the plant still ignites without one)
+      this.writeStats(sim.state);
+      return;
+    }
+    // the incident's state follows its primary responder: on scene once one of its units got there
+    if (inc.state !== 'onScene') inc.state = this.onSceneCount(inc, primary) > 0 ? 'onScene' : 'dispatched';
+    inc.reason = undefined;
+    inc.note = '';
+    inc.manualPossible = false;
+    inc.canSend = false;
+    if (wasWaiting || inc.units.length > 0) this.emit(sim, inc, 'dispatched');
+    this.writeStats(sim.state);
+  }
+
+  private onSceneAny(inc: Incident): boolean {
+    for (const id of inc.units) if (this.vById.get(id)?.state === 'onScene') return true;
+    return false;
+  }
+
+  /** a fire truck sent from inside its station's auto range is driving to the incident */
+  private coverEnRoute(inc: Incident): boolean {
+    for (const id of inc.units) {
+      const v = this.vById.get(id);
+      if (v && v.responder === 'fire' && v.state === 'outbound' && v.cover) return true;
+    }
+    return false;
+  }
+
+  /**
+   * search stations of responder r from the site seeds (already in seedBuf), up to `limit` minutes: picks = free units
+   * within their range in order of travel time (up to `want` units), inRangeBusy = in-range stations without a free
+   * unit, manual = the nearest free unit beyond range (within the limit), busy = nearest reached station without a free
+   * unit. Paths are extracted during the search. The search stops as soon as nothing more can be learned.
+   */
+  private searchUnits(st: CityState, r: Responder, ns: number, want: number, withPaths: boolean, limit: number): {
+    picks: { s: Station; t: number; n: number; route: { cells: number[]; times: number[] } | null }[];
+    inRangeBusy: { s: Station; t: number }[];
+    manual: { s: Station; t: number; route: { cells: number[]; times: number[] } | null } | null;
+    busy: Station | null;
+  } {
+    const picks: { s: Station; t: number; n: number; route: { cells: number[]; times: number[] } | null }[] = [];
+    const inRangeBusy: { s: Station; t: number }[] = [];
+    let manual: { s: Station; t: number; route: { cells: number[]; times: number[] } | null } | null = null;
+    let busy: Station | null = null;
+    let maxRange = 0;
+    for (const s of this.stations) if (s.responder === r && s.units > 0 && s.range > maxRange) maxRange = s.range;
+    let got = 0;
+    const stamp = ++this.stamp;
+    this.ds.stop = limit;
+    this.ds.run(this.g, this.tm, this.seedBuf, ns, limit, this.nodeHead, (u, d) => {
+      for (let e = this.nodeHead[u]; e >= 0; e = this.entNext[e]) {
+        const k = this.entSt[e];
+        if (this.seen[k] === stamp) continue;
+        this.seen[k] = stamp;
+        const s = this.stations[k];
+        if (s.responder !== r || s.units <= 0) continue;
+        const free = this.freeOf(s);
+        if (free <= 0 && !busy) busy = s;
+        if (d <= s.range + EPS) {
+          if (free > 0 && got < want) {
+            const n = Math.min(free, want - got);
+            got += n;
+            picks.push({ s, t: d, n, route: withPaths ? this.extractPath(u) : null });
+          } else if (free <= 0) inRangeBusy.push({ s, t: d });
+        } else if (free > 0 && !manual) {
+          manual = { s, t: d, route: withPaths ? this.extractPath(u) : null };
+        }
+      }
+      if (got >= want) return true;
+      // beyond every station's range only the nearest free (manual) unit is still of interest
+      if (d > maxRange + EPS && (manual || got > 0)) return true;
+      return false;
+    });
+    return { picks, inRangeBusy, manual, busy };
+  }
+
+  /** stations of responder r with a free unit on the site's road network (weakly connected component) */
+  private freeReachable(r: Responder, ns: number): Station | null {
+    const comp = this.g.comp;
+    let best: Station | null = null;
+    for (const s of this.stations) {
+      if (s.responder !== r || this.freeOf(s) <= 0 || !s.nodes.length) continue;
+      const c = comp[s.nodes[0]];
+      for (let q = 0; q < ns; q++) {
+        if (comp[this.seedBuf[q]] === c) { best = s; break; }
+      }
+      if (best) break;
+    }
+    return best;
+  }
+
+  /** today's dispatch-search budget (reset on a new day) */
+  private budgetDay(day: number): void {
+    if (this.p.searchDay === day) return;
+    this.p.searchDay = day;
+    this.p.searchesLeft = EMERG_SEARCHES_PER_DAY;
+    this.p.nodesLeft = EMERG_SEARCH_NODES_PER_DAY;
+  }
+  /** the first EMERG_SEARCHES_PER_DAY searches of a day always run, then while settled road nodes are left */
+  private budgetLeft(): boolean {
+    return this.p.searchesLeft > 0 || (this.p.nodesLeft ?? 0) > 0;
+  }
+  private charge(settled: number): void {
+    if (this.p.searchesLeft > 0) this.p.searchesLeft--;
+    this.p.nodesLeft = (this.p.nodesLeft ?? 0) - settled;
+  }
+  /** a fresh incident that could not be searched for yet shows 'Dispatch pending' (not "waiting for a unit") */
+  private markPending(inc: Incident): void {
+    if (inc.state === 'queued' && inc.reason === undefined) inc.note = PENDING_NOTE;
+  }
+
+  /** automatic dispatch attempt (auto range, queue / uncovered handling), within the daily search budget */
+  private tryDispatch(sim: Simulation, inc: Incident): void {
+    const st = sim.state;
+    if (inc.state === 'resolved' || inc.state === 'failed') return;
+    this.syncStations(sim);
+    const day = st.day;
+    this.budgetDay(day);
+    const now = this.now(sim);
+    const resp = INCIDENT_RESPONDERS[inc.kind];
+    let sentAny = false;
+    for (let ri = 0; ri < resp.length; ri++) {
+      const r = resp[ri];
+      const missing = (inc.need[r] ?? 0) - this.assigned(inc, r);
+      if (missing <= 0) continue;
+      const primary = ri === 0;
+      const anyStation = this.stations.some((s) => s.responder === r && s.units > 0);
+      const ns = this.siteSeeds(st, inc);
+      if (ns === 0 && anyStation && this.graphStale()) {
+        // a road built moments ago that the road graph does not have yet (traffic rebuilds it within a few days)
+        inc.retry = day + 1;
+        if (primary) this.markPending(inc);
+        continue;
+      }
+      if (!anyStation || ns === 0) {
+        if (primary && this.assigned(inc, r) === 0) {
+          const unfunded = !anyStation && this.stations.some((s) => s.responder === r);
+          const note = anyStation ? 'No road leads to this place'
+            : unfunded ? `All ${RESPONDER_STATIONS[r]} are unfunded — raise the ${RESPONDER_SERVICE[r]} budget`
+              : `The city has no ${RESPONDER_STATION[r]}`;
+          this.setUncovered(sim, inc, 'noStation', false, false, note);
+        }
+        continue;
+      }
+      if (!this.budgetLeft()) {
+        // today's dispatch searches are used up (a disaster's aftermath): first thing tomorrow (fires, then majors)
+        inc.retry = day + 1;
+        if (primary) this.markPending(inc);
+        break; // units already sent to this incident still get afterDispatch
+      }
+      this.ensureTimes(st);
+      const minor = !inc.major || !primary;
+      const freeAny = this.freeReachable(r, ns);
+      let maxRange = 0;
+      for (const s of this.stations) if (s.responder === r && s.units > 0 && s.range > maxRange) maxRange = s.range;
+      // minutes left before the deadline: a unit that cannot arrive by then does not help
+      const tLeft = Math.max(0, (inc.deadline - now) / EMERG_DAYS_PER_MIN);
+      // in-range units; with a free unit on this road network also the nearest one that can still make it in time
+      const limit = Math.min(EMERG_MANUAL_MAX, freeAny ? Math.max(maxRange, tLeft) : maxRange) + EPS;
+      const res = this.searchUnits(st, r, ns, missing, true, limit);
+      this.charge(this.ds.settled);
+      for (const pk of res.picks) {
+        for (let q = 0; q < pk.n; q++) this.sendUnit(sim, inc, pk.s, pk.route!, pk.t, now, false);
+        sentAny = true;
+      }
+      if (res.picks.length) continue;
+      if (this.assigned(inc, r) > 0) continue; // units already on the way / on scene (need grew)
+      const mu = res.manual;
+      const muEta = mu ? mu.t + mu.s.turnout / EMERG_DAYS_PER_MIN : Infinity;
+      const inTime = muEta <= tLeft + EPS;
+      if (minor && inTime) {
+        // minor incidents (and supporting responders) get the nearest free unit that can still make it, no alert
+        this.sendUnit(sim, inc, mu!.s, mu!.route!, mu!.t, now, false);
+        sentAny = true;
+        continue;
+      }
+      if (!primary) continue;
+      // the player's call: LIVE mode only while a dispatch still changes the outcome — a free unit can arrive before the
+      // deadline, sent before the window closes (an industrial accident: before the plant ignites)
+      const manualPossible = inTime && now < dispatchWindowEnd(inc) - EPS;
+      const canSend = !!freeAny;
+      inc.bestEta = Number.isFinite(muEta) ? r2(muEta) : undefined;
+      inc.bestFrom = mu ? mu.s.id : undefined;
+      const unit = RESPONDER_UNIT[r];
+      if (res.inRangeBusy.length) {
+        // queued: a unit of an in-range station is back before the grace time ends — an industrial accident's truck back
+        // home by the last dispatch pass before its plant ignites (one back later would only be sent after the fire)
+        let best = Infinity, back = Infinity;
+        for (const b of res.inRangeBusy) {
+          const fa = this.nextFreeAt(b.s);
+          back = Math.min(back, fa);
+          best = Math.min(best, fa + b.t * EMERG_DAYS_PER_MIN);
+        }
+        const s0 = res.inRangeBusy[0].s;
+        const busyNote = stationBusyText(s0);
+        // (the only unit in reach: "it is on its way back", not "one is")
+        const one = s0.units === 1 && res.inRangeBusy.length === 1 ? 'it' : 'one';
+        if (inc.kind === 'industrial' ? back <= dispatchWindowEnd(inc) - 1 + EPS : best <= inc.start + inc.grace) {
+          const was = inc.state;
+          inc.state = 'queued';
+          inc.reason = 'busy';
+          inc.manualPossible = manualPossible;
+          inc.canSend = canSend;
+          inc.note = `${busyNote} — ${one} is on its way back`;
+          inc.retry = day + 1;
+          if (was !== 'queued') this.emit(sim, inc, 'queued');
+          continue;
+        }
+        // (no free unit anywhere: one of that in-range station is sent as soon as it is back — removeVehicle retries)
+        this.setUncovered(sim, inc, 'busy', manualPossible, canSend, busyNote + (!canSend ? ` — ${one} is sent as soon as ${one} is back` : !manualPossible ? ' — the nearest free one is too far to make it in time' : ''));
+        inc.retry = day + 2;
+      } else if (freeAny) {
+        const near = mu?.s ?? this.nearestFree(r, inc.x, inc.z) ?? freeAny;
+        this.setUncovered(sim, inc, 'outOfRange', manualPossible, true,
+          `Outside ${RESPONDER_LABEL[r].toLowerCase()} coverage — nearest free ${unit[0]}: ${near.name}${manualPossible ? '' : ' (too far to make it in time)'}`);
+        inc.retry = day + 5;
+      } else if (this.stations.some((s) => s.responder === r && s.units > 0 && s.nodes.length && this.freeOf(s) <= 0)) {
+        this.setUncovered(sim, inc, 'busy', false, false, this.busyBeyondNote(r, res.busy, ns));
+        inc.retry = day + 2;
+      } else {
+        this.setUncovered(sim, inc, 'noStation', false, false, `No ${RESPONDER_STATION[r]} can reach this place by road`);
+        inc.retry = day + 5;
+      }
+      // an industrial accident nobody sent a fire truck to ignites its plant when its window closes: try again before
+      if (inc.kind === 'industrial') inc.retry = Math.min(inc.retry, Math.max(day + 1, dispatchWindowEnd(inc) - 1));
+    }
+    inc.stVer = this.stVer;
+    if (sentAny) this.afterDispatch(sim, inc);
+    // EM-1: the units just sent may be the ones an earlier decision counted on — a disaster spawns its incidents one
+    // after the other, each dispatched at once (the daily passes re-validate once, after all of them)
+    if (!this.inPasses) this.revalidate(sim);
+  }
+
+  /**
+   * EM-1: stations gave away their last free unit (an automatic or a player dispatch). The waiting incidents of those
+   * responders whose Dispatch prompt rested on a free unit (manualPossible / canSend, decided while it was still free)
+   * are checked again: with no free unit of their primary responder left on the site's road network the prompt ends at
+   * once (noFreeUnit: no "Send nearest" that fails, no LIVE mode or urgent pause for nothing, no ignored prompt); when the
+   * unit its decision found (bestFrom) is gone but another one is still free, it is decided again by the next dispatch
+   * pass — a second pass today inside the daily, else the next day's (no search here, within the day's search budget).
+   * Final fixes r3 (EM-1 residual): either way the prompt it counted on is over, so it no longer counts as given
+   * (prompted off; it used to stay on from an earlier settle point: three fires, two free trucks, the player sends both
+   * and the third scored as an IGNORED prompt). The next settle point counts it again while a unit can still make it in
+   * time, so a prompt ignored while answerable still counts.
+   */
+  private revalidate(sim: Simulation): void {
+    const drained = this.drained;
+    if (!drained.length) return;
+    this.drained = [];
+    const st = sim.state;
+    let mask = 0;
+    for (const id of drained) {
+      const s = this.stById.get(id);
+      if (s) mask |= 1 << R_INDEX[s.responder];
+    }
+    let changed = false;
+    for (const inc of this.list) {
+      if (!(inc.state === 'uncovered' || inc.state === 'queued') || !(inc.manualPossible || inc.canSend)) continue;
+      const r = INCIDENT_RESPONDERS[inc.kind][0];
+      if (!(mask & (1 << R_INDEX[r])) || this.assigned(inc, r) > 0) continue;
+      const ns = this.siteSeeds(st, inc);
+      if (ns > 0 && this.freeReachable(r, ns)) {
+        // canSend holds (a free unit on its network); manualPossible holds while the unit it counted on is still free
+        if (!inc.manualPossible) continue;
+        const from = inc.bestFrom !== undefined ? this.stById.get(inc.bestFrom) : undefined;
+        if (from && this.freeOf(from) > 0) continue;
+        if (inc.retry > st.day) inc.retry = st.day;
+        // (the unit it counted on is gone: counted again once the next pass found another one in time)
+        if (inc.prompted) inc.prompted = false;
+        this.redo = true;
+        continue;
+      }
+      this.noFreeUnit(sim, inc, r, ns);
+      changed = true;
+    }
+    if (changed) this.writeStats(st);
+  }
+
+  /**
+   * EM-1: no free unit of the incident's primary responder can be sent (every one that can reach it is busy): the
+   * Dispatch prompt is over (manualPossible / canSend off) and the note says what happens next. A unit coming back
+   * makes it retry (removeVehicle): an in-range one is then sent automatically, otherwise the player is prompted again.
+   */
+  private noFreeUnit(sim: Simulation, inc: Incident, r: Responder, ns: number): void {
+    inc.manualPossible = false;
+    inc.canSend = false;
+    inc.bestEta = undefined;
+    inc.bestFrom = undefined;
+    // (a prompt the player can no longer answer is no ignored prompt — final fixes r3; counted again at a settle point
+    // once a unit is back and can still make it. One never counted keeps no flag)
+    if (inc.prompted) inc.prompted = false;
+    if (inc.state === 'queued') {
+      // an in-range unit is on its way back and goes to it then: its note ("… — one is on its way back") holds
+      this.emit(sim, inc, 'queued');
+      return;
+    }
+    inc.note = this.allBusyNote(inc, r, ns);
+    this.emit(sim, inc, 'uncovered');
+  }
+
+  /** "All 4 fire trucks are busy — one is sent as soon as one is back" (an in-range station: reason busy), or for a site
+   *  outside every station's reach "Outside fire coverage and all 4 fire trucks are busy — you can send one once one is
+   *  back" (a unit coming back prompts the player again) */
+  private allBusyNote(inc: Incident, r: Responder, ns: number): string {
+    const unit = RESPONDER_UNIT[r];
+    const comp = this.g.comp;
+    let all = 0, reach = 0;
+    for (const s of this.stations) {
+      if (s.responder !== r || s.units <= 0) continue;
+      all += s.units;
+      if (!s.nodes.length) continue;
+      const c = comp[s.nodes[0]];
+      for (let q = 0; q < ns; q++) {
+        if (comp[this.seedBuf[q]] === c) { reach += s.units; break; }
+      }
+    }
+    if (reach === 0) return `No free ${unit[0]} can reach this place`;
+    const busy = unitsBusy(reach, unit, reach < all ? ' that can reach it' : '');
+    const one = reach === 1 ? 'it' : 'one';
+    return inc.reason === 'outOfRange'
+      ? `Outside ${RESPONDER_LABEL[r].toLowerCase()} coverage and ${busy} — you can send ${one} once ${one} is back`
+      : `${cap1(busy)} — ${one} is sent as soon as ${one} is back`;
+  }
+
+  /**
+   * the note of a site beyond every station's reach while every unit that can reach it is busy (site seeds in seedBuf):
+   * the stations of responder r on the site's road network by name — "Both fire trucks of Fire Station #1 are busy",
+   * "The only ambulance of Medical Clinic #1 is busy", "All 6 fire trucks are busy (Fire Station #1 and Fire Station #2)",
+   * "Both ambulances are busy (Medical Clinic #1 and Medical Clinic #2)", "(… and 3 others)" — the nearest busy one
+   * (`near`, the search's) first. Final fixes r3: it read "All ambulances are busy (Medical Clinic #1 and others)" in a
+   * city with a single clinic
+   */
+  private busyBeyondNote(r: Responder, near: Station | null, ns: number): string {
+    const unit = RESPONDER_UNIT[r];
+    const comp = this.g.comp;
+    const on: Station[] = [];
+    let units = 0;
+    for (const s of this.stations) {
+      if (s.responder !== r || s.units <= 0 || !s.nodes.length) continue;
+      const c = comp[s.nodes[0]];
+      for (let q = 0; q < ns; q++) {
+        if (comp[this.seedBuf[q]] === c) { on.push(s); units += s.units; break; }
+      }
+    }
+    if (!on.length) return `No ${RESPONDER_STATION[r]} can reach this place by road`;
+    const k = near ? on.indexOf(near) : -1;
+    if (k > 0) on.unshift(...on.splice(k, 1));
+    const later = units === 1 ? 'you can send it once it is back' : 'you can send one once one is back';
+    if (on.length === 1) return `${stationBusyText(on[0])} — ${later}`;
+    const who = on.length === 2 ? `${on[0].name} and ${on[1].name}` : `${on[0].name} and ${on.length - 1} others`;
+    return `${cap1(unitsBusy(units, unit))} (${who}) — ${later}`;
+  }
+
+  /** nearest (straight line) station of responder r with a free unit */
+  private nearestFree(r: Responder, x: number, z: number): Station | null {
+    let best: Station | null = null, bd = Infinity;
+    for (const s of this.stations) {
+      if (s.responder !== r || this.freeOf(s) <= 0) continue;
+      const d = Math.hypot(s.x - x, s.z - z);
+      if (d < bd) { bd = d; best = s; }
+    }
+    return best;
+  }
+
+  private setUncovered(sim: Simulation, inc: Incident, reason: UncoveredReason, manualPossible: boolean, canSend: boolean, note: string): void {
+    const changed = inc.state !== 'uncovered' || inc.reason !== reason || inc.manualPossible !== manualPossible || !!inc.canSend !== canSend;
+    inc.state = 'uncovered';
+    inc.reason = reason;
+    inc.manualPossible = manualPossible;
+    inc.canSend = canSend;
+    inc.note = note;
+    inc.etaMin = undefined;
+    // (inc.prompted is set at the day's settle point, dailyWork, while the prompt still holds then — EM-1)
+    if (!changed) return;
+    this.emit(sim, inc, 'uncovered');
+    // the news goes out at the day's settle point, worded by the state the incident has then (EM-1, uncoveredNews)
+    if (inc.major) {
+      const due = (this.p.newsDue ??= []);
+      if (!due.includes(inc.id)) due.push(inc.id);
+    }
+    this.writeStats(sim.state);
+  }
+
+  /** the "uncovered" news of the incidents decided since the last settle point, worded by their state now: "… Send help
+   *  from its alert: Send nearest, or Choose station…" only while a dispatch can still go (EM-1: a quake's toast used to
+   *  say so for prompts the next incident of the same burst had already taken the unit of). Final fixes r4: it said
+   *  "Send help with the Dispatch tool!" — a tool that is not on the toolbar (the alert's "Choose station…" and the
+   *  Emergencies panel open it) */
+  private uncoveredNews(sim: Simulation): void {
+    const due = this.p.newsDue;
+    if (!due?.length) return;
+    this.p.newsDue = undefined;
+    for (const id of due) {
+      const inc = this.byId.get(id);
+      if (!inc || inc.state !== 'uncovered' || !inc.major) continue;
+      const adv = INCIDENT_RESPONDERS[inc.kind][0] === 'medical' ? 'health' : 'safety';
+      const txt = inc.manualPossible
+        ? `${INCIDENT_LABEL[inc.kind]} at ${inc.place} — ${inc.note}. Send help from its alert: Send nearest, or Choose station…`
+        : `${INCIDENT_LABEL[inc.kind]} at ${inc.place} — ${inc.note}.`;
+      this.news(sim, 'uncovered:' + inc.kind, 2, txt, 'disaster', inc.x, inc.z, adv);
+    }
+  }
+
+  /** sim time the station's next unit is free (Infinity when none will be) */
+  private nextFreeAt(s: Station): number {
+    let best = Infinity;
+    for (const v of this.vlist) {
+      if (v.stationId !== s.id) continue;
+      if (v.state === 'returning') best = Math.min(best, v.arrive);
+    }
+    return best;
+  }
+
+  private syncStations(sim: Simulation): void {
+    this.ensureGraph(sim.state);
+    if (this.stDirty) this.refreshStations(sim);
+  }
+
+  // ------------------------------------------------------------------------------------------ daily
+  daily(sim: Simulation): void {
+    schedulerOf(sim).tickDay(sim);
+    if (!this.active) return;
+    this.dailyWork(sim);
+  }
+
+  /** the emergency system's own daily work (daily() first runs the shared infra scheduler tick) */
+  dailyWork(sim: Simulation): void {
+    const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
+    const st = sim.state;
+    this.sim = sim;
+    this.inDaily = true;
+    try {
+      this.syncStations(sim);
+      if (this.updateUnits(st)) this.stVer++;
+      this.budgetDay(st.day);
+      if (this.p.genBuild) this.weightSlice(sim);
+      // new incidents of the generation / processing below are dispatched by the prioritised pass after them
+      this.batch = true;
+      this.generate(sim);
+      this.advanceVehicles(sim);
+      this.processIncidents(sim);
+      this.batch = false;
+      this.processedDay = st.day;
+      // automatic dispatch of incidents still missing units, within the daily search budget: fires first, then the
+      // other major incidents, then minor ones (oldest first in each class). EM-1: the prompts of incidents decided
+      // earlier in the passes may rest on a unit a later one took: re-validated after the passes, and an incident whose
+      // unit is gone while another one is still free is decided again in one more round today
+      this.inPasses = true;
+      try {
+        for (let round = 0; round < 2; round++) {
+          this.redo = false;
+          for (let pass = 0; pass < 3; pass++) {
+            for (let k = 0; k < this.list.length; k++) {
+              const inc = this.list[k];
+              if ((inc.kind === 'fire' ? 0 : inc.major ? 1 : 2) !== pass) continue;
+              if (inc.state === 'resolved' || inc.state === 'failed' || !this.missingAny(inc)) continue;
+              if (inc.retry <= st.day || (inc.state === 'uncovered' && inc.stVer !== this.stVer)) this.tryDispatch(sim, inc);
+            }
+          }
+          this.revalidate(sim);
+          if (!this.redo) break;
+        }
+      } finally {
+        this.inPasses = false;
+      }
+      this.redo = false;
+      // a player dispatch stops mattering (LIVE mode ends) once even the nearest free unit cannot make it any more
+      for (const inc of this.list) {
+        if (!inc.manualPossible || inc.bestEta === undefined || !(inc.state === 'uncovered' || inc.state === 'queued')) continue;
+        if (inc.bestEta > (inc.deadline - st.day) / EMERG_DAYS_PER_MIN + EPS || st.day >= dispatchWindowEnd(inc) - EPS) inc.manualPossible = false;
+      }
+      // EM-1 settle point: a Dispatch prompt counts (as ignored when nobody answers and the incident fails: approval)
+      // once it still holds at the end of a day's dispatch work — not the moment a disaster's burst decided it, when the
+      // next incident of the same burst could take the unit it counted on before the player saw it. One whose unit a
+      // later dispatch of the second round took (bestFrom busy, revalidate: decided again) counts once tomorrow's pass
+      // has decided it again (a save from before EM-1 has no bestFrom: its prompts count as they did)
+      for (const inc of this.list) {
+        if (inc.state !== 'uncovered' || !inc.major || !inc.manualPossible) continue;
+        const from = inc.bestFrom !== undefined ? this.stById.get(inc.bestFrom) : undefined;
+        if (inc.bestFrom === undefined || (from !== undefined && this.freeOf(from) > 0)) inc.prompted = true;
+      }
+      this.uncoveredNews(sim);
+      // expire effects
+      if (this.p.effects.length) this.p.effects = this.p.effects.filter((e) => e.until > st.day);
+      // the siren times after a traffic update, also when no search needed them today: a save holds the times the next
+      // search uses (Persist.siren; the same values the lazy refresh computes — traffic writes its layer only with the
+      // update)
+      if (this.tmDirty && this.g.N === st.size && this.g.n > 0) this.ensureTimes(st);
+      this.rebuildCaches(st);
+      this.writeStats(st);
+      this.persist();
+      // the fire steps above changed burn days / heat after fire.daily saved them: save the registry again
+      sim.getSystem<FireSystem>('fire')?.persist(sim);
+    } finally {
+      this.inDaily = false;
+      this.batch = false;
+    }
+    if (t0) this.lastDailyMs = performance.now() - t0;
+  }
+
+  private missingAny(inc: Incident): boolean {
+    for (const r of INCIDENT_RESPONDERS[inc.kind]) if ((inc.need[r] ?? 0) > this.assigned(inc, r)) return true;
+    return false;
+  }
+
+  monthly(sim: Simulation): void {
+    if (!this.active) return;
+    const st = sim.state;
+    const em = st.stats.emergency;
+    // medical response quality -> medScore (12-month EMA)
+    const [qs, qn] = this.p.medQ;
+    if (qn > 0) em.medScore = Math.max(0, Math.min(1, em.medScore + (qs / qn - em.medScore) / 12));
+    this.p.medQ = [0, 0];
+    // roll the month
+    const m = em.month;
+    em.lastMonth = m;
+    this.p.months.push(m);
+    while (this.p.months.length > 12) this.p.months.shift();
+    em.year = sumMonths(this.p.months);
+    em.month = emptyEmergencyMonth();
+    this.startWeights(sim);
+    this.weightSlice(sim);
+    this.inDaily = true;
+    try {
+      this.maybeRiot(sim);
+    } finally {
+      this.inDaily = false;
+    }
+    this.rebuildCaches(st);
+    this.writeStats(st);
+    this.persist();
+  }
+
+  frame(sim: Simulation, _dt: number): void {
+    schedulerOf(sim).tickFrame(sim, this);
+  }
+
+  // ------------------------------------------------------------------------------------------ generation
+  /** restore the saved generation weights (false = none saved / wrong map size) */
+  private restoreWeights(st: CityState): boolean {
+    const g = this.p.gen;
+    if (!g || g.plantF === undefined) return false;
+    const nb = Math.ceil(st.size / GEN_B);
+    for (const k of GEN_KINDS) {
+      const e = g[k];
+      if (!Array.isArray(e) || !Array.isArray(e[0]) || !Array.isArray(e[1]) || e[0].length !== e[1].length) return false;
+      if (e[0].some((b) => !(b >= 0 && b < nb * nb))) return false;
+    }
+    for (const k of GEN_KINDS) this.gw[k].set(g[k]![0].slice(), g[k]![1].slice());
+    this.plantF = g.plantF;
+    return true;
+  }
+
+  /** monthly incident rate of kind k at building b (current state) */
+  private rateOf(st: CityState, k: GenKind, b: Building): number {
+    if (!isFunctional(b)) return 0;
+    switch (k) {
+      case 'medical': {
+        if (b.pop <= 0) return 0;
+        const sh = cohortShares(b, this.shares);
+        return b.pop * MED_RATE * (MED_BASE + MED_SENIOR * sh[4]);
+      }
+      case 'crime': {
+        const occ = b.pop + b.jobs;
+        if (occ <= 0) return 0;
+        const c = st.crime[centerCell(st, b)];
+        if (!(c > CRIME_SPREE_MIN)) return 0;
+        const f = (c - CRIME_SPREE_MIN) / 0.4;
+        return occ * CRIME_SPREE_RATE * Math.min(1, f * f);
+      }
+      case 'industrial': {
+        const inf = infoOf(st, b);
+        if (inf.fam === Fam.I) {
+          const key = inf.dev === 9 ? 'ID' : inf.dev === 10 ? 'IM' : inf.dev === 11 ? 'IHT' : '';
+          return key && b.jobs > 0 ? b.jobs * (IND_ACCIDENT_RATE[key] ?? 0) : 0;
+        }
+        if (inf.fam === Fam.Plop && ((inf.powerOut > 0 && inf.air > 0) || inf.isIncinerator)) return this.plantF;
+        return 0;
+      }
+      case 'spill': {
+        const inf = infoOf(st, b);
+        if (inf.fam === Fam.I) return inf.dev === 9 && b.jobs > 0 ? b.jobs * SPILL_RATE_ID : 0;
+        if (inf.fam === Fam.Plop) return SPILL_SITE_P[b.def] ?? (inf.model ? SPILL_SITE_P[inf.model] ?? 0 : 0);
+        return 0;
+      }
+    }
+  }
+
+  /** truck spills on a congested highway cell (monthly rate) */
+  private hwyRate(st: CityState, i: number): number {
+    if (st.network[i] !== Network.Highway || !(st.congestion[i] > 1)) return 0;
+    return SPILL_HWY_RATE * st.traffic[i] * EMERG_TRUCK_SHARE * 30;
+  }
+
+  /** monthly: per-block incident rates of every generated kind, built over GEN_SLICES days (building-list ranges;
+   *  highway cells by row bands) */
+  private startWeights(sim: Simulation): void {
+    const st = sim.state;
+    const nb = Math.ceil(st.size / GEN_B);
+    const zero = () => new Array<number>(nb * nb).fill(0);
+    // early-game grace (lead decisions 4 / 8): no accident at a thermal plant or incinerator before the city's first
+    // funded fire station, for at most its first EMERG_PLANT_GRACE_DAYS — a new town must not lose its only power plant
+    // to an accident nobody could answer. Over for good once a funded fire station existed at a month start (saved)
+    if (!this.p.plantGraceOver && (st.day >= EMERG_PLANT_GRACE_DAYS || this.stations.some((s) => s.responder === 'fire' && s.units > 0))) this.p.plantGraceOver = true;
+    this.p.genBuild = {
+      slice: 0,
+      n: GEN_SLICES,
+      plantF: this.p.plantGraceOver ? Math.fround(EMERG_PLANT_P * (1.5 - Math.min(1.2, fundingFactor(st, 'utilities')))) : 0,
+      acc: [zero(), zero(), zero(), zero()],
+    };
+  }
+
+  /** one row band of the monthly weight pass; returns true when the new weights are in place */
+  private weightSlice(sim: Simulation): boolean {
+    const gb = this.p.genBuild;
+    if (!gb) return true;
+    const st = sim.state;
+    const N = st.size;
+    const nb = Math.ceil(N / GEN_B);
+    const [aM, aC, aI, aS] = gb.acc;
+    if (aM.length !== nb * nb) { this.p.genBuild = undefined; return true; }
+    const z0 = Math.floor((gb.slice * N) / GEN_SLICES), z1 = Math.floor(((gb.slice + 1) * N) / GEN_SLICES);
+    const list = buildingList(st);
+    // buildings: an index range of the (deterministically ordered) building list; the last slice takes the rest
+    const q0 = Math.floor((gb.slice * list.length) / GEN_SLICES);
+    const q1 = gb.slice + 1 >= GEN_SLICES ? list.length : Math.floor(((gb.slice + 1) * list.length) / GEN_SLICES);
+    const cr = st.crime, sh = this.shares;
+    const mRate = MED_RATE, mBase = MED_BASE, mSen = MED_SENIOR, cMin = CRIME_SPREE_MIN, cRate = CRIME_SPREE_RATE, sRate = SPILL_RATE_ID;
+    const plantF = gb.plantF;
+    for (let q = q0; q < q1; q++) {
+      const b = list[q];
+      if (b.built < 1 || b.flags & (BF.Burnt | BF.Abandoned)) continue;
+      const blk = ((b.z / GEN_B) | 0) * nb + ((b.x / GEN_B) | 0);
+      // same rates as rateOf(), inlined (monthly pass over every building)
+      if (b.pop > 0) aM[blk] += b.pop * mRate * (mBase + mSen * cohortShares(b, sh)[4]);
+      const occ = b.pop + b.jobs;
+      if (occ > 0) {
+        const c = cr[centerCell(st, b)];
+        if (c > cMin) {
+          const f = (c - cMin) / 0.4;
+          aC[blk] += occ * cRate * Math.min(1, f * f);
+        }
+      }
+      const inf = infoOf(st, b);
+      if (inf.fam === Fam.I) {
+        if (b.jobs > 0) {
+          const key = inf.dev === 9 ? 'ID' : inf.dev === 10 ? 'IM' : inf.dev === 11 ? 'IHT' : '';
+          if (key) aI[blk] += b.jobs * (IND_ACCIDENT_RATE[key] ?? 0);
+          if (inf.dev === 9) aS[blk] += b.jobs * sRate;
+        }
+      } else if (inf.fam === Fam.Plop) {
+        if ((inf.powerOut > 0 && inf.air > 0) || inf.isIncinerator) aI[blk] += plantF;
+        const sp = SPILL_SITE_P[b.def] ?? (inf.model ? SPILL_SITE_P[inf.model] : undefined);
+        if (sp) aS[blk] += sp;
+      }
+    }
+    const net = st.network, cong = st.congestion, HW = Network.Highway;
+    for (let i = z0 * N; i < z1 * N; i++) {
+      if (net[i] !== HW || !(cong[i] > 1)) continue;
+      const w = this.hwyRate(st, i);
+      if (w > 0) {
+        const x = i % N, z = (i - x) / N;
+        aS[Math.floor(z / GEN_B) * nb + Math.floor(x / GEN_B)] += w;
+      }
+    }
+    gb.slice++;
+    if (gb.slice < GEN_SLICES) return false;
+    const gen: NonNullable<Persist['gen']> = { plantF };
+    GEN_KINDS.forEach((k, q) => {
+      this.gw[k].fromDense(gb.acc[q]);
+      gen[k] = [this.gw[k].blk, this.gw[k].w];
+    });
+    this.plantF = plantF;
+    this.p.gen = gen;
+    this.p.genBuild = undefined;
+    return true;
+  }
+
+  /** full synchronous weight pass (init / old saves) */
+  private buildWeights(sim: Simulation): void {
+    this.startWeights(sim);
+    while (!this.weightSlice(sim));
+  }
+
+  private poisson(lambda: number): number {
+    if (!(lambda > 0)) return 0;
+    const L = Math.exp(-Math.min(lambda, 30));
+    let k = 0, p = 1;
+    do { k++; p *= this.rng.next(); } while (p > L && k < 60);
+    return k - 1;
+  }
+
+  /**
+   * a site inside block `blk` picked by its current rate (buildings anchored in the block; spills also congested
+   * highway cells). Returns a building id, -(cell + 1) for a highway cell, or null when nothing qualifies.
+   */
+  private pickIn(st: CityState, k: GenKind, blk: number, r: number): number | null {
+    const N = st.size;
+    const nb = Math.ceil(N / GEN_B);
+    const bx = (blk % nb) * GEN_B, bz = Math.floor(blk / nb) * GEN_B;
+    const ids = this.pickIds, ws = this.pickW;
+    ids.length = 0;
+    ws.length = 0;
+    let t = 0;
+    const bld = st.building;
+    for (let z = bz; z < Math.min(N, bz + GEN_B); z++) for (let x = bx; x < Math.min(N, bx + GEN_B); x++) {
+      const i = z * N + x;
+      const id = bld[i];
+      if (id >= 0) {
+        // footprint cells right of / below the anchor (top-left) cell belong to the same building: skip them cheaply
+        if ((x > 0 && bld[i - 1] === id) || (z > 0 && bld[i - N] === id)) continue;
+        const b = st.buildings.get(id);
+        if (!b || b.x !== x || b.z !== z) continue; // anchor cell only
+        const w = this.rateOf(st, k, b);
+        if (w > 0) { t += w; ids.push(id); ws.push(t); }
+      } else if (k === 'spill') {
+        const w = this.hwyRate(st, i);
+        if (w > 0) { t += w; ids.push(-(i + 1)); ws.push(t); }
+      }
+    }
+    if (!(t > 0)) return null;
+    const x = r * t;
+    for (let q = 0; q < ws.length; q++) if (ws[q] > x) return ids[q];
+    return ids[ids.length - 1];
+  }
+
+  private generate(sim: Simulation): void {
+    const st = sim.state;
+    for (const kind of GEN_KINDS) {
+      const w = this.gw[kind];
+      if (!(w.total > 0)) continue;
+      const n = this.poisson(w.total / 30);
+      for (let q = 0; q < n; q++) {
+        const blk = w.pick(this.rng.next());
+        const id = blk >= 0 ? this.pickIn(st, kind, blk, this.rng.next()) : null;
+        if (id === null) continue;
+        if (id < 0) {
+          const cell = -id - 1;
+          const x = cell % st.size, z = (cell - x) / st.size;
+          this.create(sim, kind, x, z, null, {});
+          continue;
+        }
+        const b = st.buildings.get(id);
+        if (!b || !isFunctional(b) || b.flags & BF.OnFire) continue;
+        this.create(sim, kind, b.x, b.z, b, {});
+      }
+    }
+  }
+
+  private maybeRiot(sim: Simulation): void {
+    const st = sim.state;
+    const s = st.stats;
+    if (s.population < RIOT_MIN_POP) return;
+    if (this.list.some((i) => i.kind === 'riot')) return;
+    const p = RIOT_P * smoothstep(RIOT_APPROVAL[0], RIOT_APPROVAL[1], s.approval) * smoothstep(RIOT_CRIME[0], RIOT_CRIME[1], s.avgCrime);
+    if (!(p > 0) || this.rng.next() >= p) return;
+    // worst block: crime x occupants on coarse 8x8 blocks
+    const B = 8, nb = Math.ceil(st.size / B);
+    const score = new Float64Array(nb * nb);
+    const best = new Int32Array(nb * nb).fill(-1);
+    const bestV = new Float64Array(nb * nb);
+    for (const b of buildingList(st)) {
+      const occ = b.pop + b.jobs;
+      if (occ <= 0 || !isFunctional(b)) continue;
+      const v = st.crime[centerCell(st, b)] * occ;
+      const k = Math.floor(b.z / B) * nb + Math.floor(b.x / B);
+      score[k] += v;
+      if (v > bestV[k]) { bestV[k] = v; best[k] = b.id; }
+    }
+    let kb = -1;
+    for (let k = 0; k < score.length; k++) if (best[k] >= 0 && (kb < 0 || score[k] > score[kb])) kb = k;
+    if (kb < 0) return;
+    const b = st.buildings.get(best[kb])!;
+    this.create(sim, 'riot', b.x, b.z, b, { major: true });
+  }
+
+  // ------------------------------------------------------------------------------------------ vehicles
+  private advanceVehicles(sim: Simulation): void {
+    const st = sim.state;
+    const now = st.day;
+    for (let k = 0; k < this.vlist.length; k++) {
+      const v = this.vlist[k];
+      if (v.state === 'onScene' || v.arrive > now) continue;
+      if (v.state === 'outbound') {
+        const inc = this.byId.get(v.incidentId);
+        if (!inc || inc.state === 'resolved' || inc.state === 'failed') { this.startReturn(v, v.arrive, v.m1); continue; }
+        v.state = 'onScene';
+        v.workFrom = v.arrive;
+        this.onArrive(sim, inc, v);
+      } else if (v.state === 'transport') {
+        // at the hospital: drive home to the clinic
+        const home = this.stById.get(v.stationId);
+        const hosp = this.stById.get(v.hospital);
+        const route = home && hosp ? this.routeBetween(st, hosp, home) : null;
+        if (route) {
+          v.path = route.cells;
+          v.times = route.times;
+          v.state = 'returning';
+          v.m0 = 0;
+          v.m1 = route.times[route.times.length - 1];
+          v.legStart = v.arrive;
+          v.arrive = v.legStart + v.m1 * EMERG_DAYS_PER_MIN;
+          k--; // may already be home
+        } else this.removeVehicle(v, k--);
+      } else if (v.state === 'returning') {
+        this.removeVehicle(v, k--);
+      }
+    }
+  }
+
+  private removeVehicle(v: EmergencyVehicle, k: number): void {
+    this.vlist.splice(k, 1);
+    this.vById.delete(v.id);
+    const o = (this.out.get(v.stationId) ?? 1) - 1;
+    if (o > 0) this.out.set(v.stationId, o);
+    else this.out.delete(v.stationId);
+    const inc = this.byId.get(v.incidentId);
+    if (inc) {
+      const i = inc.units.indexOf(v.id);
+      if (i >= 0) inc.units.splice(i, 1);
+    }
+    // a unit is free again: waiting incidents of that responder may retry today
+    const st = this.sim?.state;
+    if (st) for (const w of this.list) if ((w.state === 'queued' || w.state === 'uncovered') && INCIDENT_RESPONDERS[w.kind].includes(v.responder)) w.retry = Math.min(w.retry, st.day);
+  }
+
+  /** start the drive back to the station from path minute m (at sim time t) */
+  private startReturn(v: EmergencyVehicle, t: number, m: number): void {
+    v.state = 'returning';
+    v.m0 = m;
+    v.m1 = 0;
+    v.legStart = t;
+    v.arrive = t + m * EMERG_DAYS_PER_MIN;
+  }
+
+  private onArrive(sim: Simulation, inc: Incident, v: EmergencyVehicle): void {
+    const st = sim.state;
+    const m = st.stats.emergency.month;
+    const r = v.responder;
+    const firstOfR = inc.firstAt[r] === undefined;
+    if (firstOfR) {
+      inc.firstAt[r] = v.arrive;
+      m.responseMin[r] += (v.arrive - inc.start) / EMERG_DAYS_PER_MIN;
+      m.responses[r]++;
+    }
+    const primary = INCIDENT_RESPONDERS[inc.kind][0];
+    const first = inc.arrived < 0;
+    if (first) inc.arrived = v.arrive;
+    if (r === primary && firstOfR) {
+      // late = after the grace; a unit sent from inside its station's own range is on time up to that range (+ turnout)
+      const home = v.cover ? this.stById.get(v.stationId) : undefined;
+      const lim = home ? Math.max(inc.grace, home.range * EMERG_DAYS_PER_MIN + home.turnout) : inc.grace;
+      if (v.arrive > inc.start + lim + EPS) m.late++;
+    }
+    // (a supporting unit on scene first — an industrial accident's ambulance — leaves the incident waiting for / expecting
+    // its primary responder)
+    if (r === primary && inc.state !== 'resolved' && inc.state !== 'failed') inc.state = 'onScene';
+    if (first) this.emit(sim, inc, 'arrived');
+    // medical: patient outcome at the first ambulance
+    if (inc.kind === 'medical' && r === 'medical' && firstOfR) {
+      const D = v.arrive - inc.start;
+      const hosp = this.hospitalFor(sim, inc, v);
+      if (hosp && hosp.id !== v.stationId) v.hospital = hosp.id;
+      this.medicalOutcome(sim, inc, D, hosp);
+      const q = D <= inc.grace ? 1 : Math.max(0, 1 - (D - inc.grace) / 11);
+      this.p.medQ[0] += q;
+      this.p.medQ[1] += 1;
+    }
+  }
+
+  /** hospital station used for a patient: the dispatching hospital itself, else the nearest reachable one */
+  private hospitalFor(sim: Simulation, inc: Incident, v: EmergencyVehicle): Station | null {
+    const home = this.stById.get(v.stationId);
+    if (home?.hospital) return home;
+    if (!this.stations.some((s) => s.hospital)) return null;
+    const st = sim.state;
+    const ns = this.siteSeeds(st, inc);
+    if (ns === 0) return null;
+    this.ensureTimes(st);
+    let found: Station | null = null;
+    const stamp = ++this.stamp;
+    this.ds.stop = EMERG_HOSPITAL_MAX;
+    this.ds.run(this.g, this.tm, this.seedBuf, ns, EMERG_HOSPITAL_MAX, this.nodeHead, (u) => {
+      for (let e = this.nodeHead[u]; e >= 0; e = this.entNext[e]) {
+        const k = this.entSt[e];
+        if (this.seen[k] === stamp) continue;
+        this.seen[k] = stamp;
+        if (this.stations[k].hospital) { found = this.stations[k]; return true; }
+      }
+      return false;
+    });
+    return found;
+  }
+
+  private medicalOutcome(sim: Simulation, inc: Incident, D: number, hosp: Station | null): void {
+    let surv = MED_SURVIVE - MED_DELAY_LOSS * smoothstep(5, 16, D);
+    if (hosp) {
+      const load = facilityLoad(sim, hosp.id);
+      if (load && load.utilization > 1.15) surv -= 0.1;
+    }
+    this.casualties(sim, inc, surv);
+  }
+
+  /** resolve the injured of an incident with survival probability `surv` */
+  private casualties(sim: Simulation, inc: Incident, surv: number): void {
+    if (inc.injured <= 0) return;
+    const m = sim.state.stats.emergency.month;
+    let deaths = 0;
+    for (let q = 0; q < inc.injured; q++) if (this.rng.next() >= surv) deaths++;
+    inc.deaths += deaths;
+    m.deaths += deaths;
+    m.rescued += inc.injured - deaths;
+    inc.injured = 0;
+  }
+
+  /** route between two stations (hospital -> clinic): reverse search seeded at `to`, first settled node of `from` */
+  private routeBetween(st: CityState, from: Station, to: Station): { cells: number[]; times: number[] } | null {
+    if (!to.nodes.length || !from.nodes.length) return null;
+    this.ensureTimes(st);
+    const ns = Math.min(this.seedBuf.length, to.nodes.length);
+    for (let k = 0; k < ns; k++) this.seedBuf[k] = to.nodes[k];
+    const kFrom = this.stations.indexOf(from);
+    let found = -1;
+    this.ds.stop = Infinity;
+    this.ds.run(this.g, this.tm, this.seedBuf, ns, EMERG_MANUAL_MAX * 2, this.nodeHead, (u) => {
+      for (let e = this.nodeHead[u]; e >= 0; e = this.entNext[e]) if (this.entSt[e] === kFrom) { found = u; return true; }
+      return false;
+    });
+    return found >= 0 ? this.extractPath(found) : null;
+  }
+
+  // ------------------------------------------------------------------------------------------ incident processing
+  private processIncidents(sim: Simulation): void {
+    const st = sim.state;
+    const now = st.day;
+    for (let k = 0; k < this.list.length; k++) {
+      const inc = this.list[k];
+      // on-scene work credit per responder since the last processing
+      const ud = this.udBuf;
+      ud[0] = 0; ud[1] = 0; ud[2] = 0;
+      for (const id of inc.units) {
+        const v = this.vById.get(id);
+        if (!v || v.state !== 'onScene') continue;
+        const d = Math.max(0, now - v.workFrom);
+        v.workFrom = now;
+        ud[R_INDEX[v.responder]] += d;
+      }
+      if (inc.kind === 'fire') this.fireStep(sim, inc, ud[0]);
+      else this.workStep(sim, inc, ud);
+      if (inc.state === 'resolved' || inc.state === 'failed') {
+        this.finalize(sim, inc, k);
+        k--;
+      }
+    }
+  }
+
+  private fireStep(sim: Simulation, inc: Incident, unitDays: number): void {
+    const st = sim.state;
+    const fire = sim.getSystem<FireSystem>('fire');
+    if (!fire) { inc.state = 'resolved'; return; }
+    // sync the cluster with the fire registry (disasters / UI may have removed fires), each building once: a list
+    // never repeats an id (see below and onFire), but a save from before that fix can — such a building would be
+    // stepped twice a day, and once one pass put it out or burnt it down the other found no fire
+    const cl: Building[] = [];
+    const seen = this.clusterSeen;
+    seen.clear();
+    for (const id of inc.fires) {
+      const b = st.buildings.get(id);
+      const f = fire.fires.get(id);
+      if (b && f && b.flags & BF.OnFire && !seen.has(id)) {
+        seen.add(id);
+        cl.push(b);
+      }
+    }
+    if (cl.length !== inc.fires.length) {
+      const was = inc.fires;
+      inc.fires = cl.map((b) => b.id);
+      // a fire that ended outside this step (UI, a disaster) leaves the cluster here: so does its BF.Incident
+      for (const id of was) if (!seen.has(id)) this.unlisted(sim, id);
+    }
+    if (cl.length === 0) {
+      inc.state = inc.lost > 0 && inc.lost >= inc.saved ? 'failed' : 'resolved';
+      return;
+    }
+    const crews = this.onSceneCount(inc, 'fire');
+    const nb = cl.length;
+    const held = crews > 0 ? Math.min(1, (crews * FIRE_HOLD_PER_UNIT) / nb) : 0;
+    // the coverage promise: while the first truck sent from inside its station's auto range is still on its way,
+    // nothing burns down before it gets there (turnout, a swamped dispatch day or the fire HQ's 6.2-minute reach
+    // never cost a covered building); spread goes on
+    const hold = crews === 0 && this.coverEnRoute(inc);
+    const share = unitDays / nb;
+    let maxDays = 0;
+    const toSpread: Building[] = [];
+    for (const b of cl) {
+      const f = fire.fires.get(b.id);
+      if (!f) continue; // (each building is stepped once, so its fire is still there: never crash a game on it)
+      const nd = f.days + 1 - held;
+      f.days = hold && nd >= FIRE_BURN_DAYS ? Math.max(f.days, FIRE_BURN_DAYS - 0.5) : nd;
+      if (share > 0) {
+        const watered = (b.flags & BF.Watered) !== 0;
+        // rounded like the save (fire.ts persist), so a loaded game continues with exactly the same heat
+        f.heat = Math.round(((f.heat ?? 1) - share / (FIRE_WORK_PER_AREA * Math.sqrt(Math.max(1, b.w * b.d)) * (watered ? 1 : FIRE_DRY_WORK))) * 1e6) / 1e6;
+      }
+      if ((f.heat ?? 1) <= 0) {
+        this.leaveCluster(inc, b);
+        fire.putOut(sim, b);
+        inc.saved++;
+        continue;
+      }
+      if (f.days >= FIRE_BURN_DAYS) {
+        this.leaveCluster(inc, b);
+        fire.burnDown(sim, b);
+        inc.lost++;
+        const m = st.stats.emergency.month;
+        m.buildingsLost++;
+        const def = getDef(b.def);
+        const cost = def?.cost ?? 0;
+        m.damage += cost > 0 && def?.category !== 'growable' ? cost : Math.max(1, b.capacity) * 40;
+        continue;
+      }
+      maxDays = Math.max(maxDays, f.days);
+      toSpread.push(b);
+    }
+    // the buildings put out or burnt down above leave the cluster before the spread below. putOut clears OnFire, so a
+    // neighbour's spread can re-ignite one of them this very step: it then joins (onFire) as a new fire, listed once.
+    // (Left in the list until the end of the step, its old entry made onFire add it a second time and both were kept —
+    // the building was stepped twice a day, and the day one pass put it out or burnt it down the other read a fire that
+    // was gone: the TypeError on f.days.)
+    if (toSpread.length !== cl.length) inc.fires = toSpread.map((b) => b.id);
+    // spread to neighbours (legacy FIRE_SPREAD_P; x0.2 with a crew on scene, x1.3 without water)
+    const N = st.size;
+    const fc = st.fireCov;
+    const rng = this.rng;
+    for (const b of toSpread) {
+      const dry = (b.flags & BF.Watered) === 0;
+      const mul = (crews > 0 ? FIRE_SPREAD_ONSCENE : 1) * (dry ? FIRE_SPREAD_DRY : 1);
+      for (let z = b.z - 1; z <= b.z + b.d; z++) for (let x = b.x - 1; x <= b.x + b.w; x++) {
+        if (x < 0 || z < 0 || x >= N || z >= N) continue;
+        const id = st.building[z * N + x];
+        if (id < 0 || id === b.id) continue;
+        const nbld = st.buildings.get(id);
+        if (!nbld || nbld.flags & (BF.OnFire | BF.Burnt)) continue;
+        const cov = fc[centerCell(st, nbld)];
+        const p = ((FIRE_SPREAD_P * (1 - 0.8 * Math.min(1, cov))) / Math.max(1, (b.w + b.d) / 2)) * mul;
+        if (rng.next() < p) fire.ignite(sim, nbld, true);
+      }
+    }
+    const fl = inc.fires;
+    inc.fires = fl.filter((id) => fire.fires.has(id));
+    if (inc.fires.length !== fl.length) for (const id of fl) if (!fire.fires.has(id)) this.unlisted(sim, id);
+    const alive = inc.fires.length;
+    if (alive === 0) {
+      inc.state = inc.lost > 0 && inc.lost >= inc.saved ? 'failed' : 'resolved';
+      return;
+    }
+    inc.severity = alive;
+    inc.need.fire = 1 + Math.floor(alive / FIRE_HOLD_PER_UNIT);
+    inc.deadline = st.day + Math.max(0, FIRE_BURN_DAYS - maxDays);
+    if (inc.need.fire > this.assigned(inc, 'fire')) inc.retry = Math.min(inc.retry, st.day);
+  }
+
+  private workStep(sim: Simulation, inc: Incident, ud: ArrayLike<number>): void {
+    const st = sim.state;
+    const now = st.day;
+    const kind = inc.kind;
+    const primary = INCIDENT_RESPONDERS[kind][0];
+    const pud = ud[R_INDEX[primary]];
+    const m = st.stats.emergency.month;
+    const b = inc.buildingId >= 0 ? st.buildings.get(inc.buildingId) : undefined;
+    if (inc.buildingId >= 0 && !b) { inc.state = 'resolved'; return; } // site bulldozed
+    if (kind === 'riot') {
+      m.riotDays++;
+      const police = this.onSceneCount(inc, 'police');
+      const need = inc.need.police ?? 2;
+      const loose = Math.max(0, 1 - police / need);
+      if (loose > 0) {
+        inc.radius = Math.min(RIOT_R_MAX, Math.max(inc.radius, 2 + RIOT_R_GROW * (now - inc.start)));
+        this.riotDamage(sim, inc, loose);
+        const nn = 2 + Math.floor(inc.radius / 3);
+        if (nn > need) {
+          inc.need.police = nn;
+          this.emit(sim, inc, 'escalated');
+          inc.retry = Math.min(inc.retry, now);
+        }
+      }
+      inc.severity = Math.round(inc.radius * 10) / 10;
+    }
+    if (kind === 'industrial' && inc.firstAt.fire === undefined && this.assigned(inc, 'fire') === 0 && now - inc.start >= EMERG_GRACE.industrial && b && !(b.flags & (BF.OnFire | BF.Burnt))) {
+      // unanswered accident (no fire truck on the way): the plant catches fire (its own fire incident), the accident fails
+      this.emit(sim, inc, 'escalated');
+      sim.getSystem<FireSystem>('fire')?.ignite(sim, b, false);
+      this.casualties(sim, inc, MED_SURVIVE - MED_DELAY_LOSS * smoothstep(5, 16, now - inc.start + 6));
+      inc.state = 'failed';
+      return;
+    }
+    if (inc.arrived >= 0 && pud > 0) inc.work -= pud;
+    if (inc.arrived >= 0 && inc.work <= 1e-9 && this.onSceneCount(inc, primary) > 0) {
+      this.resolveOutcome(sim, inc, now);
+      inc.state = 'resolved';
+      return;
+    }
+    // deadline: nobody of the primary responder got there in time (units already working may finish)
+    if (now >= inc.deadline && inc.firstAt[primary] === undefined) {
+      this.failOutcome(sim, inc, now);
+      inc.state = 'failed';
+    }
+  }
+
+  private resolveOutcome(sim: Simulation, inc: Incident, now: number): void {
+    const st = sim.state;
+    const m = st.stats.emergency.month;
+    const rng = this.rng;
+    switch (inc.kind) {
+      case 'crime': m.arrests += inc.major ? rng.int(3, 8) : rng.int(1, 4); break;
+      case 'riot':
+        m.arrests += rng.int(10, 40);
+        this.p.effects.push({ kind: 'crime', x: inc.x, z: inc.z, radius: inc.radius + 2, a: RIOT_AFTER_BOOST, b: 0, until: now + RIOT_AFTER_DAYS });
+        break;
+      case 'prisonRiot': m.arrests += rng.int(5, 15); break;
+      case 'industrial':
+      case 'collapse': {
+        const Dm = inc.firstAt.medical !== undefined ? inc.firstAt.medical - inc.start : 16;
+        const Df = (inc.firstAt.fire ?? now) - inc.start;
+        const surv = inc.kind === 'collapse'
+          ? 0.95 - 0.6 * smoothstep(inc.grace, 15, Df) - (inc.firstAt.medical === undefined ? 0.1 : 0)
+          : MED_SURVIVE - MED_DELAY_LOSS * smoothstep(5, 16, Dm);
+        this.casualties(sim, inc, surv);
+        break;
+      }
+      default: break;
+    }
+  }
+
+  private failOutcome(sim: Simulation, inc: Incident, now: number): void {
+    const st = sim.state;
+    switch (inc.kind) {
+      case 'medical':
+      case 'industrial':
+      case 'collapse':
+        this.casualties(sim, inc, 0.3);
+        // a medical call no ambulance reached in time scores 0 in the medical-response EMA (medScore): a city
+        // without clinics must not score better than one with a slow clinic
+        if (inc.kind === 'medical') this.p.medQ[1] += 1;
+        break;
+      case 'crime':
+        this.p.effects.push({ kind: 'crime', x: inc.x, z: inc.z, radius: 4, a: SPREE_FAIL_BOOST, b: 0, until: now + SPREE_FAIL_DAYS });
+        break;
+      case 'riot':
+        this.p.effects.push({ kind: 'crime', x: inc.x, z: inc.z, radius: inc.radius + 2, a: RIOT_AFTER_BOOST, b: 0, until: now + RIOT_AFTER_DAYS });
+        break;
+      case 'prisonRiot': {
+        const j = st.systemData.justice as { inmates?: number } | undefined;
+        if (j && typeof j.inmates === 'number') j.inmates *= 1 - PRISON_ESCAPE;
+        st.stats.justice.inmates *= 1 - PRISON_ESCAPE;
+        this.p.effects.push({ kind: 'crime', x: inc.x, z: inc.z, radius: 40, a: 0.1, b: 0, until: now + 90 });
+        break;
+      }
+      case 'spill':
+        this.p.effects.push({ kind: 'poll', x: inc.x, z: inc.z, radius: SPILL_POLL.radius, a: SPILL_POLL.air * 0.5, b: SPILL_POLL.water * 0.5, until: now + 30 });
+        break;
+      default: break;
+    }
+  }
+
+  private riotDamage(sim: Simulation, inc: Incident, loose: number): void {
+    const st = sim.state;
+    const R = inc.radius;
+    const fire = sim.getSystem<FireSystem>('fire');
+    let ignitions = 0;
+    const m = st.stats.emergency.month;
+    const x0 = Math.max(0, Math.floor(inc.x - R)), x1 = Math.min(st.size - 1, Math.ceil(inc.x + R));
+    const z0 = Math.max(0, Math.floor(inc.z - R)), z1 = Math.min(st.size - 1, Math.ceil(inc.z + R));
+    const seen = new Set<number>();
+    for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
+      if ((x - inc.x) * (x - inc.x) + (z - inc.z) * (z - inc.z) > R * R) continue;
+      const id = st.building[z * st.size + x];
+      if (id < 0 || seen.has(id)) continue;
+      seen.add(id);
+      const b = st.buildings.get(id);
+      if (!b || !isFunctional(b)) continue;
+      b.health = Math.max(0, b.health - RIOT_HEALTH * loose);
+      m.damage += 20 * loose;
+      if (fire && ignitions < 2 && !(b.flags & BF.OnFire) && this.rng.next() < RIOT_IGNITE_P * loose) {
+        if (fire.ignite(sim, b, true)) ignitions++;
+      }
+    }
+  }
+
+  private finalize(sim: Simulation, inc: Incident, k: number): void {
+    const st = sim.state;
+    const now = st.day;
+    this.list.splice(k, 1);
+    this.byId.delete(inc.id);
+    this.optCache.delete(inc.id);
+    const m = st.stats.emergency.month;
+    if (inc.state === 'failed') {
+      m.failed++;
+      // nobody came although the player was told a unit could still make it (WP6b: approval remembers these)
+      if (inc.major && inc.answered === 0 && inc.prompted) m.ignored = (m.ignored ?? 0) + 1;
+    }
+    // release units
+    for (const id of inc.units) {
+      const v = this.vById.get(id);
+      if (!v) continue;
+      if (v.state === 'onScene') {
+        const home = this.stById.get(v.stationId);
+        if (inc.kind === 'medical' && v.responder === 'medical' && home && !home.hospital && inc.state === 'resolved') {
+          const hosp = v.hospital >= 0 ? this.stById.get(v.hospital) ?? null : null;
+          const route = hosp ? this.hospitalRoute(sim, inc, hosp) : null;
+          if (hosp && route) {
+            v.state = 'transport';
+            v.hospital = hosp.id;
+            v.path = route.cells;
+            v.times = route.times;
+            v.m0 = route.times[route.times.length - 1];
+            v.m1 = 0;
+            v.legStart = now;
+            v.arrive = now + v.m0 * EMERG_DAYS_PER_MIN;
+            continue;
+          }
+        }
+        this.startReturn(v, now, v.m1);
+      } else if (v.state === 'outbound') {
+        // recall: turn around where it is
+        const el = Math.max(0, (now - v.legStart) / EMERG_DAYS_PER_MIN);
+        this.startReturn(v, Math.max(now, v.legStart), Math.min(v.m1, el));
+      }
+    }
+    const b = inc.buildingId >= 0 ? st.buildings.get(inc.buildingId) : undefined;
+    if (b) this.setIncidentFlag(sim, b, false);
+    for (const id of inc.fires) {
+      const fb = st.buildings.get(id);
+      if (fb) this.setIncidentFlag(sim, fb, false);
+    }
+    this.emit(sim, inc, inc.state === 'failed' ? 'failed' : 'resolved');
+    this.outcomeNews(sim, inc);
+    this.rebuildCaches(st);
+  }
+
+  /** route site -> hospital (reverse search from the site; the ambulance drives it backwards) */
+  private hospitalRoute(sim: Simulation, inc: Incident, hosp: Station): { cells: number[]; times: number[] } | null {
+    const st = sim.state;
+    const ns = this.siteSeeds(st, inc);
+    if (ns === 0) return null;
+    this.ensureTimes(st);
+    const k = this.stations.indexOf(hosp);
+    let found = -1;
+    this.ds.stop = Infinity;
+    this.ds.run(this.g, this.tm, this.seedBuf, ns, EMERG_MANUAL_MAX * 2, this.nodeHead, (u) => {
+      for (let e = this.nodeHead[u]; e >= 0; e = this.entNext[e]) if (this.entSt[e] === k) { found = u; return true; }
+      return false;
+    });
+    return found >= 0 ? this.extractPath(found) : null;
+  }
+
+  private outcomeNews(sim: Simulation, inc: Incident): void {
+    const L = INCIDENT_LABEL[inc.kind];
+    const adv = INCIDENT_RESPONDERS[inc.kind][0] === 'medical' ? 'health' : 'safety';
+    if (inc.state === 'failed') {
+      let txt: string;
+      switch (inc.kind) {
+        case 'fire': txt = `The fire at ${inc.place} burned down ${inc.lost} building${inc.lost === 1 ? '' : 's'}.`; break;
+        case 'medical': txt = `Medical emergency at ${inc.place}: ${inc.deaths ? `${inc.deaths} ${inc.deaths === 1 ? 'person' : 'people'} died` : 'nobody came'} — no ambulance arrived in time.`; break;
+        case 'riot': txt = `The riot at ${inc.place} burned itself out after ${Math.round(sim.state.day - inc.start)} days. Crime is up in the area.`; break;
+        case 'crime': txt = `The crime spree at ${inc.place} went unanswered — the neighbourhood is less safe now.`; break;
+        case 'spill': txt = `The hazardous spill at ${inc.place} was never contained and is polluting the area.`; break;
+        case 'prisonRiot': txt = `Prison riot at ${inc.place}: inmates escaped!`; break;
+        case 'industrial': txt = `The industrial accident at ${inc.place} was not answered in time and the plant caught fire.`; break;
+        // (a collapse: "help came too late" only when a unit of its primary responder was sent — EM-5)
+        default: txt = `${L} at ${inc.place}: ${inc.answered > 0 ? 'help came too late' : `no ${RESPONDER_UNIT[INCIDENT_RESPONDERS[inc.kind][0]][0]} reached it in time`}${inc.deaths ? ` (${inc.deaths} dead)` : ''}.`;
+      }
+      this.news(sim, 'failed:' + inc.kind, 3, txt, 'bad', inc.x, inc.z, adv);
+    } else if (inc.major && inc.answered === 2) {
+      this.news(sim, 'resolved:' + inc.kind, 3, `${L} at ${inc.place} is under control — thanks to your dispatch.`, 'good', inc.x, inc.z, adv);
+    }
+  }
+
+  private news(sim: Simulation, key: string, minDays: number, text: string, kind: 'good' | 'bad' | 'warning' | 'disaster' | 'info', x: number, z: number, adv: string): void {
+    const day = sim.state.day;
+    const last = (this.p.news ??= {}); // (saved: systemData.emergency is this.p)
+    if (day - (last[key] ?? -1e9) < minDays) return;
+    last[key] = day;
+    sim.notify(text, kind, x, z, adv);
+  }
+
+  private emit(sim: Simulation, inc: Incident, type: EmergencyEvent['type']): void {
+    const ev: EmergencyEvent = { type, id: inc.id, kind: inc.kind, x: inc.x, z: inc.z, major: inc.major, manualPossible: inc.manualPossible };
+    if (inc.reason && (type === 'uncovered' || type === 'queued')) ev.reason = inc.reason;
+    if (inc.etaMin !== undefined && (type === 'dispatched' || type === 'queued')) ev.etaMin = inc.etaMin;
+    sim.events.emit('emergency', ev);
+  }
+
+  private writeStats(st: CityState): void {
+    const em = st.stats.emergency;
+    em.active = this.list.length;
+    let man = 0;
+    for (const inc of this.list) if (inc.state === 'uncovered' && inc.manualPossible && inc.major) man++;
+    em.manualActive = man;
+  }
+
+  private rebuildCaches(st: CityState): void {
+    this.cacheState = st;
+    if (this.p.effects.length === 0 && !this.list.some(hasEffect)) {
+      // nothing splats crime / pollution (the common case): keep (or reset to) empty caches without allocating
+      if (this.boosts.length) this.boosts = [];
+      if (this.polls.length) this.polls = [];
+      return;
+    }
+    const c = effectsOf(this.list, this.p.effects, st.day);
+    this.boosts = c.boosts;
+    this.polls = c.polls;
+  }
+
+  /** crime boosts of active riots / failed incidents (crime.ts). Before init() on a (re)loaded state — systems that
+   *  init earlier (crime, pollution) — they are read straight from the saved systemData.emergency. */
+  crimeBoosts(st?: CityState): CrimeBoost[] {
+    if (st && st !== this.cacheState) return savedEffects(st).boosts;
+    return this.boosts;
+  }
+  /** pollution sources of active spills / accidents (pollution.ts) */
+  pollutionSources(st?: CityState): EmergencyPollutionSource[] {
+    if (st && st !== this.cacheState) return savedEffects(st).polls;
+    return this.polls;
+  }
+
+  // ------------------------------------------------------------------------------------------ response layers
+  private respDue(sim: Simulation): boolean {
+    if (this.respStep >= 0) return true;
+    const day = sim.state.day;
+    // no emergency station at all: the layers are RESP_NONE everywhere until one is built (respDirty)
+    if (!this.respDirty && this.respComputed && this.stations.length === 0) return false;
+    if (day - this.respLast >= EMERG_RESP_PERIOD) return true;
+    if (!this.respDirty) return false;
+    // station / fleet changes: right away. Network-only edits (a new road graph): within EMERG_RESP_NET_DAYS with a
+    // live renderer (the coverage overlay); headless (bots edit roads constantly) they wait for the periodic refresh
+    if (this.respNetOnly) return schedulerOf(sim).framesActive && day - this.respLast >= EMERG_RESP_NET_DAYS;
+    return true;
+  }
+
+  /**
+   * estimated ms of the next step (calibrated on the 256² stress city: 36k road nodes, 20k buildings). The sequence is
+   * 3 station searches (one per responder, EMERG_SEARCH_CHUNK settled nodes per step), 1 land fill, building fills of
+   * EMERG_FILL_CHUNK buildings per step — every step stays bounded on any map.
+   */
+  private respCost(): number {
+    const n = this.g.n;
+    if (this.respStep < 0 || this.respStep < 3) {
+      const r = RESPONDERS[Math.max(0, this.respStep)];
+      // no station of this responder: the step only fills the node slack
+      if (this.respStep >= 0 && !this.csActive && !this.stations.some((s) => s.responder === r && s.units > 0)) return 0.1 + 0.1 * Math.max(0.05, n / 36000);
+      const left = this.csActive ? Math.max(0, n - this.cs.settled) : n;
+      // + the O(n) slack pass of the step that finishes the search
+      const fin = left <= EMERG_SEARCH_CHUNK ? EMERG_SEARCH_FINISH_COST * Math.max(0.05, n / 36000) : 0;
+      return 0.1 + (EMERG_SEARCH_COST * Math.min(EMERG_SEARCH_CHUNK, Math.max(1000, left))) / 36000 + fin;
+    }
+    if (this.respStep === 3) return 0.1 + EMERG_FILL_CELLS_COST * Math.max(0.05, this.g.C / 65536);
+    const nbld = this.sim?.state.buildings.size ?? 0;
+    return 0.1 + (EMERG_FILL_BLD_COST * Math.max(500, Math.min(EMERG_FILL_CHUNK, nbld - this.respBCur))) / 20000;
+  }
+
+  private respTaskStep(sim: Simulation): void {
+    const st = sim.state;
+    if (this.respStep >= 0) {
+      // traffic may have rebuilt the graph since the last step: node ids changed, restart the sequence
+      this.ensureGraph(st);
+      if (this.gEpoch !== this.respVer) this.respStep = -1;
+    }
+    if (this.respStep < 0) {
+      this.syncStations(sim);
+      this.ensureTimes(st);
+      this.respStep = 0;
+      this.respVer = this.gEpoch;
+      this.respDirty = false;
+      this.respNetOnly = false;
+      this.csActive = false;
+      this.respBCur = 0;
+      // freeze the siren times for the whole sequence (dispatch searches may refresh this.tm in between)
+      const n = this.g.n;
+      if (this.respTm.length < n) this.respTm = new Float32Array(n + (n >> 3) + 16);
+      this.respTm.set(this.tm.subarray(0, n));
+    }
+    let next = true;
+    if (this.respStep < 3) next = this.respSearch(RESPONDERS[this.respStep]);
+    else if (this.respStep === 3) this.respFillCells(st);
+    else next = this.respFillBuildings(st);
+    if (!next) { // the same phase continues next step
+      this.saveResp();
+      return;
+    }
+    this.respStep++;
+    if (this.respStep >= 5) {
+      this.respStep = -1;
+      this.respLast = st.day;
+      this.respComputed = true;
+      sim.events.emit('layerUpdated', 'emergency');
+    }
+    this.saveResp();
+  }
+
+  /** one chunk of responder r's station search; true when its node slack is complete */
+  private respSearch(r: Responder): boolean {
+    const g = this.g;
+    const ri = R_INDEX[r];
+    const n = g.n;
+    if (this.nodeSlack[ri].length < n) this.nodeSlack[ri] = new Float32Array(n + (n >> 3) + 16);
+    const slack = this.nodeSlack[ri];
+    const cs = this.cs;
+    if (!this.csActive) {
+      const seeds = this.seeds;
+      seeds.clear();
+      let any = false;
+      for (let k = 0; k < this.stations.length; k++) {
+        const s = this.stations[k];
+        if (s.responder !== r || s.units <= 0) continue;
+        any = true;
+        const label = Math.max(0, EMERG_RMAX - s.range);
+        for (const v of s.nodes) seeds.push(v, label, k);
+      }
+      this.hasStation[ri] = any;
+      if (!any || n === 0) { slack.fill(-EMERG_RMAX, 0, n); return true; }
+      cs.start(n, seeds, EMERG_RMAX + EMERG_SLOW_MARGIN);
+      this.csActive = true;
+    }
+    if (!cs.step(g, g.fwd, this.respTm, EMERG_SEARCH_CHUNK)) return false;
+    this.csActive = false;
+    const dist = cs.dist;
+    for (let v = 0; v < n; v++) {
+      const d = dist[v];
+      if (d === Infinity) { slack[v] = -EMERG_RMAX; continue; }
+      const sl = EMERG_RMAX - d;
+      slack[v] = sl > -EPS && sl < 0 ? 0 : sl;
+    }
+    return true;
+  }
+
+  private respLayers(st: CityState): [Float32Array, Float32Array, Float32Array] {
+    return [st.respFire, st.respPolice, st.respMedical];
+  }
+
+  /** land / road cells: best slack of the cell's own road node and its 4 neighbours (all three layers, one pass) */
+  private respFillCells(st: CityState): void {
+    const L = this.respLayers(st);
+    const noc = this.g.nodeOfCell;
+    if (noc.length !== st.cells) { for (const l of L) l.fill(RESP_NONE); return; }
+    const has = this.hasStation;
+    const h0 = has[0], h1 = has[1], h2 = has[2];
+    // no station of a type: the whole layer (buildings included) is RESP_NONE
+    for (let ri = 0; ri < 3; ri++) if (!has[ri]) L[ri].fill(RESP_NONE);
+    if (!h0 && !h1 && !h2) return;
+    const N = st.size;
+    const bld = st.building;
+    const NONE = -EMERG_RMAX;
+    const s0 = this.nodeSlack[0], s1 = this.nodeSlack[1], s2 = this.nodeSlack[2];
+    const l0 = L[0], l1 = L[1], l2 = L[2];
+    for (let z = 0; z < N; z++) {
+      const row = z * N;
+      for (let x = 0; x < N; x++) {
+        const i = row + x;
+        if (bld[i] >= 0) continue; // buildings: respFillBuildings
+        let b0 = NONE, b1 = NONE, b2 = NONE;
+        let v = noc[i];
+        if (v >= 0) {
+          if (s0[v] > b0) b0 = s0[v];
+          if (s1[v] > b1) b1 = s1[v];
+          if (s2[v] > b2) b2 = s2[v];
+        }
+        if (x > 0 && (v = noc[i - 1]) >= 0) {
+          if (s0[v] > b0) b0 = s0[v];
+          if (s1[v] > b1) b1 = s1[v];
+          if (s2[v] > b2) b2 = s2[v];
+        }
+        if (x < N - 1 && (v = noc[i + 1]) >= 0) {
+          if (s0[v] > b0) b0 = s0[v];
+          if (s1[v] > b1) b1 = s1[v];
+          if (s2[v] > b2) b2 = s2[v];
+        }
+        if (z > 0 && (v = noc[i - N]) >= 0) {
+          if (s0[v] > b0) b0 = s0[v];
+          if (s1[v] > b1) b1 = s1[v];
+          if (s2[v] > b2) b2 = s2[v];
+        }
+        if (z < N - 1 && (v = noc[i + N]) >= 0) {
+          if (s0[v] > b0) b0 = s0[v];
+          if (s1[v] > b1) b1 = s1[v];
+          if (s2[v] > b2) b2 = s2[v];
+        }
+        if (h0) l0[i] = b0;
+        if (h1) l1[i] = b1;
+        if (h2) l2[i] = b2;
+      }
+    }
+  }
+
+  /** building footprints: best slack over the perimeter road nodes (= the dispatch search seeds), all three layers;
+   *  EMERG_FILL_CHUNK buildings of the building list per step. Returns true when every building is done. */
+  private respFillBuildings(st: CityState): boolean {
+    const L = this.respLayers(st);
+    const noc = this.g.nodeOfCell;
+    if (noc.length !== st.cells) return true;
+    const list = buildingList(st);
+    const q0 = Math.min(this.respBCur, list.length);
+    const q1 = Math.min(list.length, q0 + EMERG_FILL_CHUNK);
+    this.respBCur = q1;
+    const N = st.size;
+    const bld = st.building;
+    const NONE = -EMERG_RMAX;
+    const has = this.hasStation;
+    const s0 = this.nodeSlack[0], s1 = this.nodeSlack[1], s2 = this.nodeSlack[2];
+    const l0 = L[0], l1 = L[1], l2 = L[2];
+    let tmp = this.tmpNodes;
+    for (let q = q0; q < q1; q++) {
+      const b = list[q];
+      const need = 2 * (b.w + b.d) + 4;
+      if (tmp.length < need) tmp = this.tmpNodes = new Int32Array(need + 16);
+      const c = perimeterNodes(noc, N, b, tmp, 0, tmp.length);
+      let b0 = NONE, b1 = NONE, b2 = NONE;
+      for (let k = 0; k < c; k++) {
+        const v = tmp[k];
+        if (s0[v] > b0) b0 = s0[v];
+        if (s1[v] > b1) b1 = s1[v];
+        if (s2[v] > b2) b2 = s2[v];
+      }
+      if (!has[0]) b0 = RESP_NONE;
+      if (!has[1]) b1 = RESP_NONE;
+      if (!has[2]) b2 = RESP_NONE;
+      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
+        if (x < 0 || z < 0 || x >= N || z >= N) continue;
+        const i = z * N + x;
+        if (bld[i] !== b.id) continue;
+        l0[i] = b0; l1[i] = b1; l2[i] = b2;
+      }
+    }
+    return q1 >= list.length;
+  }
+
+  /** response layers computed at least once (init) */
+  get layersReady(): boolean {
+    return this.respComputed;
+  }
+}
+
+/** an active incident with a crime boost / pollution source (effectsOf) */
+function hasEffect(inc: Incident): boolean {
+  const k = inc.kind;
+  return (k === 'riot' || k === 'prisonRiot' || k === 'spill' || k === 'industrial') && inc.state !== 'resolved' && inc.state !== 'failed';
+}
+
+/** crime boosts / pollution sources of active incidents and lasting after-effects */
+function effectsOf(list: readonly Incident[], effects: readonly Effect[], day: number): { boosts: CrimeBoost[]; polls: EmergencyPollutionSource[] } {
+  const boosts: CrimeBoost[] = [];
+  const polls: EmergencyPollutionSource[] = [];
+  for (const inc of list) {
+    if (inc.state === 'resolved' || inc.state === 'failed') continue;
+    if (inc.kind === 'riot') boosts.push({ x: inc.x, z: inc.z, radius: inc.radius + 2, amount: RIOT_CRIME_BOOST });
+    else if (inc.kind === 'prisonRiot') boosts.push({ x: inc.x, z: inc.z, radius: 6, amount: 0.2 });
+    else if (inc.kind === 'spill') polls.push({ x: inc.x, z: inc.z, air: SPILL_POLL.air, water: SPILL_POLL.water, radius: SPILL_POLL.radius });
+    else if (inc.kind === 'industrial') polls.push({ x: inc.x, z: inc.z, air: INDUSTRIAL_POLL.air, water: INDUSTRIAL_POLL.water, radius: INDUSTRIAL_POLL.radius });
+  }
+  for (const e of effects) {
+    if (e.until <= day) continue;
+    if (e.kind === 'crime') boosts.push({ x: e.x, z: e.z, radius: e.radius, amount: e.a });
+    else polls.push({ x: e.x, z: e.z, air: e.a, water: e.b, radius: e.radius });
+  }
+  return { boosts, polls };
+}
+
+/** effects straight from a state's saved systemData.emergency (used before the system's init on a loaded state) */
+function savedEffects(st: CityState): { boosts: CrimeBoost[]; polls: EmergencyPollutionSource[] } {
+  const raw = st.systemData.emergency as Partial<Persist> | undefined;
+  if (!raw || typeof raw !== 'object' || raw.v !== 1) return { boosts: [], polls: [] };
+  return effectsOf(Array.isArray(raw.incidents) ? raw.incidents : [], Array.isArray(raw.effects) ? raw.effects : [], st.day);
+}
+
+/**
+ * Content signature of a road graph: map size, node cells and types, every directed link. RoadGraph.build is a pure
+ * function of the network, so equal signatures mean the identical graph with the identical node ids (two independent
+ * 32-bit hashes; O(5 n), only when traffic rebuilt its graph).
+ */
+function graphSig(g: RoadGraph): string {
+  const n = g.n, cellOf = g.cellOf, type = g.type, fwd = g.fwd;
+  let h1 = 0x811c9dc5 | 0, h2 = 0x2545f491 | 0;
+  for (let v = 0; v < n; v++) {
+    const a = cellOf[v] * 16 + type[v];
+    h1 = Math.imul(h1 ^ a, 0x01000193);
+    h2 = Math.imul(h2 + a, 0x5bd1e995) ^ (h2 >>> 15);
+    const b = v * 4;
+    for (let k = 0; k < 4; k++) {
+      const e = fwd[b + k] + 2;
+      h1 = Math.imul(h1 ^ e, 0x01000193);
+      h2 = Math.imul(h2 + e, 0x5bd1e995) ^ (h2 >>> 15);
+    }
+  }
+  return `${g.N}:${n}:${(h1 >>> 0).toString(36)}:${(h2 >>> 0).toString(36)}`;
+}
+
+/** road nodes around a cell without a building: its own node (road cell) + 4-neighbour road nodes */
+function cellSeeds(g: RoadGraph, N: number, x: number, z: number, out: Int32Array): number {
+  let c = 0;
+  const noc = g.nodeOfCell;
+  const i = z * N + x;
+  if (noc[i] >= 0) out[c++] = noc[i];
+  if (x > 0 && noc[i - 1] >= 0) out[c++] = noc[i - 1];
+  if (x < N - 1 && noc[i + 1] >= 0) out[c++] = noc[i + 1];
+  if (z > 0 && noc[i - N] >= 0) out[c++] = noc[i - N];
+  if (z < N - 1 && noc[i + N] >= 0) out[c++] = noc[i + N];
+  return c;
+}
+
+function placeName(st: CityState, x: number, z: number): string {
+  const t = st.network[z * st.size + x];
+  if (t === Network.Highway) return `the highway (${x}, ${z})`;
+  return `(${x}, ${z})`;
+}
+
+function sumMonths(ms: readonly EmergencyMonth[]): EmergencyMonth {
+  const s = emptyEmergencyMonth();
+  for (const m of ms) {
+    for (const k of INCIDENT_KINDS) s.count[k] += m.count?.[k] ?? 0;
+    for (const r of RESPONDERS) {
+      s.responseMin[r] += m.responseMin?.[r] ?? 0;
+      s.responses[r] += m.responses?.[r] ?? 0;
+    }
+    s.auto += m.auto; s.manual += m.manual; s.late += m.late; s.failed += m.failed; s.ignored = (s.ignored ?? 0) + (m.ignored ?? 0);
+    s.deaths += m.deaths; s.injured += m.injured; s.rescued += m.rescued; s.buildingsLost += m.buildingsLost;
+    s.damage += m.damage; s.arrests += m.arrests; s.riotDays += m.riotDays;
+  }
+  return s;
+}
+
+export function emergencyOf(sim: Simulation): EmergencySystemOriginal | undefined {
+  return sim.getSystem<EmergencySystemOriginal>('emergency');
+}
+
+/** vehicles for the renderer (EmergencyVehicles.ts) */
+export function emergencyVehicles(sim: Simulation): readonly EmergencyVehicle[] {
+  return emergencyOf(sim)?.vehicles() ?? [];
+}
+
+/** auto-dispatch reach of responder r at a cell: slack >= 0 = covered; slackMin RESP_NONE = no station of that type */
+export function responseAt(sim: Simulation, cell: number, r: Responder): { slackMin: number; covered: boolean } | null {
+  const em = emergencyOf(sim);
+  const st = sim.state;
+  if (!em || !em.active || !em.layersReady || cell < 0 || cell >= st.cells) return null;
+  const layer = r === 'fire' ? st.respFire : r === 'police' ? st.respPolice : st.respMedical;
+  const v = layer[cell];
+  return { slackMin: v, covered: v >= 0 };
+}
+
+/** coarse 8x8 blocks with the most residents outside responder r's auto-dispatch reach (top n) */
+export function uncoveredHotspots(sim: Simulation, r: Responder, n = 5): { x: number; z: number; people: number }[] {
+  const em = emergencyOf(sim);
+  const st = sim.state;
+  if (!em || !em.active || !em.layersReady) return [];
+  const layer = r === 'fire' ? st.respFire : r === 'police' ? st.respPolice : st.respMedical;
+  const B = 8, nb = Math.ceil(st.size / B);
+  const acc = new Float64Array(nb * nb);
+  for (const b of buildingList(st)) {
+    if (b.pop <= 0) continue;
+    if (layer[centerCell(st, b)] >= 0) continue;
+    acc[Math.floor(b.z / B) * nb + Math.floor(b.x / B)] += b.pop;
+  }
+  const out: { x: number; z: number; people: number }[] = [];
+  for (let k = 0; k < acc.length; k++) if (acc[k] > 0) out.push({ x: (k % nb) * B + B / 2, z: Math.floor(k / nb) * B + B / 2, people: acc[k] });
+  out.sort((a, b) => b.people - a.people || a.z - b.z || a.x - b.x);
+  return out.slice(0, n);
+}
+
+/** pollution sources of active incidents (spills, industrial accidents, failed spills) */
+export function emergencyPollution(sim: Simulation): EmergencyPollutionSource[] {
+  const em = emergencyOf(sim);
+  return em && em.active && typeof em.pollutionSources === 'function' ? em.pollutionSources(sim.state) : [];
+}
+
+/** crime boosts of active / failed incidents (riots, failed crime sprees, prison riots) */
+export function emergencyCrimeBoosts(sim: Simulation): CrimeBoost[] {
+  const em = emergencyOf(sim);
+  return em && em.active && typeof em.crimeBoosts === 'function' ? em.crimeBoosts(sim.state) : [];
+}

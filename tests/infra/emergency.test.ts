@@ -894,12 +894,17 @@ describe('emergency perf', () => {
       tot += b - a - ov;
     }
     const max = dayNet.reduce((m, v) => Math.max(m, v), 0);
-    // estimated cost of every response-layer step (deterministic)
-    const pr = em as unknown as { respStep: number; respCost(): number };
-    const saved = pr.respStep;
+    // estimated cost of every response-layer step (deterministic). B2 (docs/dev/B2_DESIGN.md §8, §11.5): every piece kind
+    // of every state — the start's (stations, scan, siren times), each search's (start, settle chunks, slack), the land
+    // fill's rows, the building fill's chunks — at its cursor's start (full chunks: the largest)
+    const pr = em as unknown as { respStep: number; respSub: number; respCur: number; respBCur: number; respCost(): number };
+    const saved = [pr.respStep, pr.respSub, pr.respCur, pr.respBCur];
     let maxEst = 0;
-    for (let k = 0; k < 5; k++) { pr.respStep = k; maxEst = Math.max(maxEst, pr.respCost()); } // full chunks: the largest
-    pr.respStep = saved;
+    for (let k = -1; k < 5; k++) for (let sub = 0; sub < 4; sub++) {
+      pr.respStep = k; pr.respSub = sub; pr.respCur = 0; pr.respBCur = 0;
+      maxEst = Math.max(maxEst, pr.respCost());
+    }
+    [pr.respStep, pr.respSub, pr.respCur, pr.respBCur] = saved;
     const s = st.stats.emergency.year;
     const total = Object.values(s.count).reduce((a, b) => a + b, 0);
     const est = [...sch.estMs].find(([k]) => k === 'emergency.response')?.[1] ?? 0;
@@ -907,6 +912,9 @@ describe('emergency perf', () => {
     expect(total).toBeGreaterThan(20);
     expect(s.auto / Math.max(1, total)).toBeGreaterThan(0.5);
     expect(maxEst).toBeLessThanOrEqual(3);
+    // (B2: every response piece at about a quarter of INFRA_PIECE_COLD_MS; the largest is the station scan's snapshot,
+    // one copy of the building list, when the stations are dirty at a sequence start)
+    expect(maxEst).toBeLessThanOrEqual(0.5);
     if (process.env.PERF_STRICT) {
       // quiet machine: WP8-13 targets (dispatch + generation ~0.3 ms/day on this ~470 incidents/yr city, max day 3 ms)
       expect(tot / days).toBeLessThan(0.35);
