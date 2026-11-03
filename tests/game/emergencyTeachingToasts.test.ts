@@ -55,7 +55,7 @@ function make() {
 describe('FH-08 teaching toasts in the shared queue', () => {
   it.each([
     'LIVE: the game slowed down so you can follow the truck.',
-    'The nearest free fire truck needed 6.3 min; this fire burned out in 5 min.',
+    'The nearest free fire truck needed 6.3 min; the building burned down 5 min after the alarm.',
   ])('waits beyond the queue deadline for the show to end: %s', (text) => {
     const t = make();
     const onShow = t.teach(text);
@@ -125,6 +125,104 @@ describe('FH-08 teaching toasts in the shared queue', () => {
     expect(t.seen).toEqual(['LIVE: follow the truck.']);
     expect(onShow).toHaveBeenCalledTimes(1);
     expect(t.el.children[0].classList.contains('emg-teaching-toast')).toBe(true);
+  });
+
+  it('drops an obsolete LIVE lesson only after the show ends and can teach on the next slowdown', () => {
+    const t = make();
+    let live = true;
+    const onShow = vi.fn();
+    const onDrop = vi.fn();
+    const isRelevant = vi.fn(() => live);
+    const lesson = () => t.toasts.show('LIVE: follow the truck.', 'info', undefined, 'Emergency', {
+      budget: true, action: { hint: 'Open Emergencies', run() {} },
+      deferWhile: () => t.clock.busy, isRelevant, onShow, onDrop, teaching: true,
+    });
+    lesson();
+    live = false;
+    vi.advanceTimersByTime(70000);
+    expect(isRelevant).not.toHaveBeenCalled();
+    expect(onDrop).not.toHaveBeenCalled();
+    t.clock.busy = false;
+    vi.advanceTimersByTime(100);
+    expect(t.seen).toEqual([]);
+    expect(onShow).not.toHaveBeenCalled();
+    expect(onDrop).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(60000);
+    expect(onDrop).toHaveBeenCalledTimes(1);
+    live = true;
+    lesson();
+    expect(t.seen).toEqual(['LIVE: follow the truck.']);
+    expect(onShow).toHaveBeenCalledTimes(1);
+    expect(onDrop).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks a budget-delayed lesson when its display slot arrives', () => {
+    const t = make();
+    t.clock.busy = false;
+    t.toasts.show('City news', 'good', undefined, undefined, { budget: true });
+    let live = true;
+    const onShow = vi.fn();
+    const onDrop = vi.fn();
+    const isRelevant = vi.fn(() => live);
+    t.toasts.show('LIVE: follow the truck.', 'info', undefined, 'Emergency', {
+      budget: true, action: { hint: 'Open Emergencies', run() {} }, isRelevant, onShow, onDrop,
+    });
+    expect(isRelevant).not.toHaveBeenCalled();
+    live = false;
+    vi.advanceTimersByTime(4000);
+    expect(t.seen).toEqual(['City news']);
+    expect(onShow).not.toHaveBeenCalled();
+    expect(onDrop).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1); // the ordinary news toast's lifetime only
+  });
+
+  it('does not merge an obsolete lesson into an existing toast', () => {
+    const t = make();
+    t.clock.busy = false;
+    t.toasts.show('LIVE: follow the truck.', 'info');
+    const onShow = vi.fn();
+    const onDrop = vi.fn();
+    t.toasts.show('LIVE: follow the truck.', 'info', undefined, 'Emergency', {
+      isRelevant: () => false, onShow, onDrop, teaching: true,
+    });
+    expect(t.seen).toEqual(['LIVE: follow the truck.']);
+    expect(onShow).not.toHaveBeenCalled();
+    expect(onDrop).toHaveBeenCalledTimes(1);
+    expect(t.el.children[0].classList.contains('emg-teaching-toast')).toBe(false);
+  });
+
+  it.each(['expiry', 'Fire-tab action'])('starts an E3 twelve-second reading window after the show ends: %s', (finish) => {
+    const t = make();
+    const openFire = vi.fn();
+    const onShow = vi.fn();
+    const text = 'Fire at Harbor Refinery: the nearest free fire truck needed 6.3 min; the building burned down 5 min after the alarm.';
+    t.toasts.show('City news', 'good', undefined, undefined, { budget: true });
+    t.toasts.show(text, 'warning', { x: 4, z: 7 }, 'Emergency', {
+      budget: true, ttl: 12000, teaching: true, deferWhile: () => t.clock.busy, onShow,
+      action: { hint: 'Fire tab', run: openFire },
+    });
+    vi.advanceTimersByTime(70000);
+    expect(t.seen).toEqual(['City news']);
+    expect(onShow).not.toHaveBeenCalled();
+    t.clock.busy = false;
+    vi.advanceTimersByTime(100);
+    const lesson = t.el.children[0];
+    expect(textOf(lesson.querySelector('.t-text')!)).toBe(text);
+    expect(textOf(lesson.querySelector('.t-go')!)).toContain('Fire tab');
+    expect(onShow).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(11999);
+    expect(lesson.parentNode).toBe(t.el);
+    expect(lesson.classList.contains('out')).toBe(false);
+    if (finish === 'Fire-tab action') {
+      lesson.click();
+      expect(openFire).toHaveBeenCalledTimes(1);
+    } else {
+      vi.advanceTimersByTime(1);
+      expect(lesson.classList.contains('out')).toBe(true);
+      vi.advanceTimersByTime(300);
+      expect(lesson.parentNode).toBe(null);
+      expect(openFire).not.toHaveBeenCalled();
+    }
   });
 
   it('leaving the city cancels deferred lessons, callbacks and their polling timer', () => {

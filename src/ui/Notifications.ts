@@ -146,6 +146,10 @@ export interface ToastOptions {
   deferWhile?: () => boolean;
   /** called when the toast actually appears (including a merge), never when it only enters the queue */
   onShow?: () => void;
+  /** checked when a deferred or budgeted toast can appear; obsolete lessons do not consume their one-shot */
+  isRelevant?: () => boolean;
+  /** called instead of onShow when isRelevant rejects a toast at display time */
+  onDrop?: () => void;
   /** its existing toast hides with the teaching cards if a New Year starts while it is still visible */
   teaching?: boolean;
   /**
@@ -300,6 +304,7 @@ export class Toasts {
     // identical message within the de-dup window: bump the counter on the existing toast instead of stacking
     const live = this.live.get(key);
     if (!deferred && live && live.el.isConnected && now - live.at < Toasts.DEDUP_MS) {
+      if (opts.isRelevant?.() === false) { opts.onDrop?.(); return; }
       live.count++;
       live.at = now;
       live.badge.textContent = `×${live.count}`;
@@ -320,6 +325,7 @@ export class Toasts {
       } else if (this.queue.length) this.drain();
       return;
     }
+    if (opts.isRelevant?.() === false) { opts.onDrop?.(); return; }
     this.shownAt.push(now);
     // no toast sound when the action that raised it just played its own (error buzz, reward fanfare...)
     const recent = (this.ctx.mods.audio as { sinceLastPlay?: () => number } | undefined)?.sinceLastPlay?.() ?? 1e9;

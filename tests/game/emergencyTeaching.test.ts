@@ -122,20 +122,24 @@ function option(patch: Partial<DispatchOption> = {}): DispatchOption {
   return { stationId: 7, name: 'Harbor Fire Station #7', responder: 'fire', free: 1, etaMin: 4.2,
     etaDays: 4.2 * EMERG_DAYS_PER_MIN, total: 2, inRange: false, ...patch };
 }
-interface HarnessOptions { initialBusy?: boolean; budgetBlocked?: boolean; packetPolicy?: boolean }
+interface HarnessOptions { initialBusy?: boolean; budgetBlocked?: boolean; packetPolicy?: boolean; alerted?: boolean }
 interface MockToast { text: string; opts: ToastOptions }
 function harness(inc = incident(), teaching?: TeachingPolicy['teaching'], tips = true, initialOptions: DispatchOption[] | null = [option()], config: HarnessOptions = {}) {
   const root = new FakeEl('div'), ui = new Emitter<UIEvents>(), events = new Emitter<CityEvents>();
   const abort = new AbortController();
   lifetimes.push(abort);
   const incidents = new Map([[inc.id, inc]]);
-  const policy: TeachingPolicy = { alerts: [{ id: inc.id, wasPossible: inc.manualPossible }], live: false, teaching };
+  const policy: TeachingPolicy = { alerts: config.alerted === false ? [] : [{ id: inc.id, wasPossible: inc.manualPossible }], live: false, teaching };
   const listeners = new Set<(p: TeachingPolicy) => void>();
   const toasts: string[] = [], settings: Record<string, unknown>[] = [];
   const clock = { now: 0, day: undefined as number | undefined, speed: teaching?.variant === 'E1a' ? 0 : 3, slowdown: 1,
     busy: config.initialBusy ?? false, budgetBlocked: config.budgetBlocked ?? false };
   const pendingToasts: MockToast[] = [], toastCalls: MockToast[] = [];
-  const showToast = (toast: MockToast) => { toasts.push(toast.text); toast.opts.onShow?.(); };
+  const showToast = (toast: MockToast) => {
+    if (toast.opts.isRelevant && !toast.opts.isRelevant()) { toast.opts.onDrop?.(); return; }
+    toasts.push(toast.text);
+    toast.opts.onShow?.();
+  };
   const drainToasts = () => {
     if (abort.signal.aborted) return;
     for (let i = 0; i < pendingToasts.length;) {
@@ -538,7 +542,28 @@ describe('FH-08 emergency teaching from a host snapshot', () => {
     expect(next.toastCalls.filter((q) => q.text.startsWith('LIVE:'))).toHaveLength(0);
   });
 
-  it('E3 uses the replayed event day while the host clock is stale, once, retaining the existing outcome', () => {
+  it('drops a deferred E2 after LIVE ends without consuming it, then teaches the next slowdown', () => {
+    const t = harness(incident(), undefined, true, [option()], { initialBusy: true });
+    t.clock.speed = 1;
+    t.clock.slowdown = 3;
+    t.publish({ live: true });
+    expect(t.pendingToasts).toHaveLength(1);
+    t.clock.slowdown = 1;
+    t.publish({ live: false });
+    t.clock.busy = false;
+    t.drainToasts();
+    expect(t.pendingToasts).toHaveLength(0);
+    expect(t.toasts).toHaveLength(0);
+    expect(seen().E2).toBeUndefined();
+    t.clock.slowdown = 3;
+    t.publish({ live: true });
+    t.tick();
+    expect(t.toastCalls.filter((q) => q.text.startsWith('LIVE:'))).toHaveLength(2);
+    expect(t.toasts.filter((s) => s.startsWith('LIVE:'))).toHaveLength(1);
+    expect(seen().E2).toBe(true);
+  });
+
+  it('E3 retains the observed fire window while the host clock is stale, once, retaining the existing outcome', () => {
     const t = harness(incident({ manualPossible: false, bestEta: undefined }));
     t.options([option({ etaMin: 6.3, etaDays: 6.3 * EMERG_DAYS_PER_MIN })]);
     t.tick(); // cache the last delivered free primary option before the incident ends
@@ -552,7 +577,7 @@ describe('FH-08 emergency teaching from a host snapshot', () => {
     const reason = byClass(t.root, 'emg-teach-reason')[0];
     expect(reason).toBeDefined();
     expect(reason.textContent).toContain('6.3 min');
-    expect(reason.textContent).toMatch(/(?:in|after) 5(?:\.0)?(?: min)?/);
+    expect(reason.textContent).toMatch(/the building burned down 5(?:\.0)? min after the alarm/);
     expect(byClass(t.root, 'emg-note')[0].textContent).toBe('No fire truck could reach it in time — 1 building lost');
     expect(seen().E3).toBe(true);
     const second = incident({ id: 2, manualPossible: false });
@@ -564,6 +589,37 @@ describe('FH-08 emergency teaching from a host snapshot', () => {
     t.incidents.delete(2);
     t.tick();
     expect(byClass(t.root, 'emg-teach-reason')).toHaveLength(1);
+  });
+
+  it('E3 keeps the first building window when a spreading fire extends the cluster lifetime', () => {
+    const t = harness(incident({ manualPossible: false, deadline: 5.2 * EMERG_DAYS_PER_MIN }), undefined, true, null);
+    t.options([option({ etaMin: 6.9, etaDays: 6.9 * EMERG_DAYS_PER_MIN })]);
+    t.tick();
+    t.inc.deadline = 13 * EMERG_DAYS_PER_MIN;
+    t.inc.fires = [7, 8, 9];
+    t.inc.lost = 1;
+    t.tick();
+    t.inc.state = 'failed';
+    t.clock.day = 13 * EMERG_DAYS_PER_MIN;
+    t.events.emit('emergency', { id: 1, kind: 'fire', type: 'failed', x: 20, z: 12, major: true, manualPossible: false });
+    const reason = byClass(t.root, 'emg-teach-reason')[0];
+    expect(reason.textContent).toContain('6.9 min');
+    expect(reason.textContent).toContain('the building burned down 5.2 min after the alarm');
+    expect(reason.textContent).not.toContain('13 min');
+    expect(reason.textContent).not.toContain('burned out');
+  });
+
+  it('E3 adds the response timing without repeating the existing failure outcome', () => {
+    const t = harness();
+    t.inc.state = 'failed';
+    t.inc.lost = 1;
+    t.clock.day = 5 * EMERG_DAYS_PER_MIN;
+    t.events.emit('emergency', { id: 1, kind: 'fire', type: 'failed', x: 20, z: 12, major: true, manualPossible: false });
+    t.incidents.delete(1);
+    t.tick();
+    expect(byClass(t.root, 'emg-note')[0].textContent).toContain('No fire truck was sent in time');
+    expect(byClass(t.root, 'emg-teach-reason')[0].textContent).not.toContain('No fire truck was sent in time');
+    expect(t.root.textContent.match(/No fire truck was sent in time/g)).toHaveLength(1);
   });
 
   it('E3 names the dispatched primary unit ETA rather than the nearer free station', () => {
@@ -582,7 +638,7 @@ describe('FH-08 emergency teaching from a host snapshot', () => {
     expect(reason).toBeDefined();
     expect(reason.textContent).toContain('8.7 min');
     expect(reason.textContent).not.toContain('6.3 min');
-    expect(reason.textContent).toMatch(/(?:in|after) 5(?:\.0)?(?: min)?/);
+    expect(reason.textContent).toMatch(/the building burned down 5(?:\.0)? min after the alarm/);
   });
 
   it('E3 does not count an industrial accident ambulance as its primary fire truck', () => {
@@ -597,9 +653,42 @@ describe('FH-08 emergency teaching from a host snapshot', () => {
     t.tick();
     const reason = byClass(t.root, 'emg-teach-reason')[0];
     expect(reason).toBeDefined();
-    expect(reason.textContent).toMatch(/no fire truck was sent/i);
+    expect(reason.textContent).toMatch(/dispatch window elapsed before a fire truck was sent/i);
     expect(reason.textContent).toMatch(/3(?:\.0)? min/);
     expect(reason.textContent).not.toMatch(/ambulance/i);
+  });
+
+  it('hands an E3 explanation to one long-lived service-action toast when its banner closes', () => {
+    const t = harness(incident({ manualPossible: false }), undefined, true, [option()], { budgetBlocked: true });
+    t.inc.state = 'failed';
+    t.inc.lost = 1;
+    t.clock.day = 5 * EMERG_DAYS_PER_MIN;
+    t.events.emit('emergency', { id: 1, kind: 'fire', type: 'failed', x: 20, z: 12, major: true, manualPossible: false });
+    expect(byClass(t.root, 'emg-teach-reason')).toHaveLength(1);
+    expect(seen().E3).toBe(true);
+    t.clock.busy = true;
+    t.publish({ alerts: [] });
+    expect(t.banner.bannerIds).toEqual([]);
+    expect(t.pendingToasts).toHaveLength(1);
+    const queued = t.pendingToasts[0];
+    expect(queued.text).toContain('Harbor Refinery');
+    expect(queued.text).toMatch(/the building burned down 5(?:\.0)? min after the alarm/);
+    expect(queued.opts).toMatchObject({ budget: true, teaching: true, action: { hint: 'Fire tab' } });
+    expect(queued.opts.ttl).toBeGreaterThanOrEqual(12000);
+    t.clock.budgetBlocked = false;
+    t.drainToasts();
+    expect(t.toasts).toHaveLength(0);
+    t.clock.busy = false;
+    t.drainToasts();
+    expect(t.toasts).toHaveLength(1);
+    queued.opts.action!.run();
+    expect(t.openFlyout).toHaveBeenCalledWith('civic', 'fire');
+    expect(t.setOverlay).toHaveBeenCalledWith(Overlay.Emergency);
+    t.publish({ alerts: [] });
+    t.tick();
+    t.drainToasts();
+    expect(t.toastCalls).toHaveLength(1);
+    expect(t.toasts).toHaveLength(1);
   });
 
   it('retains the failure day and ETA while New Year is busy, then queues E3 when its banner has gone', () => {
@@ -621,21 +710,43 @@ describe('FH-08 emergency teaching from a host snapshot', () => {
     t.clock.busy = false;
     t.tick();
     expect(t.pendingToasts).toHaveLength(1);
-    expect(t.pendingToasts[0].opts).toMatchObject({ budget: true, teaching: true });
+    expect(t.pendingToasts[0].opts).toMatchObject({ budget: true, teaching: true, action: { hint: 'Fire tab' } });
+    expect(t.pendingToasts[0].opts.ttl).toBeGreaterThanOrEqual(12000);
+    expect(t.pendingToasts[0].text).toContain('Harbor Refinery');
     expect(t.pendingToasts[0].text).toContain('6.3 min');
-    expect(t.pendingToasts[0].text).toMatch(/(?:in|after) 5(?:\.0)?(?: min)?/);
+    expect(t.pendingToasts[0].text).toMatch(/the building burned down 5(?:\.0)? min after the alarm/);
     expect(t.toasts).toHaveLength(0);
     expect(seen().E3).toBeUndefined();
     t.clock.budgetBlocked = false;
     t.drainToasts();
     expect(t.toasts).toHaveLength(1);
     expect(t.toasts[0]).toContain('6.3 min');
-    expect(t.toasts[0]).toMatch(/(?:in|after) 5(?:\.0)?(?: min)?/);
+    expect(t.toasts[0]).toMatch(/the building burned down 5(?:\.0)? min after the alarm/);
     expect(t.toasts[0]).not.toContain('100 min');
     expect(seen().E3).toBe(true);
     t.tick();
     t.drainToasts();
     expect(t.toastCalls).toHaveLength(1);
+  });
+
+  it('leaves E3 available after an unbannered medical failure, then teaches a bannered fire failure', () => {
+    const t = harness(incident({ kind: 'medical', major: false, need: { medical: 1 }, manualPossible: false }), undefined, true, [option()], { alerted: false });
+    expect(t.banner.bannerIds).toEqual([]);
+    t.inc.state = 'failed';
+    t.clock.day = 5 * EMERG_DAYS_PER_MIN;
+    t.events.emit('emergency', { id: 1, kind: 'medical', type: 'failed', x: 20, z: 12, major: false, manualPossible: false });
+    t.tick();
+    expect(t.toastCalls).toHaveLength(0);
+    expect(seen().E3).toBeUndefined();
+    const fire = incident({ id: 2, manualPossible: false });
+    t.incidents.set(2, fire);
+    t.publish({ alerts: [{ id: 2, wasPossible: false }] });
+    fire.state = 'failed';
+    fire.lost = 1;
+    t.events.emit('emergency', { id: 2, kind: 'fire', type: 'failed', x: 20, z: 12, major: true, manualPossible: false });
+    t.tick();
+    expect(byClass(t.root, 'emg-teach-reason')).toHaveLength(1);
+    expect(seen().E3).toBe(true);
   });
 
   it('hides an existing E3 explanation during New Year and restores it afterward', () => {
