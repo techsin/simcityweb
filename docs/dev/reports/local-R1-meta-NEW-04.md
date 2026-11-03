@@ -1,6 +1,50 @@
 # T036s4 · NEW-04 storage you can trust
 
-Branch: `local/T036s4-storage`; base: `821a8d6`. Changes are uncommitted. No `.done` file was changed.
+Branch: `local/T036s4-storage`; base: `821a8d6`. Initial WIP: `2f040cc` (App/recovery guards) and `8229b70` (owned files). Review-round fixes below are uncommitted. No `.done` file was changed.
+
+## Review round 1
+
+The four reported failures are fixed. All assertions in the existing label tests and the Found persistence tests remain unchanged. The validation in this section supersedes the initial-run limitations recorded below.
+
+Changes in this review:
+
+- `tests/game/labelFrame.test.ts`: one fixture field, `abort: new AbortController()`. Its deliberate `Object.create(RegionScreen.prototype)` bypasses constructor initializers and already supplies the other cleanup dependencies. Real RegionScreen instances always have this controller, so production lifecycle code was kept strict and unchanged.
+- `tests/save/foundingPersistence.test.ts`: its DOM stub now sets `min`, `max`, and `step` as attributes. Direct assignment hit FEl's getter-only properties and rejected the dialog promise before Modal construction, leaving `dialogs.current` null. Production Found handling is unchanged.
+- New owned `src/region/regionLock.ts`: `RegionStorage` owns session replacement/reuse, initial latest-data reads, takeover callbacks using the live city/save chain, fixed-ID reset ownership, and Found-dialog persistence/stale-result checks. Same-region takeover reentry never waits on its own pending acquisition.
+- `src/save/db.ts`: `withRegionSaveAccess()` contains the asynchronous quota and ownership checks before/after a save. The App still invokes the actual `host.save` or initial founding write.
+- `src/ui/StorageDialog.ts`: extracted recovery gate, prompt permission recheck, and quota/ownership error handling, retaining locks while the player decides and refinding current recovery data on Retry. Exports the existing structural takeover-city type for the coordinator.
+- `src/main.ts`: retains small calls to those helpers and the essential local write/stale-ack guards. **Total task diff against `821a8d6`: before +109/−24, after +44/−26** (`git diff 821a8d6 --numstat -- src/main.ts`). Both task-added App methods were removed. Original App save/recovery methods were not moved wholesale or decorated.
+- New tests: `tests/regionStorage.test.ts` (9) and `tests/save/regionSaveAccess.test.ts` (4); `tests/game/storageDialog.test.ts` now has 20 cases, including seven extracted recovery-decision cases.
+- **Outside-named existing-test hunk:** the one-field labelFrame fixture update above. **New extra owned file:** `src/region/regionLock.ts`, explicitly requested by the review. **Recovery guard:** `src/save/recoveryLs.ts` was untouched in this review and remains exactly +4/−0 against the task base. **Infra hunks:** none.
+
+Validation: **TypeScript clean; 17 single-file Vitest runs, 131 passed / 1 pre-existing skipped; no failures.** Each test was run serially through the quiet gate. The default loader still fails on Vite's Windows `net use` child-process query (`spawn EPERM`); the supported native config loader with Node's TS transform and a thread pool runs successfully without modifying Vite, dependencies, or the repository's config:
+
+```powershell
+$env:NODE_OPTIONS = '--experimental-transform-types'
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run <single-test-file> --maxWorkers=1 --configLoader native --pool threads
+```
+
+| Test file | Result |
+|---|---:|
+| `tests/game/labelFrame.test.ts` | 5 passed |
+| `tests/save/foundingPersistence.test.ts` | 2 passed |
+| `tests/game/citySaves.test.ts` | 7 passed |
+| `tests/regionStorage.test.ts` | 9 passed |
+| `tests/save/regionSaveAccess.test.ts` | 4 passed |
+| `tests/game/storageDialog.test.ts` | 20 passed |
+| `tests/sim/region.test.ts` | 6 passed |
+| `tests/sim/regionJobs.test.ts` | 1 passed |
+| `tests/save/regionEffects.test.ts` | 3 passed |
+| `tests/infra/trafficRegion.test.ts` | 4 passed |
+| `tests/game/newCityStart.test.ts` | 7 passed |
+| `tests/game/titleSettings.test.ts` | 12 passed |
+| `tests/storageDb.test.ts` | 14 passed |
+| `tests/game/autosaveFloor.test.ts` | 11 passed |
+| `tests/save/recoveryStorageLock.test.ts` | 5 passed |
+| `tests/save/recoveryLs.test.ts` | 4 passed |
+| `tests/worker/hygiene.test.ts` | 17 passed, 1 skipped |
+
+The worker's review verified the unchanged **192,899** bot total (`[61124, 93804, 37971]`). This review adds no simulation changes and does not repeat that multi-minute gate. The exact bot command remains below. Full-suite confirmation after this extraction, real-GPU/browser checks, and the previously listed worker quota-name/ownership requests remain with the lead. The browser checklist below is unchanged. No new plan-versus-code discrepancy or cloud-file request was introduced.
 
 The desktop implementation is ready for integration review. The real-worker acceptance remains open: worker save replies lose the exception name, and worker-owned persistence needs the region ownership fence described below.
 

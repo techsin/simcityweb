@@ -210,6 +210,16 @@ export async function checkStorageSpace(): Promise<void> {
   }
 }
 
+/** Check permission on both sides of the asynchronous estimate and persistence operation. */
+export async function withRegionSaveAccess<T>(regionId: string, write: () => Promise<T>): Promise<T> {
+  requireRegionSaveAccess(regionId);
+  await checkStorageSpace();
+  requireRegionSaveAccess(regionId);
+  const saved = await write();
+  requireRegionSaveAccess(regionId);
+  return saved;
+}
+
 export async function storageNeedsBackup(regionId: string): Promise<boolean> {
   try {
     if (typeof navigator !== 'undefined' && await navigator.storage?.persisted?.()) return false;

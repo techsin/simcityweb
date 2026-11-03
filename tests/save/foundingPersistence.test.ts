@@ -16,7 +16,11 @@ vi.mock('../../src/region/ui/dom', async () => {
   const { FEl, FNode } = await import('../game/fakeDom');
   const h = (tag: string, attrs: Record<string, unknown> = {}, ...children: unknown[]) => {
     const el = new FEl(tag);
-    Object.assign(el, attrs);
+    for (const [key, value] of Object.entries(attrs)) {
+      // FEl exposes these reflected attributes through getter-only properties.
+      if (key === 'min' || key === 'max' || key === 'step') el.setAttribute(key, String(value));
+      else Object.assign(el, { [key]: value });
+    }
     for (const child of children.flat()) {
       if (child === null || child === undefined || child === false) continue;
       el.append(child instanceof FNode ? child : String(child));

@@ -26,7 +26,7 @@ import type { TerrainPreset, Difficulty, Climate } from './core/types';
 import { RegionModel, createRegionData, PRESET_BY_ID } from './region/RegionModel';
 import type { RegionData, RegionPresetId, RegionTile, TileSize } from './region/types';
 import { RegionScreen } from './region/RegionScreen';
-import { openNewCityDialog, terrainOptionsFor } from './region/NewCityDialog';
+import { terrainOptionsFor } from './region/NewCityDialog';
 import { summarizeCity } from './region/citySummary';
 import { cityThumbnail, drawCityMap, normalizeThumbnail, regionPreviewDataUrl, regionPreviewKey } from './region/mapPreview';
 import { randomCityName, randomMayorName } from './region/names';
@@ -40,7 +40,6 @@ import { button, formatMoney, formatPop, h, paint, timeAgo } from './region/ui/d
 import {
   clearRecoveryBase,
   deleteCity,
-  deleteRegion,
   discardRecoverySnapshot,
   findRecoverySnapshot,
   getLastSession,
@@ -62,8 +61,9 @@ import type { CityPersistence, HostState, SaveReason, SimHost, SnapshotWhy } fro
 import { cityFingerprint } from './save/fingerprint';
 import { NeighborLabels } from './region/NeighborLabels';
 import type { Camera } from 'three';
-import { checkStorageSpace, regionSaveAccess, requestPersistentStorage, requireRegionSaveAccess } from './save/db';
-import { exportStorageRegion, isQuotaError, RegionStorageSession, reopenStoredRegion, showStorageError, withRecoveryStorage } from './ui/StorageDialog';
+import { regionSaveAccess, requireRegionSaveAccess, withRegionSaveAccess } from './save/db';
+import { RegionStorage } from './region/regionLock';
+import { handleRecoveryStorageError, recoveryStorageGate, showStorageError, storageRecoveryChoice, withRecoveryStorage } from './ui/StorageDialog';
 
 // ---------------------------------------------------------------------------------------------------------------
 // CityScene contract (owned by ui-game; loaded lazily so the app works before it exists)
@@ -149,7 +149,10 @@ class App {
   private title: TitleScreen | null = null;
   private regionScreen: RegionScreen | null = null;
   private region: RegionModel | null = null;
-  private storage: RegionStorageSession | null = null;
+  private storage = new RegionStorage(() => ({
+    root: this.root, region: this.region, city: this.city, saved: this.saveChain,
+    clearCity: () => { this.city = null; }, open: (data) => this.openRegion(data),
+  }));
   private city: {
     scene: CitySceneLike | null;
     tile: RegionTile;
@@ -263,21 +266,14 @@ class App {
       const r = await offer;
       if (r === 'recovered' || r === 'later') return false;
     }
-    if (!regionSaveAccess(regionId)) return true;
     const city = { regionId, tileKey };
     if (!(await hasRecoverySnapshot(city)) || !(await isPersistent())) return true;
-    return withRecoveryStorage(async () => {
-      const pending = await findRecoverySnapshot(city).catch(() => null);
-      if (!pending) return true;
-      return (await this.askRecover(pending)) !== 'later';
-    }, true);
+    return recoveryStorageGate(city, (pending) => this.askRecover(pending));
   }
 
   /** dialog + restore / discard. 'later' = dismissed (snapshot kept) */
   private async askRecover(p: PendingRecovery): Promise<RecoverChoice> {
-    if (!regionSaveAccess(p.marker.regionId)) return 'later';
-    const choice = await openRecoverDialog(p.marker);
-    if (!regionSaveAccess(p.marker.regionId)) return 'later';
+    const choice = await storageRecoveryChoice(p.marker.regionId, () => openRecoverDialog(p.marker));
     if (choice === 'discard') {
       await discardRecoverySnapshot(p.marker);
       return 'discarded';
@@ -289,16 +285,7 @@ class App {
       return 'recovered';
     } catch (e) {
       console.error('[main] recovery failed', e);
-      if (!regionSaveAccess(p.marker.regionId)) return 'later';
-      if (isQuotaError(e)) {
-        void showStorageError(e, { export: () => exportStorageRegion(p.marker.regionId), retry: async () => {
-          await withRecoveryStorage(async () => {
-            const pending = await findRecoverySnapshot(p.marker);
-            if (pending) await this.askRecover(pending);
-          }, undefined);
-        } });
-        return 'later';
-      }
+      if (handleRecoveryStorageError(e, p.marker, (pending) => this.askRecover(pending))) return 'later';
       // player-facing (the reason is in the console); the snapshot is deleted, so it is never offered again
       const m = p.marker;
       const last = m.baseDate ?? (m.baseDay !== undefined ? `day ${m.baseDay}` : '');
@@ -317,8 +304,7 @@ class App {
   }
 
   async showTitle(): Promise<void> {
-    this.storage?.dispose();
-    this.storage = null;
+    this.storage.dispose();
     this.clearScreens();
     audio.stopAmbience();
     audio.setMusicContext({ screen: 'menu', night: false, population: 0, activity: 0.3 });
@@ -369,8 +355,7 @@ class App {
     const ld = new LoadingScreen(this.root);
     ld.set('Generating terrain…', 0.2);
     await paint();
-    await this.holdRegionStorage(new RegionModel(data));
-    data = await loadRegion(data.id) ?? data;
+    data = await this.storage.open(data);
     const model = new RegionModel(data);
     ld.set('Placing city tiles…', 0.6);
     await paint();
@@ -379,7 +364,7 @@ class App {
   }
 
   private async showRegion(model: RegionModel, ld?: LoadingScreen, selectKey?: string, signalReady = true): Promise<void> {
-    await this.holdRegionStorage(model);
+    await this.storage.hold(model.data);
     this.clearScreens();
     this.region = model;
     audio.stopAmbience();
@@ -449,32 +434,17 @@ class App {
   }
 
   // ------------------------------------------------------------------ cities
-  private async holdRegionStorage(model: RegionModel): Promise<void> {
-    if (this.storage?.region.id === model.data.id) { this.storage.region = model.data; return; }
-    this.storage?.dispose();
-    this.storage = new RegionStorageSession(model.data, this.root, () => this.reloadStorageRegion());
-    await this.storage.acquire();
-  }
-
-  /** Takeover must discard the older in-memory city before the acquired lock permits any writes. */
-  private async reloadStorageRegion(): Promise<void> {
-    const id = this.storage?.region.id;
-    if (!id) return;
-    await reopenStoredRegion(id, this.city, { root: this.root, saved: this.saveChain, clearCity: () => { this.city = null; }, open: (data) => this.openRegion(data) });
-  }
-
   async foundCity(tile: RegionTile): Promise<void> {
-    if (this.busy || !this.region || !regionSaveAccess(this.region.data.id)) return;
+    if (this.busy || !this.region) return;
     const model = this.region;
-    const cfg = await openNewCityDialog({ region: model, tile, onFound: () => { void requestPersistentStorage(); } });
-    if (!cfg || this.region !== model || !regionSaveAccess(model.data.id)) return;
+    const cfg = await this.storage.foundDialog(model, tile);
+    if (!cfg) return;
     await this.startNewCity(model, tile, cfg);
   }
 
   /** `t0`: when the player asked for the city (performance.now(); FH-21 measures the load from it) */
   private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData, t0 = performance.now()): Promise<void> {
-    await this.holdRegionStorage(model);
-    if (!regionSaveAccess(model.data.id)) return;
+    if (!(await this.storage.hold(model.data))) return;
     this.busy = true;
     const ld = new LoadingScreen(this.root);
     try {
@@ -494,9 +464,7 @@ class App {
       await paint();
       tile.city = summarizeCity(st);
       tile.city.thumbnail = cityThumbnail(st, 256);
-      await checkStorageSpace();
-      requireRegionSaveAccess(model.data.id);
-      await saveCity(model.data.id, tile.key, st);
+      await withRegionSaveAccess(model.data.id, () => saveCity(model.data.id, tile.key, st));
       await this.persistRegion();
       await this.enterCity(model, tile, st, ld, t0);
     } catch (e) {
@@ -510,8 +478,7 @@ class App {
 
   /** Continue straight into the city the player was in when the page was closed */
   async continueInCity(data: RegionData, tileKey: string): Promise<void> {
-    await this.holdRegionStorage(new RegionModel(data));
-    data = await loadRegion(data.id) ?? data;
+    data = await this.storage.open(data);
     if (!(await this.recoveryGate(data.id, tileKey))) return;
     const ld = new LoadingScreen(this.root);
     ld.set('Generating terrain…', 0.15);
@@ -710,16 +677,12 @@ class App {
     const model = this.region;
     const c = this.city;
     if (!model || !c?.host) return;
-    requireRegionSaveAccess(model.data.id);
     const tile = c.tile;
     c.saving++;
     c.status?.set('saving');
     try {
-      await checkStorageSpace();
-      requireRegionSaveAccess(model.data.id);
-      const saved = await c.host.save(reason);
+      const saved = await withRegionSaveAccess(model.data.id, () => c.host!.save(reason));
       if (this.city !== c || this.region !== model) return;
-      requireRegionSaveAccess(model.data.id);
       c.scene?.recordSaved?.();
       c.cleanFp = saved.fp;
       c.cleanChanges = saved.changes;
@@ -754,14 +717,12 @@ class App {
     await paint();
     try {
       await this.saveChain; // an autosave may still be writing
-      if (!regionSaveAccess(model.data.id)) {
-        // Read-only tabs can leave without persisting their older city or recovery snapshot.
-      } else if (!this.isDirty()) {
+      if (regionSaveAccess(model.data.id) && !this.isDirty()) {
         // CityScene.exitToRegion just saved (onSave) and paused the sim: trust that save and only refresh the tile
         // thumbnail + region summary (no second city save)
         if (thumb && c.tile.city) c.tile.city.thumbnail = await normalizeThumbnail(thumb, Math.min(512, c.tile.size * 128));
         await this.persistRegion();
-      } else await this.saveCurrentCity('exit', thumb);
+      } else if (regionSaveAccess(model.data.id)) await this.saveCurrentCity('exit', thumb);
     } catch (e) {
       console.error('[main] save on exit failed', e);
       ld.remove();
@@ -831,9 +792,7 @@ class App {
     ld.set('Generating terrain…', 0.2);
     await paint();
     const { data, model } = createRegionData({ seed, preset: PRESET_BY_ID[preset] ? preset : 'greenvale', id });
-    await this.holdRegionStorage(model);
-    if (!regionSaveAccess(id)) { ld.remove(); const stored = await loadRegion(id); if (stored) await this.openRegion(stored); return; }
-    await deleteRegion(id).catch(() => undefined);
+    if (!(await this.storage.reset(data))) { ld.remove(); return; }
     if (q.get('demo') === '1') {
       ld.set('Founding demo cities…', 0.5);
       await paint();
@@ -846,10 +805,10 @@ class App {
     if (!openDialog) return this.showRegion(model, ld);
     const tile = model.pickNiceTile(2);
     await this.showRegion(model, ld, tile.key, false);
-    const p = openNewCityDialog({ region: model, tile, onFound: () => { void requestPersistentStorage(); } });
+    const p = this.storage.foundDialog(model, tile);
     markReady();
     const cfg = await p;
-    if (cfg && this.region === model && regionSaveAccess(model.data.id)) await this.startNewCity(model, tile, cfg);
+    if (cfg) await this.startNewCity(model, tile, cfg);
   }
 
   private async quickstart(q: URLSearchParams): Promise<void> {
@@ -860,9 +819,7 @@ class App {
     ld.set('Generating terrain…', 0.1);
     await paint();
     const { data, model } = createRegionData({ seed, preset: 'greenvale', id: 'quickstart', name: 'Quickstart Valley' });
-    await this.holdRegionStorage(model);
-    if (!regionSaveAccess(data.id)) { ld.remove(); const stored = await loadRegion(data.id); if (stored) await this.openRegion(stored); return; }
-    await deleteRegion('quickstart').catch(() => undefined);
+    if (!(await this.storage.reset(data))) { ld.remove(); return; }
     this.region = model;
     const tile = model.pickNiceTile(size);
     const partial: Partial<CityConfigData> = { name: randomCityName(), mayor: randomMayorName() };

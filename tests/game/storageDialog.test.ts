@@ -1,7 +1,8 @@
 /** NEW-04: real guided error DOM and the export route stay usable when writes fail or belong to another tab. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegionData } from '../../src/region/types';
-import { exportStorageRegion, RegionStorageSession, reopenStoredRegion, showStorageError, STORAGE_FULL_MESSAGE, withRecoveryStorage } from '../../src/ui/StorageDialog';
+import type { PendingRecovery, RecoveryCity } from '../../src/save';
+import { exportStorageRegion, handleRecoveryStorageError, recoveryStorageGate, RegionStorageSession, reopenStoredRegion, showStorageError, storageRecoveryChoice, STORAGE_FULL_MESSAGE, withRecoveryStorage } from '../../src/ui/StorageDialog';
 import { FEl, FNode, installFakeDom, textOf } from './fakeDom';
 
 const page = vi.hoisted(() => ({ root: null as unknown as HTMLElement }));
@@ -11,7 +12,7 @@ const store = vi.hoisted(() => ({
   requireRegionSaveAccess: vi.fn(), openKV: vi.fn(), storageEstimate: vi.fn(),
   put: vi.fn(), remove: vi.fn(), keys: vi.fn(), get: vi.fn(), peekRecoveryMarker: vi.fn(),
   acquireLock: vi.fn(), disposeLock: vi.fn(), restrictRegionSaveAccess: vi.fn(), unrestrict: vi.fn(),
-  loadRegion: vi.fn(), clearRecoveryBase: vi.fn(),
+  loadRegion: vi.fn(), clearRecoveryBase: vi.fn(), regionSaveAccess: vi.fn(), findRecoverySnapshot: vi.fn(),
 }));
 const lockState = vi.hoisted(() => ({
   instances: [] as { regionId: string; writable: boolean; active: boolean }[],
@@ -22,12 +23,13 @@ vi.mock('../../src/save', () => ({
   exportRegion: store.exportRegion, downloadBlob: store.downloadBlob, listRegions: store.listRegions,
   deleteRegion: store.deleteRegion, saveCity: store.saveCity, saveRegion: store.saveRegion,
   peekRecoveryMarker: store.peekRecoveryMarker,
-  loadRegion: store.loadRegion, clearRecoveryBase: store.clearRecoveryBase,
+  loadRegion: store.loadRegion, clearRecoveryBase: store.clearRecoveryBase, findRecoverySnapshot: store.findRecoverySnapshot,
   safeFileName: (name: string) => `${name}.metropolis`,
 }));
 vi.mock('../../src/save/db', () => ({
   markRegionExported: store.markRegionExported, openKV: store.openKV, storageEstimate: store.storageEstimate,
   checkStorageSpace: store.checkStorageSpace, requireRegionSaveAccess: store.requireRegionSaveAccess,
+  regionSaveAccess: store.regionSaveAccess,
   restrictRegionSaveAccess: store.restrictRegionSaveAccess,
   RegionSaveLock: class {
     writable = false;
@@ -64,6 +66,8 @@ beforeEach(() => {
   store.listRegions.mockResolvedValue([]);
   store.keys.mockResolvedValue([]);
   store.peekRecoveryMarker.mockReturnValue(null);
+  store.findRecoverySnapshot.mockResolvedValue(null);
+  store.regionSaveAccess.mockImplementation((id?: string) => [...lockState.restrictions].every((allow) => allow(id)));
   store.acquireLock.mockReturnValue(false);
   store.restrictRegionSaveAccess.mockImplementation((allow: (regionId?: string) => boolean) => {
     lockState.restrictions.add(allow);
@@ -83,6 +87,11 @@ afterEach(() => {
 
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 const button = (label: string): FEl => root.querySelectorAll('button').find((el) => textOf(el) === label)!;
+const recoveryCity: RecoveryCity = { regionId: region.id, tileKey: '0_0' };
+const pendingRecovery = (at: number): PendingRecovery => ({
+  marker: { v: 1, ...recoveryCity, at, baseSavedAt: 0, bytes: 1, ls: false, dropped: [], cityName: 'Port City', day: 1, population: 10, funds: 100 },
+  payload: new Uint8Array([at]), record: null,
+});
 
 describe('storage error dialog', () => {
   it('replaces a raw quota exception with the guided message and working Export, Manage storage and Retry actions', async () => {
@@ -243,6 +252,107 @@ describe('recovery storage ownership', () => {
     expect(lockState.restrictions.size).toBe(0);
     expect(store.unrestrict).toHaveBeenCalledOnce();
     expect(store.disposeLock).toHaveBeenCalledExactlyOnceWith('first');
+  });
+});
+
+describe('recovery storage decisions', () => {
+  it('keeps discovery and the pending recovery prompt under the same lock until the player chooses later', async () => {
+    store.keys.mockResolvedValue([`${region.id}:0_0`]);
+    store.acquireLock.mockReturnValue(true);
+    const pending = pendingRecovery(1);
+    store.findRecoverySnapshot.mockImplementationOnce(async () => {
+      expect(store.regionSaveAccess(region.id)).toBe(true);
+      expect(lockState.restrictions.size).toBe(1);
+      return pending;
+    });
+    let choose!: (choice: string) => void;
+    const ask = vi.fn(() => new Promise<string>((resolve) => { choose = resolve; }));
+    const gate = recoveryStorageGate(recoveryCity, ask);
+    await flush();
+    expect(store.findRecoverySnapshot).toHaveBeenCalledExactlyOnceWith(recoveryCity);
+    expect(ask).toHaveBeenCalledExactlyOnceWith(pending);
+    expect(lockState.restrictions.size).toBe(1);
+    expect(store.disposeLock).not.toHaveBeenCalled();
+    choose('later');
+    expect(await gate).toBe(false);
+    expect(lockState.restrictions.size).toBe(0);
+    expect(store.disposeLock).toHaveBeenCalledExactlyOnceWith(region.id);
+  });
+
+  it('does not discover or prompt for recovery when this tab cannot own its region', async () => {
+    const ask = vi.fn(async () => 'recovered');
+    store.regionSaveAccess.mockReturnValueOnce(false);
+    expect(await recoveryStorageGate(recoveryCity, ask)).toBe(true);
+    expect(store.openKV).not.toHaveBeenCalled();
+    store.keys.mockResolvedValue([`${region.id}:0_0`]);
+    expect(await recoveryStorageGate(recoveryCity, ask)).toBe(true);
+    expect(store.findRecoverySnapshot).not.toHaveBeenCalled();
+    expect(ask).not.toHaveBeenCalled();
+    expect(store.disposeLock).toHaveBeenCalledExactlyOnceWith(region.id);
+  });
+
+  it('returns a recovery choice only while this tab still owns the region after the prompt', async () => {
+    let choose!: (choice: string) => void;
+    const ask = vi.fn(() => new Promise<string>((resolve) => { choose = resolve; }));
+    const choice = storageRecoveryChoice(region.id, ask);
+    expect(ask).toHaveBeenCalledOnce();
+    store.regionSaveAccess.mockReturnValue(false);
+    choose('discard');
+    expect(await choice).toBeNull();
+    expect(store.regionSaveAccess.mock.calls).toEqual([[region.id], [region.id]]);
+  });
+
+  it('does not open a recovery prompt without access and keeps an authorized choice', async () => {
+    const ask = vi.fn(async () => 'recover');
+    store.regionSaveAccess.mockReturnValueOnce(false);
+    expect(await storageRecoveryChoice(region.id, ask)).toBeNull();
+    expect(ask).not.toHaveBeenCalled();
+    expect(await storageRecoveryChoice(region.id, ask)).toBe('recover');
+    expect(ask).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a quota failure recoverable and refinds the latest pending snapshot inside the Retry lock', async () => {
+    store.keys.mockResolvedValue([`${region.id}:0_0`]);
+    store.acquireLock.mockReturnValue(true);
+    const previous = pendingRecovery(1), latest = pendingRecovery(2);
+    let available = previous;
+    store.findRecoverySnapshot.mockImplementation(async () => available);
+    const ask = vi.fn(async (pending: PendingRecovery) => {
+      expect(pending).toBe(latest);
+      expect(lockState.restrictions.size).toBe(1);
+      expect(store.regionSaveAccess(region.id)).toBe(true);
+      expect(store.disposeLock).not.toHaveBeenCalled();
+    });
+    expect(handleRecoveryStorageError(new DOMException('RAW QUOTA', 'QuotaExceededError'), recoveryCity, ask)).toBe(true);
+    expect(textOf(root)).toContain(STORAGE_FULL_MESSAGE);
+    expect(textOf(root)).not.toContain('RAW QUOTA');
+    expect(store.findRecoverySnapshot).not.toHaveBeenCalled();
+    expect(store.remove).not.toHaveBeenCalled();
+    available = latest;
+    button('Retry').click(); await flush();
+    expect(store.findRecoverySnapshot).toHaveBeenCalledExactlyOnceWith(recoveryCity);
+    expect(ask).toHaveBeenCalledExactlyOnceWith(latest);
+    expect(root.querySelector('.storage-dialog')).toBeNull();
+    expect(store.disposeLock).toHaveBeenCalledExactlyOnceWith(region.id);
+    expect(store.remove).not.toHaveBeenCalled();
+    expect(store.put).not.toHaveBeenCalled();
+  });
+
+  it('preserves recovery on an ownership failure without presenting a retry that cannot save', () => {
+    store.regionSaveAccess.mockReturnValue(false);
+    const ask = vi.fn();
+    expect(handleRecoveryStorageError(new DOMException('Read only', 'NotAllowedError'), recoveryCity, ask)).toBe(true);
+    expect(root.querySelector('.storage-dialog')).toBeNull();
+    expect(store.findRecoverySnapshot).not.toHaveBeenCalled();
+    expect(store.remove).not.toHaveBeenCalled();
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('leaves a different restoration failure for the caller to handle', () => {
+    expect(handleRecoveryStorageError(new Error('Invalid snapshot'), recoveryCity, vi.fn())).toBe(false);
+    expect(root.querySelector('.storage-dialog')).toBeNull();
+    expect(store.findRecoverySnapshot).not.toHaveBeenCalled();
+    expect(store.remove).not.toHaveBeenCalled();
   });
 });
 

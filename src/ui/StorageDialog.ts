@@ -2,8 +2,8 @@
 import './storage.css';
 import type { RegionData } from '../region/types';
 import { uiRoot } from '../region/ui/modal';
-import { clearRecoveryBase, deleteRegion, downloadBlob, exportRegion, listRegions, loadRegion, peekRecoveryMarker, safeFileName } from '../save';
-import { markRegionExported, openKV, RegionSaveLock, restrictRegionSaveAccess, storageEstimate } from '../save/db';
+import { clearRecoveryBase, deleteRegion, downloadBlob, exportRegion, findRecoverySnapshot, listRegions, loadRegion, peekRecoveryMarker, safeFileName, type PendingRecovery, type RecoveryCity } from '../save';
+import { markRegionExported, openKV, regionSaveAccess, RegionSaveLock, restrictRegionSaveAccess, storageEstimate } from '../save/db';
 import { h } from './dom';
 
 export const STORAGE_FULL_MESSAGE = "Your browser's storage for Metropolis is full. Export this region, or delete old regions or save history to free space.";
@@ -121,7 +121,35 @@ export async function withRecoveryStorage<T>(run: () => Promise<T>, unavailable:
   } finally { for (const lock of temporary) lock.dispose(); }
 }
 
-interface StorageCity {
+/** Keep snapshot discovery and the player's decision inside the same region-lock scope. */
+export async function recoveryStorageGate(city: RecoveryCity, ask: (pending: PendingRecovery) => Promise<string>): Promise<boolean> {
+  if (!regionSaveAccess(city.regionId)) return true;
+  return withRecoveryStorage(async () => {
+    const pending = await findRecoverySnapshot(city).catch(() => null);
+    return !pending || (await ask(pending)) !== 'later';
+  }, true);
+}
+
+export async function storageRecoveryChoice<T>(regionId: string, ask: () => Promise<T>): Promise<T | null> {
+  if (!regionSaveAccess(regionId)) return null;
+  const choice = await ask();
+  return regionSaveAccess(regionId) ? choice : null;
+}
+
+/** Quota or ownership failure must keep a valid recovery snapshot available for another attempt. */
+export function handleRecoveryStorageError(error: unknown, city: RecoveryCity, ask: (pending: PendingRecovery) => Promise<unknown>): boolean {
+  if (!regionSaveAccess(city.regionId)) return true;
+  if (!isQuotaError(error)) return false;
+  void showStorageError(error, { export: () => exportStorageRegion(city.regionId), retry: async () => {
+    await withRecoveryStorage(async () => {
+      const pending = await findRecoverySnapshot(city);
+      if (pending) await ask(pending);
+    }, undefined);
+  } });
+  return true;
+}
+
+export interface StorageCity {
   scene: { dispose(): void } | null;
   host: { dispose(): void | Promise<void> } | null;
   ticker?: number;

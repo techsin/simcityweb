@@ -1,6 +1,14 @@
 # T036s4 · FEEL-02b quiet autosave
 
-Branch: `local/T036s4-storage`; base: `821a8d6`. Changes are uncommitted; no `.done` file was changed.
+Branch: `local/T036s4-storage`; base: `821a8d6`. Initial implementation is committed as WIP (`2f040cc`, `8229b70`); review-round fixes remain uncommitted. No `.done` file was changed.
+
+## Review round 1
+
+The latest validation supersedes the initial-run limitations below: TypeScript passes, and **17 serial quiet-gated test files pass: 131 passed, one existing hygiene skip**. This includes `autosaveFloor.test.ts` (11), `citySaves.test.ts` (7), both originally failing files, all region tests, and the new coordination/recovery extraction tests. See the NEW-04 report's review table for every file/result and the working native-loader command.
+
+`main.ts` is reduced from **+109/−24 to +44/−26** against `821a8d6`. Region lifecycle and Found handling are in new `src/region/regionLock.ts`; quota/save checks are in `db.ts`; recovery decisions and error routing are in `StorageDialog.ts`. The `recordSaved()` acknowledgement bridge and autosave behavior are preserved. `recoveryLs.ts` remains the original four added guard lines, with no review edit. No infra or simulation change.
+
+The worker independently verified the unchanged bot total **192,899**, residents `[61124, 93804, 37971]`. It was not rerun in this review. Full-suite confirmation and the browser/W1.3 checklist below remain for the lead. Cloud quota-name and persistence-fence requests are unchanged. Review changes are uncommitted.
 
 ## Changes by file
 
