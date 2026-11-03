@@ -191,3 +191,145 @@ The supplied real-GPU QA on `3ee51c0` passed 7/8 acceptance lines before this pa
 - [ ] Restore WebGL during active fireworks: pending review recovers, camera returns, and next year's review appears. Exit/load removes DOM, listeners and timers.
 - [ ] Recheck healthy/forced-F grades, records and approval changes against history; first-April founding works. After T037b merge, verify land-full with weak demand uses unemployment.
 - [ ] Lead: final full suite and GPU/frame-cost gates; refresh future-producer and long-run gates after its merge.
+
+## Cloud carry-over (Nov 3)
+
+Chain desk6, branch `cloud/t054`, from `local/T054-lg21-year-review` at `0818204`, with dev `89a32a6` merged in
+(`c999770`; dev's six commits since the lane's last merge are docs only: NOTE-051..056 and a T061 line). This is a
+verification of a lane the desktop finished and gated on its real GPU.
+
+### Gap list (required against done, written before any change)
+
+Sources: the task file, NOTE-048 (the T054 requests and the built-out flag), NOTE-053 (the shared listMilestones line),
+NOTE-056 (T054 received), NOTE-044, POLISH_PLAN LG-21 in full with its Acceptance, and FEEL-02a's Risk line, which
+names LG-21.
+
+| Required | Source | State at `0818204` |
+|---|---|---|
+| Timing: after the show or burst (waits for the celebration), or on 1 January with the show off; 1× every year, 2× every second, ultra every fifth | LG-21 Change, task `do` | done (`YearReview.onYear/update`, `yearReviewDue`; reads `NewYearCelebration.active`); unit-tested; desktop real-GPU PASS |
+| Card contents: population and growth, bank in months, approval change and its 3 biggest term changes, emergencies answered/failed/lost, tourists, EQ/HQ, records, goals completed and the next three, grade with sparkline, region line | LG-21 Change | done |
+| The first calendar year (founded 1 April) is labelled "since April" | FEEL-02a Risk ("the Year in review (LG-21) labels it 'since April'") | **gap**: the founding card reads "2000 in review" with no partial-year label |
+| The grade table, the weights and the cutoffs | LG-21 Change | done (`src/ui/yearGrade.ts`) |
+| Closing after 15 s or on any map input, never during LIVE, the Settings switch | LG-21 Change, NOTE-048 | done (`4b5c99c` the switch) |
+| Computed UI-side from mirrored history and replica-safe reads; no sim system reads; deterministic; never on load | task `do` | done; `listMilestones` replica-safe entry `2a44a8f` (NOTE-048; the same line as T053, NOTE-053) |
+| Grade a land-full city on unemployment, reading `AdvisorData.full` | NOTE-048 | reader and stub test in (`0c6ef5d`); publishing `full` waits for T037b, which is not in dev at `89a32a6` (NOTE-056: a later follow-up commit) |
+| Graphs' 1Y window spans one year | NOTE-048 request | done (`c79a648`, 13 samples) |
+| src/sim and src/worker limited to the history telemetry, the registry entry and the listMilestones line; the bot identical | NOTE-048 standing rule, this step | to check from the diff |
+| Gates: tsc, the full vitest, the hygiene test, the bot identical | task gates | desktop: tsc clean, 227 files / 2,268 tests, bot 192,899; to rerun here: tsc and the lane's test files (the merge step runs the full vitest and the bot) |
+| Unit tests: anchors (approval 55 → 50), 84.9 → B and 85 → A, the F fixture | task gates, LG-21 Acceptance | done (`tests/game/yearGrade.test.ts`) |
+| 256×60 s7 grades C or better every year from 2010 | task gates, LG-21 Acceptance | desktop result (38 B / 13 A, min 73.5) on the post-B3 sim (final residents 1,513,835 = B3's reference); its probe is a desktop scratch tool, not in the repo |
+| Browser, real GPU: cadence and never on load, population within 0.5 % of Graphs, the tooltip's term, LIVE skip, the toggle | task gates, LG-21 Acceptance | desktop real-GPU PASS on both hosts (evidence on the desktop's scratchpad, not in the repo); to recheck function and visuals here on SwiftShader |
+| Desktop work saved mid-edit | NOTE-044 | snapshot `74504ac` has the same src/ and tests/ as the final `0818204`, and `9e67c6d` (the vitest-gated commit) has the same src/ and tests/ too: to verify line by line |
+
+### What was done
+
+1. **Worktree and dev.** `cloud/t054` from `0818204`; dev `89a32a6` merged in as `c999770` with no conflicts (dev's
+   changes since the lane's last merge are docs only). tsc clean after the merge.
+2. **The desktop's saved-mid-edit work, line by line.** The 22:08 snapshot `74504ac` has the same src/ and tests/ as
+   the final `0818204`; so does `9e67c6d`, the commit the desktop's full vitest ran on. Every changed line of src/ and
+   tests/ against dev was read (17 files, +1,484/−8):
+   - `src/ui/YearReview.ts` (the card, its model and lifetime), `src/ui/yearGrade.ts` (the table: anchors, weights,
+     cutoffs A ≥ 85, B ≥ 70, C ≥ 55, D ≥ 40), `src/ui/yearReview.css`; `src/game/CityScene.ts` (+4: the import, the
+     CONTENT line reading `NewYearCelebration.active`, and round 1's `newYear.cancel()` before a graphics restore);
+     `src/ui/panels/GraphsPanel.ts` (1Y = 13 samples, one shared start index for the header, the plot and hover);
+     `src/ui/panels/SettingsPanel.ts` (+1 row).
+   - The plan's contents are all there: the services score is the mean of education, health, police and fire at homes
+     (`resServices`, approval.ts:334) with parks as the fifth; Noisy homes count occupied R1-R3 buildings; the
+     recurring net and expense leave out `oneoff:` lines; the bank is months of the January recurring expense.
+3. **The src/sim and src/worker scope (the bot must stay identical).** Three files:
+   - `src/sim/CityState.ts` (+30/−1): 36 new `HistorySeries` keys in `HISTORY_KEYS` (12 review inputs and 24
+     `approval_<term>` snapshots), with their types.
+   - `src/sim/economy/history.ts` (+95/−1): the history system records those series monthly, and writes two
+     economy records of its own, `systemData.economy.yearReviewGoals` (goal completion months) and
+     `yearReviewBaseline` (the founding snapshot); its new `init` seeds them and a January checkpoint's terms.
+   - `src/worker/replicaSafe.ts` (+1/−1): the `listMilestones` entry only, the same line as T053's (NOTE-053).
+   - No sim system reads any of them (grep of every new name): only `src/ui/YearReview.ts` does, and the worker's
+     recorder and replica and the save iterate `HISTORY_KEYS` generically, so they mirror and save the new series. The
+     recorder only reads state, draws no random number and writes no field a system reads, so the sim's behaviour
+     and the bot's rows cannot change; the exact digest (queries.ts:131-132) walks the history and `economy`, so
+     its value differs from dev's by the new series and records, as any added saved field does; no test pins it (the
+     desktop's full vitest), and its run-to-run determinism is unchanged (the desktop's two-process probe). The two economy records are wider than "the history field" by the letter, but they are written
+     by the history system alone and read by the card alone (decision 3).
+   - `AdvisorData.full` is read (`advisors.full === true`, absent means growth), not produced: T037b is not in dev.
+4. **The one gap fixed** (`2db5254`, src/ui only): FEEL-02a's Risk line says the nine-month first year is labelled
+   "since April" by the Year in review. The report now carries `since`, the founding month when the founding
+   baseline lies inside the reviewed year, and the eyebrow reads "2000 in review, since April · <rank>"; a day-zero
+   city (the bot) and every later year read as before. Three test lines (the card's eyebrow on the first and second
+   New Year, the real-calendar spring founding, a day-zero founding) **fail with the change reverted** (3 failed,
+   35 passed) and pass with it.
+5. **Negative controls on the desktop's own tests** (each reverted to dev, run, restored): GraphsPanel's 13-sample
+   window → 2 of 4 `yearReviewGraphs` cases fail; the `listMilestones` entry → `yearReviewMilestones` and the
+   exhaustive `replicaSafe` registry case fail.
+6. **Two costs, measured or bounded without the lock.**
+   - The monthly recorder walks the buildings once (a Map lookup each): 11,495 buildings at 991k residents
+     (`vet_s7_y43`), beside 9 other monthly building walks already in src/sim. Not timed (a timing run takes the lock).
+   - Save size: at the 600-sample cap the 36 series add about 165 KB gzip in the worst case (full-precision floats,
+     a scratch estimate with random walks), about 45 KB if rounded to 3 decimals; a 21-year 256 save is 4.4 MB.
+     Not a gate; noted for the lead (decision 7).
+
+### Gates (cloud, on `cloud/t054`)
+
+| Gate | Result |
+|---|---|
+| tsc (sem), after the dev merge and after `2db5254` | clean, exit 0 |
+| The lane's 8 test files (sem, `--maxWorkers=2`), at `c999770` | **8 files passed; 73 tests passed, 1 skipped** (the desktop's count) |
+| The same 8 files plus `tests/worker/hygiene.test.ts`, at `2db5254` | **9 files passed; 91 tests passed, 2 skipped** (the existing skips) |
+| Adjacent files: hygiene, graphAxisLabels, panelsMisc, serializePhase0, sim/history, phase0Contract, worker/replica | **7 files passed; 78 tests passed, 2 skipped** |
+| New test lines with `2db5254` reverted | 3 failed, 35 passed (2 files); all pass with it |
+| The full vitest and the bot | **not run in this step**, as the lead set it out to save the shared lock: the desktop ran both on `9e67c6d`, which has the same src/ and tests/ as `0818204` (227 files / 2,268 tests passed; residents [ 61124, 93804, 37971 ] = 192,899, identical to dev). Since then only docs came from dev and `2db5254` changed src/ui only, so the bot is expected identical; the merge step runs both on the merged tree |
+| 256×60 s7 grades C or better every year from 2010 | the desktop's result stands: 51 of 51 years, 38 B / 13 A, minimum 73.53 (B, 2060), on the post-B3 sim (year 60 = 1,513,835, B3's reference); round 2 and `2db5254` change neither the grade nor its inputs; not rerun (a 256×60 bot run takes the lock; the probe is the desktop's scratch `grade-run.ts`) |
+
+### Browser evidence
+
+- **No browser session ran in this step.** The lead's instruction for this step limits it to tsc and the lane's own
+  test files, to save the shared lock (27 waiters were queued at 23:34 UTC). A SwiftShader session was queued and
+  then withdrawn before it reached the lock; its harness (not yet run, so unvalidated) is kept in the scratchpad as
+  `t054qa/run-harness.mjs` with `t054qa/scenario.mjs`, for the merge or a review step if it wants a functional and
+  visual recheck: the founding card "since April" on the default and loopback hosts, the 15 s close, a real click on
+  the close button, the 101k fixture's card against Graphs 1Y, the tooltip labels, the card above Budget and Graphs
+  and clear of the toolbar at 720p, a graded card, the Settings switch, and the 2× cadence with the show on.
+- **The desktop's evidence images are not reachable from the cloud.** They sit on the desktop's scratchpad
+  (`qa/T054/r2/`, named in the report above) and are in no branch, so they could not be looked at here. The evidence
+  is the desktop's real-GPU table above (round 2, RTX 5070 Ti, both hosts): every LG-21 browser line passes.
+- `2db5254` changes one text line of the card; the fake-DOM card test reads the eyebrow it renders, and the real
+  calendar test drives a spring founding through its first New Year and a save/load.
+
+### Decisions
+
+1. **Acceptance 2 (population within 0.5 % of Graphs)** keeps the desktop's dated reading: the card's figures are
+   captured on 1 January and say so ("Figures on 1 January <year>"), and they equal Graphs' 1Y at that January
+   (desktop: within 0.17 %, Jan-to-Jan exact). A live graph months later has moved on with the calendar.
+2. **"It names the same approval term as the approval tooltip."** The card's terms carry the tooltip's own labels
+   (`APPROVAL_LABELS`), except `emergencies`, which the tooltip calls "Emergencies last month" and the card,
+   reporting a yearly change, calls "Emergencies". Same term id, the tooltip's label without its monthly qualifier;
+   the desktop's QA passed the line with it. Kept.
+3. **The src/sim scope** is the history telemetry (36 series) plus two economy records written by the history system
+   alone and read by the card alone (`yearReviewGoals`, `yearReviewBaseline`); no sim system reads any of them. That
+   is wider than "the history field" by the letter. Accepted as part of the lane's history telemetry, which NOTE-056
+   received with no infra.
+4. **The full vitest, the bot and the 256×60 grade run were not rerun here** (the lead's lock-saving instruction;
+   the merge step runs the full vitest and the bot). The 256×60 result is the desktop's, measured on the same sim
+   as dev's (its year-60 population is B3's reference, and dev has changed nothing in src/sim, src/worker or
+   src/save since the lane's base `fb1531f`).
+5. **The "since April" label** comes from FEEL-02a's Risk line, which names LG-21. It is shown when the founding
+   baseline lies inside the reviewed year, so only a spring-founded city's first card carries it. The founding
+   month comes from `systemData.economy.yearReviewBaseline` (mirrored through `economy`), not from
+   `systemData.foundedDay`, which the worker does not mirror until T042's SYSTEM_KEYS line lands.
+6. **No browser session** (see Browser evidence): the real-GPU lines are the desktop's and pass; the label change is
+   DOM text, covered by the tests.
+7. **History precision and save size are left as gated.** Several new series keep full-precision floats (the
+   approval terms, the recurring net and expense, the review funds, which must keep a negative balance below one
+   unit). Worst case about 165 KB gzip at the 600-sample cap, about 45 KB if rounded to 3 decimals. Rounding would
+   change the saved format and the desktop's gated digests, so it is a backlog candidate for the lead, not done here.
+
+### Remaining
+
+- **The built-out producer** (NOTE-048, NOTE-056): once T037b is in dev, merge dev and publish `full` from the LG-05
+  block in src/sim/economy/advisors.ts as a typed, optional `AdvisorData.full`, as T054's own small commit; then
+  show the bot at 192,899 and the exact and determinism digests unchanged, and add an end-to-end land-full test.
+- **The merge step:** the full vitest and the bot (expected identical: residents [ 61124, 93804, 37971 ]).
+- **Optional:** a SwiftShader functional and visual recheck with the kept harness; nothing in this lane needs the
+  real GPU again (the label is text).
+- Two low backlog notes from the desktop stand (Space on a focused Settings switch; Graphs 5Y/10Y one month short).
+- The "Review round 2: the lane's notes" section above is the lane's mid-round text ("All changes below are
+  uncommitted"); it was committed afterwards as `4b5c99c`..`e2165e0` and is kept as history.
