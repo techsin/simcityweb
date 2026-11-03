@@ -14,6 +14,8 @@ type Key = Exclude<keyof HistorySeries, 't'>;
 
 export interface YearReviewReport {
   year: number;
+  /** FEEL-02a: the city's first calendar year starts at its founding month ("since April"); null for a whole year */
+  since: string | null;
   population: number;
   populationChange: number | null;
   growth: number | null;
@@ -40,6 +42,8 @@ export interface YearReviewReport {
   pastGrades: { year: number; grade: Grade }[];
   region: string;
 }
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 function yearWindow(history: HistorySeries, month: number): number[] {
   const indices: number[] = [];
@@ -126,7 +130,7 @@ export function buildYearReview(state: CityState, year: number, regionName?: str
     + (typeof jobs === 'number' ? ` · ${num(jobs)} job slots` : '')
     + (typeof workers === 'number' ? ` · ${num(workers)} worker slots` : '');
   return {
-    year, population, populationChange: previous === null ? null : population - previous,
+    year, since: baseline && baseline.month > month - 12 ? MONTHS[baseline.month % 12] : null, population, populationChange: previous === null ? null : population - previous,
     growth: previous !== null && previous > 0 ? (population - previous) / previous : null,
     funds: history.reviewSample?.[end] === 1 ? history.reviewFunds[end] : history.funds[end],
     bankMonths: expense === null ? null : expense > 0 ? history.reviewFunds[end] / expense : Infinity,
@@ -216,7 +220,7 @@ export class YearReview {
     const list = (items: string[], empty: string) => h('p', null, items.length ? items.join(' · ') : empty);
     const card = h('article', { class: 'year-review mp-glass', role: 'region', 'aria-label': `${this.ctx.state.config.name} Gazette — ${report.year}` },
       close,
-      h('header', null, h('div', null, h('div', { class: 'yr-eyebrow' }, `${report.year - 1} in review · ${report.rank}`),
+      h('header', null, h('div', null, h('div', { class: 'yr-eyebrow' }, `${report.year - 1} in review${report.since ? `, since ${report.since}` : ''} · ${report.rank}`),
         h('h2', null, `${this.ctx.state.config.name || 'City'} Gazette — ${report.year}`),
         h('p', { class: 'yr-date' }, `Figures on 1 January ${report.year}`)), grade),
       h('div', { class: 'yr-metrics' },

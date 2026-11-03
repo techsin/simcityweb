@@ -166,6 +166,7 @@ describe('year review history telemetry', () => {
     expect(first?.records).toContain('EQ: 68');
     expect(first?.populationChange).toBe(800); // Graphs starts at its first monthly sample, not founding day.
     expect(first?.grade).toBeNull(); // The initial calendar year is nine months long.
+    expect(first?.since).toBe('April'); // FEEL-02a: the nine-month first year is labelled "since April".
     expect(data.yearReviewBaseline).toEqual(baseline);
     const loaded = deserializeCity(serializeCity(st));
     new Simulation(loaded, [historySystem()]);
@@ -196,6 +197,8 @@ describe('year review history telemetry', () => {
     expect(data.yearReviewBaseline).toEqual(baseline);
     expect(data.yearReviewBaseline.approvalTerms.parks).toBe(2);
     expect(st.history.t).toEqual([]);
+    st.history.t.push(12); padHistory(st.history);
+    expect(buildYearReview(st, st.config.startYear + 1)?.since).toBeNull(); // a day-zero city's first year is whole
   });
 
   it('silently seeds old goals on init and stamps newly reached goals only once', () => {

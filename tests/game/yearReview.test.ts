@@ -204,6 +204,19 @@ describe('year review lifetime', () => {
     f.abort.abort();
   });
 
+  it('labels a spring-founded first year "since April" and later whole years without it (FEEL-02a risk line)', () => {
+    const f = fixture();
+    (f.state.systemData.economy as Record<string, unknown>).yearReviewBaseline = {
+      month: 3, values: { pop: 0, funds: 3000, approval: 50, tourists: 0, eq: 0, hq: 0 }, approvalTerms: {},
+    };
+    f.ready(); f.year(2001);
+    expect(textOf(f.card()!.querySelector('.yr-eyebrow')!)).toBe('2000 in review, since April · ' + buildYearReview(f.state, 2001)!.rank);
+    f.year(2002);
+    expect(textOf(f.card()!.querySelector('.yr-eyebrow')!)).toMatch(/^2001 in review · /);
+    expect(buildYearReview(f.state, 2002)?.since).toBeNull();
+    f.abort.abort();
+  });
+
   it('uses a save-stable cadence at each speed', () => {
     const years = Array.from({ length: 20 }, (_, i) => 2001 + i);
     expect(years.filter((y) => yearReviewDue(y, 2000, 1))).toHaveLength(20);
