@@ -63,6 +63,7 @@ import type { EmergencyEvent, SimSystem, Simulation } from '../Simulation';
 import { getDef } from '../catalog';
 import type { BuildingDef, ServiceKind } from '../catalogTypes';
 import { cohortShares } from '../economy/demographics';
+import { difficultyRules } from '../economy/tuning';
 import { facilityLoad } from './catchments';
 import { Fam, buildingList, centerCell, fundingFactor, infoOf, isFunctional } from './common';
 import { RoadGraph, perimeterNodes } from './graph';
@@ -99,6 +100,8 @@ export interface Incident {
   /** sim time (days, fractional) the incident started, and its deadline */
   start: number;
   deadline: number;
+  /** LG-09: Expert's shorter player prompt; absent in older saves and the other difficulties */
+  manualDispatchWindowMultiplier?: number;
   /** kind-specific severity (burning buildings, riot radius, injured, ...) */
   severity: number;
   /** units needed per responder */
@@ -270,8 +273,11 @@ export const RESPONDER_MODEL: Readonly<Record<Responder, EmergencyVehicleModel>>
  * industrial accident ignites its plant at the first day tick EMERG_GRACE.industrial days after it started unless a
  * fire truck is on its way — its ambulance does not count; a truck sent in time saves the plant and the accident then
  * waits for it until its deadline — so its window ends at that tick. Every other incident runs until its deadline.
+ * Expert shortens only the player's window; `manual = false` keeps automatic dispatch on the original timing.
  */
-export function dispatchWindowEnd(inc: Pick<Incident, 'kind' | 'start' | 'deadline'>): number {
+export function dispatchWindowEnd(inc: Pick<Incident, 'kind' | 'start' | 'deadline' | 'manualDispatchWindowMultiplier'>, manual = true): number {
+  const multiplier = manual ? inc.manualDispatchWindowMultiplier ?? 1 : 1;
+  if (multiplier !== 1) return inc.start + (dispatchWindowEnd(inc, false) - inc.start) * multiplier;
   if (inc.kind !== 'industrial') return inc.deadline;
   const G = EMERG_GRACE.industrial;
   // the first day tick d with d - start >= G (the ignition test in workStep)
@@ -1499,6 +1505,8 @@ export class EmergencySystem implements SimSystem {
       place: def?.name ?? placeName(st, x, z), note: '', grace: EMERG_GRACE[kind], arrived: -1, firstAt: {}, answered: 0, work: 0,
       injured: 0, deaths: 0, radius: 0, fires: [], lost: 0, saved: 0, retry: Math.floor(now), stVer: -1,
     };
+    const windowMultiplier = difficultyRules(st.config.difficulty).manualDispatchWindowMultiplier;
+    if (windowMultiplier !== 1) inc.manualDispatchWindowMultiplier = windowMultiplier;
     const occ = b ? b.pop + b.jobs : 0;
     switch (kind) {
       case 'fire':
@@ -1879,7 +1887,7 @@ export class EmergencySystem implements SimSystem {
         const busyNote = stationBusyText(s0);
         // (the only unit in reach: "it is on its way back", not "one is")
         const one = s0.units === 1 && res.inRangeBusy.length === 1 ? 'it' : 'one';
-        if (inc.kind === 'industrial' ? back <= dispatchWindowEnd(inc) - 1 + EPS : best <= inc.start + inc.grace) {
+        if (inc.kind === 'industrial' ? back <= dispatchWindowEnd(inc, false) - 1 + EPS : best <= inc.start + inc.grace) {
           const was = inc.state;
           inc.state = 'queued';
           inc.reason = 'busy';
@@ -1906,7 +1914,7 @@ export class EmergencySystem implements SimSystem {
         inc.retry = day + 5;
       }
       // an industrial accident nobody sent a fire truck to ignites its plant when its window closes: try again before
-      if (inc.kind === 'industrial') inc.retry = Math.min(inc.retry, Math.max(day + 1, dispatchWindowEnd(inc) - 1));
+      if (inc.kind === 'industrial') inc.retry = Math.min(inc.retry, Math.max(day + 1, dispatchWindowEnd(inc, false) - 1));
     }
     inc.stVer = this.stVer;
     if (sentAny) this.afterDispatch(sim, inc);
