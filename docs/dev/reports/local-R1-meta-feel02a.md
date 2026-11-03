@@ -33,4 +33,173 @@ Goal 8, PB-NEWYEAR's row, and FH-03's "FEEL-02a's toast budget queues this toast
 | Acceptance: the first New Year and a rank-up New Year each get a full show unless one played in the last 3 real minutes | Missing |
 | Acceptance: a toast with an action that arrives over budget appears within 60 s | Missing |
 | §8.1 verifier 6: the pacing probes (ultra 5 min, 1x and 2x 10 min each) | No probe exists |
-| Gates: tsc; the full vitest; the bot identical to dev (196,101); the item's browser checks; the `.done` line | — |
+| Gates: tsc; the full vitest; the bot identical to dev (the task says 196,101; dev is 192,899 since B3 merged, by design); the item's browser checks; the `.done` line | — |
+
+### What this lane did
+
+**New Year paced in real time (src/game/NewYear.ts).**
+- `NewYearPacer` (pure, exported with `NEW_YEAR_PACING`) decides each New Year in real time: the full show when no full
+  show played in the last 3 real minutes, fewer than 2 played in the last 10, and either the New Year is a milestone or
+  10 minutes have passed since the last one. Otherwise a burst at 1x and 2x, or `quiet` at ultra. It keeps a short log
+  of its decisions (`scene.newYear.pacer.log`) for the QA probes and the console.
+- Milestones: the city's first New Year (1 January after the founding: `startYear + floor(foundedDay / 360) + 1`, so a
+  1 April city and a day-0 bot city alike) and a rank-up New Year (the peak population of the last 12 monthly samples
+  reaches a higher LG-01 `CITY_RANKS` rank than the peak before them; reached ranks survive drops, as in rewards.ts).
+  Both read only what the worker replica mirrors (config, `history.pop`, stats); a replica has no `systemData.cityRanks`.
+- The full show is today's `celebrate()`, unchanged: the cinematic at 1x, the fireworks-mode show at 2x and ultra, with
+  the fanfare and the yearly toast. It records itself with the pacer (also under "Every year", so a switch counts it).
+- The burst (`celebrate({ burst: true })`, also the dev hook's option): 'fireworks' mode, no countdown, no calendar hold
+  (NOTE-041's `holdCalendar` is never called), no show camera, no fanfare; Fireworks' shortest show (`duration` 6, its
+  minimum), the opening salvo launched at once (`delay` 0) and a show size of at most 0.4. Its yearly toast is the
+  usual one, silent (`toast(..., { silent: true })`: a 'reward' toast would otherwise play the fanfare's sound itself).
+  Any sparks still alive 12 s of show time after the start are cleared (only seen from 4.5 km or more; see the
+  decisions). The player raising the speed ends it, as it does a full show.
+- Ultra without the full show: one silent compact toast, title "New Year", text "2034 · 812,400 residents, up 6%"
+  ("down 3%", "steady", "up 0.3%" below 1 %, no trend without a year-ago sample), 4.5 s.
+- A New Year that arrives while a show still runs gets only its toast, now without the fanfare (compact at ultra).
+- `newYearPacing: 'everyYear'` runs today's code path exactly (the full show and the fanfare every year).
+- CityScene's NewYear wiring passes the toast options through (META's NewYear-construction hunk).
+
+**The toast budget (src/ui/Notifications.ts).**
+- `Toasts.show(..., { budget: true })`: a budgeted toast shows only `BUDGET_GAP_MS` (4 s) after the last toast and while
+  fewer than `BUDGET_PER_MIN` (8) showed in the last minute. Every new toast counts; a merge into a live toast (×N) does
+  not. Over budget, a toast with an action is queued (FIFO, before any new budgeted toast) and shown when the budget
+  allows, at the latest `QUEUE_MAX_MS` (50 s) after it arrived; one without an action is dropped (it is in the ticker and
+  the news feed). The queue's timer is one of the toasts' timers, cleared with the city.
+- The news handler budgets every toasted kind except bad news and disasters (advisor, warning, good and reward news).
+  Errors, the player's own feedback (tool, dispatch and panel toasts), questions and the yearly toast are not budgeted.
+- `Toasts.newsAction` (null today): the lookup by `NewsItem.ref` that FH-03 ("Zone homes") and FEEL-06 ("Place it") plug
+  their action map into; a news toast with an action is then queued over budget, never dropped.
+- The demand-cap toast passes `{ budget: true }` through `ctx.toast` (GameContext.toast gained the optional options
+  argument; CityScene's ctx passes them to Toasts).
+
+**Settings.** The Gameplay section has "New Year show" (Milestones / Every year) under "New Year celebration", with the
+key, default and validation from step 1's schema.
+
+**Tests (each fails with its fix reverted).**
+- tests/game/newYearPacing.test.ts (19): the pacer's rules (period, 3-minute gap, 2 per 10 minutes, ultra); 1x five
+  years (full, burst x3, full at 12 minutes); a burst's no-takeover list; the 1x cinematic still taking clock, camera
+  and calendar; 2x ten minutes (1 full + 7 bursts, under 25 %); ultra five minutes (1 fanfare, 1 show, compact toasts);
+  the compact line's formats; the first New Year (1 April and day 0; not within 3 minutes; not the second); rank-up
+  and two no-rank-up cases; the busy year's silent toast; "Every year"; New Year off; a speed raise ending a burst; and
+  the burst on the real Fireworks in node (4 populations x 10 seeds x 600 m / 3 km / 6 km: sparks gone by 12.05 s,
+  the celebration done by 12 s; seeds 10 and 20 at 6 km need the 12 s cap) and its show size. With dev's NewYear.ts
+  17 of 19 fail (the 1x cinematic and New Year off pass on dev by design); with only the 12 s cap reverted the
+  real-Fireworks case fails (12.2 s); with only the size cap reverted the size case fails.
+- tests/game/toastBudget.test.ts (10): the 4 s / 8 a minute schedule (0, 4 ... 28, then 60 s), the budgeted kinds,
+  bad news and disasters over budget (and counting), unbudgeted feedback and the yearly toast, a merge not spending
+  the budget, an action toast queued and not overtaken, one shown within 60 s while disasters keep the budget spent,
+  `newsAction` by `ref`, the queue dropped with the city, and the demand-cap wiring. With Notifications.ts, TopBar.ts
+  and CityScene.ts reverted 8 of 10 fail (the unbudgeted-feedback and merge cases pass on dev by design).
+- tests/game/pacingProbe.test.ts: §8.1 verifier 6's pacing probes, skipped unless `PACING_SAVE` names a save (below).
+
+### The pacing probes (§8.1 verifier 6; FEEL-02a's Acceptance)
+
+`tests/game/pacingProbe.test.ts`, run headless under the lock on the merged code:
+`PACING_BASELINE=1x PACING_SAVE=…/cities/small_s7_y10.city.metropolis npx vitest run --configLoader runner
+tests/game/pacingProbe.test.ts` (4 passed, 84 s; the ultra and 2x baselines came from the first run, 133 s). The save is the
+bot's 128x15 s7 city at 1 January 2010, **101,602 residents**. The real Simulation (createSystems) runs at the given
+speed on a simulated real-time clock of 30 frames a second, with the real NewYearCelebration, the real Fireworks in
+node (its sparks are "fireworks on screen") and the real Toasts on the city's own news. Random disasters are switched
+on (the bot founds with them off) so that disaster toasts happen. "Today" is the same run with `newYearPacing:
+'everyYear'` and no toast budget, which is dev's behaviour.
+
+| Probe | New Years | Full shows | Fanfares | Camera takeovers | Bursts (sparks on screen) | Fireworks on screen | Toasts: all / max in 60 s / budgeted max in 60 s | Disaster toasts |
+|---|---|---|---|---|---|---|---|---|
+| ultra 5 min, today | 16 | 16 | 16 | 0 | — | 82.3 % | 125 / 41 / — | 32 of 32 |
+| **ultra 5 min, FEEL-02a** | 16 | **1** | **1** | 0 | 0 (15 compact toasts) | **4.6 %** | 73 / 26 / **6**, 0 over budget | **32 of 32** |
+| 2x 10 min, today | 7 | 7 | 7 | 0 | — | 54.5 % | 47 / 10 / — | 7 of 7 |
+| **2x 10 min, FEEL-02a** | 8 | **1** | 1 | 0 | 7 (9.0-9.1 s) | **18.6 %** | 45 / 8 / 5, 0 over budget | 5 of 5 |
+| 1x 10 min, today | 3 | 3 | 3 | 3 | — | 34.0 % | 17 / 6 / — | 1 of 1 |
+| **1x 10 min, FEEL-02a** | 3 | **1** | 1 | **1** | 2 (9.0, 10.7 s) | 16.5 % | 17 / 5 / 2, 0 over budget | 1 of 1 |
+
+(The 2x runs see a different number of New Years because today's countdown holds the calendar 3.6 s every year.)
+
+Against the Acceptance:
+- 5 minutes at ultra on a 100k+ save: 1 fanfare and 1 full show (at most 2 each). Every disaster toast shown (32 of 32).
+  "At most 8 toasts in any 60 s": the budgeted news never made a ninth toast of any kind in its trailing minute (0
+  violations, at most 6 budgeted in any 60 s), but the always-shown kinds alone reach 25 in the busiest minute (14
+  disaster, 8 bad news, 3 yearly toasts, plus 1 warning): see the decisions.
+- 10 minutes at 2x: 1 full show (at most 2); fireworks on screen 18.6 % (at most 25 %; today 54.5 %).
+- 10 minutes at 1x: 1 full show and 1 camera takeover (at most 2); the other two New Years were bursts of 9.0 and
+  10.7 s (at most 12 s).
+- First and rank-up New Years: tests/game/newYearPacing.test.ts (full unless a full show played in the last 3 minutes),
+  and in the browser (below) the fresh city's first New Year got the full show as a milestone.
+- An action toast over budget appears within 60 s: tests/game/toastBudget.test.ts (queued, not overtaken, and shown at
+  the latest after 50 s while disasters keep the budget spent).
+
+### Decisions (conservative readings, for the lead)
+
+- **"At most 8 toasts in any 60 s" against "every disaster toast shown".** The plan says bad news, disasters and errors
+  always show (FEEL-02a change 2, Goal 8's "disasters always show"), so the cap binds the budgeted news: a budgeted
+  toast needs fewer than 8 toasts of any kind in the minute before it and none in the 4 s before. At ultra on the 101k
+  save the always-shown kinds alone reach 25 in the busiest minute (a tornado and its emergencies: 14 disaster, 8 bad
+  news, 3 yearly toasts); today that minute held 41. Meeting 8 in every minute would need a lead choice: summarise
+  emergency toasts (fires and medical calls are disaster-kind news), or budget bad news, which the plan exempts.
+- **2 full shows in any 10 real minutes, at every speed.** Goal 8 counts "rank-ups included", so a milestone that would
+  be a third full show within 10 minutes gets a burst. It is the only case in which a first or rank-up New Year more
+  than 3 minutes after the last full show does not get one; at ultra the 3-minute gap already gives at most 2 per 5.
+- **What a burst is.** Fireworks' shortest show (Fireworks.ts is WORLD's and unchanged): `duration` 6 (its minimum),
+  `delay` 0, show size at most 0.4. Measured on the real Fireworks in node over 3 hamlet to megacity populations x 20
+  seeds x camera distances from 300 m to 9 km, its sparks are gone after 8.6-12.4 s; only from 4.5 km away do they pass
+  12 s, so the celebration clears any spark still alive at 12 s of show time (`stop(true)`, which also clears the
+  smoke, then far away and small). "Fireworks on screen" counts sparks, not the smoke puffs that linger ~16 s.
+- **Ultra** is a game year under 45 real seconds (the threshold today's code already uses to skip the countdown): only
+  speed 3 (18 s). LIVE mode at 1x is never ultra.
+- **Rank-ups from the population history**, not `systemData.cityRanks`: the worker replica mirrors `history.pop` but not
+  that key. A rank-up New Year is one whose last 12 monthly samples peak in a higher CITY_RANKS rank than everything
+  before them; reached ranks survive drops, as in rewards.ts. LG-01 can switch it to its own record when it lands.
+- **The pacing memory lives with the city scene**: the first New Year of a session gets the full show by the 10-minute
+  rule, and re-entering a city starts afresh. Dev shows (`instant`, `fastForward`) do not count; a busy year (a show
+  still running) gets only its toast and does not carry the milestone over.
+- **Reward news is budgeted** with advisor, warning and good news: the plan's FEEL-06 "Place it" is a reward toast that
+  the budget is said to queue. The yearly New Year toast is not budgeted (it stays every year), but it counts.
+- **Every new toast counts against the budget**, budgeted or not (a merge does not). A queued action toast shows at the
+  latest 50 s after it arrived even if the budget is still spent, so "never dropped, within 60 s" holds when the
+  always-shown kinds flood; it can then be the ninth toast of a minute.
+- **The demand-cap toast** needed one-line edits outside FEEL-02a's file list: TopBar.ts (GUIDE's after the TopBar split;
+  the split lane carries the `{ budget: true }`), src/game/context.ts (GameContext.toast's optional options) and
+  CityScene's ctx wiring.
+- **No badge**: dev has no unread badge for dropped toasts, and FEEL-02a's files do not add one. A dropped toast stays
+  in the ticker and the news feed.
+- **FH-03 / FEEL-06 actions**: `Toasts.newsAction` is the `ref` lookup hook; the action map (`adviceActions.ts`, GUIDE)
+  is not in dev, so no news toast carries an action yet. The queue is tested with direct action toasts.
+- **The probes run headless**, not in the browser: SwiftShader drew 0.1-0.4 frames a second here (the 101k city and even
+  an empty one while fireworks fly), so the game clock cannot run at 1x, 2x or ultra in real time. The browser checks
+  cover the function and the visuals instead. The probe has no LivePolicy (an uncovered emergency would drop the speed
+  to LIVE in the game) and no emergency banner toasts.
+
+### Browser checks
+
+Playwright's Chromium on SwiftShader at 1280x720, quality Low, each run with its own Vite server (port 5417, cache in the
+scratch directory) under the lock. The harness is in
+`/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t036s3/harness/` (run.mjs,
+a.mjs, b.mjs, ab.mjs, c.mjs). SwiftShader drew 0.25-0.4 frames a second in the empty city and about 0.1 in the 101k
+one, so day jumps (`state.day`, ten days or less before a New Year) stand in for waiting, the burst is timed on the
+Fireworks' own show clock (it advances at most 0.1 s a frame), and part C stretches the toast lifetimes
+(`Toasts.ttlScale`) so that a frame catches them.
+
+| Check | Result |
+|---|---|
+| A new quickstart city opens on 1 April 2000 (foundedDay 90), pacing Milestones by default | pass |
+| Settings › Gameplay: "New Year show", Milestones / Every year, Milestones on, right under "New Year celebration" | pass (`01-settings-row.png`) |
+| "Every year" applies to the city and is stored in `metropolis.settings.v1`; back to Milestones | pass (`02-settings-every-year.png`) |
+| The city's first New Year (2001): the full show as a milestone; cinematic: clock and camera taken, calendar held (`maxDaysPerFrame` 0), fanfare, the yearly toast; the countdown runs | pass (A, C1) |
+| The second New Year minutes later (2002, 1x): a burst (Fireworks 6 s, delay 0); the yearly toast silent, no fanfare | pass (A); C1: see below |
+| The burst: no camera, clock or calendar takeover, no countdown, the date runs on (Jan 2 → Jan 26, 2002); its last spark at 12.0 s of show time (the cap), the celebration over | pass (A: 119 frames over 475 real seconds; `05-burst-3s.png` rockets, no countdown; `06-after-burst.png` empty sky, the date on; `06b-burst-still-3.5s.png` a frozen burst 3.5 s in) |
+| The burst's yearly toast on screen, "Happy New Year 2002!" above 2001's | `21-burst-toast.png` (C) |
+| Ultra in the fresh city 92 s after the first full show: no show, the compact toast "2003 · no residents yet" on screen (title New Year, silent, 4.5 s) | `22-ultra-compact-toast-fresh.png` (C); C1: see below |
+| Ultra 700 s after the first full show (run A, slowed by SwiftShader): the full show, as the 10-minute rule says | pacer log (A); the run's check had expected the compact toast, and C1 checks it within 10 minutes |
+| The 101k save at ultra: the session's first New Year is the full fireworks-mode show (8 s), no clock or camera, fanfare and "Botville celebrates with 101,942 residents · ▲ 17.5% vs 2010." | pass (C2; `23-ultra-full-show-101k.png`) |
+| The next New Year at ultra: only the compact toast "2012 · 103,734 residents, up 18%", on screen, silent, no fireworks, no fanfare | pass (C2; `24-ultra-compact-toast-101k.png`) |
+| No page errors | pass (A, B, C) |
+
+All screenshots are under `/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t036s3/`
+(`shots-ab/`, `shots-c/`, `shots-c1/`) and each was looked at. What they do not show: the countdown digit and the
+full shows' fireworks (`shots-ab/03-…`, `04-…`, `11-…`, `12-…`): a frame took 3-10 s, longer than the digit's 0.95 s
+animation and, before part C, the toasts' lifetimes.
+
+Seen in passing, not FEEL-02a's: at well under 1 frame a second the cinematic's calendar watchdog (midnight + 10 s of
+real time) frees the calendar before the countdown's midnight, because the celebration's timer advances at most 1 s a
+frame; the date then reads Jan 2 during the countdown (`03-first-newyear-countdown.png`). Dev behaves the same; at a
+real frame rate it cannot happen.
