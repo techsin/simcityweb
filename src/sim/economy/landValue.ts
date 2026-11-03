@@ -391,7 +391,8 @@ interface LvRun {
   parksEff: number;
   /** likewise the landfill splats */
   lfIdx: Int32Array; lfVal: Float32Array;
-  stat?: { lvStatic: Float32Array; wf: Float32Array };
+  /** the static part (view, dense) and the waterfront bonus (sparse) */
+  stat?: { lvStatic: Float32Array; wfIdx: Int32Array; wfVal: Float32Array };
   job?: StaticJob;
   /** queued splats: [id, sign, def, x, z, w, d] per entry */
   queue: (number | string)[];
@@ -405,11 +406,12 @@ function lvRunOf(st: CityState): LvRun | undefined {
   if (!(r.effIdx instanceof Int32Array) || !(r.effVal instanceof Float32Array) || r.effIdx.length !== r.effVal.length) return undefined;
   if (!(r.lfIdx instanceof Int32Array) || !(r.lfVal instanceof Float32Array) || r.lfIdx.length !== r.lfVal.length) return undefined;
   if (!Array.isArray(r.applied) || !Array.isArray(r.queue) || !Array.isArray(r.changed)) return undefined;
-  if (r.stat && (!(r.stat.lvStatic instanceof Float32Array) || r.stat.lvStatic.length !== C || !(r.stat.wf instanceof Float32Array) || r.stat.wf.length !== C)) return undefined;
+  if (r.stat && (!(r.stat.lvStatic instanceof Float32Array) || r.stat.lvStatic.length !== C || !(r.stat.wfIdx instanceof Int32Array)
+    || !(r.stat.wfVal instanceof Float32Array) || r.stat.wfIdx.length !== r.stat.wfVal.length)) return undefined;
   if (r.job && (!r.stat || !(r.job.p?.dist instanceof Uint8Array) || r.job.p.dist.length !== C)) return undefined;
   return r;
 }
-/** the non-zero cells of a splat sum (bit-exact: -0 counts as non-zero) */
+/** the non-zero cells of a raster (bit-exact: -0 counts as non-zero) */
 function sparse(a: Float32Array): { idx: Int32Array; val: Float32Array } {
   const u = new Uint32Array(a.buffer, a.byteOffset, a.length);
   let n = 0;
@@ -518,7 +520,7 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
       effIdx: eff.idx, effVal: eff.val, applied: [...ex.applied], parksEff: ex.parksEff, lfIdx: lf.idx, lfVal: lf.val,
       queue, changed: changed.map((b) => b.id),
     };
-    if (rt.terrainDirty || job) r.stat = { lvStatic: rt.lvStatic.slice(), wf: ex.wf.slice() };
+    if (rt.terrainDirty || job) { const wf = sparse(ex.wf); r.stat = { lvStatic: rt.lvStatic.slice(), wfIdx: wf.idx, wfVal: wf.val }; }
     if (job) r.job = structuredClone(job);
     st.systemData.lvRun = r;
   };
@@ -529,7 +531,7 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
     const ex = extraOf(rt, st);
     acc.set(r.acc);
     lastLandfill = r.lastLandfill;
-    if (r.stat) { rt.lvStatic.set(r.stat.lvStatic); ex.wf.set(r.stat.wf); } else computeStaticLandValue(st, rt.lvStatic, ex.wf);
+    if (r.stat) { rt.lvStatic.set(r.stat.lvStatic); unsparse(ex.wf, r.stat.wfIdx, r.stat.wfVal); } else computeStaticLandValue(st, rt.lvStatic, ex.wf);
     job = r.job ? structuredClone(r.job) : null;
     rt.terrainDirty = r.terrainDirty;
     unsparse(rt.lvEffects, r.effIdx, r.effVal);

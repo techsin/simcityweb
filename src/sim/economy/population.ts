@@ -46,7 +46,8 @@ import { getDef } from '../catalog';
 import { setSaveHook } from '../persist';
 import {
   type DemographicsCtx, DemographicsCache, REC_NOISE, REC_RAW, REC_UNMET, bindDemographics, demographicsCtx,
-  EQHQ_SLICES, demographicsData, demographicsSim, ensureDemographicsFields, eqHqDaily, evaluateNeeds, needsOf, updateDemographics,
+  C_SAVED, EQHQ_SLICES, demographicsData, demographicsSim, ensureDemographicsFields, eqHqDaily, evaluateNeeds, needsOf,
+  updateDemographics,
 } from './demographics';
 
 /** duck-typed view of sim-infra's TrafficSystem (optional methods; -1 = not assessed yet) */
@@ -334,7 +335,7 @@ function popRunOf(st: CityState, cc: number): PopRun | undefined {
   if (!(r.coarseWealth instanceof Float32Array) || r.coarseWealth.length !== cc || !Array.isArray(r.burnt)) return undefined;
   const c = r.cache;
   if (c && (!(c.ids instanceof Int32Array) || !(c.rec instanceof Int32Array) || !(c.wf instanceof Float32Array)
-    || c.rec.length !== c.ids.length * 16 || c.wf.length !== c.ids.length)) return undefined;
+    || c.rec.length !== c.ids.length * C_SAVED || c.wf.length !== c.ids.length)) return undefined;
   return r;
 }
 /** the stats aggregate() writes (a resumed init keeps the saved ones) */
