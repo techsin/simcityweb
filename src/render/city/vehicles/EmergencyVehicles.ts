@@ -13,13 +13,14 @@
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../../core/constants';
+import { Network } from '../../../core/types';
 import type { CityState } from '../../../sim/CityState';
 import { INCIDENT_COLOR, vehiclePosition, type EmergencyVehicle, type Incident, type VehiclePos } from '../../../sim/infra/emergency';
 import { EMERG_DAYS_PER_MIN } from '../../../sim/infra/params';
 import { sharedUniforms } from '../../../assets/materials';
 import { DynamicBatch } from '../common/batch';
 import { getCityMaterial } from '../common/cityMaterial';
-import { HALF_W, DX, DZ, junctionFillet, roadsConnect } from '../common/netinfo';
+import { HALF_W, HALF, DX, DZ, junctionFillet, roadsConnect } from '../common/netinfo';
 import type { RoadSurface } from '../common/surface';
 import { vehicleGeometry } from './VehicleRenderer';
 
@@ -45,7 +46,18 @@ interface DrawnRoute {
   hx: number[]; hz: number[]; speed: number[]; radius: number[];
 }
 const drawnRoutes = new WeakMap<number[], DrawnRoute>();
-const rightWidths = new Map<string, number>();
+const drawnBounds = new Map<string, THREE.Box3>();
+
+function vehicleBounds(model: string): THREE.Box3 {
+  let box = drawnBounds.get(model);
+  if (!box) {
+    const geom = vehicleGeometry(model, 0);
+    if (!geom.boundingBox) geom.computeBoundingBox();
+    box = geom.boundingBox!;
+    drawnBounds.set(model, box);
+  }
+  return box;
+}
 
 function drawnRoute(v: EmergencyVehicle, N: number): DrawnRoute {
   const old = drawnRoutes.get(v.path);
@@ -69,6 +81,14 @@ function drawnRoute(v: EmergencyVehicle, N: number): DrawnRoute {
   return g;
 }
 
+function armWidth(g: DrawnRoute, k: number, hx: number, hz: number, network: ArrayLike<number>): number {
+  const c = g.path[k], own = network[c], x = c % g.size + hx, z = Math.floor(c / g.size) + hz;
+  const a = HALF_W[own] || 0;
+  if (x < 0 || z < 0 || x >= g.size || z >= g.size) return a;
+  const t = network[z * g.size + x];
+  return roadsConnect(own, t) ? Math.max(a, HALF_W[t]) : a;
+}
+
 function turnRadius(g: DrawnRoute, k: number, model: string, network?: ArrayLike<number>): number {
   const r = g.radius[k];
   if (!network || !(r > 0) || g.hx[k - 1] * g.hz[k] - g.hz[k - 1] * g.hx[k] <= 0) return r;
@@ -80,18 +100,27 @@ function turnRadius(g: DrawnRoute, k: number, model: string, network?: ArrayLike
     const t = network[nz * g.size + nx];
     if (roadsConnect(own, t)) { b = Math.max(b, HALF_W[t]); arms++; }
   }
-  // Uniform two-arm bends use the road mesher's arc; mixed-width bends use its filleted junction instead.
-  if (arms < 2 || (arms === 2 && b === HALF_W[own])) return r;
-  let width = rightWidths.get(model);
-  if (width === undefined) {
-    const geom = vehicleGeometry(model, 0);
-    if (!geom.boundingBox) geom.computeBoundingBox();
-    width = Math.max(0, -(geom.boundingBox?.min.x ?? 0));
-    rightWidths.set(model, width);
-  }
+  if (arms < 2 || b >= HALF) return r;
+  // Match the arc piece's HALF-radius bend. Avenue medians and highway ramps keep their existing paths.
+  if (arms === 2 && b === HALF_W[own]) return own === Network.Avenue ? r : Math.min(r, HALF / CELL_SIZE);
+  b = Math.min(armWidth(g, k, -g.hx[k - 1], -g.hz[k - 1], network), armWidth(g, k, g.hx[k], g.hz[k], network));
+  const width = Math.max(0, -vehicleBounds(model).min.x);
   // Keep the whole inside side edge outside the curb's fillet, including its closest point between the axles.
   const cap = 4 * (b + junctionFillet(b) * (1 - Math.SQRT1_2) - (LANE + width) * Math.SQRT1_2) / CELL_SIZE;
   return Math.min(r, Math.max(0, cap));
+}
+
+function leftLaneOffset(g: DrawnRoute, k: number, u: number, model: string, network?: ArrayLike<number>): number {
+  if (!network || g.hx[k - 1] * g.hz[k] - g.hz[k - 1] * g.hx[k] >= 0) return LANE;
+  const own = network[g.path[k]];
+  if (!roadsConnect(own, own) || own === Network.Highway) return LANE;
+  const box = vehicleBounds(model), a = 1 - u, len = Math.hypot(a, u), r = g.radius[k] * CELL_SIZE;
+  const incoming = armWidth(g, k, -g.hx[k - 1], -g.hz[k - 1], network);
+  const outgoing = armWidth(g, k, g.hx[k], g.hz[k], network);
+  // Limit the tail/front swing to the adjacent straight curbs, including narrow Street approaches.
+  const before = (incoming + r * u * u + box.min.z * u / len) / (a / len) + box.min.x;
+  const after = (outgoing + r * a * a - box.max.z * a / len) / (u / len) + box.min.x;
+  return Math.max(0, Math.min(LANE, before, after));
 }
 
 /** Render-only world position: round one cell around turns and ease the final stop. The sim route is unchanged. */
@@ -131,6 +160,7 @@ export function drawnVehiclePosition(v: EmergencyVehicle, t: number, N: number, 
   out.x = g.x[j] + (g.x[j + 1] - g.x[j]) * f;
   out.z = g.z[j] + (g.z[j + 1] - g.z[j]) * f;
   out.hx = g.hx[j]; out.hz = g.hz[j];
+  let lane = LANE;
   for (let k = j; k <= j + 1; k++) {
     if (k <= 0 || k >= n - 1) continue;
     const r = turnRadius(g, k, v.model, network);
@@ -140,10 +170,11 @@ export function drawnVehiclePosition(v: EmergencyVehicle, t: number, N: number, 
     out.z = g.z[k] - a * a * r * g.hz[k - 1] + u * u * r * g.hz[k];
     const hx = a * g.hx[k - 1] + u * g.hx[k], hz = a * g.hz[k - 1] + u * g.hz[k], len = Math.hypot(hx, hz) || 1;
     out.hx = hx / len; out.hz = hz / len;
+    lane = leftLaneOffset(g, k, u, v.model, network);
     break;
   }
   const park = endW > 0 ? Math.max(0, Math.min(1, (m - (end - endW)) / (2 * endW))) : Number(m >= end);
-  const off = LANE + (PARK - LANE) * park * park * (3 - 2 * park);
+  const off = lane + (PARK - lane) * park * park * (3 - 2 * park);
   out.x = out.x * CELL_SIZE - out.hz * off;
   out.z = out.z * CELL_SIZE + out.hx * off;
   out.moving = m > v.m0 && m < end + endW;
