@@ -1,1 +1,2 @@
 (c) FH-05: local/R1-guide-c, report docs/dev/reports/local-R1-guide-c.md; gates green, browser check 9 of 9
+(d) FH-06, FH-09: cloud/t037d (from local/R1-guide-d), report docs/dev/reports/local-R1-guide-d.md; gates green (tsc, 2,044 tests, bot identical 196,101), browser check 36 of 36 (local host; the replica checked in vitest)
