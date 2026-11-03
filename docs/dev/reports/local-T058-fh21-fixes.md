@@ -1,24 +1,102 @@
 # T058: FH-21 follow-up fixes
 
-Branch `local/T058-fh21-fixes`, based on `821a8d6` plus its task-file commit. Changes are uncommitted. The explicit
-lane instructions override the task footer: no push, commit, or `.done` file; full Vitest and browser/GPU runs stay
-with the lead.
+Branch `local/T058-fh21-fixes`, originally based on `821a8d6`. The worker committed the five first-round fixes as
+`aff7af2` and cleanly merged dev `683d02b`, including T036 step 3 / FEEL-02a's toast budget. Round 2's Notifications
+change is uncommitted. NOTE-048, "FH-21's real-GPU recheck and T058", explicitly assigns the earlier Notifications
+request to T058. The lane instructions override the task footer: no push, commit, or `.done` file; full Vitest and
+browser/GPU runs stay with the lead.
 
 ## Supplied real-GPU recheck
 
-These are the **earlier results supplied in T058**, attributed there to the worker's `qa/FH21/qa.md`. They are not
-post-fix measurements from this lane. Hardware: RTX 5070 Ti, driver 610.47, headless Chromium 141 with the real GPU.
+The numeric measurements below are the **earlier results supplied in T058**, attributed there to the worker's
+`qa/FH21/qa.md`. In Round 2 the worker reports that `aff7af2` passes the real-GPU recheck: all five fixes work and
+all six FH-21 acceptance lines pass. Fresh post-fix timing numbers were not supplied. This lane did not run a
+browser. Hardware: RTX 5070 Ti, driver 610.47, headless Chromium 141 with the real GPU.
 
-| Recheck | Supplied result |
+| Recheck | Earlier numeric reference | Post-`aff7af2` worker recheck |
+|---|---|---|
+| First-run detection | 16 threads: High; 4 cores: Medium | Pass |
+| Existing profile | Keeps its setting | Pass |
+| Healthy frame rate | No prompt at 60 fps on the 653k and 1.12M cities | Pass |
+| Mid-session slowdown at 20x CPU throttle | Exactly one prompt, 11.5–11.8 s after slowdown; Keep and Switch remembered | Pass |
+| Context loss | 13/13 across 3 runs; card in 14–102 ms; Restore at the same camera and exactDigest in 0.94–1.15 s on the 655k city | Pass |
+| Found City to first interactive frame | 1.19–1.22 s | Pass |
+
+The five verified fixes are startup exclusion from FPS sampling, restored overlay/variant, exclusion of the recovery
+dialog from load time, restored time of day, and the detected Recommended label.
+
+**Observed difference, accepted by the lead:** FH-21 describes a prompt after roughly 20 s of low FPS. QA measured
+roughly **11.5 s** (11.5–11.8 s) after a mid-session slowdown. The code measures the median of an existing rolling
+20 s sample window; after healthy play, the median flips when approximately half the window's samples are slow,
+rather than waiting for twenty entirely slow seconds. A city that starts slow still fills the twenty-second window
+first. This earlier mid-session offer is reasonable for players, so the window and threshold stay unchanged, as
+NOTE-048 permits.
+
+## Round 2: stable question buttons
+
+- `src/ui/Notifications.ts`: one small, separate placement change, shared by new-toast insertion and live-toast
+  dedup promotion. Questions remain the leading children of the existing `.toasts` container; other toasts insert
+  below them. Additional questions follow existing questions, and deduplicating a shown question leaves it in place.
+  No CSS or additional container is needed. The no-question path retains `prepend` and newest-first order.
+- `tests/game/notificationsQuestion.test.ts` (new): DOM-order/container/button-identity regressions for new and
+  deduplicated arrivals while questions are shown, plus stack and budget integration cases.
+- `tests/game/graphicsFirstRun.test.ts`: minimal existing-test hunk, one expected order changed from News/Question
+  to Question/News. Its question lifetime and stack-protection assertions stay intact.
+- `docs/dev/reports/local-T058-fh21-fixes.md`: worker recheck table, observed latency difference, this change, and
+  the remaining real-click check.
+
+FEEL-02a's budget admission, counters, queue, drain/scheduling, dedup counting, lifetimes, sounds, and eviction logic
+are untouched. `tests/game/toastBudget.test.ts` is unchanged. No infra hunks, Worker changes, or other source edits
+in Round 2. No new RNG draws, save-format changes, balance changes, or difficulty differences are intended.
+
+Round 2 gates (each command ran separately through the quiet gate):
+
+| Check | Result |
 |---|---|
-| First-run detection | 16 threads: High; 4 cores: Medium |
-| Existing profile | Keeps its setting |
-| Healthy frame rate | No prompt at 60 fps on the 653k and 1.12M cities |
-| Mid-session slowdown at 20x CPU throttle | Exactly one prompt, 11.5–11.8 s after slowdown; Keep and Switch remembered |
-| Context loss | 13/13 across 3 runs; card in 14–102 ms; Restore at the same camera and exactDigest in 0.94–1.15 s on the 655k city |
-| Found City to first interactive frame | 1.19–1.22 s |
+| `npx tsc --noEmit` | Passed |
+| `git diff --check` | Passed |
+| `git diff --exit-code -- tests/game/toastBudget.test.ts` | Passed: FEEL-02a budget tests unchanged |
+| `tests/game/toastBudget.test.ts` (unchanged) | Blocked before collection: Vite config load, `externalize-deps`, Windows safe-realpath `spawn EPERM` |
+| `tests/game/notificationsQuestion.test.ts` (6 new cases) | Same startup error; assertions did not run |
+| `tests/game/graphicsFirstRun.test.ts` | Same startup error; assertions did not run |
+| `tests/game/graphicsRestore.test.ts` | Same startup error; assertions did not run |
+| `tests/game/graphicsRecommended.test.ts` | Same startup error; assertions did not run |
+| Standalone actual-Toasts probe | Passed all 8 placement/budget scenarios; this is a Node probe, not the blocked Vitest suite or browser layout |
+| Full suite and browser | Left to lead as instructed |
+| Bot | Not rerun in Round 2; UI placement only, expected residents remain [61,124, 93,804, 37,971] = 192,899 |
 
-## Changes by file
+The new suite is `Toasts: stable question answers (T058)`. It checks music and good-news arrivals between a Keep
+pointerdown and click, live dedup including an already-leading ordinary toast, unchanged question/button parents
+and node identities, short-screen eviction, a queued action released after four seconds, multiple questions and
+live-question dedup, and newest-first order without questions. These are DOM checks; they do not assert physical
+button rectangles in the fake DOM.
+
+As a bounded runtime check while Vitest cannot collect, `scratch/toast-question-probe.mjs` bundles the actual
+Notifications implementation with the existing fake DOM (only its Vitest setup hooks are stripped). Eight Node
+assert scenarios pass: new/dedup music, new/dedup good news, multiple/live questions, short-stack eviction,
+no-question newest-first order, queued action release at 4 s, no-action suppression/dedup spending no budget, and
+the 8-per-minute cap. City abort clears pending timers after every scenario. Result:
+`scratch/toast-question-probe.json`. This does not establish that the unchanged FEEL-02a Vitest file passes; that
+file still needs to run in an environment where Vite can start.
+
+Exact probe command (also run through the quiet gate):
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T058/scratch/toast-question-probe.mjs
+```
+
+Exact requested Round 2 commands, from this worktree, one at a time:
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsc --noEmit
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/toastBudget.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/notificationsQuestion.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/graphicsFirstRun.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/graphicsRestore.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/graphicsRecommended.test.ts --maxWorkers=1
+```
+
+## Round 1 changes by file
 
 - `src/game/CityScene.ts`: reset FPS `frames`, `t`, and `last` immediately before marking the first rendered frame
   ready. View construction and the first draw cannot enter the slow-play window. Restore captures the displayed
@@ -33,10 +111,10 @@ post-fix measurements from this lane. Hardware: RTX 5070 Ti, driver 610.47, head
 - `tests/game/graphicsRecommended.test.ts` (new): four cases for the detected recommendation and preserved selection.
 - `docs/dev/reports/local-T058-fh21-fixes.md`: this report, expressly requested by the task.
 
-No infra hunks. No source hunks outside the three named files. No simulation, balance, RNG, save-format, or Worker
+No infra hunks. Round 1 had no source hunks outside its three named files. No simulation, balance, RNG, save-format, or Worker
 protocol changes. All difficulty settings retain their simulation behavior.
 
-## Tests and gates
+## Round 1 tests and gates
 
 | Check | Result |
 |---|---|
@@ -102,37 +180,44 @@ Scratch root:
 `C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T058/scratch`.
 No 256-tile/60-year runs are needed for this UI-only item. No two-process hash comparison was performed.
 
-## Plan/code differences and cloud request
+## Plan/code differences and request status
 
 - The FH-21 Problem paragraph is historical: first-run detection, context-loss handling, and load timing already
   exist. T058 repairs those paths without retuning the threshold; retuning after W1.4 remains outside this lane.
 - The original FH-21 Acceptance has five bullets; T058 supplies six empirical recheck lines above. Both are retained
   in the browser checklist. Worker design's older bot populations are historical; T058's 192,899 is the gate here.
 - The task's push/`.done` and full-suite/GPU footer conflicts with the explicit lane instructions. The latter win.
-- **Request for the FEEL-02a owner:** `src/ui/Notifications.ts`, `Toasts.show`, both the dedup branch around line 190
-  and new-toast insertion around line 273. Ordinary toasts currently prepend above a `.question`, moving Keep/Switch
-  under the cursor. Insert ordinary toasts below the last question (including dedup promotions), or use a separate
-  question container, while retaining question lifetime and stack protection. Verify a question's button bounds stay
-  fixed as new and deduplicated news/music toasts arrive, then click Keep and Switch at their original coordinates.
-  Update the owning test expectation that currently puts News above Question. This file is untouched in T058.
+- The earlier FEEL-02a request is implemented in Round 2 under NOTE-048's explicit authorization. No remaining
+  cloud-held source request. A browser must still verify real button rectangles and a click spanning toast arrival.
+- The approximately 11.5 s mid-session latency versus the item's approximately 20 s expectation is an accepted
+  observed difference, explained above; the graphics window is unchanged.
 
 ## Browser checklist for the lead
 
-- [ ] Fresh profile: 4 cores starts on Medium; 8/16 cores starts on High; title Settings labels the detected tier
+The worker reports the five original fixes and all six acceptance lines passed after `aff7af2`. The first six
+entries below describe that completed recheck; their timings remain the earlier supplied reference. The final
+entry is the new Round 2 browser check still to run.
+
+- [x] Fresh profile: 4 cores starts on Medium; 8/16 cores starts on High; title Settings labels the detected tier
   Recommended. Existing profiles retain the selected quality, including a choice different from detection.
-- [ ] Run the slow-build probe with a 22 s `createViews` delay and separately a slow first draw: no pre-ready prompt;
+- [x] Run the slow-build probe with a 22 s `createViews` delay and separately a slow first draw: no pre-ready prompt;
   no prompt during subsequent 60 fps play on the 653k and 1.12M cities.
-- [ ] At 20x CPU throttle during play, exactly one question appears (earlier recheck: 11.5–11.8 s); test Keep and
+- [x] At 20x CPU throttle during play, exactly one question appears (earlier recheck: 11.5–11.8 s); test Keep and
   Switch independently, reopen the city/profile, and confirm the answer remains remembered.
-- [ ] Run the worker's `ctxloss-gpu.mjs` with Land value active and with a nondefault overlay variant: loss pauses,
+- [x] Run the worker's `ctxloss-gpu.mjs` with Land value active and with a nondefault overlay variant: loss pauses,
   saves, and shows the card; manual Restore and `webglcontextrestored` rebuild at the same camera and exactDigest,
   with the same visible overlay/variant and legend. Repeat at midnight and at a nondefault daytime hour.
-- [ ] Record context-loss card/rebuild timings again (earlier: 14–102 ms / 0.94–1.15 s, 13/13 in 3 runs on 655k).
-- [ ] Measure Found City to first interactive frame on the 4-core P-5 profile and check the FPS log/readout
+- [x] Recheck context-loss handling (earlier: 14–102 ms / 0.94–1.15 s, 13/13 in 3 runs on 655k; fresh timings not supplied).
+- [x] Measure Found City to first interactive frame on the 4-core P-5 profile and check the FPS log/readout
   (earlier recheck: 1.19–1.22 s). Hold Recover unsaved progress for at least 6.3 s before Play; reported load time
   must exclude the dialog wait while retaining the actual load through the first interactive frame.
-- [ ] After the Notifications owner lands the request, verify arriving and deduplicated toasts keep the question's
-  button positions fixed and the first click on Keep/Switch succeeds.
+- [ ] With the slow-frame question shown, record the actual Keep/Switch button rectangles. Start a real pointerdown
+  on Keep, deliver a new Now playing toast between pointerdown and pointerup, then release at the original position;
+  the first click must land. Repeat with a dedup promotion, queued action toast, and short-screen stack overflow,
+  then separately with Switch. Verify the same question node/container and identical button rectangles throughout,
+  and confirm each answer remains remembered.
 
-Post-fix GPU timings, visual overlay/lighting continuity, end-to-end recovery-dialog timing, and the full test suite
-remain unverified in this lane.
+Round 2's physical button rectangles and real-click behavior, fresh numeric post-fix GPU timings, and the full test
+suite remain unverified by this lane. The worker supplied the passing original-fix/acceptance recheck; Round 2 does
+not rerun the bot or change its expected 192,899 residents. The earlier exact bot commands and numbers are retained
+above for the lead.
