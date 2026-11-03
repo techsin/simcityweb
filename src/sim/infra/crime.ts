@@ -64,22 +64,28 @@ const CR_EST = 1;
 /**
  * B2 cost model (design §9): estimated warm wall µs per work unit of each kind of piece. Start values: the crime mapping's
  * in-schedule fits (dense1m / bot256 / vet cities: sources 5 ns per building + 63 ns per footprint cell, spread 20.3 ns
- * per cell, flags 31 ns per building + 4.5 ns per footprint cell + 0.4 µs per event).
+ * per cell, flags 31 ns per building + 4.5 ns per footprint cell + 0.4 µs per event). G3 refit (dense1m --warm 300
+ * --days 120, the median est / wall per piece label): piece 3 -> 1.5, snapTake 0.02 -> 0.014, srcB / srcF 0.007 / 0.063
+ * -> 0.005 / 0.042, flagB / flagF 0.031 / 0.0045 -> 0.01 / 0.001 — none of them sizes a chunk (CR_PLAN_B / CR_PLAN_F do;
+ * the coefficients that size a piece — plan, clamp, box, mix, event — are unchanged).
  */
 const CR = {
   /** per piece (dispatch, cursors) */
-  piece: 3,
+  piece: 1.5,
   /** the pass start: raw.fill (per cell), context(), the resets */
   start: 20, fill: 0.0004,
   /** the snapshot (per building: buildingList + the copy) and its chunk plan (per building) */
-  snapTake: 0.02, plan: 0.012,
+  snapTake: 0.014, plan: 0.012,
   /** the raw step per building / footprint cell; the spill splats per venue cell, per boost cell; the clamp per cell */
-  srcB: 0.007, srcF: 0.063, splat: 0.012, clamp: 0.0014,
+  srcB: 0.005, srcF: 0.042, splat: 0.012, clamp: 0.0014,
   /** spread: blur3 per cell of one box pass, the mix per cell, the copies per cell */
   box: 0.0023, mix: 0.0057, copy: 0.0004,
   /** flags per building / footprint cell, the publish per candidate, per event */
-  flagB: 0.031, flagF: 0.0045, apply: 0.05, event: 0.4,
+  flagB: 0.01, flagF: 0.001, apply: 0.05, event: 0.4,
 } as const;
+/** the chunk plan of the pass snapshot: the cold Building floor per building + the raw step's start fit per footprint cell
+ *  (63 ns; sizing only — the estimates use CR.srcB / CR.srcF) */
+const CR_PLAN_B = INFRA_BLD_SIZING_US, CR_PLAN_F = 0.063;
 /** cells of one piece of a once-per-pass cell loop costing `us` per cell (the cold cell floor) */
 function cellUnits(us: number, budget = COLD): number {
   return pieceUnits(us > INFRA_CELL_SIZING_US ? us : INFRA_CELL_SIZING_US, 1, budget);
@@ -403,8 +409,8 @@ export class CrimeSystem implements SimSystem {
       case CS_START: this.rawStart(sim); this.sub = CS_SNAP; return false;
       case CS_SNAP:
         this.snap.take(st);
-        // (chunks planned with the cold Building floor; CS_BLD's estimate keeps srcB / srcF)
-        this.snap.planBegin(Math.max(CR.srcB, INFRA_BLD_SIZING_US), CR.srcF, pieceBudgetUs(COLD));
+        // (chunks planned with the cold Building floor; CS_BLD's estimate uses srcB / srcF)
+        this.snap.planBegin(CR_PLAN_B, CR_PLAN_F, pieceBudgetUs(COLD));
         this.sub = CS_PLAN;
         return false;
       case CS_PLAN:
@@ -610,7 +616,7 @@ export class CrimeSystem implements SimSystem {
     this.cand.length = 0;
     if (this.snap.chunks > 0 || this.snap.n > 0) return;
     this.snap.take(st);
-    this.snap.plan(Math.max(CR.srcB, INFRA_BLD_SIZING_US), CR.srcF, pieceBudgetUs(COLD));
+    this.snap.plan(CR_PLAN_B, CR_PLAN_F, pieceBudgetUs(COLD));
   }
 
   /** chunk k of the flags: the weighted sums (doubles, list order) and the buildings whose BF.Crime bit flips */

@@ -210,19 +210,24 @@ const COLD = INFRA_PIECE_COLD_MS / 2;
 const PL_EST = 1;
 /**
  * B2 cost model (design §9): estimated warm wall µs per work unit of each kind of piece. Start values: the pollution
- * mapping's in-schedule fits (dense1m / bot256 / vet cities, design §9.2), split over the pieces.
+ * mapping's in-schedule fits (dense1m / bot256 / vet cities, design §9.2), split over the pieces. G3 refit (dense1m --warm
+ * 300 --days 120, the median est / wall per piece label) of the coefficients that size no piece: piece 3 -> 1.5, the
+ * pass start (+ one buildingList rebuild per building), the snapshot copy, the building stages (gsB / gsF, grB / grF,
+ * scatB, gaB / gaF, sbB / sbF, flB), the downsample (below the cold cell floor). The chunk plan has its own constants
+ * (PLAN_B / PLAN_F); fills, copies and the row ops above the floor keep their start values (they size the programs).
  */
 const PC = {
   /** per piece (dispatch, cursors) */
-  piece: 3,
+  piece: 1.5,
   /** fixed parts: a stage start / setup / end, the garbage publish, the incinerator shares per facility */
   start: 15, setup: 10, end: 5, pub: 10, fac: 0.3,
   /** native fills / copies per cell */
   fill: 0.0004, copy: 0.0004,
-  /** the snapshot (per building) and its chunk plan (per building) */
-  snapTake: 0.02, plan: 0.012,
+  /** the pass start's buildingList rebuild (per building: the first call of the day), the snapshot copy (per building)
+   *  and its chunk plan (per building) */
+  listB: 0.013, snapTake: 0.009, plan: 0.012,
   /** per building / footprint cell: garbage sources, routes (perimeter), the scatter, apply, sources (stageA), flags */
-  gsB: 0.012, gsF: 0.007, grB: 0.02, grF: 0.005, scatB: 0.004, gaB: 0.02, gaF: 0.0116, sbB: 0.01, sbF: 0.041, flB: 0.02, flF: 0.004,
+  gsB: 0.004, gsF: 0.0025, grB: 0.01, grF: 0.002, scatB: 0.002, gaB: 0.012, gaF: 0.006, sbB: 0.008, sbF: 0.026, flB: 0.018, flF: 0.004,
   /** the landfill scan per cell (+ per flooded cell), the seed signature per seed, the road checksum per cell, the BFS per
    *  queue cell, the allocation per order entry, the landfill fill + display per landfill cell, the leftovers per cell */
   lfScan: 0.003, lfFlood: 0.03, seed: 0.002, netSum: 0.00185, bfs: 0.014, alloc: 0.004, lfCell: 0.03, left: 0.0029,
@@ -230,7 +235,7 @@ const PC = {
   cells: 0.0076, freight: 0.01,
   /** blurDown's downsample per fine cell, blur3 per coarse cell of a half pass, the accumulation per coarse cell,
    *  upsampleAdd per fine cell, saturate per cell, a box half pass per cell, the tree field / count per cell */
-  down: 0.0015, box: 0.0023, acc: 0.0012, up: 0.005, sat: 0.0068, trees: 0.0015, count: 0.001,
+  down: 0.0025, box: 0.0023, acc: 0.0012, up: 0.005, sat: 0.0068, trees: 0.0015, count: 0.001,
   /** noiseBuffer per cell + per cell with a tree within reach (the belt walk) */
   noiseBuf: 0.004, walk: 0.031,
   /** water: the cleaning per cell, the list (numbering per cell, the lists per water cell, the bank BFS per queue cell),
@@ -239,8 +244,9 @@ const PC = {
   /** the soil stock per cell; the flags publish per candidate; per event */
   soil: 0.0032, apply: 0.05, event: 0.4,
 } as const;
-/** the chunk plan of the pass snapshot: the cold Building floor per building + the costliest per-footprint-cell loop (stageA) */
-const PLAN_B = INFRA_BLD_SIZING_US, PLAN_F = PC.sbF;
+/** the chunk plan of the pass snapshot: the cold Building floor per building + the costliest per-footprint-cell loop's start
+ *  fit (stageA, 41 ns; sizing only — the estimates use each stage's own coefficients) */
+const PLAN_B = INFRA_BLD_SIZING_US, PLAN_F = 0.041;
 /** cells of one piece of a once-per-pass cell loop costing `us` per cell (the cold cell floor) */
 function cellUnits(us: number, budget = COLD): number {
   return pieceUnits(us > INFRA_CELL_SIZING_US ? us : INFRA_CELL_SIZING_US, 1, budget);
@@ -713,10 +719,10 @@ export class PollutionSystem implements SimSystem {
     const chunk = (us: number, left: number) => Math.max(0, Math.min(pieceUnits(us, 1, COLD), left)) * us;
     const ops = () => (this.progBuilt ? this.opsUs() : PC.setup);
     switch (this.stepIdx) {
-      case -1: return PC.start;
+      case -1: return PC.start + st.buildings.size * PC.listB;
       case S_GARB_SRC:
         switch (this.sub) {
-          case GS_START: return PC.start;
+          case GS_START: return PC.start + st.buildings.size * PC.listB;
           case GS_SNAP: return st.buildings.size * PC.snapTake;
           case GS_PLAN: return chunk(PC.plan, snap.n - snap.planned);
           case GS_BLD: return snap.countOf(k) * PC.gsB + snap.cellsOf(k) * PC.gsF;
