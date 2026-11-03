@@ -182,7 +182,7 @@ describe('FH-21: one offer to switch a slow city to Medium', () => {
     const el = toasts.el as unknown as FEl;
     expect(el.children).toHaveLength(3);
     expect(el.querySelectorAll('.toast.question')).toHaveLength(1);
-    expect(el.children.map((c) => textOf(c.querySelector('.t-text')!))).toEqual(['News 5', 'News 4', 'Question?']);
+    expect(el.children.map((c) => textOf(c.querySelector('.t-text')!))).toEqual(['Question?', 'News 5', 'News 4']);
   });
 });
 
