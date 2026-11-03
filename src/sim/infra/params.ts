@@ -167,8 +167,13 @@ export const INFRA_PIECE_MS = 0.3;
 export const INFRA_PIECE_COLD_MS = 0.13;
 /** B2: headless, estimated ms of urgent steps (player-edit feedback) per scheduler run (replaces the pre-B2 8 steps) */
 export const INFRA_URGENT_BUDGET = 24;
-/** B2: live (frames active), real ms of urgent steps per frame (2 x INFRA_FRAME_BUDGET_MS; pre-B2: no time check) */
-export const INFRA_URGENT_FRAME_MS = 6;
+/**
+ * B2: live (frames active), real ms of urgent steps per frame (pre-B2: no time check). G4 had 2 x INFRA_FRAME_BUDGET_MS;
+ * the B2 fix round (the verify review: never measured, twice the frame budget) caps it at the frame budget itself, so an
+ * edit's urgent passes never make a frame's infra work exceed INFRA_FRAME_BUDGET_MS + one step. Live only: the headless
+ * schedule (the bot) does not read it.
+ */
+export const INFRA_URGENT_FRAME_MS = INFRA_FRAME_BUDGET_MS;
 /**
  * B2 (G2): the sizing floor, in estimated µs per cell, of the cell loops that run once per pass: on their first
  * executions after a load they run interpreted at ~100 ns per cell (G2 dense1m runs: 25-70 x their warm cost), so a piece
@@ -180,10 +185,12 @@ export const INFRA_CELL_SIZING_US = 0.004;
  * B2 (G2): the same floor for the once-per-pass Building loops, in estimated µs per building (services prep's chunks, the
  * stop list, the access seeds and homes, shopB's block sums, the EQ / HQ fallback, the police scan and job sites): their
  * first executions after a load and the Building-shape deopts ran them at 1-8 µs per building (G2 dense1m: 25-75 x
- * warm), so a piece holds at most pieceUnits(INFRA_BLD_SIZING_US, 1, budget) buildings (~325 at half
- * INFRA_PIECE_COLD_MS). Chunk sizes only.
+ * warm), so a piece holds at most pieceUnits(INFRA_BLD_SIZING_US, 1, budget) buildings (~160 at half
+ * INFRA_PIECE_COLD_MS). Chunk sizes only. G2-G4 had 0.2; the B2 fix round doubled it: the gates' and the verify runs
+ * from a load (dense1m) still ran floor-sized Building chunks at 10-17 µs per building (crime sources.bld, pollution
+ * srcBld.bld / flags.bld, utilities uses.bld / power.bld, services stops.collectB / prep.bld: 3-6.6 ms per piece).
  */
-export const INFRA_BLD_SIZING_US = 0.2;
+export const INFRA_BLD_SIZING_US = 0.4;
 /** commute above this (min) counts as unreachable for employment purposes */
 export const MAX_COMMUTE = 110;
 

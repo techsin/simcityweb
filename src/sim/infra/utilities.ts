@@ -262,10 +262,12 @@ const UT = {
  * piece; the checksum takes the cell floor)
  */
 const US = { plan: 0.012, label: 0.035, cells: INFRA_CELL_SIZING_US, zoned: INFRA_CELL_SIZING_US, bfs: 0.027, wbfs: 0.085, event: 0.4, seaBuild: 0.05 } as const;
-/** the chunk plan of the pass snapshot (every building stage walks it): the cold Building floor per building + 20 ns per
- *  footprint cell (the results' footprint writes; sizing only — the estimates use each stage's own coefficients) */
-const UT_PLAN_B = INFRA_BLD_SIZING_US, UT_PLAN_F = 0.02;
-/** the treatment prefix scan's sizing per building (a DefInfo lookup and two fields: half the Building floor, about 540
+/** the chunk plan of the pass snapshot (every building stage walks it): the cold Building floor per building + 40 ns per
+ *  footprint cell (the results' footprint writes; sizing only — the estimates use each stage's own coefficients). B2 fix
+ *  round: at the floor's former 0.2 µs and 20 ns the Building-shape deopt wave after a load (days ~21-23) and the first
+ *  passes ran uses.bld / power.bld at 4-6.6 ms (the gates' runs from a load), so the building chunks are half as long. */
+const UT_PLAN_B = INFRA_BLD_SIZING_US, UT_PLAN_F = 0.04;
+/** the treatment prefix scan's sizing per building (a DefInfo lookup and two fields: half the Building floor, about 325
  *  buildings per piece; at a quarter its first pieces after a load ran at ~3 µs per building, 4.1 ms) */
 const UT_SCAN_SIZING = INFRA_BLD_SIZING_US / 2;
 /** cells of one piece of a once-per-pass cell loop costing `us` per cell (the cold cell floor) */

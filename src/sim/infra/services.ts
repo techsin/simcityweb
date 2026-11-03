@@ -160,12 +160,15 @@ const FI_COMBO = 0, FI_COMBO_PUB = 1, FI_TIERS = 2, FI_NEEDS = 3, FI_STALE = 4, 
  * once-per-cycle loops (G1: 10-37 x their warm cost in days 0-80, ~45 x on first executions), and a cell loop at most the
  * cold cell floor's cells (cellUnits). Pure native fills / copies (no JIT state) use INFRA_PIECE_MS.
  */
-const COLD = INFRA_PIECE_COLD_MS / 2, WARM = INFRA_PIECE_MS;
+const COLD = INFRA_PIECE_COLD_MS / 4, WARM = INFRA_PIECE_MS;
 /**
- * the tier steps' budget: half INFRA_PIECE_MS. The tier items run hundreds of times per pass and are near warm after a
- * few passes, but the first scheduled passes after a load still ran them at ~10 x (G2 dense1m: 2-4.4 ms steps at 0.3)
+ * the tier steps' budget: a quarter of INFRA_PIECE_MS. The tier items run hundreds of times per pass and are near warm
+ * after a few passes, but the first scheduled passes after a load still ran them at ~10 x (G2 dense1m: 2-4.4 ms steps at
+ * 0.3) and at half INFRA_PIECE_MS at 22-93 x (B2 fix round: the gates' and the verify runs from a load, tiers.search /
+ * alloc / final 3.5-5.5 ms in days 0-80); COLD likewise went from half to a quarter of INFRA_PIECE_COLD_MS (prep's
+ * chunks, the stop list, NIMBY and the finish up to 4-6 ms there)
  */
-const TIER = INFRA_PIECE_MS / 2;
+const TIER = INFRA_PIECE_MS / 4;
 /** cells of one piece of a once-per-pass cell loop costing `us` per cell (params INFRA_CELL_SIZING_US: the cold floor) */
 function cellUnits(us: number, budget = COLD): number {
   return pieceUnits(us > INFRA_CELL_SIZING_US ? us : INFRA_CELL_SIZING_US, 1, budget);
