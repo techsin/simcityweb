@@ -61,7 +61,16 @@ through host calls where noted). No console or page errors in 12 runs.
    same; no zone-more or unemployment issue while built out.
 8. Toasts and cards readable at 1280x720.
 
-FIXES_AFTER_QA
+**The QA fix round** (`ba37339`, on top of the WIP save `2195272`, which alone does not type-check: it lacks
+`ZONE_RULE_IDS`):
+- **F1:** the advice pulse has a class of its own (`advice-pulse`, sharing the coach mark's look), so the onboarding
+  card's `Toolbar.setCoach`, which resets `coach` about twice a second, no longer ends it; a second pulse restarts its
+  4.5 s.
+- **F3:** below 20,000 residents a family with no zoned land gets no zone-more warning (a town still being laid out
+  would spend the cooldown before its real stall), and zoning more of a family resets that rule's cooldown and
+  back-off (`AdvisorData.zoned`, compared at each month tick), so the next stall is news at once.
+- **F5:** each rezoning candidate is worded by its own main zone and never offered what it already is ("to housing or
+  denser industry" for an industrial strip; a high-density residential block is passed over when only homes are wanted).
 
 **The newcomer now acts on its cues.** With FH-03 it zoned 10 patches in 10 years where it zoned none before (FH-04's
 report: it never grew past its four starting blocks), and its population went from about 100 to about 300. That is
@@ -100,3 +109,41 @@ road-facing land a player could zone; the bot's patterns leave it.
 5. The rubble variants of the zone rules keep the rule id (so the newcomer still zones on them) and show "Zone homes",
    a valid fix but not the one their text gives (bulldoze). LG-08, LG-04 and LG-12's options appear as they land.
 6. **T037e (NOTE-043)** starts after this branch merges, since this touches AdvisorsPanel.
+
+## Cloud carry-over (Nov 3)
+
+The desktop is unavailable (NOTE-044), so the cloud finishes this lane on `cloud/t037b`: `local/R1-guide-b` (`ba37339`)
+with dev `5b12abe` merged in (`67b567d`; advisors.ts and queries.ts merged without conflicts, T037d's `taxHigh` hunk and
+this lane's zone rules being separate; tsc clean after the merge).
+
+### Gap list (required against done, written before any new work)
+
+Read: the task file, every NOTE naming T037 (NOTE-035, 037, 038, 040, 042, 043) and NOTE-044, POLISH_PLAN FH-03 and
+LG-05 in full with their Acceptance lists, FH-10 (the newcomer profile), §7.2-§7.4 and §8.1, FH-04's report ("Not met",
+the inherited newcomer gate), this report, and the lane's diff against dev.
+
+| Item | Required | State at the desktop's stop |
+|---|---|---|
+| FH-03 change 1 | below 20,000 residents zoneR / zoneC / zoneI are warnings, at most once per 180 days | done (+ the F3 rules), tests |
+| FH-03 change 2 | the toast's "Zone homes" selects `zone:1` and pulses Zones; found by `ref.advice`, never by text | done, tests, desktop browser check |
+| FH-03 change 3 | FEEL-02a's toast budget queues the action toast | not this lane: FEEL-02a is META's (T036 step 3), not in dev yet |
+| FH-03 change 4 | the RCI segment's "+ zone" badge (demand above 0.5, fewer than 12 empty front lots) | **not done** (TopBar; "waits for the TopBar split") |
+| FH-03 change 5 | the Planning card's count, "4 empty residential lots left — demand wants many more" | done, tests |
+| FH-03 acceptance | toast within one month tick and at most once per 180 days; click selects `zone:1`; the badge shows and goes at 12 lots; the newcomer passes 5,000 by year 4 on Medium; the ref test; advisors.test updated | 4 of 6: **the badge missing; the newcomer gate not met** (283 at year 4, before F3) |
+| FH-04's inherited gate | re-run the Easy newcomer gate (approval ≥ 50 from year 2, ≥ 2× Medium's population in year 6) once FH-03 lands | **not met** before F3 (39 %, 1.0×); re-measure after F3 |
+| LG-05 change 1-3 | the zone scan counts free land; under 1 % with a family's demand ≥ 0.5 a `builtOut` card (Planning, priority 7) replaces zone-more and unemployment; it names the three lowest-value blocks and only existing options, each a button | done, tests |
+| LG-05 change 4 | the RCI popover's cap hints show the same line | **not done** (TopBar) |
+| LG-05 acceptance | y55 (256×60 s7, regenerated): the card within a month, no zoneC / zoneI under 1 %; y15: never; each button opens its tool or view (UI test); the scan's cost unchanged | 2 of 4 met: **y55 is not built out** (7.77 % free), so the card never fires there; y15 fine; UI test and cost met |
+| Fix round | F1, F3, F5 (`2195272` WIP + `ba37339`) | code and tests in; **never gated** (no full suite, no bot after it); WIP to verify line by line |
+| Browser | the desktop's 8 items | 7 of 8 before the fix round; **"Connect a highway" never reached**; F1 / F3 / F5 not re-checked in a browser after their fix |
+| Gates | tsc, full vitest, the bot at 196,101 | green before the fix round only; re-run here |
+| Report | the fix-round paragraph, the numbers after F3, decisions with options | `FIXES_AFTER_QA` placeholder; numbers from before F3 |
+| §8.1 verifier list | "at the end" of round 1, with META's items | not this sub-lane's: it runs once every GUIDE and META round-1 item is in |
+
+The WIP save was verified line by line: `2195272` holds every code hunk of the fix round except `ZONE_RULE_IDS` (the
+missing constant is why it does not type-check); `ba37339` adds the constant, the comments and the tests. Read against
+the sim: the free count is one more test in the existing unzoned-tile branch of `scanZones` (each unzoned tile is seen
+there exactly once, as the flood fill never visits it), `zonedFam` adds per-block family counts the pass already had,
+`lowValueBlocks` runs only while built out, the F3 reset runs only in the month tick's `gather` (the Advisors panel's
+`'open'` pass stays read-only, as the replica's query side-effects suite requires), and `queries.ts` copies `ref` and
+`options` as plain data.
