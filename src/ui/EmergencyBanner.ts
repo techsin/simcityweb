@@ -824,8 +824,10 @@ export class EmergencyBanner {
     const card = this.teaching;
     if (!card || card.episode.id !== episode.id) return;
     if (card.send) card.send.disabled = !best;
+    const dispatchText = options === undefined ? 'Loading dispatch options…'
+      : best ? `Send nearest dispatches ${best.name} (${minText(best.etaMin)}).` : 'No free unit can go right now.';
     setText(card.text, episode.variant === 'E1a'
-      ? `No ${primary === 'medical' ? 'clinic or hospital' : primary + ' station'} covers this spot, so nobody comes on their own. ${best ? `Send nearest dispatches ${best.name} (${minText(best.etaMin)}).` : 'No free unit can go right now.'} Areas marked “Auto-dispatch” in the Emergency view are answered automatically.`
+      ? `No ${primary === 'medical' ? 'clinic or hospital' : primary + ' station'} covers this spot, so nobody comes on their own. ${dispatchText} Areas marked “Auto-dispatch” in the Emergency view are answered automatically.`
       : `No station can reach this in time. ${preventionText(inc)}`);
   }
 

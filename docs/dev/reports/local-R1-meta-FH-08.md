@@ -1,9 +1,51 @@
 # T036s5 / FH-08 — first emergency teaching
 
-Desktop implementation on `local/T036s5-fh08`, based on `821a8d6`. Changes are uncommitted.
+Desktop implementation on `local/T036s5-fh08`, based on `821a8d6`, committed as WIP `d6d5421` by the owner.
+The review-round-1 correction below is uncommitted.
 **E1 is staged, not active end to end:** the cloud-owned worker settings and policy transport do not yet carry the
 teaching episode. The exact hookup is below. E2 and E3 use existing host data and can run without that hookup.
 No `.done` file was changed, following the explicit instruction not to write done markers.
+
+## Review round 1 — loading dispatch options
+
+The worker's full-suite run found one failure: the E1a card said “No free unit can go right now” before its dispatch
+options query had answered. This was a presentation bug, not a bad test expectation.
+
+- `src/ui/EmergencyBanner.ts`, `renderTeaching()`: an undefined options value now displays “Loading dispatch
+  options…”. Send nearest stays disabled. Only a delivered answer with no usable primary unit displays “No free
+  unit can go right now.” A usable answer names the actual station and ETA and enables Send.
+- `tests/game/emergencyTeaching.test.ts`: extends the existing loading regression through undefined → empty answer
+  → usable unit, retaining the same card. Checks the message and disabled state at each transition.
+- This report records the review correction and reruns. No infra hunks, hunks outside the named source/test files,
+  cloud-held edits, new dependencies, simulation changes or RNG draws.
+
+`npx tsc --noEmit` passed after this correction. All six targeted commands below were run one at a time through the
+quiet gate with `--maxWorkers=1`; each failed before test execution with `spawn EPERM` while Vite loaded the config
+(`externalize-deps` → `windowsSafeRealPathSync` → the Windows `net use` subprocess):
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/emergencyTeaching.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/emergencyPolicy.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/emergencyBanner.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/worker/policy.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/infra/emergency.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/worker/hygiene.test.ts --maxWorkers=1
+```
+
+An additional quiet-gated attempt on `emergencyTeaching.test.ts` with `--configLoader runner` also failed at config
+startup: `ReferenceError: require is not defined` in `picomatch/index.js`. No repo or dependency configuration was
+changed to bypass either failure. The owner must rerun the targeted tests; this round does not claim a Vitest pass.
+The full suite remains reserved for the owner.
+
+The owner verified WIP `d6d5421` at `[61124, 93804, 37971]` = **192,899** residents in 2015. No bot rerun was needed
+for this text-only correction; the original exact bot commands and evidence remain below. No new plan-versus-code
+differences or cloud requests; the existing integration requests remain open. No browser was run.
+
+Additional browser check for this correction:
+
+- [ ] With delayed dispatch options, E1a shows the loading line and disabled Send nearest.
+- [ ] A delivered answer without a usable unit changes the line to “No free unit can go right now”, keeping Send disabled.
+- [ ] A usable answer updates the same card with its station/ETA and enables Send nearest.
 
 ## Changes by file
 
