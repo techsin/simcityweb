@@ -3,12 +3,13 @@
  * one scripted command list in deterministic mode, with equal full-save hashes at days 30, 60 and 120; a save from one
  * host loads in another and continues identically; persistence 'main' stores the worker's saves and snapshots (R14).
  */
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { DevType, Network, Zone } from '../../src/core/types';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import { clearRecoveryBase, getCityRecord } from '../../src/save/cities';
 import { MemoryKV, setKV, type StoreName } from '../../src/save/db';
 import { rebuildRecoveredCity } from '../../src/save/recoveryCodec';
+import { peekRecoveryMarker, readLsJournal, readLsSnapshot } from '../../src/save/recoveryLs';
 import { CityActions } from '../../src/sim/actions';
 import type { CityState } from '../../src/sim/CityState';
 import { createSystems } from '../../src/sim/systems';
@@ -17,10 +18,11 @@ import { LoopbackSimHost } from '../../src/worker/LoopbackSimHost';
 import type { WorkerSimHost } from '../../src/worker/WorkerSimHost';
 import { exactDigest } from '../../src/worker/queries';
 import { buildWorkerTest } from '../../tools/bench/worker/buildTests.mjs';
-import { bootNode, hash, initialCity, send, stripCells, within } from './workerHarness';
+import { bootNode, hash, initialCity, send, stripCells, waitFor, within } from './workerHarness';
+import { MemStorage } from '../save/fixtures';
 
 beforeAll(async () => { await buildWorkerTest(); }, 60000);
-afterEach(() => { clearRecoveryBase(); setKV(new MemoryKV()); });
+afterEach(() => { clearRecoveryBase(); setKV(new MemoryKV()); vi.unstubAllGlobals(); });
 
 const worker = (city: SerializedCity, kv: MemoryKV) => bootNode(city, { kv, deterministic: true });
 /** the worker's own full save, as main stored it */
@@ -168,5 +170,27 @@ describe('persistence main (R14)', () => {
       expect(deserializeCity(record.city).budget.taxRates[0]).toBe(deserializeCity(city).budget.taxRates[0]);
       expect(deserializeCity(rebuildRecoveredCity({ marker: snapped.marker, payload: snapped.payload, record })).budget.taxRates[0]).toBe(13);
     } finally { release(); await host.dispose(); }
+  });
+  it('with localStorage, the unload write keeps the worker\'s last snapshot and no journal; a crash writes it as such', { timeout: 30000 }, async () => {
+    // R14: no journal in W1.2. T033's page journal would bind here (persistence and localStorage), and its journal-only
+    // unload write would replace the snapshot payload that the worker built
+    const storage = new MemStorage(); vi.stubGlobal('localStorage', storage);
+    const kv = new MemoryKV(), host = await bootNode(initialCity(), { kv, deterministic: true, onCrash: () => {} });
+    try {
+      await send(host, 'setTax', [DevType.R1, 11.5]);
+      const snap = await host.snapshot('hidden');
+      if (!snap) throw new Error('missing snapshot');
+      await send(host, 'plantTrees', [{ x0: 3, z0: 3, x1: 8, z1: 8 }]);
+      host.recovery!.writeNow('pagehide');
+      const slot = readLsSnapshot();
+      expect(slot?.marker).toMatchObject({ at: snap.marker.at, baseSavedAt: snap.marker.baseSavedAt, why: 'pagehide' });
+      expect(slot?.payload?.length, 'the worker\'s payload, not a journal-only slot').toBe(snap.payload.length);
+      expect(readLsJournal()).toBeNull();
+      // §4.4: the crash path writes the snapshot first, as a crash
+      (host as unknown as { link: { post(m: unknown): void } }).link.post({ t: 'tick', seq: 1, dt: -1, ack: 0 });
+      await waitFor(() => host.isDisposed, 'the crash path');
+      expect(peekRecoveryMarker()).toMatchObject({ at: snap.marker.at, why: 'crash' });
+      expect(readLsSnapshot()?.payload?.length).toBe(snap.payload.length);
+    } finally { await host.dispose(); }
   });
 });

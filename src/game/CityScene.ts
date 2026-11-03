@@ -21,6 +21,8 @@ import type { RegionContext } from '../region/regionEffects';
 import { LocalSimHost, type CityPersistence, type HostState, type SaveReason } from '../worker/SimHost';
 // W1.1b: explicit opt-in; the local host remains the default.
 import { LoopbackSimHost } from '../worker/LoopbackSimHost';
+// W1.2 (?simworker=1): the App boots the worker host before the scene (§4.1); only its type is needed here
+import type { WorkerSimHost } from '../worker/WorkerSimHost';
 import type { ViewState } from '../worker/protocol';
 import { pageSimWasmFlag } from '../wasm/simWasm';
 import type { GameContext, QueryTarget, SoundOpts, UIEvents } from './context';
@@ -66,7 +68,11 @@ export type { GameSettings } from './settings';
 
 export interface CitySceneOptions {
   container: HTMLElement;
+  /** the city; with `host`, that host's replica */
   state: CityState;
+  /** W1.2: a worker host the App already booted (§4.1: the scene is built from its Ready). It starts paused; the scene
+   *  then applies its own initial speed. Without it the scene builds a local (or `?simworker=loopback`) host. */
+  host?: WorkerSimHost;
   rctx?: RegionContext;
   persistence?: CityPersistence;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
@@ -93,7 +99,7 @@ const SOUND_MAP: Record<string, string> = {
 const SPATIAL = new Set(['road', 'rail', 'power', 'pipe', 'zone', 'dezone', 'bulldoze', 'plop', 'terraform', 'tree', 'construct', 'error', 'rotate', 'query']);
 
 export class CityScene {
-  readonly host: LocalSimHost | LoopbackSimHost;
+  readonly host: LocalSimHost | LoopbackSimHost | WorkerSimHost;
   get sim(): Simulation { return this.host.sim; }
   get actions(): CityActionsApi { return this.host.actions; }
   readonly ctx: GameContext;
@@ -114,7 +120,8 @@ export class CityScene {
   private ticker: NewsTicker;
   private toasts: Toasts;
   private onboarding: Onboarding;
-  private errors: ErrorOverlay;
+  /** also the sink of a worker host the App booted before the scene existed */
+  readonly errors: ErrorOverlay;
   private pause: PauseMenu;
   private savePill: SavePill;
   private info: InfoPanel;
@@ -176,12 +183,19 @@ export class CityScene {
     // keyed on day 0: the calendar may open later in the year.)
     this.newCity = !validCamera(state.systemData.camera, state) && state.buildings.size === 0;
     const Host = new URLSearchParams(typeof location === 'undefined' ? '' : location.search).get('simworker') === 'loopback' ? LoopbackSimHost : LocalSimHost;
-    this.host = new Host(state, {
-      rctx: opts.rctx, initialSpeed: opts.initialSpeed ?? (this.newCity ? 0 : undefined), errors: this.errors,
-      flags: { simwasm: pageSimWasmFlag() },
-      signal: this.abort.signal,
-      persistence: opts.persistence,
-    });
+    const initialSpeed = opts.initialSpeed ?? (this.newCity ? 0 : undefined);
+    if (opts.host) {
+      // booted paused, since only its Ready said whether the city is new: the local host's initial speed, as a command
+      this.host = opts.host;
+      if (initialSpeed !== 0) this.host.setSpeed(initialSpeed ?? 1, 'initial');
+    } else {
+      this.host = new Host(state, {
+        rctx: opts.rctx, initialSpeed, errors: this.errors,
+        flags: { simwasm: pageSimWasmFlag() },
+        signal: this.abort.signal,
+        persistence: opts.persistence,
+      });
+    }
     this.degraded.actions = true;
 
     // ---- context

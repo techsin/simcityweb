@@ -2,7 +2,7 @@
  * W1.2's main side: T032's PacketSimHost over a real Worker. The packet plumbing (R1 optimism and rebasing, tickets and
  * tags, keyed watches, views, the clock, replies and resyncs) is PacketSimHost's; this file adds the transport: boot
  * with its progress and timeouts, versioning, liveness on visible time (R11), failing fast, explicit acks, and
- * persistence 'main' (R14). The application still selects LocalSimHost.
+ * persistence 'main' (R14). The App boots it behind `?simworker=1` (src/main.ts) and builds the CityScene from it.
  */
 import { openKV, type KV } from '../save/db';
 import { getCityRecord, type CityRecord } from '../save/cities';
@@ -10,6 +10,7 @@ import type { RecoveryMarker } from '../save/recoveryCodec';
 import { clearRecoveryAfterSave as clearRecoveryIdb, storeRecoveryIdb } from '../save/recoveryIdb';
 import { storeRecoveryLs } from '../save/recoveryLs';
 import { PacketSimHost, type PacketHostOptions, type Settle } from './LoopbackSimHost';
+import { exactDigest } from './queries';
 import type { RecoveryMirror, SnapshotAck, SnapshotWhy } from './SimHost';
 import { PROTOCOL_VERSION, assertOwnedBuffers, errorText, type Ready, type Reply, type SimSettings, type W2M } from './protocol';
 import { ACK_WINDOW, WorkerLiveness, type SerializedSource, type WorkerInput, type WorkerOutput, type WorkerPort } from './workerProtocol';
@@ -200,6 +201,9 @@ export class WorkerSimHost extends PacketSimHost {
   }
 
   get isDisposed(): boolean { return this.closed; }
+  /** Built from the worker's Ready, so there is nothing left to start: CityScene's initViews awaits this as it awaits
+   *  the local and loopback hosts' start(). */
+  start(): Promise<void> { return this.ready; }
 
   /** Deterministic mode (§2.9; hosts.test, the protector): whole headless days as separate worker units, live flag off.
    *  Resolves to the day reached, once the replica has applied them. */
@@ -207,6 +211,13 @@ export class WorkerSimHost extends PacketSimHost {
     if (!Number.isInteger(days) || days < 0) return Promise.reject(new Error('Invalid day count'));
     // a wire-only op of protocol.ts: SimHost's command table has no debug entries
     return this.post('debug.runDays' as never, [days] as never).done;
+  }
+
+  /** §5.4 (tools/qa-worker.mjs): the worker's exact digest and the replica's, read once its reply has been applied.
+   *  Equal on a quiet (paused) city; live days in the reply's packet would follow the worker's read. */
+  async verify(): Promise<{ worker: number; replica: number }> {
+    const worker = await this.query('verify', {});
+    return { worker, replica: exactDigest(this.state) };
   }
 
   override receive(message: WorkerOutput): void {
