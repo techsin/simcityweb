@@ -36,7 +36,7 @@ export class EmergencyTeachingPolicy {
     for (const alert of alerts.values()) {
       const inc = incidents.find((i) => i.id === alert.id);
       if (!inc || !inc.major || inc.reason === 'busy' || !(inc.state === 'uncovered' || inc.state === 'queued')) continue;
-      const variant = inc.manualPossible && alert.wasPossible ? 'E1a' : !inc.manualPossible && inc.canSend ? 'E1b' : null;
+      const variant = inc.manualPossible && alert.wasPossible ? 'E1a' : !alert.wasPossible && !inc.manualPossible && inc.canSend ? 'E1b' : null;
       if (!variant || this.shown.has(variant) || !(variant === 'E1a' ? settings.teachFirst : settings.teachTooFar)) continue;
       if (settings.teachingAck === inc.id) continue;
       this.shown.add(variant);

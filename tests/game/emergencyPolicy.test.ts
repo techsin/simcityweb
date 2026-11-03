@@ -157,9 +157,22 @@ describe('FH-08 first-emergency teaching', () => {
     expect(teacher.update({ ...settings, teachingAck: 1 }, alerts(1), [inc()])).toBeNull();
     expect(teacher.update(settings, alerts(1, 2), [inc(), inc({ id: 2 })])).toBeNull();
     const tooFar = inc({ id: 3, manualPossible: false });
-    expect(teacher.update(settings, alerts(3), [tooFar])).toEqual({ id: 3, variant: 'E1b' });
-    expect(teacher.update({ ...settings, teachingAck: 3 }, alerts(3), [tooFar])).toBeNull();
-    expect(teacher.update(settings, alerts(4), [inc({ id: 4, manualPossible: false })])).toBeNull();
+    const tooFarAlerts = new Map<number, PolicyAlert>([3, 4].map((id) => [id, { id, wasPossible: false }]));
+    expect(teacher.update(settings, tooFarAlerts, [tooFar])).toEqual({ id: 3, variant: 'E1b' });
+    expect(teacher.update({ ...settings, teachingAck: 3 }, tooFarAlerts, [tooFar])).toBeNull();
+    expect(teacher.update(settings, tooFarAlerts, [inc({ id: 4, manualPossible: false })])).toBeNull();
+  });
+
+  it('a savable alert that lapses does not teach or consume E1b', () => {
+    const teacher = new EmergencyTeachingPolicy();
+    const settings = { teachTooFar: true };
+    expect(teacher.update(settings, alerts(1), [inc()])).toBeNull();
+    const lapsed = inc({ manualPossible: false });
+    expect(teacher.update(settings, alerts(1), [lapsed])).toBeNull();
+    expect(teacher.episode).toBeNull();
+    const neverSavable = inc({ id: 2, manualPossible: false });
+    const tooFarAlert = new Map<number, PolicyAlert>([[2, { id: 2, wasPossible: false }]]);
+    expect(teacher.update(settings, tooFarAlert, [neverSavable])).toEqual({ id: 2, variant: 'E1b' });
   });
 
   it('skips disabled tips, unalerted, minor, busy, already handled and unreachable calls', () => {
