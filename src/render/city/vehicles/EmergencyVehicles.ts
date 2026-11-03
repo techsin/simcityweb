@@ -279,6 +279,28 @@ export class EmergencyVehicles {
     if (nb) { this.beams.instanceMatrix.needsUpdate = true; if (this.beams.instanceColor) this.beams.instanceColor.needsUpdate = true; }
   }
 
+  /** lead vehicle's rendered world position, read only from the emergency feed */
+  followPosition(vehicleId: number): { x: number; y: number; z: number; onScene: boolean } | null {
+    const feed = this.feed;
+    if (!feed) return null;
+    let list: readonly EmergencyVehicle[] = [];
+    let t = 0;
+    try {
+      list = feed.vehicles();
+      t = feed.time();
+    } catch {
+      return null;
+    }
+    const v = list.find(v => v.id === vehicleId);
+    if (!v || !v.path?.length || (v.state !== 'outbound' && v.state !== 'onScene')) return null;
+    const ps = vehiclePosition(v, t, this.state.size, this.pos);
+    const onScene = v.state === 'onScene' || (!ps.moving && t >= v.arrive);
+    const off = onScene ? PARK : LANE;
+    const x = (ps.x + -ps.hz * (off / CELL_SIZE)) * CELL_SIZE;
+    const z = (ps.z + ps.hx * (off / CELL_SIZE)) * CELL_SIZE;
+    return { x, y: this.surf.y(x, z), z, onScene };
+  }
+
   /** world positions of vehicles with sirens on (for src/audio/sirens.ts) */
   sirenSources(out: { x: number; y: number; z: number; responder: string }[] = []): { x: number; y: number; z: number; responder: string }[] {
     out.length = 0;

@@ -61,7 +61,7 @@ import {
   type EmergencyVehicle, type Incident,
 } from '../sim/infra/emergency';
 import { EMERG_DAYS_PER_MIN } from '../sim/infra/params';
-import { openDispatch } from '../game/tools/DispatchTool';
+import { DispatchTool, openDispatch } from '../game/tools/DispatchTool';
 import { clear, h, setText, toggleClass } from './dom';
 import { icon } from './icons';
 
@@ -383,6 +383,7 @@ interface BannerEl {
   sendLbl: HTMLElement;
   sendEta: HTMLElement;
   choose: HTMLButtonElement;
+  follow: HTMLButtonElement;
   /** the options watch version last shown by Send (-1: read it at the next refresh) */
   optsVersion: number;
   /** outcome line once the incident is over */
@@ -402,6 +403,14 @@ interface BannerEl {
   settleUntil: number;
   settleGen: number;
 }
+
+export interface EmergencyFollow {
+  start(vehicleId: number): void;
+  active(): number | null;
+  stop(): void;
+}
+const FOLLOW_ICON = '<svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 5 1.5-2h5L16 5h4a1 1 0 0 1 1 1v13H3V6a1 1 0 0 1 1-1z"/><circle cx="12" cy="12" r="4"/></svg>';
+const FOLLOW_CHIP_H = 34;
 
 /** a banner's height as a full / compact one in a stack `w` layout px wide: as measured there, else the default */
 function fullAt(b: BannerEl, w: number): number {
@@ -467,8 +476,13 @@ export class EmergencyBanner {
   /** close-out c1: the highest an open toolbar flyout's top reached since it opened (relative to the bottom block, <= 0;
    *  flyoutTop): a switch to a shorter tab keeps the bound of the tallest — the stack does not re-dock with every tab */
   private flyHigh = 0;
+  private dispatchUnits = new Map<number, Set<number>>();
+  private followDispatches = new Map<number, { seq: number; vehicleId: number; arrive: number }>();
+  private activeFollow: { id: number; label: string } | null = null;
+  private followChip: HTMLDivElement;
+  private followText: HTMLElement;
 
-  constructor(private ctx: GameContext, parent: HTMLElement) {
+  constructor(private ctx: GameContext, parent: HTMLElement, private follow?: EmergencyFollow) {
     this.options = new DispatchOptionsWatches(ctx.host, ctx.signal);
     this.el = h('div', { class: 'emg-banners' });
     this.moreText = h('span');
@@ -476,11 +490,16 @@ export class EmergencyBanner {
     // close-out c4: a retained node after exit to region must not keep the city's element listeners alive
     this.more.addEventListener('click', () => this.ctx.panels.open('emergencies'), { signal: ctx.signal });
     this.el.appendChild(this.more);
+    this.followText = h('span', { style: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: '0' } });
+    this.followChip = h('div', { class: 'emg-follow-chip mp-glass', style: { display: 'none', order: '10000', padding: '8px 12px', fontSize: '12px', gap: '8px', alignItems: 'center', height: `${FOLLOW_CHIP_H}px`, boxSizing: 'border-box', flexShrink: '0' } }, h('span', { html: FOLLOW_ICON }), this.followText);
+    this.el.appendChild(this.followChip);
+    this.seedDispatchUnits();
     parent.appendChild(this.el);
     const dirty = () => { this.dockDirty = true; };
     if (typeof ResizeObserver !== 'undefined') {
       this.ro = new ResizeObserver(dirty);
       this.ro.observe(this.more);
+      this.ro.observe(this.followChip);
     }
     if (typeof MutationObserver !== 'undefined') this.mo = new MutationObserver(dirty);
     const win = typeof window !== 'undefined' && typeof window.addEventListener === 'function' ? window : null;
@@ -552,13 +571,16 @@ export class EmergencyBanner {
     this.el.addEventListener('lostpointercapture', release, { capture: true, signal: ctx.signal });
     const off = ctx.sim.events.on('emergency', (e) => this.onEvent(e));
     const offReset = ctx.sim.events.on('reset', () => this.reset());
+    const offReady = ctx.ui.on('viewsReady', () => this.seedDispatchUnits());
     const offTick = ctx.ui.on('uiTick', () => this.tick());
     const offPolicy = ctx.host.policy.subscribe((policy) => this.renderPolicy(policy, true), ctx.signal);
     const offSettings = ctx.ui.on('settings', () => this.sendSettings());
     this.sendSettings();
     this.renderPolicy(ctx.host.policy);
     ctx.signal.addEventListener('abort', () => {
-      off(); offReset(); offTick(); offPolicy(); offSettings();
+      this.follow?.stop();
+      this.refreshFollow();
+      off(); offReset(); offReady(); offTick(); offPolicy(); offSettings();
       this.ro?.disconnect();
       this.mo?.disconnect();
       win?.removeEventListener('resize', resized);
@@ -620,6 +642,10 @@ export class EmergencyBanner {
   get liveActive(): boolean { return this.ctx.host.policy.live; }
 
   private reset(): void {
+    this.follow?.stop();
+    this.followDispatches.clear();
+    this.seedDispatchUnits();
+    this.refreshFollow();
     this.options.dispose();
     for (const b of this.banners.values()) b.el.remove();
     this.banners.clear();
@@ -630,6 +656,7 @@ export class EmergencyBanner {
   private renderPolicy(policy: PolicySnapshot, feedback = false): void {
     const em = this.ctx.host.emergency;
     const ids = new Set(policy.alerts.map((a) => a.id));
+    for (const id of this.followDispatches.keys()) if (this.followVehicle(id)) ids.add(id);
     for (const id of this.banners.keys()) if (!ids.has(id)) this.removeBanner(id);
     for (const alert of policy.alerts) {
       if (!this.banners.has(alert.id)) {
@@ -660,6 +687,7 @@ export class EmergencyBanner {
   }
 
   private onEvent(e: EmergencyEvent): void {
+    this.recordDispatch(e);
     const b = this.banners.get(e.id);
     if (e.type === 'resolved' || e.type === 'failed') {
       if (b) {
@@ -672,6 +700,54 @@ export class EmergencyBanner {
     // Any dispatch can take the unit another banner's Send nearest button counted on (EM-1).
     if (e.type === 'dispatched') for (const o of this.banners.values()) o.optsVersion = -1;
     else if (b && (e.type === 'uncovered' || e.type === 'queued')) b.optsVersion = -1;
+  }
+
+  private seedDispatchUnits(): void {
+    this.dispatchUnits.clear();
+    for (const inc of this.ctx.host.emergency.incidents()) this.dispatchUnits.set(inc.id, new Set(inc.units));
+  }
+
+  /** The incident is event-time; the fleet stream may already contain later commands in the same packet. */
+  private recordDispatch(e: EmergencyEvent): void {
+    const inc = this.ctx.host.emergency.incident(e.id);
+    if (e.type === 'resolved' || e.type === 'failed') {
+      this.dispatchUnits.delete(e.id);
+      this.followDispatches.delete(e.id);
+      return;
+    }
+    if (!inc) return;
+    const previous = this.dispatchUnits.get(e.id);
+    this.dispatchUnits.set(e.id, new Set(inc.units));
+    const cause = this.ctx.host.cause, tag = cause?.tag;
+    if (!this.follow || !cause || e.type !== 'dispatched' || !(tag === this || tag instanceof DispatchTool)) return;
+    const added = new Set(inc.units.filter((id) => !previous?.has(id)));
+    const lead = this.ctx.host.emergency.vehicles().filter((v) => added.has(v.id) && v.incidentId === e.id && v.state === 'outbound')
+      .sort((a, b) => a.arrive - b.arrive || a.id - b.id)[0];
+    if (!lead) return;
+    const current = this.followDispatches.get(e.id);
+    if (current?.seq === cause.seq && (current.arrive < lead.arrive || current.arrive === lead.arrive && current.vehicleId < lead.id)) return;
+    this.followDispatches.set(e.id, { seq: cause.seq, vehicleId: lead.id, arrive: lead.arrive });
+    const b = this.banners.get(e.id);
+    if (b) this.refresh(b, inc);
+    else this.addBanner(inc);
+  }
+
+  private followVehicle(id: number): EmergencyVehicle | undefined {
+    const vehicleId = this.followDispatches.get(id)?.vehicleId;
+    if (vehicleId === undefined) return;
+    return this.ctx.host.emergency.vehicles().find((v) => v.id === vehicleId && v.incidentId === id && (v.state === 'outbound' || this.follow?.active() === v.id));
+  }
+
+  /** Camera cancellation calls this too, so the chip disappears in the same input frame. */
+  refreshFollow(): void {
+    const id = this.follow?.active();
+    const em = this.ctx.host.emergency;
+    const v = id == null ? undefined : em.vehicles().find((q) => q.id === id);
+    if (v) this.activeFollow = { id: v.id, label: `Following ${cap1(RESPONDER_UNIT[v.responder][0])} from ${em.stationName(v.stationId)} · ${v.state === 'outbound' ? emgTime(v.arrive - this.ctx.host.simTime()) : 'on scene'}` };
+    else if (id == null || this.activeFollow?.id !== id) this.activeFollow = null;
+    const display = this.activeFollow ? 'flex' : 'none';
+    if (this.followChip.style.display !== display) { this.followChip.style.display = display; this.dockDirty = true; }
+    if (this.activeFollow) setText(this.followText, this.activeFollow.label);
   }
 
   private addBanner(inc: Incident): void {
@@ -687,18 +763,28 @@ export class EmergencyBanner {
     const sendEta = h('span', { class: 'emg-eta' });
     const send = h('button', { class: 'btn sm primary', title: 'Dispatch the fastest free unit' }, sendLbl, sendEta) as HTMLButtonElement;
     const choose = h('button', { class: 'btn sm emg-choose', title: 'Pick the station yourself (Dispatch tool)', html: '<span>Choose station…</span>' }) as HTMLButtonElement;
+    const follow = h('button', { class: 'btn sm emg-follow', title: 'Follow the unit you sent', style: 'display:none', html: FOLLOW_ICON + '<span>Follow</span>' });
     const close = h('button', { class: 'icon-btn emg-x', title: 'Dismiss', html: icon('close', 14) });
     const el = h('div', { class: 'emg-banner mp-glass', style: { '--kc': color } as Record<string, string> },
       h('div', { class: 'emg-ico', html: kindIcon(inc.kind, 22) }),
-      h('div', { class: 'emg-body' }, h('div', { class: 'emg-head' }, title, time), place, note, sub, h('div', { class: 'emg-btns' }, jump, send, choose)),
+      h('div', { class: 'emg-body' }, h('div', { class: 'emg-head' }, title, time), place, note, sub, h('div', { class: 'emg-btns' }, jump, send, choose, follow)),
       close,
     );
     jump.addEventListener('click', () => this.jump(inc.id), { signal: this.ctx.signal });
     send.addEventListener('click', () => this.sendNearest(inc.id), { signal: this.ctx.signal });
     choose.addEventListener('click', () => openDispatch(this.ctx, inc.id), { signal: this.ctx.signal });
-    close.addEventListener('click', () => this.ctx.host.act('dismissAlert', [inc.id], { tag: this }), { signal: this.ctx.signal });
+    follow.addEventListener('click', () => {
+      const v = this.followVehicle(inc.id);
+      if (!v || v.state !== 'outbound') return;
+      this.follow?.start(v.id);
+      this.refreshFollow();
+    }, { signal: this.ctx.signal });
+    close.addEventListener('click', () => {
+      this.followDispatches.delete(inc.id);
+      this.ctx.host.act('dismissAlert', [inc.id], { tag: this });
+    }, { signal: this.ctx.signal });
     this.el.insertBefore(el, this.more);
-    const b: BannerEl = { id: inc.id, inc, el, title, place, note, sub, time, send, sendLbl, sendEta, choose, optsVersion: -1, settleUntil: 0, settleGen: 0 };
+    const b: BannerEl = { id: inc.id, inc, el, title, place, note, sub, time, send, sendLbl, sendEta, choose, follow, optsVersion: -1, settleUntil: 0, settleGen: 0 };
     this.banners.set(inc.id, b);
     this.ro?.observe(el);
     this.dockDirty = true;
@@ -718,7 +804,7 @@ export class EmergencyBanner {
     const em = this.ctx.host.emergency;
     let r;
     try {
-      r = await this.ctx.host.act('dispatchBest', [id]).done;
+      r = await this.ctx.host.act('dispatchBest', [id], { tag: this }).done;
     } catch (e) {
       console.warn('[dispatch] failed', e);
       r = { ok: false, reason: 'No unit available' };
@@ -804,6 +890,8 @@ export class EmergencyBanner {
     }
     const vd = waiting ? '' : 'none';
     if (b.send.style.display !== vd) b.send.style.display = vd;
+    const fd = this.followVehicle(inc.id)?.state === 'outbound' ? '' : 'none';
+    if (b.follow.style.display !== fd) b.follow.style.display = fd;
   }
 
   /** the incident is over: the banner lingers briefly with the outcome — no countdown, no urgency, no dispatch buttons */
@@ -815,6 +903,7 @@ export class EmergencyBanner {
     setText(b.time, `${emgTime(now - b.inc.start)} ago`);
     b.send.style.display = 'none';
     b.choose.style.display = 'none';
+    b.follow.style.display = 'none';
   }
 
   /**
@@ -933,7 +1022,7 @@ export class EmergencyBanner {
     const mh = this.more.offsetHeight;
     const moreH = (mh > 0 ? mh : 34) + 8;
     const fbH = H > 0 ? H : Infinity;
-    const bottom = this.stackBottom(root, H);
+    const bottom = this.stackBottom(root, H) - (this.followChip.style.display === 'none' ? 0 : FOLLOW_CHIP_H + 8);
     this.more.style.visibility = '';
     // NOTE-023: the pill-only and folded-stack paths share full-panel clearance. If the tool chip leaves too little
     // room, use a free strip beside it, still clear of the toolbar and flyout. These reads stay inside dirty docking.
@@ -1105,6 +1194,10 @@ export class EmergencyBanner {
   private tick(): void {
     const em = this.ctx.host.emergency;
     const now = this.ctx.host.simTime();
+    this.refreshFollow();
+    const incidentIds = new Set(em.incidents().map((inc) => inc.id));
+    for (const id of this.dispatchUnits.keys()) if (!incidentIds.has(id)) this.dispatchUnits.delete(id);
+    for (const id of this.followDispatches.keys()) if (!incidentIds.has(id) || !this.followVehicle(id)) this.followDispatches.delete(id);
     this.renderPolicy(this.ctx.host.policy);
     for (const b of this.banners.values()) {
       const inc = em?.incident(b.id);
@@ -1152,6 +1245,10 @@ export class EmergencyBanner {
   }
 
   dispose(): void {
+    this.follow?.stop();
+    this.followDispatches.clear();
+    this.dispatchUnits.clear();
+    this.activeFollow = null;
     this.options.dispose();
     this.ro?.disconnect();
     this.mo?.disconnect();
