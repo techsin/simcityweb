@@ -13,15 +13,25 @@
  * Power plants are scaled by (NIMBY_PLANT_IDLE + (1 - IDLE) x plantLoad) when the utilities system reports plantLoad.
  */
 import { DevType, Network, Zone } from '../../core/types';
-import type { CityState } from '../CityState';
+import type { Building, CityState } from '../CityState';
 import type { Simulation } from '../Simulation';
 import { getDef } from '../catalog';
 import { Fam, buildingList, infoOf, isFunctional } from './common';
 import { falloff } from './catchments';
+import { EM_SCAR } from '../economy/tuning';
 import {
   NIMBY_HIGHWAY, NIMBY_HIGHWAY_BRIDGE, NIMBY_ID, NIMBY_IM, NIMBY_LANDFILL_IDLE, NIMBY_PLANT_IDLE, NIMBY_RAIL,
   PRESTIGE_HIGH_C, PRESTIGE_HIGH_C_STAGE,
 } from './params';
+
+/** Burnt sites after unanswered fire calls; optional systemData.emergencyScars, saved without the derived raster. */
+export interface EmergencyScar { x: number; z: number; w: number; d: number; expires: number }
+
+export function addEmergencyScar(st: CityState, b: Building): void {
+  let scars = st.systemData.emergencyScars as EmergencyScar[] | undefined;
+  if (!Array.isArray(scars)) st.systemData.emergencyScars = scars = [];
+  scars.push({ x: b.x, z: b.z, w: b.w, d: b.d, expires: st.day + EM_SCAR.days });
+}
 
 /** splat kernel (offsets from the footprint min corner + weights), cached per (radius, w, d) */
 interface Kernel { dx: Int16Array; dz: Int16Array; w: Float32Array; n: number }
@@ -110,6 +120,18 @@ export function rebuildNimby(sim: Simulation): void {
     if (sA > 0) touches += splatAdd(stig, N, b.x, b.z, b.w, b.d, sA, sR);
     if (pA > 0) touches += splatAdd(pres, N, b.x, b.z, b.w, b.d, pA, pR);
     if (inf.campusAmt > 0) touches += splatAdd(camp, N, b.x, b.z, b.w, b.d, inf.campusAmt, inf.campusR);
+  }
+  const scars = st.systemData.emergencyScars as EmergencyScar[] | undefined;
+  if (Array.isArray(scars)) {
+    // The final saturation maps this raw amount to exactly EM_SCAR.amount at a lone scar's core.
+    const amount = -Math.log1p(-EM_SCAR.amount);
+    let n = 0;
+    for (const scar of scars) {
+      if (scar.expires <= st.day) continue;
+      scars[n++] = scar;
+      touches += splatAdd(stig, N, scar.x, scar.z, scar.w, scar.d, amount, EM_SCAR.radius);
+    }
+    scars.length = n;
   }
   // landfill zones: per 2x2 block, scaled by how full the block's own landfill cells are (WP3's landfillFill stock:
   // an empty landfill is only mildly stigmatised, a mountain of garbage fully — incinerators / recycling elsewhere

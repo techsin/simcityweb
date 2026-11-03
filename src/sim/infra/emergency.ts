@@ -63,9 +63,11 @@ import type { EmergencyEvent, SimSystem, Simulation } from '../Simulation';
 import { getDef } from '../catalog';
 import type { BuildingDef, ServiceKind } from '../catalogTypes';
 import { cohortShares } from '../economy/demographics';
+import { REBUILD_SHARE } from '../economy/tuning';
 import { facilityLoad } from './catchments';
 import { Fam, buildingList, centerCell, fundingFactor, infoOf, isFunctional } from './common';
 import { RoadGraph, perimeterNodes } from './graph';
+import { addEmergencyScar } from './nimby';
 import {
   BPR_ALPHA, BPR_MAX_FACTOR, CRIME_MAJOR, CRIME_SPREE_MIN, CRIME_SPREE_RATE, EMERG_DAYS_PER_MIN, EMERG_DEADLINE,
   EMERG_FILL_BLD_COST, EMERG_FILL_CELLS_COST, EMERG_FILL_CHUNK, EMERG_GRACE, EMERG_HOSPITAL_MAX, EMERG_MANUAL_MAX, EMERG_MAX_PATH, EMERG_PLANT_P, EMERG_RANGE_K, EMERG_RESP_PERIOD,
@@ -146,6 +148,8 @@ export interface Incident {
   fires: number[];
   lost: number;
   saved: number;
+  /** rebuild charge from this incident's damage (absent in older saves) */
+  rebuildCost?: number;
   /** earliest sim day of the next automatic dispatch attempt */
   retry: number;
   /** stations version seen by the last attempt (uncovered incidents retry when stations change) */
@@ -2197,6 +2201,8 @@ export class EmergencySystem implements SimSystem {
     this.p.medQ = [0, 0];
     // roll the month
     const m = em.month;
+    m.rebuildCost = Math.round(m.damage * REBUILD_SHARE);
+    m.unansweredRebuildCost = Math.min(m.rebuildCost, Math.round((m.unansweredDamage ?? 0) * REBUILD_SHARE));
     em.lastMonth = m;
     this.p.months.push(m);
     while (this.p.months.length > 12) this.p.months.shift();
@@ -2695,12 +2701,16 @@ export class EmergencySystem implements SimSystem {
       if (f.days >= FIRE_BURN_DAYS) {
         this.leaveCluster(inc, b);
         fire.burnDown(sim, b);
+        if (inc.answered === 0) addEmergencyScar(st, b);
         inc.lost++;
         const m = st.stats.emergency.month;
         m.buildingsLost++;
         const def = getDef(b.def);
         const cost = def?.cost ?? 0;
-        m.damage += cost > 0 && def?.category !== 'growable' ? cost : Math.max(1, b.capacity) * 40;
+        const damage = cost > 0 && def?.category !== 'growable' ? cost : Math.max(1, b.capacity) * 40;
+        m.damage += damage;
+        if (inc.answered === 0) m.unansweredDamage = (m.unansweredDamage ?? 0) + damage;
+        inc.rebuildCost = (inc.rebuildCost ?? 0) + damage * REBUILD_SHARE;
         continue;
       }
       maxDays = Math.max(maxDays, f.days);
@@ -2865,6 +2875,8 @@ export class EmergencySystem implements SimSystem {
       if (!b || !isFunctional(b)) continue;
       b.health = Math.max(0, b.health - RIOT_HEALTH * loose);
       m.damage += 20 * loose;
+      if (inc.answered === 0) m.unansweredDamage = (m.unansweredDamage ?? 0) + 20 * loose;
+      inc.rebuildCost = (inc.rebuildCost ?? 0) + 20 * loose * REBUILD_SHARE;
       if (fire && ignitions < 2 && !(b.flags & BF.OnFire) && this.rng.next() < RIOT_IGNITE_P * loose) {
         if (fire.ignite(sim, b, true)) ignitions++;
       }
@@ -3308,6 +3320,9 @@ function sumMonths(ms: readonly EmergencyMonth[]): EmergencyMonth {
     s.auto += m.auto; s.manual += m.manual; s.late += m.late; s.failed += m.failed; s.ignored = (s.ignored ?? 0) + (m.ignored ?? 0);
     s.deaths += m.deaths; s.injured += m.injured; s.rescued += m.rescued; s.buildingsLost += m.buildingsLost;
     s.damage += m.damage; s.arrests += m.arrests; s.riotDays += m.riotDays;
+    s.unansweredDamage = (s.unansweredDamage ?? 0) + (m.unansweredDamage ?? 0);
+    s.rebuildCost = (s.rebuildCost ?? 0) + (m.rebuildCost ?? 0);
+    s.unansweredRebuildCost = (s.unansweredRebuildCost ?? 0) + (m.unansweredRebuildCost ?? 0);
   }
   return s;
 }
