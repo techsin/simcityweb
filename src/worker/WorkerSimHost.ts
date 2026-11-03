@@ -237,6 +237,24 @@ export class WorkerSimHost extends PacketSimHost {
     return { worker, replica: exactDigest(this.state) };
   }
 
+  /**
+   * The speed while a packet is applied (NOTE-048; T061 item 1 has the loopback's): the replica replays the packet's
+   * log, where a speed change the worker made by itself (an urgent pause, LIVE's slow-down) is a speedChanged, before
+   * PacketSimHost's clock hook moves its speed mirror to the packet's clock. A handler that re-read host.speed inside
+   * that event read the old speed (T048's QA: after an urgent pause the LIVE duck never engaged). So during the packet
+   * the speed is its clock's, unless a speed command of the page's is newer than the packet: the mirror holds that one,
+   * before the packet and after it.
+   */
+  private packetSpeed: number | null = null;
+  /** the last setSpeed or resume posted */
+  private speedSeq = 0;
+  override get speed(): number { return this.packetSpeed ?? super.speed; }
+  override post<K extends import('./SimHost').CommandOp>(op: K, args: import('./SimHost').CommandArgs<K>, opts?: import('./SimHost').ActOptions) {
+    const ticket = super.post(op, args, opts);
+    if (op === 'setSpeed' || op === 'resume') this.speedSeq = ticket.seq;
+    return ticket;
+  }
+
   override receive(message: WorkerOutput): void {
     if (this.closed) return;
     if (message.t === 'fatal') { this.crash(Object.assign(new Error(message.message), message.stack ? { stack: message.stack } : {})); return; }
@@ -248,7 +266,8 @@ export class WorkerSimHost extends PacketSimHost {
         if (!this.closed) this.link.post({ t: 'ack', ack: 0, epoch: this.epoch });
         return;
       }
-      super.receive(message);
+      if (message.t === 'pkt' && this.speedSeq <= message.p.cmd) this.packetSpeed = message.p.clock.speed;
+      try { super.receive(message); } finally { this.packetSpeed = null; }
       if (message.t !== 'pkt' || this.closed || this.replica.diverged) return;
       // acks ride on ticks, which stop with the tab hidden (T032 minor 8): ack a packet with replies at once, and ack
       // before the worker's window fills, so the hidden path's save reply never waits for the tab to come back
