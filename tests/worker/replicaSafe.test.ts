@@ -6,6 +6,8 @@ import { CityActions } from '../../src/sim/actions';
 import type { CityState } from '../../src/sim/CityState';
 import type { Simulation } from '../../src/sim/Simulation';
 import { approvalBreakdown } from '../../src/sim/economy/approval';
+import { emergencyRebuildCosts } from '../../src/sim/economy/budget';
+import { emergencyMigrationImpact } from '../../src/sim/economy/tourism';
 import { demandInfo, econData, infraFlags, listOrdinances, listRewards, loanOffer, maxLoanAmount, onStrike, serviceEffectiveness } from '../../src/sim/economy';
 import { ORDINANCES } from '../../src/sim/economy/ordinances';
 import { windVector } from '../../src/sim/infra/wind';
@@ -81,6 +83,7 @@ describe('REPLICA_SAFE', () => {
           .toEqual(approvalBreakdown(loop.primary).map(({ id, value }) => [id, value]));
         compare('regionTerms', (s) => econData(s).regionTerms); compare('demandInfo', demandInfo);
         compare('infraFlags', infraFlags); compare('windVector', windVector); compare('cityFingerprint', cityFingerprint);
+        compare('emergencyRebuildCosts', emergencyRebuildCosts); compare('emergencyMigrationImpact', emergencyMigrationImpact);
         for (const service of ['education', 'health', 'fire', 'police', 'parks', 'transit', 'utilities'] as const) {
           compare('serviceEffectiveness', (s) => serviceEffectiveness(s, service)); compare('onStrike', (s) => onStrike(s, service));
         }
