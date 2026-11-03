@@ -486,6 +486,11 @@ function shiftOf(st: CityState, d: number): number {
     + ordinanceEffect(st, 'add.desir.' + DEV_ENUM[d]) + ordinanceEffect(st, 'add.desir.' + fam);
 }
 
+/** city-wide I-D penalty: educated workers avoid smokestacks (LG-07) */
+function dirtyEducationPenalty(st: CityState, d: number): number {
+  return d === DevType.ID ? -0.03 * Math.max(0, st.stats.eq - 90) / 10 : 0;
+}
+
 // ------------------------------------------------------------------------------------------------ system
 export function desirabilitySystem(rt: EconRuntime): SimSystem {
   let row = 0;
@@ -501,7 +506,7 @@ export function desirabilitySystem(rt: EconRuntime): SimSystem {
   let unsub: (() => void) | null = null;
 
   const prepShift = (st: CityState) => {
-    for (let d = 0; d < DEV_TYPE_COUNT; d++) shift[d] = shiftOf(st, d);
+    for (let d = 0; d < DEV_TYPE_COUNT; d++) shift[d] = shiftOf(st, d) + dirtyEducationPenalty(st, d);
   };
   /** refresh the per-cell caches: slope of changed terrain; freight with the coarse BFS */
   const prepCaches = (st: CityState, freight: boolean) => {
@@ -659,7 +664,7 @@ function termDetail(t: number, v: number, c: TermCtx, i: number, dev: number, w:
     case T_SHOPS: return `shops in reach ${pct(v)}`;
     case T_TRAFFIC: return `passing traffic ${pct(v)} of a busy street`;
     case T_TREES: return `tree cover ${pct(v)}`;
-    case T_SOIL: return `contaminated soil ${pct(v)} (it fades once the polluter is gone)`;
+    case T_SOIL: return `contaminated soil ${pct(v)} (fades after the polluter is gone; Brownfield Cleanup speeds recovery 5×)`;
     case T_SLOPE: return `slope ${pct(v)} of too steep`;
     case T_SKILL: return `workforce education ${pct(v)}`;
     case T_CAMPUS: return `college campus nearby ${pct(v)}`;
@@ -691,6 +696,11 @@ export function desirabilityBreakdown(st: CityState, rt: EconRuntime | null, dev
   terms.push({ id: 'base', label: 'Base appeal', value: BIAS[dev] });
   if (sh !== 0) terms.push({ id: 'tax', label: 'Taxes & ordinances', value: sh, detail: `tax ${st.budget.taxRates[dev]}%` });
   let raw = BIAS[dev] + sh;
+  const eqPenalty = dirtyEducationPenalty(st, dev);
+  if (eqPenalty !== 0) {
+    terms.push({ id: 'dirtyEducation', label: 'Educated workers avoid smokestacks', value: eqPenalty, detail: `EQ ${st.stats.eq.toFixed(0)} — educated workers avoid smokestacks above EQ 90` });
+    raw += eqPenalty;
+  }
   const lvT = WTZ[o] * (BT[T_LV] - LVREF[dev]);
   if (WTZ[o] !== 0) { terms.push({ id: 'lv', label: DESIR_TERM_LABELS[T_LV], value: lvT, detail: termDetail(T_LV, BT[T_LV], c, i, dev, WTZ[o]) }); raw += lvT; }
   const nz = NZ[slot * DEV_TYPE_COUNT + dev];

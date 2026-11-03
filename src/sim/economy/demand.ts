@@ -27,7 +27,8 @@ import type { SimSystem } from '../Simulation';
 import type { CityState } from '../CityState';
 import { BF } from '../CityState';
 import { clamp, lerp, smoothstep } from '../../core/rng';
-import { DEV_TYPE_COUNT, DevType } from '../../core/types';
+import { DEV_TYPE_COUNT, DevType, Network, Zone } from '../../core/types';
+import { DAYS_PER_MONTH } from '../../core/constants';
 import { CAP_RELIEF, devFamily } from '../catalog';
 import {
   APPROVAL_R, BASE_CAP, CAP_BINDING, CAP_POP_FRAC, CAP_SOFTMIN_K, CAP_WEIGHT, CIVIC_WEALTH_MIX, CO3_FRAC_MAX, CO3_FRAC_MIN,
@@ -37,9 +38,10 @@ import {
   ID_SHARE_AT_EQ0, ID_SHARE_EQ_SLOPE, ID_SHARE_MIN, IHT_EQ_START, IHT_SHARE_MAX, IHT_SHARE_PER_EQ, JOB_MIX_AVG, JOB_SLACK,
   JOB_WEALTH_MIX, LABOUR_MIN_HEAD, LABOUR_POP0, LABOUR_POP1, LABOUR_UNEMP0, LABOUR_VAC0, R_BASE, R_JOB_SLACK, REGION_WEALTH_MIX,
   RG_CAP, RG_CI, RG_CI_SPLIT, RG_CS, RG_CS_MAX, RG_MARKET, RG_MARKET_POP, RG_R, TAX_FACTOR_MAX, TAX_FACTOR_MIN, TAX_NEUTRAL, TAX_SENS, TOURISM_CS_PER_POINT, TOURISM_CS_SPLIT, UNEMP_CI_BOOST,
+  RETOOL_IHT, RETOOL_IHT_EQ0, RETOOL_IHT_EQ1, RETOOL_IHT_SHARE, RETOOL_IM, RETOOL_MONTHS,
   UNEMP_NEUTRAL, UNEMP_R_PENALTY, WORKFORCE_RATIO,
 } from './tuning';
-import { type EconRuntime, type RegionTerms, econData, infraFlags } from './runtime';
+import { type EconData, type EconRuntime, type RegionTerms, econData, infraFlags } from './runtime';
 import { connectedNeighbours, neighbourSurplus } from './regionLink';
 import { ordinanceEffect } from './ordinances';
 import { venueIssue, venueOp } from './tourism';
@@ -71,6 +73,69 @@ export interface DemandContext {
 
 /** the last demand context per state (capHints reads the withheld relief; derived, not saved) */
 const contexts = new WeakMap<CityState, DemandContext>();
+
+export interface IndustrialStrategy {
+  /** Refused dirty job target today; retooled jobs are additions to clean targets, before their caps / labour limits. */
+  refused: number;
+  retooledIM: number;
+  retooledIHT: number;
+  /** Filled I-D jobs / all filled industrial jobs (including farms). */
+  dirtyShare: number;
+  /** Resident-weighted air pollution at homes, 0..1. */
+  airAtHomes: number;
+}
+interface IndustryData extends IndustrialStrategy {
+  /** Daily target cohorts: a moving year's mean gives a linear 12-month ramp, including when retooling ends. */
+  day: number;
+  history: number[];
+  total: number;
+}
+type IndustryEconomy = EconData & { industry?: IndustryData };
+const RETOOL_DAYS = RETOOL_MONTHS * DAYS_PER_MONTH;
+
+/** Read-only on a host's mirrored economy; older saves / an uninitialized replica have no strategy yet. */
+export function industrialStrategy(st: CityState): Readonly<IndustrialStrategy> | undefined {
+  const d = (st.systemData.economy as IndustryEconomy | undefined)?.industry;
+  return d ? { refused: d.refused, retooledIM: d.retooledIM, retooledIHT: d.retooledIHT, dirtyShare: d.dirtyShare, airAtHomes: d.airAtHomes } : undefined;
+}
+
+/** Growth's frontage cache can lag zoning or occupied lots: stop at the first currently usable dirty front cell. */
+function dirtyRoom(st: CityState): { front: boolean; redevelopment: boolean } {
+  const N = st.size, zone = st.zone, net = st.network, bld = st.building;
+  const road = (i: number) => net[i] >= Network.Street && net[i] <= Network.Highway;
+  let redevelopment = false;
+  for (let i = 0; i < st.cells; i++) {
+    if (zone[i] !== Zone.IndMed) continue;
+    if (bld[i] >= 0) {
+      const b = st.buildings.get(bld[i]);
+      if (b && !(b.flags & (BF.Plopped | BF.Historic | BF.Burnt))) redevelopment = true;
+      continue;
+    }
+    if (net[i] !== Network.None || st.water[i] || st.powerLines[i]) continue;
+    const x = i % N;
+    if ((x > 0 && road(i - 1)) || (x < N - 1 && road(i + 1)) || (i >= N && road(i - N)) || (i < st.cells - N && road(i + N))) return { front: true, redevelopment };
+  }
+  return { front: false, redevelopment };
+}
+
+function retool(st: CityState, data: IndustryEconomy, refused: number): IndustryData {
+  const d = data.industry ??= {
+    day: st.day, history: new Array(RETOOL_DAYS).fill(0), total: 0,
+    refused: 0, retooledIM: 0, retooledIHT: 0, dirtyShare: 0, airAtHomes: 0,
+  };
+  // Init and repeated computations on the same day never advance the ramp; save/load resumes the same cohort.
+  for (let day = Math.max(d.day, st.day - RETOOL_DAYS) + 1; day <= st.day; day++) {
+    const k = day % RETOOL_DAYS;
+    d.total += refused - d.history[k];
+    d.history[k] = refused;
+  }
+  d.day = st.day;
+  d.refused = refused;
+  const converted = Math.max(0, d.total / RETOOL_DAYS);
+  d.retooledIM = converted * RETOOL_IM;
+  d.retooledIHT = st.stats.eq > IHT_EQ_START ? converted * RETOOL_IHT : 0;
+  return d;
+}
 
 /** connection factors, freight boosts and cap relief from plopped buildings + neighbor connections */
 export function demandContext(st: CityState, rt: EconRuntime): DemandContext {
@@ -251,7 +316,8 @@ export function demandSystem(rt: EconRuntime): SimSystem {
     raw[DevType.CO3] = co * f3;
     const iTotal = (I_BASE + W * lerp(I_SHARE_MAX, I_SHARE_MIN, logF)) * ctx.connI * (1 + ctx.freightBoost);
     const sID = clamp(ID_SHARE_AT_EQ0 - Math.max(0, EQ - ID_EQ_START) * ID_SHARE_EQ_SLOPE, ID_SHARE_MIN, 1);
-    const sIHT = clamp((EQ - IHT_EQ_START) * IHT_SHARE_PER_EQ, 0, IHT_SHARE_MAX);
+    const sIHT = clamp(Math.max((EQ - IHT_EQ_START) * IHT_SHARE_PER_EQ,
+      RETOOL_IHT_SHARE * smoothstep(RETOOL_IHT_EQ0, RETOOL_IHT_EQ1, EQ)), 0, IHT_SHARE_MAX);
     const sIM = Math.max(0.1, 1 - sID - sIHT);
     raw[DevType.ID] = iTotal * sID;
     raw[DevType.IM] = iTotal * sIM;
@@ -296,6 +362,8 @@ export function demandSystem(rt: EconRuntime): SimSystem {
       mods[w] = unempF * apprF * m;
     }
     // ---- modifiers + caps
+    const dirtyBeforePolicy = raw[DevType.ID];
+    const dirtyAfterPolicy = dirtyBeforePolicy * ordinanceEffect(st, 'demand.ID') * ordinanceEffect(st, 'demand.I');
     const relief = ctx.relief;
     const rCap = rin ? { R: rin.reachPop * RG_CAP.R, C: rin.reachPop * RG_CAP.C, I: rin.reachPop * RG_CAP.I } : null;
     for (let d = 0; d < DEV_TYPE_COUNT; d++) {
@@ -313,6 +381,24 @@ export function demandSystem(rt: EconRuntime): SimSystem {
       cap[d] = c;
       cur[d] = d <= DevType.R3 ? t.resCapAll[d] : t.jobCapAll[d];
     }
+    // Refused targets are disjoint: ordinance losses, then unmet demand with no dirty frontage. Existing factories
+    // keep their jobs; clean replacements still pass through their own caps and the common labour headroom below.
+    // Convert before tax so a replacement pays its new sector's modifiers once.
+    const refusedPolicy = Math.max(0, dirtyBeforePolicy - dirtyAfterPolicy);
+    const dirty = dirtyAfterPolicy > cur[DevType.ID] ? dirtyRoom(st) : null;
+    const hasDirtyRoom = !dirty || dirty.front;
+    const dirtyCanRedevelop = dirty?.redevelopment ?? false;
+    const refusedLand = hasDirtyRoom ? 0 : Math.max(0, dirtyAfterPolicy - cur[DevType.ID]);
+    const industry = retool(st, data, refusedPolicy + refusedLand);
+    industry.retooledIM *= mods[DevType.IM] / jobMul;
+    industry.retooledIHT *= mods[DevType.IHT] / jobMul;
+    raw[DevType.IM] += industry.retooledIM;
+    raw[DevType.IHT] += industry.retooledIHT;
+    let industrialJobs = 0;
+    for (let d = DevType.IA; d <= DevType.IHT; d++) industrialJobs += t.jobs[d];
+    industry.dirtyShare = industrialJobs > 0 ? t.jobs[DevType.ID] / industrialJobs : 0;
+    // The population-weighted infra statistic is authoritative even when no pollution overlay is subscribed.
+    industry.airAtHomes = s.avgAir ?? 0;
     if (rin) {
       const terms: RegionTerms = {
         R: [reg[0] * mods[0], reg[1] * mods[1], reg[2] * mods[2]],
@@ -335,7 +421,8 @@ export function demandSystem(rt: EconRuntime): SimSystem {
     let jobsNow = t.civicJobCap, capC = 0, capI = 0, exC = 0, exI = 0;
     for (let d = DevType.CS1; d <= DevType.IHT; d++) {
       jobsNow += t.jobCapAll[d];
-      const ex = Math.max(0, eff[d] - cur[d]);
+      // Refused factories cannot reserve workers without a buildable lot; occupied growables can still redevelop.
+      const ex = d === DevType.ID && !hasDirtyRoom && !dirtyCanRedevelop ? 0 : Math.max(0, eff[d] - cur[d]);
       if (d <= DevType.CO3) { capC += t.jobCapAll[d]; exC += ex; } else { capI += t.jobCapAll[d]; exI += ex; }
     }
     const staffable = (W * (1 - LABOUR_UNEMP0)) / (1 - LABOUR_VAC0);
@@ -373,6 +460,8 @@ export function demandSystem(rt: EconRuntime): SimSystem {
       // is rebuilt and the next daily update continues the EMA, so a save / load does not jolt growth. A new city
       // starts from its instantaneous demand.
       if (st.day > 0 && econData(st).demandAbs.some((v) => v !== 0)) {
+        const data = econData(st) as IndustryEconomy;
+        if (!data.industry) retool(st, data, 0);
         ctx = demandContext(st, rt);
         rt.capsDirty = false;
       } else {

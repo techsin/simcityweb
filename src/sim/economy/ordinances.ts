@@ -87,14 +87,14 @@ export const ORDINANCES: OrdinanceDef[] = [
     effectText: 'Residents feel safer (+desirability), bans nuclear power and shuts down existing nuclear plants' },
   { id: 'tourism_promotion', name: 'Tourism Promotion', description: 'Advertise the city to visitors from around the world.', fixed: 300, perCapita: 0.004,
     unlockPop: 10000, effects: { 'demand.CS': 1.08, 'add.tourism': 4, 'tourism.draw': 1.2 }, effectText: '+8% retail demand, more tourists' },
-  { id: 'pollution_controls', name: 'Industrial Pollution Controls', description: 'Scrubbers and filters required on industrial sites.', fixed: 100, perCapita: 0.005,
-    unlockPop: 12000, effects: { 'pollution.air.industry': 0.85, 'pollution.water.industry': 0.75, 'demand.I': 0.94 }, effectText: '−15% industrial air, −25% water pollution, −6% industrial demand' },
+  { id: 'pollution_controls', name: 'Industrial Pollution Controls', description: 'Scrubbers and filters required on industrial sites. Refused dirty factories retool over 12 months: 50% to manufacturing and 25% to high-tech above EQ 70.', fixed: 100, perCapita: 0.005,
+    unlockPop: 12000, effects: { 'pollution.air.industry': 0.85, 'pollution.water.industry': 0.75, 'demand.I': 0.94 }, effectText: '−15% industrial air, −25% water pollution, −6% industrial demand; refused dirty demand retools over 12 months' },
   { id: 'tire_recycling', name: 'Tire Recycling', description: 'Keeps old tires out of landfills and fires.', fixed: 250, perCapita: 0,
     unlockPop: 12000, effects: { 'pollution.air': 0.97, 'garbage.produced': 0.97 }, effectText: '−3% air pollution and garbage' },
   { id: 'commuter_shuttle', name: 'Commuter Shuttle Service', description: 'Shuttle buses between neighborhoods and job centers.', fixed: 50, perCapita: 0.01,
     unlockPop: 15000, effects: { 'traffic.car': 0.95, 'transit.ridership': 1.1 }, effectText: '−5% car traffic, +10% transit use' },
-  { id: 'clean_air_act', name: 'Clean Air Act', description: 'Strict emission limits for industry.', fixed: 200, perCapita: 0.004,
-    unlockPop: 20000, effects: { 'pollution.air.industry': 0.7, 'demand.ID': 0.75, 'demand.IM': 0.95 }, effectText: '−30% industrial air pollution, −25% dirty industry demand' },
+  { id: 'clean_air_act', name: 'Clean Air Act', description: 'Strict emission limits for industry. Refused dirty factories retool over 12 months: 50% to manufacturing and 25% to high-tech above EQ 70.', fixed: 200, perCapita: 0.004,
+    unlockPop: 20000, effects: { 'pollution.air.industry': 0.7, 'demand.ID': 0.75, 'demand.IM': 0.95 }, effectText: '−30% industrial air pollution, −25% dirty industry demand; refused dirty demand retools over 12 months' },
   // ---- SIM_DEPTH_SPEC WP3 (environment)
   { id: 'quiet_zones', name: 'Quiet Zones', description: 'Quiet hours for shops, factories and building sites; lower speed limits and truck routes.', fixed: 30, perCapita: 0.004,
     unlockPop: 4000, effects: { 'pollution.noise': 0.85, 'pollution.noise.traffic': 0.9 }, effectText: '−15% business & construction noise, −10% traffic noise' },
@@ -102,8 +102,8 @@ export const ORDINANCES: OrdinanceDef[] = [
     unlockPop: 6000, effects: { 'pollution.sewage': 0.6 }, effectText: '−40% sewage water pollution (cleaner rivers and tap water)' },
   { id: 'clean_power_act', name: 'Clean Power Act', description: 'Scrubbers and filters on every power plant. Utilities pass the cost on.', fixed: 150, perCapita: 0.004,
     unlockPop: 8000, effects: { 'pollution.air.power': 0.6, 'upkeep.power.smoke': 1.15 }, effectText: '−40% power plant smoke, +15% upkeep of smoking plants' },
-  { id: 'brownfield_cleanup', name: 'Brownfield Cleanup', description: 'Crews excavate and treat contaminated soil at old industrial sites and landfills.', fixed: 200, perCapita: 0.002,
-    unlockPop: 10000, effects: { 'soil.decay': 5 }, effectText: 'Contaminated soil recovers 5× faster' },
+  { id: 'brownfield_cleanup', name: 'Brownfield Cleanup', description: 'Crews excavate and treat contaminated soil at old industrial sites and landfills, restoring their appeal to homes and wealthy offices.', fixed: 200, perCapita: 0.002,
+    unlockPop: 10000, effects: { 'soil.decay': 5 }, effectText: 'Contaminated soil recovers 5× faster; homes and CO$$$ regain desirability' },
 ];
 
 const BY_ID = new Map(ORDINANCES.map((o) => [o.id, o]));

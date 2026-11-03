@@ -118,8 +118,8 @@ export const IA_BASE = 250;
 export const IA_PER_RES = 0.004;
 /**
  * EQ → industry mix: dirty share = ID_SHARE_AT_EQ0 − (EQ − ID_EQ_START) × slope (≥ min); high-tech share rises above
- * IHT_EQ_START; manufacturing takes the rest. Gentle on purpose: EQ can rise fast, dirty industry should fade over years.
- * EQ 50: 70/30/0 (D/M/HT) · EQ 100: 42/43/15 · EQ 130: 26/44/30 · EQ 150: 15/45/40
+ * IHT_EQ_START; manufacturing takes the rest. LG-07's floor reaches 30% at EQ 110; the native share resumes at EQ 130.
+ * EQ 50: 70/30/0 (D/M/HT) · EQ 100: 42/43/15 · EQ 110: 37/33/30 · EQ 130: 26/44/30 · EQ 150: 14/46/40
  */
 export const ID_SHARE_AT_EQ0 = 0.7;
 export const ID_EQ_START = 50;
@@ -128,6 +128,14 @@ export const ID_SHARE_MIN = 0.12;
 export const IHT_EQ_START = 70; // IHT demand starts above this EQ
 export const IHT_SHARE_PER_EQ = 1 / 200;
 export const IHT_SHARE_MAX = 0.45;
+/** LG-07: mature export demand favours high-tech; young towns keep their original mix. */
+export const RETOOL_IHT_SHARE = 0.3;
+export const RETOOL_IHT_EQ0 = 90;
+export const RETOOL_IHT_EQ1 = 110;
+/** Refused dirty job targets reach their clean replacements after a full year, without new random draws. */
+export const RETOOL_MONTHS = 12;
+export const RETOOL_IM = 0.5;
+export const RETOOL_IHT = 0.25;
 
 /** neighbor connection factors (demand multipliers). conn = base + Σ per-connection weights (capped) */
 export const CONN_BASE = { R: 0.85, C: 0.85, I: 0.85 };
@@ -469,7 +477,7 @@ export const DESIR_WEIGHTS: readonly DesirWeights[] = [
     skill: 0.15, campus: 0.08, stigma: -0.1, prestige: 0.05, parking: -0.08 }),
   // CO$$$: land value, skills, campus, short commute
   W({ bias: -0.05, lv: 0.9, lvRef: 0.42, air: -0.6, garbage: -0.2, crime: -0.7, noise: -0.1, commute: 0.7, transit: 0.18, traffic: 0.08, police: 0.12, fire: 0.1, slope: -0.4,
-    skill: 0.25, campus: 0.12, stigma: -0.2, prestige: 0.15, parking: -0.08 }),
+    skill: 0.25, campus: 0.12, stigma: -0.2, prestige: 0.15, soil: -0.3, parking: -0.08 }),
   // I-Ag: flat cheap land, hurt by pollution and contaminated soil
   W({ bias: 0.42, lv: -0.3, lvRef: 0.2, air: -0.6, water: -0.6, garbage: -0.2, crime: -0.1, commute: 0.1, slope: -0.9, soil: -0.5 }),
   // I-D: tolerates pollution, likes freight, cheap land (rent)
