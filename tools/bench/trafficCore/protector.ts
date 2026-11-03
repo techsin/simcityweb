@@ -1,11 +1,15 @@
 /**
- * V8's ArrayBuffer-detaching protector in benchmark arms. The first detach of any ArrayBuffer in an isolate (a
- * memory.grow of a wasm memory, a postMessage transfer list, ArrayBuffer.prototype.transfer, and in NODE the web
- * streams of undici: Blob.stream / DecompressionStream / Response.arrayBuffer, i.e. bundle.ts unpackFile) invalidates
- * it for good: from then on every typed-array access of optimized code in that isolate carries a detach check. A fair
+ * V8's ArrayBuffer-detaching protector in benchmark arms. While it holds, optimized code accesses typed arrays without a
+ * detach check; once it is invalidated (for good, per isolate), every typed-array access of optimized code carries one.
+ * What invalidates it depends on the V8. In node 22's V8: the first detach of any ArrayBuffer (a memory.grow of a wasm
+ * memory, a postMessage transfer list, ArrayBuffer.prototype.transfer, and in NODE the web streams of undici: Blob.stream /
+ * DecompressionStream / Response.arrayBuffer, i.e. bundle.ts unpackFile). Chromium 153's V8 tracks array buffer views: a
+ * detach of a buffer with no view or exactly one TypedArray view leaves it intact (the view is updated in place: such a
+ * transfer is free), and a detach of a buffer with two or more views, a DataView or a detach key invalidates it. A fair
  * A/B therefore keeps it intact in every arm (fixtures gunzipped with zlib in node, a pre-sized wasm memory that never
- * grows, no transfer lists) unless an arm invalidates it on purpose ('-inv' arms: the game's main thread today, where
- * lodBuilder's postMessage transfer list invalidates it).
+ * grows, no transfer lists) unless an arm invalidates it on purpose ('-inv' arms: the game's main thread on a V8 that
+ * invalidates on any detach, where lodBuilder's postMessage transfer list of single-view buffers invalidates it;
+ * Chromium 153 keeps the page's protector through those transfers).
  */
 
 /**
@@ -27,9 +31,11 @@ export function makeProtectorProbe(): (() => boolean) | null {
   }
 }
 
-/** detach an ArrayBuffer: invalidates the protector of this isolate for good */
+/** detach an ArrayBuffer that has two TypedArray views: invalidates the protector of this isolate for good, in node 22's
+ *  V8 (any detach does) and in Chromium 153's (a buffer with no view or one view would leave it intact there) */
 export function invalidateProtector(): void {
   const b = new ArrayBuffer(8) as ArrayBuffer & { transfer?: () => ArrayBuffer };
+  new Uint8Array(b); new Float32Array(b);
   if (typeof b.transfer === 'function') b.transfer();
   else structuredClone(b, { transfer: [b] });
 }

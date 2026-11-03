@@ -1,16 +1,19 @@
 /**
- * Dev only: a probe of V8's ArrayBuffer-detaching protector in this isolate (WORKER_DESIGN §5.4, risk 7). Where V8 has
- * that protector (node 22's V8 does), the first detach of any ArrayBuffer (a transfer list, a wasm memory.grow,
- * ArrayBuffer.prototype.transfer) invalidates it for good, and every typed-array access in optimized code then carries a
- * detach check. TurboFan code of a typed-array loop depends on the protector and deoptimizes at that moment, so the probe
- * sees a detach that happens after it was made: the worker makes it first, before the city is deserialized and before
- * the wasm loader runs (fetch, instantiateStreaming, the arrayBuffer() fallback). The same technique as
- * tests/perf/protectorChild.ts and tools/bench/trafficCore/protector.ts.
- *
- * Chromium 153's V8 has no ArrayBufferDetaching protector: a detach deoptimizes this loop in no isolate and V8 traces no
- * invalidation, while a protector it has (ArraySpecies) is traced and deoptimizes the code that depends on it. There the
- * probe reads intact whatever ran, so tools/qa-worker.mjs runs both controls first and counts the probe as evidence only
- * where a detach deoptimizes it (docs/dev/reports/local-W1.2-worker.md, the fix round).
+ * Dev only: a probe of V8's ArrayBufferDetaching protector in this isolate (WORKER_DESIGN §5.4, risk 7). While it holds,
+ * optimized code reads and writes typed arrays without a detach check; once it is invalidated (for good, per isolate),
+ * every typed-array access of optimized code carries one. What invalidates it depends on the V8:
+ * - node 22's V8 (12.4): the first detach of any ArrayBuffer (a transfer list, a wasm memory.grow,
+ *   ArrayBuffer.prototype.transfer).
+ * - Chromium 153's V8 (15.3) tracks array buffer views: a detach of a buffer with no view, or with exactly one TypedArray
+ *   view, updates that view in place and leaves the protector intact, so a single-view transfer is free; a detach of a
+ *   buffer with two or more views, a DataView or a detach key invalidates it. Keeping it there means never detaching such
+ *   a buffer.
+ * TurboFan code of a typed-array loop depends on the protector and deoptimizes at that moment, so the probe sees an
+ * invalidation that happens after it was made: the worker makes it first, before the city is deserialized and before the
+ * wasm loader runs (fetch, instantiateStreaming, the arrayBuffer() fallback). The same technique as
+ * tests/perf/protectorChild.ts and tools/bench/trafficCore/protector.ts. tools/qa-worker.mjs runs a positive control (a
+ * buffer with two TypedArray views detached) and a negative one (a buffer with no view) first, and counts the probe as
+ * evidence only where the positive control deoptimizes it (docs/dev/reports/local-W1.2-worker.md, T034b).
  *
  * The tier is read with %ActiveTierIsTurbofan, not with %GetOptimizationStatus's bits, whose layout differs between V8
  * versions (node 22's V8 reads this loop's TurboFan code as 81, Chromium 153's as 41). The loop is warmed up until
