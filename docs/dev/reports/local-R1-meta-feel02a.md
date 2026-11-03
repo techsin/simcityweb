@@ -1,7 +1,7 @@
 # T036 step 3 — FEEL-02a: real-time budgets at every speed (New Year pacing, D17, and the toast budget)
 
-Branch `cloud/t036s3`, from dev `4432beb` (`origin/claude/beautiful-johnson-u2jqoz`); dev merged in twice since: `48991d7`
-(B3, which changes the bot reference by design) and `97f1a9c` (NOTE-045, docs only).
+Branch `cloud/t036s3`, from dev `4432beb` (`origin/claude/beautiful-johnson-u2jqoz`); dev merged in since: `48991d7`
+(B3, which changes the bot reference by design), then `97f1a9c` and `fb1531f` (NOTE-045 and NOTE-046, docs only).
 
 ## Cloud carry-over (Nov 3)
 
@@ -13,7 +13,8 @@ no T036 patch or journal. T027 (the camera keys on `e.code`) and T031 (NOTE-041'
 NewYear.ts now calls through the host) are in dev, so step 3's dependency is met. Every item below starts from dev.
 
 Sources read: T036's task file (step 3), NOTE-035/037/038/040/042/043 (the ones that name T036), NOTE-044, NOTE-045
-(the desktop is back; the meta chain's step 3 stays with the cloud; FEEL-06 goes to the desktop's round 2), NOTE-041
+(the desktop is back; the meta chain's step 3 stays with the cloud; FEEL-06 goes to the desktop's round 2), NOTE-046
+(T036 steps 3-5 stay the cloud's; nothing for this step), NOTE-041
 (holdCalendar), POLISH_PLAN §7.2-§7.5 and §8.1, FEEL-02a in full with its Acceptance, D17 (§11), critique point 3,
 Goal 8, PB-NEWYEAR's row, and FH-03's "FEEL-02a's toast budget queues this toast".
 
@@ -223,7 +224,7 @@ A burst's and a compact toast are silent, and the rerun's scene log has no `rewa
 ### Gates
 
 The lane's source has not changed since `692b799`: the commits after it are this report and dev's NOTE-045 merge
-(`git diff 692b799 HEAD -- . ':!docs'` is empty), so the gates run on `692b799` stand for the branch head.
+(`git diff 692b799 HEAD -- . ':!docs'` is empty; NOTE-046 came the same way), so the gates run on `692b799` stand for the branch head.
 
 | Gate | Result |
 |---|---|
