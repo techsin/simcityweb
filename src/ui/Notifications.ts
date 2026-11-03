@@ -145,7 +145,7 @@ export interface ToastOptions {
   buttons?: ToastButton[];
   /**
    * FEEL-02a: the toast is news that shares the budget (Toasts.BUDGET_GAP_MS, BUDGET_PER_MIN). Over budget, one with an
-   * action waits in a queue and shows when the budget allows (at the latest QUEUE_MAX_MS after it arrived); one without
+   * action waits in a queue and shows when the budget allows (or in spaced releases after QUEUE_MAX_MS); one without
    * is dropped: it is still in the ticker and the news feed
    */
   budget?: boolean;
@@ -182,7 +182,7 @@ export class Toasts {
    */
   static BUDGET_GAP_MS = 4000;
   static BUDGET_PER_MIN = 8;
-  /** a queued toast (one with an action) shows at the latest this long after it arrived, whatever the budget */
+  /** a queued toast (one with an action) becomes eligible for a spaced release this long after it arrived */
   static QUEUE_MAX_MS = 50000;
   readonly el: HTMLDivElement;
   /**
@@ -195,6 +195,7 @@ export class Toasts {
   /** budgeted toasts with an action that wait for the budget, oldest first */
   private queue: QueuedToast[] = [];
   private queueTimer = 0;
+  private lastCappedAt = -Infinity;
   /** performance.now() a message signature last sounded */
   private sounded = new Map<string, number>();
   private live = new Map<string, { el: HTMLElement; count: number; at: number; badge: HTMLElement; cell?: { x: number; z: number }; restart: (ms: number) => void }>();
@@ -246,12 +247,18 @@ export class Toasts {
     return t;
   }
 
-  /** show the queued toasts the budget allows now (the oldest first; one that waited QUEUE_MAX_MS shows anyway) */
+  /** show queued toasts oldest first; capped releases bypass the budget, at most one per half budget gap */
   private drain(): void {
     const now = performance.now();
-    while (this.queue.length && (this.allows(now) || now - this.queue[0].at >= Toasts.QUEUE_MAX_MS)) {
+    while (this.queue.length) {
+      const allowed = this.allows(now);
+      if (!allowed && (now - this.queue[0].at < Toasts.QUEUE_MAX_MS || now - this.lastCappedAt < Toasts.BUDGET_GAP_MS / 2)) break;
       const q = this.queue.shift()!;
       this.show(q.text, q.kind, q.cell, q.title, { ...q.opts, budget: false });
+      if (!allowed) {
+        this.lastCappedAt = now;
+        break;
+      }
     }
     this.schedule(now);
   }
@@ -262,7 +269,8 @@ export class Toasts {
     this.timers.delete(this.queueTimer);
     this.queueTimer = 0;
     if (!this.queue.length || this.ctx.signal?.aborted) return;
-    const at = Math.min(this.nextAllowed(now), this.queue[0].at + Toasts.QUEUE_MAX_MS);
+    const capAt = Math.max(this.queue[0].at + Toasts.QUEUE_MAX_MS, this.lastCappedAt + Toasts.BUDGET_GAP_MS / 2);
+    const at = Math.min(this.nextAllowed(now), capAt);
     this.queueTimer = this.arm(() => {
       this.queueTimer = 0;
       this.drain();

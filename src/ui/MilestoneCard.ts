@@ -8,6 +8,9 @@ import { CITY_RANKS, listMilestones, type CityRank } from '../sim/economy/reward
 import { STAGE_POP } from '../sim/economy/tuning';
 import { h, setText } from './dom';
 
+/** Let the final alert's exit fade finish before a milestone appears. */
+export const ALERT_CLEAR_DELAY_MS = 300;
+
 interface Moment { population: number; rankUp: boolean; remaining: number; interruptions: number; deferred?: boolean }
 
 export class MilestoneCard {
@@ -19,6 +22,7 @@ export class MilestoneCard {
   private pending: Moment | null = null;
   private active: Moment | null = null;
   private expiresAt = 0;
+  private alertsEmptySince: number | null = -Infinity;
   private panels = new Set<string>();
   private lastShown = -Infinity;
   private highest = 0;
@@ -75,6 +79,8 @@ export class MilestoneCard {
     this.hide();
     this.clearWake();
     this.pending = null;
+    if (this.ctx.host.policy.alerts.length) this.alertsEmptySince = null;
+    else if (this.alertsEmptySince === null) this.alertsEmptySince = performance.now();
     const pop = this.ctx.state.stats.population;
     this.highest = POP_MILESTONES.filter((m) => m <= pop).pop() ?? 0;
     this.rank = CITY_RANKS.findLastIndex((r) => r.population <= pop);
@@ -110,12 +116,16 @@ export class MilestoneCard {
   }
 
   private present(): void {
-    if (this.disposed || !this.pending && !this.active) return;
+    if (this.disposed) return;
+    const now = performance.now();
+    if (this.ctx.host.policy.alerts.length) this.alertsEmptySince = null;
+    else if (this.alertsEmptySince === null) this.alertsEmptySince = now;
+    if (!this.pending && !this.active) return;
     // Panels can be dragged anywhere, so keep the moment until their contents are clear of it.
-    const blocked = this.ctx.host.policy.alerts.length > 0 || this.isBusy() || this.panels.size > 0 || Array.from(this.parent.querySelectorAll('.panel')).some((p) => !p.classList.contains('closing'));
+    const blocked = this.alertsEmptySince === null || now - this.alertsEmptySince < ALERT_CLEAR_DELAY_MS || this.isBusy() || this.panels.size > 0 || Array.from(this.parent.querySelectorAll('.panel')).some((p) => !p.classList.contains('closing'));
     if (blocked) {
       if (this.active && this.active.interruptions === 0 && this.active.population === this.highest) {
-        const remaining = Math.max(0, this.expiresAt - performance.now());
+        const remaining = Math.max(0, this.expiresAt - now);
         if (remaining > 0) this.enqueue({ ...this.active, remaining, interruptions: 1, deferred: true });
       }
       if (this.pending) this.pending.deferred = true;
@@ -133,7 +143,6 @@ export class MilestoneCard {
       this.clearWake();
       return;
     }
-    const now = performance.now();
     const wait = 30_000 - (now - this.lastShown);
     if (this.ctx.host.speed >= 3 && wait > 0) {
       if (moment.rankUp && this.active) {

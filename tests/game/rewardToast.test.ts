@@ -80,6 +80,41 @@ describe('reward toast Place it action', () => {
     expect(rows().find((row) => row.classList.contains('reward-highlight'))?.dataset.reward).toBe('landmark');
   });
 
+  it('spaces five capped rewards in order and keeps every Place it action', () => {
+    const { news, el, panels, items, rows } = make();
+    const ids = Array.from({ length: 5 }, (_, i) => `capped-${i}`);
+    const reward = items[0];
+    items.splice(0, items.length, ...ids.map((id) => ({ ...reward, id, name: id })));
+    const seen: { at: number; id: string; el: FEl }[] = [];
+    const prepend = el.prepend.bind(el);
+    el.prepend = (...cs: (FEl | string)[]) => {
+      for (const c of cs) if (c instanceof FEl) {
+        const id = textOf(c.querySelector('.t-text')!);
+        if (ids.includes(id)) seen.push({ at: performance.now(), id, el: c });
+      }
+      prepend(...cs);
+    };
+    for (let i = 0; i < Toasts.BUDGET_PER_MIN; i++) news(`Fire ${i}`, 'disaster');
+    for (const id of ids) news(id, 'reward', { reward: id });
+    let checked = 0;
+    for (let s = 0; s < 60; s++) {
+      news(`Emergency ${s}`, 'bad');
+      vi.advanceTimersByTime(1000);
+      // Re-checking the queue in the same instant must not release another capped item.
+      news('Another budgeted item', 'good');
+      while (checked < seen.length) {
+        const shown = seen[checked++];
+        expect(textOf(shown.el.querySelector('.t-go')!)).toContain('Place it');
+        shown.el.click();
+        expect(panels.isOpen('rewards')).toBe(true);
+        expect(rows().find((row) => row.classList.contains('reward-highlight'))?.dataset.reward).toBe(shown.id);
+      }
+    }
+    expect(seen.map((shown) => shown.id)).toEqual(ids);
+    expect(seen[0].at).toBe(Toasts.QUEUE_MAX_MS);
+    for (let i = 1; i < seen.length; i++) expect(seen[i].at - seen[i - 1].at).toBeGreaterThanOrEqual(Toasts.BUDGET_GAP_MS / 2);
+  });
+
   it('keeps the selected row through rebuilds and changes it on a later toast', () => {
     const { news, el, panel, items, rows } = make();
     news('First unlock', 'reward', { reward: 'reward' });
