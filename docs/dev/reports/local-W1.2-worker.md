@@ -80,6 +80,91 @@ For B2's rebase: keep B2's piece budgets and resumable steps, put the same `yiel
 every step B2's loops run, and keep `run()` a full drain. `Simulation.ts` gains `frameHooks`, `accumulate`, `stepDay`
 and `capFrame` (`update()` calls the first two); `disasters.ts` gains the same `live` field in `daily()`.
 
+### Gates (cloud, Nov 3; 4-core container, heavy commands under the shared lock)
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | clean, after each merge and on the final tree |
+| Full vitest (`SIM_FIXTURES`, `SIM_SNAP` set: the grown-fixture cases run), on `0514a67` (dev `44f39b1` merged in) | **207 files passed, 1 skipped; 2,077 tests passed, 3 skipped**; 474 s. It includes the task's gates: hosts.test (Local vs Loopback vs Worker under worker_threads, 120 deterministic days equal at 30, 60, 120; save in one host and load in another, 60 more days equal; persistence main), S1's protector on the production worker loop (tests/perf/protector.test.ts), workerTransport, worldResync, hygiene's W1.2 graph gate, T033's recovery suite |
+| The W1.2 worker files alone, after the merge (hygiene, hosts, workerTransport, worldResync, recovery, loopbackHost, holdCalendar) | 7 files, 80 passed, 25 s |
+| The bot, 128 x 15, seed 7, lane against a clean export of dev | **identical** apart from the timing (the ms columns and the "done in" line): `residents [ 59288, 95301, 41512 ]`, 196k in 2015, every year row equal. Twice: on `6b9dbfb` against dev `98f4cf2`, and on `0514a67` against dev `44f39b1` |
+| New tests fail with their fix reverted | 3 of 3: `journal: false` removed; `'crash'` back to `'exit'`; the stall rule removed |
+| §6 acceptance, `tools/qa-worker.mjs` on the production build (Playwright Chromium, SwiftShader, quality low, small city) | **20 of 20 passed** (log `docs/dev/reports/local-W1.2/qa-worker-prod.log`), below |
+
+### Browser check: a real worker city (`node tools/qa-worker.mjs`, production build)
+
+The worker is its own 794 KB chunk (`simWorker-*.js`, 269 KB gzipped; an IIFE that Vite runs as a module worker, so no
+`worker.format` is needed) and carries the kernels' wasm URL; the kernels were not switched on (`?simwasm` unset), so
+wasm in the worker is not exercised here. Each step through the App, the real tools and the keyboard:
+- **boot**: quickstart reaches `__ready` on a worker host in 9.0 s; the new city starts paused (speed 0).
+- **tools**: a road drag and a zone drag on the canvas (pointer events through ToolController) are acked: 17 road
+  cells and 28 zoned cells in the replica, no pending edit (`qa-prod-02-tools.jpg`).
+- **play**: speed 3 by keyboard, day 0 to 41.
+- **latency** (post to ack applied, 40 `setTax`, measured, not gated): p50 0.7 ms, p95 4.9 ms, p99 5.0 ms (`qa-prod1`);
+  p50 0.6, p95 7.6, p99 11.6 ms in dev mode.
+- **verify**: paused, the worker's exact digest equals the replica's, twice.
+- **save**: Ctrl+S, "City saved", the App reads the city clean (`qa-prod-03-saved.jpg`).
+- **hidden**: with no rAF and the tab hidden, a save replies in 13 ms (acks outside ticks).
+- **load**: a reload to the title and Continue: a new worker on the saved record (O6: main never deserialized it), day
+  41, the road and the zone, running at speed 1, and it continues to day 62 (`qa-prod-04-loaded.jpg`, the loading
+  screen fading out over the loaded city).
+- **freeze** (R16): `Page.setWebLifecycleState` frozen for 15 s, then active: no crash path, and the days resume with
+  the first frame after resume (1.5 s later on SwiftShader; decision 6).
+- **crash**: an invalid tick posted to the worker is a fatal there: the crash dialog; Restart from autosave boots a
+  new worker on the save (day 41, the edits of the save).
+- **recover**: an edit after the save (tax 13.5), a worker snapshot stored by main in IndexedDB, a fatal: the dialog
+  offers Recover unsaved progress (buttons read from the DOM: Continue on the main thread, Recover unsaved progress,
+  Restart from autosave); Recover restores the snapshot and a new worker has tax 13.5 (`qa-prod-07d-recovered.jpg`:
+  the "Recovered …" toast over the reloading city).
+- **watchdog**: the worker terminated behind the host's back: the dialog after 10.0 visible seconds
+  (`qa-prod-07b-watchdog-dialog.jpg`); Continue on the main thread runs the save on a local host.
+- **fallback**: a worker script that throws on load (the page's `Worker` swapped for that script): the city boots on
+  the main thread, with exactly one toast (`qa-prod-09-fallback.jpg`).
+- **console**: no console errors in the normal steps (the crash steps log their own, expected).
+
+Not visible in the screenshots, though the checks read the DOM: the fatal's crash dialog is still fading in on the
+slow SwiftShader frames when `06-crash-dialog` and `07c-crash-dialog-recoverable` are taken (the error card shows,
+the dialog does not); the watchdog's dialog shows fully (`07b`). The first dev-mode run, before the stall fix, is
+`qa-worker-dev-before-stall-fix.log` (the false crash, the dialog in `qa-dev1/02-tools.png`). Full screenshots and logs
+of every run: `scratchpad/t034work/qa-{dev1,dev2,prod1,prod2}/` (`prod1` stopped at the reload: a 30 s navigation
+timeout, raised in `796d1b9`).
+
+### Left open
+
+- WASM_PLAN §7.8's worker-mode browser check with the kernels on (`?simworker=1&simwasm=…`).
+- The protector probe in the browser and the 10-minute run (decision 7); the held-brush check of §5.4.
+- Real-GPU timings: the freeze test's 1 s, boot time, FPS with the worker (SwiftShader here).
+- T039 (W1.3): the worker's own IndexedDB, the journal and its boot replay; worker mode then drops `journal: false`.
+
+### Decisions (conservative readings, for the lead)
+
+1. **No journal in worker mode** (`journal: false`): R14 has none in W1.2, T039 (W1.3) owns the journal, its binding and
+   the worker's boot replay, and with T033's mirror bound here its journal-only unload write replaced the worker's
+   snapshot in localStorage (the new hosts.test case). Worker mode keeps W1.2's snapshot-only recovery (up to 30 s of
+   edits can be lost, as §6 says for this dev flag).
+2. **No hello deadline in the browser**: the App passes no `scriptLoaded`. The region screen's spawn is the prefetch,
+   and the page cannot see a module worker's download finish without a second fetch; the design forbids a deadline
+   while the script may still be downloading. A script error still fails fast, and the 20 s boot deadline runs from
+   the worker's hello.
+3. **The worker boots paused** and the scene applies its own initial-speed rule as a `setSpeed(…, 'initial')` command
+   (only the Ready says whether the city is new): a new city stays paused, a saved one runs (qa: speed 0, then 1).
+4. **"Continue on the main thread" holds for the rest of the visit** (no second crash loop); a reload returns to the
+   worker. The crash choices skip the recovery prompt (the player already chose); "Restart from autosave" leaves a
+   crash snapshot in place until the next save clears it, as an unsaved exit does.
+5. **The watchdog's stall rule** (`STALL_MS` = 1 s, above). A worker that is really silent is still caught at the
+   first poll on time after a stall; a main thread stalled for good keeps the verdict waiting, which is the page's
+   problem, not the worker's.
+6. **The freeze test's 1 s** is real-GPU wall time: on SwiftShader a frame takes seconds and days come with frames,
+   so qa-worker gates "no crash path, and the days resume" and reports the time to the first day with the frames.
+7. **Not run here**: the protector probe in the browser (both isolates) and its 10-minute run. The page's own
+   protector is invalidated by lodBuilder's transfer list today (tools/bench/trafficCore/protector.ts says so), and a
+   worker-side probe needs a dev-only hook in simWorker. S1's tests/perf/protector.test.ts runs the production worker
+   loop under worker_threads (60 days, both kernel modes, both negative controls). The latency is measured, not gated
+   (§6). qa-worker's held-brush check (§5.4) is not written.
+8. **Dev moved during the lane** (T029 merged, `44f39b1`): merged clean (`0514a67`); both bots re-run on it.
+9. **Left as the desktop listed it**: FallbackWorldView and FallbackObjectsView still rebuild from their first state on a
+   `'reset'` (the degraded views miss a resync); NOTE-041 item 2 names WorldView only.
+
 ## The rebuild on T032's code (the local worker)
 
 Branch `local/W1.2-worker`, committed locally, no `.done`. I pushed nothing; a usage-limit snapshot (`bddba48`, not

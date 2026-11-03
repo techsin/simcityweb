@@ -1,0 +1,1 @@
+T034 (W1.2, the simulation in a real Web Worker, with the App wiring behind ?simworker=1): cloud/t034, cloud carry-over Nov 3; report docs/dev/reports/local-W1.2-worker.md; tsc clean, full vitest 2,077 passed, bot identical to dev 44f39b1, tools/qa-worker.mjs 20 of 20 on the production build
