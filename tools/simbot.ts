@@ -5,7 +5,7 @@
  *                           [--water 0.2] [--quiet] [--no-infra] [--tax 12] [--spendy] [--neglect]
  *                           [--skip schools,garbage,jail,transit,police,services] [--save-years 21,43 --save-prefix PATH]
  *                           [--profile default|newcomer]
- *                           [--subway] [--late-ordinances] [--venues] [--tax=N] [--tax-start-year N]
+ *                           [--subway] [--late-ordinances] [--venues] [--megaprojects] [--tax=N] [--tax-start-year N]
  *   env: SIMBOT_BUDGET=1 (yearly budget lines) · SIMBOT_LOG=1 (full action log) · SIMBOT_VERBOSE=1
  *
  * Plays through CityActions only (like the UI): lays out a 9-cell road grid (avenues every 4th line) with a
@@ -41,7 +41,7 @@ import { Simulation, type SimSystem } from '../src/sim/Simulation';
 import { economySystems, economyRuntime } from '../src/sim/systems/economy';
 import { CityActions, lPath, type ActionResult, type Cell } from '../src/sim/actions';
 import { DevType, Network, Zone, type Difficulty, type TerrainPreset } from '../src/core/types';
-import { CAP_RELIEF, getDef, rotatedFootprint } from '../src/sim/catalog';
+import { CAP_RELIEF, CATALOG, getDef, rotatedFootprint } from '../src/sim/catalog';
 import { econData, type EconRuntime } from '../src/sim/economy/runtime';
 import { BF, type Building, type CityState } from '../src/sim/CityState';
 import { maxLoanAmount } from '../src/sim/economy/loans';
@@ -58,6 +58,7 @@ import { adviceIdOf, openAdvice } from '../src/sim/economy/advisors';
 import { approvalBreakdown } from '../src/sim/economy/approval';
 import type { FactorTerm } from '../src/sim/explain';
 import { getOrdinance, ordinanceMonthly } from '../src/sim/economy/ordinances';
+import { PROJECT_INSTALLMENTS, firstProjectInstallment, nextProjectInstallment, projectAvailable, projectList } from '../src/sim/economy/projects';
 
 export interface BotOptions {
   size: number;
@@ -79,6 +80,8 @@ export interface BotOptions {
   subway?: boolean;
   lateOrdinances?: boolean;
   venues?: boolean;
+  /** LG-03: save for multi-year projects once a year of expenses is banked; keep taxes at least 8 % while saving */
+  megaprojects?: boolean;
   /** careless mayor: 150% funding everywhere and builds services / parks without checking the budget */
   spendy?: boolean;
   /** inattentive mayor: never dispatches to uncovered emergencies (measures failure outcomes) */
@@ -127,6 +130,22 @@ export interface YearRow {
   /** newcomer only: the largest non-baseline terms and failures in this year from founding */
   approvalTerms?: FactorTerm[];
   failedIncidents?: number;
+  /** LG-03 only; gate inputs observed without changing the city */
+  megaprojects?: ProjectRow;
+}
+
+export interface ProjectRow {
+  completed: number;
+  completed2030To2060: number;
+  active: number;
+  saving: boolean;
+  bankMonths: number;
+  operatingBankMonths: number;
+  lowestDailyBalance: number;
+  lowestSavingTax?: number;
+  lowestApprovalFromYear30?: number;
+  bestEqByYear30: number;
+  missingKinds: string[];
 }
 
 /** block use: ... 'X' planned landfill block, 'L' landfill zoned by ensureGarbage (utilities never go there) */
@@ -259,6 +278,14 @@ export class SimBot {
   private newcomerFirstIncident: number | undefined;
   private newcomerFailed = 0;
   private newcomerPlants = new Map<number, { warnedDay?: number; rebuilt?: boolean }>();
+  private projectSavingStarted = false;
+  private projectSaving = false;
+  private projectHold = 0;
+  private projectLowFunds = Infinity;
+  private projectLowTax = Infinity;
+  private projectLowApproval = Infinity;
+  private projectBestEq = 0;
+  private projectNoSite = new Map<string, number>();
 
   constructor(opts: BotOptions, systems: SimSystem[] = economySystems()) {
     const cfg: CityConfigData = defaultCityConfig({
@@ -374,7 +401,7 @@ export class SimBot {
   /** optional spending (parks the residential cap does not need, tree buffers) leaves the venue fund alone
    *  (saveForVenue) */
   canSpendOpt(cost: number): boolean {
-    return this.canSpend(cost + this.venueFund);
+    return this.canSpend(cost + this.venueFund + this.projectHold);
   }
   /** money set aside for the next tourism venue (saveForVenue / venues; VENUE_SAVE_SHARE) */
   venueFund = 0;
@@ -885,6 +912,7 @@ export class SimBot {
     this.pendingUpkeep = 0;
     const st = this.st, s = st.stats;
     const pop = s.population;
+    if (this.opts.megaprojects) this.saveForProjects();
     this.finance();
     this.saveForVenue();
     this.repairUtilities();
@@ -901,7 +929,9 @@ export class SimBot {
       this.ensureResponse();
     }
     if (!this.skips('transit')) this.ensureTransit();
-    if (this.opts.subway) this.ensureSubway();
+    if (this.opts.subway || this.projectSubway()) this.ensureSubway();
+    if (this.opts.megaprojects) this.ensureProjectStations();
+    if (this.opts.megaprojects) this.megaprojects();
     this.treeBuffers();
     if (!this.highway && pop > HIGHWAY_POP) {
       const gap = this.freightGap();
@@ -962,6 +992,7 @@ export class SimBot {
   // ------------------------------------------------------------------------------------------ daily (attentive mayor)
   /** WP6-3: an attentive mayor sends a unit to every uncovered major emergency (--neglect: never) */
   daily(): void {
+    if (this.opts.megaprojects) this.observeProjects();
     if (this.opts.neglect) return;
     const em = emergencyOf(this.sim);
     if (!em || !em.active) return;
@@ -1026,6 +1057,7 @@ export class SimBot {
     if ((net < 0 && st.funds < 30000) || (margin < 0.02 && months < 6 && st.stats.population > 20000)) t = Math.min(11, cur + 0.5);
     else if (margin > 0.12 && months > 12 && st.funds > 400000 + st.stats.population * 2) t = Math.max(7, cur - 0.5);
     else if (st.funds > 60000 && cur > 9 && margin > 0.05) t = cur - 0.5;
+    if (this.opts.megaprojects && this.projectSaving) t = Math.max(8, t);
     if (t !== cur) for (let d = 0; d < 12; d++) this.A.setTax(d as DevType, t);
   }
 
@@ -1905,7 +1937,7 @@ export class SimBot {
 
   /** LG-10: the three densest developed 8 x 8 residential blocks; each home counted once, ties in map order. */
   subwayDistricts(): Block[] {
-    if (!this.opts.subway) return [];
+    if (!this.opts.subway && !this.projectSubway()) return [];
     const people = new Map<Block, number>();
     for (const b of this.st.buildings.values()) {
       const dv = getDef(b.def)?.devType ?? -1;
@@ -1920,7 +1952,7 @@ export class SimBot {
   /** The first 150k plan stays put; missing entrances retry without laying a new line to a different set of homes. */
   private subwayLine?: { paths: Cell[][]; stops: (Cell & { at?: Cell })[] };
   ensureSubway(): void {
-    if (!this.opts.subway || this.opts.profile === 'newcomer' || this.skips('transit')) return;
+    if ((!this.opts.subway && !this.projectSubway()) || this.opts.profile === 'newcomer' || this.skips('transit')) return;
     const st = this.st;
     if (st.stats.population < 150000 || (this.svcRetry.get('subway') ?? -1) > st.day) return;
     if (!this.subwayLine) {
@@ -1976,7 +2008,7 @@ export class SimBot {
   }
 
   private subwayEntrance(at: Cell, used: Set<number>): Cell | null {
-    if (!this.opts.subway) return null;
+    if (!this.opts.subway && !this.projectSubway()) return null;
     const st = this.st, def = getDef('tr_subway_station')!;
     const accept = (x: number, z: number, w: number, d: number) => Math.abs(x - at.x) + Math.abs(z - at.z) <= 4 && !used.has(z * this.N + x) && this.walkableLot(x, z, w, d);
     for (let dist = 0; dist <= 4; dist++) for (let z = at.z - dist; z <= at.z + dist; z++) for (let x = at.x - dist; x <= at.x + dist; x++) {
@@ -2324,6 +2356,170 @@ export class SimBot {
     }
   }
 
+  // ------------------------------------------------------------------------------------------ mega-projects (LG-03)
+  private projectSubway(): boolean {
+    return !!this.opts.megaprojects && CATALOG.some((d) => d.project?.kind === 'expressMetro');
+  }
+
+  /** The three-district line can have fewer than six usable entrances; short spurs finish Express's prerequisite. */
+  ensureProjectStations(): void {
+    if (!this.opts.megaprojects || this.opts.profile === 'newcomer' || this.skips('transit') || !this.subwayLine) return;
+    const st = this.st, N = this.N;
+    const express = CATALOG.find((d) => d.project?.kind === 'expressMetro');
+    if (!express || projectList(st).some((p) => p.kind === 'expressMetro')) return;
+    const required = Math.max(6, express.project!.stations ?? 6);
+    const seed = this.subwayLine.paths.flat().find((c) => st.subway[c.z * N + c.x]);
+    if (!seed) return;
+    const connected = new Set<number>([seed.z * N + seed.x]), queue = [...connected];
+    for (let k = 0; k < queue.length; k++) {
+      const i = queue[k], x = i % N, z = (i - x) / N;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const xx = x + dx, zz = z + dz, j = zz * N + xx;
+        if (!st.inBounds(xx, zz) || !st.subway[j] || connected.has(j)) continue;
+        connected.add(j); queue.push(j);
+      }
+    }
+    let stations = 0;
+    for (const b of st.buildings.values()) if (b.def === 'tr_subway_station' && b.built >= 1 &&
+      !(b.flags & (BF.Constructing | BF.Burnt | BF.Abandoned)) && connected.has(b.z * N + b.x)) stations++;
+    const def = getDef('tr_subway_station')!, funding = st.budget.funding.transit / 100;
+    const tried = new Set<number>();
+    let added = 0;
+    for (const i of queue) {
+      if (stations >= required) break;
+      const x = i % N, z = (i - x) / N;
+      for (let distance = 0; distance <= 4 && stations < required; distance++) {
+        for (let zz = z - distance; zz <= z + distance && stations < required; zz++) {
+          for (let xx = x - distance; xx <= x + distance && stations < required; xx++) {
+            const j = zz * N + xx;
+            if (!st.inBounds(xx, zz) || Math.abs(xx - x) + Math.abs(zz - z) !== distance || tried.has(j)) continue;
+            tried.add(j);
+            if (st.building[j] >= 0 || !this.walkableLot(xx, zz, 1, 1)) continue;
+            const lot = this.A.plop(def.id, xx, zz, 0, true);
+            if (!lot.ok || lot.reason) continue;
+            const path = lPath({ x, z }, { x: xx, z: zz }), tunnel = this.A.buildSubway(path, true);
+            if (!tunnel.ok || !this.canSpendOpt(lot.cost + tunnel.cost + this.jailHold)) continue;
+            const up = (tunnel.affected ?? 0) * SUBWAY_UPKEEP * funding + expectedUpkeep(st, def) * funding;
+            if (!(this.monthlyNet() + this.pendingUpkeep > up || this.funds > 60 * up + 50000)) continue;
+            const built = this.A.buildSubway(path);
+            if (!built.ok || !this.A.plop(def.id, xx, zz, 0).ok) continue;
+            this.pendingUpkeep -= up;
+            this.services.push({ def: def.id, x: xx, z: zz });
+            stations++; added++;
+          }
+        }
+      }
+    }
+    if (added) this.say(`mega-projects: added ${added} subway entrances; ${stations}/${required} connected stations for Express Metro`);
+  }
+
+  projectCandidates(): BuildingDef[] {
+    if (!this.opts.megaprojects || this.opts.profile === 'newcomer') return [];
+    const started = new Set(projectList(this.st).map((p) => p.kind));
+    return CATALOG.filter((d) => d.project && d.buildMonths && !started.has(d.project.kind))
+      .sort((a, b) => (a.cost ?? 0) - (b.cost ?? 0) || (a.id < b.id ? -1 : 1));
+  }
+
+  /** A year of expenses triggers saving once; subsequent builds leave the ordinary reserve and next bill untouched. */
+  saveForProjects(): void {
+    if (!this.opts.megaprojects || this.opts.profile === 'newcomer') return;
+    let expense = 0;
+    for (const k in this.st.budget.lastExpense) if (!k.startsWith('oneoff:')) expense += this.st.budget.lastExpense[k];
+    const active = projectList(this.st).some((p) => p.completedDay === undefined);
+    const candidates = this.projectCandidates();
+    if (!this.projectSavingStarted && expense > 0 && this.funds >= 12 * expense && (active || candidates.length)) {
+      this.projectSavingStarted = true;
+      this.say('mega-projects: a year of expenses banked; saving for construction');
+    }
+    this.projectSaving = this.projectSavingStarted && (active || candidates.length > 0);
+    const best = candidates.find((d) => (!d.requires || this.st.unlocked.has(d.requires)) && !projectAvailable(this.st, d));
+    this.projectHold = this.projectSaving ? nextProjectInstallment(this.st) + (active || !best ? 0 : firstProjectInstallment(best)) : 0;
+  }
+
+  megaprojects(): void {
+    if (!this.opts.megaprojects || this.opts.profile === 'newcomer' || !this.projectSaving) return;
+    if (projectList(this.st).some((p) => p.completedDay === undefined)) return;
+    for (const def of this.projectCandidates()) {
+      if ((def.requires && !this.st.unlocked.has(def.requires)) || projectAvailable(this.st, def) || (this.projectNoSite.get(def.id) ?? -1) > this.st.day) continue;
+      const installment = firstProjectInstallment(def);
+      if (!this.canSpend(installment + this.jailHold)) continue;
+      if (!this.placeProject(def)) {
+        this.projectNoSite.set(def.id, this.st.day + 360);
+        this.say(`mega-projects: no affordable connected site for ${def.name}`);
+        continue;
+      }
+      this.projectHold = nextProjectInstallment(this.st);
+      this.say(`mega-projects: started ${def.name}; ${def.buildMonths} monthly installments`);
+      return;
+    }
+  }
+
+  private placeProject(def: BuildingDef): boolean {
+    const st = this.st, N = this.N;
+    const build = (x: number, z: number, rot: 0 | 1 | 2 | 3): boolean => {
+      const p = this.A.plop(def.id, x, z, rot, true);
+      if (!p.ok || p.reason || !this.canSpend(p.cost + this.jailHold)) return false;
+      const r = this.A.plop(def.id, x, z, rot);
+      if (!r.ok) return false;
+      const [w, d] = rotatedFootprint(def, rot);
+      // A large construction site may span several future blocks; do not run a later grid road through it.
+      for (const b of this.blocks) if (x < b.x1 && x + w > b.x0 && z < b.z1 && z + d > b.z0) {
+        b.developed = true; b.use = 'P';
+      }
+      this.lastPlaced = { x, z, w, d };
+      return true;
+    };
+    const blocks = this.blocks.filter((b) => b.use === 'P' && b.developed)
+      .sort((a, b) => a.ring - b.ring || a.bz - b.bz || a.bx - b.bx);
+    for (const b of blocks) for (const rot of [0, 1, 2, 3] as const) {
+      const [w, d] = rotatedFootprint(def, rot);
+      for (let z = b.z0; z + d <= b.z1; z++) for (let x = b.x0; x + w <= b.x1; x++) {
+        if (this.walkableLot(x, z, w, d) && build(x, z, rot)) return true;
+      }
+    }
+    // Free frontage at the edge of town also fits projects larger than the grid's 8 x 8 interiors.
+    for (const rot of [0, 1, 2, 3] as const) {
+      const [w, d] = rotatedFootprint(def, rot);
+      for (let z = 1; z + d < N; z++) for (let x = 1; x + w < N; x++) {
+        const i = z * N + x;
+        if (st.building[i] >= 0 || st.network[i] !== Network.None || st.water[i] || !this.walkableLot(x, z, w, d)) continue;
+        if (build(x, z, rot)) return true;
+      }
+    }
+    return false;
+  }
+
+  private observeProjects(): void {
+    this.projectLowFunds = Math.min(this.projectLowFunds, this.funds);
+    if (this.projectSaving) this.projectLowTax = Math.min(this.projectLowTax, ...this.st.budget.taxRates);
+    const year = Math.floor(this.st.day / 360);
+    if (year >= 30) this.projectLowApproval = Math.min(this.projectLowApproval, this.st.stats.approval);
+    if (this.st.day <= 30 * 360) this.projectBestEq = Math.max(this.projectBestEq, this.st.stats.eq);
+  }
+
+  get projectReport(): ProjectRow {
+    const projects = projectList(this.st), completed = projects.filter((p) => p.completedDay !== undefined);
+    let expense = 0, operatingExpense = 0;
+    for (const k in this.st.budget.lastExpense) if (!k.startsWith('oneoff:')) {
+      expense += this.st.budget.lastExpense[k];
+      if (k !== PROJECT_INSTALLMENTS) operatingExpense += this.st.budget.lastExpense[k];
+    }
+    const startYear = this.st.config.startYear;
+    return {
+      completed: completed.length,
+      completed2030To2060: completed.filter((p) => p.completedDay! >= (2030 - startYear) * 360 &&
+        p.completedDay! <= (2060 - startYear) * 360).length,
+      active: projects.length - completed.length, saving: this.projectSaving,
+      bankMonths: expense > 0 ? this.funds / expense : 0,
+      operatingBankMonths: operatingExpense > 0 ? this.funds / operatingExpense : 0,
+      lowestDailyBalance: Number.isFinite(this.projectLowFunds) ? this.projectLowFunds : this.funds,
+      ...(Number.isFinite(this.projectLowTax) ? { lowestSavingTax: this.projectLowTax } : {}),
+      ...(Number.isFinite(this.projectLowApproval) ? { lowestApprovalFromYear30: this.projectLowApproval } : {}),
+      bestEqByYear30: this.projectBestEq,
+      missingKinds: ['expressMetro', 'fusion', 'expo', 'spaceCenter'].filter((kind) => !CATALOG.some((d) => d.project?.kind === kind && d.buildMonths)),
+    };
+  }
+
   // ------------------------------------------------------------------------------------------ tourism venues (VENUE_*)
   /** LG-10: buy the zoo even when the residential cap never asks; add one passenger station with rail to the edge. */
   ensureLateVenues(): void {
@@ -2636,6 +2832,11 @@ export class SimBot {
   // ------------------------------------------------------------------------------------------ run
   run(years: number, onYear?: (row: YearRow) => void): YearRow[] {
     this.setup();
+    if (this.opts.megaprojects) {
+      this.observeProjects();
+      const missing = this.projectReport.missingKinds;
+      if (missing.length) this.say(`mega-projects: missing CONTENT definitions: ${missing.join(', ')}; completion gates are not verified`);
+    }
     const st = this.st;
     let e0 = this.econTime, t0 = this.totalTime, d0 = 0;
     for (let y = 0; y < years; y++) {
@@ -2645,6 +2846,7 @@ export class SimBot {
           this.sim.advanceDay(); this.days++; this.daily();
         }
         this.monthly();
+        if (this.opts.megaprojects) this.observeProjects();
       }
       const s = st.stats;
       let inc = 0, exp = 0;
@@ -2672,6 +2874,7 @@ export class SimBot {
         row.failedIncidents = this.newcomerFailed;
         this.newcomerFailed = 0;
       }
+      if (this.opts.megaprojects) row.megaprojects = this.projectReport;
       e0 = this.econTime; t0 = this.totalTime; d0 = this.days;
       this.rows.push(row);
       onYear?.(row);
@@ -2771,8 +2974,9 @@ export function parseArgs(argv: string[]): BotOptions {
     else if (a === '--subway') o.subway = true;
     else if (a === '--late-ordinances') o.lateOrdinances = true;
     else if (a === '--venues') o.venues = true;
-    else if (a === '--expand' || a === '--megaprojects' || a === '--arcology' || a === '--charter' || a.startsWith('--charter=')) {
-      const item = a === '--expand' ? 'LG-19' : a === '--megaprojects' ? 'LG-03' : a === '--arcology' ? 'LG-04' : 'LG-17';
+    else if (a === '--megaprojects') o.megaprojects = true;
+    else if (a === '--expand' || a === '--arcology' || a === '--charter' || a.startsWith('--charter=')) {
+      const item = a === '--expand' ? 'LG-19' : a === '--arcology' ? 'LG-04' : 'LG-17';
       console.error(`simbot: ${a.split('=')[0]} lands with ${item}; its simulation content is not available`);
       process.exit(2);
     }
@@ -2785,8 +2989,8 @@ export function parseArgs(argv: string[]): BotOptions {
   if (o.profile === 'newcomer') {
     if (!argv.includes('--size')) o.size = 128;
     if (!argv.includes('--years')) o.years = 10;
-    if (o.tax !== undefined || o.taxStartYear !== undefined || o.spendy || o.skip?.length || o.subway || o.lateOrdinances || o.venues) {
-      console.error('simbot: --profile newcomer has its own tax, funding and service rules; omit --tax, --tax-start-year, --spendy, --skip, --subway, --late-ordinances and --venues');
+    if (o.tax !== undefined || o.taxStartYear !== undefined || o.spendy || o.skip?.length || o.subway || o.lateOrdinances || o.venues || o.megaprojects) {
+      console.error('simbot: --profile newcomer has its own tax, funding and service rules; omit --tax, --tax-start-year, --spendy, --skip, --subway, --late-ordinances, --venues and --megaprojects');
       process.exit(2);
     }
   }
@@ -2822,7 +3026,10 @@ usage: npx tsx tools/simbot.ts [flags]   (no tsx: bundle with node_modules/.bin/
   --late-ordinances enact the fourteen unused ordinances when useful, unlocked and affordable, including upkeep
   --venues          buy a zoo once unlocked and a passenger train station with rail to the edge from 25k;
                     keep the reserve / venue fund and cover upkeep; --skip services omits the zoo, transit the train
-                    LG-10 rules are off by default. --expand lands with LG-19; --megaprojects with LG-03;
+  --megaprojects    once 12 months of expenses are banked, build available projects one at a time on installments;
+                    taxes stay at least 8 % while saving (a fixed --tax overrides this); build the Express subway
+                    prerequisite unless --skip transit. Prints yearly gate inputs and reports missing CONTENT defs.
+                    LG-10 rules are off by default. --expand lands with LG-19;
                     --arcology with LG-04; --charter=X with LG-17 (unavailable flags are rejected).
   --neglect         never dispatches to uncovered emergencies
   --profile P       default | newcomer (default). Newcomer defaults to --size 128 --years 10, founds on day 90:
@@ -2853,8 +3060,8 @@ if (process.argv[1]?.includes('simbot') && (process.argv.includes('--help') || p
     process.exit(2);
   }
   console.log(`SIMBOT size=${opts.size} years=${opts.years} seed=${opts.seed} ${opts.difficulty} ${opts.terrain}${opts.noInfra ? ' (no infra)' : ''}${opts.profile === 'newcomer' ? ' profile=newcomer (founded day 90)' : ''}`);
-  if (opts.subway || opts.lateOrdinances || opts.venues || opts.tax !== undefined) {
-    console.log('LG-10 rules:', [opts.subway && '--subway', opts.lateOrdinances && '--late-ordinances', opts.venues && '--venues', opts.tax !== undefined && `--tax=${opts.tax}`, opts.taxStartYear !== undefined && `--tax-start-year=${opts.taxStartYear}`].filter(Boolean).join(' '));
+  if (opts.subway || opts.lateOrdinances || opts.venues || opts.megaprojects || opts.tax !== undefined) {
+    console.log('LG-10 rules:', [opts.subway && '--subway', opts.lateOrdinances && '--late-ordinances', opts.venues && '--venues', opts.megaprojects && '--megaprojects', opts.tax !== undefined && `--tax=${opts.tax}`, opts.taxStartYear !== undefined && `--tax-start-year=${opts.taxStartYear}`].filter(Boolean).join(' '));
   }
   const systems = opts.noInfra ? economySystems() : (await import("../src/sim/systems/index")).createSystems();
   const bot = new SimBot(opts, systems);
@@ -2863,6 +3070,7 @@ if (process.argv[1]?.includes('simbot') && (process.argv.includes('--help') || p
   const t0 = performance.now();
   bot.run(opts.years, (r) => {
     console.log(formatRow(r));
+    if (r.megaprojects) console.log('   mega-projects:', JSON.stringify(r.megaprojects));
     save?.(bot, r);
   });
   const st = bot.st;
@@ -2891,6 +3099,7 @@ async function yearSaver(o: BotOptions): Promise<(bot: SimBot, r: YearRow) => vo
     ...(o.taxStartYear !== undefined ? { taxStartYear: o.taxStartYear } : {}),
     ...(o.skip ? { skip: o.skip } : {}),
     ...(o.subway ? { subway: true } : {}), ...(o.lateOrdinances ? { lateOrdinances: true } : {}), ...(o.venues ? { venues: true } : {}),
+    ...(o.megaprojects ? { megaprojects: true } : {}),
   };
   console.error(`simbot: saving the end of year ${[...years].join(', ')} as ${prefix}y<N>.city.metropolis / .region.metropolis / .READY`);
   return (b, r) => {

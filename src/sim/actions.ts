@@ -42,6 +42,10 @@ import { MANIFEST_BY_ID } from '../assets/manifest';
 import { blockedByOrdinance, getOrdinance, setOrdinanceEnabled } from './economy/ordinances';
 import { takeLoanNow } from './economy/loans';
 import { formatMoney } from './economy/format';
+import {
+  beginProject, cancelProject, firstProjectInstallment, forgetUnfinishedProject, PROJECT_INSTALLMENTS,
+  projectAvailable, projectCancelRefund,
+} from './economy/projects';
 export { networkCellCost, zoneCellCost, POWERLINE_COST, SUBWAY_COST, BRIDGE_COST_MUL } from './economy/tuning';
 export { CURRENCY, formatMoney } from './economy/format';
 
@@ -161,8 +165,9 @@ function dirCode(dx: number, dz: number): number {
 }
 
 /** FH-07a: refund the plop price, apart from the unchanged demolition / tree-clearing fees. */
-function buildingRefund(b: Building): number {
+function buildingRefund(b: Building, st: Simulation['state']): number {
   if (!(b.flags & BF.Plopped)) return 0;
+  if (getDef(b.def)?.buildMonths !== undefined) return projectCancelRefund(st, b.id);
   const price = getDef(b.def)?.cost ?? 0;
   return b.age === 0 ? price : b.age < 30 ? price * 0.5 : 0;
 }
@@ -550,10 +555,12 @@ export class CityActions implements CityActionsApi {
             const b = st.buildings.get(bid)!;
             blds.push(b);
             fee += demolishFee(b);
-            const credit = buildingRefund(b);
+            const credit = buildingRefund(b, st);
             refund += credit;
-            if (b.age === 0) todayRefund += credit;
-            else youngRefund += credit;
+            if (getDef(b.def)?.buildMonths === undefined) {
+              if (b.age === 0) todayRefund += credit;
+              else youngRefund += credit;
+            }
           }
         }
         const net = st.network[i];
@@ -589,7 +596,10 @@ export class CityActions implements CityActionsApi {
     const warn = unique ? `Demolishes ${getDef(unique.def)?.name}` : undefined;
     if (preview) return { ok: true, cost: total, affected: count, cells, reason: warn, ...credit };
     this.prepareFreshCells();
-    for (const b of blds) removeBuilding(this.sim, b);
+    for (const b of blds) {
+      forgetUnfinishedProject(st, b.id);
+      removeBuilding(this.sim, b);
+    }
     for (let z: number = r.z0; z < r.z1; z++) {
       for (let x: number = r.x0; x < r.x1; x++) {
         const i = z * N + x;
@@ -611,12 +621,24 @@ export class CityActions implements CityActionsApi {
   }
 
   // ---------------------------------------------------------------------------------------------- plop
+  /** Thin authoritative entry point for the Worker's startProject command. */
+  startProject(defId: string, x: number, z: number, rot: 0 | 1 | 2 | 3, preview = false): ActionResult {
+    if (getDef(defId)?.buildMonths === undefined) return fail('This building is not a project');
+    return this.plop(defId, x, z, rot, preview);
+  }
+
+  cancelProject(buildingId: number, preview = false): ActionResult {
+    return cancelProject(this.sim, buildingId, preview);
+  }
+
   plop(defId: string, x: number, z: number, rot: 0 | 1 | 2 | 3, preview = false): ActionResult {
     const st = this.st, N = st.size;
     const def = getDef(defId);
     if (!def) return fail(`Unknown building "${defId}"`);
     if (def.hidden || def.category === 'growable') return fail(`${def.name} can't be placed directly`);
     if (def.requires && !this.sandbox && !st.unlocked.has(def.requires)) return fail(`${def.name} is not unlocked yet`);
+    const projectLock = projectAvailable(st, def);
+    if (projectLock) return fail(projectLock);
     const blocked = blockedByOrdinance(st, def.id);
     if (blocked) return fail(`Banned by the ${blocked.name} ordinance`);
     if (def.unique && (st.milestones[def.id] ?? 0) > 0) {
@@ -658,7 +680,9 @@ export class CityActions implements CityActionsApi {
       if (f.total === 0 || f.hit * 2 < f.total) return fail('Must be placed on the shore with its front facing water', def.cost ?? 0, cells);
     }
     if (lotSlope(st, x, z, w, d) > PLOP_MAX_SLOPE) return fail('Too steep — level the ground first', def.cost ?? 0, cells);
-    const cost = (def.cost ?? 0) + treeCells * TREE_CLEAR_COST;
+    const project = def.buildMonths !== undefined;
+    const price = project ? firstProjectInstallment(def) : (def.cost ?? 0);
+    const cost = price + treeCells * TREE_CLEAR_COST;
     if (!this.affordable(cost)) return fail(`Not enough money (${money(cost)})`, cost, cells);
     const warn = lotTouchesRoad(st, x, z, w, d) ? undefined : noRoadWarning(def);
     if (preview) return { ok: true, cost, affected: 1, cells, reason: warn };
@@ -679,18 +703,22 @@ export class CityActions implements CityActionsApi {
     const variants = MANIFEST_BY_ID[def.model]?.variants ?? 1;
     const b: Building = {
       id, def: def.id, x, z, w, d, rot, variant: spreadVariant(st, def.id, x, z, w, d, positionVariant(x, z, variants), variants),
-      pop: 0, jobs: 0, capacity: def.jobs ?? 0, wealth: 0, built: 1, age: 0,
-      flags: BF.Plopped, baseY: lv.baseY, health: 1, unhappy: 0,
+      pop: 0, jobs: 0, capacity: project ? 0 : (def.jobs ?? 0), wealth: 0, built: project ? 0 : 1, age: 0,
+      flags: BF.Plopped | (project ? BF.Constructing : 0), baseY: lv.baseY, health: 1, unhappy: 0,
       // WP1 fields in their fixed order (one hidden class for every building; demographics ensureDemographicsFields)
       kids: undefined, teens: undefined, yad: undefined, srs: undefined, wf: undefined, edu: undefined, hire: undefined,
     };
+    if (project) beginProject(st, b, def);
     placeBuilding(this.sim, b);
-    this.spend(cost, 'oneoff:construction');
+    if (project) {
+      this.spend(price, PROJECT_INSTALLMENTS);
+      this.spend(treeCells * TREE_CLEAR_COST, 'oneoff:construction');
+    } else this.spend(cost, 'oneoff:construction');
     const rect = { x0: x, z0: z, x1: x + w, z1: z + d };
     if (lv.changed) this.sim.events.emit('terrainChanged', lv.changed);
     if (zoneCleared) this.sim.events.emit('zoneChanged', rect);
     if (treesCleared) this.sim.events.emit('treesChanged', rect);
-    if (def.unique && (def.category === 'reward' || def.category === 'landmark' || def.category === 'civic')) {
+    if (!project && def.unique && (def.category === 'reward' || def.category === 'landmark' || def.category === 'civic')) {
       this.sim.notify(`${def.name} opens in ${st.config.name}!`, 'good', x + (w >> 1), z + (d >> 1), 'planning');
     }
     return { ok: true, cost, affected: 1, cells, reason: warn };

@@ -34,6 +34,7 @@ import { DevType, Network } from '../../core/types';
 import type { BuildingDef } from '../catalogTypes';
 import { type EconRuntime, type InfraFlags, GROWABLE_SLICES, econData, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
+import { expoDrawMultiplier } from './projects';
 import { onStrike, serviceEffectiveness } from './budget';
 import { residentSurvey, toxicDumpOperating, type ResidentSurvey } from './approval';
 import { lotTouchesRoad } from './buildings';
@@ -544,7 +545,7 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
     const A = data.attractiveness > 0 ? data.attractiveness : MIG_NEUTRAL;
     const aF = Math.pow(Math.max(0, A) / TOURISM.aRef, TOURISM.aExp);
     const sizeF = TOURISM.sizeMin + (1 - TOURISM.sizeMin) * smoothstep(0, TOURISM.sizePop, pop);
-    const drawMul = ordinanceEffect(st, 'tourism.draw');
+    const drawMul = ordinanceEffect(st, 'tourism.draw') * expoDrawMultiplier(st);
     const traffic = sim.getSystem<SimSystem & TrafficApi>('traffic');
     const venues = new Map<number, VenueRecord>();
     const ven: number[] = [];

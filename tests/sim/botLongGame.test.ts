@@ -96,7 +96,7 @@ describe('bot: LG-10 options and fixed taxes', () => {
     expect(USAGE).toContain('--expand lands with LG-19');
   });
 
-  it.each([['--expand', 'LG-19'], ['--megaprojects', 'LG-03'], ['--arcology', 'LG-04'], ['--charter=green', 'LG-17']])('reports unavailable content for %s', (flag, item) => {
+  it.each([['--expand', 'LG-19'], ['--arcology', 'LG-04'], ['--charter=green', 'LG-17']])('reports unavailable content for %s', (flag, item) => {
     rejects([flag], new RegExp(`lands with ${item}`));
   });
 });

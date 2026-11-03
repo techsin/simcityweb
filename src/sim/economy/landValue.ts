@@ -231,6 +231,7 @@ function parksEffectiveness(st: CityState): number {
 
 /** splat factor of a plopped building: 0 when burnt / abandoned (a burnt landmark lifts nothing), parks × funding */
 export function lvSplatFactor(st: CityState, b: Building, parksEff = parksEffectiveness(st)): number {
+  if (b.built < 1) return 0;
   if (b.flags & (BF.Burnt | BF.Abandoned)) return 0;
   const def = getDef(b.def);
   if (!def?.landValue) return 0;

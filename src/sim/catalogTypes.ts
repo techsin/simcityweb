@@ -33,6 +33,17 @@ export interface AreaEffect {
   radius: number;
 }
 
+export type ProjectKind = 'expressMetro' | 'fusion' | 'expo' | 'spaceCenter';
+
+/** Additional project gates; ordinary `requires` and `unique` still apply. Expo is once per city. */
+export interface ProjectDef {
+  kind: ProjectKind;
+  population: number;
+  stations?: number;
+  education?: number;
+  attractiveness?: number;
+}
+
 export interface BuildingDef {
   id: string;
   name: string;
@@ -54,6 +65,9 @@ export interface BuildingDef {
 
   // ---- ploppables
   cost?: number;
+  /** Paid in monthly installments; construction takes this many 30-day months. */
+  buildMonths?: number;
+  project?: ProjectDef;
   /** monthly maintenance */
   upkeep?: number;
   /** monthly income (casinos, business deals, etc.) */

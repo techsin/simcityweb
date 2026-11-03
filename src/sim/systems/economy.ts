@@ -17,12 +17,14 @@ import { rewardsSystem } from '../economy/rewards';
 import { approvalSystem } from '../economy/approval';
 import { advisorsSystem } from '../economy/advisors';
 import { historySystem } from '../economy/history';
+import { projectsSystem } from '../economy/projects';
 
 export function economySystems(): SimSystem[] {
   const rt = new EconRuntime();
   return [
     landValueSystem(rt),
     desirabilitySystem(rt),
+    projectsSystem(),
     populationSystem(rt),
     tourismSystem(rt),
     demandSystem(rt),

@@ -19,9 +19,10 @@
  *           'transport:bridges' 'transport:rail' 'transport:subway'
  *           'utilities:powerlines' 'utilities:landfill'
  *           'ordinance:<id>'    'loan' (all loan payments)
+ *           'projects:installments'  Mega-projects (installments), only amounts actually paid at settlement
  *           'oneoff:construction' 'oneoff:zoning' 'oneoff:demolition' 'oneoff:terraform' 'oneoff:loanRepay'
- *  'oneoff:*' entries were paid / received immediately when the action happened; everything else is settled on
- *  the first day of the month. Σ lastIncome − Σ lastExpense = change of funds over the month.
+ *  'oneoff:*' entries and the first project installment are paid / received immediately when the action happened;
+ *  everything else is settled on the first day of the month. Σ lastIncome − Σ lastExpense = change of funds over the month.
  */
 import type { SimSystem, Simulation } from '../Simulation';
 import { BF, type CityState, type NeedTier } from '../CityState';
@@ -39,6 +40,7 @@ import { ORDINANCES, ordinanceEffect, ordinanceMonthly } from './ordinances';
 import { payLoansMonthly } from './loans';
 import { ATTRACTIONS, venueVisits } from './tourism';
 import { facilityUseFactor } from '../infra/facilities';
+import { nextProjectInstallment, payProjectInstallments, PROJECT_INSTALLMENTS } from './projects';
 
 const NET_KEY: Record<number, string> = {
   [Network.Street]: 'transport:streets',
@@ -73,6 +75,7 @@ export function estimateUtilities(st: CityState, rt: EconRuntime): void {
     const def = getDef(b.def);
     if (!def) continue;
     if (b.flags & BF.Plopped) {
+      if (b.built < 1) continue;
       pOut += def.powerOut ?? 0;
       wOut += def.waterOut ?? 0;
       gCap += def.garbageCapacity ?? 0;
@@ -144,6 +147,7 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
   const opexTiers = new Set<NeedTier>();
   for (const b of plopped) {
     if (!st.buildings.has(b.id)) continue;
+    if (b.built < 1) continue;
     const def = getDef(b.def);
     if (!def) continue;
     let up = def.upkeep ?? 0;
@@ -204,6 +208,7 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
   let loan = 0;
   for (const l of st.budget.loans) loan += Math.min(l.monthlyPayment, l.remaining * (1 + l.rate / 12));
   add(expense, 'loan', loan);
+  add(expense, PROJECT_INSTALLMENTS, nextProjectInstallment(st));
   for (const k in income) income[k] = Math.round(income[k]);
   for (const k in expense) expense[k] = Math.round(expense[k]);
   let ti = 0, te = 0;
@@ -218,6 +223,8 @@ export function budgetSystem(rt: EconRuntime): SimSystem {
     const data = econData(st);
     if (!infraFlags(st).utilities) estimateUtilities(st, rt);
     const bd = computeMonthlyBudget(st, rt);
+    // Projects wait until the city's ordinary obligations have been met; only paid installments enter the ledger.
+    delete bd.expense[PROJECT_INSTALLMENTS];
     // actual loan payments (amortization mutates loans)
     delete bd.expense.loan;
     const paid = payLoansMonthly(st);
@@ -228,6 +235,8 @@ export function budgetSystem(rt: EconRuntime): SimSystem {
     const sandbox = !!st.config.sandbox;
     if (!sandbox) st.funds += ti - te;
     else st.funds = Math.max(st.funds, st.config.startFunds);
+    const projectPaid = payProjectInstallments(sim);
+    if (projectPaid) { bd.expense[PROJECT_INSTALLMENTS] = projectPaid; te += projectPaid; }
     // merge one-offs into last month's record
     const b = st.budget;
     b.lastIncome = { ...bd.income };
