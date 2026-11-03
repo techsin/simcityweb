@@ -1,6 +1,6 @@
-# T053: milestone moments — review round 2
+# T053: milestone moments — review rounds 2–3
 
-Branch `local/T053-feel06-milestones`, review base `8d806bd` (round-1 commit `b297f35` plus dev `683d02b`). All changes remain **uncommitted**. No push, merge or `.done` file.
+Round-2 record: branch `local/T053-feel06-milestones`, review base `8d806bd` (round-1 commit `b297f35` plus dev `683d02b`). The lead has committed these changes and verified 226 files / 2,286 tests and the bot. The new uncommitted round-3 changes are recorded below.
 
 ## Numbered changes and files
 
@@ -114,3 +114,20 @@ Browser checklist for the lead:
 - [ ] **5:** At 720p/1080p during manual/autosave, the save pill and card have a gap. Recheck Zones/Rewards flyout clearance after the 28px downward move.
 - [ ] **6:** Explicit and system reduced motion show the card without a slide and start no rank burst. Full motion still permits the bounded burst; changing preference cannot cancel a NewYear show.
 - [ ] Lead's full-suite run and normal Worker/GPU checks.
+
+## Review round 3 — base 787fad4
+
+Both fixes remain **uncommitted**, each in its own source/test files:
+
+1. **R3-1 — `src/ui/MilestoneCard.ts`, `tests/game/milestoneCard.test.ts`:** named `ALERT_CLEAR_DELAY_MS = 300`; `performance.now()` tracks the uninterrupted empty-alert interval even before a card exists. New alerts hide immediately and restart that interval. The existing UI tick admits the card only after 300 ms; no banner DOM lookup or new timer. Fake-timer tests cover the 299/300 ms boundary, an empty gap of 49 ms between incidents, and a clear before milestone arrival, preserving the remaining visible lifetime.
+2. **R3-2 — `src/ui/Notifications.ts`, `tests/game/rewardToast.test.ts`:** capped releases stay FIFO, at least `BUDGET_GAP_MS / 2` (2 s) apart, with one forced capped release per drain. Scheduling respects the next eligible release instead of polling every 16 ms. The five-reward regression verifies release order, spacing and every Place it action opening/highlighting its row. `QUEUE_MAX_MS` is now eligibility for a spaced release; followers may wait beyond 50 s. **The FEEL-02a `toastBudget.test.ts` file is unchanged and all 10 tests pass; none pins simultaneous release.**
+
+Quiet-gated typecheck passes; `git diff --check` passes. **Eight targeted files: 99 passed, 1 skipped:** `milestoneCard.test.ts` 32, `rewardToast.test.ts` 7, `toastBudget.test.ts` 10, `panelsNews.test.ts` 5, `views.test.ts` 3, `graphicsFirstRun.test.ts` 21, `cityTeardown.test.ts` 4, and `tests/worker/hygiene.test.ts` 17 + 1 skipped. The existing scratch native-config test command above was used, one file/worker at a time; typecheck used `node $quietGate npx tsc --noEmit`. Logs are `round3-tests-*.txt` in the lane scratch folder. Node's listener-count warnings remain non-failing; no assertions/limits were changed.
+
+Fresh quiet-gated **128×15 s7 Medium: 192,899**, residents **[61124, 93804, 37971]**; all **15 full and FH-03 yearly hashes match round 2**. No repeated stage items after save/load plus 35 days. Used the same documented bundled harness: `node "$laneScratch/bundle.mjs" round3`, then `$env:T053_MODE = 'round3'` and `node $quietGate node "$laneScratch/round3/check.mjs" --size 128 --years 15 --seed 7`. Output: `round3-128x15.json`; the equivalent simbot command above is unchanged. No simulation, RNG, infra, Worker or other source hunks; no remaining cloud request.
+
+The lead's round-3 GPU QA passed the other acceptance checks. Full-suite/browser checks were not rerun here. Remaining browser checklist:
+
+- [ ] Final alert exit fade finishes before the card appears; a <50 ms empty-alert gap shows no card flash.
+- [ ] A cluster of five capped rewards arrives at least 2 s apart, in order, with Place it preserved on every toast.
+- [ ] Lead's full-suite/real-GPU regression gate. No commit, push, merge or `.done` file was made.
