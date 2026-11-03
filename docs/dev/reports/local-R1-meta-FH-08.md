@@ -1,10 +1,113 @@
 # T036s5 / FH-08 — first emergency teaching
 
-Desktop implementation on `local/T036s5-fh08`, based on `821a8d6`, committed as WIP `d6d5421` by the owner.
-The review-round-1 correction below is uncommitted.
-**E1 is staged, not active end to end:** the cloud-owned worker settings and policy transport do not yet carry the
-teaching episode. The exact hookup is below. E2 and E3 use existing host data and can run without that hookup.
+Desktop implementation on `local/T036s5-fh08`, initially based on `821a8d6`, committed as WIP `d6d5421`, then
+review-round-1 fix `e5a234d`. The owner merged dev `683d02b` cleanly before round 2.
+**Round 2 is uncommitted. E1 is now wired through the local and packet hosts.** Direct source-level probes passed on
+both; Vitest remains blocked at startup in this sandbox. New Year suppression now uses the exposed full-show busy
+state and the shared toast queue, without editing NewYear.ts.
 No `.done` file was changed, following the explicit instruction not to write done markers.
+
+## Review round 2 — protocol activation and New Year
+
+Read NOTE-048 in full, including “FH-08's request” and “A standing rule for src/worker/**”. The protocol work is
+isolated in the following small hunks for a separate eventual commit; no commit was made here.
+
+| File | Round-2 change |
+| --- | --- |
+| `src/worker/protocol.ts` | Type-only import; three optional SimSettings fields `teachFirst`, `teachTooFar`, `teachingAck`; optional `PolicyState.teaching`. No protocol version or command change. |
+| `src/worker/SimHost.ts` | One optional readonly teaching field in PolicySnapshot. |
+| `src/worker/SimCore.ts` | LivePolicy owns the existing EmergencyTeachingPolicy, passes its episode to speedPolicy, exposes it locally, publishes episode-only changes and absence, resets/disposes it. Default settings remain unarmed. |
+| `src/worker/loopbackCore.ts` **(minimal hunk outside the original named files)** | Two-line recorder projection update: copy optional teaching from LivePolicy to packets. The field stays absent when inactive, preserving the default packet shape. Without this, the recorder would discard the newly typed field. |
+| `src/ui/EmergencyBanner.ts` | Retains full subscribed policy snapshots because the protected packet policy getter list omits additive fields; ticks and acknowledgements use that snapshot. Existing `loadPref` firsts now reach the active host policy through setSettings. New Year methods defer initial cards/seen flags, hide existing lessons, queue E2 through the shared budget, and retain event-time E3 evidence until the show ends. Toast seen flags are saved on actual display, with pending guards against duplicates. |
+| `src/game/context.ts` **(minimal hunk outside the original named files)** | Optional `newYearBusy()` accessor and the shared ToastOptions type for the existing toast method. |
+| `src/game/CityScene.ts` **(two isolated lines outside the original named files)** | Supplies `newYearBusy: () => this.newYear?.busy ?? false`; updates `newyear-busy` on the UI root after newYear.frame and before rendering. Both existing toast forwarding lines are unchanged. |
+| `src/ui/Notifications.ts` **(necessary shared-queue hunk outside the original named files)** | Additive `deferWhile`, `onShow`, `teaching` options. The existing queue waits while deferred even past its normal 50 s deadline, lets eligible ordinary news proceed, and marks teaching toasts for visibility suppression. Existing toast-budget rules are retained when no deferral is supplied. |
+| `src/ui/emergency.css` | Separate New Year visibility selectors for teaching cards, fallback, outcome explanation and marked teaching toasts. |
+| `tests/worker/emergencyTeachingHost.test.ts` (new) | Local and packet settings/episode/ack tests, absent-flags-off/default packet shape, E1a/E1b independence, dispatch clearing, and real Banner → profile prefs → actual host → card acknowledgement → new-city seen-state tests on both hosts. |
+| `tests/game/emergencyTeaching.test.ts` | New Year card/fallback/explanation suppression, delayed seen consumption, queued E2/E3, preserved event-time numbers after the banner disappears, abort guards, and the packet getter/subscription distinction. |
+| `tests/game/emergencyTeachingToasts.test.ts` (new) | Actual shared Toasts queue with fake time: long-show deferral, show beginning during budget delay, ordinary news progress, deduplication, display callbacks/marker and abort cleanup. |
+| This report | Current implementation, limits, gates and remaining handoff. |
+
+No infra hunks. No edits to `WorkerSimHost.ts`, `LoopbackSimHost.ts`, `protocolInbox.ts`, NewYear.ts, TopBar,
+App wiring, save/journal/recovery paths, or the existing `toastBudget.test.ts`. No new RNG draws, systemData keys,
+simulation rules, balance changes or dependencies. The worker additions are optional and additive.
+
+Round-2 gates:
+
+- **Passed:** quiet-gated `npx tsc --noEmit`, including the final real-host/profile integration fixtures;
+  `git diff --check`; source review of protected-file and unchanged toast-budget-test diffs.
+- **Passed direct host probe:** actual LocalSimHost and clone-only LoopbackSimHost, settled incidents, settings
+  arming, E1a pause, seen-flag update retaining the hold, matching acknowledgement resuming LIVE, independent E1b,
+  and teaching present in recorded packets and replica policy.
+- **Passed direct Toasts probe:** actual shared queue, ordinary-news progress while teaching waits, no teaching
+  display through a simulated 70-second show, one actual-display callback afterward, DOM marker and abort cleanup.
+- **Vitest did not execute:** all eight targeted files below were attempted separately through the quiet gate with
+  `--maxWorkers=1`. Every one failed loading Vite config with `spawn EPERM` in the optional Windows `net use`
+  path probe. This is the same sandbox startup restriction as earlier rounds; no test pass is claimed.
+
+```text
+tests/game/emergencyTeaching.test.ts
+tests/game/emergencyPolicy.test.ts
+tests/game/emergencyBanner.test.ts
+tests/worker/policy.test.ts
+tests/worker/emergencyTeachingHost.test.ts
+tests/worker/hygiene.test.ts
+tests/game/toastBudget.test.ts
+tests/game/emergencyTeachingToasts.test.ts
+```
+
+Each test used the same full quiet-run prefix recorded in round 1. The additional command lines were:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsc --noEmit
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/worker/emergencyTeachingHost.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/toastBudget.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/game/emergencyTeachingToasts.test.ts --maxWorkers=1
+```
+
+The direct probes and their loader are in the supplied scratch directory (`fh08-host-probe.mjs`,
+`fh08-toast-probe.mjs`, `fh08-host-loader.mjs`). The native loader resolves extensionless TypeScript/index imports
+and maps the two existing Vite lazy-module declarations to explicit imports in memory; it changes no repository
+source or host/transport behavior. These probes do not substitute for Vitest, hygiene or browser checks. Commands:
+
+```text
+node --no-warnings --experimental-transform-types --import file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T036s5/scratch/fh08-host-loader.mjs C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T036s5/scratch/fh08-host-probe.mjs
+node --no-warnings --experimental-transform-types --import file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T036s5/scratch/fh08-host-loader.mjs C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T036s5/scratch/fh08-toast-probe.mjs
+```
+
+The owner verified `e5a234d` with tsc, **219 files / 2,202 tests** and the bot at **192,899**. No bot rerun was
+requested or performed in round 2; the exact standard/native bot command lines remain in the original checks below.
+Expected residents remain `[61124, 93804, 37971]`, total 192,899 in 2015. No browser, full suite, GPU timing,
+Hard digest or old-save continuation gate was run here.
+
+Plan-versus-code and remaining handoff:
+
+- The optional protocol is now active, superseding original requests 1–4 below. `loopbackCore.ts` needed the
+  documented two-line projection in addition to protocol/SimHost/SimCore. The protected packet getter list stays
+  unchanged; the banner uses the complete subscribed snapshot, with a regression test.
+- The existing `NewYearCelebration.busy` covers the whole show and lingering fireworks. The context accessor and
+  two CityScene lines replace the original request for a new NewYear event; **no NewYear.ts edit is needed**.
+- E2/E3 use FEEL-02a's shared budget and action queue. `onShow` preserves a first tip until it is displayed rather
+  than silently consuming it when queued. A deferred lesson does not block ordinary eligible news.
+- **Still for the cloud:** the LIVE pill title in the extracted `src/ui/topbar/**` component after the TopBar split.
+  Intended text: “Within station range never slows. Outside it, LIVE slows your dispatch; your speed returns when
+  help arrives. Settings → Gameplay.” No TopBar hunk was written.
+- The future GuideProfile migration remains with T037a; this base still uses its working loadPref firsts and Tips
+  setting. No new profile/schema workaround was added.
+- FEEL-10 has not been merged by this lane. Banner changes stay in named teaching functions and snapshot handling;
+  resolve its EmergencyBanner conflict after the owner merges the updated dev, without changing other branches.
+
+Additional real-GPU browser checks for the owner:
+
+- [ ] Fresh profile on both local and actual worker host: E1a pauses, shows actual station/ETA, and Send nearest
+      dispatches and closes the card. Got it acknowledges once. A new city respects the profile's seen flags.
+- [ ] E1b still leaves speed alone; the next uncovered fire and the T029 busy/cooldown rules behave normally.
+- [ ] Start a full New Year show or burst with an E1 card/folded fallback or E3 explanation visible: it hides before
+      paint through the last lingering firework and returns only if still relevant.
+- [ ] An E1 first arriving during a show creates no card or seen flag until the full busy state ends.
+- [ ] E2/E3 queued before or during a show never appear during it, including a show longer than 50 seconds, and
+      each appears once afterward subject to the shared budget. E3 retains its original ETA and event-day duration.
+- [ ] Ordinary budgeted news keeps FEEL-02a's gap/rate/maximum-wait behavior; leaving the city cancels queued tips.
 
 ## Review round 1 — loading dispatch options
 

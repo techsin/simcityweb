@@ -258,6 +258,7 @@ export class CityScene {
       showQuery: (t, o) => this.showQuery(t, o),
       applySettings: (p) => this.applySettings(p),
       toast: (text, kind, cell, title, opts) => this.toasts?.show(text, kind, cell, title, opts),
+      newYearBusy: () => this.newYear?.busy ?? false,
       openFlyout: (id, tab) => this.toolbar?.openFlyout(id, tab),
       showOnboarding: () => this.onboarding?.show(),
       save: () => this.save(false),
@@ -674,6 +675,7 @@ export class CityScene {
     this.edgeScroll(dt);
     try {
       this.newYear.frame(dt);
+      this.uiRoot.classList.toggle('newyear-busy', this.newYear.busy);
     } catch (e) {
       this.errors.report('New Year celebration error', e, { key: 'newyear' });
     }

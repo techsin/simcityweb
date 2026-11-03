@@ -372,9 +372,8 @@ export function placeText(inc: Incident, sep = ' '): string {
 
 // ------------------------------------------------------------------------------------------------ FH-08 teaching
 interface TeachingSeen { E1a: boolean; E1b: boolean; E2: boolean; E3: boolean }
-/** Optional until the worker owner carries FH-08's episode in PolicySnapshot / PolicyState. */
-interface TeachingSnapshot extends PolicySnapshot { readonly teaching?: Readonly<EmergencyTeaching> }
 interface TeachingCard { episode: Readonly<EmergencyTeaching>; el: HTMLElement; text: HTMLElement; send?: HTMLButtonElement }
+interface FailureTeaching { id: number; reason: string; prevention: string; primary: Responder; cell: { x: number; z: number } }
 const TEACHING_PREF = 'emergencyTeaching';
 const TEACHING_STATION = { fire: 'civ_fire_station', police: 'civ_police_station', medical: 'civ_clinic' } as const;
 const TEACHING_TAB = { fire: 'Fire', police: 'Police', medical: 'Health' } as const;
@@ -469,10 +468,14 @@ export class EmergencyBanner {
   readonly el: HTMLDivElement;
   private banners = new Map<number, BannerEl>();
   private options: DispatchOptionsWatches;
+  /** Packet policy subscriptions carry additive fields that older getter-only views do not expose. */
+  private policy: PolicySnapshot;
   private seen = teachingSeen();
   private teaching: TeachingCard | null = null;
   private teachingAck: number | undefined;
   private teachingFallback: HTMLElement | null = null;
+  private teachingToasts = new Set<'E2' | 'E3'>();
+  private pendingFailure: FailureTeaching | null = null;
   /** Local hosts remove a finished incident before its event; keep the view's reference until the first failure. */
   private failureIncidents = new Map<number, Incident>();
   /** the "N more emergencies" pill and its text (built once: EM-4) */
@@ -521,6 +524,7 @@ export class EmergencyBanner {
   private flyHigh = 0;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
+    this.policy = ctx.host.policy;
     this.options = new DispatchOptionsWatches(ctx.host, ctx.signal);
     this.el = h('div', { class: 'emg-banners' });
     this.moreText = h('span');
@@ -605,11 +609,14 @@ export class EmergencyBanner {
     const off = ctx.host.events.on('emergency', (e) => this.onEvent(e));
     const offReset = ctx.host.events.on('reset', () => this.reset());
     const offTick = ctx.ui.on('uiTick', () => this.tick());
-    const offPolicy = ctx.host.policy.subscribe((policy) => this.renderPolicy(policy, true), ctx.signal);
+    const offPolicy = ctx.host.policy.subscribe((policy) => {
+      this.policy = policy;
+      this.renderPolicy(policy, true);
+    }, ctx.signal);
     const offSettings = ctx.ui.on('settings', () => this.sendSettings());
     if (ctx.settings.tips === true && !this.seen.E3) for (const inc of ctx.host.emergency.incidents()) this.failureIncidents.set(inc.id, inc);
     this.sendSettings();
-    this.renderPolicy(ctx.host.policy);
+    this.renderPolicy(this.policy);
     ctx.signal.addEventListener('abort', () => {
       off(); offReset(); offTick(); offPolicy(); offSettings();
       this.ro?.disconnect();
@@ -619,6 +626,8 @@ export class EmergencyBanner {
       win?.removeEventListener('pointercancel', release, true);
       win?.removeEventListener('blur', release);
       this.failureIncidents.clear();
+      this.pendingFailure = null;
+      this.teachingToasts.clear();
       this.clearTeaching();
     });
   }
@@ -678,6 +687,7 @@ export class EmergencyBanner {
     this.clearTeaching();
     this.teachingAck = undefined;
     this.failureIncidents.clear();
+    this.pendingFailure = null;
     this.options.dispose();
     for (const b of this.banners.values()) b.el.remove();
     this.banners.clear();
@@ -702,8 +712,7 @@ export class EmergencyBanner {
     if (feedback && policy.toast) this.ctx.toast(policy.toast.text, policy.toast.kind, undefined, 'Emergency');
     this.renderTeaching(policy);
     if (this.ctx.settings.tips === true && this.ctx.settings.toasts !== false && !this.seen.E2 && policy.live && this.ctx.host.speed === 1 && this.ctx.host.liveSlowdown > 1) {
-      this.markTeachingSeen('E2');
-      this.ctx.toast(LIVE_LESSON, 'info', undefined, 'Emergency');
+      this.queueTeachingToast('E2', LIVE_LESSON, 'info');
     }
   }
 
@@ -730,6 +739,31 @@ export class EmergencyBanner {
     savePref(TEACHING_PREF, this.seen);
   }
 
+  private newYearBusy(): boolean { return this.ctx.newYearBusy?.() === true; }
+
+  /** The shared news budget retains one-shot tips until they can actually be displayed. */
+  private queueTeachingToast(id: 'E2' | 'E3', text: string, kind: string, cell?: { x: number; z: number }): void {
+    if (this.seen[id] || this.teachingToasts.has(id) || this.ctx.settings.tips !== true || this.ctx.settings.toasts === false) return;
+    this.teachingToasts.add(id);
+    this.ctx.toast(text, kind, cell, 'Emergency', {
+      budget: true, teaching: true,
+      action: { hint: 'Open Emergencies', run: () => { if (!this.ctx.signal.aborted) this.ctx.panels.open('emergencies'); } },
+      deferWhile: () => this.newYearBusy() || this.ctx.settings.tips !== true || this.ctx.settings.toasts === false,
+      onShow: () => {
+        if (this.ctx.signal.aborted) return;
+        this.teachingToasts.delete(id);
+        this.markTeachingSeen(id);
+      },
+    });
+  }
+
+  private syncTeachingVisibility(): void {
+    const display = this.newYearBusy() ? 'none' : '';
+    if (this.teaching) this.teaching.el.style.display = display;
+    if (this.teachingFallback) this.teachingFallback.style.display = display;
+    for (const b of this.banners.values()) if (b.teachingReason) b.teachingReason.style.display = display;
+  }
+
   private clearTeaching(): void {
     if (!this.teaching) return;
     const b = this.banners.get(this.teaching.episode.id);
@@ -742,7 +776,7 @@ export class EmergencyBanner {
   }
 
   private acknowledgeTeaching(id: number): void {
-    if (this.teaching?.episode.id !== id && (this.teachingAck === id || (this.ctx.host.policy as TeachingSnapshot).teaching?.id !== id)) return;
+    if (this.teaching?.episode.id !== id && (this.teachingAck === id || this.policy.teaching?.id !== id)) return;
     this.teachingAck = id;
     if (this.teaching?.episode.id === id) this.clearTeaching();
     this.sendSettings();
@@ -765,6 +799,7 @@ export class EmergencyBanner {
       this.teachingFallback.remove();
       this.teachingFallback = null;
     }
+    this.syncTeachingVisibility();
   }
 
   private teachingAction(label: string, action: () => void): HTMLButtonElement {
@@ -779,11 +814,13 @@ export class EmergencyBanner {
     this.ctx.setOverlay(Overlay.Emergency);
   }
 
-  private renderTeaching(policy: TeachingSnapshot): void {
+  private renderTeaching(policy: PolicySnapshot): void {
     const episode = policy.teaching;
     if (this.teaching && (!episode || episode.id !== this.teaching.episode.id || episode.variant !== this.teaching.episode.variant)) this.clearTeaching();
+    this.syncTeachingVisibility();
     if (!episode) return;
     if (this.ctx.settings.tips !== true) { this.acknowledgeTeaching(episode.id); return; }
+    if (this.newYearBusy()) return;
     const b = this.banners.get(episode.id), inc = this.ctx.host.emergency.incident(episode.id);
     if (!b || !inc) return;
     if (!(inc.state === 'uncovered' || inc.state === 'queued') || inc.reason === 'busy' || inc.lost > 0) {
@@ -832,19 +869,27 @@ export class EmergencyBanner {
   }
 
   private teachFailure(b: BannerEl | undefined, inc: Incident | undefined): void {
-    if (!inc || this.ctx.settings.tips !== true || this.seen.E3 || (!b && this.ctx.settings.toasts === false)) return;
+    if (!inc || this.ctx.settings.tips !== true || this.seen.E3 || this.pendingFailure || this.teachingToasts.has('E3') || (!b && this.ctx.settings.toasts === false)) return;
     const eta = inc.answered > 0 && Number.isFinite(inc.etaMin) ? inc.etaMin : b?.teachingEta;
     // During packet replay the state is at the event's day; the interpolated clock is still at the previous packet.
     const reason = firstFailureReason(inc, this.ctx.state.day, eta, inc.answered > 0 || b?.teachingPrimarySent);
-    this.markTeachingSeen('E3');
     this.failureIncidents.clear();
+    const lesson: FailureTeaching = { id: inc.id, reason, prevention: preventionText(inc), primary: INCIDENT_RESPONDERS[inc.kind][0], cell: { x: inc.x, z: inc.z } };
+    if (this.newYearBusy()) { this.pendingFailure = lesson; return; }
+    this.showFailureTeaching(lesson, b);
+  }
+
+  private showFailureTeaching(lesson: FailureTeaching, b: BannerEl | undefined): void {
     if (!b) {
-      this.ctx.toast(`${reason} ${preventionText(inc)}`, 'warning', { x: inc.x, z: inc.z }, 'Emergency');
+      this.queueTeachingToast('E3', `${lesson.reason} ${lesson.prevention}`, 'warning', lesson.cell);
       return;
     }
-    const primary = INCIDENT_RESPONDERS[inc.kind][0];
-    b.teachingReason = h('div', { class: 'emg-teach-reason' }, h('div', null, reason), h('div', null, preventionText(inc)),
-      this.teachingAction(`${TEACHING_TAB[primary]} tab`, () => this.openTeachingService(inc)));
+    this.markTeachingSeen('E3');
+    b.teachingReason = h('div', { class: 'emg-teach-reason' }, h('div', null, lesson.reason), h('div', null, lesson.prevention),
+      this.teachingAction(`${TEACHING_TAB[lesson.primary]} tab`, () => {
+        this.ctx.openFlyout?.('civic', lesson.primary === 'medical' ? 'health' : lesson.primary);
+        this.ctx.setOverlay(Overlay.Emergency);
+      }));
     b.body.appendChild(b.teachingReason);
     b.hts?.clear();
     this.dockDirty = true;
@@ -1328,7 +1373,11 @@ export class EmergencyBanner {
   private tick(): void {
     const em = this.ctx.host.emergency;
     const now = this.ctx.host.simTime();
-    this.renderPolicy(this.ctx.host.policy);
+    this.renderPolicy(this.policy);
+    if (this.pendingFailure && !this.newYearBusy() && this.ctx.settings.tips === true) {
+      const lesson = this.pendingFailure, b = this.banners.get(lesson.id);
+      if (b || this.ctx.settings.toasts !== false) { this.pendingFailure = null; this.showFailureTeaching(lesson, b); }
+    }
     for (const b of this.banners.values()) {
       const inc = em?.incident(b.id);
       if (inc) this.refresh(b, inc);
@@ -1377,6 +1426,7 @@ export class EmergencyBanner {
   dispose(): void {
     this.clearTeaching();
     this.failureIncidents.clear();
+    this.pendingFailure = null;
     this.options.dispose();
     this.ro?.disconnect();
     this.mo?.disconnect();

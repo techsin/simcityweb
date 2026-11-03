@@ -1,5 +1,4 @@
-/** FH-08 presentation contract. The policy episode is supplied by a mock host: worker transport wiring is staged
- *  separately. No simulation reads or speed mutations are available to the banner in this fixture. */
+/** FH-08 presentation contract. No simulation reads or speed mutations are available to the banner in this fixture. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Emitter } from '../../src/core/events';
 import { Overlay } from '../../src/core/types';
@@ -9,6 +8,7 @@ import type { CityEvents } from '../../src/sim/Simulation';
 import { INCIDENT_RESPONDERS, type DispatchOption, type DispatchResult, type Incident } from '../../src/sim/infra/emergency';
 import { EMERG_DAYS_PER_MIN } from '../../src/sim/infra/params';
 import { EmergencyBanner } from '../../src/ui/EmergencyBanner';
+import type { ToastOptions } from '../../src/ui/Notifications';
 import type { PolicySnapshot } from '../../src/worker/SimHost';
 
 // Minimal DOM, as in emergencyBanner.test.ts; signal-bound listeners also work on retained elements after exit.
@@ -122,7 +122,9 @@ function option(patch: Partial<DispatchOption> = {}): DispatchOption {
   return { stationId: 7, name: 'Harbor Fire Station #7', responder: 'fire', free: 1, etaMin: 4.2,
     etaDays: 4.2 * EMERG_DAYS_PER_MIN, total: 2, inRange: false, ...patch };
 }
-function harness(inc = incident(), teaching?: TeachingPolicy['teaching'], tips = true, initialOptions: DispatchOption[] | null = [option()]) {
+interface HarnessOptions { initialBusy?: boolean; budgetBlocked?: boolean; packetPolicy?: boolean }
+interface MockToast { text: string; opts: ToastOptions }
+function harness(inc = incident(), teaching?: TeachingPolicy['teaching'], tips = true, initialOptions: DispatchOption[] | null = [option()], config: HarnessOptions = {}) {
   const root = new FakeEl('div'), ui = new Emitter<UIEvents>(), events = new Emitter<CityEvents>();
   const abort = new AbortController();
   lifetimes.push(abort);
@@ -130,7 +132,30 @@ function harness(inc = incident(), teaching?: TeachingPolicy['teaching'], tips =
   const policy: TeachingPolicy = { alerts: [{ id: inc.id, wasPossible: inc.manualPossible }], live: false, teaching };
   const listeners = new Set<(p: TeachingPolicy) => void>();
   const toasts: string[] = [], settings: Record<string, unknown>[] = [];
-  const clock = { now: 0, day: undefined as number | undefined, speed: teaching?.variant === 'E1a' ? 0 : 3, slowdown: 1 };
+  const clock = { now: 0, day: undefined as number | undefined, speed: teaching?.variant === 'E1a' ? 0 : 3, slowdown: 1,
+    busy: config.initialBusy ?? false, budgetBlocked: config.budgetBlocked ?? false };
+  const pendingToasts: MockToast[] = [], toastCalls: MockToast[] = [];
+  const showToast = (toast: MockToast) => { toasts.push(toast.text); toast.opts.onShow?.(); };
+  const drainToasts = () => {
+    if (abort.signal.aborted) return;
+    for (let i = 0; i < pendingToasts.length;) {
+      const toast = pendingToasts[i];
+      if (toast.opts.deferWhile?.() || (toast.opts.budget && clock.budgetBlocked)) { i++; continue; }
+      pendingToasts.splice(i, 1);
+      showToast(toast);
+    }
+  };
+  abort.signal.addEventListener('abort', () => { pendingToasts.length = 0; }, { once: true });
+  const subscribe = (fn: (p: TeachingPolicy) => void, signal: AbortSignal) => {
+    listeners.add(fn);
+    const off = () => { listeners.delete(fn); };
+    signal.addEventListener('abort', off, { once: true });
+    return off;
+  };
+  const policyView = config.packetPolicy ? {
+    get alerts() { return policy.alerts; }, get live() { return policy.live; },
+    get toast() { return policy.toast; }, get warn() { return policy.warn; }, subscribe,
+  } : Object.assign(policy, { subscribe });
   let options: DispatchOption[] | undefined = initialOptions ?? undefined, version = 1;
   let result: Promise<DispatchResult> = Promise.resolve({ ok: true, responder: 'fire', sent: 1, etaMin: 4.2 });
   const act = vi.fn((op: string, args: unknown[], _opts?: unknown) => {
@@ -153,12 +178,7 @@ function harness(inc = incident(), teaching?: TeachingPolicy['teaching'], tips =
       kind: 'worker', events, act, setSpeed, simTime: () => clock.now,
       beginGesture: vi.fn(() => ({ end: vi.fn(), settled: Promise.resolve() })),
       get speed() { return clock.speed; }, get liveSlowdown() { return clock.slowdown; },
-      policy: Object.assign(policy, { subscribe: (fn: (p: TeachingPolicy) => void, signal: AbortSignal) => {
-        listeners.add(fn);
-        const off = () => { listeners.delete(fn); };
-        signal.addEventListener('abort', off, { once: true });
-        return off;
-      } }),
+      policy: policyView,
       emergency: {
         active: true, layersReady: true, incident: (id: number) => incidents.get(id),
         incidents: () => [...incidents.values()], vehicles: () => [], stationList: () => [],
@@ -167,13 +187,20 @@ function harness(inc = incident(), teaching?: TeachingPolicy['teaching'], tips =
       watch: () => ({ get value() { return options; }, get version() { return version; }, error: undefined,
         setArgs: () => undefined, subscribe: () => () => undefined, dispose: () => undefined }),
     },
-    root, ui, signal: abort.signal, settings: { ...DEFAULT_SETTINGS, tips },
-    panels: { open: vi.fn(), isOpen: () => false }, sound: vi.fn(), toast: (t: string) => { toasts.push(t); },
+    root, ui, signal: abort.signal, settings: { ...DEFAULT_SETTINGS, tips }, newYearBusy: () => clock.busy,
+    panels: { open: vi.fn(), isOpen: () => false }, sound: vi.fn(),
+    toast: (text: string, _kind?: string, _cell?: { x: number; z: number }, _title?: string, opts: ToastOptions = {}) => {
+      const toast = { text, opts };
+      toastCalls.push(toast);
+      if (opts.deferWhile?.() || (opts.budget && clock.budgetBlocked)) pendingToasts.push(toast);
+      else showToast(toast);
+    },
     setOverlay, openFlyout, focusCell: vi.fn(), showQuery: vi.fn(),
   } as unknown as GameContext;
   const banner = new EmergencyBanner(ctx, root as unknown as HTMLElement);
   return {
-    banner, ctx, root, inc, incidents, policy, abort, clock, toasts, settings, act, setSpeed, setOverlay, openFlyout, events, ui,
+    banner, ctx, root, inc, incidents, policy, abort, clock, toasts, toastCalls, pendingToasts, drainToasts,
+    settings, act, setSpeed, setOverlay, openFlyout, events, ui,
     tick: () => ui.emit('uiTick', undefined),
     publish: (patch: Partial<TeachingPolicy>) => { Object.assign(policy, patch); for (const fn of listeners) fn(policy); },
     options: (next: DispatchOption[]) => { options = next; version++; },
@@ -344,6 +371,78 @@ describe('FH-08 emergency teaching from a host snapshot', () => {
     expect(t.settings.at(-1)).toMatchObject({ teachingAck: 1 });
   });
 
+  it.each(['E1a', 'E1b'] as const)('waits until the complete New Year show ends before displaying or recording %s', (variant) => {
+    const t = harness(incident({ manualPossible: variant === 'E1a' }), { id: 1, variant }, true, [option()], { initialBusy: true });
+    expect(card(t)).toBeUndefined();
+    expect(seen()[variant]).toBeUndefined();
+    for (let i = 0; i < 3; i++) {
+      t.publish({ teaching: { id: 1, variant } });
+      t.tick();
+    }
+    expect(card(t)).toBeUndefined();
+    expect(seen()[variant]).toBeUndefined();
+    expect(t.settings.some((s) => s.teachingAck === 1)).toBe(false);
+    t.clock.busy = false;
+    t.tick();
+    expect(card(t)).toBeDefined();
+    expect(seen()[variant]).toBe(true);
+    expect(t.settings.some((s) => s.teachingAck === 1)).toBe(false);
+  });
+
+  it('hides an existing teaching card throughout New Year and restores the same unacknowledged card', () => {
+    const t = harness(incident(), { id: 1, variant: 'E1a' });
+    const c = card(t)!;
+    t.clock.busy = true;
+    t.tick();
+    expect(c.style.display).toBe('none');
+    expect(card(t)).toBeUndefined();
+    t.publish({ teaching: { id: 1, variant: 'E1a' } });
+    t.tick();
+    expect(c.style.display).toBe('none');
+    expect(t.settings.some((s) => s.teachingAck === 1)).toBe(false);
+    t.clock.busy = false;
+    t.tick();
+    expect(card(t)).toBe(c);
+    expect(t.settings.some((s) => s.teachingAck === 1)).toBe(false);
+  });
+
+  it('hides and restores the folded-card fallback with its card when New Year is busy', () => {
+    const t = harness(incident(), { id: 1, variant: 'E1a' });
+    const c = card(t)!;
+    const dock = t.banner as unknown as { applyDock(place: null, compact: boolean, rows: number): void };
+    dock.applyDock(null, true, -1);
+    const fallback = byClass(t.root, 'emg-teach-fallback')[0];
+    expect(fallback.contains(c)).toBe(true);
+    t.clock.busy = true;
+    t.publish({});
+    expect(fallback.style.display).toBe('none');
+    expect(c.style.display).toBe('none');
+    expect(card(t)).toBeUndefined();
+    t.clock.busy = false;
+    t.publish({});
+    expect(fallback.style.display).toBe('');
+    expect(card(t)).toBe(c);
+    expect(t.settings.some((s) => s.teachingAck === 1)).toBe(false);
+  });
+
+  it('keeps the full subscribed teaching snapshot when the packet policy getters omit it', () => {
+    const t = harness(incident(), undefined, true, [option()], { packetPolicy: true });
+    expect(t.ctx.host.policy.teaching).toBeUndefined();
+    t.publish({ teaching: { id: 1, variant: 'E1a' } });
+    const c = card(t)!;
+    expect(c).toBeDefined();
+    expect(t.ctx.host.policy.teaching).toBeUndefined();
+    t.tick();
+    t.tick();
+    expect(card(t)).toBe(c);
+    button(c, 'Got it').click();
+    expect(card(t)).toBeUndefined();
+    expect(t.settings.at(-1)).toMatchObject({ teachingAck: 1 });
+    t.tick();
+    expect(card(t)).toBeUndefined();
+    expect(t.settings.filter((s) => s.teachingAck === 1)).toHaveLength(1);
+  });
+
   it('remembers E1a and E1b independently across city remounts in the same profile', () => {
     const first = harness(incident(), { id: 1, variant: 'E1a' });
     button(card(first)!, 'Got it').click();
@@ -401,6 +500,42 @@ describe('FH-08 emergency teaching from a host snapshot', () => {
     next.publish({ live: true });
     next.tick();
     expect(next.toasts.filter((s) => s.startsWith('LIVE:'))).toHaveLength(0);
+  });
+
+  it('queues E2 once during New Year, records it only after the shared budget displays it, and remembers it after remount', () => {
+    const t = harness(incident(), undefined, true, [option()], { initialBusy: true, budgetBlocked: true });
+    t.clock.speed = 1;
+    t.clock.slowdown = 3;
+    for (let i = 0; i < 3; i++) {
+      t.publish({ live: true });
+      t.tick();
+      t.drainToasts();
+    }
+    expect(t.toastCalls.filter((q) => q.text.startsWith('LIVE:'))).toHaveLength(1);
+    expect(t.pendingToasts).toHaveLength(1);
+    expect(t.pendingToasts[0].opts).toMatchObject({ budget: true, teaching: true, action: { hint: 'Open Emergencies' } });
+    expect(t.toasts).toHaveLength(0);
+    expect(seen().E2).toBeUndefined();
+    t.clock.busy = false;
+    t.tick();
+    t.drainToasts();
+    expect(t.toasts).toHaveLength(0);
+    expect(seen().E2).toBeUndefined();
+    t.clock.budgetBlocked = false;
+    t.drainToasts();
+    expect(t.toasts.filter((s) => s.startsWith('LIVE:'))).toHaveLength(1);
+    expect(seen().E2).toBe(true);
+    t.publish({ live: true });
+    t.tick();
+    expect(t.toastCalls.filter((q) => q.text.startsWith('LIVE:'))).toHaveLength(1);
+    t.abort.abort('exit');
+    t.banner.dispose();
+    const next = harness();
+    next.clock.speed = 1;
+    next.clock.slowdown = 3;
+    next.publish({ live: true });
+    next.tick();
+    expect(next.toastCalls.filter((q) => q.text.startsWith('LIVE:'))).toHaveLength(0);
   });
 
   it('E3 uses the replayed event day while the host clock is stale, once, retaining the existing outcome', () => {
@@ -465,6 +600,79 @@ describe('FH-08 emergency teaching from a host snapshot', () => {
     expect(reason.textContent).toMatch(/no fire truck was sent/i);
     expect(reason.textContent).toMatch(/3(?:\.0)? min/);
     expect(reason.textContent).not.toMatch(/ambulance/i);
+  });
+
+  it('retains the failure day and ETA while New Year is busy, then queues E3 when its banner has gone', () => {
+    const t = harness(incident({ manualPossible: false, bestEta: undefined }), undefined, true, [option()], { initialBusy: true, budgetBlocked: true });
+    t.options([option({ etaMin: 6.3, etaDays: 6.3 * EMERG_DAYS_PER_MIN })]);
+    t.tick();
+    t.inc.state = 'failed';
+    t.inc.lost = 1;
+    t.clock.day = 5 * EMERG_DAYS_PER_MIN;
+    t.events.emit('emergency', { id: 1, kind: 'fire', type: 'failed', x: 20, z: 12, major: true, manualPossible: false });
+    t.incidents.delete(1);
+    t.publish({ alerts: [] });
+    t.tick();
+    expect(t.banner.bannerIds).toEqual([]);
+    expect(byClass(t.root, 'emg-teach-reason')).toHaveLength(0);
+    expect(t.toastCalls).toHaveLength(0);
+    expect(seen().E3).toBeUndefined();
+    t.clock.day = t.clock.now = 100 * EMERG_DAYS_PER_MIN;
+    t.clock.busy = false;
+    t.tick();
+    expect(t.pendingToasts).toHaveLength(1);
+    expect(t.pendingToasts[0].opts).toMatchObject({ budget: true, teaching: true });
+    expect(t.pendingToasts[0].text).toContain('6.3 min');
+    expect(t.pendingToasts[0].text).toMatch(/(?:in|after) 5(?:\.0)?(?: min)?/);
+    expect(t.toasts).toHaveLength(0);
+    expect(seen().E3).toBeUndefined();
+    t.clock.budgetBlocked = false;
+    t.drainToasts();
+    expect(t.toasts).toHaveLength(1);
+    expect(t.toasts[0]).toContain('6.3 min');
+    expect(t.toasts[0]).toMatch(/(?:in|after) 5(?:\.0)?(?: min)?/);
+    expect(t.toasts[0]).not.toContain('100 min');
+    expect(seen().E3).toBe(true);
+    t.tick();
+    t.drainToasts();
+    expect(t.toastCalls).toHaveLength(1);
+  });
+
+  it('hides an existing E3 explanation during New Year and restores it afterward', () => {
+    const t = harness(incident({ manualPossible: false }));
+    t.tick();
+    t.inc.state = 'failed';
+    t.inc.lost = 1;
+    t.clock.day = 5 * EMERG_DAYS_PER_MIN;
+    t.events.emit('emergency', { id: 1, kind: 'fire', type: 'failed', x: 20, z: 12, major: true, manualPossible: false });
+    const reason = byClass(t.root, 'emg-teach-reason')[0];
+    expect(reason).toBeDefined();
+    t.clock.busy = true;
+    t.tick();
+    expect(reason.style.display).toBe('none');
+    t.clock.busy = false;
+    t.tick();
+    expect(reason.style.display).toBe('');
+    expect(byClass(t.root, 'emg-teach-reason')[0]).toBe(reason);
+  });
+
+  it('drops queued teaching with the city and ignores retained deferred callbacks after abort', () => {
+    const t = harness(incident(), undefined, true, [option()], { initialBusy: true });
+    t.clock.speed = 1;
+    t.clock.slowdown = 3;
+    t.publish({ live: true });
+    const queued = t.pendingToasts[0];
+    expect(queued).toBeDefined();
+    expect(seen().E2).toBeUndefined();
+    t.abort.abort('exit');
+    expect(t.pendingToasts).toHaveLength(0);
+    t.clock.busy = false;
+    t.drainToasts();
+    queued.opts.onShow?.();
+    queued.opts.action?.run();
+    expect(t.toasts).toHaveLength(0);
+    expect(seen().E2).toBeUndefined();
+    expect(t.ctx.panels.open).not.toHaveBeenCalled();
   });
 
   it('Tips off disables the policy teaching flags, card, LIVE explainer and failed-incident explainer', () => {
