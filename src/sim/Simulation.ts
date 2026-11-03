@@ -175,8 +175,8 @@ export class Simulation {
     for (let i = 0; i < n; i++) this.advanceDay();
   }
 
-  notify(text: string, kind: NewsItem['kind'] = 'info', x?: number, z?: number, advisor?: string): void {
-    const item = this.state.notify(text, kind, x, z, advisor);
+  notify(text: string, kind: NewsItem['kind'] = 'info', x?: number, z?: number, advisor?: string, ref?: NewsItem['ref']): void {
+    const item = this.state.notify(text, kind, x, z, advisor, ref);
     this.events.emit('news', item);
   }
 

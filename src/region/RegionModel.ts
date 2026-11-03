@@ -24,6 +24,8 @@ export const REGION_SAMPLES_PER_UNIT = 32;
 export const REGION_SIZE_X_M = REGION_W * REGION_UNIT_CELLS * CELL_SIZE;
 export const REGION_SIZE_Z_M = REGION_H * REGION_UNIT_CELLS * CELL_SIZE;
 export const UNIT_M = REGION_UNIT_CELLS * CELL_SIZE;
+/** a city cell steeper than this (m between neighbouring samples one cell apart) is not flat (terrainStats' default) */
+const FLAT_SLOPE_M = 2.5;
 
 export interface RegionPresetInfo {
   id: RegionPresetId;
@@ -248,6 +250,55 @@ export class RegionModel {
       }
     return w / n;
   }
+
+  /**
+   * fraction of a tile that is dry, flat land: on a 16 x 16 sample grid, land whose height changes by at most
+   * FLAT_SLOPE_M over one city cell in x and z (terrainStats' and the start camera's "buildable": 2.5 m per 16 m cell)
+   */
+  tileFlatFraction(tile: RegionTile): number {
+    let n = 0, f = 0;
+    const s = tile.size * UNIT_M, x0 = tile.x * UNIT_M, z0 = tile.z * UNIT_M;
+    for (let k = 0; k < 16; k++)
+      for (let j = 0; j < 16; j++) {
+        n++;
+        const x = x0 + ((j + 0.5) / 16) * s, z = z0 + ((k + 0.5) / 16) * s;
+        const hh = this.heightAt(x, z);
+        if (hh < 0) continue;
+        if (Math.abs(this.heightAt(x + CELL_SIZE, z) - hh) <= FLAT_SLOPE_M && Math.abs(this.heightAt(x, z + CELL_SIZE) - hh) <= FLAT_SLOPE_M) f++;
+      }
+    return f / n;
+  }
+
+  /**
+   * A tile of the wanted size with a pleasant amount of water (some, not much), near the region's centre (quickstart's
+   * pick, moved here from main.ts). `flat`: also score the tile's share of flat buildable land (FH-11's first city).
+   */
+  pickNiceTile(size: TileSize, opts: { flat?: boolean } = {}): RegionTile {
+    const cands = this.data.tiles.filter((t) => t.size === size);
+    const pool = cands.length ? cands : this.data.tiles;
+    let best = pool[0], bestScore = -1e9;
+    for (const t of pool) {
+      const w = this.tileWaterFraction(t);
+      let score = -Math.abs(w - 0.12) - (w > 0.4 ? 1 : 0) - Math.hypot(t.x + t.size / 2 - 8, t.z + t.size / 2 - 8) * 0.01;
+      if (opts.flat) score += this.tileFlatFraction(t);
+      if (score > bestScore) {
+        bestScore = score;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * FH-11: the medium tile the region screen recommends for a first city ("A good first city"), only while the region
+   * has no city at all (null otherwise). The terrain never changes, so the pick is computed once.
+   */
+  recommendedTile(): RegionTile | null {
+    if (this.data.tiles.some((t) => t.city)) return null;
+    this.recommended ??= this.pickNiceTile(2, { flat: true });
+    return this.recommended;
+  }
+  private recommended: RegionTile | undefined;
 
   /** default city config for founding a city on this tile (region terrain) */
   cityConfigFor(tile: RegionTile, partial: Partial<CityConfigData> = {}): CityConfigData {

@@ -120,7 +120,7 @@ export class NetworkTool extends Tool {
       const xFirst = (dx >= dz) !== p.shift;
       path = lPath(this.start, c, xFirst);
     } else path = [c];
-    const key = path.length + ':' + path[0].x + ',' + path[0].z + '>' + c.x + ',' + c.z + (p.shift ? 's' : '') + (this.start ? 'd' : 'h');
+    const key = path.length + ':' + path[0].x + ',' + path[0].z + '>' + c.x + ',' + c.z + (p.shift ? 's' : '') + (this.start ? 'd' : 'h') + ':' + (this.ctx.host.pending?.revision ?? 0);
     if (key !== this.lastKey || force) {
       this.lastKey = key;
       this.path = path;
@@ -206,7 +206,7 @@ export class NetworkTool extends Tool {
   private sideRisk(path: Cell[]): Promise<DemolishRisk | null> | null {
     const pre = this.run(path);
     if (!pre.ok || !pre.demolished?.length) return null;
-    return this.ctx.host.query('sideDemolishRisks', { ids: pre.demolished, fee: pre.demolishFee ?? 0, sandbox: this.ctx.sandbox(), add: this.added(path) });
+    return this.ctx.host.query('sideDemolishRisks', { ids: pre.demolished, fee: pre.demolishFee ?? 0, refund: pre.refund, refundNote: pre.refundNote, sandbox: this.ctx.sandbox(), add: this.added(path) });
   }
 
   private commitPath(path: Cell[], gesture = this.gesture ?? undefined) {

@@ -16,6 +16,8 @@
  * used: it feeds the master directly and would bypass the SFX volume.)
  */
 
+import { OneShotPool, type OneShot } from './oneShot';
+
 export interface FireworksAudioOut {
   /** a live AudioContext (sounds only while it is running) or an OfflineAudioContext (tests / level checks) */
   ctx: BaseAudioContext;
@@ -83,6 +85,7 @@ export class FireworksAudio {
   private glitterBuf: AudioBuffer | null = null;
   private irBuf: AudioBuffer | null = null;
   private voiceEnds: number[] = [];
+  private pool: OneShotPool | null = null;
 
   constructor(getOut: () => FireworksAudioOut | null) {
     this.getOut = getOut;
@@ -92,19 +95,21 @@ export class FireworksAudio {
   launch(sp: FireworksSpatial, whistle: boolean, flight = 2.5, glitter = false): void {
     const c = this.begin(0, 2.4);
     if (!c) return;
+    const nodes = this.pool!.begin();
     const t = c.currentTime + sp.delay + 0.01;
     const g0 = sp.gain * 0.55;
     // mortar thump
-    const out = this.chain(sp, t, 2.6);
+    const out = this.chain(nodes, sp, t, 2.6);
     const thump = c.createOscillator();
     thump.type = 'sine';
     thump.frequency.setValueAtTime(150, t);
     thump.frequency.exponentialRampToValueAtTime(48, t + 0.12);
-    const tg = c.createGain();
+    const tg = nodes.gain();
     env(tg.gain, t, 0.003, 0.18, g0 * 0.9);
     thump.connect(tg).connect(out);
     thump.start(t);
     thump.stop(t + 0.3);
+    nodes.source(thump, t + 0.3);
     const dur = Math.min(flight, 2.2);
     if (whistle) {
       const o = c.createOscillator();
@@ -114,10 +119,10 @@ export class FireworksAudio {
       o.frequency.exponentialRampToValueAtTime(f0 * (1.8 + Math.random() * 0.5), t + dur);
       const lfo = c.createOscillator();
       lfo.frequency.value = 14 + Math.random() * 8;
-      const lg = c.createGain();
+      const lg = nodes.gain();
       lg.gain.value = f0 * 0.015;
       lfo.connect(lg).connect(o.frequency);
-      const wg = c.createGain();
+      const wg = nodes.gain();
       wg.gain.setValueAtTime(0, t);
       wg.gain.linearRampToValueAtTime(g0 * 0.16, t + 0.12);
       wg.gain.setValueAtTime(g0 * 0.16, t + dur - 0.2);
@@ -125,80 +130,90 @@ export class FireworksAudio {
       o.connect(wg).connect(out);
       o.start(t + 0.05);
       o.stop(t + dur + 0.05);
+      nodes.source(o, t + dur + 0.05);
       lfo.start(t + 0.05);
       lfo.stop(t + dur + 0.05);
+      nodes.source(lfo, t + dur + 0.05);
     }
     // swoosh: band-passed noise sweeping up, fading as the shell climbs
     const n = this.noiseSrc(c);
-    const bp = c.createBiquadFilter();
+    const bp = nodes.filter();
     bp.type = 'bandpass';
     bp.Q.value = 1.1;
     bp.frequency.setValueAtTime(450, t);
     bp.frequency.exponentialRampToValueAtTime(2400, t + dur * 0.7);
-    const ng = c.createGain();
+    const ng = nodes.gain();
     ng.gain.setValueAtTime(0, t);
     ng.gain.linearRampToValueAtTime(g0 * (whistle ? 0.18 : 0.42), t + 0.07);
     ng.gain.exponentialRampToValueAtTime(0.0008, t + dur);
     n.connect(bp).connect(ng).connect(out);
     n.start(t, Math.random());
     n.stop(t + dur + 0.1);
+    nodes.source(n, t + dur + 0.1);
     // glitter tail: faint fizz while it rises
     if (glitter && this.glitterBuf) {
       const s = c.createBufferSource();
       s.buffer = this.glitterBuf;
-      const gg = c.createGain();
+      const gg = nodes.gain();
       gg.gain.setValueAtTime(0, t);
       gg.gain.linearRampToValueAtTime(g0 * 0.12, t + 0.2);
       gg.gain.linearRampToValueAtTime(0, t + dur);
       s.connect(gg).connect(out);
       s.start(t, Math.random() * 0.8, dur + 0.1);
+      nodes.source(s, t + dur + 0.1);
     }
+    nodes.finish();
   }
 
   /** size01: shell calibre (0 small .. 1 huge); crackle01 > 0 adds a crackling tail */
   burst(sp: FireworksSpatial, size01: number, crackle01 = 0): void {
     const c = this.begin(2, 3.5);
     if (!c) return;
+    const nodes = this.pool!.begin();
     const t = c.currentTime + sp.delay + 0.01;
     const big = Math.max(0, Math.min(1, size01));
     const g0 = sp.gain * (0.6 + 0.5 * big);
-    const out = this.chain(sp, t, 4 + big * 2, 0.25 + 0.35 * big);
+    const out = this.chain(nodes, sp, t, 4 + big * 2, 0.25 + 0.35 * big);
     // boom: pitched-down sine
     const o = c.createOscillator();
     o.type = 'sine';
     o.frequency.setValueAtTime(90 + 30 * Math.random(), t);
     o.frequency.exponentialRampToValueAtTime(32, t + 0.5 + big * 0.4);
-    const og = c.createGain();
+    const og = nodes.gain();
     env(og.gain, t, 0.004, 0.7 + 1.1 * big, g0 * 0.95);
     o.connect(og).connect(out);
     o.start(t);
     o.stop(t + 2.2 + big);
+    nodes.source(o, t + 2.2 + big);
     // crack: short bright noise burst
     const n = this.noiseSrc(c);
-    const lp = c.createBiquadFilter();
+    const lp = nodes.filter();
     lp.type = 'lowpass';
     lp.frequency.value = 1400 + 1800 * Math.random();
-    const ng = c.createGain();
+    const ng = nodes.gain();
     env(ng.gain, t, 0.002, 0.22 + 0.2 * big, g0 * 0.8);
     n.connect(lp).connect(ng).connect(out);
     n.start(t, Math.random());
     n.stop(t + 0.8);
+    nodes.source(n, t + 0.8);
     // rolling thunder for big (and far) shells
     if (big > 0.35 || sp.distance > 900) {
       const r = this.noiseSrc(c);
-      const rl = c.createBiquadFilter();
+      const rl = nodes.filter();
       rl.type = 'lowpass';
       rl.frequency.value = 180 + 120 * Math.random();
       rl.Q.value = 0.7;
-      const rg = c.createGain();
+      const rg = nodes.gain();
       rg.gain.setValueAtTime(0, t);
       rg.gain.linearRampToValueAtTime(g0 * 0.9 * (0.4 + big), t + 0.12);
       rg.gain.exponentialRampToValueAtTime(0.0008, t + 1.8 + 1.6 * big);
       r.connect(rl).connect(rg).connect(out);
       r.start(t, Math.random());
       r.stop(t + 3.6 + big * 1.6);
+      nodes.source(r, t + 3.6 + big * 1.6);
     }
     if (crackle01 > 0) this.crackle(sp, 0.8 + crackle01 * 1.4, 0.35 + 0.1 * big, 0.35);
+    nodes.finish();
   }
 
   /** pops for `seconds`, starting `offset` s after the (delayed) event */
@@ -214,32 +229,37 @@ export class FireworksAudio {
   salute(sp: FireworksSpatial): void {
     const c = this.begin(2, 3);
     if (!c) return;
+    const nodes = this.pool!.begin();
     const t = c.currentTime + sp.delay + 0.01;
     const g0 = sp.gain * 1.2;
-    const out = this.chain(sp, t, 3.5, 0.5);
+    const out = this.chain(nodes, sp, t, 3.5, 0.5);
     const n = this.noiseSrc(c);
-    const bp = c.createBiquadFilter();
+    const bp = nodes.filter();
     bp.type = 'lowpass';
     bp.frequency.value = 3200;
-    const ng = c.createGain();
+    const ng = nodes.gain();
     env(ng.gain, t, 0.001, 0.16, g0);
     n.connect(bp).connect(ng).connect(out);
     n.start(t, Math.random());
     n.stop(t + 0.5);
+    nodes.source(n, t + 0.5);
     const o = c.createOscillator();
     o.frequency.setValueAtTime(120, t);
     o.frequency.exponentialRampToValueAtTime(30, t + 0.6);
-    const og = c.createGain();
+    const og = nodes.gain();
     env(og.gain, t, 0.002, 1.1, g0 * 0.9);
     o.connect(og).connect(out);
     o.start(t);
     o.stop(t + 1.8);
+    nodes.source(o, t + 1.8);
+    nodes.finish();
   }
 
   /** countdown blip (not spatialized) */
   tick(final = false): void {
     const c = this.begin(1, 1);
     if (!c || !this.bus) return;
+    const nodes = this.pool!.begin();
     const t = c.currentTime + 0.01;
     const o = c.createOscillator();
     o.type = 'sine';
@@ -247,9 +267,9 @@ export class FireworksAudio {
     const o2 = c.createOscillator();
     o2.type = 'sine';
     o2.frequency.value = (final ? 1568 : 1046.5) * 2.01;
-    const g = c.createGain();
+    const g = nodes.gain();
     env(g.gain, t, 0.004, final ? 0.9 : 0.35, 0.16);
-    const g2 = c.createGain();
+    const g2 = nodes.gain();
     g2.gain.value = 0.25;
     o.connect(g);
     o2.connect(g2).connect(g);
@@ -257,14 +277,15 @@ export class FireworksAudio {
     o.start(t);
     o2.start(t);
     o.stop(t + 1.2);
+    nodes.source(o, t + 1.2);
     o2.stop(t + 1.2);
+    nodes.source(o2, t + 1.2);
     if (this.wet) {
-      const s = c.createGain();
+      const s = nodes.gain();
       s.gain.value = 0.3;
       g.connect(s).connect(this.wet);
-      setTimeout(() => s.disconnect(), 2500);
     }
-    setTimeout(() => g.disconnect(), 2500);
+    nodes.finish();
   }
 
   /**
@@ -299,6 +320,8 @@ export class FireworksAudio {
 
   /** drop the output graph (e.g. when leaving the city) */
   dispose(): void {
+    this.pool?.dispose();
+    this.pool = null;
     try {
       this.bus?.disconnect();
       for (const n of this.wetNodes) n.disconnect();
@@ -342,6 +365,8 @@ export class FireworksAudio {
   }
 
   private build(out: FireworksAudioOut): void {
+    this.pool?.dispose();
+    this.pool = new OneShotPool(out.ctx);
     try {
       this.bus?.disconnect();
       for (const n of this.wetNodes) n.disconnect();
@@ -381,34 +406,23 @@ export class FireworksAudio {
   }
 
   /** per-voice output: env -> distance lowpass -> panner -> bus (+ reverb send); auto-disconnects */
-  private chain(sp: FireworksSpatial, t: number, life: number, wetAmt = 0.15): AudioNode {
-    const c = this.ctx!;
-    const input = c.createGain();
-    const lp = c.createBiquadFilter();
+  private chain(nodes: OneShot, sp: FireworksSpatial, t: number, life: number, wetAmt = 0.15): AudioNode {
+    const input = nodes.gain();
+    const lp = nodes.filter();
     lp.type = 'lowpass';
     lp.frequency.value = sp.lowpass;
     lp.Q.value = 0.5;
-    const pan = c.createStereoPanner();
+    const pan = nodes.panner();
     pan.pan.value = sp.pan;
     input.connect(lp).connect(pan).connect(this.bus!);
     let send: GainNode | null = null;
     if (this.wet && wetAmt > 0) {
-      send = c.createGain();
+      send = nodes.gain();
       // far sounds are mostly reverberant
       send.gain.value = wetAmt * (0.5 + Math.min(1, sp.distance / 1500));
       pan.connect(send).connect(this.wet);
     }
-    const ms = (t - c.currentTime + life) * 1000 + 200;
-    setTimeout(() => {
-      try {
-        input.disconnect();
-        lp.disconnect();
-        pan.disconnect();
-        send?.disconnect();
-      } catch {
-        /* ignore */
-      }
-    }, ms);
+    nodes.hold(t + life);
     return input;
   }
 
@@ -422,16 +436,17 @@ export class FireworksAudio {
   private texture(buf: AudioBuffer | null, sp: FireworksSpatial, seconds: number, level: number, offset: number, hp: number): void {
     const c = this.begin(0, seconds + offset);
     if (!c || !buf) return;
+    const nodes = this.pool!.begin();
     const t = c.currentTime + sp.delay + offset + 0.01;
     const dur = Math.min(seconds, buf.duration - 0.1);
-    const out = this.chain(sp, t, dur + 0.5, 0.2);
+    const out = this.chain(nodes, sp, t, dur + 0.5, 0.2);
     const s = c.createBufferSource();
     s.buffer = buf;
     s.playbackRate.value = 0.85 + Math.random() * 0.35;
-    const f = c.createBiquadFilter();
+    const f = nodes.filter();
     f.type = 'highpass';
     f.frequency.value = hp;
-    const g = c.createGain();
+    const g = nodes.gain();
     const g0 = sp.gain * level;
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(g0, t + 0.06);
@@ -439,6 +454,8 @@ export class FireworksAudio {
     g.gain.linearRampToValueAtTime(0, t + dur);
     s.connect(f).connect(g).connect(out);
     s.start(t, Math.random() * Math.max(0, buf.duration - dur - 0.05), dur + 0.05);
+    nodes.source(s, t + (dur + 0.05) / s.playbackRate.value);
+    nodes.finish();
   }
 }
 

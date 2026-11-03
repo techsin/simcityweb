@@ -1,0 +1,436 @@
+From a168442714da67fa12b24a6765d1c7be8a786069 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 28 Oct 2026 07:14:02 +0000
+Subject: [PATCH 11/11] perf(sim): B2 G2 a Building floor for the cold Building
+ loops, typed tier scratch
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+dense1m from load (5 runs) still had services steps of 4.3-8.4 ms without
+a GC pause in them:
+
+- the once-per-pass Building loops (prep's chunks, the stop list, the
+  access seeds) ran at 1-8 µs per building on first executions and after
+  Building-shape deopts, in pieces of up to 5,400 buildings (stop list at
+  0.012 µs per building). params.ts INFRA_BLD_SIZING_US = 0.2: a piece of
+  such a loop holds at most pieceUnits(INFRA_BLD_SIZING_US, 1, budget)
+  buildings (~325 at half INFRA_PIECE_COLD_MS): prep's chunk plan, the
+  stop list, the access seeds and homes, shopB's block sums, the EQ / HQ
+  fallback, the police scan and job sites. Chunk sizes only; the police
+  scan's estimate is back at 0.03 µs per building.
+- the tier engine's per-facility scratch of the current slot (facStart,
+  facEnd, facSig, facSeat) were JS arrays emptied per slot and filled in
+  seat order: an out-of-bounds store deoptimised allocSeats on day 25 and
+  it ran unoptimised for five tier steps (up to 8.4 ms). They are typed
+  arrays grown once; every entry is written before it is read within a
+  slot. reachOf, splatUnion and allocSeats read the facility's id / flags
+  once at their top (reachOf deoptimised ~1,500 times in 40 days on a
+  later read of b.id).
+
+Results are unchanged (b2PiecesServices; its comparison with the frozen
+original skips the four scratch arrays, whose representation differs).
+Exploratory runs (3, from load): services max 2.46 / 2.69 / 2.15 ms in
+days 0-20 / 20-80 / 80-220 (median over runs), the worst 3.59 (prep's
+first chunk on day 1).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KT9tXthEhyzExdUuGEecAJ
+---
+ src/sim/infra/facilities.ts          | 25 +++++----
+ src/sim/infra/params.ts              |  8 +++
+ src/sim/infra/services.ts            | 77 +++++++++++++++++-----------
+ tests/infra/b2PiecesServices.test.ts |  9 +++-
+ 4 files changed, 79 insertions(+), 40 deletions(-)
+
+diff --git a/src/sim/infra/facilities.ts b/src/sim/infra/facilities.ts
+index bdd1828..d308077 100644
+--- a/src/sim/infra/facilities.ts
++++ b/src/sim/infra/facilities.ts
+@@ -40,7 +40,8 @@ import {
+   type TierNeedRun,
+ } from './catchments';
+ import {
+-  AIRPORT_CAP, AIRPORT_PAX_EXP, AIRPORT_PAX_K, COURTHOUSE_POLICE_MUL, CRIME_SPILL, GARBAGE_UNPOWERED, HOLDING_CELLS, JAIL_BEDS,
++  AIRPORT_CAP, AIRPORT_PAX_EXP, AIRPORT_PAX_K, COURTHOUSE_POLICE_MUL, CRIME_SPILL, GARBAGE_UNPOWERED, HOLDING_CELLS, INFRA_BLD_SIZING_US,
++  INFRA_CELL_SIZING_US, JAIL_BEDS,
+   JUSTICE_CRIME_K, JUSTICE_POLICE_K, OVERCROWDED_UTIL, PATIENTS_PER_BED, POLICE_CAP, POLICE_CRIME_BASE, POLICE_JOB_W, RECYCLE_MAX_SHARE, SEAPORT_TRUCKS,
+   SOLAR_SUMMER, SOLAR_WINTER, STAFF_CITY_INFO, STAFF_CITY_MIN, STAFF_FLAG, STAFF_OP_MIN, STAFF_STEP, THERMAL_UNWATERED, UNPOWERED_SERVICE_EFF,
+   UNWATERED_HEALTH_EFF, USE_FACTOR_MIN, USE_FULL, WIND_TURBINE_BASE, WIND_TURBINE_GAIN,
+@@ -247,7 +248,11 @@ function policeCellRange(res: Float32Array, out: Float32Array, crime: Float32Arr
+ }
+ 
+ /** B2: estimated warm µs per unit of the police need run's pieces (services' prep budget; G2 fit, dense1m) */
+-const PN_US = { scan: 0.06, jobs: 0.02, jobCell: 0.004, cell: 0.004, piece: 2 } as const;
++const PN_US = { scan: 0.03, jobs: 0.02, jobCell: 0.004, cell: 0.004, piece: 2 } as const;
++/** the police run's chunks: its Building loops (scan, job sites) and its cell pass at the cold floors (params.ts) */
++const PN_SIZE = {
++  scan: Math.max(PN_US.scan, INFRA_BLD_SIZING_US), jobs: Math.max(PN_US.jobs, INFRA_BLD_SIZING_US), cell: Math.max(PN_US.cell, INFRA_CELL_SIZING_US),
++} as const;
+ /**
+  * B2 (docs/dev/B2_DESIGN.md §4 S_PREP, review 2 item 5b): policeNeed in pieces over services' pass list (the catchments
+  * TierNeedRun) — the monthly scan when stale, by building chunks of `list` (installed at its end, jobNext = the list's
+@@ -270,16 +275,16 @@ class PoliceNeedRun implements TierNeedRun {
+   }
+ 
+   pieceUs(budgetUs: number): number {
+-    const c = (us: number, left: number) => Math.max(0, Math.min(Math.max(1, Math.floor(budgetUs / us)), left)) * us + PN_US.piece;
++    const c = (us: number, size: number, left: number) => Math.max(0, Math.min(Math.max(1, Math.floor(budgetUs / size)), left)) * us + PN_US.piece;
+     switch (this.stage) {
+       case 0: {
+         // (the stale check falls through into the scan or the job sites; side-effect free: no cache is created here)
+         const sc = stateCache.get(this.st);
+-        return !sc || sc.jobNext !== this.st.nextBuildingId ? c(PN_US.scan, this.list.length) : c(PN_US.jobs, sc.jobs.length);
++        return !sc || sc.jobNext !== this.st.nextBuildingId ? c(PN_US.scan, PN_SIZE.scan, this.list.length) : c(PN_US.jobs, PN_SIZE.jobs, sc.jobs.length);
+       }
+-      case 1: return c(PN_US.scan, this.list.length - this.cur);
+-      case 2: return c(PN_US.jobs, this.jobs.length - this.cur);
+-      case 3: return c(PN_US.cell, this.st.cells - this.cur);
++      case 1: return c(PN_US.scan, PN_SIZE.scan, this.list.length - this.cur);
++      case 2: return c(PN_US.jobs, PN_SIZE.jobs, this.jobs.length - this.cur);
++      case 3: return c(PN_US.cell, PN_SIZE.cell, this.st.cells - this.cur);
+       default: return 0;
+     }
+   }
+@@ -293,7 +298,7 @@ class PoliceNeedRun implements TierNeedRun {
+     }
+     switch (this.stage) {
+       case 1: {
+-        const end = Math.min(this.list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.scan)));
++        const end = Math.min(this.list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_SIZE.scan)));
+         scanRange(st, cacheOf(st), this.list, this.cur, end, this.scan);
+         this.cur = end;
+         if (end < this.list.length) return false;
+@@ -310,7 +315,7 @@ class PoliceNeedRun implements TierNeedRun {
+   /** the job sites in chunks: the jobs part of the raster (and the list's compaction, as policeNeed) */
+   private jobSites(budgetUs: number): void {
+     const st = this.st, N = st.size, grid = st.building, out = this.out, list = this.jobs;
+-    const k1 = Math.min(list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.jobs)));
++    const k1 = Math.min(list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_SIZE.jobs)));
+     let n = this.n;
+     for (let k = this.cur; k < k1; k++) {
+       const b = list[k];
+@@ -336,7 +341,7 @@ class PoliceNeedRun implements TierNeedRun {
+   /** the cell pass by ranges; true when the raster is complete */
+   private cells(budgetUs: number): boolean {
+     const C = this.st.cells;
+-    const i1 = Math.min(C, this.cur + Math.max(1, Math.floor(budgetUs / PN_US.cell)));
++    const i1 = Math.min(C, this.cur + Math.max(1, Math.floor(budgetUs / PN_SIZE.cell)));
+     policeCellRange(this.res, this.out, this.st.crime, this.cur, i1);
+     this.cur = i1;
+     if (i1 < C) return false;
+diff --git a/src/sim/infra/params.ts b/src/sim/infra/params.ts
+index 7b4fb2f..19799e8 100644
+--- a/src/sim/infra/params.ts
++++ b/src/sim/infra/params.ts
+@@ -173,6 +173,14 @@ export const INFRA_URGENT_FRAME_MS = 6;
+  * cheap the loop is warm. Chunk sizes only — the estimates keep the loops' own coefficients.
+  */
+ export const INFRA_CELL_SIZING_US = 0.004;
++/**
++ * B2 (G2): the same floor for the once-per-pass Building loops, in estimated µs per building (services prep's chunks, the
++ * stop list, the access seeds and homes, shopB's block sums, the EQ / HQ fallback, the police scan and job sites): their
++ * first executions after a load and the Building-shape deopts ran them at 1-8 µs per building (G2 dense1m: 25-75 x
++ * warm), so a piece holds at most pieceUnits(INFRA_BLD_SIZING_US, 1, budget) buildings (~325 at half
++ * INFRA_PIECE_COLD_MS). Chunk sizes only.
++ */
++export const INFRA_BLD_SIZING_US = 0.2;
+ /** commute above this (min) counts as unreachable for employment purposes */
+ export const MAX_COMMUTE = 110;
+ 
+diff --git a/src/sim/infra/services.ts b/src/sim/infra/services.ts
+index 0ed2c04..69acedb 100644
+--- a/src/sim/infra/services.ts
++++ b/src/sim/infra/services.ts
+@@ -77,7 +77,8 @@ import {
+ import {
+   ACCESS_JOB_EXTRA, ACCESS_JOB_SLOTS, ACCESS_LAND_STEP, ACCESS_PERIOD, ACCESS_UNREACHED, CAR_OVERHEAD, CATCH_COLLEGE_WILL,
+   CLUSTER_BLOCK, CLUSTER_COV, COLLEGE_ADULT_W, EDU_LEGACY_W, EQ_TAU_YEARS, GREEN_NEED_BASE, GREEN_NEED_NORM,
+-  GREEN_NEED_SENIOR, HEALTH_NEED_NORM, HEALTH_NEED_W, HQ_TAU_YEARS, INFRA_CELL_SIZING_US, INFRA_PIECE_COLD_MS, INFRA_PIECE_MS, MAX_COMMUTE, NET_TIME,
++  GREEN_NEED_SENIOR, HEALTH_NEED_NORM, HEALTH_NEED_W, HQ_TAU_YEARS, INFRA_BLD_SIZING_US, INFRA_CELL_SIZING_US, INFRA_PIECE_COLD_MS, INFRA_PIECE_MS,
++  MAX_COMMUTE, NET_TIME,
+   OVERCROWDED_UTIL, PLAY_TEEN_W, RAMP_PENALTY, RES_PER_CS_JOB, ROAD_RADIUS_FACTOR, SHOP_BASE, SHOP_CAP_CELLS, SHOP_FAR, SHOP_NEAR,
+   UNPOWERED_SERVICE_EFF, UNWATERED_HEALTH_EFF,
+ } from './params';
+@@ -162,6 +163,10 @@ const TIER = INFRA_PIECE_MS / 2;
+ function cellUnits(us: number, budget = COLD): number {
+   return pieceUnits(us > INFRA_CELL_SIZING_US ? us : INFRA_CELL_SIZING_US, 1, budget);
+ }
++/** buildings of one piece of a once-per-pass Building loop costing `us` per building (params INFRA_BLD_SIZING_US) */
++function bldUnits(us: number, budget = COLD): number {
++  return pieceUnits(us > INFRA_BLD_SIZING_US ? us : INFRA_BLD_SIZING_US, 1, budget);
++}
+ /**
+  * the absolute scale of the estimates: stepCost = SV_EST x (SC.piece + the piece's units x SC) / 1000. SC sets the
+  * relative costs, so (with the budgets above) the chunk sizes; SV_EST makes the estimate honest warm wall ms without
+@@ -282,11 +287,16 @@ export class ServicesSystem implements SimSystem {
+   private fac: Building[][] = Array.from({ length: NT + 1 }, () => [] as Building[]);
+   private facOp: number[][] = Array.from({ length: NT + 1 }, () => [] as number[]);
+   private facCap: number[][] = Array.from({ length: NT + 1 }, () => [] as number[]);
+-  private facStart: number[] = [];
+-  private facEnd: number[] = [];
+-  /** current shared slot, per facility: seated fraction of its claims, seats taken */
+-  private facSig: number[] = [];
+-  private facSeat: number[] = [];
++  /**
++   * current slot, per facility: its pool range; shared slots: seated fraction of its claims, seats taken. Typed, grown
++   * once (tierInit): every entry of the slot is written (the search writes every range, the seat allocation every
++   * fraction and seat count) before it is read. (G2: pre-B2's JS arrays, emptied per slot and filled in seat order, made
++   * allocSeats deoptimise on an out-of-bounds store and run unoptimised for whole tier steps.)
++   */
++  private facStart = new Int32Array(64);
++  private facEnd = new Int32Array(64);
++  private facSig = new Float64Array(64);
++  private facSeat = new Float64Array(64);
+   /** seat order of the current shared slot (facility indices, best op first, then building id) */
+   private order = new Int32Array(0);
+   private shared: boolean[] = new Array(NT + 1).fill(false);
+@@ -657,6 +667,7 @@ export class ServicesSystem implements SimSystem {
+     const st = sim.state, C = st.cells, N = st.size;
+     const chunk = (us: number, left: number, budget = COLD) => Math.max(0, Math.min(pieceUnits(us, 1, budget), left)) * us;
+     const cells = (us: number, left: number) => Math.max(0, Math.min(cellUnits(us), left)) * us;
++    const blds = (us: number, left: number) => Math.max(0, Math.min(bldUnits(us), left)) * us;
+     const rowsUs = (us: number, rowsLeft: number) => Math.max(0, Math.min(Math.max(1, Math.floor(cellUnits(us) / Math.max(1, N))), rowsLeft)) * us * N;
+     switch (this.stepIdx) {
+       case -1: case S_PREP: return this.prepUs(sim, chunk);
+@@ -671,7 +682,7 @@ export class ServicesSystem implements SimSystem {
+       }
+       case S_STOPS:
+         switch (this.sub) {
+-          case ST_COLLECT_B: return chunk(SC.stopB, this.cur === 0 ? this.snap.n : this.snap.n - this.stopCol.bi);
++          case ST_COLLECT_B: return blds(SC.stopB, this.cur === 0 ? this.snap.n : this.snap.n - this.stopCol.bi);
+           case ST_COLLECT_C: return cells(SC.stopCell, C - this.stopCol.ci);
+           case ST_ATTACH: { const a = this.attachUs(sim); return a > 0 ? a : SC.stopBegin + C * SC.fill; }
+           case ST_BEGIN: return SC.stopBegin + C * SC.fill;
+@@ -680,7 +691,7 @@ export class ServicesSystem implements SimSystem {
+           default: return C * SC.fill;
+         }
+       case S_NIMBY: return this.nimbyRun.active ? this.nimbyRun.pieceUs(pieceBudgetUs(COLD)) : 4 * C * 0.0004;
+-      case S_ACC_SEED: return this.sub === 0 ? C * SC.fill : chunk(SC.seedB, this.snap.n - this.cur);
++      case S_ACC_SEED: return this.sub === 0 ? C * SC.fill : blds(SC.seedB, this.snap.n - this.cur);
+       case S_ACC_SEARCH:
+         if (this.sub === 0) return cells(SC.accSeed, this.cur === 0 ? C : C - this.accRun.seedAt);
+         return chunk(SC.accPop, Math.max(1, this.accRun.queued));
+@@ -689,7 +700,7 @@ export class ServicesSystem implements SimSystem {
+           case AL_INIT: return rowsUs(SC.accInit, N - this.cur);
+           case AL_FWD: case AL_BWD: return rowsUs(SC.chamfer, N - this.cur);
+           case AL_OUT: return rowsUs(SC.accOut, N - this.cur);
+-          case AL_HOMES: return chunk(SC.accHome * 2, this.snap.n - this.cur);
++          case AL_HOMES: return blds(SC.accHome * 2, this.snap.n - this.cur);
+           default: return C * SC.fill;
+         }
+       case S_SHOP_A: return this.sub === 0 ? C * SC.fill + this.nCsSeeds * 0.01 : chunk(SC.shopPop, Math.max(1, this.shopRun.queued));
+@@ -698,7 +709,7 @@ export class ServicesSystem implements SimSystem {
+           case SB_INIT: return rowsUs(SC.shopInit, N - this.cur);
+           case SB_FWD: case SB_BWD: return rowsUs(SC.chamfer, N - this.cur);
+           case SB_POP: return rowsUs(SC.shopBlock, N - this.cur);
+-          case SB_CS: return chunk(SC.shopCs, this.snap.n - this.cur);
++          case SB_CS: return blds(SC.shopCs, this.snap.n - this.cur);
+           case SB_BOX: { const nb = Math.ceil(N / CLUSTER_BLOCK); return nb * nb * SC.shopBox + N * 0.05; }
+           case SB_OUT: return rowsUs(SC.shopOut, N - this.cur);
+           default: return C * SC.fill;
+@@ -711,7 +722,7 @@ export class ServicesSystem implements SimSystem {
+           case FI_TIERS: return rowsUs(SC.tierStat, N - this.cur);
+           case FI_NEEDS: return cells(SC.stale, Math.min(this.tierById.length, this.seenById.length));
+           case FI_STALE: return cells(SC.stale, Math.min(this.tierById.length, this.seenById.length) - this.cur);
+-          case FI_EQHQ: return chunk(SC.eqhq, this.snap.n - this.cur);
++          case FI_EQHQ: return blds(SC.eqhq, this.snap.n - this.cur);
+           default: return SC.end + SC.needs;
+         }
+     }
+@@ -947,7 +958,8 @@ export class ServicesSystem implements SimSystem {
+     this.powById = ensureIdFloat(this.powById as Float32Array<ArrayBuffer>, st);
+     this.seenById = ensureIdFloat(this.seenById as Float32Array<ArrayBuffer>, st);
+     this.passNo = (this.passNo % 1e6) + 1;
+-    this.snap.planBegin(SC.prepB, SC.prepF, pieceBudgetUs(COLD));
++    // (chunks planned with the cold Building floor; PR_BLD's estimate keeps prepB / prepF)
++    this.snap.planBegin(Math.max(SC.prepB, INFRA_BLD_SIZING_US), SC.prepF, pieceBudgetUs(COLD));
+   }
+ 
+   /** zero the back need rasters (native fills, several per piece) */
+@@ -1319,8 +1331,12 @@ export class ServicesSystem implements SimSystem {
+     if (this.shared[k]) this.seat.fill(1);
+     this.poolN = 0;
+     this.curEnt = new Map();
+-    this.facStart.length = 0; this.facEnd.length = 0;
+-    this.facSig.length = 0; this.facSeat.length = 0;
++    const n = this.fac[k].length;
++    if (this.facStart.length < n) {
++      const cap = Math.max(n, this.facStart.length * 2);
++      this.facStart = new Int32Array(cap); this.facEnd = new Int32Array(cap);
++      this.facSig = new Float64Array(cap); this.facSeat = new Float64Array(cap);
++    }
+     this.cursor = 0;
+     this.tierPhase = P_SEARCH;
+     return st.cells * U_INIT;
+@@ -1432,7 +1448,9 @@ export class ServicesSystem implements SimSystem {
+    * mean police over R cells 0.98 -> 0.46 on those days, a deep lot's stored desirability -9 vs raw +49)
+    */
+   private finFoot(st: CityState, room: number): number {
+-    const r = lotMaxRange(this.finBuf, st.size, this.multiRect, this.multi.length, this.finCur, room, FOOT_WORK, this.lotOut);
++    // (at most the cold cell floor's lot cells: a once-per-pass cell loop)
++    const cap = cellUnits(FOOT_WORK * SC.tierUnit) * FOOT_WORK;
++    const r = lotMaxRange(this.finBuf, st.size, this.multiRect, this.multi.length, this.finCur, room < cap ? room : cap, FOOT_WORK, this.lotOut);
+     this.finCur = r;
+     if (r >= this.multi.length) { this.finSub = F_PUBLISH; this.finCur = 0; }
+     return this.lotOut[0];
+@@ -1465,9 +1483,9 @@ export class ServicesSystem implements SimSystem {
+ 
+   /** reach of facility c of slot k into the pool (cached copy or fresh search); returns work units */
+   private reachOf(st: CityState, b: Building, k: number, c: number): number {
+-    const key = keyOf(b);
++    const key = keyOf(b), id = b.id;
+     const cache = this.cache[k];
+-    const e = cache?.ent.get(b.id);
++    const e = cache?.ent.get(id);
+     const off = this.poolN;
+     if (cache && e && e.valid && e.key === key) {
+       const n = e.end - e.start;
+@@ -1476,7 +1494,7 @@ export class ServicesSystem implements SimSystem {
+       this.pW.set(cache.w.subarray(e.start, e.end), off);
+       this.poolN = off + n;
+       this.facStart[c] = off; this.facEnd[c] = off + n;
+-      this.curEnt.set(b.id, { key, start: off, end: off + n, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, road: e.road, valid: true });
++      this.curEnt.set(id, { key, start: off, end: off + n, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, road: e.road, valid: true });
+       return n * U_COPY + 8;
+     }
+     const inf = infoOf(st, b);
+@@ -1501,7 +1519,7 @@ export class ServicesSystem implements SimSystem {
+     }
+     this.poolN = m;
+     this.facStart[c] = off; this.facEnd[c] = m;
+-    this.curEnt.set(b.id, { key, start: off, end: m, x0, z0, x1, z1, road: metric !== 2, valid: true });
++    this.curEnt.set(id, { key, start: off, end: m, x0, z0, x1, z1, road: metric !== 2, valid: true });
+     return n * (metric === 2 ? U_SEARCH / 2 : U_SEARCH) + 16;
+   }
+ 
+@@ -1514,6 +1532,7 @@ export class ServicesSystem implements SimSystem {
+ 
+   /** union tier (police / fire / transit): legacy combination from the pool range; returns work units */
+   private splatUnion(st: CityState, b: Building, k: number, c: number, needL: Float32Array): number {
++    const id = b.id, flags = b.flags;
+     const inf = infoOf(st, b);
+     const transit = k === SLOT_TRANSIT;
+     const s = transit ? inf.covStrength : inf.tierStrength;
+@@ -1535,7 +1554,7 @@ export class ServicesSystem implements SimSystem {
+         cov[i] = 1 - (1 - cov[i]) * (1 - v);
+       }
+     }
+-    if (!transit) this.record(b, inf, S, D, served, op, S < Infinity && D > S ? S : D);
++    if (!transit) this.record(id, flags, inf, S, D, served, op, S < Infinity && D > S ? S : D);
+     return (s1 - s0) * U_ENTRY * 2 + 8;
+   }
+ 
+@@ -1547,6 +1566,7 @@ export class ServicesSystem implements SimSystem {
+     const s0 = this.facStart[c], s1 = this.facEnd[c];
+     this.facSig[c] = 1; this.facSeat[c] = 0;
+     if (s1 <= s0) return 4;
++    const id = b.id, flags = b.flags;
+     const inf = infoOf(st, b);
+     const s = inf.tierStrength;
+     const pIdx = this.pIdx, pW = this.pW, u = this.seat, A = this.A, cov = this.cov;
+@@ -1577,7 +1597,7 @@ export class ServicesSystem implements SimSystem {
+     this.facSig[c] = sig;
+     this.facSeat[c] = seated;
+     // demand of an uncrowded facility = its claims; crowded ones are re-measured in reportDemand
+-    this.record(b, inf, S, D, D * rho, op, seated);
++    this.record(id, flags, inf, S, D, D * rho, op, seated);
+     return 2 * (s1 - s0) * U_ENTRY + 8;
+   }
+ 
+@@ -1611,8 +1631,7 @@ export class ServicesSystem implements SimSystem {
+     return (s1 - s0) * U_REPORT + 14;
+   }
+ 
+-  private record(b: Building, inf: DefInfo, S: number, D: number, served: number, op: number, seated: number): void {
+-    const id = b.id;
++  private record(id: number, flags: number, inf: DefInfo, S: number, D: number, served: number, op: number, seated: number): void {
+     if (id >= this.tierById.length) return;
+     this.tierById[id] = inf.tier + 1;
+     this.seenById[id] = this.passNo;
+@@ -1622,7 +1641,7 @@ export class ServicesSystem implements SimSystem {
+     this.seatById[id] = seated;
+     this.opById[id] = op;
+     this.utilById[id] = S < Infinity && S > 0 ? D / S : 0;
+-    this.powById[id] = !inf.usesPower || (b.flags & BF.Powered) !== 0 ? 1 : 0;
++    this.powById[id] = !inf.usesPower || (flags & BF.Powered) !== 0 ? 1 : 0;
+   }
+ 
+   // ------------------------------------------------------------------------------------------------ transit stops
+@@ -1648,7 +1667,7 @@ export class ServicesSystem implements SimSystem {
+             this.stopCol.begin(this.stops);
+             this.cur = 1;
+           }
+-          if (this.stopCol.buildings(st, this.snap.list, pieceUnits(SC.stopB, 1, COLD))) this.sub = ST_COLLECT_C;
++          if (this.stopCol.buildings(st, this.snap.list, bldUnits(SC.stopB))) this.sub = ST_COLLECT_C;
+           return false;
+         }
+         case ST_COLLECT_C:
+@@ -1711,7 +1730,7 @@ export class ServicesSystem implements SimSystem {
+   /** accessCommute step 1: seeds on frontage road cells (homes: their commute; job sites: CAR_OVERHEAD + 2) */
+   private accSeedPiece(sim: Simulation): boolean {
+     if (this.sub === 0) { this.idist.fill(-1); this.sub = 1; this.cur = 0; return false; }
+-    const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.seedB, 1, COLD));
++    const e = Math.min(this.snap.n, this.cur + bldUnits(SC.seedB));
+     this.accSeedRange(sim, this.cur, e);
+     this.cur = e;
+     return e >= this.snap.n;
+@@ -1821,7 +1840,7 @@ export class ServicesSystem implements SimSystem {
+         return false;
+       }
+       case AL_HOMES: {
+-        const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.accHome * 2, 1, COLD));
++        const e = Math.min(this.snap.n, this.cur + bldUnits(SC.accHome * 2));
+         this.accHomes(st, this.cur, e);
+         this.cur = e;
+         if (e >= this.snap.n) this.sub = AL_PUBLISH;
+@@ -1917,7 +1936,7 @@ export class ServicesSystem implements SimSystem {
+         return false;
+       }
+       case SB_CS: {
+-        const e = Math.min(this.snap.n, this.cur + pieceUnits(SC.shopCs, 1, COLD));
++        const e = Math.min(this.snap.n, this.cur + bldUnits(SC.shopCs));
+         this.shopCsRange(st, this.cur, e);
+         this.cur = e;
+         if (e >= this.snap.n) { this.sub = SB_BOX; this.cur = 0; }
+@@ -2088,7 +2107,7 @@ export class ServicesSystem implements SimSystem {
+           return false;
+         }
+         case FI_EQHQ: {
+-          const bI = this.eqhqRange(st, this.cur, Math.min(this.snap.n, this.cur + pieceUnits(SC.eqhq, 1, COLD)));
++          const bI = this.eqhqRange(st, this.cur, Math.min(this.snap.n, this.cur + bldUnits(SC.eqhq)));
+           this.cur = bI;
+           if (this.eqWp1 || bI >= this.snap.n) this.sub = FI_END;
+           return false;
+diff --git a/tests/infra/b2PiecesServices.test.ts b/tests/infra/b2PiecesServices.test.ts
+index 7796d8a..f2d0a0f 100644
+--- a/tests/infra/b2PiecesServices.test.ts
++++ b/tests/infra/b2PiecesServices.test.ts
+@@ -126,6 +126,12 @@ function svcEdit(c: SvcCity, k: number): void {
+ /** services fields whose content depends on where the pieces fall (the estimates, the clocks, the snapshot's chunk plan),
+  *  and the state reference (the state digest covers the state) */
+ const SV_EXCLUDE = ['lastMs', 'lastPassMs', 'workLeft', 'snap', 'lastState'];
++/**
++ * the tier engine's per-facility scratch of the current slot: JS arrays emptied per slot in the original, typed arrays
++ * grown once in W (every entry is written before it is read within a slot; after a pass they hold the last slot's
++ * scratch). Compared between W runs, not against the original's representation.
++ */
++const SV_SCRATCH = ['facStart', 'facEnd', 'facSig', 'facSeat'];
+ 
+ /** the city digest with systemData per key */
+ function cityDigest(st: CityState): Record<string, string> {
+@@ -302,9 +308,10 @@ describe('B2 G2 services: a pass in one go = in pieces = the frozen pre-B2 pass'
+     it(`${name}: production and random pieces = the frozen original (41ae570), every original field`, () => {
+       // (the original's own field names: W's new piece fields have no counterpart; the estimates / clocks differ by design)
+       const orig = withPieceScale(1, () => svcSim(mk(), systems, true));
+-      const keys = Object.keys(orig.svc).filter((k) => !SV_EXCLUDE.includes(k));
++      const keys = Object.keys(orig.svc).filter((k) => !SV_EXCLUDE.includes(k) && !SV_SCRATCH.includes(k));
+       const w = withPieceScale(1, () => svcSim(mk(), systems));
+       const onlyW = Object.keys(w.svc).filter((k) => !keys.includes(k));
++      expect(SV_SCRATCH.every((k) => k in orig.svc && k in w.svc)).toBe(true);
+       const ref = runPasses(mk, systems, passes, 1, { orig: true, exclude: Object.keys(orig.svc).filter((k) => !keys.includes(k)) });
+       expectSameRuns(ref, runPasses(mk, systems, passes, 1, { exclude: onlyW }), `${name} production vs original`);
+       expectSameRuns(ref, runPasses(mk, systems, passes, 'random', { exclude: onlyW }), `${name} random vs original`);
+-- 
+2.43.0
+
