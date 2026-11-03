@@ -18,6 +18,7 @@ import { getDef } from '../../sim/catalog';
 import type { BuildingDef } from '../../sim/catalogTypes';
 import { facilityDefFacts } from '../../sim/infra/facilities';
 import { lotTouchesRoad } from '../../sim/economy/buildings';
+import { WIND_SPACING } from '../../sim/economy/tuning';
 import { EMG_FIRE } from '../../sim/infra/overlays';
 import type { GameContext } from '../context';
 import { escapeHtml } from '../../ui/dom';
@@ -238,6 +239,16 @@ export class PlopTool extends Tool {
       this.spotNotes(pl.x, pl.z, w, d, pl.rot);
       const cells = this.res.cells && this.res.cells.length ? [...this.res.cells] : [];
       if (!cells.length) for (let z = pl.z; z < pl.z + d; z++) for (let x = pl.x; x < pl.x + w; x++) cells.push({ x, z, ok });
+      if (this.def.id === 'util_wind_turbine') {
+        // The sim uses Chebyshev spacing: show its square clearance, including diagonal conflicts.
+        const gap = WIND_SPACING - 1, st = this.ctx.state;
+        const x0 = pl.x - gap, z0 = pl.z - gap, x1 = pl.x + w + gap - 1, z1 = pl.z + d + gap - 1;
+        for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
+          if (!st.inBounds(x, z) || x >= pl.x && x < pl.x + w && z >= pl.z && z < pl.z + d) continue;
+          const conflict = st.buildingAt(x, z)?.def === this.def.id;
+          if (conflict || x === x0 || x === x1 || z === z0 || z === z1) cells.push({ x, z, ok: !conflict });
+        }
+      }
       // the stops a garage would serve / the terminals a ferry would link to, lit up on the map
       for (const id of this.previewTargets(pl.x, pl.z, pl.rot)) {
         const b = this.ctx.state.buildings.get(id);
@@ -246,10 +257,11 @@ export class PlopTool extends Tool {
       this.ctx.world.setHighlight(cells);
     }
     const facing = this.manual ? 'R rotate' : this.facingWater ? 'Auto-facing water · R rotate' : 'Auto-facing road · R rotate';
+    const spacing = this.def.id === 'util_wind_turbine' ? `Keep ${WIND_SPACING - 1} empty tiles between turbines (marked ring)` : '';
     // FH-05: what it does to the monthly budget at the upkeep quoted above (a placeable spot only; red below zero)
     const be = this.res?.ok ? safe(() => budgetEffect(this.ctx.state, this.def, this.upkeepMo, this.ctx.sandbox()), null) : null;
     const budget = be ? `<div class="${be.bad ? 'tip-reason' : 'tip-sub'}">Monthly budget: ${escapeHtml(be.text)}${be.reserves ? ` · ${escapeHtml(be.reserves)}` : ''}</div>` : '';
-    const t = resultTip(this.def.name, this.shown(), [this.upkeep, facing].filter(Boolean).map(escapeHtml).join(' · '), budget);
+    const t = resultTip(this.def.name, this.shown(), [this.upkeep, facing, spacing].filter(Boolean).map(escapeHtml).join(' · '), budget);
     const pv = this.place ? this.placementPreview(this.place.x, this.place.z, this.place.rot) : '';
     // (a staffed service without a road is placeable but won't work: a red line and a red tip, P8)
     const bad = this.noRoad ? `<div class="tip-reason">${escapeHtml(NO_ROAD_STAFFED)}</div>` : '';

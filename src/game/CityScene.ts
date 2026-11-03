@@ -287,6 +287,7 @@ export class CityScene {
     this.onboarding = new Onboarding(ctx, tl, {
       celebrating: () => this.newYear?.busy ?? false,
       openWhy: () => this.info?.guideWhy((id) => this.onboarding.whyExpanded(id)),
+      mark: (target) => this.toolbar.setCoachItems(target?.items ?? []),
       coach: (cats, play) => {
         this.toolbar.setCoach(cats);
         this.topBar.setCoachPlay(play);
@@ -300,6 +301,7 @@ export class CityScene {
       objects: () => this.objects,
       settings: () => this.settings,
       toast: (text, kind, cell, title, opts) => this.toasts.show(text, kind, cell, title, opts),
+      yearFeedback: (text) => this.onboarding.yearFeedback(text),
       sound: (n) => this.sound(n),
       audio: () => this.mods.audio,
       overlayRoot: this.uiRoot,

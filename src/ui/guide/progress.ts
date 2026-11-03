@@ -1,27 +1,7 @@
 /** Serializable guide progress. The host owns the saved copy; the card only edits its own snapshot. */
 import { loadPref, savePref } from '../../game/settings';
-
-export const FOUNDING_IDS = ['road', 'zones', 'power', 'water', 'play'] as const;
-export const GOAL_IDS = ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9', 'G10'] as const;
-export type FoundingId = typeof FOUNDING_IDS[number];
-export type GoalId = typeof GOAL_IDS[number];
-export type GuideId = FoundingId | GoalId;
-
-export interface GuideProgress {
-  version: 1;
-  phase: 'founding' | 'year' | 'complete';
-  completed: GuideId[];
-  started: GoalId[];
-  startDay: number;
-  dismissed: boolean;
-  minimised: boolean;
-  budgetOpened: boolean;
-  solventMonths: number;
-  lastBudgetMonth: number | null;
-  whyOpened: boolean;
-  powerMarginSince: number | null;
-  lastExplainerDay: number | null;
-}
+import { FOUNDING_IDS, GOAL_IDS, type GoalId, type GuideId, type GuideProgress } from '../../core/onboarding';
+export { FOUNDING_IDS, GOAL_IDS, type FoundingId, type GoalId, type GuideId, type GuideProgress } from '../../core/onboarding';
 
 export interface GuideProfile {
   version: 1;

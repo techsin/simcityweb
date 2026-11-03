@@ -45,6 +45,8 @@ export interface NewYearDeps {
   objects: () => CityObjectsViewApi;
   settings: () => GameSettings;
   toast: (text: string, kind?: string, cell?: { x: number; z: number }, title?: string, opts?: { silent?: boolean; ttl?: number }) => void;
+  /** Append first-time guide feedback to this year's existing toast, without a second notification. */
+  yearFeedback?: (text: string) => string;
   /** UI sound by name (optional) */
   sound?: (name: string) => void;
   /** the audio engine (fireworks audio uses its getSfxOutput()) */
@@ -350,13 +352,13 @@ export class NewYearCelebration {
     try {
       if (o.fanfare === false) {
         // (silent: a 'reward' toast would otherwise play the fanfare's sound itself)
-        this.deps.toast(this.statsLine(year), 'reward', undefined, `🎆 Happy New Year ${year}!`, { silent: true });
+        this.deps.toast(this.feedback(this.statsLine(year)), 'reward', undefined, `🎆 Happy New Year ${year}!`, { silent: true });
         return;
       }
       // fanfare first: the toast then stays quiet instead of requesting it again (and the fanfare can't be lost to the
       // toast's "a sound just played" rule when the month's budget tick lands on the same boundary)
       this.deps.sound?.('reward');
-      this.deps.toast(this.statsLine(year), 'reward', undefined, `🎆 Happy New Year ${year}!`);
+      this.deps.toast(this.feedback(this.statsLine(year)), 'reward', undefined, `🎆 Happy New Year ${year}!`);
     } catch {
       /* ignore */
     }
@@ -366,11 +368,13 @@ export class NewYearCelebration {
   private compactToast(year: number): void {
     if (this.deps.settings().toasts === false) return;
     try {
-      this.deps.toast(this.compactLine(year), 'reward', undefined, 'New Year', { silent: true, ttl: NEW_YEAR_PACING.compactTtlMs });
+      this.deps.toast(this.feedback(this.compactLine(year)), 'reward', undefined, 'New Year', { silent: true, ttl: NEW_YEAR_PACING.compactTtlMs });
     } catch {
       /* ignore */
     }
   }
+
+  private feedback(text: string): string { return this.deps.yearFeedback?.(text) ?? text; }
 
   /** real seconds per game year at the current sim speed (Infinity while paused / unknown) */
   private yearSeconds(): number {

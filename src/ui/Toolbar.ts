@@ -5,6 +5,7 @@ import { CATEGORIES, CATEGORY_COLORS, categoryOfTool, findToolSpec, type ToolCat
 import { budgetEffect } from '../game/tools/Tool';
 import type { BuildingDef } from '../sim/catalogTypes';
 import { facilityDefFacts } from '../sim/infra/facilities';
+import { WIND_TURBINE_BASE, WIND_TURBINE_GAIN } from '../sim/infra/params';
 import { opexTierOf } from '../sim/economy/opex';
 import { upkeepEstimate } from './upkeepModel';
 import { BRIDGE_COST_MUL, NETWORK_INFO, POWERLINE_COST, SUBWAY_COST, networkCellCost, zoneCellCost } from '../sim/economy/tuning';
@@ -13,6 +14,7 @@ import { icon } from './icons';
 import { money, num, titleCase } from './format';
 import { thumbs } from './thumbs';
 import { uiZoom } from './zoom';
+import { WIND_START } from './guide/founding';
 
 const CAT_LABELS: Record<string, string> = {
   power: 'Power', water: 'Water', garbage: 'Garbage', police: 'Police', fire: 'Fire', health: 'Health', education: 'Education',
@@ -55,6 +57,7 @@ export class Toolbar {
   private tip: HTMLDivElement;
   private btns = new Map<string, HTMLButtonElement>();
   private openCat: string | null = null;
+  private coachItems = new Set<string>();
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'hud-bottom' });
@@ -97,6 +100,12 @@ export class Toolbar {
   /** onboarding coach marks: pulse these category buttons */
   setCoach(catIds: string[]): void {
     for (const [id, b] of this.btns) toggleClass(b, 'coach', catIds.includes(id));
+  }
+
+  /** Exact tool ids survive flyout/tab rebuilds; the scene forwards GuideHooks.mark here. */
+  setCoachItems(ids: string[]): void {
+    this.coachItems = new Set(ids);
+    for (const el of this.flyout.querySelectorAll<HTMLElement>('.fly-item')) toggleClass(el, 'coach', this.coachItems.has(el.dataset.toolId ?? ''));
   }
 
   get flyoutOpen(): boolean {
@@ -209,7 +218,12 @@ export class Toolbar {
       // "typical in this city · up to §B at full use", the plop tool what it costs at the cursor)
       const est = upkeepEstimate(this.ctx.state, spec.def);
       const up = est ? `<span class="up" title="${escapeHtml(est.title)}">≈${money(est.now)}/mo</span>` : `<span class="up">${spec.upkeep ? `${money(spec.upkeep)}/mo` : spec.income ? `+${money(spec.income)}/mo` : '&nbsp;'}</span>`;
-      return `<span>${cost}</span>${up}`;
+      const d = spec.def, pw = d.powerOut ?? 0;
+      const mw = (v: number) => v.toLocaleString('en-US', { maximumFractionDigits: 1 });
+      const output = pw <= 0 ? '' : d.id === 'util_wind_turbine'
+        ? `${mw(pw * WIND_TURBINE_BASE)} MW flat · up to ${mw(pw * (WIND_TURBINE_BASE + WIND_TURBINE_GAIN))} on hills`
+        : `${mw(pw)} MW`;
+      return `<span>${cost}</span>${output ? `<span class="fly-output" style="display:block;max-width:calc(var(--fly-w) - 12px);white-space:normal">${output}</span>` : ''}${up}`;
     }
     if (spec.costUnit) {
       const c = this.perTileCost(spec);
@@ -219,6 +233,12 @@ export class Toolbar {
   }
 
   // ------------------------------------------------------------------------------------------------ flyout
+  private powerNeed(items: ToolSpec[]): HTMLElement | null {
+    return items.some((s) => s.def?.category === 'power' && s.def.powerOut)
+      ? h('div', { class: 'sec-title fly-power-need' }, `Your town uses about 1 MW per ${num(WIND_START.residentsPerMW)} residents`)
+      : null;
+  }
+
   private renderFlyout(c: ToolCategory): void {
     clear(this.flyout);
     let groups = [] as ReturnType<NonNullable<ToolCategory['groups']>>;
@@ -253,13 +273,13 @@ export class Toolbar {
       const items = h('div', { class: 'fly-items wide' });
       if (!g.items.length) items.appendChild(h('div', { class: 'fly-empty' }, 'Nothing available yet'));
       for (const s of g.items) items.appendChild(this.item(s, s.id === active));
-      wrap.appendChild(h('div', { class: 'fly-group' }, items));
+      wrap.appendChild(h('div', { class: 'fly-group' }, this.powerNeed(g.items), items));
     } else {
       for (const g of groups) {
         const items = h('div', { class: 'fly-items' + (groups.length === 1 ? ' wide' : '') });
         if (!g.items.length) items.appendChild(h('div', { class: 'fly-empty' }, 'Nothing available yet'));
         for (const s of g.items) items.appendChild(this.item(s, s.id === active));
-        wrap.appendChild(h('div', { class: 'fly-group' }, h('div', { class: 'sec-title', html: (g.icon ? icon(g.icon, 13) : '') + `<span>${escapeHtml(g.label)}</span>` }), items));
+        wrap.appendChild(h('div', { class: 'fly-group' }, h('div', { class: 'sec-title', html: (g.icon ? icon(g.icon, 13) : '') + `<span>${escapeHtml(g.label)}</span>` }), this.powerNeed(g.items), items));
       }
     }
     this.flyout.append(head, wrap);
@@ -278,7 +298,7 @@ export class Toolbar {
       if (cached) put(cached);
       else if (cached === undefined) thumbs.get(def.model, def.footprint).then(put);
     }
-    const el = h('div', { class: 'fly-item' + (active ? ' active' : '') + (s.locked ? ' locked' : '') + (s.disabled ? ' disabled' : ''), style: { '--c': color } as Record<string, string> },
+    const el = h('div', { class: 'fly-item' + (active ? ' active' : '') + (s.locked ? ' locked' : '') + (s.disabled ? ' disabled' : '') + (this.coachItems.has(s.id) ? ' coach' : ''), dataset: { toolId: s.id }, style: { '--c': color } as Record<string, string> },
       thumb,
       h('div', { class: 'fly-name' + (s.label.length <= 13 ? ' one' : '') }, s.label),
       h('div', { class: 'fly-cost', html: this.costLine(s) }),

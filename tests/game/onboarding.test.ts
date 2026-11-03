@@ -5,6 +5,7 @@ import { DAYS_PER_MONTH } from '../../src/core/constants';
 import { Emitter } from '../../src/core/events';
 import { Network, Overlay, Zone } from '../../src/core/types';
 import type { GameContext, UIEvents } from '../../src/game/context';
+import { deserializeCity, serializeCity } from '../../src/save/serialize';
 import { BF, type CityState } from '../../src/sim/CityState';
 import { getDef } from '../../src/sim/catalog';
 import { updateNeighborConnections } from '../../src/sim/economy/connections';
@@ -319,19 +320,20 @@ describe('FH-02 goal predicates', () => {
     i.facts.brownout = false; expect(goalAppears('G10', i)).toBe(false);
   });
 
-  it('reads resident-weighted police and guarded auto-dispatch fire layers through host views', () => {
+  it('uses queried coverage facts instead of view-dependent replica layers', () => {
     const st = newState(128);
     place(st, 't_r1', 5, 5, { pop: 10, flags: BF.Powered });
     place(st, 't_r1', 10, 5, { pop: 30, flags: BF.NoGarbage });
-    const plant = place(st, 'util_gas_plant', 20, 20, { flags: BF.Plopped });
+    place(st, 'util_gas_plant', 20, 20, { flags: BF.Plopped });
     st.policeCov[st.idx(5, 5)] = 1;
     st.respFire.fill(2);
     const f = setup(st), first = goalFacts(f.host);
-    expect(first).toMatchObject({ policeAtHomes: 0.25, fireCovered: 0, fuelCovered: false, noGarbage: true, brownout: true });
-    const host = { state: st, emergency: { ...f.host.emergency, active: true, layersReady: true } };
-    expect(goalFacts(host)).toMatchObject({ fireCovered: 1, fuelCovered: true });
-    st.respFire[st.idx(plant.x + (plant.w >> 1), plant.z + (plant.d >> 1))] = -99;
-    expect(goalFacts(host)).toMatchObject({ fuelCovered: false });
+    expect(first).toMatchObject({ policeAtHomes: 0, fireCovered: 0, fuelCovered: false, noGarbage: true, brownout: true });
+    const coverage = { policeAtHomes: 0.25, fireCovered: 1, fuelCovered: true };
+    expect(goalFacts(f.host, coverage)).toMatchObject(coverage);
+    st.policeCov.fill(0); st.respFire.fill(-99);
+    expect(goalFacts(f.host, coverage)).toMatchObject(coverage);
+    expect(goalFacts(f.host, { ...coverage, fuelCovered: false })).toMatchObject({ fuelCovered: false });
   });
 
   it('keeps at most two goals visible, prioritises power, and permits G10 after handover', () => {
@@ -423,17 +425,46 @@ describe('FH-02 goal predicates', () => {
 });
 
 describe('FH-22 progress and profile boundaries', () => {
-  it('restores a supplied G4 snapshot, including its timing fields, without mutating the host state', () => {
+  it('restores a G4 snapshot, retains detached copies and saves minimise and dismissal through the host', () => {
     const st = yearState(), p = newProgress(0); p.phase = 'year'; p.completed = [...FOUNDING_IDS, 'G1', 'G2', 'G3']; p.started = ['G4'];
     p.powerMarginSince = 0; p.lastExplainerDay = 0; st.systemData.onboarding = p; st.stats.population = 800;
     const before = structuredClone(p), f = setup(st);
     expect(goalRows(f)[0].dataset.guideId).toBe('G4');
     f.card.setMinimised(true); f.card.hide(true); f.card.show(false);
     expect(f.card.progress.phase).toBe('year');
-    expect(st.systemData.onboarding).toEqual(before);
+    expect(st.systemData.onboarding).toEqual(f.card.progress);
+    expect(st.systemData.onboarding).not.toBe(p);
+    expect(p).toEqual(before);
     const detached = f.card.progress; detached.completed.length = 0;
     expect(f.card.progress.completed).toContain('G3');
     expect(readProgress(JSON.parse(JSON.stringify(before)), st.day)).toEqual(before);
+  });
+
+  it('sends changed snapshots with a tag and settled one-off gesture, including hidden event and timer changes', async () => {
+    const st = yearState(); (st.systemData.onboarding as ReturnType<typeof newProgress>).started.push('G10');
+    const f = setup(st), act = vi.spyOn(f.host, 'act');
+    f.card.hide(true);
+    expect(stored()).toMatchObject({ dismissed: true });
+    f.card.setMinimised(true);
+    expect(stored()).toMatchObject({ minimised: true });
+    f.ctx.ui.emit('panel', { id: 'budget', open: true });
+    expect(stored()).toMatchObject({ budgetOpened: true });
+    f.st.stats.powerDemand = 8; f.st.stats.powerSupply = 12; f.st.day = 30;
+    f.host.events.emit('day', 30);
+    expect(stored()).toMatchObject({ powerMarginSince: 30 });
+    f.st.budget.lastIncome = { 'tax:R$': 100 }; f.st.budget.lastExpense = {};
+    f.host.events.emit('month', 1);
+    expect(stored()).toMatchObject({ solventMonths: 1, lastBudgetMonth: 1 });
+    const calls = act.mock.calls.filter(([op]) => op === 'setOnboarding');
+    expect(calls).toHaveLength(5);
+    for (const [, , opts] of calls) {
+      expect(opts?.tag).toBe(f.card);
+      expect(opts?.gesture).toBeDefined();
+      await expect(opts!.gesture!.settled).resolves.toBeUndefined();
+    }
+    f.host.events.emit('day', 30); f.host.events.emit('month', 1); tick(f);
+    expect(act.mock.calls.filter(([op]) => op === 'setOnboarding')).toHaveLength(5);
+    function stored() { return f.host.state.systemData.onboarding; }
   });
 
   it('shows a second city unless all cities was chosen; city dismissal leaves profile tips enabled', () => {
@@ -454,6 +485,36 @@ describe('FH-22 progress and profile boundaries', () => {
     localStorage.setItem('metropolis.ui.onboarding', JSON.stringify({ dismissed: true, min: true }));
     const old = setup(); expect(old.card.isVisible).toBe(false); expect(old.card.isMinimised).toBe(true);
     expect(loadGuideProfile().dismissedAll).toBe(true);
+  });
+
+  it('leaves a mature old save unenrolled through hidden events and reload until Help opens its guide', () => {
+    const st = newState(128); st.stats.population = 300;
+    const f = setup(st);
+    expect(f.card.isVisible).toBe(false);
+    st.day = 30; f.host.events.emit('day', 30); f.host.events.emit('month', 1);
+    f.ctx.ui.emit('panel', { id: 'budget', open: true }); tick(f);
+    expect(Object.hasOwn(st.systemData, 'onboarding')).toBe(false);
+    const loaded = deserializeCity(serializeCity(f.host.sim.state, { copy: true }));
+    f.abort.abort('reload');
+    const again = setup(loaded);
+    expect(again.card.isVisible).toBe(false);
+    expect(Object.hasOwn(loaded.systemData, 'onboarding')).toBe(false);
+    again.card.show(false);
+    expect(again.card.isVisible).toBe(true);
+    expect(loaded.systemData.onboarding).toEqual(again.card.progress);
+  });
+
+  it('does not enrol a new city while the profile suppresses its guide until Help opens it', () => {
+    for (const field of ['dismissedAll', 'veteran'] as const) {
+      const profile = loadGuideProfile(); profile.dismissedAll = false; profile.veteran = false; profile[field] = true;
+      saveGuideProfile(profile);
+      const f = setup();
+      expect(f.card.isVisible).toBe(false);
+      f.st.day = 30; f.host.events.emit('month', 1);
+      expect(Object.hasOwn(f.st.systemData, 'onboarding')).toBe(false);
+      f.card.show(false);
+      expect(f.st.systemData.onboarding).toEqual(f.card.progress);
+    }
   });
 
   it('rejects malformed / future progress and keeps unknown or duplicated ids out of current progress', () => {

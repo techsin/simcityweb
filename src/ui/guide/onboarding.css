@@ -16,3 +16,6 @@
 .onboard .ob-foot { flex-wrap: wrap; gap: 6px; }
 .onboard .ob-step[hidden], .onboard .ob-tip[hidden], .onboard .ob-dismiss[hidden] { display: none; }
 .onboard .ob-tip-actions > [hidden] { display: none; }
+
+.fly-item.coach { border-color: #7cd4ff; }
+.fly-item.coach::before { content: ''; position: absolute; inset: -3px; border: 2px solid #7cd4ff; border-radius: inherit; animation: coach 1.4s ease-out infinite; pointer-events: none; }

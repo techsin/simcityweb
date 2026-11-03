@@ -4,7 +4,7 @@ import type { GameContext } from '../game/context';
 import { getDef } from '../sim/catalog';
 import { APPROVAL_LABELS } from '../sim/economy/approval';
 import type { LandfillInfo } from '../sim/infra/pollution';
-import { watchFor, type QueryResult, type WatchHandle } from '../worker/SimHost';
+import { Gesture, watchFor, type QueryResult, type WatchHandle } from '../worker/SimHost';
 import { h, setText, toggleClass } from './dom';
 import { icon } from './icons';
 import { guideCopy, type ZoneTargets } from './guide/copy';
@@ -46,9 +46,12 @@ export class Onboarding {
   private facts: GoalFacts;
   private targets: ZoneTargets;
   private p: GuideProgress;
+  private enrolled = false;
+  private lastProgress = '';
   private profile = loadGuideProfile();
   private explainers: ExplainerQueue;
   private budgetWatch?: WatchHandle<QueryResult<'computeMonthlyBudget'>>;
+  private coverageWatch?: WatchHandle<QueryResult<'guideFacts'>>;
   private caps?: WatchHandle<QueryResult<'capHints'>>;
   private landfill: LandfillInfo[] = [];
   private landfillPending = false;
@@ -63,7 +66,9 @@ export class Onboarding {
   constructor(private ctx: GameContext, parent: HTMLElement, private hooks: GuideHooks) {
     const st = ctx.host.state, saved = readProgress(st.systemData.onboarding, st.day);
     this.p = saved ?? newProgress(st.day);
+    this.enrolled = !!saved;
     if (!saved) this.p.minimised = this.profile.min;
+    if (saved) this.lastProgress = JSON.stringify(this.p);
     this.targets = zoneTargets(st);
     this.facts = goalFacts(ctx.host);
     this.lastFacts = performance.now();
@@ -74,8 +79,8 @@ export class Onboarding {
     this.setMinimised(this.p.minimised, false);
     this.viewSince = ctx.overlay === Overlay.None ? null : performance.now();
     const offs = [
-      ctx.host.events.on('day', () => trackPower(ctx.host.state, this.p)),
-      ctx.host.events.on('month', () => trackBudget(ctx.host.state, this.p)),
+      ctx.host.events.on('day', () => { trackPower(ctx.host.state, this.p); this.persistProgress(); }),
+      ctx.host.events.on('month', () => { trackBudget(ctx.host.state, this.p); this.persistProgress(); }),
       ctx.host.events.on('speedChanged', () => { if (!this.changingSpeed && ctx.host.cause?.tag !== this) this.pauseRestore = null; }),
       watchGuideTips((on) => {
         this.profile.tips = on;
@@ -86,7 +91,7 @@ export class Onboarding {
       ctx.host.events.on('terrainChanged', () => { this.targets = zoneTargets(ctx.host.state); this.clearHint(); }),
       // ToolController has already cleared the old tool and drawn the next preview when this event arrives.
       ctx.ui.on('tool', () => { this.hintShown = false; }),
-      ctx.ui.on('panel', ({ id, open }) => { if (id === 'budget' && open) this.p.budgetOpened = true; }),
+      ctx.ui.on('panel', ({ id, open }) => { if (id === 'budget' && open) { this.p.budgetOpened = true; this.persistProgress(); } }),
       ctx.ui.on('overlay', (overlay) => { this.viewSince = overlay === Overlay.None ? null : performance.now(); }),
       ctx.ui.on('query', (target) => {
         if (!this.visible || this.p.whyOpened) return;
@@ -111,16 +116,32 @@ export class Onboarding {
     else ctx.signal.addEventListener('abort', dispose, { once: true });
     const young = st.stats.population < 300 && st.buildings.size < 40;
     if (!ctx.signal.aborted && !this.profile.dismissedAll && !this.profile.veteran && !this.p.dismissed && (saved || young)) this.show(false);
+    this.persistProgress();
   }
 
-  /** Detached data for FH-22's pending host command. No replica writes here. */
+  /** Detached data; saved copies reach the simulation only through setOnboarding. */
   get progress(): GuideProgress { return structuredClone(this.p); }
   get isMinimised(): boolean { return this.p.minimised; }
   get isVisible(): boolean { return this.visible; }
 
+  private persistProgress(): void {
+    if (this.ctx.signal.aborted || !this.enrolled) return;
+    const key = JSON.stringify(this.p);
+    if (key === this.lastProgress) return;
+    this.lastProgress = key;
+    // A hidden timer is its own commit; it must not end an in-progress placement gesture.
+    const gesture = new Gesture(this);
+    try {
+      const ticket = this.ctx.host.act('setOnboarding', [this.progress], { tag: this, gesture });
+      void ticket.done.then((ok) => { if (!ok && this.lastProgress === key) this.lastProgress = ''; },
+        () => { if (this.lastProgress === key) this.lastProgress = ''; });
+    } finally { gesture.end(); }
+  }
+
   /** Help reopens the current phase without resetting any completed step. */
   show(sound = true): void {
     if (this.ctx.signal.aborted) return;
+    this.enrolled = true;
     if (sound && !this.visible) this.ctx.sound('open');
     this.visible = true;
     this.p.dismissed = false;
@@ -136,11 +157,13 @@ export class Onboarding {
     this.dismissal.hidden = true;
     this.closeExplainer();
     this.budgetWatch?.dispose(); this.budgetWatch = undefined;
+    this.coverageWatch?.dispose(); this.coverageWatch = undefined;
     this.caps?.dispose(); this.caps = undefined;
     this.landfillEpoch++;
     this.lastFacts = -Infinity;
     this.clearHint();
     this.coach(null);
+    this.persistProgress();
   }
 
   setMinimised(on: boolean, remember = true): void {
@@ -149,17 +172,26 @@ export class Onboarding {
     toggleClass(this.el, 'min', on);
     if (remember) { this.profile.min = on; saveGuideProfile(this.profile); }
     if (on) { this.closeExplainer(); this.clearHint(); this.coach(null); }
+    this.persistProgress();
   }
 
   /** Inspector owner calls this after expanding Why?, not merely after a Query click. */
   whyExpanded(buildingId: number): void {
     if (this.ctx.signal.aborted) return;
     const b = this.ctx.host.state.buildings.get(buildingId);
-    if (b && getDef(b.def)?.category === 'growable') this.p.whyOpened = true;
+    if (b && getDef(b.def)?.category === 'growable') { this.p.whyOpened = true; this.persistProgress(); }
   }
 
   /** Emergency, finance, news and year-review owners share this queue and its pacing. */
   offerExplainer(tip: Explainer): void { if (!this.ctx.signal.aborted) this.explainers.offer(tip); }
+
+  /** E11 belongs in the existing year-end toast, with the same profile memory as other tips. */
+  yearFeedback(text: string): string {
+    if (this.ctx.signal.aborted || !this.profile.tips || this.profile.seenExplainers.includes('E11')) return text;
+    this.profile.seenExplainers.push('E11');
+    saveGuideProfile(this.profile);
+    return `${text} ${guideCopy.phaseD.E11()}`;
+  }
 
   setTips(on: boolean): void {
     if (this.ctx.signal.aborted) return;
@@ -374,6 +406,10 @@ export class Onboarding {
       this.lastFacts = now;
       this.refreshLandfill();
     }
+    if (this.p.phase !== 'founding' && (!this.p.completed.includes('G3') || !this.p.completed.includes('G4'))) {
+      this.coverageWatch ??= watchFor(this.ctx.host, 'guideFacts', {}, 'change', this.ctx.signal);
+      Object.assign(this.facts, this.coverageWatch.value ?? { policeAtHomes: 0, fireCovered: 0, fuelCovered: false });
+    } else { this.coverageWatch?.dispose(); this.coverageWatch = undefined; }
     const celebrating = this.hooks.celebrating?.() ?? false;
     for (const row of this.rows.values()) row.el.hidden = true;
     let action: GuideAction | null = null, fresh = false;
@@ -441,5 +477,6 @@ export class Onboarding {
     const shown = !celebrating && (this.p.phase !== 'complete' || goals.length > 0 || !!this.explainers.current);
     toggleClass(this.el, 'show', shown);
     this.coach(shown && !this.p.minimised ? this.explainers.current?.action ?? action : null);
+    this.persistProgress();
   }
 }

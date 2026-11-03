@@ -6,6 +6,7 @@ import { getDef } from '../../sim/catalog';
 import type { BudgetBreakdown } from '../../sim/economy/budget';
 import type { LandfillInfo } from '../../sim/infra/pollution';
 import type { SimHost } from '../../worker/SimHost';
+import type { GuideFacts } from '../../worker/queries';
 import { guideCopy } from './copy';
 import { openTaxes, toolAction, viewAction, type GuideAction, type GuideHooks } from './coach';
 import { isFuelPlant } from './founding';
@@ -23,29 +24,22 @@ export interface GoalFacts {
 }
 
 /** Refreshed at most once a second, including the NoGarbage counter. */
-export function goalFacts(host: Pick<SimHost, 'state' | 'emergency'>): GoalFacts {
+export function goalFacts(host: Pick<SimHost, 'state'>, coverage?: GuideFacts): GoalFacts {
   const st = host.state;
   let noGarbage = false, brownout = false, fuelPlants = 0, services = 0, elementarySchool = false;
-  let residents = 0, police = 0, buildings = 0, covered = 0, fuelCovered = true;
-  const fireReady = host.emergency.active && host.emergency.layersReady;
   for (const b of st.buildings.values()) {
     if (b.flags & BF.Burnt) continue;
-    const def = getDef(b.def), cell = (b.z + (b.d >> 1)) * st.size + b.x + (b.w >> 1);
+    const def = getDef(b.def);
     if (b.flags & BF.NoGarbage) noGarbage = true;
     if (def?.category === 'growable' && def.devType !== undefined && def.devType <= 2 && b.pop > 0) {
-      residents += b.pop;
-      police += st.policeCov[cell] * b.pop;
       if (!(b.flags & BF.Powered)) brownout = true;
     }
     if (def?.coverage && b.flags & BF.Plopped) services++;
     if (b.def === 'civ_elementary_school') elementarySchool = true;
-    buildings++;
-    const fire = fireReady && st.respFire[cell] >= 0;
-    if (fire) covered++;
-    if (isFuelPlant(b)) { fuelPlants++; if (!fire) fuelCovered = false; }
+    if (isFuelPlant(b)) fuelPlants++;
   }
-  return { noGarbage, brownout, fuelPlants, services, policeAtHomes: residents ? police / residents : 0,
-    fireCovered: buildings ? covered / buildings : 0, fuelCovered, elementarySchool };
+  return { noGarbage, brownout, fuelPlants, services, policeAtHomes: coverage?.policeAtHomes ?? 0,
+    fireCovered: coverage?.fireCovered ?? 0, fuelCovered: coverage?.fuelCovered ?? false, elementarySchool };
 }
 
 export interface GoalInputs {
