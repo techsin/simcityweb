@@ -28,7 +28,7 @@ import { MANIFEST_BY_ID } from '../../assets/manifest';
 import {
   COARSE, DOWNTOWN_MIN, DOWNTOWN_MIN_JOBS, DOWNTOWN_R0, DOWNTOWN_R1, DOWNTOWN_STAGE, FILTER_DAYS, FILTER_DES,
   GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, GROWTH_ATTEMPTS_BASE, GROWTH_ATTEMPTS_MAX, GROWTH_ATTEMPTS_PER100,
-  GROWTH_BANK_DAYS, GROWTH_BANK_MIN_FRAC, GROWTH_MAX_BASE, GROWTH_MAX_FRAC, GROWTH_MAX_SCALE, GROWTH_MIN_ALLOW,
+  GROWTH_BANK_DAYS, GROWTH_BANK_MIN_FRAC, GROWTH_DEMAND_FULL, GROWTH_MAX_BASE, GROWTH_MAX_FRAC, GROWTH_MAX_SCALE, GROWTH_MIN_ALLOW,
   GROWTH_OVERSHOOT_SLACK, GROWTH_RESPONSE, GROWTH_SIZE_DEMAND, HOTEL_PREF_MAX, INFILL_MAX_EXTRA, PICK_ALLOW_EXP, PICK_DES_EXP,
   REDEVELOP_CHECKS, REDEVELOP_MIN_AGE, REDEVELOP_MIN_GAIN, STAGE_DES_D0, STAGE_DES_D1, STAGE_POP, STAGE_PREF, SWAP_LOCK_DAYS,
   SWAP_MIN_AGE, SWAP_MIN_CAP, SWAP_MIN_DEMAND, SWAP_MIN_DES, SWAP_MIN_GAIN, SWAP_SCAN_DAYS, VARIANT_SPREAD, WATER_REQUIRED_STAGE,
@@ -342,17 +342,21 @@ export function growthSystem(rt: EconRuntime): SimSystem {
     for (let d = 3; d <= 7; d++) famCap.C += t.jobCapAll[d];
     for (let d = 8; d <= 11; d++) famCap.I += t.jobCapAll[d];
     const famSum = { R: 0, C: 0, I: 0 };
+    const famDemand = { R: 0, C: 0, I: 0 };
     for (let d = 0; d < 12; d++) {
       const abs = data.demandAbs[d];
       const fam = devFamily(d);
       if (abs <= 0 || st.stats.demand[d] <= 0.01) { allow[d] = 0; continue; }
       allow[d] = Math.max(abs * GROWTH_RESPONSE, Math.min(abs, GROWTH_MIN_ALLOW[fam]));
       famSum[fam] += allow[d];
+      famDemand[fam] += allow[d] * Math.min(1, st.stats.demand[d] / GROWTH_DEMAND_FULL);
     }
     for (let d = 0; d < 12; d++) {
       const fam = devFamily(d);
       const c = famCap[fam];
-      const max = GROWTH_MAX_BASE[fam] + (GROWTH_MAX_FRAC * c) / Math.sqrt(1 + c / GROWTH_MAX_SCALE);
+      // Cap each demand response before averaging, so a hot subtype cannot mask weaker demand in its family.
+      const response = famSum[fam] > 0 ? famDemand[fam] / famSum[fam] : 0;
+      const max = (GROWTH_MAX_BASE[fam] + (GROWTH_MAX_FRAC * c) / Math.sqrt(1 + c / GROWTH_MAX_SCALE)) * response;
       if (famSum[fam] > max) allow[d] *= max / famSum[fam];
     }
     // bank the daily allowance (so big buildings become possible when throughput is capped); building size is
