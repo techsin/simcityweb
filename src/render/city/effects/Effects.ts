@@ -1,7 +1,7 @@
 /**
- * Effects — cheap GPU-animated particles (no per-frame CPU work): industrial / power plant smoke & steam plumes,
- * fire (additive flames + dark smoke) for burning buildings, construction dust. Emitters come from building
- * visuals; particle buffers are rebuilt only when emitters change. 2 draw calls.
+ * Effects — cheap GPU-animated particles: industrial / power plant smoke & steam plumes,
+ * fire (additive flames + dark smoke) for burning buildings, construction dust and one-shot building feedback.
+ * Emitters come from building visuals; particle buffers rebuild on emitter changes or feedback expiry. 2 draw calls.
  */
 import * as THREE from 'three';
 import { sharedUniforms } from '../../../assets/materials';
@@ -15,12 +15,15 @@ const SMOKY: Record<string, number> = {
   ind_smokestack_factory: 0, ind_refinery: 0, util_coal_plant: 0, util_oil_plant: 0, util_gas_plant: 5,
   util_incinerator: 0, util_nuclear_plant: 1, ind_assembly_plant: 5,
 };
-// kinds: 0 smoke, 1 steam, 2 flame, 3 fire smoke, 4 dust, 5 light exhaust
+// kinds: 0 smoke, 1 steam, 2 flame, 3 fire smoke, 4 dust, 5 light exhaust, 6 demolition dust, 7 ash, 8 landing ring
 
 const VERT = /* glsl */ `
 attribute vec4 aEmit;
 attribute vec4 aP;
+attribute float aBirth;
 uniform float uTime;
+uniform float uFeedbackTime;
+uniform vec3 uFeedbackCamera;
 uniform vec3 uWind;
 varying vec2 vUv;
 varying float vAlpha;
@@ -31,11 +34,18 @@ void main() {
   float kind = aP.x; float life = aP.y; float size = aP.z; float phase = aP.w;
   float seed = aEmit.w;
   float age = fract(uTime / life + phase);
+  if (aBirth >= 0.0) age = clamp((uFeedbackTime - aBirth) / life, 0.0, 1.0);
   float T = age * life;
   vec3 p = aEmit.xyz;
   float sz;
   float alpha;
-  if (kind > 1.5 && kind < 2.5) {
+  if (kind > 5.5) {
+    p.y += kind > 7.5 ? 0.08 : T * (kind > 6.5 ? 0.65 : 1.1);
+    p.xz += kind > 7.5 ? vec2(0.0) : vec2(sin(seed * 12.0), cos(seed * 9.0)) * T * 1.7 + uWind.xz * T * 0.25;
+    sz = size * (kind > 7.5 ? 0.8 + 0.5 * age : 0.65 + 1.1 * age);
+    alpha = smoothstep(0.0, 0.04, age) * pow(1.0 - age, 0.7) * (kind > 7.5 ? 0.65 : 0.55);
+    if (distance(p, uFeedbackCamera) > 2200.0) alpha = 0.0;
+  } else if (kind > 1.5 && kind < 2.5) {
     // flame: fast rise, shrink
     p.y += 5.0 * T;
     p.x += sin(seed * 31.0 + T * 7.0) * 0.6 * age;
@@ -62,6 +72,10 @@ void main() {
   vKind = kind;
   vAge = age;
   vSeed = seed;
+  if (kind > 7.5) {
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(p + vec3(position.x, 0.0, -position.y) * sz, 1.0);
+    return;
+  }
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   float ang = seed * 6.2831 + T * 0.15 * (fract(seed * 3.1) - 0.5);
   vec2 c = position.xy;
@@ -90,6 +104,11 @@ void main() {
   vec2 q = vUv * 2.0 - 1.0;
   float d = length(q);
   if (d > 1.0) discard;
+  if (vKind > 7.5) {
+    float ring = smoothstep(0.78, 0.88, d) * (1.0 - smoothstep(0.92, 1.0, d));
+    gl_FragColor = vec4(vec3(0.78, 0.72, 0.53) * mix(1.0, 0.35, uNight), ring * vAlpha);
+    return;
+  }
   float n = pn(q * 2.2 + vSeed * 17.0) * 0.6 + pn(q * 4.7 - vSeed * 9.0) * 0.4;
   float m = smoothstep(1.0, 0.15, d + (n - 0.5) * 0.55);
   float a = m * vAlpha;
@@ -105,6 +124,8 @@ void main() {
     col = mix(vec3(1.0, 0.72, 0.25), vec3(0.95, 0.22, 0.03), smoothstep(0.05, 0.7, vAge)) * mix(2.2, 0.9, uNight);
     gl_FragColor = vec4(col * fm * mix(1.0, 0.8, uNight), 1.0);
     return;
+  } else if (vKind > 5.5) {
+    col = (vKind > 6.5 ? vec3(0.38, 0.37, 0.35) : vec3(0.64, 0.56, 0.44)) * lit;
   } else if (vKind > 0.5 && vKind < 1.5) {
     col = vec3(0.92, 0.93, 0.95) * lit;
   } else if (vKind > 2.5 && vKind < 3.5) {
@@ -194,6 +215,10 @@ function findStacks(geo: THREE.BufferGeometry, key: string): V3[] {
 
 export interface Emit { x: number; y: number; z: number; kind: number; size: number; count: number; life: number; }
 
+type ImpactVisual = Pick<BuildingVisual, 'cx' | 'cz' | 'baseY' | 'sw' | 'sd'>;
+type Impact = { minX: number; minZ: number; maxX: number; maxZ: number; y: number; kind: number; count: number; size: number; life: number; birth: number };
+const FEEDBACK_CAP = 600;
+
 /**
  * Plume drift shared by every Effects instance (WP5): the simulation's prevailing wind (src/sim/infra/wind.ts
  * windVector, the same vector pollution.ts drifts smoke with and the Air legend's arrow shows). Default until the game
@@ -214,11 +239,17 @@ export class Effects {
   private emitters = new Map<number, Emit[]>();
   /** keyed transient emitter groups (disasters), with expiry time (s, effect clock) */
   private extras = new Map<string, { list: Emit[]; until: number }>();
+  private impacts: Impact[] = [];
+  private impactCount = 0;
+  private pendingImpacts: Impact[] = [];
+  private pendingLandings: Impact[] = [];
+  private pendingCloud: { bounds: Impact; buildings: number } | null = null;
+  private feedbackCamera: THREE.Vector3 | null = null;
   private clock = 0;
   private dirty = true;
   private smokeGeo: THREE.InstancedBufferGeometry;
   private flameGeo: THREE.InstancedBufferGeometry;
-  private uniforms = { uTime: sharedUniforms.uTime, uNight: sharedUniforms.uNight, uWind: WIND, uAdditive: { value: 0 } };
+  private uniforms = { uTime: sharedUniforms.uTime, uNight: sharedUniforms.uNight, uWind: WIND, uAdditive: { value: 0 }, uFeedbackTime: { value: 0 }, uFeedbackCamera: { value: new THREE.Vector3() } };
   maxSmoke = 7000;
   maxFlame = 3000;
   particleCount = 0;
@@ -234,6 +265,7 @@ export class Effects {
       const cap = additive ? this.maxFlame : this.maxSmoke;
       g.setAttribute('aEmit', new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4));
       g.setAttribute('aP', new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4));
+      g.setAttribute('aBirth', new THREE.InstancedBufferAttribute(new Float32Array(cap).fill(-1), 1));
       g.instanceCount = 0;
       const mat = new THREE.ShaderMaterial({
         vertexShader: VERT, fragmentShader: FRAG, uniforms: { ...this.uniforms, uAdditive: { value: additive ? 1 : 0 } },
@@ -311,7 +343,66 @@ export class Effects {
   clear(): void {
     this.emitters.clear();
     this.extras.clear();
+    this.impacts.length = this.pendingImpacts.length = this.pendingLandings.length = 0;
+    this.impactCount = 0;
+    this.pendingCloud = null;
     this.dirty = true;
+  }
+
+  setFeedbackCamera(position: THREE.Vector3): void {
+    this.feedbackCamera ??= new THREE.Vector3();
+    this.feedbackCamera.copy(position);
+    this.uniforms.uFeedbackCamera.value.copy(position);
+  }
+
+  /** Event-only feedback; a drag's removal bounds coalesce before the next buffer upload. */
+  impact(v: ImpactVisual, kind: 'dust' | 'ash' | 'landing'): void {
+    const cam = this.feedbackCamera;
+    if (!cam || (v.cx - cam.x) ** 2 + (v.baseY - cam.y) ** 2 + (v.cz - cam.z) ** 2 > 2200 ** 2) return;
+    const p: Impact = { minX: v.cx - v.sw / 2, minZ: v.cz - v.sd / 2, maxX: v.cx + v.sw / 2, maxZ: v.cz + v.sd / 2,
+      y: v.baseY + 0.12, kind: kind === 'landing' ? 8 : kind === 'ash' ? 7 : 6,
+      count: kind === 'landing' ? 1 : kind === 'ash' ? 16 : Math.min(40, Math.max(16, Math.round(16 + Math.sqrt(v.sw * v.sd) * 0.5))),
+      size: kind === 'landing' ? Math.max(v.sw, v.sd) * 1.25 : Math.min(kind === 'ash' ? 7 : 14, 3 + Math.sqrt(v.sw * v.sd) * 0.15),
+      life: kind === 'landing' ? 1.2 : kind === 'ash' ? 1.5 : 2.5, birth: 0 };
+    if (kind === 'landing') {
+      if (this.pendingLandings.length < FEEDBACK_CAP) this.pendingLandings.push(p);
+      return;
+    }
+    const cloud = this.pendingCloud;
+    if (!cloud) this.pendingCloud = { bounds: { ...p }, buildings: 1 };
+    else {
+      const b = cloud.bounds;
+      b.minX = Math.min(b.minX, p.minX); b.minZ = Math.min(b.minZ, p.minZ);
+      b.maxX = Math.max(b.maxX, p.maxX); b.maxZ = Math.max(b.maxZ, p.maxZ);
+      b.y = Math.min(b.y, p.y); b.kind = Math.min(b.kind, p.kind);
+      b.life = Math.max(b.life, p.life); b.size = Math.max(b.size, p.size);
+      cloud.buildings++;
+    }
+    if (this.pendingCloud!.buildings <= 30) this.pendingImpacts.push(p);
+    else this.pendingImpacts.length = 0;
+  }
+
+  private flushImpacts(): void {
+    const cloud = this.pendingCloud;
+    if (!cloud && !this.pendingLandings.length) return;
+    if (cloud) {
+      if (cloud.buildings > 30) {
+        cloud.bounds.count = Math.min(FEEDBACK_CAP, cloud.buildings * 16);
+        this.pendingImpacts.push(cloud.bounds);
+      } else {
+        const perCloud = Math.floor(FEEDBACK_CAP / cloud.buildings);
+        for (const p of this.pendingImpacts) p.count = Math.min(p.count, perCloud);
+      }
+    }
+    for (const pending of [this.pendingImpacts, this.pendingLandings]) for (const p of pending) {
+      while (this.impactCount + p.count > FEEDBACK_CAP && this.impacts.length) this.impactCount -= this.impacts.shift()!.count;
+      p.birth = this.clock;
+      this.impacts.push(p);
+      this.impactCount += p.count;
+      this.dirty = true;
+    }
+    this.pendingImpacts.length = this.pendingLandings.length = 0;
+    this.pendingCloud = null;
   }
 
   /** add / replace a transient emitter group (null / empty list removes). ttl in seconds (Infinity = until removed) */
@@ -326,6 +417,12 @@ export class Effects {
 
   update(dt = 0): void {
     this.clock += dt;
+    this.uniforms.uFeedbackTime.value = this.clock;
+    for (let i = this.impacts.length - 1; i >= 0; i--) {
+      const p = this.impacts[i];
+      if (this.clock - p.birth >= p.life) { this.impactCount -= p.count; this.impacts.splice(i, 1); this.dirty = true; }
+    }
+    this.flushImpacts();
     for (const [k, e] of this.extras) if (e.until < this.clock) { this.extras.delete(k); this.dirty = true; }
     if (!this.dirty) return;
     this.dirty = false;
@@ -339,6 +436,8 @@ export class Effects {
     const aSP = this.smokeGeo.getAttribute('aP') as THREE.InstancedBufferAttribute;
     const aFE = this.flameGeo.getAttribute('aEmit') as THREE.InstancedBufferAttribute;
     const aFP = this.flameGeo.getAttribute('aP') as THREE.InstancedBufferAttribute;
+    const aSB = this.smokeGeo.getAttribute('aBirth') as THREE.InstancedBufferAttribute;
+    const aFB = this.flameGeo.getAttribute('aBirth') as THREE.InstancedBufferAttribute;
     const sE = aSE.array as Float32Array, sP = aSP.array as Float32Array;
     const fE = aFE.array as Float32Array, fP = aFP.array as Float32Array;
     let is = 0, iF = 0;
@@ -351,12 +450,29 @@ export class Effects {
           if (flame ? iF >= nf : is >= ns) break;
           const E = flame ? fE : sE, P = flame ? fP : sP;
           const o = (flame ? iF++ : is++) * 4;
+          (flame ? aFB : aSB).setX(o / 4, -1);
           E[o] = e.x + (rnd() - 0.5) * 0.6; E[o + 1] = e.y; E[o + 2] = e.z + (rnd() - 0.5) * 0.6; E[o + 3] = rnd();
           P[o] = e.kind; P[o + 1] = e.life * (0.85 + 0.3 * rnd()); P[o + 2] = e.size; P[o + 3] = k / e.count + rnd() * 0.04;
         }
       }
     }
+    // Reserve the bounded feedback share after writing continuous emitters, preserving their seed sequence.
+    is = Math.min(is, Math.max(0, this.maxSmoke - this.impactCount));
+    for (const p of this.impacts) {
+      let seed = (Math.imul(Math.round(p.minX * 4), 73856093) ^ Math.imul(Math.round(p.minZ * 4), 19349663) ^ p.kind) >>> 0;
+      const rand = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+      for (let k = 0; k < p.count && is < this.maxSmoke; k++) {
+        const index = is++, o = index * 4;
+        sE[o] = p.kind === 8 ? (p.minX + p.maxX) / 2 : p.minX + rand() * (p.maxX - p.minX);
+        sE[o + 1] = p.y;
+        sE[o + 2] = p.kind === 8 ? (p.minZ + p.maxZ) / 2 : p.minZ + rand() * (p.maxZ - p.minZ);
+        sE[o + 3] = rand();
+        sP[o] = p.kind; sP[o + 1] = p.life; sP[o + 2] = p.size; sP[o + 3] = 0;
+        aSB.setX(index, p.birth);
+      }
+    }
     aSE.needsUpdate = aSP.needsUpdate = aFE.needsUpdate = aFP.needsUpdate = true;
+    aSB.needsUpdate = aFB.needsUpdate = true;
     this.smokeGeo.instanceCount = is;
     this.flameGeo.instanceCount = iF;
     this.smoke.visible = is > 0;
@@ -365,6 +481,7 @@ export class Effects {
   }
 
   dispose(): void {
+    this.clear();
     this.smokeGeo.dispose();
     this.flameGeo.dispose();
     (this.smoke.material as THREE.Material).dispose();

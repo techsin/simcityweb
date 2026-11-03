@@ -128,6 +128,20 @@ export interface BuildingVisual {
   sy: number;
 }
 
+/** Detached drawn parts; neither their lifetime nor their batch slots follow a reusable building id. */
+export interface BuildingCollapse {
+  cx: number;
+  cz: number;
+  baseY: number;
+  parts: { geom: number; matrix: THREE.Matrix4; color: THREE.Vector4; pivot: THREE.Vector3 }[];
+}
+
+interface Collapse {
+  copy: BuildingCollapse;
+  slots: number[];
+  age: number;
+}
+
 interface BInst {
   b: Building;
   /** placement of the drawn state, independent of later mutations to b while a rebuild waits */
@@ -233,6 +247,8 @@ function foundQ(depth: number): number {
 }
 
 const POP_TIME = 0.55;
+const COLLAPSE_TIME = 0.35;
+const FEEDBACK_DISTANCE2 = 2200 * 2200;
 /** live geometry work per frame (ms); one indivisible building may run past the deadline */
 const BUILD_BUDGET_MS = 2;
 /** bound priority preparation as well as geometry work; later waves cannot overtake these oldest entries */
@@ -965,6 +981,13 @@ export class BuildingRenderer {
   /** next update evaluates everything due without a budget (flushLod: captures / benchmarks want the settled state) */
   private lodFull = false;
   private animating = new Set<number>();
+  private collapseQueue: BuildingCollapse[] = [];
+  private collapseAt = 0;
+  private collapses: Collapse[] = [];
+  /** The live view position; detached feedback is skipped without a view. */
+  feedbackCamera: THREE.Vector3 | null = null;
+  private collapseTransform = new THREE.Matrix4();
+  private collapseTilt = new THREE.Matrix4();
   private m4 = new THREE.Matrix4();
   private q = new THREE.Quaternion();
   private v = new THREE.Vector3();
@@ -1155,6 +1178,88 @@ export class BuildingRenderer {
 
   get pendingBuilds(): number {
     return this.buildQueue.size;
+  }
+
+  get collapsing(): number {
+    return this.collapses.length;
+  }
+
+  /** Snapshot before remove frees the original slots. Geometry is immutable and shared with the existing batch. */
+  captureCollapse(id: number): BuildingCollapse | null {
+    const bi = this.inst.get(id);
+    if (!bi || bi.li < 0 || bi.vis.burnt || !this.feedbackNear(bi.vis)) return null;
+    const v = bi.vis;
+    const parts: BuildingCollapse['parts'] = [];
+    for (const slot of [bi.main, bi.site]) {
+      if (slot < 0) continue;
+      const f = slot === bi.main ? bi.fade : null;
+      const geom = f ? f.p < 0.5 ? f.gOld : f.gNew : this.batch.mesh.getGeometryIdAt(slot);
+      const matrix = this.batch.mesh.getMatrixAt(slot, new THREE.Matrix4());
+      const color = this.batch.mesh.getColorAt(slot, new THREE.Vector4());
+      const pivot = this.batch.bounds(geom).getCenter(new THREE.Vector3());
+      const sy = Math.hypot(matrix.elements[4], matrix.elements[5], matrix.elements[6]);
+      pivot.applyMatrix4(this.m4.copy(matrix).scale(this.s.set(1, sy > 0 ? Math.max(1, sy) / sy : 1, 1)));
+      parts.push({ geom, matrix, color, pivot });
+    }
+    return { cx: v.cx, cz: v.cz, baseY: v.baseY, parts };
+  }
+
+  queueCollapse(copy: BuildingCollapse): void {
+    if (!this.disposed && this.feedbackNear(copy)) this.collapseQueue.push(copy);
+  }
+
+  private feedbackNear(p: { cx: number; cz: number; baseY: number }): boolean {
+    const c = this.feedbackCamera;
+    return !!c && (p.cx - c.x) ** 2 + (p.baseY - c.y) ** 2 + (p.cz - c.z) ** 2 <= FEEDBACK_DISTANCE2;
+  }
+
+  /** Allocation shares the live geometry deadline; animation only visits the short-lived detached copies. */
+  private buildCollapse(copy: BuildingCollapse): void {
+    if (!this.feedbackNear(copy)) return;
+    const slots: number[] = [], version = shadowCasters.version;
+    for (const part of copy.parts) {
+      const slot = this.batch.add(part.geom);
+      this.batch.setShadowCascades(slot, 0);
+      this.batch.setMatrix(slot, part.matrix);
+      this.batch.setColor(slot, part.color.x, part.color.y, part.color.z, part.color.w);
+      this.batch.setTile(slot, -1);
+      slots.push(slot);
+    }
+    shadowCasters.version = version;
+    this.collapses.push({ copy, slots, age: 0 });
+  }
+
+  private updateCollapses(dt: number): void {
+    const version = shadowCasters.version;
+    for (let i = this.collapses.length - 1; i >= 0; i--) {
+      const collapse = this.collapses[i], copy = collapse.copy;
+      collapse.age += dt;
+      if (collapse.age >= COLLAPSE_TIME || !this.feedbackNear(copy)) {
+        for (const slot of collapse.slots) this.batch.remove(slot);
+        this.collapses.splice(i, 1);
+        continue;
+      }
+      const t = collapse.age / COLLAPSE_TIME, p = t * t;
+      const sign = cellHash(Math.floor(copy.cx), Math.floor(copy.cz), 0) & 1 ? 1 : -1;
+      const sy = 1 - 0.85 * p;
+      for (let k = 0; k < copy.parts.length; k++) {
+        const part = copy.parts[k], pivot = part.pivot;
+        // Tilt about the uncompressed culling centre, keeping its conservative sphere fixed as the copy sinks.
+        const m = this.collapseTransform.makeTranslation(pivot.x, pivot.y, pivot.z);
+        m.multiply(this.collapseTilt.makeRotationZ(sign * 0.045 * p));
+        m.multiply(this.collapseTilt.makeTranslation(-pivot.x, -pivot.y + copy.baseY * (1 - sy), -pivot.z));
+        m.scale(this.s.set(1, sy, 1));
+        this.batch.setMatrix(collapse.slots[k], this.m4.multiplyMatrices(m, part.matrix));
+      }
+    }
+    // Detached copies cast no shadow; their motion must not invalidate the cached cascades.
+    shadowCasters.version = version;
+  }
+
+  private clearCollapses(): void {
+    for (const c of this.collapses) for (const slot of c.slots) this.batch.remove(slot);
+    this.collapses.length = this.collapseQueue.length = 0;
+    this.collapseAt = 0;
   }
 
   /** buildings in a LOD cross-fade now (stats) */
@@ -1606,6 +1711,7 @@ export class BuildingRenderer {
   }
 
   clear(): void {
+    this.clearCollapses();
     for (const bi of this.inst.values()) { if (bi.li >= 0) this.freeInstances(bi); bi.gone = true; }
     this.buildQueue.clear();
     this.buildOrder.length = 0;
@@ -1810,11 +1916,16 @@ export class BuildingRenderer {
 
   /** a frame admits at least one building, then checks the clock between entries; bulk paths explicitly take all */
   private drainBuilds(all = false): void {
-    if (!this.buildQueue.size || this.disposed) return;
+    if ((!this.buildQueue.size && this.collapseAt >= this.collapseQueue.length) || this.disposed) return;
     const end = performance.now() + BUILD_BUDGET_MS;
     let done = 0;
-    while (this.buildQueue.size) {
+    while (this.buildQueue.size || this.collapseAt < this.collapseQueue.length) {
       if (done > 0 && !all && performance.now() >= end) break;
+      if (this.collapseAt < this.collapseQueue.length && (!this.buildQueue.size || (done & 1) === 0)) {
+        this.buildCollapse(this.collapseQueue[this.collapseAt++]);
+        done++;
+        continue;
+      }
       if (this.buildAt >= this.buildOrder.length) {
         this.orderBuilds();
         if (done > 0 && !all && performance.now() >= end) break;
@@ -1825,6 +1936,7 @@ export class BuildingRenderer {
       done++;
     }
     if (!this.buildQueue.size) { this.buildOrder.length = 0; this.buildAt = 0; }
+    if (this.collapseAt >= this.collapseQueue.length) { this.collapseQueue.length = 0; this.collapseAt = 0; }
   }
 
   private build(bi: BInst): void {
@@ -2617,6 +2729,7 @@ export class BuildingRenderer {
       this.rebuildAll();
       this.flushLod();
     }
+    this.updateCollapses(dt);
     if (this.animating.size) {
       for (const id of this.animating) {
         const bi = this.inst.get(id);
@@ -2663,6 +2776,7 @@ export class BuildingRenderer {
 
   dispose(): void {
     this.disposed = true;
+    this.clearCollapses();
     this.buildQueue.clear();
     this.buildOrder.length = 0;
     this.buildAt = 0;

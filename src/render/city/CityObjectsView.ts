@@ -12,7 +12,7 @@ import * as THREE from 'three';
 import { CELL_SIZE } from '../../core/constants';
 import { Overlay, type Network } from '../../core/types';
 import type { CellRect, Emitter } from '../../core/events';
-import type { CityState } from '../../sim/CityState';
+import { BF, type Building, type CityState } from '../../sim/CityState';
 import type { CityEvents } from '../../sim/Simulation';
 import type { CityObjectsViewApi, QualityLevel } from '../contracts';
 import { registerAllModels } from '../../assets/builders';
@@ -26,7 +26,7 @@ import { RoadRenderer } from './roads/RoadRenderer';
 import { releaseRoadMaterial, roadUniforms } from './roads/roadMaterial';
 import { PropRenderer, propGeometry } from './props/PropRenderer';
 import { PowerLines } from './props/PowerLines';
-import { BuildingRenderer } from './buildings/BuildingRenderer';
+import { BuildingRenderer, type BuildingCollapse, type BuildingVisual } from './buildings/BuildingRenderer';
 import { Effects } from './effects/Effects';
 import { Disasters } from './effects/Disasters';
 import { Fireworks, LaunchSiteIndex, collectLaunchSites, type LaunchSite, type SiteSource } from './effects/Fireworks';
@@ -78,6 +78,14 @@ function expand(r: CellRect, m: number, N: number): CellRect {
   return { x0: Math.max(0, r.x0 - m), z0: Math.max(0, r.z0 - m), x1: Math.min(N, r.x1 + m), z1: Math.min(N, r.z1 + m) };
 }
 
+interface RemovalFeedback {
+  lot: Pick<Building, 'x' | 'z' | 'w' | 'd'>;
+  visual: Pick<BuildingVisual, 'cx' | 'cz' | 'baseY' | 'sw' | 'sd'>;
+  copy: BuildingCollapse | null;
+  ash: boolean;
+  redevelopment: boolean;
+}
+
 export class CityObjectsView implements CityObjectsViewApi {
   readonly root = new THREE.Group();
   state: CityState;
@@ -107,6 +115,10 @@ export class CityObjectsView implements CityObjectsViewApi {
   private syncTimer = 0;
   private quality: QualityLevel;
   private launchSiteIndex: LaunchSiteIndex | null = null;
+  private removalFeedback: RemovalFeedback[] = [];
+  private landingFeedback = new Set<number>();
+  private feedbackClock = 0;
+  private redevelopmentTimes: number[] = [];
 
   constructor(state: CityState, events: Emitter<CityEvents>, ctx: CityObjectsViewContext) {
     registerAllModels();
@@ -123,6 +135,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.roads.onChunkProps = (i, props, pools) => this.props.setGroup('road:' + i, props, pools);
     this.power = new PowerLines(state, this.surf);
     this.effects = new Effects();
+    this.effects.setFeedbackCamera(ctx.camera.position);
     this.effects.geometryOf = (m, v) => getModelGeometry(m, v);
     this.disasters = new Disasters(state, this.surf, this.effects);
     // the world's fill light (WorldView's night fill), found once while the scene is still small
@@ -138,8 +151,10 @@ export class CityObjectsView implements CityObjectsViewApi {
       fill: () => fill,
     });
     this.buildings = new BuildingRenderer(state, this.culler);
+    this.buildings.feedbackCamera = ctx.camera.position;
     this.buildings.onVisual = (v, id) => {
       this.effects.onBuilding(v, id);
+      if (v && this.landingFeedback.delete(id) && !v.burnt) this.effects.impact(v, 'landing');
       if (id === this.buildings.selected) this.previews.setSelection(v);
       this.launchSiteIndex?.visualChanged(id, v, CELL_SIZE);
     };
@@ -187,10 +202,12 @@ export class CityObjectsView implements CityObjectsViewApi {
       ev.on('powerLinesChanged', () => { this.powerDirty = true; }),
       ev.on('subwayChanged', () => { this.subwayDirty = true; }),
       ev.on('buildingAdded', (b) => {
+        this.feedbackAdded(b);
         this.buildings.add(b, true);
         this.launchSiteIndex?.update(b, this.launchSiteSource());
       }),
       ev.on('buildingRemoved', (b) => {
+        this.feedbackRemoved(b);
         this.launchSiteIndex?.remove(b.id);
         this.buildings.remove(b.id);
         if (this.buildings.selected === b.id) this.setSelected(null);
@@ -207,6 +224,47 @@ export class CityObjectsView implements CityObjectsViewApi {
         else this.rebuildAll();
       }),
     );
+  }
+
+  private feedbackAdded(b: Building): void {
+    this.landingFeedback.delete(b.id);
+    if (b.flags & BF.Plopped) this.landingFeedback.add(b.id);
+    else {
+      // Growth and wealth swaps emit remove/add on overlapping lots, with no removal-reason field.
+      for (const r of this.removalFeedback) {
+        const a = r.lot;
+        if (!r.ash && a.x < b.x + b.w && b.x < a.x + a.w && a.z < b.z + b.d && b.z < a.z + a.d) r.redevelopment = true;
+      }
+    }
+  }
+
+  private feedbackRemoved(b: Building): void {
+    this.landingFeedback.delete(b.id);
+    const v = this.buildings.getVisual(b.id);
+    if (!v) return;
+    const c = this.ctx.camera.position;
+    if ((v.cx - c.x) ** 2 + (v.baseY - c.y) ** 2 + (v.cz - c.z) ** 2 > 2200 * 2200) return;
+    const ash = !!(b.flags & BF.Burnt);
+    this.removalFeedback.push({
+      lot: { x: b.x, z: b.z, w: b.w, d: b.d },
+      visual: { cx: v.cx, cz: v.cz, baseY: v.baseY, sw: v.sw, sd: v.sd },
+      copy: ash ? null : this.buildings.captureCollapse(b.id), ash, redevelopment: false,
+    });
+  }
+
+  private flushFeedback(dt: number): void {
+    this.feedbackClock += dt;
+    this.effects.setFeedbackCamera(this.ctx.camera.position);
+    this.redevelopmentTimes = this.redevelopmentTimes.filter((t) => t > this.feedbackClock - 1);
+    for (const r of this.removalFeedback) {
+      if (r.redevelopment) {
+        if (this.redevelopmentTimes.length >= 4) continue;
+        this.redevelopmentTimes.push(this.feedbackClock);
+      }
+      if (r.copy) this.buildings.queueCollapse(r.copy);
+      this.effects.impact(r.visual, r.ash ? 'ash' : 'dust');
+    }
+    this.removalFeedback.length = 0;
   }
 
   /** swap to another CityState (e.g. after load) and rebuild everything */
@@ -234,6 +292,10 @@ export class CityObjectsView implements CityObjectsViewApi {
 
   /** full synchronous rebuild of every layer */
   rebuildAll(): void {
+    this.removalFeedback.length = 0;
+    this.landingFeedback.clear();
+    this.redevelopmentTimes.length = 0;
+    this.effects.clear();
     this.net.update();
     this.roads.markAllDirty();
     this.roads.rebuildAll();
@@ -306,6 +368,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     const lap = (k: keyof typeof P) => { const n = now(); P[k] += n - t; t = n; };
     const cam = this.ctx.camera;
     cam.updateMatrixWorld();
+    this.flushFeedback(dt);
     this.culler.update(cam);
     lap('cull');
     if (this.roads.hasDirty) this.roads.update(6);
@@ -442,6 +505,8 @@ export class CityObjectsView implements CityObjectsViewApi {
   }
 
   dispose(): void {
+    this.removalFeedback.length = 0;
+    this.landingFeedback.clear();
     for (const u of this.unsub) u();
     this.unsub.length = 0;
     this.launchSiteIndex?.clear();
