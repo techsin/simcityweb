@@ -956,6 +956,8 @@ export interface OverlayReadout {
   tone: 'good' | 'warn' | 'bad' | '';
   /** optional second line ("of 240 residents") */
   sub?: string;
+  /** Optional machine-readable response reason, shared by the model tint and hover. */
+  reason?: EmergencyReach['why'];
 }
 
 const pctS = (v: number) => `${Math.round(v * 100)}%`;
@@ -1026,8 +1028,8 @@ export function overlayReadout(st: CityState, o: Overlay, x: number, z: number, 
       const noLots = st.building[i] >= 0 ? '' : net === Network.Rail ? 'Rail' : st.water[i] && net === Network.None ? 'Water' : '';
       if (r.why === 'noRoad') {
         return st.building[i] >= 0
-          ? { text: 'Unreachable — no road beside it', tone: 'bad', sub: 'Trucks drive on roads: build a road next to it' }
-          : { text: 'No road nearby', tone: 'bad', sub: noLots ? `${noLots}: no lots here` : 'Empty land: lots here need a road first' };
+          ? { text: 'Unreachable — no road beside it', tone: 'bad', sub: 'Trucks drive on roads: build a road next to it', reason: 'noRoad' }
+          : { text: 'No road nearby', tone: 'bad', sub: noLots ? `${noLots}: no lots here` : 'Empty land: lots here need a road first', reason: 'noRoad' };
       }
       const s = r.slack;
       // the "Just out of reach" band ends at emgNearSlack (fire: the burn-down window — beyond it no truck makes it)
