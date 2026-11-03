@@ -47,6 +47,8 @@ export interface CityEvents extends Record<string, unknown> {
   disaster: { kind: string; x: number; z: number; active: boolean };
   unlocked: string;
   speedChanged: number;
+  /** saved system data changed without a tool edit or derived-layer refresh */
+  savedDataChanged: void;
   /** emergency incident lifecycle (WP8) */
   emergency: EmergencyEvent;
   /** full reset (after load) — renderers should rebuild everything */

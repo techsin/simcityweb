@@ -20,5 +20,5 @@ export function cityFingerprint(st: CityState): string {
  */
 export const CHANGE_EVENTS = [
   'networkChanged', 'zoneChanged', 'terrainChanged', 'powerLinesChanged', 'subwayChanged', 'treesChanged',
-  'buildingAdded', 'buildingRemoved', 'disaster', 'emergency', 'unlocked',
+  'buildingAdded', 'buildingRemoved', 'disaster', 'emergency', 'unlocked', 'savedDataChanged',
 ] as const;

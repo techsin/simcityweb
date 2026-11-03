@@ -9,6 +9,7 @@ import { Simulation, type SimSystem } from '../sim/Simulation';
 import { applySimWasmFlag } from '../wasm/simWasm';
 import type { Command, CommandOp, CommandResult } from './SimHost';
 import { runQuery, watchSignature, type QueryName, type QueryArgs, type QueryResult, type WatchPolicy } from './queries';
+import { plainEqual } from './protocol';
 // W0.4: headless policy and its read-only host view.
 import { Emitter } from '../core/events';
 import { AlertQueue, LIVE_COOLDOWN_MS, LIVE_IDLE, followingDispatch, pendingCount, sendDays, speedPolicy, unbanneredPrompt, urgentSeconds, type LiveState, type PolicyAlert } from '../game/emergencyPolicy';
@@ -230,7 +231,9 @@ export class SimCore {
       case 'setOnboarding': {
         const progress = copyOnboardingProgress(cmd.args[0]);
         if (!progress) return false;
+        if (plainEqual(st.systemData.onboarding, progress)) return true;
         st.systemData.onboarding = progress;
+        sim.events.emit('savedDataChanged', undefined);
         return true;
       }
       // W0.4: only the policy owner changes dismissals and simulation settings.
