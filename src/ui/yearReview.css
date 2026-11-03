@@ -1,11 +1,12 @@
 .year-review {
-  position: absolute; left: 50%; bottom: 86px; transform: translateX(-50%); z-index: 24;
+  position: absolute; left: 50%; bottom: 86px; transform: translateX(-50%); z-index: 31;
   width: min(700px, calc(100% - 32px)); max-height: calc(100% - 160px); overflow: auto;
   padding: 20px 24px 14px; pointer-events: auto; font-variant-numeric: tabular-nums;
   border-top: 2px solid #c9b27c;
 }
 .year-review header { display: flex; gap: 18px; justify-content: space-between; align-items: center; padding-right: 18px; }
-.year-review h2 { margin: 5px 0 14px; font: 600 25px/1.15 Georgia, serif; color: #f3e6c9; }
+.year-review h2 { margin: 5px 0 6px; font: 600 25px/1.15 Georgia, serif; color: #f3e6c9; }
+.year-review .yr-date { margin-bottom: 8px; font-size: 10px; color: var(--text-dim); }
 .year-review h3 { margin: 0 0 6px; font-size: 11px; color: var(--text-dim); font-weight: 600; }
 .year-review p { margin: 0; line-height: 1.6; }
 .yr-eyebrow { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: #c9b27c; }
@@ -31,7 +32,7 @@
 .yr-next b { color: #c9b27c; font-weight: 500; }
 .year-review footer { border-top: 1px solid var(--hair); padding-top: 9px; color: var(--text-dim); font-size: 10px; }
 .year-review footer small { display: block; margin-top: 5px; color: var(--text-faint); font-size: 10px; }
-.short .year-review { bottom: 72px; padding: 14px 18px 10px; }
+.short .year-review { bottom: 82px; padding: 14px 18px 10px; }
 .short .yr-columns { gap: 10px 20px; padding: 10px 0; }
 @media (max-width: 650px) {
   .yr-metrics { grid-template-columns: repeat(2, 1fr); }

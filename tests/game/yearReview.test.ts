@@ -7,6 +7,7 @@ import { CityState, HISTORY_KEYS } from '../../src/sim/CityState';
 import { defaultCityConfig } from '../../src/sim/config';
 import type { CityEvents } from '../../src/sim/Simulation';
 import { APPROVAL_LABELS } from '../../src/sim/economy/approval';
+import { REWARDS } from '../../src/sim/economy/rewards';
 import { buildYearReview, YearReview, yearGradeInput, yearReviewDue } from '../../src/ui/YearReview';
 import { FEl, installFakeDom, textOf } from './fakeDom';
 
@@ -35,8 +36,8 @@ describe('year review model', () => {
   it('matches the Graphs population interval and averages/sums the twelve completed months for grading', () => {
     const state = city(), report = buildYearReview(state, 2002)!;
     expect(report.population).toBe(1240);
-    expect(report.populationChange).toBe(110);
-    expect(report.growth).toBeCloseTo(110 / 1130, 12);
+    expect(report.populationChange).toBe(120);
+    expect(report.growth).toBeCloseTo(120 / 1120, 12);
     expect(yearGradeInput(state.history, 24)?.growth).toBeCloseTo(120 / 1120, 12);
     expect(report.bankMonths).toBe(3);
     expect(report.recurringNet).toBe(2400);
@@ -57,9 +58,24 @@ describe('year review model', () => {
     expect(report.terms[0].change).toBeCloseTo(-4.8);
   });
 
-  it('includes the tooltip limit term when it is among the biggest changes', () => {
-    const state = city(); state.history.approval_clamp[24] = -20;
-    expect(buildYearReview(state, 2002)?.terms[0]).toEqual({ id: 'clamp', label: APPROVAL_LABELS.clamp, change: -20 });
+  it('hides base and limit adjustments just as the tooltip does', () => {
+    const state = city(); state.history.approval_clamp[24] = -20; state.history.approval_base[24] = 65;
+    expect(buildYearReview(state, 2002)?.terms.map((t) => t.id)).toEqual(['noise', 'services', 'crime']);
+  });
+
+  it('uses a yearly emergency label and omits changes that would print as zero points', () => {
+    const state = city();
+    for (const key of ['approval_noise', 'approval_services', 'approval_crime', 'approval_tax'] as const) state.history[key][24] = state.history[key][12];
+    state.history.approval_emergencies[24] = -0.3;
+    state.history.approval_parks[24] = 0.049;
+    state.history.approval_tourism[24] = -0.049;
+    state.history.approval_pollution[24] = 0.05;
+    state.history.approval_unemployment[24] = -0.05;
+    expect(buildYearReview(state, 2002)?.terms).toEqual([
+      { id: 'emergencies', label: 'Emergencies', change: -0.3 },
+      { id: 'pollution', label: APPROVAL_LABELS.pollution, change: 0.05 },
+      { id: 'unemployment', label: APPROVAL_LABELS.unemployment, change: -0.05 },
+    ]);
   });
 
   it('preserves the negative-funds cutoff despite rounded Graphs funds', () => {
@@ -77,7 +93,7 @@ describe('year review model', () => {
     const old = buildYearReview(state, 2002)!;
     expect(old.grade).toBeNull();
     expect(old.answered).toBeNull();
-    expect(old.populationChange).toBe(110);
+    expect(old.populationChange).toBe(120);
     expect(old.pastGrades.map((g) => g.year)).toEqual([2000]);
     state.history.reviewSample[12] = 0;
     state.history.reviewTermsSample[12] = 0;
@@ -91,7 +107,7 @@ describe('year review model', () => {
     const state = city(), before = buildYearReview(state, 2002)!;
     for (const key of HISTORY_KEYS) state.history[key].splice(0, 10);
     expect(buildYearReview(state, 2002)?.grade).toEqual(before.grade);
-    expect(buildYearReview(state, 2002)?.populationChange).toBe(110);
+    expect(buildYearReview(state, 2002)?.populationChange).toBe(120);
     state.history.pop[state.history.t.indexOf(25)] = 999999;
     expect(before.population).toBe(1240);
     expect(buildYearReview(state, 2002)?.population).toBe(1240);
@@ -161,6 +177,31 @@ describe('year review lifetime', () => {
     f.show.busy = false; f.tick(); expect(f.card()).not.toBeNull();
     f.host.speed = 0; vi.advanceTimersByTime(14999); expect(f.card()).not.toBeNull();
     vi.advanceTimersByTime(1); expect(f.card()).toBeNull(); f.abort.abort();
+  });
+
+  it('dates delayed figures at the captured January even when the city advances during the show', () => {
+    const f = fixture(); f.ready(); f.show.busy = true; f.year(2002);
+    f.state.day += 150; f.state.stats.population = 999999;
+    f.state.history.pop[25] = 999999;
+    f.show.busy = false; f.tick();
+    expect(textOf(f.card()!)).toContain('Figures on 1 January 2002');
+    const residents = f.card()!.querySelector('.yr-metric')!;
+    expect(textOf(residents)).toContain('1,240');
+    expect(textOf(residents)).toContain('+120 residents');
+    expect(textOf(f.card()!)).not.toContain('999,999');
+    f.abort.abort();
+  });
+
+  it('shows unavailable approval until residents arrive and omits an empty Next goals block', () => {
+    const f = fixture();
+    f.state.history.pop[12] = 0;
+    for (const reward of REWARDS) f.state.unlocked.add(reward.id);
+    f.ready(); f.year(2001);
+    expect(f.card()!.querySelectorAll('h3').map(textOf)).toContain('Approval —');
+    expect(textOf(f.card()!)).toContain('No residents yet.');
+    expect(textOf(f.card()!)).not.toContain('Approval 62');
+    expect(f.card()!.querySelector('.yr-next')).toBeNull();
+    f.abort.abort();
   });
 
   it('uses a save-stable cadence at each speed', () => {

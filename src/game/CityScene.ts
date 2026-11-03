@@ -307,7 +307,7 @@ export class CityScene {
       holdCalendar: (on) => { if (!this.disposed) this.host.act('holdCalendar', [on], { tag: this.newYear }); },
     });
     // ---- CONTENT: yearly feedback follows the celebration, without changing its timing or camera.
-    new YearReview(ctx, { busy: () => this.newYear.busy, regionName: opts.persistence?.regionName });
+    new YearReview(ctx, { busy: () => this.newYear.active, regionName: opts.persistence?.regionName });
     // event-driven sounds (news, disasters, rewards, budget ticks, construction) + generic control feedback
     this.gameSounds = new GameSounds({ sim: this.sim, sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox() });
     this.offUiSounds = installUiSounds(() => this.mods.audio as unknown as UiSoundAudio | undefined);
