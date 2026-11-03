@@ -1,0 +1,80 @@
+T034 fix round, Nov 3: V8's ArrayBufferDetaching protector in Playwright's Chromium 153.0.8010.12 (risk 7).
+Scripts: scratchpad/t034work/probe-exp7.mjs and probe-exp8.mjs; tools/qa-worker.mjs's 'control' step repeats experiment 8 in every run.
+Chromium was launched with --js-flags='--allow-natives-syntax --trace-protector-invalidation' and traced (Chrome tracing, category v8),
+which records V8.InvalidateProtector on the thread that invalidated a protector.
+
+== experiment 7: fresh classic and module workers (routed origin) make the TurboFan probe loop, then a control message, then a detach
+version 153.0.8010.12
+workers {"classic":[{"step":"made","calls":1024,"turbofan":true,"at":3.1999999955296516},{"step":"control","turbofan":true,"at":2994.2999999970198},{"step":"detach","turbofan":true,"at":4498.89999999851}],"module":[{"step":"made","calls":1024,"turbofan":true,"at":2.4000000059604645},{"step":"control","turbofan":true,"at":3000.8000000044703},{"step":"detach","turbofan":true,"at":4512.60000000149}]}
+invalidations []
+worker threads ["DedicatedWorker thread","DedicatedWorker thread"]
+
+== experiment 8: in a classic worker, a module worker and the page: the probe loop and a TurboFan function that depends on the
+   ArraySpecies protector (Array.prototype.map inlined); a buffer detached, then ArraySpecies invalidated
+{
+ "version": "153.0.8010.12",
+ "res": {
+  "classic": {
+   "probeCalls": 1024,
+   "probeBefore": true,
+   "mapperCalls": 18432,
+   "mapperBefore": true,
+   "speciesBefore": true,
+   "detached": true,
+   "probeAfterDetach": true,
+   "speciesAfter": false,
+   "mapperAfterSpecies": false
+  },
+  "module": {
+   "probeCalls": 1024,
+   "probeBefore": true,
+   "mapperCalls": 18432,
+   "mapperBefore": true,
+   "speciesBefore": true,
+   "detached": true,
+   "probeAfterDetach": true,
+   "speciesAfter": false,
+   "mapperAfterSpecies": false
+  },
+  "page": {
+   "probeCalls": 1024,
+   "probeBefore": true,
+   "mapperCalls": 18432,
+   "mapperBefore": true,
+   "speciesBefore": true,
+   "detached": true,
+   "probeAfterDetach": true,
+   "speciesAfter": false,
+   "mapperAfterSpecies": false
+  }
+ },
+ "traceEvents": 38,
+ "invalidations": [
+  {
+   "name": "V8.InvalidateProtector",
+   "args": {
+    "protector-name": "ArraySpeciesLookupChain"
+   },
+   "thread": "DedicatedWorker thread"
+  },
+  {
+   "name": "V8.InvalidateProtector",
+   "args": {
+    "protector-name": "ArraySpeciesLookupChain"
+   },
+   "thread": "DedicatedWorker thread"
+  },
+  {
+   "name": "V8.InvalidateProtector",
+   "args": {
+    "protector-name": "ArraySpeciesLookupChain"
+   },
+   "thread": "CrRendererMain"
+  }
+ ],
+ "stdout": []
+}
+
+== node 22.22.0 (V8 12.4), the same body (node --allow-natives-syntax):
+{"probeCalls":470,"probeBefore":true,"mapperCalls":3011,"mapperBefore":true,"speciesBefore":true,"detached":true,"probeAfterDetach":false,"speciesAfter":false,"mapperAfterSpecies":false}
+node --trace-protector-invalidation, one detach: 'Invalidating protector cell ArrayBufferDetaching'
