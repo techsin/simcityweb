@@ -5,6 +5,7 @@ import { escapeHtml, h } from './dom';
 import { icon } from './icons';
 import { dayLabel } from './format';
 import { newsMark, tickerItems } from './newsLog';
+import type { RewardsPanel } from './panels/ListPanels';
 
 export const NEWS_META: Record<string, { color: string; icon: string; title: string }> = {
   info: { color: 'var(--accent)', icon: 'news', title: 'News' },
@@ -209,17 +210,25 @@ export class Toasts {
       this.live.clear();
       this.queue.length = 0;
     }, { once: true });
-    ctx.sim.events.on('news', (n) => {
+    const off = ctx.sim.events.on('news', (n) => {
       if (!ctx.settings.toasts) return;
       if (n.kind === 'info') return;
       if (n.kind === 'advisor' && !/!|urgent|critical|warning/i.test(n.text)) return;
-      const action = this.newsAction?.(n);
+      const reward = n.ref?.reward;
+      const action = reward ? {
+        hint: 'Place it', icon: 'plus', run: () => {
+          const panels = ctx.panels as typeof ctx.panels & { get?: (id: string) => Pick<RewardsPanel, 'showReward'> | undefined };
+          panels.open('rewards');
+          panels.get?.('rewards')?.showReward(reward);
+        },
+      } : this.newsAction?.(n);
       // silent: GameSounds plays the (rate-limited) news sound even when toasts are off. FEEL-02a: bad news and disasters
       // always show; every other kind shares the budget
       this.show(n.text, n.kind, n.x !== undefined && n.z !== undefined ? { x: n.x, z: n.z } : undefined, n.advisor, {
         silent: true, budget: n.kind !== 'bad' && n.kind !== 'disaster', ...(action ? { action } : {}),
       });
     });
+    ctx.signal?.addEventListener('abort', off, { once: true });
   }
 
   /** the budget allows a toast now: BUDGET_GAP_MS since the last toast and fewer than BUDGET_PER_MIN in the last minute */
