@@ -212,7 +212,7 @@ the runs at `954306d`; the head's code is byte-identical to it).
 | LG-05 acceptance 2: on y15 it never fires | met (51.12 % free; no built-out issue after a month) |
 | LG-05 acceptance 3: each button opens the right tool or view (UI test) | met (`adviceActions.test.ts`, `rciGuide.test.ts`; browser C5, C7) |
 | LG-05 acceptance 4: the scan's cost unchanged | **met in substance** (decision 9): no new pass, one more test in the scan's existing unzoned-tile branch (plus F3's per-block family counts). The day-28 scan alone (`scratchpad/t037b/scanbench.mts`: `advisorsSystem.daily` on day 28, the scan forced fresh), median ms, lane / dev: bot256_s7_y60 2.497 / 2.502 and 2.483 / 2.484 (no change); dense1m_s7, eight alternating pairs, median ratio **1.05** (1.18, 1.01, 0.73, 1.02, 1.04, 1.07, 1.07, 1.06), about 0.1 ms on a 1.7-2.0 ms scan that runs once a month (`m3_scanbench.log`, `m4_scanbench2.log`) |
-| The badge's recount (UI thread, at most once a real second) | ROOM_COST_PLACEHOLDER |
+| The badge's recount (UI thread, at most once a real second) | `zoneRoom` on the 256 fixtures (node, 300 rounds; `gates/m5_roombench.json`): bot256_s7_y60 median **1.55 ms** (p90 2.24, max 4.40); dense1m_s7 median **0.59 ms** (p90 0.62, max 1.21). Once a second, so under 0.2 % of the main thread; decision 10 |
 | Browser checklist (below) | **19 of 19 checks pass** (C0 is the setup), "Connect a highway" included |
 | §8.1's round-1 verifier list | not this sub-lane's: it runs once every GUIDE and META round-1 item is in |
 
@@ -235,9 +235,11 @@ both):
 same as now. Logs: `scratchpad/t037b/gates/m3_nc.log`, `m3_ncdev.log`; before B3 `nc_medium.log`, `nc_easy.log`.)
 
 - **FH-03's gate (5,000 by year 4 on Medium): not met, 2,348** (23× dev's 100). The desktop's pre-F3 run had 283; F3's
-  reset lets the newcomer answer each cue as soon as its patch is full, so it zoned 17 residential and 8 commercial
-  patches from December 2001 to September 2003, and no industrial one (dev: none beyond its four founding blocks; the
-  desktop's pre-F3 run: 10 in ten years).
+  reset lets the newcomer answer each cue as soon as its patch is full. Beyond its four founding blocks it zoned 47
+  patches in ten years on Medium (36 residential, the last in April 2003; 9 commercial, the last in September 2003; 2
+  industrial, in June 2000 and May 2001) and 44 on Easy (35, 7, 2); dev's newcomer zoned none beyond its founding
+  blocks, and the desktop's pre-F3 run 10 (`scratchpad/t037b/ncpatches.mts`, log `gates/m5_ncpatches.log`; the bot
+  itself prints only its last 25 log lines).
 - **FH-04's inherited gate: not met.** Easy approval 39.0-39.7 % in years 2-6 (≥ 50 required); year 6 Easy / Medium =
   2,284 / 2,324 = 0.98× (≥ 2× required). The terms that hold Easy under 50 are FH-04's: residential taxes −7.0, city
   services at homes −5.4, air pollution −3.6 to −4.7, and from year 7 unemployment −12.0 to −12.8.
@@ -360,3 +362,7 @@ hangs just under the segment (`f9fd2a9`).
    there is no new pass, and the counter costs about 0.1 ms (+5 %) on dense1m's monthly scan and nothing measurable on
    bot256's (the gates table). The lead may want the free count moved behind a cheaper test if a stricter reading is
    meant; this lane left it in the scan, where the plan puts it.
+10. **The badge's recount runs once a real second whatever the demand** (0.6-1.5 ms on a 256 map, the gates table). It
+    could skip the pass while no family's demand is above 0.5, when the badge cannot show; this lane left it as is
+    (the cost is small and the recount also keeps the room fresh for the moment demand rises). The lead may want the
+    skip; it is a two-line change in TopBar.ts's badge update.
