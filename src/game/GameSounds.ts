@@ -14,6 +14,8 @@
  *   emergency   (WP8 dispatch) a major incident nobody can answer: fire -> 'fire' station bell (≥ 25 s), other
  *               kinds -> 'warning' (≥ 12 s). A routine fire the fire service already answers -> short soft 'fireBell'
  *               (≥ 60 s; the truck siren is the rest of the cue). Without the dispatch system every fire rings 'fire'.
+ *               Player response saved without losses -> 'saved'; failure or losses -> 'lost' (shared ≥ 10 s).
+ *               Visible LIVE holds the music 6 dB lower, with a 0.5 s release.
  *   unlocked    'reward' fanfare (at most every 6 s: several rewards unlocking together celebrate once)
  *   month       budget tick: 'coin' when last month's net was positive, 'cashLow' when negative (≥ 90 s apart, ≥ 20 s
  *               when the sign flips; quiet, skipped in sandbox and when another event sound just played)
@@ -26,11 +28,16 @@ import * as THREE from 'three';
 import { CELL_SIZE } from '../core/constants';
 import type { NewsItem } from '../sim/CityState';
 import type { EmergencyEvent, Simulation } from '../sim/Simulation';
+import type { Incident } from '../sim/infra/emergency';
+import type { SimHost } from '../worker/SimHost';
 import type { WorldViewApi } from '../render/contracts';
 import type { SoundOpts } from './context';
 
 export interface GameSoundsDeps {
   sim: Simulation;
+  host?: SimHost;
+  signal?: AbortSignal;
+  duck?: (db: number, hold: number, release: number) => void;
   sound: (name: string, opts?: SoundOpts) => void;
   world: () => WorldViewApi;
   /** sandbox / unlimited money: no budget ticks */
@@ -57,6 +64,15 @@ const BURST_MS = 120;
 const REPEAT_MS = 180000;
 /** advisor messages the toasts show (src/ui/Notifications.ts); the rest are ticker-only tips */
 const URGENT = /!|urgent|critical|warning/i;
+const OUTCOME_GAP = 10000;
+/** Renew before duck's 60 ms attack ends; its final attack + release total 500 ms. */
+const LIVE_DUCK_MS = 50, LIVE_DUCK_RELEASE = 0.5 - 0.06;
+const outcomeAt = new WeakMap<SimHost, number>();
+
+/** The outcome voice already supplies the restore toast's feedback, including delayed policy delivery. */
+export function emergencyStingJustPlayed(host: SimHost): boolean {
+  return performance.now() - (outcomeAt.get(host) ?? -1e9) < 1000;
+}
 
 interface FireProbe {
   x: number;
@@ -75,10 +91,14 @@ export class GameSounds {
   private lastSign = 0;
   private flushT: ReturnType<typeof setTimeout> | null = null;
   private fire: FireProbe | null = null;
+  private incidents = new Map<number, Incident>();
+  private playerDispatches = new Set<number>();
+  private liveDuckT: ReturnType<typeof setInterval> | null = null;
+  private disposed = false;
   private v = new THREE.Vector3();
 
   constructor(private d: GameSoundsDeps) {
-    const ev = d.sim.events;
+    const ev = d.host?.events ?? d.sim.events;
     this.offs.push(
       ev.on('news', (n) => this.onNews(n)),
       ev.on('disaster', (x) => this.onDisaster(x)),
@@ -94,19 +114,47 @@ export class GameSounds {
         else if (this.constructing.delete(b.id)) this.onBuilt(b.x + b.w / 2, b.z + b.d / 2);
       }),
       ev.on('buildingRemoved', (b) => void this.constructing.delete(b.id)),
-      ev.on('reset', () => this.constructing.clear()),
+      ev.on('reset', () => {
+        this.constructing.clear();
+        this.incidents.clear();
+        this.playerDispatches.clear();
+        this.seedIncidents();
+        if (d.host) outcomeAt.delete(d.host);
+      }),
     );
+    this.seedIncidents();
+    void d.host?.ready?.then(() => { if (!this.disposed) this.seedIncidents(); }, () => {});
+    if (d.host && d.signal) {
+      this.offs.push(d.host.policy.subscribe(() => this.syncLive(), d.signal), ev.on('speedChanged', () => this.syncLive()));
+      this.syncLive();
+    }
+    if (d.signal) {
+      const dispose = () => this.dispose();
+      d.signal.addEventListener('abort', dispose, { once: true });
+      this.offs.push(() => d.signal?.removeEventListener('abort', dispose));
+      if (d.signal.aborted) this.dispose();
+    }
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     for (const f of this.offs) f();
     this.offs = [];
     if (this.flushT) clearTimeout(this.flushT);
     this.flushT = null;
+    this.stopLiveDuck();
+    this.incidents.clear();
+    this.playerDispatches.clear();
+    if (this.d.host) outcomeAt.delete(this.d.host);
   }
 
   private since(key: string): number {
     return performance.now() - (this.last.get(key) ?? -1e9);
+  }
+
+  private seedIncidents(): void {
+    if (this.d.host) for (const inc of this.d.host.emergency.incidents()) this.incidents.set(inc.id, inc);
   }
 
   /** true (and marks it) when `key` has not fired within `ms` */
@@ -243,6 +291,23 @@ export class GameSounds {
   }
 
   private onEmergency(e: EmergencyEvent): void {
+    const host = this.d.host;
+    // Local hosts remove terminal incidents before emitting; their earlier view objects retain the final values.
+    const inc = host?.emergency.incident(e.id) ?? this.incidents.get(e.id);
+    if (inc) this.incidents.set(e.id, inc);
+    // A disaster command can also cause automatic dispatches; the host record identifies the player's response.
+    if (e.type === 'dispatched' && host?.cause && inc?.answered === 2) this.playerDispatches.add(e.id);
+    if (e.type === 'resolved' || e.type === 'failed') {
+      const lost = e.type === 'failed' || !!inc && (inc.lost > 0 || inc.deaths > 0);
+      const player = inc?.answered === 2 || this.playerDispatches.has(e.id);
+      this.incidents.delete(e.id);
+      this.playerDispatches.delete(e.id);
+      if ((lost || player && !!inc) && this.ready('emergencyOutcome', OUTCOME_GAP)) {
+        this.play(lost ? 'lost' : 'saved', { pan: this.screenOf(e.x, e.z)?.pan ?? 0 });
+        if (host) outcomeAt.set(host, performance.now());
+      }
+      return;
+    }
     if (e.kind === 'fire' && this.fire) this.fire.types.add(e.type);
     if (e.type !== 'uncovered') return;
     this.last.set('uncovered', performance.now());
@@ -253,6 +318,23 @@ export class GameSounds {
     } else if (this.ready('incident', 12000)) this.play('warning', { pan: (s?.pan ?? 0) * 0.5 });
   }
 
+  /** The LIVE pill is hidden during a pause, even though the policy episode remains active. */
+  private syncLive(): void {
+    const host = this.d.host;
+    if (!host?.policy.live || host.speed === 0) { this.stopLiveDuck(); return; }
+    if (this.liveDuckT !== null || !this.d.duck) return;
+    const renew = () => this.d.duck?.(6, 0, LIVE_DUCK_RELEASE);
+    renew();
+    this.liveDuckT = setInterval(renew, LIVE_DUCK_MS);
+  }
+
+  private stopLiveDuck(): void {
+    if (this.liveDuckT === null) return;
+    clearInterval(this.liveDuckT);
+    this.liveDuckT = null;
+    this.d.duck?.(6, 0, LIVE_DUCK_RELEASE);
+  }
+
   private reward(): void {
     if (this.ready('reward', 6000)) this.play('reward');
   }
@@ -260,7 +342,7 @@ export class GameSounds {
   // ------------------------------------------------------------------ budget + construction
   private onMonth(): void {
     if (this.d.sandbox()) return;
-    const b = this.d.sim.state.budget;
+    const b = (this.d.host?.state ?? this.d.sim.state).budget;
     let net = 0;
     // recurring net only (loan proceeds, construction and other 'oneoff:*' entries are not the month's result)
     for (const k in b.lastIncome) if (!k.startsWith('oneoff:')) net += b.lastIncome[k] || 0;

@@ -50,7 +50,9 @@
  * days, so ETAs, "time since" and "time left" all use the same unit ("Send nearest 4.7 min" vs "4.0 min left").
  */
 import './emergency.css';
+import './fx.css';
 import type { GameContext } from '../game/context';
+import { emergencyStingJustPlayed } from '../game/GameSounds';
 import { MAX_BANNERS, sendDays } from '../game/emergencyPolicy';
 import type { EmergencyView, PolicySnapshot } from '../worker/SimHost';
 import { DispatchOptionsWatches } from './dispatchOptions';
@@ -467,6 +469,7 @@ export class EmergencyBanner {
   /** close-out c1: the highest an open toolbar flyout's top reached since it opened (relative to the bottom block, <= 0;
    *  flyoutTop): a switch to a shorter tab keeps the bound of the tallest — the stack does not re-dock with every tab */
   private flyHigh = 0;
+  private flashes = new Set<ReturnType<typeof setTimeout>>();
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.options = new DispatchOptionsWatches(ctx.host, ctx.signal);
@@ -550,15 +553,18 @@ export class EmergencyBanner {
     // (a release the window never sees: the pointer capture ends, or the window loses focus with the button held)
     win?.addEventListener('blur', release);
     this.el.addEventListener('lostpointercapture', release, { capture: true, signal: ctx.signal });
-    const off = ctx.sim.events.on('emergency', (e) => this.onEvent(e));
-    const offReset = ctx.sim.events.on('reset', () => this.reset());
+    const off = ctx.host.events.on('emergency', (e) => this.onEvent(e));
+    const offReset = ctx.host.events.on('reset', () => this.reset());
     const offTick = ctx.ui.on('uiTick', () => this.tick());
+    const offSpeed = ctx.host.events.on('speedChanged', () => this.renderLive(ctx.host.policy));
     const offPolicy = ctx.host.policy.subscribe((policy) => this.renderPolicy(policy, true), ctx.signal);
     const offSettings = ctx.ui.on('settings', () => this.sendSettings());
     this.sendSettings();
     this.renderPolicy(ctx.host.policy);
     ctx.signal.addEventListener('abort', () => {
-      off(); offReset(); offTick(); offPolicy(); offSettings();
+      off(); offReset(); offTick(); offSpeed(); offPolicy(); offSettings();
+      this.clearFlashes();
+      toggleClass(ctx.root, 'emg-live', false);
       this.ro?.disconnect();
       this.mo?.disconnect();
       win?.removeEventListener('resize', resized);
@@ -619,7 +625,12 @@ export class EmergencyBanner {
   /** The LIVE badge follows the authoritative policy, even while the sim is paused. */
   get liveActive(): boolean { return this.ctx.host.policy.live; }
 
+  private renderLive(policy: PolicySnapshot): void {
+    toggleClass(this.ctx.root, 'emg-live', policy.live && this.ctx.host.speed !== 0);
+  }
+
   private reset(): void {
+    this.clearFlashes();
     this.options.dispose();
     for (const b of this.banners.values()) b.el.remove();
     this.banners.clear();
@@ -639,9 +650,9 @@ export class EmergencyBanner {
       const b = this.banners.get(alert.id);
       if (b) b.wasPossible = alert.wasPossible;
     }
-    toggleClass(this.ctx.root, 'emg-live', policy.live);
+    this.renderLive(policy);
     if (feedback && policy.warn) this.ctx.sound('warning');
-    if (feedback && policy.toast) this.ctx.toast(policy.toast.text, policy.toast.kind, undefined, 'Emergency');
+    if (feedback && policy.toast) this.ctx.toast(policy.toast.text, policy.toast.kind, undefined, 'Emergency', { silent: emergencyStingJustPlayed(this.ctx.host) });
   }
 
   /** Only the three simulation settings cross the host seam. */
@@ -666,6 +677,10 @@ export class EmergencyBanner {
         b.inc = this.ctx.host.emergency.incident(e.id) ?? b.inc;
         const losses = lossText(b.inc);
         b.outcome = (e.type === 'failed' ? failText(b.inc, !!b.wasPossible) : `${INCIDENT_LABEL[e.kind]} under control`) + (losses ? ` — ${losses}` : '');
+        const flash = e.type === 'failed' || b.inc.lost > 0 || b.inc.deaths > 0 ? 'emg-lost' : 'emg-saved';
+        b.el.classList.add(flash);
+        const timer = setTimeout(() => { b.el.classList.remove(flash); this.flashes.delete(timer); }, 600);
+        this.flashes.add(timer);
       }
       return;
     }
@@ -1151,7 +1166,15 @@ export class EmergencyBanner {
     return [...this.banners.keys()];
   }
 
+  private clearFlashes(): void {
+    for (const timer of this.flashes) clearTimeout(timer);
+    this.flashes.clear();
+    for (const b of this.banners.values()) b.el.classList.remove('emg-saved', 'emg-lost');
+  }
+
   dispose(): void {
+    this.clearFlashes();
+    toggleClass(this.ctx.root, 'emg-live', false);
     this.options.dispose();
     this.ro?.disconnect();
     this.mo?.disconnect();

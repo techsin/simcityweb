@@ -257,7 +257,7 @@ export class CityScene {
       focusCell: (x, z, d) => this.focusCell(x, z, d),
       showQuery: (t, o) => this.showQuery(t, o),
       applySettings: (p) => this.applySettings(p),
-      toast: (text, kind, cell, title) => this.toasts?.show(text, kind, cell, title),
+      toast: (text, kind, cell, title, opts) => this.toasts?.show(text, kind, cell, title, opts),
       openFlyout: (id, tab) => this.toolbar?.openFlyout(id, tab),
       showOnboarding: () => this.onboarding?.show(),
       save: () => this.save(false),
@@ -306,7 +306,11 @@ export class CityScene {
       holdCalendar: (on) => { if (!this.disposed) this.host.act('holdCalendar', [on], { tag: this.newYear }); },
     });
     // event-driven sounds (news, disasters, rewards, budget ticks, construction) + generic control feedback
-    this.gameSounds = new GameSounds({ sim: this.sim, sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox() });
+    this.gameSounds = new GameSounds({
+      sim: this.sim, host: this.host, signal: this.abort.signal,
+      duck: (db, hold, release) => (this.mods.audio as { duck?: import('../audio/AudioEngine').AudioEngine['duck'] } | undefined)?.duck?.(db, hold, release, { renew: true }),
+      sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox(),
+    });
     this.offUiSounds = installUiSounds(() => this.mods.audio as unknown as UiSoundAudio | undefined);
     this.fpsEl = h('div', { class: 'fps mp-glass', style: 'display:none' });
     this.uiRoot.appendChild(this.fpsEl);

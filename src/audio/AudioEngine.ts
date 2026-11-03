@@ -384,9 +384,15 @@ export class AudioEngine {
   }
 
   // ------------------------------------------------------------------ music
-  /** Duck only music (dry + reverb send). Explicit long ducks are not subject to the SFX cooldown. */
-  duck(db: number, hold: number, release = 0.6): void {
+  /** Duck only music (dry + reverb send), bypassing the SFX cooldown. Renewals leave a deeper duck's deadline intact. */
+  duck(db: number, hold: number, release = 0.6, opts?: { renew?: boolean }): void {
+    if (opts?.renew && this.ducking && this.ducking.music.gain.value < 10 ** (-db / 20) - 1e-6) return;
     this.ducking?.duck(db, hold, release);
+  }
+
+  /** Dev / acceptance: effective dry music bus gain, including ducking, before the master gain. */
+  get debugMusicBusGain(): number | null {
+    return this.ctx && this.ducking ? this.buses.music.gain.value * this.ducking.music.gain.value : null;
   }
 
   /** The Settings panel persists these two flags in GameSettings. */
