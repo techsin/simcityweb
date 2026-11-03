@@ -1,7 +1,7 @@
 # B3: spreading the month-boundary work (design, rev 5: as built, merged onto dev)
 
 Design for docs/WASM_PLAN.md row B3 and docs/WORKER_DESIGN.md §6 row S4. Base: a59f08f, branch `b3-month-spread`;
-rev 5: merged onto dev `44f39b1`, branch `cloud/b3`.
+rev 5: merged onto dev `44f39b1`, then `5b12abe`; branch `cloud/b3`.
 It is built on the three B3 maps (tourism; population, EQ/HQ and advisors; the whole month day). The numbers below
 come from their runs on this machine: wall clock, idle-gated, interleaved B/W, base code.
 
@@ -137,6 +137,8 @@ gate and the evidence are in docs/dev/reports/cloud-B3.md.
 - **Merged onto dev `44f39b1`** (`422bdf0`: B1, W0–W1.1, T029, FH-04 and the J-fixes as merged). Dev's tourism.ts,
   advisors.ts and population.ts equal `a59f08f`'s, so B3's code merged unchanged. This file (dev held rev 2) and
   `balance-baseline.json` (B1's `b1` key next to B3's `b3`) conflicted; both sides were kept.
+  Dev's next commit `5b12abe` (T037d: approval labels and details, the taxHigh rule) merged cleanly (`dea855c`); the
+  bot, the digests and the balance rows below are the same on both merges.
 - **L7 is in** (`1db0c5d`, approval.ts): a resumed init keeps the saved tourism term (finite), else computes it as
   before. §7 gains a test: a static town saved on days 56–59 keeps the tick's approval terms and raw value right after
   each load (it fails without the fix, on day 56); test 2 compares them right after each of its 30 loads too (it fails

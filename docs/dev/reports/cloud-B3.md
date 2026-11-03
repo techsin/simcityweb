@@ -49,6 +49,9 @@ it), the desktop workflow's journal (`docs/dev/wip/journals/b3-wf_96cfa1e8-a78.j
    - Checked after the merge: every file that only one side changed since `a59f08f` equals that side's version; tsc clean.
    - The saved WIP copy (`docs/dev/wip/b3/0001…0013*.patch` on rev 2) reproduces `b3-month-spread`'s tree exactly, and
      its `uncommitted.diff` is empty: nothing was saved mid-edit.
+   - Dev moved while the gates ran (T037d, `5b12abe`: approval.ts labels and details, advisors.ts's taxHigh rule, UI). It is
+     merged too (`dea855c`), without conflicts; L7's hunk and B3's advisor code are untouched by it. The gates below were
+     re-run on that merge where they could change (round 2).
 2. **L7, approval's resumed init** (`1db0c5d`, `src/sim/economy/approval.ts`, 4 lines; NOTE-044 asked for it if contained).
    On a resumed init (a loaded city: day > 0 with saved terms) the tourism term keeps the saved value when it is a finite
    number, else it is computed as before (an old save without the term). The other terms are recomputed from the load's
@@ -71,23 +74,30 @@ it), the desktop workflow's journal (`docs/dev/wip/journals/b3-wf_96cfa1e8-a78.j
 5. **The design doc's as-built revision** (rev 5, docs/dev/B3_DESIGN.md): the merge, L7 applied (§4, §7 test 15, §10),
    the bot on dev and its attribution, the digests.
 
-### Gates (W = `cloud/b3`, B = dev `44f39b1` from a clean export in `co/b3-devbase`)
+### Gates (W = `cloud/b3`, B = dev from a clean export in `co/b3-devbase`)
+
+Round 1: W at `1db0c5d` against dev `44f39b1` (everything below). Round 2, after dev moved: W at `dea855c` against dev
+`5b12abe` (T037d), for tsc, the full vitest, the bots, the digests and W's balance rows; the timing and the tourism probes
+were not re-run (T037d changes only advice text, a tax-advice threshold, labels and UI, and both rounds' bots and digests
+are equal).
 
 Every heavy command ran under the shared timing lock. Scratch:
 `/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/b3cloud/`
-(`logs/`, `runs/`, `bal/`; the scripts `gates.sh`, `balance.sh`, `timing2.sh`, `tjmulti.sh`, `vstats.py`, `bal3.py`).
+(`logs/`, `runs/`, `bal/`, and round 2's `logs2/`, `runs2/`, `bal2/`; the scripts `gates.sh`, `balance.sh`, `timing2.sh`,
+`tjmulti.sh`, `gates2.sh`, `vstats.py`, `bal3.py`).
 
 | gate | result |
 |---|---|
-| tsc (`npx tsc --noEmit`) | clean after the merge (`422bdf0`) and at `1db0c5d` |
-| full vitest (`npx vitest run --configLoader runner`, at `1db0c5d`) | **208 files passed, 1 skipped; 2,053 tests passed, 22 skipped, 0 failed** (250 s; `logs/vitest_full.log`) |
+| tsc (`npx tsc --noEmit`) | clean after each merge (`422bdf0`, `dea855c`) and at `1db0c5d` |
+| **full vitest, round 2** (at `dea855c`, with `SIM_FIXTURES` / `SIM_SNAP` pointing at the main checkout's 1M fixtures, so the grown-fixture replica, querySideEffects and WASM cases run) | **212 files passed, 1 skipped; 2,106 tests passed, 4 skipped, 0 failed** (462 s; `logs2/vitest_full.log`). Dev's own merge gate at `f85d538` also skipped 4 (2,087 passed; cloud-carryover-log.md) |
+| full vitest, round 1 (at `1db0c5d`, without the fixture env: the worktree has no `tools/bench/.fixtures`) | 208 files passed, 1 skipped; 2,053 passed, 22 skipped, 0 failed (250 s; `logs/vitest_full.log`) |
 | after the `b3` rows were re-recorded (the JSON only) | tsc clean; `tests/sim/botRules.test.ts` 9/9 (it imports the JSON; `balance.test.ts` skips without `BALANCE=1`) |
 | B3's own suites, alone | `tests/sim/monthSpread.test.ts` 12/12; `tests/sim/advisorsScanOrder.test.ts` 1/1 (each new or fixed test also run with its fix reverted: it fails, above) |
-| bot 128×15 seed 7, dev | 2015: **196,101 [59288, 95301, 41512]**, equal line for line (non-timing) to the dev gate log `gate_bot_t033m.log` |
-| bot 128×15 seed 7, W | 2015: **192,899 [61124, 93804, 37971]**, −3,202 (−1.6 %) against dev: changed by design |
-| bot, W without T2 and P3 (`var-noT2P3`: W with T1's tourism.ts `6e1a875` and dev's population.ts) | **identical to dev** line for line: A0, T1, A1, the fix round and L7 change nothing |
-| bot, dev with only T2 and P3 (`var-onlyT2P3`: dev with W's tourism.ts and population.ts) | **identical to W** line for line: nothing else adds to the change (A1's cache interaction with B1's services, §3.2 O9, does not show) |
-| determinism (monthbench `--digest`, 120 days at design cadence, two processes for W) | dense1m W `f341ae74…18be` = `f341ae74…18be`; bot256 W `b3081164…d504` = `b3081164…d504`. Dev: `a93bb936…3571`, `f561f4e9…58aa`; the no-T2/P3 tree equals dev on both fixtures (`runs/dig_*.json`) |
+| bot 128×15 seed 7, dev | 2015: **196,101 [59288, 95301, 41512]** on both dev commits, equal line for line (non-timing) to the dev gate log `gate_bot_t033m.log` |
+| bot 128×15 seed 7, W | 2015: **192,899 [61124, 93804, 37971]**, −3,202 (−1.6 %) against dev: changed by design. Rounds 1 and 2 equal line for line (`logs/`, `logs2/bot_W.log`) |
+| bot, W without T2 and P3 (`var-noT2P3`: W with T1's tourism.ts `6e1a875` and dev's population.ts) | **identical to dev** line for line, in both rounds: A0, T1, A1, the fix round and L7 change nothing |
+| bot, dev with only T2 and P3 (`var-onlyT2P3`: dev with W's tourism.ts and population.ts) | **identical to W** line for line, in both rounds: nothing else adds to the change (A1's cache interaction with B1's services, §3.2 O9, does not show) |
+| determinism (monthbench `--digest`, 120 days at design cadence, two processes for W) | dense1m W `f341ae74…18be` = `f341ae74…18be`; bot256 W `b3081164…d504` = `b3081164…d504`. Dev: `a93bb936…3571`, `f561f4e9…58aa`; the no-T2/P3 tree equals dev on both fixtures. Round 2 gives the same eight digests (`runs/`, `runs2/dig_*.json`) |
 
 **Month-day timing spot check, the L0 reading** (NOTE-044: warm months, the median over runs, the worst month,
 ≤ +10 ms). `b3work/tools/monthbench.ts` bundled against each tree (`b3cloud/build/sim-profile/monthbench-{W,B}.js`),
@@ -120,7 +130,8 @@ old base verify-b read dom 28's worst day at 13.9 in W (d11008, a cold month) ag
 
 **The balance procedure** (B3_DESIGN §8, docs/SIM_DEPTH_SPEC.md), `tools/balance-json.ts` on both trees, the three runs
 of a side in parallel under one hold of the lock (`bal/`, `logs/bal3.txt`). The dev re-runs reproduce the recorded `b1`
-rows **in every non-timing column** (all three runs), so `b1` is the baseline.
+rows **in every non-timing column** (all three runs), so `b1` is the baseline. Round 2 re-ran W's three runs at `dea855c`:
+equal to round 1 in every non-timing column (`bal2/`), so the recorded `b3` rows hold on the final tree.
 
 | run | W population (b1) | W / b1 | acceptance |
 |---|---|---|---|
@@ -182,6 +193,14 @@ events (`'tourism'` now on day 26, `'demographics'` on dom 1); the full vitest c
    gated: W's first timed tick (the 2nd after the load) is +20.0 at dense1m design (dev +19.4), with the cold budget code
    (L1) in it.
 7. **No browser check** (above). docs/dev/STATUS.md is not edited (the lead's; B3_DESIGN §8, gameplay R7).
+
+### Noticed, not changed
+
+- **Approval's tourism detail** (`approvalDetail` in approval.ts, `'tourism'`: "N tourists / day") reads today's
+  `econData.tourists`, while the term next to it is what the last tick scored. Since T2 the totals change on day 26, so on
+  dom 26–29 the tooltip shows the coming tick's tourists next to the last tick's pride (in the base only after a venue
+  removal). Display-only; a fix needs a choice (derive the count from the term, which caps at `tourismMax`, or save the
+  tourists the tick scored), so it is left to the lead or the review step rather than widened into approval.ts here.
 
 ### Left for the next steps
 
