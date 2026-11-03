@@ -114,7 +114,7 @@ road-facing land a player could zone; the bot's patterns leave it.
 ## Cloud carry-over (Nov 3)
 
 The desktop was unavailable (NOTE-044), so the cloud finishes this lane on `cloud/t037b`: `local/R1-guide-b`
-(`ba37339`) with dev merged in six times:
+(`ba37339`) with dev merged in seven times:
 - `67b567d` (dev `5b12abe`): advisors.ts and queries.ts merged without conflicts, T037d's `taxHigh` hunk and this
   lane's zone rules being separate;
 - `00b96cb` (dev `48991d7`: B3 and T036 step 2): no conflicts; B3 moves the advisors' month-boundary work, and
@@ -123,9 +123,21 @@ The desktop was unavailable (NOTE-044), so the cloud finishes this lane on `clou
   docs only;
 - `533178a` (dev `821a8d6`: T038, merged with no conflicts): src/render, tests/render and a bench tool only, none of
   this lane's files and nothing the bot runs (src/sim, src/worker, src/game, src/save, src/core and tools/simbot.ts are
-  byte-identical between dev `97f1a9c` and `821a8d6`). The full vitest and the lane's bot ran again at this head.
+  byte-identical between dev `97f1a9c` and `821a8d6`);
+- `270b709` (dev `683d02b`: T036 step 3, FEEL-02a's toast budget and New Year pacing): **one conflict**, in
+  Notifications.ts's news handler. Dev's version is kept as it is (the budget, and its `Toasts.newsAction` hook, "set by
+  the lane that adds the action map"); this lane now sets that hook in the Toasts constructor to its ref lookup
+  (`adviceActions.newsAction`), where it used to call the lookup inline. So FH-03's toast keeps its button and, over
+  budget, waits in FEEL-02a's queue instead of being dropped: FH-03 change 3, which the gap list had left to META, is
+  now in. The advice-toast tests in `adviceActions.test.ts` run on faked clocks, and the two that see more than one
+  toast move them past the budget (both failed after the merge as written: the month tick's other news spends the
+  budget, and a second toast within 4 s is dropped); a new test checks the queue through this lane's hook. With the
+  hook removed, 4 of the file's tests fail. dev's own sim, worker and save code is unchanged
+  since `97f1a9c`, and src/game's change (NewYear.ts, CityScene.ts, context.ts) is not in the bot.
 
-tsc is clean at `67b567d`, `954306d`, `f077faf`, `5f634f6` and `533178a`. NOTE-045 to NOTE-047 keep T037b on the
+The gates below ran again at this head (`270b709`, with the report commits after it).
+
+tsc is clean at `67b567d`, `954306d`, `f077faf`, `5f634f6`, `533178a` and `270b709`. NOTE-045 to NOTE-047 keep T037b on the
 cloud (the desktop is back, but must not touch it); NOTE-047 moves T037a and T037e to the desktop, T037e to start once
 this lane is in dev.
 
@@ -139,7 +151,7 @@ the inherited newcomer gate), this report, and the lane's diff against dev.
 |---|---|---|
 | FH-03 change 1 | below 20,000 residents zoneR / zoneC / zoneI are warnings, at most once per 180 days | done (+ the F3 rules), tests |
 | FH-03 change 2 | the toast's "Zone homes" selects `zone:1` and pulses Zones; found by `ref.advice`, never by text | done, tests, desktop browser check |
-| FH-03 change 3 | FEEL-02a's toast budget queues the action toast | not this lane: FEEL-02a is META's (T036 step 3), not in dev yet |
+| FH-03 change 3 | FEEL-02a's toast budget queues the action toast | not this lane: FEEL-02a is META's (T036 step 3), not in dev yet (it reached dev later, and the merge `270b709` wires it: see above) |
 | FH-03 change 4 | the RCI segment's "+ zone" badge (demand above 0.5, fewer than 12 empty front lots) | **not done** (TopBar; "waits for the TopBar split") |
 | FH-03 change 5 | the Planning card's count, "4 empty residential lots left — demand wants many more" | done, tests |
 | FH-03 acceptance | toast within one month tick and at most once per 180 days; click selects `zone:1`; the badge shows and goes at 12 lots; the newcomer passes 5,000 by year 4 on Medium; the ref test; advisors.test updated | 4 of 6: **the badge missing; the newcomer gate not met** (283 at year 4, before F3) |
@@ -366,3 +378,8 @@ hangs just under the segment (`f9fd2a9`).
     could skip the pass while no family's demand is above 0.5, when the badge cannot show; this lane left it as is
     (the cost is small and the recount also keeps the room fresh for the moment demand rises). The lead may want the
     skip; it is a two-line change in TopBar.ts's badge update.
+11. **FH-03's "a toast within one month tick" with FEEL-02a's budget in dev.** The advice still posts at the month tick
+    (day 30), and its toast shows at once when the budget allows; when the tick's other news has spent it, the toast
+    waits in FEEL-02a's queue, at most `Toasts.QUEUE_MAX_MS` (50 s of real time), and is never dropped. That is FH-03
+    change 3 as the plan words it, so this lane reads acceptance 1 as met; the unit test bounds the wait at 50 s and the
+    browser recheck (A1) records it.
