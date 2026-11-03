@@ -8,7 +8,9 @@ import {
   NO_RESIDENTS_TEXT, approvalFace, approvalFix, approvalFixHint, approvalHud, newTownFooter,
 } from '../../src/ui/topbar/approvalGuide';
 import { LocalSimHost } from '../../src/worker/SimHost';
-import { newState } from '../infra/cityGen';
+import { LoopbackSimHost } from '../../src/worker/LoopbackSimHost';
+import { approvalBreakdown } from '../../src/sim/economy/approval';
+import { newState, stressCity } from '../infra/cityGen';
 import { FEl, installFakeDom, textOf } from './fakeDom';
 
 installFakeDom();
@@ -179,4 +181,37 @@ describe('TopBar approval segment (FH-06)', () => {
       expect(f.showTab).toHaveBeenCalledTimes(2);
     } finally { await f.dispose(); }
   });
+});
+
+describe('the approval card on the replica (LoopbackSimHost)', () => {
+  it('reads the crime, tax and baseline details from mirrored data and opens the crime fix', async () => {
+    const { st } = stressCity(48, 7);
+    st.budget.taxRates.fill(11, 0, 3);
+    const abort = new AbortController();
+    const host = new LoopbackSimHost(st, { initialSpeed: 0, signal: abort.signal, loopback: { cadence: 'design' } });
+    await host.start();
+    try {
+      host.harness.runDays(60);
+      await host.drain();
+      const replica = host.state;
+      expect(replica).not.toBe(host.harness.primary);
+      const detail = (s: Parameters<typeof approvalBreakdown>[0], id: string) => approvalBreakdown(s).find((t) => t.id === id)?.detail;
+      for (const id of ['base', 'crime', 'tax']) expect(detail(replica, id), id).toBe(detail(host.harness.primary, id));
+      expect(detail(replica, 'crime')).toMatch(/^crime at homes \d+% — low-wealth homes/);
+      expect(detail(replica, 'tax')).toMatch(/^homes are taxed 11% on average/);
+      const ctx = {
+        host, state: replica, sim: host.sim, signal: abort.signal, ui: new Emitter<UIEvents>(), mods: {}, world: { timeOfDay: 12 },
+        overlay: Overlay.None, overlayVariant: -1, setOverlay: vi.fn((o: Overlay) => { ctx.overlay = o; }),
+        sound: vi.fn(), toast: vi.fn(), openPauseMenu: vi.fn(), openFlyout: vi.fn(), panels: { toggle: vi.fn(), open: vi.fn() },
+      } as unknown as GameContext;
+      const bar = new TopBar(ctx, new FEl('div') as unknown as HTMLElement);
+      bar.update();
+      const el = bar.el as unknown as FEl, seg = el.querySelector('.approval')!;
+      const crime = el.querySelectorAll('.ap-r').find((r) => r.dataset.fix === 'crime')!;
+      expect(textOf(crime)).toContain('crime at homes');
+      seg.fire('click', { target: crime });
+      expect(ctx.overlay).toBe(Overlay.Police);
+      expect(ctx.panels.toggle).not.toHaveBeenCalled();
+    } finally { abort.abort('dispose'); await host.dispose(); }
+  }, 60000);
 });
