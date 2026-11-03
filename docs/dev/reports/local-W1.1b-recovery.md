@@ -157,3 +157,77 @@ the T031 and T032 reports' T033 hand-offs; this report; the diff against dev.
 Out of scope, left to T039 (W1.3) as the plan rows say: the worker's own journal read and boot replay with the
 save-before-ready handshake, `LocalSimHost`'s boot replay, the title screen's journal-only offer, and the snapshot
 cadence of min(30 s, 90 sim days).
+
+### What the carry-over did
+
+Commits on `cloud/t033`: `aebadaa` (dev merged in), `2422b40` (the integration), `e7e7f82` (review fixes), and the
+report commit. The desktop's mid-edit work was read line by line: the codec's `journalMatches`, the IDB/LS readers and
+`SimCore.replayRecoveryJournal` stand as written, apart from the changes below; the mirror class was reworked.
+
+| Gap | Change |
+|---|---|
+| G1 | `SimHost.RecoveryMirror` is dev's narrow `{ writeNow(why) }` again (now also taking `'crash'`); the class in `recoveryMirror.ts` implements it. tsc is clean. |
+| G2 | `PacketSimHost` binds a `RecoveryMirror` to the first Ready (its `savedAt`, `cmd` and any carried `journal`) when the host has persistence and the page has localStorage (`journal: false` turns it off; `LocalSimHost` keeps `recovery = null`). It is fed from the host's own paths, beside T032's observer hooks: `transmit` (after slider coalescing; commands sent before the Ready are buffered and journaled at bind), `ack`, `save` (`onSaving`), `saved` (ok: `onSaved`, rebinding to the save; failed: `onSaveFailed`), and `snapped` (`onSnapped`, then one localStorage write of the payload with its journal, instead of dev's `storeRecoveryLs(marker, payload)`, which deleted the LS journal). Replies update recovery state even when no caller waits. `host.recovery.writeNow` flushes buffered sliders, then writes. A `fatal` writes the journal (`why: 'crash'`) before the host fails (§4.4). The mirror is disposed with the host. The mirror's reserve check is now incremental (it re-serialized the whole journal per command), a periodic write without a change is skipped, and journal-only markers read their metadata (name, day, date, base day, population, funds) from the replica at write time. |
+| G3 | `LoopbackCore` takes the journal bound to its loaded save (`bootJournal`: the page's recovery base, `readRecoveryJournal` on the KV; mismatched journals are deleted) and replays it after init, before the first tick and before its Ready, through `SimCore.replayRecoveryJournal`. The replay's change events count, so the city reads as unsaved. The loopback's Ready is synchronous, so no save can precede it: the replayed ops ride in `ready.journal` renumbered to seqs ≤ 0 (the design's failed-boot-save path, §4.3), the mirror starts from them, and the session's first save trims them and deletes the IDB journal. |
+| G4 | `Journal.ops` (protocol) carries optional `cost` and `refund` for a bulldoze; `RecoveryJournal` is that type. The mirror keeps the ack's `cost` and gross `refund`. The replay moves the funds to the charged net and books the refund line to the charged refund and the demolition line to the charged fee (an entry without `refund` keeps the old net-only booking). `journalMatches` validates both fields. |
+| G5 | `holdCalendar` is in the excluded-ops test. |
+| G6 | `SimCore.copyRecoverySnapshot(…, base?)` is the one builder; `ProtocolInbox` calls it with the save still being written as the base, and the shared `JOURNAL_RESERVE_BYTES` replaces T032's literal. |
+| G7 | `LoopbackCore.resync` re-sends dropped `saved` and `snapped` replies after its Ready; only `qres` ids go in `lost`. A save written while its reply was in flight now resolves, and the mirror rebinds to it. |
+| G8 | `findRecoverySnapshot` (page composition) adopts the LS journal into IndexedDB before it clears the slot, once the save (and, for a snapshot-bound journal, the snapshot) it extends is identified; `adoptRecoveryJournal` no longer deletes a newer IDB copy bound elsewhere. `restoreRecoverySnapshot` re-binds a journal that extends the restored snapshot to the new record (after the record write: KV has no cross-store transaction, so a stop in between loses only what the snapshot alone would), so the next loopback boot replays it. |
+| G9 | Eight new cases in `tests/worker/recovery.test.ts` (25 in all), five of them through `LoopbackSimHost` (below). |
+
+**New cases**, each checked to fail with its fix reverted (13 reverts, every one failing; the script and log are in
+the lane's scratch dir, `t033work/mutate.py`, `muts1.log`):
+1. `replays a day-20 bulldoze with the refund it was charged, not the base day's same-day rule`: fails with the old
+   net-only reconciliation (refund line 150 instead of 75) and without the mirror keeping `refund`.
+2. `moves the unload journal into IndexedDB at title time when only localStorage kept it`: fails without the adoption.
+3. `restores a snapshot with the journal that extends it: re-bound to the new save, replayed at the next boot`: fails
+   without the rebind.
+4. `journals what the host sends and replays it onto that save at the next boot, then the first save trims it`:
+   fails without the mirror binding, without the boot replay, and without `ready.journal`.
+5. `keeps the payload and the journal of one base in localStorage through host snapshots and saves`: fails with dev's
+   `snapped` handler and without the `saved` rebind.
+6. `rebinds the journal to a save whose reply a resync dropped in flight, and that save still resolves`: fails with
+   T032's `lost` list.
+7. `journals commands posted before the core is ready, and writes the journal first on a fatal error`: fails without
+   the early buffer and without the crash write.
+8. `keeps no journal without persistence or localStorage, and none when turned off`: fails with the gate removed.
+
+### Gates (cloud, Nov 3; 4-core container, heavy commands under the shared lock)
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | clean (it failed twice on the desktop branch after the merge, G1) |
+| `tests/worker/recovery.test.ts` | **25 passed** (17 desktop cases re-run here for the first time, all green after the integration; 8 new) |
+| Worker and save suites, with the fixtures (all of `tests/worker` but querySideEffects, `tests/save`, newyear) | 40 files, **296 passed, 1 skipped** |
+| Full vitest, `SIM_FIXTURES` set (the grown-fixture cases run) | **203 files passed, 1 skipped; 2,038 tests passed, 4 skipped**; 427 s |
+| The bot, 128x15 seed 7, lane vs a clean export of dev `923428d` | **identical** apart from the ms/day timing line: `residents [ 59288, 95301, 41512 ]`, 196k residents in 2015, every year row equal |
+| New tests fail with their fix reverted | 13 of 13 reverts fail (list above) |
+
+### Decisions (conservative readings, for the lead)
+
+1. **No save before the loopback's Ready.** §4.3 has the worker save after a replay, before `ready`. The loopback core
+   builds its Ready synchronously in its constructor, so it takes the design's own failed-save path: the replayed
+   edits ride in `ready.journal` renumbered to seqs ≤ 0, the IDB journal stays bound to the loaded save, the city
+   reads as unsaved (the replay's change events count), and the first save trims and deletes the journal. A second
+   crash before that save loses nothing (test 4). The save-before-ready handshake stays with the real worker, T039.
+2. **A resync no longer drops written saves' and snapshots' outcomes in the loopback** (T032 rejected them as
+   "interrupted"). The core wrote them, so the page's journal must rebind and the app must not show a failure; reads
+   are still lost. For T034: its worker runs with persistence `'main'`, where the page stores the record on the
+   `saved` reply, so there a lost reply does mean no write and rejecting it stays right; the mirror then sees neither
+   `onSaved` nor `onSaveFailed` for that save, which only keeps its pin (memory, not correctness) until the next save.
+   W1.3's `worker-idb` mode writes in the worker and must re-send as the loopback now does.
+3. **`onResync(cmd)` needs no mirror action** once written saves are re-sent. Commands applied before a resync whose
+   acks were lost stay journaled with an unknown outcome: a replay drops one that fails, and a bulldoze among them
+   replays with the base day's refund rule (its charge never arrived).
+4. **The restore rebind is not atomic.** KV has no transaction across stores, so the re-bound journal is written
+   after the restored record; a stop between the two loses only the post-snapshot edits, as before this change.
+5. **Left to T039 (W1.3), as its row says:** `LocalSimHost`'s boot replay (a journal written in loopback mode is
+   ignored by a local-mode session and deleted by its first save), the title screen's journal-only offer (a journal
+   alone is now moved into IndexedDB at title time and replayed silently at the next loopback boot), the worker's
+   own journal read, and the min(30 s, 90 sim days) snapshot cadence (the app's 30 s periodic snapshot is unchanged).
+6. **The mirror is on by default in `?simworker=loopback`** with persistence and localStorage; `journal: false`
+   turns it off. There is no player setting: the loopback is a dev flag.
+7. **FH-07a test setup.** Over 20 loopback days the small test city's population pass did not age the plopped park
+   (`age` stayed 0), so the test sets `age = 20` before the bulldoze. That is the test city, not the replay; the
+   aging itself is covered by `tests/sim/actions.test.ts`'s FH-07a cases.
