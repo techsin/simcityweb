@@ -1300,7 +1300,7 @@ export class EmergencySystem implements SimSystem {
     const n = Math.max(1, Math.min(free, units | 0));
     const route = this.extractPath(found);
     for (let q = 0; q < n; q++) this.sendUnit(sim, inc, s, route, fd, now, true);
-    this.afterDispatch(sim, inc);
+    this.afterDispatch(sim, inc, true);
     // (the station's last free unit may have been the one another waiting incident's prompt counted on)
     this.revalidate(sim);
     this.persist();
@@ -1676,13 +1676,14 @@ export class EmergencySystem implements SimSystem {
     return v;
   }
 
-  private afterDispatch(sim: Simulation, inc: Incident): void {
+  private afterDispatch(sim: Simulation, inc: Incident, manual = false): void {
     const wasWaiting = inc.state === 'uncovered' || inc.state === 'queued';
     const primary = INCIDENT_RESPONDERS[inc.kind][0];
     if (wasWaiting && this.assigned(inc, primary) === 0) {
       // only a supporting responder was sent (the ambulance of an industrial accident or a collapse): the incident keeps
       // waiting for its primary one — state, reason, note and the player's prompt (manualPossible / canSend) stay, so
       // the banner and LIVE mode stay until a fire truck is on its way (the plant still ignites without one)
+      if (manual) this.emit(sim, inc, 'dispatched');
       this.writeStats(sim.state);
       return;
     }
