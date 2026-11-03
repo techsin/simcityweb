@@ -1,10 +1,10 @@
 import { writeFile } from 'node:fs/promises';
 
-export const BASE = 'a2578da29d8f67d1b218b1ce5e86e3ae7d3f9545';
+export const BASE = '28a4862';
 export const COMMANDS = [
   'zone', 'dezone', 'bulldoze', 'buildNetwork', 'buildPowerLine', 'buildSubway', 'plop', 'terraform', 'plantTrees',
   'setTax', 'setFunding', 'setHistoric', 'setOrdinance', 'takeLoan', 'repayLoan', 'setSpeed', 'resume',
-  'dispatch', 'dispatchBest', 'triggerDisaster', 'setCamera',
+  'dispatch', 'dispatchBest', 'triggerDisaster', 'setCamera', 'dismissAlert', 'setSettings',
 ];
 export const commandCheck = (op) => op === 'terraform' ? 'terraform / held brush reaches flat' : op === 'setCamera' ? 'setCamera / Ctrl+S save' : op;
 export const PANELS = ['graphs', 'stats', 'advisors', 'dataviews', 'demographics', 'emergencies', 'rewards'];
@@ -14,11 +14,13 @@ export const CHECKS = {
   onboarding: 'Appendix A / Onboarding Play', 'speed-keys': 'Appendix A / keys 1/2/3',
   'info-demolish': 'Appendix A / InfoPanel Demolish', exit: 'Appendix A / exit to region',
   'data-view': 'Appendix A / select data view', verify: 'replica verify',
+  ghosts: 'pending ghosts / provisional edits', packets: 'packet replies / cause tags', recovery: 'recovery mirror',
   ...Object.fromEntries(PANELS.map((id) => [`panel:${id}`, `Appendix A / ${id} panel`])),
 };
 export const DEPENDENCIES = {
   dezone: ['zone'], bulldoze: ['plop'], repayLoan: ['takeLoan'], setHistoric: [CHECKS.fixture],
   [CHECKS.save]: [CHECKS.setCamera], triggerDisaster: [CHECKS.fixture], dispatch: ['triggerDisaster'], dispatchBest: ['dispatch'],
+  dismissAlert: ['triggerDisaster'], [CHECKS.packets]: ['dispatch'], [CHECKS.recovery]: ['zone'],
 };
 export function selectedChecks(only) {
   if (!only) return null;
@@ -32,7 +34,7 @@ export const help = `Worker acceptance harness (T028, base ${BASE})
   node tools/qa-worker.mjs [options]
 
   --help                     Print this help; no Vite or Playwright import
-  --host local|loopback|worker  Host to require (default local)
+  --host local|loopback|worker  Host to require (default loopback)
   --swiftshader              Cloud GPU flags; default is the real GPU
   --headed                   Show Chromium (default headless)
   --executable PATH          Chromium executable (otherwise Playwright's)
@@ -42,13 +44,13 @@ export const help = `Worker acceptance harness (T028, base ${BASE})
   --only CHECK               Run one check plus its prerequisites (e.g. freeze, zone, save)
   --break-ack OP             Break OP's done promise in the temporary build; implies --only OP
   --drop-ack OP              Probe-only fault: withhold OP's first ack, across city sessions
-  --w1                       Enable W1.1b/W1.2 host, verify and protector gates
-  --digest-module PATH       W1 shared module exporting exactDigest(state); see README
+  --w1                       Also enable verify/protector gates for the local host
+  --digest-module PATH       Override shared exactDigest module (default src/worker/queries.ts)
 
 Always builds production assets into a temporary directory and starts its own vite preview.
 One fresh browser/context, 256-cell sandbox, synthetic pointer input through the real tools.
 Freeze duration is always 15 s; resume deadline is always 1 s.
-Until W1.x lands, omit --w1; its checks print SKIPPED with the missing milestone.
+Loopback runs now, including verify/protectors. Worker skips if its host is not in this build.
 Cloud: PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tools/qa-worker.mjs --swiftshader
 Checks: ${Object.keys(CHECKS).join(', ')}
 Exit: 0 = no failures, 1 = failed check (also a verified broken-build control),
@@ -56,7 +58,7 @@ Exit: 0 = no failures, 1 = failed check (also a verified broken-build control),
 For --break-ack, require PASS broken-build control; exit 1 alone proves nothing.`;
 
 export function parseArgs(argv) {
-  const o = { host: 'local', swiftshader: false, headed: false, w1: false, ackTimeout: 8000, bootTimeout: 180000 };
+  const o = { host: 'loopback', swiftshader: false, headed: false, w1: false, ackTimeout: 8000, bootTimeout: 180000 };
   const flags = { '--help': 'help', '--swiftshader': 'swiftshader', '--headed': 'headed', '--w1': 'w1' };
   const values = { '--host': 'host', '--executable': 'executable', '--out': 'out', '--drop-ack': 'dropAck',
     '--ack-timeout': 'ackTimeout', '--boot-timeout': 'bootTimeout', '--digest-module': 'digestModule', '--only': 'only', '--break-ack': 'breakAck' };
@@ -78,11 +80,11 @@ export function parseArgs(argv) {
   if (o.only && !CHECKS[o.only] && !Object.values(CHECKS).includes(o.only)) throw new Error(`unknown check ${o.only}; use --help`);
   if (o.breakAck) {
     if (o.dropAck) throw new Error('--break-ack and --drop-ack are separate controls');
-    if (o.host !== 'local') throw new Error('--break-ack currently targets LocalSimHost only');
     if (o.only && (CHECKS[o.only] ?? o.only) !== commandCheck(o.breakAck)) throw new Error('--break-ack requires --only to name the same command');
     o.only = o.breakAck;
   }
-  if (o.digestModule && !o.w1) throw new Error('--digest-module requires --w1');
+  o.w1 ||= o.host !== 'local';
+  if (o.digestModule && !o.w1) throw new Error('--digest-module requires --w1 for the local host');
   return o;
 }
 
@@ -134,7 +136,8 @@ export async function waitForAcks(read, op, timeout, { gesture = false, tag = fa
     throw e;
   }
   for (const r of rows) {
-    assert(Number.isSafeInteger(r.seq) && r.seq > 0, `${op}: invalid ticket seq ${r.seq}`);
+    const refusal = r.seq === 0 && r.exact === true && r.predicted?.ok === false && r.result?.ok === false;
+    assert(Number.isSafeInteger(r.seq) && (r.seq > 0 || (allowFailure && refusal)), `${op}: invalid ticket seq ${r.seq}`);
     assert(r.status === 'resolved', `${op} #${r.seq}: ${r.error ?? r.status}`);
     if (['zone', 'dezone', 'bulldoze', 'buildNetwork', 'buildPowerLine', 'buildSubway', 'plop', 'terraform', 'plantTrees', 'setOrdinance', 'takeLoan', 'repayLoan', 'dispatch', 'dispatchBest'].includes(op)) {
       assert(typeof r.result?.ok === 'boolean', `${op} #${r.seq}: malformed acknowledgement`);
@@ -145,6 +148,23 @@ export async function waitForAcks(read, op, timeout, { gesture = false, tag = fa
     if (!allowFailure) assert(r.result !== false && r.result?.ok !== false, `${op} #${r.seq}: refused: ${r.result?.reason ?? r.result}`);
   }
   return rows;
+}
+
+/** seq 0 is an exact, unposted refusal. Only coalesced slider calls may share a transported ticket. */
+export function validateSession(rows) {
+  let highest = 0;
+  const seen = new Map();
+  for (const r of rows) {
+    if (r.seq === 0) {
+      assert(r.exact === true && r.predicted?.ok === false && r.result?.ok === false, 'invalid unposted refusal');
+      continue;
+    }
+    assert(Number.isSafeInteger(r.seq) && r.seq > 0, 'invalid transported sequence');
+    const old = seen.get(r.seq);
+    if (old) assert(['setTax', 'setFunding'].includes(r.op) && old.op === r.op && old.args[0] === r.args[0]
+      && old.ticketId > 0 && old.ticketId === r.ticketId, 'only coalesced slider calls may share a ticket');
+    else { assert(r.seq > highest, 'transported ticket sequence did not increase'); seen.set(r.seq, r); highest = r.seq; }
+  }
 }
 
 export function brokenBuildVerdict(checks, op, transform, cleanupErrors = []) {

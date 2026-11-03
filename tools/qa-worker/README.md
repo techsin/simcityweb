@@ -1,194 +1,131 @@
-# Worker acceptance harness (T028)
+# Worker acceptance harness (T028r)
 
-Base: **a2578da29d8f67d1b218b1ce5e86e3ae7d3f9545**, branch `local/T028-qa-worker`.
-Implements the browser gate in WORKER_DESIGN §5.4, its Appendix A command paths, and R16's freeze test.
-Code changes are confined to this directory and `tools/qa-worker.mjs`; nothing under `src/` changes.
-The review follow-up and validation record are in [the T028 report](../../docs/dev/reports/local-T028-qa-worker.md).
+Reviewed at **28a4862**, branch `local/T028-qa-worker`. Implements WORKER_DESIGN §5.4 and R16 against
+production assets. **Loopback runs now and is the default.** `--host` selects local, loopback or worker;
+the URL uses `simworker=0`, `simworker=loopback` or `simworker=1` respectively. A requested host must actually
+boot; local fallback cannot pass a loopback/worker gate. No files under `src/` are modified.
 
-## Run on the desktop
+## Desktop commands
+
+Run sequentially from this worktree. Each browser command creates one disposable Chromium context, builds
+production assets in an owned temporary directory and serves them on its own Vite preview port.
 
 ```powershell
-node tools/qa-worker.mjs --help
-node tools/qa-worker.mjs --host local --out "$env:TEMP/qa-worker-local.json"
-node tools/qa-worker.mjs --only freeze --out "$env:TEMP/qa-worker-freeze.json"
-node tools/qa-worker.mjs --break-ack zone --out "$env:TEMP/qa-worker-broken-zone.json"
-node tools/qa-worker.mjs --drop-ack dispatch --out "$env:TEMP/qa-worker-probe-control.json"
+$root = 'C:/Users/techsin/Desktop/projects/simcityweb-T028'
+$scratch = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T028r/scratch'
+Set-Location $root
+node "$root/tools/qa-worker.mjs" --help
+node "$root/tools/qa-worker.mjs" --host loopback --out "$scratch/loopback.json"
+node "$root/tools/qa-worker.mjs" --host local --out "$scratch/local.json"
+node "$root/tools/qa-worker.mjs" --host worker --out "$scratch/worker.json"
 ```
 
-Run these sequentially. The positive run must exit **0**, with every current command, save/Continue, freeze and
-console gate **PASS**. `--only` runs the named check and its explicit prerequisites; other checks print SKIPPED.
-Use an operation name, `freeze`, `save`, `exit`, `onboarding`, `info-demolish`, `speed-keys`, `data-view`, or a
-`panel:NAME` alias (the full list is in `--help`). An isolated run is a diagnostic, not the full acceptance gate.
+Worker currently prints **`worker host not in this build; requires T034 / W1.2 WorkerSimHost`** for every
+check and exits **3**, before importing Vite/Playwright or opening a browser. Once `src/worker/WorkerSimHost.ts`
+lands, the same command runs the real gate. If its App selection is missing or falls back to local, it fails.
 
-`--break-ack OP` creates a **real broken production build**: a Vite transform replaces LocalSimHost's resolved
-`done` for that operation with a promise that never settles, including the promise tracked by gestures. It
-implies `--only OP`, leaves `src/` unchanged, and fails closed if the initializer changes or is absent/duplicated.
-Require **PASS broken-build control** as well as exit **1**: exactly the target command's ack check must fail with
-an issued, pending ticket. A missing command, broken probe read, unrelated failure or cleanup failure cannot pass
-the control. Its intentional ack failure remains FAIL in the log/JSON and preserves the ordinary failure exit code.
+Loopback automatically enables the shared `src/worker/queries.ts` exact digest and the main-isolate protector.
+Worker adds the protector in the dedicated worker named `sim`. `--w1` remains an optional local-mode switch
+for these checks; `--digest-module PATH` can override the shared export if its owning lane moves it.
 
-`--drop-ack OP` is a separate observer fault, useful for debugging the oracle. It withholds the first returned
-ticket for that operation, carrying the unused fault across reload/exit until consumed. It is not the broken-build
-gate. Both controls must run separately from the positive gate, in one browser at a time.
+Focused diagnostics and controls:
 
-Dependencies are the repo's Vite and Playwright packages and Playwright's Chromium installation. `--executable PATH`
-selects another Chromium. Default launch uses the real GPU (`--enable-gpu --ignore-gpu-blocklist --use-angle=default`)
-and rejects software renderers, including SwiftShader, llvmpipe and WARP / Microsoft Basic Render Driver.
-`--headed` shows the browser. Each invocation creates one browser and one
-fresh context: it does not touch a normal browser profile. The fixture is disposable.
+```powershell
+node "$root/tools/qa-worker.mjs" --host loopback --only ghosts --out "$scratch/ghosts.json"
+node "$root/tools/qa-worker.mjs" --host loopback --only freeze --out "$scratch/freeze.json"
+node "$root/tools/qa-worker.mjs" --host loopback --only freeze --headed --out "$scratch/freeze-headed.json"
+node "$root/tools/qa-worker.mjs" --host loopback --break-ack zone --out "$scratch/broken-zone.json"
+node "$root/tools/qa-worker.mjs" --host local --break-ack zone --out "$scratch/broken-local-zone.json"
+node "$root/tools/qa-worker.mjs" --host loopback --drop-ack dispatch --out "$scratch/probe-control.json"
+node "$root/tools/qa-worker.mjs" --host local --w1 --out "$scratch/local-verify.json"
+```
 
-The runner always calls `vite.build()` using the project production config, into its own temporary directory, then
-`vite.preview()` on a new loopback port. It never attaches to another lane's server or reuses a stale `dist/`.
-The browser, Vite preview (`server.close()`) and temporary build are closed in `finally`. The runner owns SIGINT
-and SIGTERM and disables Playwright's automatic process exits. Interrupting a build waits for the build to finish
-before deleting its output. At startup, stale `metropolis-qa-worker-*` builds are swept: dead recorded owner PIDs,
-or unowned legacy directories older than 24 hours. Live owners, permission-denied PID checks, recent unowned dirs
-and linked directories are retained. Every removal checks the resolved path within the system temp directory.
-No existing tool or package script is changed.
-`--help` imports neither Vite nor Playwright and works without installed browsers.
+The positive full run must exit **0** with every applicable check PASS. `--only` runs a named check plus
+prerequisites and cannot establish full acceptance. Other aliases include command names, `save`, `exit`,
+`onboarding`, `speed-keys`, `info-demolish`, `data-view`, `packets`, `recovery` and `panel:NAME` (see `--help`).
 
-Cloud example:
+`--break-ack OP` transforms the **actual host** in the temporary build. Local mode replaces its resolved
+`done` initializer; packet modes withhold the selected command's ticket resolution in `PacketSimHost.ack`.
+The real mutation and replica replay still happen; the tool and its gesture receive the unresolved promise.
+Source drift, duplicate transforms and missing build inclusion fail closed. Require **PASS broken-build control**
+and exit **1**: exactly the selected check must fail on a transported pending ticket; unrelated/probe/cleanup
+failures invalidate the control. This leaves source files untouched.
+
+`--drop-ack OP` is a separate observer control. It withholds the first transported ticket, carrying the unused
+fault across city sessions. Predictions and unposted refusals cannot consume it. It is not the broken-build gate.
+
+## GPU, lifecycle and cleanup
+
+Default Chromium requests the real GPU and rejects SwiftShader, llvmpipe, WARP and Microsoft Basic Render Driver.
+`--executable PATH` selects Chromium; `--headed` shows it. For the cloud only:
 
 ```sh
-PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tools/qa-worker.mjs --host local --swiftshader --out /tmp/qa-worker-cloud.json
+PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tools/qa-worker.mjs --host loopback --swiftshader --out /tmp/qa-worker-loopback.json
 ```
 
-SwiftShader uses §5.4's `--use-angle=swiftshader --enable-unsafe-swiftshader`, plus the existing screenshot tools'
-WebGL flags. Both GPU modes include `--js-flags=--allow-natives-syntax`. Software-rendered runs are identified in
-the output and do not establish the desktop GPU gate. The one-second freeze-resume limit is never relaxed.
+SwiftShader uses §5.4's flags and is marked in the report; it cannot establish the desktop GPU gate. Both modes
+include `--js-flags=--allow-natives-syntax`. One browser runs at a time. No normal browser profile is used.
 
-Every check prints `PASS`, `FAIL` or `SKIPPED` and a reason. Failures produce exit 1, argument errors exit 2.
-An entirely skipped future-host run exits **3**; SIGINT/SIGTERM exit **130/143**. The optional JSON contains the
-base and actual HEAD, browser/GPU, check results, command seq/args/acks, save correlation, continuity markers,
-freeze evidence, cleanup diagnostics, errors and warnings.
-Console warnings are diagnostic; **every console error, page exception and browser crash fails** (no allowlist).
-Increase `--ack-timeout MS` (default 8000) or `--boot-timeout MS` (default 180000) on slow machines.
+Freeze runs last: CDP frozen for **at least 15000 ms** measured outside the page, then active. Chromium may leave
+the page hidden after active: headed uses `bringToFront`; headless restores minimized/normal window bounds.
+Polling visibility never depends on rAF. The first new sim day must arrive **within 1000 ms of the later of resume
+and visible**, with **0 frames during freeze**, **0 crash overlays** and an intact protector afterwards.
+The JSON includes external timestamps, page lifecycle timestamps, frame counts and resume delay.
 
-## What runs now
+SIGINT/SIGTERM close the browser, preview and owned temporary build. Playwright's automatic signal exits are
+disabled. Existing stale-build ownership/path checks remain. Exercise interruption cleanup on the real machine.
+Every console error, page exception and browser crash fails; warnings are retained as diagnostics.
+Exit codes: 0 success, 1 failure (including the intentional broken build), 2 arguments, 3 entirely skipped,
+130/143 interruption. The report preserves primary and cleanup failures. Timeouts are adjustable with
+`--ack-timeout MS` (8000) and `--boot-timeout MS` (180000); freeze thresholds never change.
 
-The URL starts with `?quickstart=1&size=256`, with `simworker=0`, `seed=7`, `terrain=flat` and `difficulty=sandbox`.
-Sandbox funds and a flat preset keep construction independent of unlock progression. This is a QA fixture, not the
-128×15 bot reference. The runner requires `__ready`, real views/actions, and the requested `scene.host.kind`.
+## Coverage and numeric evidence
 
-Tools are selected through toolbar categories, tabs and cards; panels open through TopBar buttons or the Data
-toolbar button. The banner selects DispatchTool; the driver does not re-select it. Terrain points are projected with the real camera and
-validated using `pickCell`. Synthetic `PointerEvent`s go through the canvas's actual down/move/up handlers.
-Panel controls receive normal Playwright clicks/keyboard input. Camera framing and cleanup use the context API.
-It never calls tool `down`/`up` methods, patches a picker, writes simulation state,
-or calls `host.act` to bypass UI input. The temporary observer forwards the original methods, tags and gestures.
-Added freeze/resume/visibility listeners use `ctx.signal`; patches restore on host disposal. Argument cloning is
-best-effort and occurs after the real act call, so non-cloneable diagnostic arguments cannot interrupt the app.
+The fixture opens `?quickstart=1&size=256&terrain=flat&difficulty=sandbox&seed=7&simworker=loopback`, requires
+`__ready` and real actions/world/objects, and grows through normal live frames. Tools are selected with real
+toolbar/category/tab/card clicks. Ground points are projected with the real camera and verified by `pickCell`.
+Synthetic canvas pointer events go through normal handlers. Panel inputs use UI clicks/keyboard events.
+No test calls tool methods, mutates city state, patches a picker or uses host commands to bypass UI input.
 
-| Appendix A command path | Assertions |
+| Check | Required evidence |
 | --- | --- |
-| ZoneTool: `zone`, `dezone`, `bulldoze` | Real drag, issuing gesture, ack and changed map/building |
-| NetworkTool: `buildNetwork`, `buildPowerLine`, `buildSubway` | Real drag, gesture, ack and every path cell |
-| PlopTool: `plop` | Ack, intended origin and created building |
-| BrushTool: `plantTrees`, `terraform` | Raise held until at least three successful acks; Level held through paid work and two `Nothing to change` acks; one gesture, release sound timestamp at/after `settledAt`, exactly one release sound and no toast |
-| BudgetPanel: `setTax`, `setFunding` | Slider keyboard input, void ticket settlement, resulting values |
-| BudgetPanel: `takeLoan`, `repayLoan` | Successful ack, loan list and repayment principal/months guard |
-| OrdinancesPanel: `setOrdinance` | Toggle, successful ack and ordinance list |
-| QueryTool / InfoPanel: `setHistoric`, Demolish | Naturally grown historic building; separate park demolished through the inspector, with panel gesture, footprint and removal checked |
-| TopBar / keyboard / PauseMenu / Onboarding: `setSpeed`, `resume` | Source strings, tickets, Space and keys 1/2/3; Play; save/exit to region, old city's abort and return through the region city list |
-| DisasterTool: `triggerDisaster` | Pointer-started fire, boolean ack and burning site |
-| DispatchTool: `dispatch` | Wait for that banner's `settleUntil`; Choose station must activate DispatchTool targeting its incident before station input; tag, incident, sent/ETA ack |
-| EmergencyBanner: `dispatchBest` | Wait for the second fire's banner to settle; Send nearest ack must name that second incident |
-| CityScene: `setCamera`, save | Ctrl+S invokes `save(false)`; its synchronous camera ticket is correlated to that save call, excluding the periodic storeCamera path |
+| Commands | **23** current UI ops each have a positive transported sequence and settled ack, including void setters, settings and alert dismissal; no rejected/pending tickets |
+| Exact/provisional | Exact failures use **seq 0**, are classified as unposted refusals, and cannot satisfy command ack coverage; coalesced slider calls may share only the same key and actual promise |
+| Pending ghosts | **2** rapid real zoning strokes: exact then provisional; **2** actual visible ghost meshes; claim/hover active during pending work; each ghost clears after applied Ack; **0** pending reservations and meshes afterwards |
+| Corrections | All observed gestures settle and issue **at most 1** failure correction each; real commitAction regression also forces an exact mismatch and subsequent provisional failures |
+| Brush | Raise until **at least 3** paid acks; Level through paid work and **at least 2** flat refusals; **1** gesture, **1** release sound after settlement, **0** early release sounds, **0** toasts |
+| Dispatch | Two distinct UI-started fires; Choose station preserves its target and tool tag; Send nearest targets the second fire; both return sent > 0 and finite ETA; dispatched replay preserves cause seq/tag |
+| Replies/verify | Query replies ride in observed packets with cmd <= applied; cause clears outside replay; **0** unexpected resyncs; numeric authoritative digest equals replica digest while paused/drained |
+| Save/Continue | Ctrl+S's own camera ticket precedes host.save(manual)'s reply; save cmd includes camera; day/funds/next id/layer hashes/policies/buildings/camera preserved on reload/Continue; sim days advance afterwards |
+| Teardown | PauseMenu save/exit aborts the city with reason dispose; **0** pending edits and ghost meshes; return through region city list reaches fresh playable views |
+| RecoveryMirror | App pagehide writes a base-bound ordered whitelisted journal containing a real UI edit; excluded commands absent; worker close-page replay remains W1.3/T039 |
+| Consumers | Onboarding Play, keys 1/2/3, Space, PauseMenu resume, InfoPanel Historic/Demolish; graphs, stats, advisors, data views, demographics, emergencies, rewards; Power view then None |
+| Freeze/errors | >= **15000 ms** frozen, <= **1000 ms** visible resume, **0** frozen frames, **0** overlays/console errors/page exceptions/crashes |
 
-The neighbourhood is built entirely through these tools: a connected road, turbines, water tower, fire stations,
-zoning and two distant fire sites. Growth runs via normal frames at Ultra, then pauses. The fire sites are just beyond
-automatic dispatch range but within the fire deadline. Missing growth, refused construction and absent controls fail;
-they are never silently counted as skips. Read-only panels (graphs, stats, advisors, data views, demographics,
-emergencies and rewards) also open through the UI and render. The Data panel selects Power, verifies the active
-view and clears it with None. Error-overlay Pause is explicitly SKIPPED: a healthy production fixture has no error
-card, and injecting an application error conflicts with the zero-console-errors gate. It needs a separate error fixture.
+The probe forwards original arguments, tags, gestures and promises (apart from the explicit observer fault).
+It records predictions separately from acknowledgements, observes real pending mesh creation/removal, packets,
+replayed causes, save replies and gesture settlement. It attaches after real views replace loading views;
+subscriptions end with `ctx.signal`, patches restore on abort/dispose, and archives hold plain diagnostics only.
 
-The ack observer records `ticket.done` independently of `predicted`, including void replies. It requires all 21
-current ops, increasing ticket sequences within each session, and no pending/rejected tickets. Positive exact
-predictions or visible state changes alone cannot satisfy it. Brush saturation is an explicitly expected refusal.
-
-Save/reload uses the same context and IndexedDB. It removes `quickstart` with `history.replaceState`, reloads the
-title screen, sets `window.__ready = false`, and clicks **Continue**. It pauses the arriving city through the Space
-keyboard path before waiting for the new real views. Day, funds, nextBuildingId and saved camera join the existing
-layer hashes, identity, policies, loans, plopped buildings and Historic marker. The actual restored camera is also
-checked (0.2 units/degrees, 1 unit of distance tolerance), then simulation days must advance. These selected
-persistence markers are **not** a substitute for W1's exact-state digest.
-
-Freeze runs last. CDP `Page.setWebLifecycleState(frozen)` lasts **15 seconds measured outside the page**, with
-`active` in cleanup. **§5.4/R16 does not account for Chromium leaving the page hidden after `active`.** The harness
-reads `document.visibilityState` with `page.evaluate`, without rAF polling. If hidden, headless mode uses
-`Browser.getWindowForTarget` and `Browser.setWindowBounds` (minimized, then normal); headed mode uses
-`page.bringToFront()`. Staying hidden produces a specific FAIL, and cleanup avoids a hidden-page speed-button click.
-
-Signal-bound listeners record freeze, resume and visible timestamps in the same browser clock. The first new sim
-day must occur within **1000 ms of the later of resume and visible**. Pre-freeze/hidden progress cannot satisfy it.
-JSON evidence includes those timestamps, external UTC request/confirmation timestamps, frozen duration, frame
-counts at freeze/resume and every frame observed while frozen (expected zero). There must be no crash overlay.
-Cleanup failures are retained separately and cannot replace the primary failure.
-
-## W1 switches and plan/code differences
-
-Default runs explicitly skip `protector at boot`, `replica verify`, `protector after freeze`, and `protector at end`.
-`--host loopback` or `--host worker` without `--w1` prints skips for the whole requested host and opens no browser.
-Once those implementations land:
+## Non-browser checks and limits
 
 ```powershell
-node tools/qa-worker.mjs --host loopback --w1 --digest-module src/worker/<actual-digest-module>.ts
-node tools/qa-worker.mjs --host worker --w1 --digest-module src/worker/<actual-digest-module>.ts
-```
-
-Enabled gates fail closed: local fallback, missing query, missing digest export, missing sim worker, unsupported
-native probe or unavailable CDP attachment is a **FAIL**. They do not downgrade a requested W1 run to local acceptance.
-`w1.mjs` installs the existing S1 optimized typed-array protector probe before page scripts, and uses CDP auto-attach
-with `waitForDebuggerOnStart` to install it before each worker starts. It probes the worker named `sim`, not the LOD
-worker. Worker mode requires exactly one sim isolate. Local/loopback have only the main sim isolate.
-
-Differences requiring follow-up by the owning lanes:
-
-- At this base `CityScene` constructs `LocalSimHost` directly. W1.1a has recorder/replica infrastructure, but neither
-  `LoopbackSimHost` nor `WorkerSimHost` is selectable yet. W1.1b/W1.2 must add selection.
-- `SimHost` has no `query` method and the tree has no `exactDigest` export. `--digest-module` names the eventual shared
-  module exporting `exactDigest(state)`; the production build includes it as an extra entry, preserving its exports.
-  The paused, drained harness compares `await host.query('verify')` (the design's numeric digest) with
-  `exactDigest(host.state)`. No guessed digest algorithm or replica serialization is used. The design calls this
-  query “dev” while §5.4 runs a production build: its QA availability must be resolved by W1's owner.
-- §5.4 assumes Ctrl+S goes through `host.save`; today it goes through `CityScene.save` and App persistence.
-  The harness exercises the current keyboard path and persistence evidence without fabricating a save ack.
-- `dismissAlert` and `setSettings` do not exist in this base's command API (W0.4/W0.5). They print a separate skip.
-  Their existing UI implementations cannot establish a host-command round trip.
-- Journal recovery is a separate **SKIPPED** W1.3 gate. This task does not implement a speculative journal contract.
-- `tools/soak/` is absent. The production pattern comes from `tools/bench/browser-check.mjs`; it already has prod
-  mode and needs no edit for this harness. `tools/leakprobe/` and `tools/shoot*.mjs` supplied browser/input patterns.
-- The user authorized the report during review follow-up. The work remains uncommitted; no DONE marker or push.
-
-## Checks in this sandbox / remaining gates
-
-```powershell
-node tools/qa-worker/selftest.mjs
-npx vitest run tools/qa-worker/fixture.test.ts --maxWorkers=1
+node "$root/tools/qa-worker/selftest.mjs"
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tools/qa-worker/fixture.test.ts --maxWorkers=1
 npx tsc --noEmit
 ```
 
-`selftest.mjs` uses Node's test runner, outside Vitest discovery. It covers the ack oracle, actual build transform,
-strict control verdict, save correlation, cross-session fault injection, lifecycle restoration, timing and cleanup.
-`fixture.test.ts` checks growth and both manual dispatch paths against real LocalSimHost and **is included in the
-default Vitest suite**; the command above also runs it alone. See the report for this sandbox's actual results.
+The Node selftest tests the oracle/control/probe without Vite or a browser. The Vitest fixture is in normal test
+discovery and validates real local/loopback growth and dispatch plus provisional dependencies, ghosts, tagged replay,
+query read-after-write, correction deduplication and abort cleanup. It uses deterministic design cadence only in
+the node fixture; the browser uses live frames. Current results are in the [report](../../docs/dev/reports/local-T028-qa-worker.md).
 
-Desktop gates: the full LocalSimHost run, isolated headless/headed freeze, the real `--break-ack` control and the
-cross-session `--drop-ack dispatch` diagnostic. Exercise Ctrl+C cleanup during a run. Full suites and the bot
-(128×15 seed 7: 196,101 in 2015) remain the lead's checks. W1 paths cannot run against the current host.
+Error-overlay Pause remains explicitly SKIPPED in the healthy fixture and needs a separate error fixture.
+Close-page worker journal restoration is explicitly SKIPPED until W1.3/T039. `holdCalendar` is an additional
+automatic New Year op: any observed ticket must settle, but this short command fixture does not force midnight.
+Full visual parity of every overlay variant, New Year and other Appendix A consumers remains manual QA.
+No browser, build, perf run, full Vitest suite or bot was launched for T028r. No balance, simulation or RNG code changes;
+the supplied seed-7 reference remains residents **[61124, 93804, 37971] = 192899** in 2015, unverified here.
 
-| New file | Purpose |
-| --- | --- |
-| `../qa-worker.mjs` | Browser-free CLI entry and exit status |
-| `harness.mjs` | Arguments, reporting and ack oracle |
-| `run.mjs` | Owned production build, preview, browser, console capture and cleanup |
-| `build.mjs` | Temporary-build fault transform, ownership and stale-directory cleanup |
-| `driver.mjs` | Real tool/panel input and fixture construction helpers |
-| `page.mjs` | Temporary ticket/gesture/feedback observer, picking and persistence markers |
-| `checks.mjs` | Command, brush, save, freeze and consumer checks |
-| `freeze.mjs` | Visibility restoration, freeze evidence and resume deadline |
-| `w1.mjs` | Gated per-isolate protector and shared-digest verification |
-| `selftest.mjs` | Browser-free acceptance-oracle tests |
-| `fixture.test.ts` | Real-sim validation of fixture assumptions |
-| `README.md` | Run instructions, gate status and integration differences |
+`tools/bench/browser-check.mjs` already supports production assets and is unchanged. No source/infra/cloud-held
+files were edited; no commit, push or DONE marker was made.

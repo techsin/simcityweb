@@ -1,14 +1,14 @@
-import { assert, COMMANDS, PANELS, CHECKS, commandCheck, poll, withCleanup } from './harness.mjs';
+import { assert, COMMANDS, PANELS, CHECKS, commandCheck, poll, withCleanup, validateSession } from './harness.mjs';
 import { Driver } from './driver.mjs';
 import { pointer, savedMarkers } from './page.mjs';
 import { verifyReplica } from './w1.mjs';
 import { freeze } from './freeze.mjs';
 
-const W1 = 'requires --w1 after W1.1b (host/verify) and W1.2 (worker isolate); not available at a2578da';
+const W1 = 'local host: use --w1 to include the shared digest and protector gates';
 export const BROWSER_CHECKS = [
   'host ready', ...COMMANDS.map(commandCheck),
   'fixture / grow a neighbourhood', 'save / reload / Continue', 'freeze 15 s / resume 1 s',
-  ...PANELS.map((id) => `Appendix A / ${id} panel`), 'dismissAlert / setSettings', 'recovery journal',
+  ...PANELS.map((id) => `Appendix A / ${id} panel`), 'recovery journal', CHECKS.ghosts, CHECKS.packets, CHECKS.recovery,
   'protector at boot', 'protector after freeze', 'replica verify', 'protector at end', 'all command acknowledgements', 'no crash overlay',
   'other command acknowledgements',
   CHECKS.onboarding, CHECKS['speed-keys'], CHECKS['info-demolish'], CHECKS.exit, CHECKS['data-view'], 'Appendix A / error overlay Pause',
@@ -88,6 +88,39 @@ export async function runChecks(page, options, report, protectors, signal) {
     await checkRect(page, 'zone', [140, 140, 146, 144], 0);
     return 'same rectangle cleared after ack';
   }, ['zone']);
+  if (options.host === 'local') report.add(CHECKS.ghosts, 'SKIPPED', 'LocalSimHost has no pending replica edits or ghosts');
+  else await report.check(CHECKS.ghosts, async () => {
+    await d.clean(); await d.speed(0); await d.select('zone:1'); await d.focus([142, 154], [144, 154]);
+    const points = [await d.point([142, 154]), await d.point([144, 154])], start = await d.mark();
+    // Both strokes use real canvas handlers in one task, before loopback/worker can replay either Ack.
+    const pending = await page.evaluate((points) => {
+      const s = window.__metropolis.city.scene;
+      for (const point of points) for (const type of ['pointermove', 'pointerdown', 'pointerup']) {
+        s.ctx.canvas.dispatchEvent(new PointerEvent(type, { ...point, bubbles: true, cancelable: true, pointerId: 1,
+          pointerType: 'mouse', isPrimary: true, button: 0, buttons: type === 'pointerup' ? 0 : 1 }));
+      }
+      return { count: s.host.pending.count, claim: s.host.pending.claims({ x0: 142, z0: 154, x1: 143, z1: 155 }) };
+    }, points);
+    assert(pending.count === 2 && pending.claim === 'waiting', `missing pending reservations/claims: ${JSON.stringify(pending)}`);
+    const rows = await d.acks('zone', start, { gesture: true });
+    assert(rows.length === 2 && rows[0].exact && !rows[1].exact && rows[1].predicted?.provisional, 'second stroke did not use a provisional prediction');
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+    const evidence = await page.evaluate((seqs) => {
+      const q = window.__qaWorker, h = window.__metropolis.city.scene.host;
+      return { ghosts: q.ghosts.filter((g) => seqs.includes(g.seq)), previews: q.previews, pending: h.pending.count,
+        meshes: window.__metropolis.city.scene.ctx.world.pendingPreviews.size };
+    }, rows.map((r) => r.seq));
+    for (const row of rows) {
+      const gs = evidence.ghosts.filter((g) => g.seq === row.seq);
+      assert(gs.length === 2 && gs[0].geometry && gs[0].visible && gs[0].pending > 0, `ghost was not drawn for ${row.seq}`);
+      assert(gs[1].geometry === null && gs[1].applied >= row.seq && !gs[1].visible, `ghost cleared before Ack replay for ${row.seq}`);
+    }
+    assert(evidence.previews.some((p) => p.pending > 0 && p.claim === 'waiting'), 'hover preview was suppressed while an edit was pending');
+    assert(evidence.pending === 0 && evidence.meshes === 0, 'settled gestures left reservations or ghost meshes');
+    await checkRect(page, 'zone', [142, 154, 143, 155], 1); await checkRect(page, 'zone', [144, 154, 145, 155], 1);
+    report.details.pendingGhosts = { ...evidence, pendingDuringInput: pending, sequences: rows.map((r) => r.seq) };
+    return '2 real strokes: exact then provisional; 2 visible ghosts retained through Ack; hover/claims active; 0 reservations/meshes after settlement';
+  });
   for (const [op, id, layer, z, value] of [
     ['buildNetwork', 'net:2', 'network', 145, 2],
     ['buildPowerLine', 'power', 'powerLines', 147, 1],
@@ -165,6 +198,14 @@ export async function runChecks(page, options, report, protectors, signal) {
     assert(await page.evaluate(([id, on]) => window.__metropolis.city.scene.host.state.budget.ordinances.includes(id) === on, [id, on]), 'ordinance ack did not update the list');
     return `OrdinancesPanel ${id} = ${on} acknowledged`;
   });
+  await report.check('setSettings', async () => {
+    await d.panel('settings');
+    const row = page.locator('.set-row').filter({ has: page.locator('.sr-l').filter({ hasText: /^Emergency alerts$/ }) });
+    const rows = await d.command('setSettings', () => row.locator('button').filter({ hasText: /^All$/ }).click());
+    assert(rows.some((r) => r.args[0]?.emergencyAlerts === 'all'), 'Settings did not send the selected policy');
+    assert(await page.evaluate(() => window.__metropolis.city.scene.host.pending.count === 0), 'settings incorrectly counted as a preview edit');
+    return 'Settings → Emergency alerts All; setSettings void ticket acknowledged without a pending preview';
+  });
 
   await report.check('fixture / grow a neighbourhood', async () => {
     await d.clean(); await d.speed(0);
@@ -191,10 +232,30 @@ export async function runChecks(page, options, report, protectors, signal) {
     return 'QueryTool → InfoPanel → idempotent setHistoric acknowledged';
   }, ['fixture / grow a neighbourhood']);
 
+  if (options.host === 'local') report.add(CHECKS.recovery, 'SKIPPED', 'LocalSimHost uses snapshot recovery; the command journal belongs to packet hosts');
+  else await report.check(CHECKS.recovery, async () => {
+    const rows = await d.draw('zone', 'zone:1', [146, 154]);
+    const journal = await page.evaluate(() => {
+      const h = window.__metropolis.city.scene.host;
+      if (!h.recovery) throw new Error('packet host RecoveryMirror is unavailable');
+      // The real App lifecycle handler writes the encoded mirror; no city serialization or command bypass.
+      try {
+        window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+        return JSON.parse(localStorage.getItem('metropolis.recovery.journal'));
+      } finally { window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })); }
+    });
+    assert(journal?.v === 1 && journal.ops.some((op) => op.seq === rows[0].seq && op.op === 'zone'), 'pagehide did not journal the UI edit');
+    assert(journal.ops.every((op, i) => op.seq > journal.fromCmd && (!i || op.seq > journal.ops[i - 1].seq)), 'journal suffix has invalid watermarks/order');
+    assert(!journal.ops.some((op) => ['setCamera', 'setSpeed', 'setSettings', 'triggerDisaster', 'dispatch'].includes(op.op)), 'journal retained an excluded command');
+    report.details.recoveryJournal = journal;
+    return `App pagehide wrote ${journal.ops.length} whitelisted edits bound to ${journal.base.kind}; UI zone seq ${rows[0].seq} retained`;
+  }, ['zone']);
+
   await report.check('setCamera / Ctrl+S save', async () => {
     await d.clean(); await d.speed(0);
     await d.focus([168, 168]);
     const mark = await d.mark(), saveMark = await page.evaluate(() => window.__qaWorker.saves.length);
+    const hostSaveMark = await page.evaluate(() => window.__qaWorker.hostSaves.length);
     await page.keyboard.press('Control+s');
     const save = await poll(() => page.evaluate((n) => window.__qaWorker.saves.slice(n).find((s) => !s.auto), saveMark), Boolean,
       options.ackTimeout, 'Ctrl+S did not call CityScene.save(false)');
@@ -205,10 +266,14 @@ export async function runChecks(page, options, report, protectors, signal) {
       return !s.saving && !a.city.saving && !a.city.saveFailed && document.querySelector('.save-pill.done')?.textContent.includes('City saved');
     }, null, { timeout: options.bootTimeout });
     assert(rows.some((r) => r.args[0]?.distance > 0), 'save did not post a valid camera');
+    const hostSave = await poll(() => page.evaluate((n) => window.__qaWorker.hostSaves.slice(n).find((s) => s.reason === 'manual'), hostSaveMark),
+      (s) => s?.status === 'resolved', options.ackTimeout, 'Ctrl+S did not receive host.save(manual) acknowledgement');
+    assert(hostSave.ack.cmd >= Math.max(...rows.map((r) => r.seq)), 'saved reply predates its camera command');
+    if (options.host !== 'local') assert(hostSave.applied >= hostSave.ack.cmd, 'saved reply arrived before its commands replayed');
     saved = await page.evaluate(savedMarkers);
     report.details.savedMarkers = saved;
-    report.details.ctrlSave = { ...await page.evaluate((id) => window.__qaWorker.saves.find((s) => s.id === id), save.id), cameraSeqs: rows.map((r) => r.seq) };
-    return 'Ctrl+S called CityScene.save(false); its own setCamera ticket acknowledged and persistence completed';
+    report.details.ctrlSave = { ...await page.evaluate((id) => window.__qaWorker.saves.find((s) => s.id === id), save.id), hostSave, cameraSeqs: rows.map((r) => r.seq) };
+    return 'Ctrl+S: its own camera ticket and host.save(manual) reply acknowledged in order; persistence completed';
   });
   await report.check('save / reload / Continue', async () => {
     // quickstart deletes the old region on boot. Reload the title route in the SAME storage context.
@@ -249,6 +314,9 @@ export async function runChecks(page, options, report, protectors, signal) {
     await page.locator('.rc-item').first().waitFor();
     await page.waitForFunction(() => window.__ready === true, null, { timeout: options.bootTimeout });
     assert(await page.evaluate(() => window.__qaWorkerArchive?.abortReason === 'dispose'), 'exited city did not abort(dispose)');
+    const teardown = await page.evaluate(() => window.__qaWorkerArchive.teardown);
+    assert(teardown.aborted && teardown.pending === 0 && teardown.ghosts === 0, `city teardown retained pending work: ${JSON.stringify(teardown)}`);
+    report.details.teardown = teardown;
     await d.archive();
     await page.evaluate(() => { window.__ready = false; });
     await page.locator('.rc-item').first().dblclick();
@@ -271,6 +339,18 @@ export async function runChecks(page, options, report, protectors, signal) {
     fixture.incident = await incidentFor(page, b.id);
     return 'DisasterTool fire ticket resolved true; site is on fire';
   }, ['fixture / grow a neighbourhood']);
+  await report.check('dismissAlert', async () => {
+    // Exercise a separate site's close button while the stations still have free units for its alert.
+    const b = await d.plop('park_small', 135, 127);
+    await d.command('triggerDisaster', () => d.stroke('disaster:fire', [b.x, b.z]));
+    const incident = await incidentFor(page, b.id);
+    assert(incident !== fixture.incident, 'dismissal fire clustered into the first incident');
+    fixture.dismissIncident = incident;
+    const rows = await d.command('dismissAlert', () => d.banner(incident, 'dismiss'));
+    assert(rows[0].args[0] === incident, 'Dismiss targeted the wrong alert');
+    assert(await page.evaluate((id) => !window.__metropolis.city.scene.host.policy.alerts.some((a) => a.id === id), incident), 'dismissed alert returned after Ack');
+    return 'separate fire banner close button acknowledged dismissAlert; alert absent after replay';
+  }, ['triggerDisaster']);
   await report.check('dispatch', async () => {
     await d.banner(fixture.incident, 'choose');
     await poll(() => page.evaluate(() => {
@@ -288,11 +368,27 @@ export async function runChecks(page, options, report, protectors, signal) {
     await d.clean(); await d.speed(0);
     await d.command('triggerDisaster', () => d.stroke('disaster:fire', [b.x, b.z]));
     const incident = await incidentFor(page, b.id);
-    assert(incident !== fixture.incident, 'second fire reused the first incident');
+    assert(incident !== fixture.incident && incident !== fixture.dismissIncident, 'Send nearest fire reused another incident');
+    fixture.secondIncident = incident;
     const rows = await d.command('dispatchBest', () => d.banner(incident, 'send'));
     assert(rows[0].args[0] === incident, `Send nearest targeted ${rows[0].args[0]}, expected second fire ${incident}`);
     assert(rows[0].result.sent > 0 && Number.isFinite(rows[0].result.etaMin), 'Send nearest ack did not send a unit');
     return 'EmergencyBanner Send nearest acknowledged; sent/ETA verified';
+  }, ['dispatch']);
+  await report.check(CHECKS.packets, async () => {
+    await drain(page, options.ackTimeout);
+    const evidence = await page.evaluate(() => ({ events: window.__qaWorker.events, packets: window.__qaWorker.packets, commands: window.__qaWorker.commands }));
+    const dispatch = evidence.commands.find((r) => r.op === 'dispatch' && r.status === 'resolved');
+    assert(dispatch && evidence.events.some((e) => e.type === 'emergency' && e.event.type === 'dispatched' && e.seq === dispatch.seq && e.tagMatches), 'dispatch cause did not replay with the issuing tool tag');
+    assert(await page.evaluate(() => window.__metropolis.city.scene.host.cause === null), 'cause leaked outside command replay');
+    if (options.host !== 'local') {
+      const replies = evidence.packets.flatMap((p) => p.replies ?? []);
+      assert(replies.some((r) => r.t === 'qres'), 'no query reply observed inside a packet');
+      assert(evidence.packets.every((p) => p.causeCleared !== false && (p.replies ?? []).every((r) => r.cmd <= p.applied)), 'reply arrived ahead of the replica or cause leaked');
+      assert(!evidence.packets.some((p) => p.resync), 'unexpected resync during healthy acceptance');
+    }
+    report.details.packetEvidence = evidence;
+    return 'dispatch event has the original seq/tag; cause cleared; packet reply watermarks never exceed applied commands; 0 unexpected resyncs';
   }, ['dispatch']);
 
   for (const id of PANELS) {
@@ -314,23 +410,22 @@ export async function runChecks(page, options, report, protectors, signal) {
     return 'Data toolbar → Power view → None; overlay state and selected view verified';
   });
   report.add('Appendix A / error overlay Pause', 'SKIPPED', 'healthy production fixture has no error card; injecting an app error would violate the zero-console-errors gate; exercise this path in a separate error fixture');
-  report.add('dismissAlert / setSettings', 'SKIPPED', 'W0.4/W0.5 commands are absent from SimHost.ts at a2578da; legacy UI changes would not test command acks');
-  report.add('recovery journal', 'SKIPPED', 'W1.3 journal/recovery is not implemented; §5.4 adds this gate from W1.3');
+  report.add('recovery journal', 'SKIPPED', 'close-page worker journal restore is the W1.3/T039 browser gate; current loopback mirror write is checked separately');
   await protector('protector at end');
   await report.check('all command acknowledgements', async () => {
     await drain(page, options.ackTimeout);
     const current = await page.evaluate(() => window.__qaWorker.commands);
     const rows = [...d.sessions.flat(), ...current];
     report.details.commands = rows;
-    const missing = COMMANDS.filter((op) => !rows.some((r) => r.op === op && r.status === 'resolved'));
+    const missing = COMMANDS.filter((op) => !rows.some((r) => r.op === op && r.seq > 0 && r.status === 'resolved'));
     assert(missing.length === 0, `commands without an ack: ${missing.join(', ')}`);
     assert(rows.every((r) => r.status === 'resolved'), `unsettled or rejected tickets: ${JSON.stringify(rows.filter((r) => r.status !== 'resolved'))}`);
-    for (const session of [...d.sessions, current]) {
-      const seqs = session.map((r) => r.seq);
-      assert(seqs.every((s, i) => Number.isSafeInteger(s) && s > 0 && (!i || s > seqs[i - 1])), 'ticket sequence did not strictly increase within a host session');
-    }
+    for (const session of [...d.sessions, current]) validateSession(session);
+    const gestures = [...d.archives.flatMap((a) => a.gestures ?? []), ...await page.evaluate(() => window.__qaWorker.gestures)];
+    assert(gestures.every((g) => g.settled && g.failures <= 1), 'gesture did not settle or issued more than one failure correction');
+    report.details.gestures = gestures;
     if (options.dropAck) assert(rows.some((r) => r.dropped), `negative control ${options.dropAck} was never exercised`);
-    return `all ${COMMANDS.length} W0.2 commands acknowledged; sequences strictly increase per session`;
+    return `all ${COMMANDS.length} UI commands have transported acknowledgements; exact refusals classified separately; only slider coalescing shares seqs; ${gestures.length} gestures settled with at most one failure each`;
   });
   await report.check('no crash overlay', async () => {
     const cards = await page.locator('.err-card, vite-error-overlay, [data-sim-crash]').allTextContents();
@@ -350,11 +445,13 @@ export async function runChecks(page, options, report, protectors, signal) {
   else await protector('protector after freeze');
   // Preserve diagnostics even when an acknowledgement gate failed.
   report.details.commands = [...d.sessions.flat(), ...await page.evaluate(() => window.__qaWorker?.commands ?? [])];
+  report.details.sessions = d.archives;
   report.details.cleanupErrors = d.cleanupErrors;
 }
 
 async function incidentFor(page, buildingId) {
-  const id = await page.evaluate((id) => window.__metropolis.city.scene.ctx.sim.getSystem('emergency')?.incidents().find((i) => i.buildingId === id)?.id, buildingId);
+  const id = await poll(() => page.evaluate((id) => window.__metropolis.city.scene.host.emergency.incidents().find((i) => i.buildingId === id)?.id, buildingId),
+    Number.isSafeInteger, 8000, `fire at building ${buildingId} has no mirrored incident`);
   assert(Number.isSafeInteger(id), `fire at building ${buildingId} has no incident`);
   return id;
 }

@@ -1,102 +1,81 @@
-# T028 worker acceptance harness — review follow-up
+# T028r: worker acceptance harness review and loopback enablement
 
-Date: 2026-10-27. Branch: `local/T028-qa-worker`.
-Base and inspected HEAD: `a2578da29d8f67d1b218b1ce5e86e3ae7d3f9545`.
+Date: 2026-11-03. Worktree/branch: `simcityweb-T028`, `local/T028-qa-worker`. Reviewed HEAD: **28a4862**.
+Read the full task and WORKER_DESIGN (including §5.4, Appendix A and R16), the previous report, the harness,
+and current T031 HostActions/PendingEdits/tool commits, T032 packet host/replica/replies/resyncs, T033
+RecoveryMirror, cause-tag/ack APIs and relevant UI callers. No AGENTS.md or CLAUDE.md was found in the
+worktree or its ancestor directories checked.
 
-The review fixes are implemented in `tools/qa-worker.mjs` and `tools/qa-worker/**`.
-This report is the additional file explicitly authorized in the review request. No existing tracked file or
-`src/**` file was edited. Changes remain uncommitted; no push or queue DONE marker was made.
-No browser acceptance result is claimed: the source review and browser-free tests cannot establish that gate.
-
-## Run
-
-Run these sequentially from the worktree, using the repo's Vite/Playwright dependencies and installed Chromium:
-
-```powershell
-node tools/qa-worker.mjs --help
-node tools/qa-worker.mjs --host local --out "$env:TEMP/qa-worker-local.json"
-node tools/qa-worker.mjs --only freeze --out "$env:TEMP/qa-worker-freeze.json"
-node tools/qa-worker.mjs --only freeze --headed --out "$env:TEMP/qa-worker-freeze-headed.json"
-node tools/qa-worker.mjs --break-ack zone --out "$env:TEMP/qa-worker-broken-zone.json"
-node tools/qa-worker.mjs --drop-ack dispatch --out "$env:TEMP/qa-worker-probe-dispatch.json"
-```
-
-The full positive run must exit 0 with all implemented checks PASS. Known unavailable checks print SKIPPED with
-reasons. `--only` selects one check plus its prerequisites, so it does not establish full acceptance. `--help` lists
-command names and aliases, including `save`, `exit`, `onboarding`, `info-demolish`, `speed-keys` and `data-view`.
-
-The broken-build run deliberately exits **1**. Require **PASS broken-build control**: one production-host transform
-must have occurred, exactly the selected operation's check must fail on an actual pending ticket, and all other
-observed commands, checks and cleanup must succeed. Missing input, a failed probe read, or any unrelated failure
-rejects the control. Exit 1 alone is never evidence of a successful negative control.
-
-The separate `--drop-ack dispatch` observer control should fail its dispatch ack check after the reload/exit
-sessions. It verifies that an unused fault survives session replacement; it does not substitute for the real
-broken-build control. Both controls keep predictions and actual local mutations intact.
-
-Default Chromium uses the real GPU. `--executable PATH` chooses an executable. Cloud fallback:
-
-```sh
-PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tools/qa-worker.mjs --swiftshader --out /tmp/qa-worker-cloud.json
-```
-
-SwiftShader is identified in the report and cannot establish the desktop GPU gate. The harness always builds
-production assets into an owned temporary directory, serves them with its own Vite preview, and uses one browser.
-Exit codes: 0 successful selected checks; 1 failed check/control build; 2 invalid arguments; 3 entirely skipped;
-130/143 SIGINT/SIGTERM. See [README](../../../tools/qa-worker/README.md) for details and W1 integration options.
+**Loopback is now the default runnable browser path**, using `?simworker=loopback`, current shared digest,
+protector, pending/provisional/ghost checks, UI playability and exit teardown. Worker uses the same host switch
+and skips before browser startup with **worker host not in this build** until T034 exists. Runtime fallback
+is a failure. **No browser acceptance result is claimed**: browsers were expressly prohibited for this turn.
 
 ## Review findings and fixes
 
-| Finding | Change and evidence required by the harness |
-| --- | --- |
-| 1. Frozen page stays hidden; rAF waits hang and cleanup masks failure | `freeze.mjs` evaluates visibility after `active`. Headless restores the target window via minimized/normal bounds; headed calls `bringToFront`. Visibility polling uses Node timers and `page.evaluate`. Persistent hidden state has a specific failure. Timing starts at the later browser resume/visible timestamp. Freeze is the last behavioural check; failed freeze prevents its protector follow-up. Cleanup skips hidden-page clicks and retains secondary errors without replacing the primary one. |
-| 1. Missing evidence / isolated run | `--only freeze` runs boot, overlay/console checks, freeze and cleanup. JSON includes external freeze/resume/visibility UTC timestamps, browser lifecycle timestamps, freeze duration, frames at freeze/resume and all frames during freeze (must be zero). |
-| 2. EmergencyBanner settle window swallows clicks | The driver waits for `performance.now() > scene.emgBanner.banners.get(incident).settleUntil` and the specific button to be available. Choose station must make DispatchTool active with `inc` equal to the banner incident before station input; no tool re-selection occurs. Both dispatch args name the intended incident, and Send nearest must name the distinct second fire. |
-| 3. Probe-only negative control and vacuous exit 1 | `--break-ack OP` installs a Vite pre-transform of the exact LocalSimHost `done` initializer. The built host and gesture tracker receive the never-settling promise. No source file is changed. The transform fails on source drift, duplicate transforms or absence from the bundle. Typed failure evidence and the strict control verdict reject unrelated failures; a separate check drains all non-target tickets. |
-| 3. Drop control lost across reload | Driver archives plain command rows per session and carries `dropAck` until a row records consumption. A browser-free regression covers an unused first session, a dropped second-session ack and an unaffected third session. |
-| 4. Frame-rate-dependent raised terrain | The real Raise pointer remains held until at least three successful acknowledgements. Only then does Level run to paid work followed by flat/no-change acks. There is no fixed 100 ms raise fixture. |
-| 5. Continue inherits title readiness | The harness sets `window.__ready = false` immediately before Continue and waits for the arriving city's real views. It pauses arrival through the real Space key path before that wait, preserving continuity markers. The region return does the same readiness reset. |
-| 6. Ctrl+C leaks build output | CLI owns SIGINT/SIGTERM; Playwright's process signal handlers are disabled. Interrupted waits release into normal cleanup; preview uses `server.close()`. Startup sweeps dead-owner temporary builds and legacy unowned builds older than 24 hours, retaining live/recent/linked paths. Recursive deletion verifies the resolved direct child of the system temp directory. |
-| 7. Weak continuity markers | Saved/loaded comparisons now include exact day, funds, nextBuildingId and saved camera. Actual restored camera target, distance, yaw and base tilt are checked separately, alongside existing layer/policy/building markers. |
-| 8. Periodic camera store can impersonate Ctrl+S | Probe wraps `CityScene.save` and correlates only synchronous commands within that particular call to its save ID. Ctrl+S must start a non-auto save and acknowledge its own `setCamera`; periodic calls have no save ID. Save completion and persistence still must succeed. |
-| 9. No proof release sound follows settlement | Gesture probe records `settledAt`. The single release sound must have `sound.at >= settledAt`; flat saturation still requires no toast or early release sound. |
-| 10. Missing Appendix A routes | Added InfoPanel Demolish, PauseMenu save/exit to region and region-list return, keys 1/2/3, Onboarding Play, actual toolbar category/tab/card selection, TopBar panel buttons, and Power/None data-view selection. Error-overlay Pause is explicitly SKIPPED because the healthy fixture has no error card; an intentional error fixture conflicts with this run's zero-console-errors requirement. |
-| Nits: WARP, cloning, skipped exit | GPU rejection includes WARP / Microsoft Basic Render Driver. Argument snapshots occur after the original act and cloning errors are caught. An all-skipped run exits 3. |
-| Nits: test discovery, output paths, help | README states that `fixture.test.ts` belongs to the default Vitest suite; actual sandbox startup failure is recorded below instead of implying exclusion. All output examples use system temp paths. `--w1` help alignment is corrected. |
+Locations below point to the resulting implementation of each fix, so they remain useful for review.
 
-## Files
+| Severity | File:line | Finding and fix |
+| --- | --- | --- |
+| High | `tools/qa-worker/run.mjs:19`, `harness.mjs:61` | Old gate blocked loopback without a future --w1 flag and claimed only LocalSimHost existed. Current CityScene selects LoopbackSimHost. Loopback is enabled/default; --host worker detects the missing host file before Vite/Playwright import, with the required clear skip. |
+| High | `tools/qa-worker/run.mjs:48`, `w1.mjs:82` | Shared digest/query were treated as absent. Automatically build the existing `src/worker/queries.ts` exactDigest export and call `host.query('verify', {})` against the paused replica. No invented hash or replica serialization. |
+| High | `tools/qa-worker/harness.mjs:139` | Ack oracle rejected legitimate exact predicted failures at seq 0, making held Level saturation fail in loopback. Accept them only as explicitly allowed exact unposted refusals with false prediction/result; they never satisfy transported ack coverage. |
+| High | `tools/qa-worker/harness.mjs:154`, `checks.mjs:422` | Strict sequence increase rejected legitimate coalesced sliders. Allow repeated sequence only for matching setter/key and actual shared done promise identity; all new transported tickets must increase. |
+| Medium | `tools/qa-worker/page.mjs:45` | Probe omitted predictions/pending state, so it could not distinguish exact, provisional, transported and unposted results. Record each separately, plus actual promise identity and replica applied watermark. Probe-only drop control cannot consume a seq-0 refusal. |
+| High | `tools/qa-worker/checks.mjs:92`, `page.mjs:81` | No pending ghost or hover acceptance despite T031. Two actual canvas strokes in one task force exact then provisional predictions. Observe actual mesh presence, pending claims/hover and clear after Ack replay; require zero reservations/meshes after settlement. |
+| High | `tools/qa-worker/driver.mjs:18` | Installing the observer at scene construction could instrument the loading/null world, missing real ghosts. Pause arrival through real Space early, then install after real views and __ready. Setup pause is not counted as command acceptance. |
+| Medium | `tools/qa-worker/page.mjs:143`, `checks.mjs:317` | Teardown lacked signal-bound plain evidence and could inspect a replacement null world. End observers on ctx.signal, archive plain data, then measure the captured original world's resources after all synchronous disposal completes. Require abort(dispose), zero pending/ghosts, then playable region return. |
+| High | `tools/qa-worker/checks.mjs:452` | Incident lookup reached through ctx.sim.getSystem. Use host.emergency's mirrored incidents and poll for readiness. |
+| Medium | `tools/qa-worker/page.mjs:63`, `checks.mjs:378` | Dispatch checked only the input tag; packet replies/resync outcomes were unobserved. Check actual emergency dispatched replay cause seq/tag, cleared cause, reply cmd <= replica.applied and zero unexpected resyncs in healthy acceptance. A resync-lost outcome remains a rejected ticket, never a fabricated ack. |
+| Medium | `tools/qa-worker/checks.mjs:201`, `checks.mjs:342` | Stale skips hid existing setSettings/dismissAlert. Use Settings Emergency alerts All and a separate fire site's real close button before dispatching the available fleet; require void ticket settlement and resulting mirrored policy. Coverage now requires 23 UI ops. |
+| High | `tools/qa-worker/page.mjs:100` | Save observer dropped the current second SaveReason argument, changing exit saves to manual saves. Forward all arguments unchanged; regression checks save(false, 'exit'). |
+| Medium | `tools/qa-worker/page.mjs:93`, `checks.mjs:258` | Save checks described old App persistence and observed only camera/save pill. Also require real host.save(manual) reply and cmd >= its own camera seq, delivered after commands replay. |
+| Medium | `tools/qa-worker/checks.mjs:236` | Recovery was wholly marked absent despite integrated T033 mirror. Drive a real UI edit, invoke the real App pagehide handler, inspect its ordered base-bound whitelisted journal, then balance the synthetic lifecycle with pageshow. Worker close-page replay remains a separate W1.3 gate. |
+| High | `tools/qa-worker/build.mjs:12` | Broken-build transform only supported local mode. Add actual PacketSimHost.ack settlement withholding for loopback/worker, preserving mutations/replay/other acks; fail closed on source drift and retain strict negative-control verdict. |
+| High | `tools/qa-worker/fixture.test.ts:26` | Fixture tested only local; sim.runDays throws on the loopback facade. Parameterize both modes, use loopback's deterministic harness + drain only in node tests, and use host.emergency/host.state. Add real commitAction provisional/ghost/cause/query/abort/correction tests. |
+| High, caught during fix review | `tools/qa-worker/checks.mjs:344` | A proposed third fire site at x118 would cluster into first x122. Place at x135 (gap4 from x130 exceeds FIRE_CLUSTER_R3), before dispatch consumes the fleet, and assert distinct incidents. |
+| Medium | `tools/qa-worker/README.md:1`, `harness.mjs:3` | Old base, future-host instructions and 196101 bot number were stale. Replace with current commands, explicit skips/limits and the supplied 192899 reference. |
+
+The retained October fixes were also checked: true build transform rather than observer-only control, safe argument
+cloning after act, issuing-tool gestures, held brush settlement/sound timing, banner settleUntil waits, readiness reset,
+save correlation, lifecycle resume oracle, primary-error preservation, owned-build cleanup and signal handling.
+
+## Files changed
 
 | File | Change |
 | --- | --- |
-| `tools/qa-worker.mjs` | Browser-free CLI, explicit signal ownership and exit codes. |
-| `tools/qa-worker/harness.mjs` | Check selection/prerequisites, CLI flags, typed ack failure evidence, strict broken-build verdict and cleanup error preservation. |
-| `tools/qa-worker/run.mjs` | Production build/preview, transform wiring, disabled Playwright signal exits, stale-build sweep and Vite cleanup. |
-| `tools/qa-worker/build.mjs` | Real broken-build transform, temp ownership and safe stale-directory removal. |
-| `tools/qa-worker/page.mjs` | Safe ticket snapshots, save correlation, settlement/lifecycle timing, frame evidence, plain session archives and stronger markers. |
-| `tools/qa-worker/driver.mjs` | Real toolbar/TopBar input, banner settlement, active-tool strokes, early arrival pause and cross-session fault tracking. |
-| `tools/qa-worker/checks.mjs` | Added UI paths; incident assertions; deterministic brush setup; correlated save and continuity; freeze last; non-target ack isolation. |
-| `tools/qa-worker/freeze.mjs` | Hidden-state restoration, resume oracle, evidence collection and cleanup that preserves primary errors. |
-| `tools/qa-worker/selftest.mjs` | Browser-free regressions for the review findings and failure oracle. |
-| `tools/qa-worker/fixture.test.ts` | Existing harness fixture test retained: real LocalSimHost growth and two manual dispatches. Included in default Vitest discovery. |
-| `tools/qa-worker/w1.mjs` | Existing gated per-isolate protector and shared-digest verification retained. |
-| `tools/qa-worker/README.md` | Updated usage, control verdicts, coverage, lifecycle caveat, cleanup and remaining gates. |
-| `docs/dev/reports/local-T028-qa-worker.md` | This requested review and validation record. |
+| `tools/qa-worker/harness.mjs` | Current base/default host, switches/check prerequisites, 23 ops, refusal and coalescing validation. |
+| `tools/qa-worker/run.mjs` | Loopback enabled, absent-worker preflight, automatic shared digest/protector, host-specific fault transform. |
+| `tools/qa-worker/build.mjs` | Real packet-host broken-ack transform with strict anchors/evidence; local transform retained. |
+| `tools/qa-worker/w1.mjs` | Current exactDigest and explicit verify query arguments. |
+| `tools/qa-worker/page.mjs` | Prediction/pending/promise/mesh/cause/packet/save/gesture evidence; preserve save args; signal disposal and captured-world teardown. |
+| `tools/qa-worker/driver.mjs` | Real-view observer installation after early arrival pause; plain session archives; real banner close support. |
+| `tools/qa-worker/checks.mjs` | Ghost/provisional/hover, current settings/dismissal, mirror journal, save watermark, cause/reply, teardown and current ack coverage. |
+| `tools/qa-worker/selftest.mjs` | Current CLI plus refusal/coalescing, save reason, packet broken-build and teardown/real-view/control regressions. |
+| `tools/qa-worker/fixture.test.ts` | Both real host fixture modes and three real commitAction lifecycle tests. |
+| `tools/qa-worker/README.md` | Exact desktop/cloud commands, controls, numeric acceptance evidence, available gates and limits. |
+| `docs/dev/reports/local-T028-qa-worker.md` | This explicitly requested report. |
 
-## Validation
+No hunk outside the named files. **Infra hunks: none. Cloud-held file changes/requests: none.**
+`tools/qa-worker.mjs`, `freeze.mjs` and `tools/bench/browser-check.mjs` remain unchanged.
+Changes are uncommitted; no push, merge, branch switch or DONE file.
 
-Passed here:
+## Validation and loopback results
 
-- `node tools/qa-worker.mjs --help`: works without importing Vite or Playwright.
-- `node tools/qa-worker.mjs --host worker`: every check SKIPPED with the W1.2 reason; verified Node exit code 3.
-- `node tools/qa-worker.mjs --only typo`: FAIL arguments; verified Node exit code 2.
-- `node --check`: all ten harness `.mjs` files.
-- `node tools/qa-worker/selftest.mjs`: 23 tests passed, listed below.
-- `npx tsc --noEmit`: passed.
-- `git diff --check` and tracked-file scope inspection: no existing tracked-file modifications.
+| Check | Result |
+| --- | --- |
+| `node tools/qa-worker/selftest.mjs` | **30 passed, 0 failed**, latest run after fixes. |
+| `npx tsc --noEmit` | **PASS**, including the new fixture tests. |
+| quiet-gated `npx vitest run tools/qa-worker/fixture.test.ts --maxWorkers=1` | **Could not start**: Vite loading vite.config.ts failed `[plugin externalize-deps] Error: spawn EPERM` in Windows real-path resolution. **0 tests executed**, not a fixture failure/pass. No alternate config or dependency workaround. |
+| `node tools/qa-worker.mjs --host worker` | **55 SKIPPED, 0 failed**, each says worker host not in this build; Node exit **3** verified with PowerShell LASTEXITCODE. No build or browser. |
+| `git diff --check` | **PASS**. |
+| Changed-file encoding | **UTF-8, no BOM** verified. Scratch `validation.json` and `worker-preflight.json` record the non-browser results. |
+| Loopback browser/live-frame, real GPU, production build, protector/CDP | **Not run by instruction**. Numeric targets below are requirements, not measured results. |
+| Bot/full Vitest/perf | **Not run by instruction/scope**. No balance, RNG or sim behavior changes. |
 
-Browser-free tests by name:
+Selftest names (all passed):
 
-1. CLI: defaults, host validation and explicit W1 gate
+1. CLI: loopback runs by default; worker shares the host switch; local W1 is optional
 2. ack oracle: missing, pending, rejected, refused and malformed tickets fail
 3. ack oracle: deferred tickets must ALL settle, including void results
 4. deadlines: an unresponsive browser read fails without waiting for its promise
@@ -119,31 +98,78 @@ Browser-free tests by name:
 21. cleanup: secondary failure preserves primary error and reports cleanup evidence
 22. exit status: an entirely skipped run is distinct from acceptance
 23. control reporting: report-write failure never announces a successful negative control
+24. loopback oracle: exact unposted refusals are classified without satisfying transported ack coverage
+25. loopback oracle: only same-key sliders sharing the actual promise may coalesce sequences
+26. probe: forwards save reason and observes the real host save watermark
+27. broken loopback build: only target settlement is withheld; packet mutation and other acks still complete
+28. probe: abort teardown measures the original world even after the scene replaces it
+29. ready: instruments the arriving real view after loading views are replaced
+30. probe control: an exact unposted refusal cannot consume the dropped transported ack
 
-Attempted `npx vitest run tools/qa-worker/fixture.test.ts --maxWorkers=1`. Vite failed to load `vite.config.ts`:
-`[plugin externalize-deps] Error: spawn EPERM` from its Windows real-path resolver. Vitest did not run the test.
-The trace resolves the shared dependencies under the sibling `simcityweb-W11a/node_modules`; those files were
-not edited. No alternate config, dependency change or source workaround was introduced.
+Fixture test names (typechecked; execution blocked before test discovery):
 
-Left for the lead's machine: the single fixture test, full LocalSimHost browser gate, isolated headless/headed
-freeze, real broken-build control, cross-session probe control, Ctrl+C/SIGTERM cleanup during a browser run,
-and the full suites/bot. No production build, real GPU, Chromium lifecycle or actual UI timing was verified here.
-The bot's required 128×15 seed-7 reference remains 196,101 in 2015; it was not rerun and no bot source changed.
+- QA local fixture grows an inspectable building and supports both manual dispatch commands
+- QA loopback fixture grows an inspectable building and supports both manual dispatch commands
+- QA loopback tool lifecycle > settles provisional edits after tagged replay, retaining ghosts through each Ack
+- QA loopback tool lifecycle > clears pending ghosts and watches on city abort without late feedback
+- QA loopback tool lifecycle > routes several authoritative refusals to the issuing tool once per gesture
 
-## Plan/code differences and skips
+## Commands and remaining real-GPU gates
 
-- §5.4/R16 omits the hidden state left by Chromium's frozen/active lifecycle sequence. This harness restores
-  visibility and uses the requested later-of-resume-and-visible timing origin; the one-second limit is unchanged.
-- Only LocalSimHost is selectable at this base. Loopback/worker modes, protector checks in the applicable isolates
-  and replica verification stay SKIPPED unless `--w1` is explicitly enabled after W1.1b/W1.2. Requested W1 gates
-  fail if their actual APIs/isolate are absent; they do not silently accept local fallback.
-- `SimHost.query('verify')` and the shared `exactDigest(state)` export are not present. The future
-  `--digest-module PATH` supplies the real shared export as a production entry. The design calls verification
-  “dev” while the acceptance run uses production assets; the owning lane must make that contract available.
-- Ctrl+S currently uses `CityScene.save` and App persistence, not `host.save`. The harness observes that actual
-  path and its setCamera ack; it does not invent a save ticket.
-- `dismissAlert` / `setSettings` commands await W0.4/W0.5; journal recovery awaits W1.3 and remains SKIPPED.
-- Error-overlay Pause remains an explicit fixture limitation, not a PASS. Panels/data-view assertions are smoke
-  and state checks, not complete visual QA of every Appendix A consumer.
-- `tools/soak/` is absent; existing leakprobe/shoot tools and the already-production-capable browser-check script
-  supplied the repo patterns. No existing browser tool needed modification.
+The [README](../../../tools/qa-worker/README.md) contains the full absolute worktree/scratch setup and exact commands
+for local, loopback, worker, isolated ghosts/freeze, controls and SwiftShader. Main acceptance invocations:
+
+```powershell
+Set-Location 'C:/Users/techsin/Desktop/projects/simcityweb-T028'
+node C:/Users/techsin/Desktop/projects/simcityweb-T028/tools/qa-worker.mjs --host loopback --out C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T028r/scratch/loopback.json
+node C:/Users/techsin/Desktop/projects/simcityweb-T028/tools/qa-worker.mjs --host loopback --break-ack zone --out C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T028r/scratch/broken-zone.json
+node C:/Users/techsin/Desktop/projects/simcityweb-T028/tools/qa-worker.mjs --host worker --out C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T028r/scratch/worker.json
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tools/qa-worker/fixture.test.ts --maxWorkers=1
+```
+
+No bot is needed for a harness-only change. If the lead repeats the supplied invariant, run from this worktree:
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
+```
+
+Capture its stdout to the supplied scratch folder using a UTF-8 writer. Expected 2015 residents remain
+**[61124, 93804, 37971] = 192899**; Medium/Hard and old-save continuation are unchanged by design.
+No 256×60 bot, simulation hash or timing number is claimed/required for this harness-only lane.
+
+Browser acceptance checklist (all left for the lead):
+
+- [ ] Full loopback production run exits 0 on real GPU with actual host.kind loopback and real 256-cell views.
+- [ ] All **23** UI ops have transported acks; no pending/rejected tickets; exact seq-0 refusals and valid slider coalescing accepted separately. Observed gestures settle with **<=1** failure each.
+- [ ] **2** rapid strokes give exact then provisional, **2** visible pending meshes and live hover/claims, then **0** pending edits/ghosts after Ack. Visually confirm neutral pending style and no blink.
+- [ ] Raise **>=3** successful acks; held Level paid work then **>=2** flat refusals, **1** settled gesture, **1** post-settlement release sound, **0** early release sounds/toasts.
+- [ ] Both distinct dispatch paths preserve target, sent>0/finite ETA, issuing cause seq/tag; third distinct alert dismisses. Settings policy command acknowledges.
+- [ ] Packet qres/saved replies have cmd<=applied; **0** unexpected resyncs; authoritative/replica exact digests equal. Protector intact at boot/end/after freeze.
+- [ ] Ctrl+S includes its camera in host save cmd; reload/Continue preserves day/funds/next id/layer/policy/building/camera markers and advances days afterwards.
+- [ ] PauseMenu save/exit aborts old city, **0** pending/ghost resources in captured old world, then region return is playable. Exercise Ctrl+C/SIGTERM cleanup; no owned preview/build/browser remains.
+- [ ] RecoveryMirror pagehide journal contains the UI zone in an ordered matching-base suffix; excludes nonjournal ops. Worker close-page restoration is a separate W1.3/T039 follow-up.
+- [ ] Freeze **>=15000 ms**, **0** frozen frames, visible sim resume **<=1000 ms**, **0** crash/error overlays and **0** console errors/page exceptions/crashes. Repeat isolated headless/headed freeze if needed.
+- [ ] Broken loopback build exits **1** with **PASS broken-build control**, one target pending-ack failure, **0** unrelated/cleanup failures. Separately exercise cross-session --drop-ack dispatch.
+- [ ] Appendix A panels/tools, every overlay/variant, inspector/watch target changes, emergency LIVE, MiniMap/news, New Year, vehicle animation, save/region lifecycle all remain visually/playably correct. Panel/Power smoke checks are automated; full parity is manual.
+- [ ] Error-overlay Pause in a separate intentional error fixture (healthy zero-error run explicitly skips it).
+- [ ] Repeat worker mode when T034 lands; exactly **1** sim worker, protectors intact in both isolates, same current gates. From T039/W1.3, close-page journal restore must preserve the in-flight edit.
+
+## Plan versus current code and verification limits
+
+- Original task says new-files-only, local-only and push/DONE; this T028r request explicitly authorizes finishing
+  the existing harness/report and requires uncommitted changes, no push/DONE. The newer request was followed.
+- T031/T032/T033 are present: exact/provisional HostActions, seq-0 exact refusals, coalesced setters, tagged replay,
+  replies inside packets, fresh-state resync and RecoveryMirror. No worker/main/cloud code workaround was made.
+- §5.4 calls verify dev-only while requiring production QA; the current verify handler/export are present in production.
+  The harness builds the actual shared export as an additional production entry.
+- Ctrl+S already reaches host.save via App and camera ordering. Both paths are now observed; no fake save ticket.
+- `holdCalendar` is newer than the Appendix A command table. Any observed ticket is validated, but this short fixture
+  does not force midnight; New Year remains a manual Appendix A check.
+- W1.3 worker close-page restore remains explicitly skipped; current loopback mirror write is exercised separately.
+- Chromium's hidden-after-active behavior still requires visibility restoration and the later resume/visible timing origin.
+- Error-overlay Pause and complete overlay/consumer screenshot parity remain separate manual checks, clearly unclaimed.
+- browser-check.mjs already has production wasm kernel checks; its planned real-game worker/actions/save extension
+  remains a W1.2 follow-up. This lane's current game actions/save gate is qa-worker.mjs; no existing bench was changed.
+- No production build, real browser/GPU, CDP/protector, live loopback fixture, browser broken-build control or actual
+  persistence/recovery UI timing was verified. Vitest was blocked by sandbox spawn EPERM; it must be rerun outside
+  this restriction. Node oracle success does not establish those browser gates.

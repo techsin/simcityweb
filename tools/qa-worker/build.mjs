@@ -5,20 +5,29 @@ import { assert } from './harness.mjs';
 
 const PREFIX = 'metropolis-qa-worker-';
 const ANCHOR = 'const done = Promise.resolve(predicted);';
+const PACKET_ACK = 'private ack(seq: number, result: unknown): void {';
+const PACKET_RESOLVE = 'else ticket?.resolve(result);';
 
 /** Change the production host itself, in Vite's input only. Never write src/ or the normal dist/. */
-export function breakAckPlugin(op, evidence) {
-  evidence.op = op; evidence.rewrites = 0;
+export function breakAckPlugin(op, evidence, host = 'local') {
+  const local = host === 'local';
+  evidence.op = op; evidence.host = host; evidence.rewrites = 0;
   return {
     name: 'qa-worker-break-ack', enforce: 'pre',
     transform(source, id) {
-      if (!id.replaceAll('\\', '/').split('?')[0].endsWith('/src/worker/SimHost.ts')) return null;
-      assert(source.split(ANCHOR).length === 2, 'break-ack: SimHost done initializer changed; review the transform against source');
-      assert(evidence.rewrites === 0, 'break-ack: unexpected duplicate SimHost transform');
+      const file = local ? 'SimHost.ts' : 'LoopbackSimHost.ts';
+      if (!id.replaceAll('\\', '/').split('?')[0].endsWith(`/src/worker/${file}`)) return null;
+      const anchors = local ? [ANCHOR] : [PACKET_ACK, PACKET_RESOLVE];
+      for (const anchor of anchors) assert(source.split(anchor).length === 2, `break-ack: ${file} ${local ? 'done initializer' : 'acknowledgement'} changed; review the transform against source`);
+      assert(evidence.rewrites === 0, `break-ack: unexpected duplicate ${file} transform`);
       evidence.rewrites++;
-      return { code: source.replace(ANCHOR, `const done = op === ${JSON.stringify(op)} ? new Promise<CommandResult<K>>(() => {}) : Promise.resolve(predicted);`), map: null };
+      const code = local
+        ? source.replace(ANCHOR, `const done = op === ${JSON.stringify(op)} ? new Promise<CommandResult<K>>(() => {}) : Promise.resolve(predicted);`)
+        : source.replace(PACKET_ACK, `${PACKET_ACK}\n    const qaCommand = this.edits.get(seq);`)
+          .replace(PACKET_RESOLVE, `else if (qaCommand?.op !== ${JSON.stringify(op)}) ticket?.resolve(result);`);
+      return { code, map: null };
     },
-    generateBundle() { assert(evidence.rewrites === 1, 'break-ack: the production build did not include the expected LocalSimHost'); },
+    generateBundle() { assert(evidence.rewrites === 1, `break-ack: the production build did not include the expected ${local ? 'LocalSimHost' : 'PacketSimHost'}`); },
   };
 }
 

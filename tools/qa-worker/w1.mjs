@@ -80,16 +80,16 @@ export async function watchProtectors(page) {
 }
 
 export async function verifyReplica(page, digestUrl, timeout) {
-  assert(digestUrl, 'W1 exactDigest export does not exist at this base; supply --digest-module when W1.1b lands (no substitute hash)');
+  assert(digestUrl, 'shared exactDigest entry was not emitted; use src/worker/queries.ts or --digest-module');
   const result = await page.evaluate(async ({ url, timeout }) => {
     const h = window.__metropolis.city.scene.host;
-    if (typeof h.query !== 'function') throw new Error('host.query is unavailable until W0.3/W1.1b');
+    if (typeof h.query !== 'function') throw new Error('host.query is unavailable');
     if (h.speed !== 0) throw new Error('verify requires a paused, drained host');
     const { exactDigest } = await import(url);
     if (typeof exactDigest !== 'function') throw new Error('digest module must export exactDigest(state)');
     let timer;
     try {
-      const primary = await Promise.race([h.query('verify'), new Promise((_, reject) => {
+      const primary = await Promise.race([h.query('verify', {}), new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error('host.query(verify) timed out')), timeout);
       })]);
       return { primary, replica: exactDigest(h.state) };

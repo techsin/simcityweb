@@ -2,24 +2,31 @@ import { assert, poll, sleep, waitForAcks, withCleanup } from './harness.mjs';
 import { installProbe, pointForCell, pointer } from './page.mjs';
 
 export class Driver {
-  constructor(page, options) { this.page = page; this.options = options; this.sessions = []; this.dropAckUsed = false; this.cleanupErrors = []; }
+  constructor(page, options) { this.page = page; this.options = options; this.sessions = []; this.archives = []; this.dropAckUsed = false; this.cleanupErrors = []; }
   async ready({ pauseOnArrival = false } = {}) {
     await this.page.waitForFunction(() => window.__metropolis?.city?.scene?.host && window.__metropolis.city.scene.ctx,
       null, { timeout: this.options.bootTimeout, polling: 25 });
-    await this.page.evaluate(installProbe, { dropAck: this.dropAckUsed ? null : this.options.dropAck });
     if (pauseOnArrival && await this.page.evaluate(() => window.__metropolis.city.scene.host.speed !== 0)) {
-      await this.command('setSpeed', () => this.page.keyboard.press('Space'));
+      await this.page.keyboard.press('Space');
+      await this.page.waitForFunction(() => window.__metropolis.city.scene.host.speed === 0);
     }
     await this.page.waitForFunction(() => {
       const s = window.__metropolis?.city?.scene;
       return window.__ready === true && s?.host && s.ctx?.world && s.ctx.objects && !s.ctx.world.isNull && !s.ctx.objects.isNull
         && !s.ctx.degraded.actions && !s.ctx.degraded.world && !s.ctx.degraded.objects;
     }, null, { timeout: this.options.bootTimeout });
+    // initViews replaces the null/loading world. Observe the real view, after the early keyboard pause.
+    await this.page.evaluate(installProbe, { dropAck: this.dropAckUsed ? null : this.options.dropAck });
     const kind = await this.page.evaluate(() => window.__metropolis.city.scene.host.kind);
     assert(kind === this.options.host, `requested ${this.options.host}, got ${kind}; fallback is not acceptance`);
   }
   async archive() {
-    const rows = await this.page.evaluate(() => (window.__qaWorker ?? window.__qaWorkerArchive).commands);
+    const data = await this.page.evaluate(() => {
+      const q = window.__qaWorker ?? window.__qaWorkerArchive;
+      return Object.fromEntries(['commands', 'gestures', 'ghosts', 'events', 'packets', 'hostSaves', 'teardown'].map((k) => [k, q[k]]));
+    });
+    const rows = data.commands;
+    this.archives.push(data);
     this.sessions.push(rows);
     this.dropAckUsed ||= rows.some((r) => r.dropped);
   }
@@ -150,7 +157,7 @@ export class Driver {
     const point = await poll(() => this.page.evaluate(({ id, action }) => {
       const b = window.__metropolis.city.scene.emgBanner.banners.get(id);
       if (!b || performance.now() <= b.settleUntil) return null;
-      const button = b[action], rect = button.getBoundingClientRect();
+      const button = action === 'dismiss' ? b.el.querySelector('.emg-x') : b[action], rect = button.getBoundingClientRect();
       if (button.disabled || rect.width === 0 || rect.height === 0) return null;
       return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
     }, { id, action }), Boolean, this.options.ackTimeout, `incident ${id}: banner ${action} never settled/available`);
