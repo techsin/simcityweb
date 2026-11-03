@@ -123,6 +123,13 @@ export class NewsTicker {
   }
 }
 
+/** an answer button on a question toast (Toasts.show opts.buttons) */
+export interface ToastButton {
+  label: string;
+  primary?: boolean;
+  run: () => void;
+}
+
 export class Toasts {
   /** multiplier for toast lifetimes (dev/screenshot tooling raises it) */
   static ttlScale = 1;
@@ -162,8 +169,10 @@ export class Toasts {
   /**
    * show a toast; plays the kind's sound (TOAST_SOUND) unless opts.silent or it merges into an identical live toast.
    * opts.action: a click runs it (instead of jumping to `cell`), with a small hint line under the text.
+   * opts.buttons: a question with answers (FH-21's slow-frame prompt): each button runs its answer and closes the toast;
+   * a click elsewhere on the toast does nothing.
    */
-  show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string, opts: { silent?: boolean; ttl?: number; action?: { hint: string; icon?: string; run: () => void } } = {}): void {
+  show(text: string, kind = 'info', cell?: { x: number; z: number }, title?: string, opts: { silent?: boolean; ttl?: number; action?: { hint: string; icon?: string; run: () => void }; buttons?: ToastButton[] } = {}): void {
     const now = performance.now();
     const key = kind + ':' + text;
     const meta = NEWS_META[kind] ?? NEWS_META.info;
@@ -197,12 +206,14 @@ export class Toasts {
     const x = h('button', { class: 'icon-btn t-x', html: icon('close', 12) });
     const badge = h('span', { class: 't-count', style: 'display:none' });
     const timerBar = h('div', { class: 't-timer', style: { animationDuration: ttl + 'ms' } });
+    const answers = opts.buttons?.length ? opts.buttons.map((b) => h('button', { class: `btn t-btn${b.primary ? ' primary' : ''}`, type: 'button' }, b.label)) : null;
     const t = h('div', { class: 'toast mp-glass', style: { '--tc': meta.color } as Record<string, string> },
       h('div', { class: 't-ico', html: icon(meta.icon, 16) }),
       h('div', { class: 't-body' },
         h('div', { class: 't-title' }, title ?? meta.title, badge),
         h('div', { class: 't-text' }, text),
         opts.action ? h('div', { class: 't-go', html: icon(opts.action.icon ?? 'target', 12) + escapeHtml(opts.action.hint) }) : cell ? h('div', { class: 't-go', html: icon('target', 12) + 'Click to view' }) : null,
+        answers ? h('div', { class: 't-btns' }, ...answers) : null,
       ),
       x,
       timerBar,
@@ -240,7 +251,13 @@ export class Toasts {
       e.stopPropagation();
       kill();
     }, { signal: this.ctx.signal });
+    answers?.forEach((el, k) => el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      kill();
+      opts.buttons![k].run();
+    }, { signal: this.ctx.signal }));
     t.addEventListener('click', () => {
+      if (answers) return;
       if (opts.action) opts.action.run();
       else if (entry.cell) this.ctx.focusCell(entry.cell.x, entry.cell.z, 420);
       kill();

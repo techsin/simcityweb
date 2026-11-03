@@ -30,7 +30,7 @@ import { openNewCityDialog, terrainOptionsFor } from './region/NewCityDialog';
 import { summarizeCity } from './region/citySummary';
 import { cityThumbnail, drawCityMap, normalizeThumbnail, regionPreviewDataUrl, regionPreviewKey } from './region/mapPreview';
 import { randomCityName, randomMayorName } from './region/names';
-import { cityOverrides, loadSettings, saveSettings, takeCityChanges, type AppSettings } from './region/settings';
+import { applyFirstRunQuality, cityOverrides, loadSettings, saveSettings, takeCityChanges, type AppSettings } from './region/settings';
 import { TitleScreen } from './region/ui/TitleScreen';
 import { LoadingScreen } from './region/ui/LoadingScreen';
 import { openCredits, openLoadRegion, openNewRegion, openRecoverDialog, openSettings } from './region/ui/dialogs';
@@ -78,6 +78,8 @@ interface CitySceneLike {
   worldView?: { camera?: Camera; isNull?: boolean };
   /** optional: resolves once the 3D views are up (used to delay window.__ready) */
   ready?: Promise<unknown>;
+  /** FH-21: the measured time from the click to the first interactive frame (the fps readout shows it) */
+  reportLoadTime?(ms: number): void;
   whenReady?(): Promise<unknown>;
 }
 interface CitySceneOptions {
@@ -178,8 +180,12 @@ class App {
   private offerPending: Promise<RecoverChoice> | null = null;
   /** last recovery snapshot result (debugging / tests) */
   lastSnapshot: (WriteResult & { why: string }) | null = null;
+  /** FH-21: ms from the last "Found City" / "Play" to the city's first interactive frame (P-5 reports it) */
+  lastLoadMs: number | null = null;
 
   constructor(host: HTMLElement) {
+    // FH-21: a first run picks the graphics quality the device can carry (and keeps it, like a chosen setting)
+    if (applyFirstRunQuality(this.settings)) saveSettings(this.settings);
     this.root = h('div', { class: 'meta-root' });
     host.appendChild(this.root);
     setUiRoot(this.root);
@@ -425,7 +431,8 @@ class App {
     await this.startNewCity(this.region, tile, cfg);
   }
 
-  private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData): Promise<void> {
+  /** `t0`: when the player asked for the city (performance.now(); FH-21 measures the load from it) */
+  private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData, t0 = performance.now()): Promise<void> {
     this.busy = true;
     const ld = new LoadingScreen(this.root);
     try {
@@ -447,7 +454,7 @@ class App {
       tile.city.thumbnail = cityThumbnail(st, 256);
       await saveCity(model.data.id, tile.key, st);
       await this.persistRegion();
-      await this.enterCity(model, tile, st, ld);
+      await this.enterCity(model, tile, st, ld, t0);
     } catch (e) {
       console.error('[main] failed to found city', e);
       toast(`Could not found the city: ${(e as Error).message}`, 'bad', 6000);
@@ -474,6 +481,7 @@ class App {
   }
 
   async playCity(tile: RegionTile, existing?: LoadingScreen): Promise<void> {
+    const t0 = performance.now();
     if (this.busy || !this.region) {
       existing?.remove();
       return;
@@ -497,7 +505,7 @@ class App {
         await this.regionScreen?.refresh();
         return;
       }
-      await this.enterCity(this.region, tile, st, ld);
+      await this.enterCity(this.region, tile, st, ld, t0);
     } catch (e) {
       console.error('[main] failed to load city', e);
       toast(`Could not load the city: ${(e as Error).message}`, 'bad', 6000);
@@ -507,7 +515,7 @@ class App {
     }
   }
 
-  private async enterCity(model: RegionModel, tile: RegionTile, st: CityState, ld: LoadingScreen): Promise<void> {
+  private async enterCity(model: RegionModel, tile: RegionTile, st: CityState, ld: LoadingScreen, t0 = performance.now()): Promise<void> {
     ld.set('Building the city…', 0.7);
     await paint();
     this.clearScreens();
@@ -559,6 +567,9 @@ class App {
       this.tickSaveState();
     }
     await ld.hide();
+    // FH-21: the loading screen is gone and the views drew a frame: the city takes input from here
+    this.lastLoadMs = performance.now() - t0;
+    this.city?.scene?.reportLoadTime?.(this.lastLoadMs);
     audio.play('cityReady');
     markReady();
   }
