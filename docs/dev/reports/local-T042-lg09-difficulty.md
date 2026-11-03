@@ -1,4 +1,33 @@
-# T042 LG-09 difficulty rules — review round 3
+# T042 report: LG-09, Hard and Expert change the rules, not just the money (desktop)
+
+**Verdict: done; holds for B2.** Every T042 gate passes. Two commits hold for B2's merge (NOTE-046 Q1):
+`0585869` and `496d01a`, the `src/sim/infra` hunks (disasters.ts, emergency.ts, facilities.ts). Per NOTE-050, the
+final gate re-measures the Hard and Expert rows against the dev that includes T041, with the second A/A envelope run.
+
+Branch `local/T042-lg09-difficulty`:
+- `888194b` the lane, with `0585869` (infra, holds for B2);
+- `c5f9d60` the `?difficulty=` quickstart funds map learns Expert (`src/main.ts`; NOTE-048 keeps it in the lane);
+- `5118f48` review round 1, with `496d01a` (infra, holds for B2);
+- `e871697` dev `683d02b` merged in (clean);
+- `d49754a` `foundedDay` in `SYSTEM_KEYS` (NOTE-048), so a replica keeps Expert's loan cutoff; `e4b6107` this report.
+
+## Gates
+
+| Gate | Result |
+|---|---|
+| tsc | clean |
+| Full vitest with the fixtures (`e4b6107`) | **227 files passed, 2 skipped; 2,280 tests passed, 11 skipped; 0 failing** |
+| 128×15 s7 Medium bot with the action log | **identical to dev:** residents [ 61124, 93804, 37971 ] = 192,899 |
+| Medium two-process hashes, 128×15 s7, 256×60 s7 and s11 | **bit-identical**, 135 of 135 yearly save hashes (review round 1) |
+| Hard 128×15 s7: each year 2010-15, funds ≤ 0.5× or population ≤ 0.9× Medium | **pass every year:** population 0.714-0.787× Medium; funds 0.363× in 2011 |
+| Hard's lowest daily balance ≥ 0, using loans | **§2,464** (Medium §3,774) |
+| Unit tests: a forced 12-month deficit removes the mayor on Hard and Expert; Expert takes no new loan after year 5 | pass (`lg09EconomyDifficulty`; the cutoff also in `lg09LoanReplica`) |
+| Old saves load and continue: no 'expert', no streak key | pass (`lg09EconomyDifficulty`, `lg09RemovalMigration`) |
+| Replica parity for the loan cutoff on a packet (loopback) host | pass, both parity cases unconditional since `d49754a` |
+
+The lane's own round notes follow.
+
+## Review round 3: the lane's notes
 
 Status: **holds for B2** for the existing infra work. Round 3 changes are uncommitted on `local/T042-lg09-difficulty`, over the lead's merge `e871697` of dev `683d02b`. The lead committed the original work as `0585869` (infra), `888194b` (other work), `c5f9d60` (App funds map), and review fixes as `5118f48`. This round makes no infra or App edits; c5f9d60's `src/main.ts` line is unchanged. No commit, push, merge or `.done` file was made by this worker.
 
