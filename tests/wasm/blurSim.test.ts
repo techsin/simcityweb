@@ -5,6 +5,10 @@
  *     the arguments; outputs must be bit-identical, call by call, on live data.
  *  2. determinism: a city simulated with preference 'js' and one simulated with the wasm kernels end up with
  *     bit-identical layers and identical stats (after a JS-vs-JS baseline confirms the sim itself is deterministic).
+ * B2 (G3): the split pollution and crime passes blur in row pieces (blur.ts Blur3Run / boxHRows / BoxVRun /
+ * downsampleRows / upsampleAddRows), which the wasm bindings do not cover; the simulation here runs the frozen pre-B2
+ * PollutionSystem and CrimeSystem (tests/sim/exact/*Original.ts = 41ae570) in their place, which call the whole-call
+ * kernels. tests/infra/b2PiecesEnv.test.ts proves the split passes equal to the frozen ones at every pass end.
  */
 import { describe, expect, it, vi } from 'vitest';
 import type * as BlurModule from '../../src/sim/infra/blur';
@@ -54,7 +58,19 @@ vi.mock('../../src/sim/infra/blur', async (importOriginal) => {
 });
 
 // imported after the mock is registered (vitest hoists vi.mock)
-const { newSim, stressCity } = await import('../infra/cityGen');
+const { registerTestDefs, stressCity } = await import('../infra/cityGen');
+const { Simulation } = await import('../../src/sim/Simulation');
+const { infraSystems } = await import('../../src/sim/systems/infra');
+const { PollutionSystemOriginal } = await import('../sim/exact/pollutionOriginal');
+const { CrimeSystemOriginal } = await import('../sim/exact/crimeOriginal');
+/** the infra systems with the frozen pre-B2 pollution and crime passes (B2: see the header) */
+function newSim(st: import('../../src/sim/CityState').CityState): import('../../src/sim/Simulation').Simulation {
+  registerTestDefs();
+  const list = infraSystems() as import('../../src/sim/Simulation').SimSystem[];
+  list[list.findIndex((x) => x.name === 'pollution')] = new PollutionSystemOriginal() as unknown as import('../../src/sim/Simulation').SimSystem;
+  list[list.findIndex((x) => x.name === 'crime')] = new CrimeSystemOriginal() as unknown as import('../../src/sim/Simulation').SimSystem;
+  return new Simulation(st, list);
+}
 const { setSimWasmPreference, simWasmStatus } = await import('../../src/wasm/simWasm');
 const { DERIVED_LAYERS } = await import('../../src/save/serialize');
 const shadow = (): Shadow => (globalThis as { __blurShadow?: Shadow }).__blurShadow!;
