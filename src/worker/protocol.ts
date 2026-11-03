@@ -39,7 +39,8 @@ export interface Journal {
   v: 1; regionId: string; tileKey: string; at: number;
   base: { kind: 'save'; savedAt: number } | { kind: 'snapshot'; at: number; baseSavedAt: number };
   fromCmd: number;
-  ops: { seq: number; op: JournalOp; args: unknown[] }[];
+  /** FH-07a (T033): a bulldoze carries its ack's charge, net `cost` and gross `refund`, not the refund rule */
+  ops: { seq: number; op: JournalOp; args: unknown[]; cost?: number; refund?: number }[];
 }
 export type M2W =
   | { t: 'init'; v: number; city: CitySource; rctx: RegionContext | null; initialSpeed: number; settings: SimSettings;

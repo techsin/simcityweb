@@ -10,6 +10,8 @@ import { attachOverlays, registerDerivedSource, TAP_T0 } from '../sim/infra/over
 import { serializeCity } from '../save/serialize';
 import { CHANGE_EVENTS } from '../save/fingerprint';
 import { clearRecoveryAfterSave, storeRecoveryLs } from '../save/recoveryLs';
+import { gameDateLabel, type RecoveryInfo } from '../save/recoveryCodec';
+import { RecoveryMirror as JournalMirror } from './recoveryMirror';
 import { Gesture, type ActOptions, type Cause, type Command, type CommandArgs, type CommandOp, type CommandResult,
   type GestureOwner, type LocalSimHostOptions, type PolicySnapshot, type PolicyView, type RecoveryMirror,
   type SaveAck, type SaveReason, type SimHost, type SnapshotAck, type SnapshotWhy, type SpeedSource, type Ticket, type WatchHandle } from './SimHost';
@@ -49,6 +51,8 @@ export interface PacketHostOptions extends LocalSimHostOptions {
   onPacket?: (packet: Packet) => void;
   /** T033: a resync adopted the worker's snapshot, which holds every command up to this seq */
   onResync?: (cmd: number) => void;
+  /** T033: keep the page's recovery journal (§4.3). By default on with persistence where localStorage exists. */
+  journal?: boolean;
   /** CityActions for the optimistic tax / funding / historic writes, when already loaded (tests). Hosts load it lazily
    *  and call useOptimisticActions: the city screen's static graph excludes src/sim/actions.ts (FH-07a). */
   optimistic?: typeof CityActions;
@@ -117,7 +121,6 @@ export class PacketSimHost implements SimHost {
   readonly replica: Replica;
   readonly sim: Simulation;
   readonly policy: PolicyView;
-  readonly recovery: RecoveryMirror | null;
   readonly ready: Promise<void>;
   private readiness = deferred<void>();
   private controller: PacketActions | null = null;
@@ -152,14 +155,22 @@ export class PacketSimHost implements SimHost {
   private speedMirror = 1;
   private stop = () => { void this.dispose(); };
   changes = 0;
+  /** T033: the base-bound journal, from the first Ready (the loaded save and its watermark) until dispose */
+  private mirror: JournalMirror | null = null;
+  private mirrorLife = new AbortController();
+  /** commands transmitted before that Ready: newer than its watermark, so they belong in the journal */
+  private early: Extract<M2W, { t: 'cmd' }>[] = [];
+  /** the replica's day at the base save, for a journal-only marker */
+  private baseDay = 0;
+  /** the app's unload write: buffered sliders go out (and into the journal) first */
+  private writer: RecoveryMirror = { writeNow: (why) => {
+    if (this.closed) return;
+    this.flushCommands(); this.options.recovery?.writeNow(why); this.mirror?.writeNow(why);
+  } };
 
   constructor(readonly kind: 'loopback' | 'worker', initial: Ready, options: PacketHostOptions = {}, initialIsReady = true) {
     this.options = options;
     this.ready = this.readiness.promise;
-    this.recovery = options.recovery ? { writeNow: (why) => {
-      if (this.closed) return;
-      this.flushCommands(); this.options.recovery?.writeNow(why);
-    } } : null;
     this.replica = new Replica({
       tag: (seq) => this.tickets.get(seq)?.tag ?? null,
       ack: (seq, result) => this.ack(seq, result),
@@ -205,7 +216,26 @@ export class PacketSimHost implements SimHost {
     if (options.actions) this.installActions(options.actions);
     options.signal?.addEventListener('abort', this.stop, { once: true });
     if (options.signal?.aborted) this.stop();
-    if (initialIsReady && !this.closed) { this.hasReady = true; this.readiness.resolve(undefined); }
+    if (initialIsReady && !this.closed) { this.hasReady = true; this.bindRecovery(initial); this.readiness.resolve(undefined); }
+  }
+
+  get recovery(): RecoveryMirror | null { return this.options.recovery || this.mirror ? this.writer : null; }
+  /** T033: the journal mirror, bound to the save the first Ready names; it carries a boot replay's renumbered edits. */
+  private bindRecovery(ready: Ready): void {
+    const p = this.options.persistence, wanted = this.options.journal ?? typeof localStorage !== 'undefined';
+    if (this.mirror || this.closed || !p || !wanted) { this.early = []; return; }
+    this.baseDay = this.state.day;
+    this.mirror = new JournalMirror({
+      regionId: p.regionId, tileKey: p.tileKey, savedAt: ready.savedAt, cmd: ready.cmd, journal: ready.journal,
+      signal: this.mirrorLife.signal, info: () => this.describe(), requestSnapshot: () => this.snapshot('journal'),
+    });
+    for (const m of this.early.splice(0)) if (m.seq > ready.cmd) this.mirror.onCommand(m.seq, m.op, m.args);
+  }
+  /** a journal-only marker's metadata, read from the replica at write time */
+  private describe(): RecoveryInfo {
+    const st = this.state, start = Number(st.config.startYear ?? 2000);
+    return { cityName: st.config.name, regionName: this.options.persistence?.regionName, day: st.day, date: gameDateLabel(st.day, start),
+      baseDay: this.baseDay, baseDate: gameDateLabel(this.baseDay, start), population: st.stats.population, funds: st.funds };
   }
 
   get state() { return this.replica.state; }
@@ -282,12 +312,18 @@ export class PacketSimHost implements SimHost {
   }
   private transmit(message: Extract<M2W, { t: 'cmd' }>): void {
     try { this.options.onPost?.(copyOwned(message)); } catch (e) { this.report('command observer', e); }
+    // T033: the journal holds what was sent, after slider coalescing, before any ack
+    try {
+      if (this.mirror) this.mirror.onCommand(message.seq, message.op, message.args);
+      else if (!this.hasReady) this.early.push(copyOwned(message));
+    } catch (e) { this.report('recovery journal', e); }
     this.send(message);
   }
   private ack(seq: number, result: unknown): void {
     const ticket = this.tickets.get(seq);
     this.edits.delete(seq); this.controller?.pending.ack(seq); this.tickets.delete(seq);
     try { this.options.onAck?.(seq, result); } catch (e) { this.report('ack observer', e); }
+    try { this.mirror?.onAck(seq, result); } catch (e) { this.report('recovery journal', e); }
     if (result && typeof result === 'object' && 'commandError' in result) ticket?.reject(new Error(String(result.commandError)));
     else ticket?.resolve(result);
   }
@@ -390,7 +426,10 @@ export class PacketSimHost implements SimHost {
     this.watches.set(id, w as PacketWatch<QueryName>); w.request(); return w;
   }
   save(reason: SaveReason): Promise<SaveAck> {
-    if (!this.closed) { try { this.options.onSaving?.(); } catch (e) { this.report('save observer', e); } }
+    if (!this.closed) {
+      try { this.options.onSaving?.(); } catch (e) { this.report('save observer', e); }
+      this.mirror?.onSaving();
+    }
     return this.request({ t: 'save', id: ++this.id, reason });
   }
   snapshot(why: SnapshotWhy): Promise<SnapshotAck | null> { return this.request({ t: 'snapshot', id: ++this.id, why }); }
@@ -409,21 +448,26 @@ export class PacketSimHost implements SimHost {
       this.report(reply.key, error, reply.title, reply.sim); return;
     }
     try { this.options.onReply?.(reply, this.packet!); } catch (e) { this.report('reply observer', e); }
+    // the page's recovery state follows every write the worker made, whether or not a caller still waits for it
     const wait = this.requests.get(reply.id); this.requests.delete(reply.id);
-    if (!wait) return;
     if (reply.t === 'qres') {
-      if (reply.ok) wait.resolve(reply.value); else wait.reject(new Error(reply.error));
+      if (reply.ok) wait?.resolve(reply.value); else wait?.reject(new Error(reply.error));
     } else if (reply.t === 'saved') {
-      if (!reply.ok) { wait.reject(new Error(reply.error)); return; }
+      if (!reply.ok) { this.mirror?.onSaveFailed(); wait?.reject(new Error(reply.error)); return; }
       const p = this.options.persistence;
       const dropped = p ? clearRecoveryAfterSave(p.regionId, p.tileKey, reply.savedAt!) : false;
-      wait.resolve({ savedAt: reply.savedAt!, cmd: reply.cmd, pktSeq: reply.pktSeq!, fp: reply.fp!, summary: reply.summary!,
+      // T033: the journal rebinds to this save and keeps only the commands newer than its copy
+      if (this.mirror) { this.baseDay = this.state.day; this.mirror.onSaved(reply.savedAt!, reply.cmd); }
+      wait?.resolve({ savedAt: reply.savedAt!, cmd: reply.cmd, pktSeq: reply.pktSeq!, fp: reply.fp!, summary: reply.summary!,
         changes: reply.changes ?? this.changes, recoveryDropped: dropped || !!reply.recoveryDropped } satisfies SaveAck);
     } else if (reply.ok === false) {
-      if (reply.error) wait.reject(new Error(reply.error)); else wait.resolve(null);
+      if (reply.error) wait?.reject(new Error(reply.error)); else wait?.resolve(null);
     } else {
-      const ls = storeRecoveryLs(reply.marker, reply.payload);
-      wait.resolve({ ...reply.result, marker: reply.marker, payload: reply.payload, dropped: reply.marker.dropped,
+      // T033: with a journal, localStorage keeps the payload and the journal of the same base; a snapshot of a replaced
+      // save is not taken up (its IndexedDB copy is dropped at restore)
+      const ls = this.mirror ? this.mirror.onSnapped(reply.marker, reply.payload, reply.cmd) && this.mirror.writeNow((reply.marker.why ?? 'periodic') as SnapshotWhy)
+        : storeRecoveryLs(reply.marker, reply.payload);
+      wait?.resolve({ ...reply.result, marker: reply.marker, payload: reply.payload, dropped: reply.marker.dropped,
         ok: true, bytes: reply.payload.length, ms: reply.result?.ms ?? 0, idb: reply.result?.idb ?? false, ls,
         cmd: reply.cmd, fp: reply.fp!, changes: reply.changes ?? this.changes } satisfies SnapshotAck);
     }
@@ -432,6 +476,8 @@ export class PacketSimHost implements SimHost {
   receive(message: W2M): void {
     if (this.closed) return;
     if (message.t === 'fatal') {
+      // §4.4: the journal is safe before anything else
+      try { this.mirror?.writeNow('crash'); } catch (e) { this.report('recovery journal', e); }
       const error = new Error(message.message);
       if (message.stack) error.stack = message.stack;
       this.fail(error); void this.dispose(); return;
@@ -446,7 +492,9 @@ export class PacketSimHost implements SimHost {
       this.hasReady = true;
       // the worker's count: events in packets dropped by a resync must not leave dirty tracking behind for good
       if (message.changes !== undefined) this.changes = message.changes;
-      this.replica.adopt(message); this.readiness.resolve(undefined);
+      this.replica.adopt(message);
+      if (!resync) this.bindRecovery(message);
+      this.readiness.resolve(undefined);
       if (resync) { try { this.options.onResync?.(message.cmd); } catch (e) { this.report('resync observer', e); } }
       return;
     }
@@ -511,6 +559,7 @@ export class PacketSimHost implements SimHost {
     for (const off of this.policies.values()) off();
     this.gesture?.end(); this.controller?.dispose(); this.offViews(); this.events.clear();
     this.sender = null; this.outbox = []; this.sliders.clear(); this.queuedView = null;
+    this.mirrorLife.abort('dispose'); this.mirror = null; this.early = [];
     this.options = {};
     return Promise.resolve();
   }
@@ -538,8 +587,14 @@ export class LoopbackSimHost extends PacketSimHost {
     if (this.starting) return this.starting;
     this.starting = (async () => {
       try {
-        const [{ LoopbackCore }, { CityActions }, actions] = await Promise.all([import('./loopbackCore'), import('../sim/actions'),
+        const [{ LoopbackCore, bootJournal }, { CityActions }, actions] = await Promise.all([import('./loopbackCore'), import('../sim/actions'),
           this.opts.actions ? undefined : ACTION_MODULES['./HostActions.ts']?.()]);
+        // T033: the core replays a journal bound to the loaded save before its Ready (§4.3)
+        let journal: Awaited<ReturnType<typeof bootJournal>>;
+        if (this.opts.journal ?? typeof localStorage !== 'undefined') {
+          try { journal = await bootJournal(this.opts.persistence); }
+          catch (e) { this.report('recovery', e, 'The recovery journal could not be read'); }
+        }
         this.useOptimisticActions(CityActions);
         // before the core's Ready, so its adopt rebases the controller's reservations
         if (actions && !this.closed) this.installActions((host) => new actions.HostActions(host));
@@ -551,7 +606,7 @@ export class LoopbackSimHost extends PacketSimHost {
         if (this.closed) return;
         this.loop = new LoopbackCore(this.initial!, { cadence: 'live', ...this.opts.loopback, initialSpeed: this.opts.initialSpeed,
           rctx: this.opts.rctx, flags: this.opts.flags, signal: this.opts.signal, persistence: this.opts.persistence,
-          now: this.opts.now, replicaInstance: this.replica, receive: (m) => this.receive(m) });
+          now: this.opts.now, replicaInstance: this.replica, receive: (m) => this.receive(m), journal });
         this.initial = null;
         this.connect((m) => this.loop?.post(m));
       } catch (e) { this.fail(e); throw e; }
