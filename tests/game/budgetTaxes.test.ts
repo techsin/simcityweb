@@ -49,7 +49,7 @@ describe('Budget tax effects (FH-09)', () => {
     const copy = textOf(f.el);
     expect(copy).toContain('9% is neutral');
     expect(copy).toContain('−3.5 a point');
-    expect(copy).toContain('above 13% demand collapses');
+    expect(copy).toContain('Higher taxes gradually slow growth');
     expect(copy).toContain('(+1.5) but less income');
     expect(copy).not.toContain('above ~12%');
     expect(f.panel.projection().inc).toBe(income); // the 200 ms watch cap still applies
