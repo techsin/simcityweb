@@ -16,6 +16,7 @@ import { TopBar } from '../../src/ui/TopBar';
 import { ZONE_BADGE_LOTS, builtOut, builtOutIssue, zoneBadge } from '../../src/ui/topbar/rciGuide';
 import { newState, place, roadLine } from '../infra/cityGen';
 import { queryHost } from './queryHost';
+import { LoopbackSimHost } from '../../src/worker/LoopbackSimHost';
 import { FEl, installFakeDom, textOf } from './fakeDom';
 
 installFakeDom();
@@ -196,4 +197,44 @@ describe('TopBar: the RCI popover\'s built-out line (LG-05)', () => {
     seg.fire('click', { target: seg });
     expect(t.el.querySelector('.built-out')).toBeNull();
   });
+});
+
+describe('the "+ zone" badge on the replica (LoopbackSimHost)', () => {
+  it('reads the mirrored zone, road and building layers; a zoning command reaches it', async () => {
+    const st = newState(64);
+    st.funds = 1e6;
+    homes(4)(st);
+    const abort = new AbortController();
+    const host = new LoopbackSimHost(st, { initialSpeed: 0, signal: abort.signal, loopback: { cadence: 'design' } });
+    await host.start();
+    try {
+      await host.drain();
+      const replica = host.state;
+      expect(replica).not.toBe(host.harness.primary);
+      replica.stats.demand.fill(0);
+      replica.stats.demand[0] = 0.8;
+      let now = 1000;
+      vi.spyOn(performance, 'now').mockImplementation(() => now);
+      const selected: string[] = [];
+      const ctx = {
+        host, state: replica, sim: host.sim, signal: abort.signal, ui: new Emitter<UIEvents>(), mods: {}, world: { timeOfDay: 12 },
+        overlay: Overlay.None, overlayVariant: -1, tools: { activeId: null, select: (id: string) => { selected.push(id); return true; } },
+        focusCell: vi.fn(), setOverlay: vi.fn(), sound: vi.fn(), toast: vi.fn(), openPauseMenu: vi.fn(), openFlyout: vi.fn(), panels: { toggle: vi.fn(), open: vi.fn() },
+      } as unknown as GameContext;
+      const bar = new TopBar(ctx, new FEl('div') as unknown as HTMLElement);
+      bar.update();
+      const badge = (bar.el as unknown as FEl).querySelector('.rci-zone')!;
+      expect(badge.style.display).toBe('');
+      expect(badge.title).toContain('4 empty residential lots left');
+      badge.click();
+      expect(selected).toEqual(['zone:1']);
+      // the player zones 10 more lots along the road: a command to the core, mirrored back
+      host.actions.zone({ x0: 7, z0: 21, x1: 17, z1: 22 }, Zone.ResLow);
+      await host.drain();
+      replica.stats.demand[0] = 0.8;
+      now += 1000;
+      bar.update();
+      expect(badge.style.display, '14 empty lots on the replica').toBe('none');
+    } finally { abort.abort('dispose'); await host.dispose(); }
+  }, 60000);
 });
