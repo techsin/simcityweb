@@ -601,7 +601,9 @@ async function main() {
     }
     const rising = samples.every((x, i) => i === 0 || x.day > samples[i - 1].day);
     check(`soak: ${SOAK_MIN} min at speed 3, alive and advancing`, rising && !samples.some((x) => x.disposed) && !(await crashDialog(page)), JSON.stringify({ first: samples[0], last: samples.at(-1) }));
-    await protector(page, `after ${SOAK_MIN} min`);
+    const soaked = await protector(page, `after ${SOAK_MIN} min`);
+    // the one detach the worker could cause by itself: a wasm memory.grow (risk 7)
+    if (SIMWASM) check(`soak: after ${SOAK_MIN} min the kernels still run on wasm in the worker, its memory never grown`, soaked.wasm?.state === 'ready' && soaked.wasm.blur === true && soaked.wasm.grows === 0, JSON.stringify(soaked.wasm));
     await shot(page, '05b-after-soak');
   }
   check('console: no errors in normal play', errors.length === 0, errors.slice(0, 5).join(' | '));
