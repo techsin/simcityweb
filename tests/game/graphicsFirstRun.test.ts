@@ -236,5 +236,10 @@ describe('FH-21: a lost graphics context', () => {
     await Promise.resolve();
     expect(calls.filter((c) => c === 'createViews')).toHaveLength(1);
     expect(scene.ctxLost).toBeNull();
+    // disposing the old views forces a loss on the old (restored) canvas: that is not a new loss
+    canvas.fire('webglcontextlost', { preventDefault() {} });
+    expect(scene.ctxLost).toBeNull();
+    expect(scene.save).toHaveBeenCalledTimes(1);
+    expect(canvas.listenerCount()).toBe(0);
   });
 });

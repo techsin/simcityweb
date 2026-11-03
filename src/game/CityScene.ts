@@ -519,15 +519,23 @@ export class CityScene {
   }
 
   // ------------------------------------------------------------------------------------------------ lost graphics (FH-21)
-  /** a driver reset or a GPU-starved machine can take the WebGL context away: pause, save, and offer to rebuild */
+  /**
+   * a driver reset or a GPU-starved machine can take the WebGL context away: pause, save, and offer to rebuild. One canvas
+   * is watched at a time: the views' dispose forces a context loss on their old canvas (WorldView.dispose), which must
+   * not read as a new loss after a rebuild.
+   */
   private watchContext(canvas: HTMLCanvasElement): void {
+    this.ctxWatch?.abort();
+    const watch = (this.ctxWatch = new AbortController());
+    const signal = AbortSignal.any ? AbortSignal.any([this.abort.signal, watch.signal]) : this.abort.signal;
     canvas.addEventListener('webglcontextlost', (e) => {
       // (preventDefault: the browser may hand the context back, webglcontextrestored)
       e.preventDefault();
-      this.onContextLost();
-    }, { signal: this.abort.signal });
-    canvas.addEventListener('webglcontextrestored', () => void this.restoreViews(), { signal: this.abort.signal });
+      if (!watch.signal.aborted) this.onContextLost();
+    }, { signal });
+    canvas.addEventListener('webglcontextrestored', () => { if (!watch.signal.aborted) void this.restoreViews(); }, { signal });
   }
+  private ctxWatch: AbortController | null = null;
 
   private onContextLost(): void {
     if (this.disposed || this.ctxLost) return;
@@ -556,6 +564,8 @@ export class CityScene {
     if (!lost || lost.restoring || this.disposed) return;
     lost.restoring = true;
     const cam = readCamera(this.world.controls) ?? validCamera(this.sim.state.systemData.camera, this.sim.state);
+    // stop watching the old canvas first: disposing its views forces a (second) context loss on it
+    this.ctxWatch?.abort();
     for (const v of [this.objects, this.world]) {
       try {
         v.dispose();
