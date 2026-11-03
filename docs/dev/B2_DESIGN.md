@@ -955,6 +955,7 @@ New: save in the middle of every task's pass, with tiny pieces so that every tas
 | `tests/infra/perf.test.ts` P0-8 / P0-15 (G3) | crime's and pollution's largest piece estimates ≤ 1.0; P0-15 re-baselined to ≤ 0.99 (0.985 with G3's pieces) | the finer pieces fill a day to within a few hundredths of a ms; G4 re-checks it |
 | `tests/wasm/fieldPasses.test.ts` live sections, `tests/wasm/blurSim.test.ts` (G3) | the frozen pre-B2 `PollutionSystem` (and, in blurSim, `CrimeSystem`) replaces the live one (`tests/sim/exact/pollutionOriginal.ts`, `crimeOriginal.ts`) | the field-pass overrides and the wasm blur bindings cover the pre-B2 stage methods and whole-call kernels; the B2 pieces equal the frozen classes at every pass end |
 | `tests/infra/emergencyBot.test.ts` EM-1 normal play (G2) | the invariants are checked on the first of seeds 2, 4, 5, 6, 1, 3, 8 whose 4-year town raises at least two prompts (G1 had moved it from seed 7 to seed 2) | the bot's schedule follows the estimates; G2's tier pieces left seed 2 with one prompt |
+| `tests/infra/emergencyBot.test.ts` EM-1 normal play (G3) | the towns run 5 years instead of 4 (seed 2: 3 prompts) | G3's pieces left every seed 1–16 at 0 or 1 prompt in 4 years |
 
 ### 11.6 The WASM ports: a decision for the lead
 
@@ -1376,3 +1377,203 @@ Services runs more passes in W: its estimates are honest, so the day budget buys
 - **Cached results keep kernels cold.** A kernel that runs only on a cache miss (the reach search) is cold exactly when an edit invalidates the caches: split it like a once-per-pass loop, not like the hot items around it.
 - **Frozen originals** (`servicesOriginal.ts`) keep the WASM sections and the bench tools running; pollution can do the same for the field-pass sections.
 - **Tools** (in `scratchpad/b2work/G2-services-nimby/`): `cpumapS.ts` (cpumap with services labelled by `stepName`), `passdigestS.ts` (`--infra`: without WP1), `genfxS.ts` (synthetic services fixtures from B's code), `editmapS.ts` (the edit and disaster scenario), `anS.py` / `anTableS.py` / `anEd.py` / `anFit.py` / `calS.py` (windows, tables, edits, per-label error, the fixed-cost model), `catchPerf.ts` (the stress city's per-label estimates, fresh vs cached).
+
+## 17. G3 as built (`G3-crime-pollution`, Nov 3)
+
+**Commits** (branch `b2-step-split`, on G2's `91a0436`): `0c3b32c` the kernels (`Blur3Run`, `downsampleRows`, `upsampleAddRows` in blur.ts), `7452227` every crime and pollution state in pieces with the cost model per piece, the frozen originals and `tests/infra/b2PiecesEnv.test.ts`, `74307eb` four test adaptations (§11.5), `7972d25` the cost refit, `2fc45f0` the smaller cold pieces (crime's loops and pollution's cell work at a quarter of `INFRA_PIECE_COLD_MS`, the field programs' loops as functions of their own), `bd7695a` the EM-1 adaptation, then this document. `npx tsc --noEmit` clean; the full `npx vitest run` at `bd7695a` (3 workers, under the timing lock): 137 files passed, 1 skipped (1,397 tests passed, 18 skipped), no unhandled errors. The run before at `2fc45f0` failed only EM-1 normal play (the bot towns moved; `bd7695a` adapts it, §11.5)
+
+### 17.1 Review items applied
+
+| item | where |
+|---|---|
+| review 1 R4 (saved data in one piece) | `st.crime` (SP_PUB), `st.garbage` (GA_PUB), `st.soil` (the brownfield writes at GS_END, the stock's publish in FL_SOIL), `st.landfillFill` (the resets at GS_END, the fill in GA_LF), `st.airPollution` / `st.noise` / `st.waterPollution` (their programs' last `.set()`), `treeCover` (derived, the tree program's `.set()`): each built in a private buffer (or written in one piece) and published once per state; the flags and `stats` in publish pieces. The brownfield `st.soil` / `st.landfillFill` writes of the landfill scan are collected in scan order and applied at GS_END (R4c). b2PiecesEnv "R7" checks every one at every production piece, "R9" a mid-pass save |
+| review 1 R5 (the water list in mid-diffusion) | the list is (re)built only in the water stage's list sub-state, in pieces, into private buffers installed at its end; the stage keeps references to the list it built or found valid; an invalidation during the build (an epoch counter) leaves the list invalid for the next pass. b2PiecesEnv "R5": a terrain change in the diffusion keeps the stage's list, the next pass rebuilds it |
+| review 1 R6 (proof against today's code) | `tests/sim/exact/crimeOriginal.ts`, `pollutionOriginal.ts` (41ae570, frozen): b2PiecesEnv compares every original field at every pass end, at production and random piece sizes, across network, building, landfill, tree, park, terrain and funding edits; `passdigest --mode atomic` B vs W on dense1m, bot256 and three env cities generated with B's code (a river, a lake, a landfill with a road and one without, every garbage / emitter / spill kind, trees, parks, building states), each with and without WP1 (17.3) |
+| review 1 R8 (other code of the same city between pieces) | b2PiecesEnv "R8": after every piece, traffic `findPath` and `stopAttached` / `freightRailCells` with the attachment forced dirty; pollution `garbageInfo`, `emissionOf`, `incineratorShare`, `landfillInfo`, `garbageSummary`, `roadlessGarbage`; crime `termsOf`; utilities `waterQualityAt` / `gridInfo`; services `needRaster`; an emergency `probe`; another city's `blur3` / `upsampleAdd` (the blur module's scratch and tables): same digests as without them |
+| review 1 O3, O4, O5, O6, O8 | `stepCost` reads cursors and sizes only (a field program: O(its ops)); b2PiecesEnv "O4" (the stepName sequence and the digests with frames active and headless); `withPieceScale`, seeded random scales; the G1 harness digests; `stepIdx < 0` resets every cursor (`resetPieces`) before the first piece in both systems (crime treated 0 and −1 alike pre-B2) |
+| review 1 O10 | pollution's `ground` is still not reset on a same-size `replaceState` (`ensureCells` reallocates on a size change only, as pre-B2) |
+| review 2 item 1 (cold sizes) | R2 "Crime and pollution as built": half `INFRA_PIECE_COLD_MS`, the cold cell and Building floors, one chunk plan per pass |
+| review 2 item 3 (windows from load; edits) | measured `--warm 0 --days 220` per window and the edit and disaster scenario (17.4) |
+| review 2 item 3d (kernels by rows) | blur3, blurDown's downsample, upsampleAdd, saturate and `noiseBuffer` run by rows (field programs); airFar's saturate is several pieces |
+| review 2 item 4 (warm cost error) | the refit of the coefficients that size no piece (`7972d25`), checked warm on dense1m and bot256 (17.4) |
+| review 2 item 5a (publish pieces) | crime's mix in row pieces into `next`, published by `.set()`; every pollution layer likewise |
+| review 2 item 5d (flags) | crime, garbApply and flags push candidates (the buildings whose bits flip, with the wanted bits) in their chunks; the publish piece applies them in snapshot order (pre-B2's `changed` list) |
+| review 2 item 5e (lazy caches) | traffic's pending attachment refresh runs in a pollution piece of its own (srcCells, before `freightRailCells`), as G2 |
+| review 2 item 5f (largest indivisible items) | 17.4 |
+
+Not applied: R1–R3 (traffic, G1), R7a (utilities' j10 test, G4), O1 / O2 / O7 / O9 / O11 / O12 (no crime or pollution part), review 2 item 2 (the Building-shape fix is outside B2's files; §14 item 4).
+
+### 17.2 Deviations from §5–§6, and why
+
+- **Kernels by rows, not one call per piece** (§5 SP1..SP6, §6 AN / AF / NO / WA): a single kernel call ran at up to 22× cold (review 2 item 3d), so blur3, the downsample, upsampleAdd, saturate and `noiseBuffer` run in row ranges. `Blur3Run` keeps a `BoxVRun` of its own; `upsampleAddRows` rebuilds the module's interpolation tables when other code changed them (a pure cache).
+- **Field programs** (§6 as built): the cell and blur work of a stage is a list of ops run in row / unit ranges, a piece continuing across ops while its sizing fits; one mechanism for ten stages instead of a sub-state per call. Each program is built in a piece of its own (the stage's conditions are read there, once per stage).
+- **The landfill scan's labels and regions are built privately** and swapped in at GS_END (§6 said "the landfill-scan setup" only): `landfillInfo` reads them between pieces (R7). `roadless` likewise.
+- **The water list is built in pieces** (§6 WA4 "ensureWaterList when invalid"): it runs on most passes of a growing city (terrain levelling), O(C) with JS-array bank lists.
+- **airFar's and noise's saturate and the soil stock run on private copies** published by `.set()` (§6 had the saturate as the publish piece, FL0 as one piece): split by rows, a saved layer must still change once.
+- **One snapshot plan per pollution pass for all its building stages** (and the route scatter), at the Building floor + stageA's 41 ns per footprint cell; crime's at the floor + 63 ns. The estimates use each stage's own coefficients.
+- **Candidate lists for flags** (R7 "a desired-value array or a list of the buildings whose bit changes"): the list.
+- **R7 exceptions added:** `prodById` / `reasonById` (only `garbageInfo` reads them) written in place by the building chunks, like `airById`; `garbageSummary()` written by three states, as pre-B2.
+- **The WASM sections and blurSim run against the frozen classes** (§11.6 as built) instead of being skipped.
+
+### 17.3 Exactness evidence
+
+- `tests/infra/b2PiecesEnv.test.ts` (16 tests): `Blur3Run`, `downsampleRows`, `upsampleAddRows` in random row ranges equal blur3, blurDown's downsample and upsampleAdd, with other blurs and upsamplings (other keys of the module tables) between the pieces; three env cities (48 infra only, 64 every system, 96 infra only) give identical cities and crime / pollution fields at every pass end in one go, at the production size and in tiny / random pieces, across network, landfill (dezoned and built-over cells: the brownfield and fill-reset paths), tree, park, terrain (the water list), building, fire and funding edits; production and random pieces equal the frozen originals in every original field; the edits reach every branch (brownfield, fill reset, a BFS rerun, a water-list rebuild, the tree program, the spill venues); R8, R7, R9, O4, two cities interleaved, review 1 R5, every piece estimate within budget.
+- `tests/wasm/fieldPasses.test.ts` (the field-pass port against the frozen pollution class) and `tests/wasm/blurSim.test.ts` (the wasm blur against JS on the frozen pollution and crime passes): pass.
+- `passdigest --mode atomic`, B vs W, digests at days 30 and 100 (G3's `passdigestE.ts`: G2's digests + the pollution internals — per-id garbage arrays, shares, regions, the water list, ground water, the noise buffer, tree belts, the source fields — and crime's raw field): dense1m, bot256, and `env96_s7`, `env128_s11`, `env64_s5` (`envCity`, generated with B's code), each with and without WP1. All 16 checkpoints identical, at `7452227` and again at `2fc45f0` (dense1m, env128). The step counts differ by design: at dense1m by day 100, crime 15 steps in B and 2,221 pieces in W, pollution 80 and 6,728.
+
+### 17.4 Measurements (dense1m, headless, wall clock)
+
+Tool: `b2work/G3-crime-pollution/cpumapE.ts` (G2's cpumap: crime and pollution labelled by `stepName` in W and by state in B), `--noinputs`; `editmapE.ts` (G2's edit and disaster scenario). One timing-lock hold (`timed.py`; other processes averaged 0.055 cores, peak 2.16), B and W interleaved, B first on odd pairs: from load (`--warm 0 --days 220`) 5 runs per side; warm (`--warm 300 --days 120`) 3 per side on dense1m and on bot256; the edit scenario 3 per side. Per run, the p99 and the max of the task's steps; the tables give the median over runs, and the worst run's max in brackets. W is `2fc45f0`. (A first formal hold at `7972d25`, half the cold budget for every loop, had crime's mix at 3–4 ms and its building chunks at up to 4.6 ms on the first two passes, and pollution's cell programs at 2–5 ms on the first pass, in a hold with other processes at 0.27 cores: `2fc45f0` quartered those budgets.)
+
+**Crime and pollution steps, all states** (ms):
+
+| window | task | B p99 | B max | W p99 | W max | W max, worst run | W max without GC, worst run | W steps > 3 / > 5 ms (all runs) |
+|---|---|---|---|---|---|---|---|---|
+| days 0–20 | crime | 15.05 | 15.05 | 0.47 | 1.26 | 4.45 | 4.45 | 1 / 0 |
+| days 0–20 | pollution | 18.12 | 18.12 | 0.45 | 1.28 | 2.04 | 2.04 | 0 / 0 |
+| days 20–80 | crime | 18.40 | 18.40 | 0.21 | 1.00 | 1.47 | 1.19 | 0 / 0 |
+| days 20–80 | pollution | 11.86 | 11.86 | 0.36 | 1.81 | 3.58 | 3.20 | 2 / 0 |
+| days 80–220 | crime | 16.75 | 16.75 | 0.16 | 1.30 | 2.04 | 0.49 | 0 / 0 |
+| days 80–220 | pollution | 17.89 | 17.89 | 0.17 | 2.16 | 2.50 | 2.11 | 0 / 0 |
+| warm, days 300–420 | crime | 3.83 | 3.83 | 0.05 | 0.31 | 0.50 | 0.50 | 0 / 0 |
+| warm, days 300–420 | pollution | 5.14 | 5.14 | 0.08 | 1.28 | 2.09 | 1.28 | 0 / 0 |
+| bot256 warm | crime | 3.57 | 3.57 | 0.06 | 0.31 | 0.31 | 0.31 | 0 / 0 |
+| bot256 warm | pollution | 10.34 | 10.34 | 0.09 | 1.83 | 1.87 | 1.44 | 0 / 0 |
+
+W p99 ranges over its runs: crime 0.26–0.49, 0.19–0.28, 0.15–0.21, warm 0.04–0.06, bot256 0.05–0.07; pollution 0.44–0.60, 0.27–0.38, 0.15–0.18, warm 0.07–0.08, bot256 0.07–0.09. No W crime or pollution step exceeded 5 ms in any run; the three above 3 ms are a crime building chunk of the first pass after the load (day 18, 4.45 ms, one run) and two single pollution pieces in days 20–80 (airFar's coarse blur 3.20 ms, a stageA chunk 3.58 ms with a GC pause in it). The all-task p99 of W's runs is 1.97, 1.15 and 0.50 ms per window (B 32.8, 29.5, 18.0); its max (13.0, 14.4, 11.1 ms) is utilities' (G4).
+
+**Cost error** (median of estimate / measured − 1, per run; median, range, and B): crime warm −0.03 (−0.14…+0.07; B +0.16), bot256 warm −0.21 (−0.22…−0.10; B +0.02), days 0–20 −0.84, 20–80 −0.39, 80–220 −0.10 (B −0.87, −0.48, +0.06); pollution warm −0.12 (−0.15…−0.09; B +0.16), bot256 warm −0.22 (−0.22…−0.08; B −0.09), days 0–20 −0.83, 20–80 −0.20, 80–220 −0.13 (B −0.85, −0.34, +0.06). The warm gate (±30 %, per task) holds on both fixtures; the cold windows are reported only (§9.5).
+
+**Busy-time-weighted p99 of W** (median over runs): crime 1.26, 1.00, 1.30 ms per window from load, 0.30 warm, 0.27 bot256; pollution 1.28, 1.81, 1.98, 0.50, 1.81.
+
+**The edit and disaster scenario** (dense1m, `--warm 30 --gap 30`; the steps of the 10 days from each edit):
+
+| edit (10 days) | crime B steps | B p99 | B max | W steps | W p99 | W max | pollution B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| bld | – | – | – | – | – | – | 6 | 20.69 | 20.69 [22.92] | 518 | 0.07 | 0.32 [1.33] |
+| meteor | – | – | – | – | – | – | 5 | 5.08 | 5.08 [5.48] | 594 | 0.18 | 0.62 [1.58] |
+| quake | 3 | 3.01 | 3.01 [3.53] | 378 | 0.12 | 0.51 [1.98] | 4 | 3.85 | 3.85 [4.67] | 9 | 0.21 | 0.21 [0.35] |
+| road | – | – | – | – | – | – | 4 | 11.56 | 11.56 [12.85] | 716 | 0.44 | 1.32 [1.33] |
+| unroad | 3 | 4.62 | 4.62 [5.54] | 444 | 0.12 | 0.20 [0.35] | 4 | 3.04 | 3.04 [4.35] | 767 | 0.09 | 0.31 [0.34] |
+
+(– : no pass of the task in that edit's 10 days.) W's longest steps there: 1.98 ms `spread.blur` (crime, quake + 9 d), 1.58 ms `garbSrc` (meteor + 7 d), 1.33 ms `noise` (bld + 5 d) and `garbApply` (road + 7 d).
+
+**Pieces and cadence** (medians over runs): from load (220 days) crime 10 passes in W (10 in B) in 4,443 pieces (30 steps), 0.49 real ms a day (B 0.52; by window 0.41–1.07, B 0.43–0.88); pollution 17 passes in W (11 in B) in 14,297 pieces (109 steps), 2.06 ms a day (B 1.59; by window 1.69–3.17, B 1.16–3.32). Warm (120 days): crime 6 passes (6), 0.28 real ms a day (0.25); pollution 10 passes (6), 1.41 real ms a day (0.74). At dense1m a crime pass is about 445 pieces and a pollution pass about 840. Pollution runs its full cadence (its 12-day period) in W: its estimates are honest, so the day budget buys it; per pass W spends about 17 real ms (B about 15 ms in 10 steps). G4 sets the final budget (§9.4).
+
+**Per state, before (B) and after (W)** (median over runs of each run's p99 / max; worst run's max in brackets):
+
+| crime, days 0–20 | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| sources | 1 | 15.05 | 15.05 [18.24] | 196 | 0.38 | 1.20 [4.45] |
+| spread | 1 | 1.64 | 1.64 [3.08] | 68 | 0.56 | 0.56 [1.74] |
+| flags | – | – | – | 168 | 0.06 | 0.09 [1.61] |
+| pollution, days 0–20 | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| garbSrc | 1 | 8.44 | 8.44 [9.67] | 93 | 1.14 | 1.14 [1.60] |
+| garbRoute | 1 | 9.40 | 9.40 [12.37] | 168 | 0.45 | 0.49 [0.55] |
+| garbApply | 1 | 9.01 | 9.01 [10.64] | 90 | 0.19 | 0.19 [1.20] |
+| srcBld | 1 | 18.12 | 18.12 [24.06] | 88 | 1.23 | 1.23 [2.04] |
+| srcCells | 1 | 8.07 | 8.07 [10.37] | 20 | 0.74 | 0.74 [1.23] |
+| airNear | 1 | 6.47 | 6.47 [11.89] | 68 | 0.17 | 0.17 [0.26] |
+| airFar | 1 | 7.26 | 7.26 [8.62] | 49 | 0.06 | 0.06 [0.13] |
+| noise | – | – | – | 86 | 0.09 | 0.09 [0.21] |
+| water | – | – | – | 90 | 0.26 | 0.26 [0.33] |
+| flags | – | – | – | 89 | 0.42 | 0.42 [0.95] |
+| crime, days 20–80 | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| sources | 2 | 18.40 | 18.40 [25.19] | 392 | 0.26 | 0.89 [1.47] |
+| spread | 2 | 3.05 | 3.05 [4.33] | 136 | 0.07 | 0.09 [0.16] |
+| flags | 3 | 4.54 | 4.54 [5.58] | 372 | 0.11 | 0.29 [1.19] |
+| pollution, days 20–80 | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| garbSrc | 3 | 5.88 | 5.88 [8.25] | 465 | 0.30 | 0.44 [1.81] |
+| garbRoute | 3 | 4.52 | 4.52 [14.11] | 840 | 0.15 | 0.21 [1.52] |
+| garbApply | 3 | 9.94 | 9.94 [14.28] | 450 | 0.15 | 0.18 [1.11] |
+| srcBld | 3 | 2.45 | 2.45 [26.43] | 440 | 0.57 | 1.41 [3.58] |
+| srcCells | 3 | 6.50 | 6.50 [11.11] | 100 | 0.49 | 0.49 [0.72] |
+| airNear | 3 | 3.00 | 3.00 [5.66] | 340 | 0.09 | 0.13 [0.17] |
+| airFar | 2 | 1.51 | 1.51 [2.66] | 245 | 0.11 | 0.24 [3.20] |
+| noise | 3 | 8.19 | 8.19 [9.58] | 406 | 0.10 | 0.21 [1.75] |
+| water | 3 | 7.28 | 7.28 [8.01] | 360 | 0.08 | 0.97 [2.14] |
+| flags | 3 | 10.10 | 10.10 [11.86] | 356 | 0.12 | 0.19 [2.86] |
+| crime, days 80–220 | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| sources | 7 | 16.75 | 16.75 [23.97] | 1375 | 0.19 | 1.30 [2.04] |
+| spread | 7 | 2.30 | 2.30 [2.44] | 476 | 0.07 | 0.10 [0.24] |
+| flags | 7 | 3.53 | 3.53 [5.41] | 1260 | 0.06 | 0.22 [0.33] |
+| pollution, days 80–220 | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| garbSrc | 7 | 5.52 | 5.52 [5.96] | 1023 | 0.17 | 1.53 [2.31] |
+| garbRoute | 7 | 8.54 | 8.54 [11.18] | 1848 | 0.07 | 0.26 [2.11] |
+| garbApply | 7 | 8.58 | 8.58 [10.08] | 990 | 0.14 | 1.10 [2.16] |
+| srcBld | 7 | 17.89 | 17.89 [19.67] | 968 | 0.34 | 1.53 [2.50] |
+| srcCells | 7 | 0.94 | 0.94 [1.13] | 220 | 0.10 | 0.18 [0.35] |
+| airNear | 7 | 3.01 | 3.01 [3.81] | 748 | 0.08 | 0.15 [0.23] |
+| airFar | 8 | 2.22 | 2.22 [2.74] | 539 | 0.09 | 0.25 [1.75] |
+| noise | 8 | 3.85 | 3.85 [4.59] | 970 | 0.09 | 0.36 [1.38] |
+| water | 8 | 3.27 | 3.27 [3.74] | 1080 | 0.08 | 0.23 [0.31] |
+| flags | 7 | 9.00 | 9.00 [14.41] | 1068 | 0.12 | 0.29 [1.31] |
+
+| crime, warm, days 300–420 | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| sources | 6 | 3.83 | 3.83 [12.54] | 1181 | 0.06 | 0.31 [0.50] |
+| spread | 6 | 2.20 | 2.20 [2.33] | 408 | 0.06 | 0.07 [0.08] |
+| flags | 6 | 0.59 | 0.59 [0.63] | 1079 | 0.02 | 0.05 [0.07] |
+| pollution, warm, days 300–420 | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| garbSrc | 6 | 1.05 | 1.05 [2.86] | 931 | 0.15 | 0.41 [0.50] |
+| garbRoute | 6 | 1.17 | 1.17 [1.30] | 1682 | 0.04 | 0.10 [0.10] |
+| garbApply | 6 | 1.11 | 1.11 [1.25] | 901 | 0.05 | 0.08 [0.18] |
+| srcBld | 6 | 3.30 | 3.30 [18.28] | 881 | 0.07 | 0.10 [2.09] |
+| srcCells | 6 | 0.68 | 0.68 [0.98] | 200 | 0.09 | 0.10 [0.13] |
+| airNear | 6 | 2.64 | 2.64 [2.92] | 680 | 0.08 | 0.22 [0.32] |
+| airFar | 6 | 2.15 | 2.15 [2.43] | 490 | 0.09 | 0.13 [0.38] |
+| noise | 6 | 4.02 | 4.02 [5.14] | 860 | 0.08 | 0.20 [0.34] |
+| water | 7 | 3.13 | 3.13 [3.20] | 900 | 0.08 | 0.15 [0.36] |
+| flags | 6 | 1.26 | 1.26 [1.38] | 863 | 0.06 | 0.28 [1.28] |
+
+| crime, bot256 warm | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| sources | 6 | 2.75 | 2.75 [3.57] | 948 | 0.06 | 0.28 [0.31] |
+| spread | 6 | 1.71 | 1.71 [2.46] | 408 | 0.07 | 0.11 [0.31] |
+| flags | 6 | 0.62 | 0.62 [3.70] | 858 | 0.02 | 0.13 [0.16] |
+| pollution, bot256 warm | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| garbSrc | 7 | 1.18 | 1.18 [1.52] | 740 | 0.18 | 1.44 [1.87] |
+| garbRoute | 6 | 0.98 | 0.98 [1.33] | 1310 | 0.05 | 0.17 [0.22] |
+| garbApply | 6 | 10.34 | 10.34 [12.69] | 699 | 0.06 | 0.19 [1.83] |
+| srcBld | 6 | 2.54 | 2.54 [2.67] | 630 | 0.07 | 0.13 [0.18] |
+| srcCells | 6 | 1.67 | 1.67 [2.95] | 428 | 0.12 | 0.18 [0.18] |
+| airNear | 7 | 1.68 | 1.68 [2.75] | 612 | 0.08 | 0.16 [0.16] |
+| airFar | 7 | 1.41 | 1.41 [2.38] | 441 | 0.09 | 0.10 [1.16] |
+| noise | 7 | 3.40 | 3.40 [4.37] | 1046 | 0.08 | 0.53 [0.69] |
+| water | 7 | 2.36 | 2.36 [3.68] | 1251 | 0.07 | 0.14 [0.29] |
+| flags | 7 | 1.41 | 1.41 [1.71] | 713 | 0.14 | 0.26 [0.29] |
+
+**The largest items** (review 2 item 5f; the max over all W runs of each piece kind from load, steps that overlap a GC pause left out):
+
+| label | 0–20 | 20–80 | 80–220 |
+|---|---|---|---|
+| crime `sources.bld` | 4.45 | 0.89 | 0.49 |
+| crime `spread.blur` | 1.74 | 0.14 | 0.12 |
+| pollution `srcBld.bld` | 2.04 | 2.13 | 0.86 |
+| pollution `airFar.blur` | 0.03 | 3.20 | 0.12 |
+| pollution `flags.events` | 0.14 | 2.86 | 0.14 |
+| pollution `water.up` | 0.07 | 2.14 | 0.24 |
+| pollution `garbRoute.scat` | 0.06 | 1.18 | 2.11 |
+| pollution `garbApply.left` | 0.06 | 0.09 | 1.97 |
+| pollution `garbSrc.start` (the day's first `buildingList` rebuild) | 1.60 | 0.60 | 0.44 |
+| pollution `garbSrc.plan` | 1.41 | 0.13 | 0.33 |
+| pollution `srcCells.cells` | 1.23 | 0.72 | 0.35 |
+
+The indivisible items stay small (all W runs, no GC): the snapshot take (`sources.snap` / `garbSrc.snap`, one `buildingList` + copy) at most 0.70 ms, traffic's attachment refresh in its own pollution piece (`srcCells.attach`) 0.18 ms (1.5 ms in the first formal hold, under load), the publish pieces (`garbSrc.end`, `garbApply.publish`, `flags.publish`) at most 0.16 ms, the landfill fill + display (`garbApply.lf`) 0.06 ms at dense1m; the water-list rebuild pieces at most 0.10 ms.
+
+**The bot** (128 × 15, seed 7, `tools/balance-json.ts`, W `2fc45f0`): 2015 population 194,947, approval 80.5, `totalMsPerDay` 7.10. B1's reference is 196,101; G1 gave 193,525, G2 193,577. The results move by design through the schedule (the headless schedule follows the estimates); G4 records the new hashes.
+
+### 17.5 Notes for G4
+
+- **The field-program pattern** (pollution) fits any stage whose work is a fixed sequence of cell loops and kernel calls: ops with a unit count and a µs per unit, a piece running ops while its sizing fits, `cost()` walking the same ranges. Utilities' fills, labels and result writes could reuse it.
+- **A quarter of `INFRA_PIECE_COLD_MS` for the rarest passes.** Crime (every 20 days) and pollution's cell work ran their first passes after a load at 150–300 ns per cell: at half the cold budget their pieces reached 3–5 ms. Utilities' passes are frequent (every few days); emergency response's 90-day period is rarer than crime's.
+- **Keep sizing and estimate apart** (as G2): the chunk plans have their own constants (`CR_PLAN_*`, `PLAN_*`), so the refit moved no boundary; check it by the atomic passdigest's step counts.
+- **The frozen originals** (`crimeOriginal.ts`, `pollutionOriginal.ts`) keep the WASM field-pass sections and blurSim running; the bench tools that install field passes into a live `PollutionSystem` (`tools/bench/fieldPasses/insitu.ts`, `capture.ts`) need them too.
+- **Tools** (in `scratchpad/b2work/G3-crime-pollution/`): `cpumapE.ts`, `editmapE.ts` (G2's, rebundled), `passdigestE.ts` (+ the pollution / crime internals), `genfxE.ts` (env cities from B's code), `anE.py` (windows, tables, cost error, busy p99, cadence, per label), `formal2.sh` (the formal hold).
