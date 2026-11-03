@@ -109,8 +109,9 @@ async function settleDialog(page) {
   await page.waitForFunction(() => {
     const m = [...document.querySelectorAll('.modal')].find((e) => e.querySelector('h2')?.textContent === 'The simulation stopped');
     if (!m) return false;
-    // a looping animation (a button's shimmer) never finishes: only the ones that end count
-    const busy = document.getAnimations().some((a) => { const t = a.effect?.target; return a.effect?.getTiming?.().iterations !== Infinity && t instanceof Element && (t.contains(m) || m.contains(t)); });
+    // still running, and one that ends: a looping animation (a spinner) never finishes, and a finished one with fill
+    // 'both' (the modal's pop) stays in getAnimations()
+    const busy = document.getAnimations().some((a) => { const t = a.effect?.target; return a.playState !== 'finished' && a.effect?.getTiming?.().iterations !== Infinity && t instanceof Element && (t.contains(m) || m.contains(t)); });
     return !busy && Number(getComputedStyle(m).opacity) === 1;
   }, null, { timeout: 30000, polling: 250 }).catch(() => log('the crash dialog was still animating after 30 s'));
   await sleep(500);
