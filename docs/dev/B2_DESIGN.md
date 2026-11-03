@@ -652,7 +652,7 @@ No fixture has P&R garages.
 
 **As built (G4).**
 - `sub` numbers the pieces of the whole pass (25 sub-states inside the six `U_*` states); `stepName` is `<state>.<piece>`, e.g. `power.sum#12`. One snapshot per pass with one chunk plan (the cold Building floor + 20 ns per footprint cell) for all six building stages; every piece at half `INFRA_PIECE_COLD_MS`, with the cold cell floor for the cell loops.
-- UU0 is `S_START` (ensure, the effects, the plant efficiency and prepareUses' per-pass values; the dirty flags and the `added` / `removed` swap, R5). The jobs check (`detectJobsUnknown`) moved into the snapshot piece, where the day's first `buildingList` rebuild falls (a pure function of the buildings). The sea mask is its own piece, taken unconditionally (pre-B2 took it at the first working water producer; a pure, checksummed cache). The treatment prefix scan runs by building ranges of a quarter of the Building floor (it reads a DefInfo and two fields), not by plan chunks.
+- UU0 is `S_START` (ensure, the effects, the plant efficiency and prepareUses' per-pass values; the dirty flags and the `added` / `removed` swap, R5). The jobs check (`detectJobsUnknown`) moved into the snapshot piece, where the day's first `buildingList` rebuild falls (a pure function of the buildings). The sea mask is taken unconditionally (pre-B2 took it at the first working water producer; a pure, checksummed cache), in pieces: the checksum by cell ranges and, after a water edit, the rebuild (`terrainMasks.SeaMaskRun`, 18.2). The treatment prefix scan runs by building ranges of half the Building floor (it reads a DefInfo and two fields), not by plan chunks.
 - The publish pieces are the last piece of their loop: the uses' last chunk swaps the producers, posts the nuclear news and runs `patchPower`; a label's last piece swaps the labels; the sums' last chunk `.set()`s the per-component sums (and, for water, the per-id networks `bWComp` and the intake pollution) from private buffers and runs the rest of pre-B2's sums step; the zoned loop's last piece `.set()`s `st.powered` / `st.watered` from private layers. `.set()` of the `[0, nc)` range rather than a swap keeps the arrays' tails (beyond `nc`) exactly as pre-B2, so the frozen-original comparison holds field by field.
 - Finish: the building chunks collect the candidates (snapshot index and the wanted bits of each building whose Powered / Watered bit flips) and run the cooling-water result and the cut tally (both read only state that the pass does not change between the chunk and the apply); one piece applies the flags (review 1 R4d); the events follow in batches, their last piece posts the news and `layerUpdated`.
 - U_WATER's mid-pass relabel check runs at its first piece (as pre-B2's step); `dirtyWater` is consumed at the first piece of a water label (R5), so an edit during the label relabels again at U_WATER.
@@ -972,7 +972,7 @@ New: save in the middle of every task's pass, with tiny pieces so that every tas
 | `tests/infra/emergencyBot.test.ts` EM-1 normal play (G3) | the towns run 5 years instead of 4 (seed 2: 3 prompts) | G3's pieces left every seed 1–16 at 0 or 1 prompt in 4 years |
 | `tests/sim/exact/j10.test.ts` (G4) | the city-days test compares at day ends (every utilities pass ends within its day on these tiny cities) with the B2 fields excluded by name, the scheduler fields that follow the estimates excluded (credit, carry, estMs, estSpent, lastDayCost), and the step trace kept at the state transitions (day, due, urgent, state) without the estimates; the edge test runs whole passes between its edits | review 1 R7a: one step is one piece; the trace's per-step costs are recalibrated by design |
 | `tests/infra/emergency.test.ts` 'emergency perf' (G4) | the `respCost` loop covers every sub-state (`respStep` −1…4 × `respSub` 0…3); every response piece ≤ 0.5 estimated ms | §8 |
-| `tests/infra/perf.test.ts` P0-8 / P0-15 (G4) | utilities' largest piece estimate ≤ 1.0; P0-15 re-baselined to ≤ 1.02 (0.996) | the step guard no longer ends a day before its budget is spent (§18) |
+| `tests/infra/perf.test.ts` P0-8 / P0-15 (G4) | utilities' largest piece estimate ≤ 1.0; P0-15 re-baselined to ≤ 1.02 (0.996 at the budget 5.3, 0.994 at the final 4.6) | the step guard no longer ends a day before its budget is spent (§18) |
 
 ### 11.6 The WASM ports: a decision for the lead
 
@@ -1597,7 +1597,7 @@ The indivisible items stay small (all W runs, no GC): the snapshot take (`source
 
 ## 18. G4 as built (`G4-utilities-emergency-recalibration`, Nov 3)
 
-**Commits** (branch `b2-step-split`, on G3's `e5a1e81`): `618f15c` utilities in pieces (the frozen `utilitiesOriginal.ts`, the j10 adaptation), `a34b5d2` the emergency response in pieces (the frozen `emergencyOriginal.ts`, the `respCost` loop over the sub-states), `dc6b826` `tests/infra/b2PiecesInfra.test.ts` and `tests/infra/infraCity.ts`, `ee298e9` the chunk sizes apart from the estimates, the warm refit, the treatment scan by building ranges, `be73ef4` the step guard 256 → 4096, the final day budget (5.3), P0-15, `99690b9` the bot's new hashes (the `b2` rows) with this document's first G4 sections, `0f51b6d` a second utilities refit and `1983efe` its revert (18.2), then this document. `npx tsc --noEmit` clean; the full `npx vitest run` at `be73ef4` (2 workers, low priority, outside the timing lock: the lock queue held other workers' runs for most of the afternoon): 138 files passed, 1 skipped (1,418 tests passed, 18 skipped), no unhandled errors.
+**Commits** (branch `b2-step-split`, on G3's `e5a1e81`): `618f15c` utilities in pieces (the frozen `utilitiesOriginal.ts`, the j10 adaptation), `a34b5d2` the emergency response in pieces (the frozen `emergencyOriginal.ts`, the `respCost` loop over the sub-states), `dc6b826` `tests/infra/b2PiecesInfra.test.ts` and `tests/infra/infraCity.ts`, `ee298e9` the chunk sizes apart from the estimates, the warm refit, the treatment scan by building ranges, `be73ef4` the step guard 256 → 4096, the final day budget (5.3), P0-15, `99690b9` the bot's new hashes (the `b2` rows) with this document's first G4 sections, `0f51b6d` a second utilities refit and `1983efe` its revert (18.2), `0bd0337` / `d409f1a` this document's measurements and the report, `d8fd0b9` the sea mask in pieces and `180f8a6` its rebuild's cold sizing (18.2; found by the locked edit scenario), `d8f4669` the `b2` rows re-recorded at `180f8a6`, `09b55fd` the labels sized for cold code, `2d2940a` the final day budget 4.6 (18.5), `2db4097` the `b2` rows at the final code, then this document. `npx tsc --noEmit` clean; the full `npx vitest run` at the final code (`2d2940a`; 2 workers, low priority, outside the timing lock: the lock queue held other workers' runs for most of the afternoon): 139 files passed, 1 skipped (1,429 tests passed, 18 skipped), no unhandled errors (at `be73ef4`: 138 files, 1,418 tests).
 
 ### 18.1 Review items applied
 
@@ -1609,7 +1609,7 @@ The indivisible items stay small (all W runs, no GC): the snapshot take (`source
 | review 1 R8 (other code of the same city between pieces) | b2PiecesInfra "R8": utilities `gridInfo`, `waterInfo`, `waterQualityAt`, `plantLoad`, `producerInfo`, traffic `findPath` and `stopAttached` / `freightRailCells` with the attachment forced dirty, pollution `garbageInfo` / `incineratorShare`, services `needRaster`, an emergency `probe` after every utilities piece; emergency `probe` (dispatch searches, which run the lazy station / graph / siren refreshes themselves), `stationList`, traffic `findPath` after every response piece: same results as without them |
 | review 1 R9 | utilities: a save in the middle of a pass holds no pass state, loads idle, loads the same twice; emergency: the saved key set is unchanged mid-sequence, a load starts idle (`p.resp` as pre-B2) |
 | review 1 O3, O4, O5, O8, O9 | `stepCost` / `respCost` read cursors and sizes only (O(1)); utilities "O4" (the piece sequence and the digests with frames active and headless); `withPieceScale`, seeded random scales; `stepIdx < 0` resets every utilities cursor, `init()` and the epoch restart reset every response cursor (`resetRespPieces`); the test passes assert their end |
-| review 2 item 1 (cold sizes) | utilities at half `INFRA_PIECE_COLD_MS`, the response sequence at a quarter, both with the cold cell and Building floors |
+| review 2 item 1 (cold sizes) | utilities at half `INFRA_PIECE_COLD_MS`, the response sequence at a quarter, both with the cold cell and Building floors; the code that runs rarely (a full relabel, the sea mask's rebuild) sized for its interpreted speed (18.2) |
 | review 2 item 3 (windows from load; edits) | measured `--warm 0 --days 220` per window and the edit and disaster scenario (18.4) |
 | review 2 item 4 (warm cost error) | the warm refit (`ee298e9`); the cost error per task on the warm windows (18.4) |
 | review 2 item 5c (ES0) | the start in pieces: the moved graph's signature by node ranges (cached for `ensureGraph`), the station scan, the siren times into a private buffer (§8 as built) |
@@ -1622,82 +1622,106 @@ Not applied: R1–R5 (traffic / services / pollution, G1–G3), O10 / O11 (no ut
 ### 18.2 Deviations from §7–§9, and why
 
 - **`STEP_GUARD` 256 → 4096** (§2.1 said 256). At 256, the ~470 pieces of a dense1m utilities pass ended 72 of 100 days after ~3 of the 5.3 estimated ms (the guard, not the budget, decided the day), and an urgent pass needed two days. 4096 pieces of the smallest estimate are above a day's budget, so the budgets bind.
-- **`INFRA_DAY_BUDGET` stays 5.3** (§9.4 item 2 asked for W's real infra ms per day to match B's). The match needs about 3.0–3.2 with B2's estimates, and at 3.2 the services pass, the largest, ran 0–1 times in 120 days (B: 3); at 4.2 dense1m's traffic fell from 5 to 3 cycles. Only 5.3 keeps every task at B's cadence or above (18.5). The balance runs check the time (`totalMsPerDay` ≤ baseline + 3, 18.6).
+- **`INFRA_DAY_BUDGET` 4.6, `INFRA_DAY_CARRY` 0.87, `CREDIT_FLOOR` 5.75** (§9.4 item 2 asked for W's real infra ms per day to match B's; G1's provisional values were 5.3 / 1.0 / 6.5). The match needs about 3.0–3.2 with B2's estimates, and at 3.2 the services pass, the largest, ran 0–1 times in 120 days (B: 3). G4 first kept 5.3, the only value that kept every task at B's cadence; but the balance's `totalMsPerDay` then ran +2.5 to +3.4 over B on seed 7 in three side-by-side measurements, two above the gate's +3. Under one timing-lock hold (B and W at 5.3 / 4.6 / 4.2 side by side) 4.6 gave +1.42 with every seed-7 gate passed, 4.2 +1.04 with the population at 0.84 × B1 (a fail). At 4.6 every task runs at B's cadence or above per 360 days but dense1m's traffic, 10 cycles instead of 13: the slower traffic §9.4 item 4 expected (18.5). The carry and the floor scale with the budget (× 1.44 of pre-B2's 0.6 / 4).
+- **The labels are sized for cold code** (`09b55fd`: `US.label` 0.007 → 0.035 µs per unit, ~1,860 units per piece). Every hold showed a full relabel's first pieces (days 24 and 48 after a load) at 1.3–2.4 ms, 20–30 × their estimate, until the JIT caught up after five or six pieces; the estimate stays the warm one.
 - **ES0's last part is folded into the siren times' last piece**, and the moved graph's signature is cached by graph object and version instead of being an `ensureGraph` sub-step; `ensureGraph`, `refreshStations` and `ensureTimes` keep their synchronous code for dispatch.
-- **The sea mask is its own piece, taken unconditionally**, and the jobs check sits in the snapshot piece (both pure, cached or early-exit functions; §7 as built).
+- **The sea mask runs in pieces of its own, taken unconditionally** (`terrainMasks.SeaMaskRun`, `d8fd0b9` / `180f8a6`; `terrainMasks.ts` is outside §7's file list), and the jobs check sits in the snapshot piece (a pure early-exit function; §7 as built). The locked edit scenario showed `uses.sea` at 12.2–12.6 ms after the meteor: the water layer changed, the masks' checksum missed and terrainMasks rebuilt them (the distance BFS, the water components) in one call. SeaMaskRun runs `build()`'s loops in its order: the checksum by cell ranges against the cache (a hit returns the cached mask, as `masks()`), on a miss a private copy of the water layer (one piece), the shore scan (fused with the copy's checksum), the depth BFS, the all-water fix-up, the components and the sea marking, then the result goes into the cache as `build()` would put it (unless another caller replaced the entry meanwhile). With nothing in between it returns exactly `seaMask(st)` and leaves the same cache; a water edit between two pieces of a rebuild gives the masks of the water at the copy, and the next pass's checksum misses. The checksum keeps the cell floor (it runs every pass); the rebuild runs once per water edit, cold (interpreted at first: 0.03–0.09 µs per unit at dense1m, a 16k-cell scan piece took 1.5 ms), so it has its own size (`US.seaBuild` 0.05 µs per unit, ~1,300 units per piece) and estimate (0.03 µs per unit, the copy 0.003 µs per cell).
 - **The treatment prefix scan runs by building ranges** at half the Building floor (it reads a DefInfo and two fields), not by plan chunks; at a quarter its first pieces after a load ran at ~3 µs per building (4.1 ms).
 - **Sums are published by `.set()` of `[0, nc)`, not by a swap**, so the arrays' tails stay exactly pre-B2's (the frozen-original comparison is field by field).
 - **The pre-B2 `EMERG_*` chunk and cost params stay** in params.ts for the frozen original and the search bench.
 - **A separate test file**, `tests/infra/b2PiecesInfra.test.ts`, on the G1 harness. j10 keeps its own frozen utilities (614609f, J10's reference); b2PiecesInfra uses `utilitiesOriginal.ts` (41ae570).
-- **The second utilities refit was reverted** (`0f51b6d`, reverted in `1983efe`). It divided the building chunks' coefficients by 1.18 to centre dense1m (+0.39) and bot256 (−0.02); the bot's 256 × 60 seed-7 run then fell to 0.887 × B1 in 2007 (the gate is ≥ 0.9; min funds 4,333, y15 174,576, y60 1,441,916), while `be73ef4`'s coefficients pass every balance gate. The bot's chaos (a schedule change moves it by ±10 %), but the recorded b2 rows and the gates are `be73ef4`'s.
+- **The second utilities refit was reverted** (`0f51b6d`, reverted in `1983efe`). It divided the building chunks' coefficients by 1.18 to centre dense1m (+0.39) and bot256 (−0.02); the bot's 256 × 60 seed-7 run then fell to 0.887 × B1 in 2007 (the gate is ≥ 0.9; min funds 4,333, y15 174,576, y60 1,441,916), while `be73ef4`'s coefficients pass every balance gate. The bot's chaos (a schedule change moves it by ±10 %), but the reverted refit is not used. The recorded b2 rows and the gates are those of the final code (`2d2940a`: the sea mask's pieces, the labels' cold size and the day budget moved the schedule again after the refit; 18.6).
 
 ### 18.3 Exactness evidence
 
 - `tests/infra/b2PiecesInfra.test.ts` (21 tests): utilities passes (util cities 48 without a short grid, 64 with short main grids, 96 with a short island grid; infra only and every system) in one go = production = tiny / random pieces at every pass end; production and random pieces = the frozen original in every original field, also with the mid-pass water relabel; the edits reach every branch (both labels, the relabel of a soft pass, both brownouts, the results without one, the mid-pass water relabel, flag flips); R8, R7, R9, O4, two cities interleaved, piece estimates within budget. The emergency response likewise (emergency cities 64 and 96): one go = pieces = the frozen original, also with a graph change mid-sequence; every branch (signature pieces, the epoch restart, the same graph rebuilt, the station scan, the siren times, every state); R8, R7 / R9, estimates.
+- `tests/infra/seaMaskRun.test.ts` (11 tests): SeaMaskRun = `seaMask` (the sea mask, the shore cells, the depth, the sea cell count and the cache entry) at piece sizes 1 to 10⁹ and random ones, on generated coast / islands / river / lakes terrains and synthetic water layers (none, all water, noise, a sea and a lake); the cache hit; a water edit after a rebuild and in the middle of one; another caller's rebuild in the middle of one. b2PiecesInfra adds water edits before every pass (against the frozen original, at random piece sizes), the rebuild branch and its pieces' estimates.
 - `tests/sim/exact/j10.test.ts`: the split UtilitiesSystem against J10's frozen one over 10,240 city-days with edits, loads and new cities, and 32 edge cities (sparse ids, > 256 grids, special floats) pass by pass.
-- `passdigest --mode atomic` (`b2work/G4-utilities-emergency-recalibration/passdigestG4.ts`: G3's digests + the utilities internals — labels, sums, per-id results, producers, loads, the cut tally — and the response internals — slacks, siren times, stations, the graph signature), B vs W at `dc6b826` and again at `0f51b6d` (the final pieces: the atomic mode flushes every pass, so it does not depend on the estimates), digests at days 30 and 100: dense1m, bot256 and the five synthetic cities, each with and without WP1. All 24 checkpoints identical both times. The step counts differ by design: at dense1m by day 100, utilities 154 steps in B and 24,116 pieces in W, emergency 6 and 252.
+- `passdigest --mode atomic` (`b2work/G4-utilities-emergency-recalibration/passdigestG4.ts`: G3's digests + the utilities internals — labels, sums, per-id results, producers, loads, the cut tally — and the response internals — slacks, siren times, stations, the graph signature), B vs W at `dc6b826`, at `0f51b6d`, at `d8fd0b9`, at `180f8a6` and at the final `2d2940a` (`runs/pd6`; the atomic mode flushes every pass, so it does not depend on the estimates), digests at days 30 and 100: dense1m, bot256 and the five synthetic cities, each with and without WP1. All 24 checkpoints identical every time. The step counts differ by design: at dense1m by day 100, utilities 154 steps in B and 24,116 pieces in W, emergency 6 and 252.
 
 ### 18.4 Measurements (dense1m, headless, wall clock)
 
-Tool: `b2work/G4-utilities-emergency-recalibration/cpumapG4.ts` (G3's cpumap; utilities and the emergency response labelled by `stepName` in W, by state in B), `--noinputs`; `anG4.py` (windows, states, labels, the cost error per task). Hold 1, one timing-lock hold (`timedG4.py` = `timed.py` polling the lock every 5 s; other processes averaged 0.08 cores, peak 1.9), B and W interleaved, B first on odd pairs: from load (`--warm 0 --days 220`) 3 runs per side, warm (`--warm 300 --days 120`) 3 per side on dense1m and bot256. W's code there is `be73ef4`'s pieces with the pre-refit estimates and the treatment scan at a quarter of the Building floor (`ee298e9` / `be73ef4` refit the estimates, which moves no piece, and halved the scan's pieces). Per run, the p99 and the max of the task's steps; the median over runs, the worst run's max in brackets.
+Tools: `b2work/G4-utilities-emergency-recalibration/cpumapG4.ts` (G3's cpumap; utilities and the emergency response labelled by `stepName` in W, by state in B), `--noinputs`; `editmapG4.ts` (the edit and disaster scenario: a road cut, its restore, a bulldoze, an earthquake and a meteor, 30 days apart from day 30 after the load; it records no GC); `anG4.py`, `docG4.py`, `cadG4.py`. **Hold 6, at the final code (`2d2940a`)**: one timing-lock hold (`timedG4.py` polling the lock every 1 s; 123 s; other processes averaged 0.10 cores, peak 0.58), B and W interleaved, B first on odd pairs: from load (`--warm 0 --days 220`) 3 runs per side, the edit scenario 2 per side, warm (`--warm 300 --days 120`) 2 per side on dense1m and bot256 (`runs/h6`). Per run, the p99 and the max of the task's steps; the median over runs, the worst run's max in brackets. Holds 1 and 3–5 measured the intermediate commits the same way (`runs/h1`, `h3`–`h5`); hold 1 (`be73ef4`, 3 runs per side) gave W utilities p99 0.27 / 0.14 / 0.12 ms and max 1.05 / 2.11 / 1.54 ms per window from load (worst runs 3.97 / 4.34 / 2.23), the emergency response p99 0.51 / 0.19 and max 0.55 / 0.27.
 
-**Utilities and emergency response, all states** (ms; B = before, W = after):
+**Utilities, the emergency response and all tasks** (ms; B = before, W = after):
 
-| window | task | B p99 | B max | W p99 | W max [worst run] | W max without GC, worst run | W steps > 3 / > 5 ms (all runs) |
+| window | task | B p99 | B max [worst run] | W p99 | W max [worst run] | W max without GC, worst run | W steps > 3 / > 5 ms (all runs) |
 |---|---|---|---|---|---|---|---|
-| days 0–20 | utilities | 14.39 | 14.39 [15.25] | 0.27 | 1.05 [3.97] | 3.97 | 1 / 0 |
-| days 20–80 | utilities | 10.55 | 10.55 [12.63] | 0.14 | 2.11 [4.34] | 4.10 | 3 / 0 |
-| days 20–80 | emergency.response | 8.71 | 8.71 [11.70] | 0.51 | 0.55 [2.27] | 0.55 | 0 / 0 |
-| days 80–220 | utilities | 14.44 | 14.44 [17.36] | 0.12 | 1.54 [2.23] | 1.54 | 0 / 0 |
-| days 80–220 | emergency.response | 1.52 | 1.52 [1.87] | 0.19 | 0.27 [0.29] | 0.29 | 0 / 0 |
-| warm dense1m | utilities | 3.60 | 3.60 [3.81] | 0.07 | 1.06 [1.12] | 1.12 | 0 / 0 |
-| warm dense1m | emergency.response | 1.50 | 1.50 [1.96] | 0.13 | 0.20 [0.37] | 0.37 | 0 / 0 |
-| warm bot256 | utilities | 3.52 | 3.52 [6.16] | 0.14 | 1.62 [2.05] | 1.62 | 0 / 0 |
-| warm bot256 | emergency.response | 1.62 | 1.62 [2.21] | 0.13 | 0.22 [0.22] | 0.22 | 0 / 0 |
+| days 0–20 | utilities | 12.16 | 12.16 [12.48] | 0.26 | 2.03 [10.01] | 10.01 | 1 / 1 |
+| days 0–20 | all tasks | 47.13 | 47.13 [47.41] | 1.00 | 3.46 [10.01] | 10.01 | 12 / 4 |
+| days 20–80 | utilities | 10.24 | 10.24 [13.55] | 0.24 | 4.13 [5.10] | 5.10 | 3 / 1 |
+| days 20–80 | emergency | 8.36 | 8.36 [13.40] | 0.52 | 2.68 [2.77] | 0.94 | 0 / 0 |
+| days 20–80 | all tasks | 27.79 | 29.78 [34.44] | 0.54 | 4.79 [5.10] | 5.10 | 8 / 1 |
+| days 80–220 | utilities | 12.62 | 12.62 [19.04] | 0.07 | 1.41 [2.41] | 2.41 | 0 / 0 |
+| days 80–220 | emergency | 9.24 | 9.24 [13.20] | 0.15 | 0.18 [0.20] | 0.20 | 0 / 0 |
+| days 80–220 | all tasks | 16.47 | 26.84 [30.70] | 0.25 | 5.66 [6.13] | 2.68 | 5 / 2 |
+| edit scenario | utilities | 13.80 | 13.80 [16.21] | 0.18 | 1.79 [2.26] | (no GC record) | 0 / 0 |
+| edit scenario | emergency | 10.95 | 10.95 [11.37] | 0.41 | 3.76 [5.71] | (no GC record) | 1 / 1 |
+| edit scenario | all tasks | 23.48 | 28.64 [29.00] | 0.41 | 5.15 [5.89] | (no GC record) | 7 / 2 |
+| warm dense1m | utilities | 2.56 | 2.56 [3.12] | 0.05 | 1.66 [2.64] | 0.68 | 0 / 0 |
+| warm dense1m | emergency | 1.39 | 1.39 [1.47] | 0.11 | 0.26 [0.38] | 0.38 | 0 / 0 |
+| warm dense1m | all tasks | 10.49 | 15.26 [25.01] | 0.18 | 2.64 [2.64] | 2.63 | 0 / 0 |
+| warm bot256 | utilities | 4.18 | 4.18 [5.05] | 0.12 | 1.00 [1.48] | 0.51 | 0 / 0 |
+| warm bot256 | emergency | 1.55 | 1.55 [1.60] | 0.11 | 0.99 [1.88] | 1.88 | 0 / 0 |
+| warm bot256 | all tasks | 4.12 | 6.68 [8.31] | 0.21 | 3.00 [3.19] | 3.19 | 1 / 0 |
 
-(No response sequence falls in days 0–20: the first one after the load is on day ~75, `p.resp`.) W's utilities steps above 3 ms: the treatment scan's first pieces (`uses.scan`, 1,300 buildings: 3.97 ms on day 0 and 4.10 ms on day 48 in one run — now halved), one uses chunk on day 37 (3.63 ms), a snapshot take with a 3.7 ms GC pause inside (4.34 ms). The all-task p99 of W's runs is 1.30, 0.65 and 0.30 ms per window (B 49.6, 27.8, 16.7); the all-task max (5.33, 4.90, 3.77 ms, median over runs; worst 8.54) is traffic's (G1: `transit2.origins` 8.54 ms on day 51, `commute.pool*` 5.1–6.6, `roundMatch.sort2` 6.2, `roundMatch.next` 5.4, `roundMatch.accept` 5.3 in days 0–80, one run each) — for the gates role.
+(No response sequence falls in days 0–20: the first one after the load is on day ~75, `p.resp`.) Per run, the all-task max without GC from load is 3.46, 10.01, 3.41 ms (days 0–20), 4.10, 5.10, 4.79 (20–80) and 2.41, 1.63, 2.68 (80–220); the busy-time-weighted p99 (review 2's optional metric: the step length below which 99 % of the infra time falls) 3.35, 10.01, 2.82 / 4.10, 3.29, 3.35 / 1.89, 2.17, 2.68 ms (B 31.7–47.4 / 22.7–34.4 / 19.7–30.7).
 
-**Per state, before (B) and after (W)** (median over runs of each run's p99 / max; worst run's max in brackets):
+**W's G4 steps above 3 ms** (hold 6, all runs):
+- `water.bld#62` 10.01 ms, day 11 of run 2, no GC: inside a 50 ms stretch in which three pollution `srcBld.bld` pieces also ran 5.0–8.5 ms (they take ≤ 0.6 ms in the other runs; that day's infra time was 65 ms against 24 in run 1). A stall of the process, not the piece's work.
+- `uses.bld` 4.10 ms (day 23, run 1) and 5.10 / 2.96 ms (day 22, run 2), no GC: the Building-shape deopt wave around day 21 (review 2 item 2: the field-constness flips of the first growth writes). Two runs of holds 3–5 had `uses.bld` at 2.1–2.7 ms on day 21. The fix is outside B2's files (§14 item 4).
+- `water.sum#15` 4.13 ms with a 3.8 ms GC pause inside.
+- The response's first `resp3.rows` piece of one edit-scenario sequence, 5.71 ms (17 days after the road restore; the sequence's other rows pieces took 0.4–0.5 ms; editmap records no GC). From load, `resp3.rows` reached 2.68–2.77 ms with a GC pause inside and 0.59 ms without.
+
+**Per state, before (B) and after (W)** (hold 6; median over runs of each run's p99 / max; worst run's max in brackets):
 
 | utilities, days 0–20 | B steps | B p99 | B max | W steps | W p99 | W max |
 |---|---|---|---|---|---|---|
-| uses | 5 | 13.09 | 13.09 [13.22] | 594 | 0.41 | 0.88 [3.97] |
-| power | 4 | 9.89 | 9.89 [9.95] | 978 | 0.12 | 0.84 [1.05] |
-| water | 4 | 14.39 | 14.39 [15.25] | 1285 | 0.14 | 0.71 [3.00] |
+| uses | 5 | 10.83 | 10.83 [12.48] | 713 | 0.38 | 1.15 [2.22] |
+| power | 4 | 9.79 | 9.79 [10.30] | 978 | 0.12 | 2.03 [2.21] |
+| water | 4 | 11.84 | 11.84 [12.16] | 1292 | 0.12 | 0.73 [10.01] |
 | utilities, days 20–80 | B steps | B p99 | B max | W steps | W p99 | W max |
-| uses | 10 | 7.55 | 7.55 [12.63] | 1445 | 0.26 | 1.81 [4.34] |
-| label | 3 | 9.41 | 9.41 [9.62] | 42 | 1.56 | 1.56 [2.11] |
-| power | 11 | 3.48 | 3.48 [8.36] | 2380 | 0.08 | 0.52 [0.78] |
-| water | 11 | 10.55 | 10.55 [11.39] | 3680 | 0.07 | 0.41 [0.91] |
+| uses | 10 | 7.39 | 7.39 [7.86] | 1428 | 0.29 | 4.10 [5.10] |
+| label | 3 | 9.36 | 9.36 [13.55] | 204 | 0.35 | 0.57 [0.60] |
+| power | 11 | 2.60 | 2.60 [10.37] | 1960 | 0.08 | 0.42 [0.78] |
+| water | 11 | 10.24 | 10.24 [13.49] | 3052 | 0.07 | 0.44 [4.13] |
 | utilities, days 80–220 | B steps | B p99 | B max | W steps | W p99 | W max |
-| uses | 26 | 11.67 | 11.67 [14.44] | 3145 | 0.23 | 1.54 [2.23] |
-| label | 5 | 1.54 | 1.54 [1.62] | 70 | 0.22 | 0.22 [0.25] |
-| power | 26 | 7.46 | 7.46 [9.65] | 5180 | 0.07 | 0.55 [0.60] |
-| water | 26 | 13.73 | 13.73 [17.36] | 7659 | 0.08 | 0.56 [1.37] |
+| uses | 26 | 10.51 | 10.51 [11.76] | 3774 | 0.21 | 0.70 [1.05] |
+| label | 5 | 1.60 | 1.60 [1.98] | 340 | 0.05 | 0.09 [0.12] |
+| power | 26 | 8.67 | 8.67 [9.62] | 5180 | 0.06 | 0.22 [0.34] |
+| water | 26 | 12.62 | 12.62 [19.04] | 7659 | 0.06 | 1.41 [2.41] |
 | emergency.response, days 20–80 | B steps | B p99 | B max | W steps | W p99 | W max |
-| resp0 | 1 | 7.14 | 7.14 [7.89] | 41 | 0.41 | 0.41 [0.53] |
-| resp1 | 1 | 2.60 | 2.60 [3.52] | 40 | 0.43 | 0.43 [0.46] |
-| resp2 | 1 | 1.99 | 1.99 [2.84] | 40 | 0.46 | 0.46 [0.55] |
-| resp3 | 1 | 8.71 | 8.71 [11.70] | 24 | 0.55 | 0.55 [2.27] |
-| resp4 | 1 | 8.63 | 8.63 [9.32] | 107 | 0.20 | 0.24 [0.48] |
+| resp0 | 1 | 5.44 | 5.44 [6.34] | 41 | 0.40 | 0.40 [0.49] |
+| resp1 | 1 | 2.34 | 2.34 [2.34] | 40 | 0.41 | 0.41 [0.59] |
+| resp2 | 1 | 2.47 | 2.47 [3.71] | 40 | 0.35 | 0.35 [0.50] |
+| resp3 | 1 | 8.36 | 8.36 [13.40] | 24 | 2.68 | 2.68 [2.77] |
+| resp4 | 1 | 7.71 | 7.71 [9.83] | 107 | 0.32 | 0.33 [0.94] |
 | emergency.response, days 80–220 | B steps | B p99 | B max | W steps | W p99 | W max |
-| resp0 | 1 | 1.43 | 1.43 [1.81] | 41 | 0.09 | 0.09 [0.21] |
-| resp1 | 1 | 1.21 | 1.21 [1.52] | 40 | 0.10 | 0.10 [0.20] |
-| resp2 | 1 | 1.52 | 1.52 [1.87] | 40 | 0.17 | 0.17 [0.20] |
-| resp3 | 1 | 1.46 | 1.46 [1.47] | 24 | 0.13 | 0.13 [0.13] |
-| resp4 | 3 | 1.08 | 1.08 [1.24] | 107 | 0.26 | 0.27 [0.29] |
+| resp0 | 1 | 1.87 | 1.87 [5.04] | 41 | 0.08 | 0.08 [0.08] |
+| resp1 | 1 | 1.43 | 1.43 [2.29] | 40 | 0.11 | 0.11 [0.13] |
+| resp2 | 1 | 1.29 | 1.29 [1.81] | 40 | 0.13 | 0.13 [0.14] |
+| resp3 | 1 | 9.24 | 9.24 [13.20] | 24 | 0.07 | 0.07 [0.10] |
+| resp4 | 3 | 1.25 | 1.25 [1.35] | 107 | 0.16 | 0.18 [0.20] |
 
-**The largest items** (review 2 item 5f; the max over all W runs of each piece kind from load, GC-overlapping steps left out; days 0–20 / 20–80 / 80–220): `uses.scan` 3.97 / 4.10 / 0.36 (now half the pieces), `uses.bld` 0.49 / 3.63 / 0.94, `water.zoned` 3.00 / 0.62 / 0.49, `label.plabel` – / 2.11 / 0.25, `uses.plan` 0.60 / 0.12 / 1.54, `uses.sea` (the masks' checksum) 1.21 / 0.22 / 0.23, `uses.snap` (one `buildingList` + copy) 1.01 / 1.19 / 0.87, `power.bld` 1.05 / 0.39 / 0.46, `water.bld` 0.71 / 0.91 / 0.51, the flags' publish (`water.apply`) at most 0.04 warm; emergency `resp3.rows` 0.55, `resp*.slack` 0.55, `resp*.start` 0.22, `resp4.bld` 0.48. The station scan and the siren times did not run inside a response piece in these windows (dailyWork refreshes them first); the b2PiecesInfra estimate test bounds them.
+(The days 20–80 resp3 row is one 24-piece state per run: its p99 is its max, 2.68–2.77 ms with a GC pause inside.)
 
-**Cost error** (median of estimate / measured − 1 per run; median and range over runs; warm windows): at the final coefficients (`be73ef4`, hold 2, 2 runs per fixture, other processes 0.38 cores), dense1m pooled over every task +0.13 (+0.08…+0.18), bot256 −0.02 (−0.04…0.00); per task, dense1m / bot256: utilities +0.39 / −0.02, emergency +0.21 / +0.05, traffic −0.10 / +0.25, pollution −0.07 / −0.09, services −0.04 / +0.04, crime +0.02 / −0.12. Before the refit (hold 1): utilities +0.69 / +0.15, emergency −0.12 / +0.12. From load (hold 1): utilities +0.33, +0.62, +0.68 per window; emergency −0.03 (days 20–80), −0.24 (80–220) (B −0.62…−0.01 and −0.81, −0.03). Utilities on dense1m is the one per-task median outside ±30 % warm: its building chunks run at 3–10 µs warm there (timer and per-piece noise of the same size; two holds differed by ±30 % per label), and the centring refit that fixed it (`0f51b6d`, chunks / 1.18) moved the chaotic bot below the 0.9 population gate in one year, so it was reverted (18.2).
+**The edit scenario** (the max after each edit, worst run, W [B]): utilities road cut 1.39 [16.21], restore 0.70 [13.19], bulldoze 2.26 [2.68], quake 0.44 [1.92], meteor 0.75 [13.43]; the emergency response restore 5.71 [10.52] (the `resp3.rows` piece above), bulldoze – [11.37], quake 0.34 [–]; all tasks 3.58 [28.37], 5.71 [19.77], 2.54 [29.00], 1.94 [25.83], 5.89 [28.28] (W's top: traffic `inbound.0` 5.89 and 4.40 ms five days after the meteor, `resp3.rows` 5.71, pollution `srcBld.bld` 3.58, crime `sources.bld` 3.50, traffic `commute.end10` 3.45). The meteor's sea-mask rebuild, 12.2–12.6 ms in one piece in hold 4, now runs as 195 pieces of at most 0.38 ms (`uses.sea`).
+
+**The largest items** (review 2 item 5f; hold 6, the max over the W runs from load of each piece kind, GC-overlapping steps left out; days 0–20 / 20–80 / 80–220): `water.bld` 10.01 (the stall above) / 0.35 / 0.22, `uses.bld` 2.22 / 5.10 / 1.05, `water.sum` 0.67 / 0.21 / 2.41, `power.zoned` 2.21 / 0.42 / 0.34, `power.bld` 2.03 / 0.78 / 0.22, `uses.scan` (the treatment scan, now half the pieces) 1.15 / 0.13 / 0.44, `uses.snap` (one `buildingList` + its copy, indivisible) 1.13 / 0.51 / 0.42, `power.cells` 0.87 / 0.26 / 0.21, `uses.plan` 0.76 / 0.20 / 0.48, `water.flags` 0.73 / 0.31 / 0.35, `uses.sea` (the masks' checksum) 0.67 / 0.43 / 0.11, `label.plabel` – / 0.60 / 0.12 (holds 1–5 at the warm label size: 1.3–5.1 ms on days 24 and 48), the flags' publish (`water.apply`) at most 0.04 warm; emergency `resp4.bld` 0.94 / 0.20, `resp*.slack` 0.59 / 0.05, `resp3.rows` 0.59 / 0.10, `resp*.start` 0.35 / 0.14, `resp*.run` 0.17 / 0.13, `resp0.stations` 0.08 / 0.03. The station scan and the siren times did not run inside a response piece in these windows (dailyWork refreshes them first); the b2PiecesInfra estimate test bounds them.
+
+**Cost error** (median of estimate / measured − 1 per run; median and range over runs). Warm, at the final code (hold 6, 2 runs per fixture): dense1m pooled over every task **+0.14** (+0.12…+0.15), bot256 **−0.06** (−0.08…−0.05); per task, dense1m / bot256: utilities +0.42 / −0.06, emergency +0.24 / +0.17, traffic +0.04 / +0.17, pollution −0.06 / −0.12, services −0.01 / 0.00, crime +0.01 / −0.13 (B: pooled −0.00 / −0.05; traffic −0.39 / −0.06, crime +0.33 / −0.02). From load (hold 6): pooled −0.18, +0.01, +0.11 per window (B −0.75, −0.35, −0.21); utilities +0.17, +0.29, +0.39 (B −0.32, −0.09, +0.11); emergency −0.18 (days 20–80), +0.08 (80–220) (B −0.75, −0.26). At the refit (`be73ef4`, hold 2) the warm values were +0.13 / −0.02 pooled, utilities +0.39 / −0.02; before it (hold 1) utilities +0.69 / +0.15, emergency −0.12 / +0.12. Utilities on dense1m is the one per-task median outside ±30 % warm: its building chunks run at 3–10 µs warm there (timer and per-piece noise of the same size; two holds differed by ±30 % per label), and the centring refit that fixed it (`0f51b6d`, chunks / 1.18) moved the chaotic bot below the 0.9 population gate in one year, so it was reverted (18.2).
+
+**Cadence at the final code** (hold 6, `cadG4.py`; passes per 120 warm days, deterministic; real infra ms per day, median of 2 runs): dense1m B 4.22 ms / day, traffic 5 cycles, services 3, utilities 21, pollution 6, crime 6, emergency 1; W 5.30 ms / day (1.26 × B), 3, 3, 30, 10, 6, 1. bot256 B 3.90, 7, 3, 16, 7, 6, 1; W 5.61 (1.44 ×), 7, 6, 27, 9, 6, 1. From load (220 days, 3 runs): B 9.47, W 10.09 ms / day (1.07 ×). The per-360-day counts are in 18.5.
 
 ### 18.5 The day budget and the cadence (§9.4)
 
 Tool: `cadG4.py` over the cpumap summaries and step logs (real infra ms per day = the sum of the measured step times over
-the days). Hold 1 (`be73ef4`'s code before the refit, budget 5.3, other processes 0.08 cores): B and W, 3 runs each; hold
-2 (the refit; budget 5.3, 4.2 and 3.2 with the carry and the credit floor scaled as 0.6 / 4 × budget / 3.2): W 2 runs per
-budget and fixture, B one (other processes 0.38 cores: noisier). Warm windows (`--warm 300 --days 120`); passes per 120
-days, medians over runs.
+the days; the pass counts are deterministic headless, the real times need the timing lock).
+
+**The search** (at `be73ef4`'s estimates). Hold 1 (budget 5.3, other processes 0.08 cores): B and W, 3 runs each; hold 2
+(budget 5.3, 4.2 and 3.2 with the carry and the credit floor scaled as 0.6 / 4 × budget / 3.2): W 2 runs per budget and
+fixture, B one (other processes 0.38 cores: noisier). Warm windows (`--warm 300 --days 120`); passes per 120 days,
+medians over runs.
 
 | fixture, side | real infra ms / day | est ms / day | traffic cycles | services | utilities | pollution | crime | emergency |
 |---|---|---|---|---|---|---|---|---|
@@ -1715,47 +1739,98 @@ days, medians over runs.
   the estimates are per-piece medians: summed, W's real time is 1.36 × its estimates at dense1m and 1.22 × at bot256
   (traffic 2.0 ×: its cold tail), so the real-time match of §9.4 item 2 needs a budget of about 3.0–3.2. At 3.2 the
   services pass (the largest, ~60 estimated ms at dense1m) runs 0–1 times in 120 days.
-- **The final values: 5.3 / 1.0 / 6.5** (G1's provisional ones). At 5.3 traffic keeps B's cycles on both fixtures, every
-  other task runs at least as often as in B (pollution its full 12-day period; utilities passes end in their first day,
-  so the next soft pass comes sooner). The cost: 1.3–1.9 × B's real infra ms per day warm (+1.5 to +3.7 ms); from load
-  (220 days) 1.21 × (11.95 against 9.84 ms per day). `INFRA_TASK_WEIGHT` was not needed (no balance failure from a cadence
-  shift, 18.6).
-- **P0-15** (the stress city's utilisation): 0.996 at 5.3 with the new step guard; re-baselined to ≤ 1.02 (§11.5).
+
+**The choice** (at `09b55fd`, the final pieces). The balance's `totalMsPerDay` on seed 7 at 5.3 ran +2.65 (`be73ef4`),
++3.24 (`d8fd0b9`), +3.36 (`180f8a6`; all three B and W side by side outside the lock) and +3.39 (`180f8a6`, the same
+under the timing lock) over B: at or over the gate's +3. One timing-lock hold then ran 256 × 60 seed 7 for B and W at
+5.3, 4.6 and 4.2 side by side (four processes; other processes 0.02 cores):
+
+| budget (carry, floor) | `totalMsPerDay` W − B (B 10.42) | pop year 15 / 60 | lowest W / B ratio | approval from y30 | EQ y30 | lowest funds | |
+|---|---|---|---|---|---|---|---|
+| 5.3 (1.0, 6.5) | +2.46 | 178,834 / 1,525,902 | 0.937 | 79.8 | 120.9 | 6,236 | passes this time |
+| **4.6 (0.87, 5.75)** | **+1.42** | 184,844 / 1,552,965 | 1.001 | 79.7 | 121.6 | 9,185 | passes |
+| 4.2 (0.79, 5.25) | +1.04 | 181,201 / 1,283,089 | **0.838** | 78.4 | 119.9 | 3,885 | fails (population) |
+
+Passes per 360 days (`--warm 300 --days 360`, one run each: the counts are deterministic; the real ms per day of these
+runs, two at a time outside the lock, are indicative only):
+
+| fixture, side | traffic cycles | services | utilities | pollution | crime | emergency | real infra ms / day |
+|---|---|---|---|---|---|---|---|
+| dense1m B | 13 | 8 | 56 | 16 | 18 | 4 | 4.73 |
+| dense1m W 5.3 | 13 | 14 | 106 | 30 | 18 | 4 | 7.86 |
+| dense1m W **4.6** | **10** | 11 | 86 | 29 | 18 | 4 | 7.22 |
+| bot256 B | 21 | 19 | 47 | 19 | 18 | 4 | 5.74 |
+| bot256 W 5.3 | 26 | 22 | 92 | 29 | 17 | 4 | 7.93 |
+| bot256 W **4.6** | 23 | 19 | 81 | 28 | 18 | 6 | 6.59 |
+
+- **The final values: 4.6 / 0.87 / 5.75** (× 1.44 of pre-B2's 3.2 / 0.6 / 4; `2d2940a`). Every task runs at B's
+  cadence or above but dense1m's traffic: 36 days per cycle instead of 28, the slower traffic §9.4 item 4 expected (34
+  instead of 25.7) — honest fairness hands out equal real time, and traffic's pieces cost more real time per cycle than
+  B's steps (about 70 against 41 ms at dense1m). Utilities and pollution still run about 1.5–1.9 × as often as in B
+  (their passes end within a day, so the next one comes sooner; pollution keeps its 12-day period). `INFRA_TASK_WEIGHT`
+  was not needed (no balance failure from a cadence shift, 18.6).
+- **P0-15** (the stress city's utilisation): 0.996 at 5.3 with the new step guard, 0.994 at 4.6; re-baselined to ≤ 1.02
+  (§11.5).
 
 ### 18.6 The balance procedure and the bot (SIM_DEPTH_SPEC)
 
 Tool: `b2work/G4-utilities-emergency-recalibration/balanceG4.ts` (tools/balance-json.ts + the bot printout's tourists
-column, B1's tourism check), bundled in B (41ae570, B1's code) and in W (`be73ef4`); B and W side by side (in parallel,
-nice 19). **Outside the timing lock**: the lock queue held other workers' QA soaks and full test runs for hours. The
-rows are deterministic (B reproduces every b1 row: 256 × 60 s7 2015 183,671, s11 181,028, 128 × 15 s7 2015 196,101,
-and B1's five extra 128 seeds); `totalMsPerDay` is only comparable B against W of the same pair (load average 5–7).
-`balcmp.py` gives the gates.
+column, B1's tourism check), bundled in B (41ae570, B1's code) and in W (the final `2d2940a`); B and W side by side. The
+rows are deterministic (B reproduces every b1 row: 256 × 60 s7 2015 183,671, s11 181,028, 128 × 15 s7 2015 196,101, and
+B1's five extra 128 seeds); `totalMsPerDay` is only comparable B against W of the same session. Seed 7 is the run of
+the timing-lock hold that chose the budget (18.5; four processes side by side, the same code as `2d2940a`); seed 11 and
+the 128 × 15 runs ran B and W side by side outside the lock (nice 19, load 5–7). `balcmp.py` gives the gates. The bot is
+chaotic (any schedule change moves it): during G4 seed 7's lowest ratio went 0.983 (`be73ef4`), 0.964 (`d8fd0b9` /
+`180f8a6`), 1.001 (final); seed 11's 0.938, 0.889, 0.955.
 
-| gate (256 × 60 seed 7 unless named) | B (b1) | W (b2) | |
+| gate (256 × 60 seed 7 unless named) | B (b1) | W (b2, `2d2940a`) | |
 |---|---|---|---|
-| pop at year 15 ≥ 150k | 183,671 | 186,016 | pass |
-| pop at year 60 ≥ 950k | 1,527,090 | 1,501,465 | pass |
-| lowest W / B pop ratio ≥ 0.9 | — | 0.983 (2055) | pass |
-| lowest approval from year 30 ≥ 50 | 79.5 | 79.8 | pass |
-| EQ ≥ 100 by year 30 | 121.6 (first 2017) | 120.5 (first 2020) | pass |
-| lowest funds ≥ 0 | 6,994 | 9,552 | pass |
-| tourism jobs within ±30 % | — | single years 0.39–1.30 (7 of 55 outside, 2006–07, 2015–19), geometric mean 0.845; across six 128 × 15 seeds the year-15 ratio's geometric mean is **1.000** (0.59–1.33) | pass, judged as B1 did (the bot's chaos) |
-| mean `totalMsPerDay` ≤ baseline + 3 | 11.37 | 14.02 (+2.65; the worst single year +7.84) | pass |
-| seed 11: pop y15 / y60, lowest ratio, approval, EQ y30, funds, tourism, ms / day | 181,028 / 1,504,571; 80.0; 118.8; 8,031; —; 10.59 | 186,159 / 1,411,714; 0.938 (2059); 80.2; 121.8; 6,943; 0.70–1.48 (3 of 55 outside, mean 0.966); 13.06 (+2.48) | informative |
-| 128 × 15 seed 7: pop 2015, lowest ratio, funds, ms / day | 196,101; —; 7,955; 5.43 | **194,404**; 0.916 (2002), 0.991 at 2015; 7,247; 6.75 (+1.32) | informative |
+| pop at year 15 ≥ 150k | 183,671 | 184,844 | pass |
+| pop at year 60 ≥ 950k | 1,527,090 | 1,552,965 | pass |
+| lowest W / B pop ratio ≥ 0.9 | — | 1.001 (2008) | pass |
+| lowest approval from year 30 ≥ 50 | 79.5 | 79.7 | pass |
+| EQ ≥ 100 by year 30 | 121.6 (first 2017) | 121.6 (first 2019) | pass |
+| lowest funds ≥ 0 | 6,994 | 9,185 | pass |
+| tourism jobs within ±30 % | — | single years 0.46–1.44 (9 of 55 outside: 2006–07, 2010–12, 2015–18), geometric mean 0.877; across six 128 × 15 seeds the year-15 ratio's geometric mean is **1.062** (0.59–1.40) | pass, judged as B1 did (the bot's chaos) |
+| mean `totalMsPerDay` ≤ baseline + 3 | 10.42 | 11.84 (**+1.42**; the worst single year +3.97), under the timing lock | pass |
+| seed 11: pop y15 / y60, lowest ratio, approval, EQ y30, funds, tourism, ms / day | 181,028 / 1,504,571; 80.0; 118.8; 8,031; —; 10.00 | 185,176 / 1,531,494; 0.955 (2001); 79.2; 121.8; 7,775; 0.78–1.64 (3 of 55 outside, mean 0.990); 11.66 (+1.66) | pass (informative) |
+| 128 × 15 seed 7: pop 2015, lowest ratio, funds, ms / day | 196,101; —; 7,955; 4.81 | **191,840**; 0.919 (2006), 0.978 at 2015; 6,156; 5.94 (+1.13) | informative |
 
-Six 128 × 15 seeds, year 15 (B → W): population 192,879 → 194,279, 194,974 → 192,420, 195,940 → 195,297, 196,955 →
-192,865, 193,637 → 193,922, 196,101 → 194,404 (geometric mean 0.994); approval 79–82 → 79–82; EQ 100–108 → 102–104;
-tourists 0.86, 1.11, 1.33, 1.01, 1.33, 0.59 (geometric mean 1.000).
+Six 128 × 15 seeds, year 15 (B → W): population 192,879 → 195,651, 194,974 → 194,950, 195,940 → 195,673, 196,955 →
+194,005, 193,637 → 195,723, 196,101 → 191,840 (geometric mean 0.998); approval 79–82 → 78–82; EQ 100–108 → 100–105
+(seed 3 99.8 at year 15); tourists 1.33, 1.08, 1.40, 1.07, 1.13, 0.59 (geometric mean 1.062). Seed 7's 128 × 15 run
+is the low one (its tourists 0.34–0.60 × B in every year) while its 256 × 60 run and the other seeds sit around 1.
 
-**The new bot hashes**: `tests/sim/fixtures/balance-baseline.json` gets a `b2` key in each of the three runs (W's rows),
-`reference = 'b2'`, a note; the older rows are untouched. **The new 128 × 15 seed-7 2015 population is 194,404** (B1's
-196,101; G3 194,947, G2 193,577, G1 193,525). The results move by design through the schedule: the headless schedule
-follows the estimates and the pieces.
+**The new bot hashes**: `tests/sim/fixtures/balance-baseline.json` gets a `b2` key in each of the three runs (W's rows
+at `2d2940a`), `reference = 'b2'`, a note; the older rows are untouched. **The new 128 × 15 seed-7 2015 population is
+191,840** (B1's 196,101; G3 194,947, G2 193,577, G1 193,525). The results move by design through the schedule: the
+headless schedule follows the estimates, the pieces and the budget.
 
 ### 18.7 Notes for the gates role and the lead
 
-- **Traffic's pieces above 5 ms in days 0–80** (hold 1, one run each): `transit2.origins` 8.54 ms (day 51), `commute.pool0/2` 5.7–6.6 (one with a 5.7 ms GC pause), `roundMatch.sort2` 6.2, `roundMatch.next` 5.4, `roundMatch.accept` 5.3 (day 7). They set the all-task max (median over runs 5.33 ms in days 0–20, 4.90 in 20–80); utilities' and the response's maxima are 1.0–2.1 ms (worst runs 2.3–4.3).
-- **The day budget** (§14 item 3; 18.5): 5.3 keeps the cadence at 1.3–1.9 × B's real infra ms per day (the balance's `totalMsPerDay` +2.3 to +2.7 on the means); the real-time match starves services. A lower budget needs services' pass to get cheaper first (or `INFRA_TASK_WEIGHT`).
-- **The timing lock** was held by other workers' QA soaks and full test runs for most of the afternoon (waits of 20–40 min per acquisition with `timed.py`'s 15 s poll). The balance runs and the final full vitest ran outside it (B and W side by side, nice 19); a clean locked repeat of the balance's `totalMsPerDay`, of the edit scenario and of the from-load window at the final commit belongs to the gates role (scripts: `hold3.sh`, `balfree.sh`, `baltour.sh` in `b2work/G4-utilities-emergency-recalibration/`).
-- **Tools** (in `scratchpad/b2work/G4-utilities-emergency-recalibration/`): `cpumapG4.ts`, `editmapG4.ts` (G3's, + `stepName` labels for every split task), `passdigestG4.ts` (+ the utilities / response internals), `genfxG4.ts` (the utilities / emergency cities from B's code), `balanceG4.ts` (balance-json + tourists; `bundle-dir.mjs` bundles it), `anG4.py`, `cadG4.py`, `balcmp.py`, `timedG4.py`.
+- **Other groups' pieces above 5 ms** (one run each, no GC overlap unless named): traffic `final2.11` 34.1 ms (hold 3,
+  day 44), `roundSearch.search` 12.5 and `roundMatch.flows` 8.8 (hold 5, day 7), `transit2.origins` 8.5 (hold 1, day
+  51), `commute.pool*` 5.1–6.6, `roundMatch.sort2` 5.1–6.2; services `tiers.alloc` 16.2 (hold 3, day 58),
+  `accSeed.bld` 6.8 and `tiers.search` 6.4 (the edit scenario, hold 5); pollution `garbApply.left.left` 7.1 (hold 5, day
+  10); in hold 6 (the final code) traffic `inbound.0` 5.89 ms five days after the meteor (the edit scenario, no GC
+  record). They set the all-task max; G4's own tasks stay within the bounds of 18.4.
+- **G4's remaining long items** (18.4): `uses.bld` on days 21–23 after a load, the Building-shape deopt wave (review 2
+  item 2): 4.10 and 5.10 ms in two of hold 6's three runs at the final code, 2.1–2.7 ms in two runs of holds 3–5, no GC.
+  Smaller utilities chunks would at best shorten it in proportion, and would move the bot again; the shape fix (§14 item 4)
+  removes it. The snapshot take (`uses.snap`: one `buildingList` + its copy, indivisible) reached 4.57 ms once, the day
+  after the road cut (hold 4; otherwise ≤ 2.3 ms). The response's first `resp3.rows` piece of a sequence: 5.71 ms once
+  (hold 6's edit scenario, no GC record), otherwise ≤ 0.6 ms without GC. Single pieces of 3.7–10 ms whose kind normally
+  takes 0.05–0.4 ms (`uses.sea` day 18, `uses.scan` day 0, `resp1.run` day 167 in holds 4–5; `water.bld` day 11 in
+  hold 6, inside a stretch where pollution's pieces ran 10–15 × slower too) appear in one run each with no GC overlap:
+  process stalls, JIT tier-up or page faults, not their work.
+- **The day budget** (18.5): 4.6, not 5.3; `totalMsPerDay` of the same code moved by ±0.5 ms between sessions (+2.46 to
+  +3.39 at 5.3), so 5.3 sat on the gate. A lower budget needs services' pass to get cheaper first (or
+  `INFRA_TASK_WEIGHT`): at 4.2 the bot's seed 7 fell to 0.84 × B1.
+- **The timing lock** was held by other workers' QA soaks and full test runs for most of the afternoon (waits of 1–40
+  min per acquisition). Holds 3–6, the budget hold and the locked balance took it (`timedG4.py` polling every 1–5 s);
+  the remaining balance runs and the full vitest ran outside it (B and W side by side, nice 19).
+- **Tools** (in `scratchpad/b2work/G4-utilities-emergency-recalibration/`): `cpumapG4.ts`, `editmapG4.ts` (G3's, +
+  `stepName` labels for every split task), `passdigestG4.ts` (+ the utilities / response internals), `genfxG4.ts` (the
+  utilities / emergency cities from B's code), `balanceG4.ts` (balance-json + tourists; `bundle-dir.mjs` bundles it),
+  `anG4.py`, `anEditG4.py`, `docG4.py` (18.4's tables), `cadG4.py`, `balcmp.py`, `timedG4.py`; the holds `hold1.sh` …
+  `hold6.sh`, `budget.sh`, `holdbal5.sh`, the unlocked runs `balfree*.sh`, `bal6.sh`, `pd*.sh`.
