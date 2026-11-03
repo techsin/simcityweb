@@ -201,7 +201,7 @@ const S_FBLD = 22, S_FAPPLY = 23, S_FEV = 24;
 const SUB_NAMES = ['start', 'snap', 'plan', 'sea', 'scan', 'bld', 'plabel', 'wlabel', 'sum', 'cells', 'bld', 'zoned', 'cells', 'seed', 'bfs',
   'sum', 'cells', 'bld', 'zoned', 'cells', 'seed', 'bfs', 'flags', 'apply', 'events'];
 const STATE_NAMES = ['uses', 'label', 'power', 'brownout', 'water', 'waterBrownout'];
-const CHUNKED = new Set([S_SCAN, S_USES, S_PSUM, S_PBLD, S_WSUM, S_WBLD, S_FBLD]);
+const CHUNKED = new Set([S_USES, S_PSUM, S_PBLD, S_WSUM, S_WBLD, S_FBLD]);
 /**
  * B2 piece budget (design R2): every utilities loop runs once per pass. The passes are frequent (every few days at
  * dense1m, urgent after edits), so half INFRA_PIECE_COLD_MS as pollution's building loops, with G2's cold cell and
@@ -218,35 +218,50 @@ const UT_EST = 1;
  * B2 cost model (design §9): estimated warm wall µs per work unit of each kind of piece. Start values: the utilities
  * mapping's in-schedule fits (uses 0.08 ms + 16 ns per prefix-scanned building + 24 ns·B + 17 ns·F; label 13.7 ns per
  * cell; power sums 15·B + 3·F, results 5.1·C + 5.9·B + 7.9·F; brownout 5.5·C + 27·Q + 12·F; water sums 12·B + 9·F,
- * results 4.2·C + 4.4·B + 8.5·F, finish 14.5·B + 400·E; water brownout 6.3·C + 70-99·Q).
+ * results 4.2·C + 4.4·B + 8.5·F, finish 14.5·B + 400·E; water brownout 6.3·C + 70-99·Q). G4 refit (dense1m and bot256,
+ * --warm 300 --days 120, 3 runs each: each label's coefficients divided by the geometric mean of its median est / ms on
+ * the two fixtures): uses chunks / 1.27, power sums / 1.95, power results / 1.21, water sums / 1.43, water results / 1.31,
+ * finish / 1.49, plan / 1.38, label x 1.22, zoned x 1.37, snapshot x 1.18, the pass start 15 -> 25, the water brownout's
+ * seeds 0.3 -> 1 µs per seed (+ 8), the flags' publish 2 -> 6, the pass end 40 -> 26. None of them sizes a piece (US,
+ * UT_PLAN_* do), so the refit moved no boundary.
  */
 const UT = {
   /** per piece (dispatch, cursors, ensureIds) */
   piece: 1.5,
-  /** the pass start (ensure, effects, the input swaps); the snapshot per building, its plan per building */
-  start: 15, snapTake: 0.014, plan: 0.012,
+  /** the pass start (ensure, effects, the input swaps); the snapshot per building (the day's first buildingList rebuild
+   *  + the copy + the jobs check), its plan per building */
+  start: 25, snapTake: 0.0165, plan: 0.0087,
   /** the sea mask (the masks' checksum) per cell; the treatment prefix scan per building */
   sea: 0.0015, scan: 0.016,
   /** the uses chunks per building / footprint cell; their publish (fixed) + per patched (added / removed) building */
-  usesB: 0.024, usesF: 0.017, usesPub: 4, patch: 0.08,
+  usesB: 0.019, usesF: 0.0134, usesPub: 4, patch: 0.08,
   /** the labels per unit (a cell scanned or a cell taken off the BFS queue); a label's publish (fixed) */
-  label: 0.007, labelPub: 2,
+  label: 0.0085, labelPub: 2,
   /** power sums per building / footprint cell; their publish (fixed) + per component / plant / critical load */
-  sumB: 0.015, sumF: 0.003, sumPub: 4, sumComp: 0.004, sumPlant: 0.2, sumCrit: 0.05,
+  sumB: 0.0077, sumF: 0.0015, sumPub: 4, sumComp: 0.004, sumPlant: 0.2, sumCrit: 0.05,
   /** results: the cell loop per cell, per building / footprint cell, the zoned loop per cell, the layer copy per cell */
-  cells: 0.0025, resB: 0.0059, resF: 0.0079, zoned: 0.0026, copy: 0.0002,
+  cells: 0.0025, resB: 0.0049, resF: 0.0065, zoned: 0.0036, copy: 0.0002,
   /** brownout: the seeds per plant footprint cell, the BFS per queue cell */
   seed: 0.01, bfs: 0.027,
   /** water sums per building / footprint cell; their publish (fixed) + per component (tap quality) */
-  wsumB: 0.012, wsumF: 0.009, wsumPub: 4, wsumComp: 0.01,
+  wsumB: 0.0084, wsumF: 0.0063, wsumPub: 4, wsumComp: 0.01,
   /** water results per building / footprint cell; the water brownout's seeds per seed, its BFS per queue cell */
-  wresB: 0.0044, wresF: 0.0085, wseed: 0.3, wbfs: 0.085,
-  /** the finish per building / footprint cell, the flags' publish per candidate, per event, the pass end (news) */
-  finB: 0.0145, finF: 0.001, apply: 0.05, event: 0.4, end: 5,
+  wresB: 0.0034, wresF: 0.0065, wseed: 1, wbfs: 0.085,
+  /** the finish per building / footprint cell, the flags' publish per candidate, per event, the pass end (news,
+   *  layerUpdated and its listeners) */
+  finB: 0.0097, finF: 0.0007, apply: 0.05, event: 0.4, end: 26,
 } as const;
+/**
+ * the chunk sizes, in estimated µs per unit (pieceUnits / cellUnits; kept apart from the estimates' UT coefficients, so a
+ * refit of the estimates never moves a piece boundary — traffic's TR_EST lesson): the plan per building, a label unit
+ * (a cell scanned or dequeued), the cell loops (the cold cell floor), a brownout queue cell, an event
+ */
+const US = { plan: 0.012, label: 0.007, cells: INFRA_CELL_SIZING_US, zoned: INFRA_CELL_SIZING_US, bfs: 0.027, wbfs: 0.085, event: 0.4 } as const;
 /** the chunk plan of the pass snapshot (every building stage walks it): the cold Building floor per building + 20 ns per
  *  footprint cell (the results' footprint writes; sizing only — the estimates use each stage's own coefficients) */
 const UT_PLAN_B = INFRA_BLD_SIZING_US, UT_PLAN_F = 0.02;
+/** the treatment prefix scan's sizing per building (a DefInfo lookup and two fields: a quarter of the Building floor) */
+const UT_SCAN_SIZING = INFRA_BLD_SIZING_US / 4;
 /** cells of one piece of a once-per-pass cell loop costing `us` per cell (the cold cell floor) */
 function cellUnits(us: number): number {
   return pieceUnits(us > INFRA_CELL_SIZING_US ? us : INFRA_CELL_SIZING_US, 1, COLD);
@@ -478,36 +493,37 @@ export class UtilitiesSystem implements SimSystem {
   private pieceUs(sim: Simulation): number {
     const st = sim.state, C = st.cells;
     const snap = this.snap, k = this.cur, last = k + 1 >= snap.chunks;
-    const cells = (us: number) => Math.max(0, Math.min(cellUnits(us), C - k)) * us;
+    const cells = (size: number, us: number) => Math.max(0, Math.min(cellUnits(size), C - k)) * us;
     if (this.stepIdx < 0) return UT.start;
     switch (this.sub) {
       case S_START: return UT.start;
       case S_SNAP: return st.buildings.size * UT.snapTake;
-      case S_PLAN: return Math.max(0, Math.min(pieceUnits(UT.plan, 1, COLD), snap.n - snap.planned)) * UT.plan;
+      case S_PLAN: return Math.max(0, Math.min(pieceUnits(US.plan, 1, COLD), snap.n - snap.planned)) * UT.plan;
       case S_SEA: return C * UT.sea;
-      case S_SCAN: return snap.countOf(k) * UT.scan;
+      case S_SCAN: return Math.max(0, Math.min(pieceUnits(UT_SCAN_SIZING, 1, COLD), snap.n - k)) * UT.scan;
       case S_USES:
         return snap.countOf(k) * UT.usesB + snap.cellsOf(k) * UT.usesF
           + (last ? UT.usesPub + (this.passFull ? 0 : (this.passAdded.length + this.passRemoved.length) * UT.patch) : 0);
       case S_PLABEL: case S_WLABEL:
-        return Math.max(0, Math.min(pieceUnits(UT.label, 1, COLD), 2 * (C - this.lS) + 1)) * UT.label + UT.labelPub;
+        return Math.max(0, Math.min(pieceUnits(US.label, 1, COLD), 2 * (C - this.lS) + 1)) * UT.label + UT.labelPub;
       case S_PSUM:
         return snap.countOf(k) * UT.sumB + snap.cellsOf(k) * UT.sumF
           + (last ? UT.sumPub + this.nPComp * UT.sumComp + this.nPlants * UT.sumPlant + this.nCrit * UT.sumCrit : 0);
-      case S_PCELLS: case S_BCELLS: case S_WCELLS: case S_WBCELLS: return cells(UT.cells);
+      case S_PCELLS: case S_BCELLS: case S_WCELLS: case S_WBCELLS: return cells(US.cells, UT.cells);
       case S_PBLD: return snap.countOf(k) * UT.resB + snap.cellsOf(k) * UT.resF;
       case S_WBLD: return snap.countOf(k) * UT.wresB + snap.cellsOf(k) * UT.wresF;
-      case S_PZONED: case S_WZONED: return cells(UT.zoned) + (C - k <= cellUnits(UT.zoned) ? C * UT.copy : 0);
+      case S_PZONED: case S_WZONED: return cells(US.zoned, UT.zoned) + (C - k <= cellUnits(US.zoned) ? C * UT.copy : 0);
       case S_BSEED: return 2 + this.nPlants * 9 * UT.seed;
-      case S_BBFS: return Math.max(0, Math.min(pieceUnits(UT.bfs, 1, COLD), Math.max(1, this.qt - this.qh))) * UT.bfs;
+      // (the queue grows while a BFS piece runs: its estimate is the piece's full size)
+      case S_BBFS: return pieceUnits(US.bfs, 1, COLD) * UT.bfs;
       case S_WSUM:
         return snap.countOf(k) * UT.wsumB + snap.cellsOf(k) * UT.wsumF + (last ? UT.wsumPub + this.nWComp * UT.wsumComp : 0);
-      case S_WBSEED: return 2 + this.nWSeeds * UT.wseed;
-      case S_WBBFS: return Math.max(0, Math.min(pieceUnits(UT.wbfs, 1, COLD), Math.max(1, this.qt - this.qh))) * UT.wbfs;
+      case S_WBSEED: return 8 + this.nWSeeds * UT.wseed;
+      case S_WBBFS: return pieceUnits(US.wbfs, 1, COLD) * UT.wbfs;
       case S_FBLD: return snap.countOf(k) * UT.finB + snap.cellsOf(k) * UT.finF;
-      case S_FAPPLY: return 2 + this.cand.length * UT.apply;
+      case S_FAPPLY: return 6 + this.cand.length * UT.apply;
       default: {
-        const left = this.changed.length - k, n = pieceUnits(UT.event, 1, COLD);
+        const left = this.changed.length - k, n = pieceUnits(US.event, 1, COLD);
         return Math.max(0, Math.min(n, left)) * UT.event + (left <= n ? UT.end : 0);
       }
     }
@@ -540,12 +556,15 @@ export class UtilitiesSystem implements SimSystem {
       case S_START: this.usesStart(st); this.sub = S_SNAP; break;
       case S_SNAP:
         this.snap.take(st);
+        // (pre-B2 read it in the uses step's prologue: a pure function of the buildings; here after the snapshot, so the
+        // day's first buildingList rebuild falls in this piece, whose estimate counts it)
+        this.jobsUnknown = detectJobsUnknown(st);
         // (one chunk plan for every building stage of the pass; each stage's estimate uses its own coefficients)
         this.snap.planBegin(UT_PLAN_B, UT_PLAN_F, pieceBudgetUs(COLD));
         this.sub = S_PLAN;
         break;
       case S_PLAN:
-        if (this.snap.planRun(pieceUnits(UT.plan, 1, COLD))) this.sub = S_SEA;
+        if (this.snap.planRun(pieceUnits(US.plan, 1, COLD))) this.sub = S_SEA;
         break;
       case S_SEA:
         // (pre-B2 took the sea mask at the first working water producer of the uses loop: a pure function of the water grid,
@@ -735,7 +754,6 @@ export class UtilitiesSystem implements SimSystem {
     const fx = readEffects(st);
     this.pMul = fx.powerDemand;
     this.wMul = fx.waterDemand;
-    this.jobsUnknown = detectJobsUnknown(st);
     this.eff = plantEfficiency(st);
     this.nInfo = 0;
     this.hasTreatment = false;
@@ -758,22 +776,23 @@ export class UtilitiesSystem implements SimSystem {
     this.soft = false;
   }
 
-  /** one piece of the treatment prefix scan (pre-B2's first prepareUses loop, in snapshot chunks; it stops at the first
+  /** one piece of the treatment prefix scan (pre-B2's first prepareUses loop, by building ranges of the snapshot: it
+   *  reads a DefInfo and two fields per building, so its pieces hold UT_SCAN_SIZING-sized ranges; it stops at the first
    *  working treatment plant, `useInfo` keeps the prefix's DefInfo) */
   private scanPiece(st: CityState): void {
     const snap = this.snap, list = snap.list, infos = this.useInfo;
-    let done = this.cur >= snap.chunks;
-    if (!done) {
-      let n = this.nInfo;
-      for (let bI = snap.bounds[this.cur], b1 = snap.bounds[this.cur + 1]; bI < b1; bI++) {
-        const b = list[bI];
-        const inf = infoOf(st, b);
-        infos[n++] = inf;
-        if (inf.isTreatment && b.built >= 1 && (b.flags & BF.Burnt) === 0) { this.hasTreatment = true; done = true; break; }
-      }
-      this.nInfo = n;
-      if (++this.cur >= snap.chunks) done = true;
+    const i1 = Math.min(snap.n, this.cur + pieceUnits(UT_SCAN_SIZING, 1, COLD));
+    let done = false;
+    let n = this.nInfo;
+    for (let bI = this.cur; bI < i1; bI++) {
+      const b = list[bI];
+      const inf = infoOf(st, b);
+      infos[n++] = inf;
+      if (inf.isTreatment && b.built >= 1 && (b.flags & BF.Burnt) === 0) { this.hasTreatment = true; done = true; break; }
     }
+    this.nInfo = n;
+    this.cur = i1;
+    if (i1 >= snap.n) done = true;
     if (!done) return;
     infos.length = this.nInfo;
     this.sub = S_USES;
@@ -906,7 +925,7 @@ export class UtilitiesSystem implements SimSystem {
   // ------------------------------------------------------------------------------------------ power
   /**
    * one piece of the power label (pre-B2 labelPower: conductor components — network cells, power lines, building cells —
-   * by BFS in cell order, in pieces of at most pieceUnits(UT.label) cells scanned or dequeued) into pCompNext; the last
+   * by BFS in cell order, in pieces of at most pieceUnits(US.label) cells scanned or dequeued) into pCompNext; the last
    * piece publishes (a swap: gridInfo never sees half labels), then the water label or the power sums follow
    */
   private powerLabelPiece(st: CityState): void {
@@ -919,7 +938,7 @@ export class UtilitiesSystem implements SimSystem {
       this.lBegun = true;
     }
     const comp = this.pCompNext, queue = this.queue;
-    let budget = pieceUnits(UT.label, 1, COLD);
+    let budget = pieceUnits(US.label, 1, COLD);
     let s = this.lS, nc = this.lNc, qh = this.qh, qt = this.qt, busy = this.lBusy;
     while (budget > 0) {
       if (busy) {
@@ -1110,7 +1129,7 @@ export class UtilitiesSystem implements SimSystem {
   /** a cell range of `out[i] = c >= 0 ? ok[c] : 0` (the results' first loop, the brownouts' first loop; out: private) */
   private cellsPiece(st: CityState, out: Uint8Array, comp: Int32Array, ok: Uint8Array, next: number): void {
     const C = st.cells;
-    const i1 = Math.min(C, this.cur + cellUnits(UT.cells));
+    const i1 = Math.min(C, this.cur + cellUnits(US.cells));
     for (let i = this.cur; i < i1; i++) {
       const c = comp[i];
       out[i] = c >= 0 ? ok[c] : 0;
@@ -1154,7 +1173,7 @@ export class UtilitiesSystem implements SimSystem {
 
   /**
    * one piece of the power brownout BFS (pre-B2 powerBrownout's loop: from the plants of short components, consumers in
-   * distance order; once the supply is exhausted every farther consumer loses power), at most pieceUnits(UT.bfs) queue
+   * distance order; once the supply is exhausted every farther consumer loses power), at most pieceUnits(US.bfs) queue
    * cells; then the building results
    */
   private brownBfsPiece(st: CityState): void {
@@ -1166,7 +1185,7 @@ export class UtilitiesSystem implements SimSystem {
     const powered = this.poweredNext;
     const exhausted = this.exhaustedP;
     let qh = this.qh, qt = this.qt;
-    const q1 = qh + pieceUnits(UT.bfs, 1, COLD);
+    const q1 = qh + pieceUnits(US.bfs, 1, COLD);
     while (qh < qt && qh < q1) {
       const i = queue[qh++];
       const c = comp[i];
@@ -1238,7 +1257,7 @@ export class UtilitiesSystem implements SimSystem {
     const N = st.size, C = st.cells;
     const zone = st.zone;
     const comp = this.pComp, powered = this.poweredNext;
-    const i1 = Math.min(C, this.cur + cellUnits(UT.zoned));
+    const i1 = Math.min(C, this.cur + cellUnits(US.zoned));
     for (let i = this.cur; i < i1; i++) {
       if (zone[i] === 0 || comp[i] >= 0) continue;
       const x = i % N;
@@ -1287,7 +1306,7 @@ export class UtilitiesSystem implements SimSystem {
       this.lBegun = true;
     }
     const comp = this.wCompNext, queue = this.queue;
-    let budget = pieceUnits(UT.label, 1, COLD);
+    let budget = pieceUnits(US.label, 1, COLD);
     let s = this.lS, nc = this.lNc, qh = this.qh, qt = this.qt, busy = this.lBusy;
     while (budget > 0) {
       if (busy) {
@@ -1454,7 +1473,7 @@ export class UtilitiesSystem implements SimSystem {
   }
 
   /** one piece of the water brownout BFS (pre-B2 waterBrownout's loop: over the pipes from the producers, nearest
-   *  buildings first), at most pieceUnits(UT.wbfs) queue cells; then the building results */
+   *  buildings first), at most pieceUnits(US.wbfs) queue cells; then the building results */
   private waterBrownBfsPiece(st: CityState): void {
     const N = st.size, C = st.cells;
     const bld = st.building;
@@ -1464,7 +1483,7 @@ export class UtilitiesSystem implements SimSystem {
     const wLeft = this.wLeft;
     const exhausted = this.exhaustedW;
     let qh = this.qh, qt = this.qt;
-    const q1 = qh + pieceUnits(UT.wbfs, 1, COLD);
+    const q1 = qh + pieceUnits(US.wbfs, 1, COLD);
     while (qh < qt && qh < q1) {
       const i = queue[qh++];
       const c = comp[i];
@@ -1538,7 +1557,7 @@ export class UtilitiesSystem implements SimSystem {
     const N = st.size, C = st.cells;
     const zone = st.zone, bld = st.building;
     const comp = this.wComp, watered = this.wateredNext;
-    const i1 = Math.min(C, this.cur + cellUnits(UT.zoned));
+    const i1 = Math.min(C, this.cur + cellUnits(US.zoned));
     for (let i = this.cur; i < i1; i++) {
       if (zone[i] === 0 || bld[i] >= 0 || comp[i] >= 0) continue;
       const x = i % N;
@@ -1626,7 +1645,7 @@ export class UtilitiesSystem implements SimSystem {
   /** the events in batches (after the flags they announce); the last piece: news, layerUpdated, the pass end */
   private eventsPiece(sim: Simulation): void {
     const st = sim.state, changed = this.changed;
-    const k1 = Math.min(changed.length, this.cur + pieceUnits(UT.event, 1, COLD));
+    const k1 = Math.min(changed.length, this.cur + pieceUnits(US.event, 1, COLD));
     for (let k = this.cur; k < k1; k++) {
       const b = changed[k];
       // (R4: a snapshot building removed since gets no event; in an uninterrupted pass every one is live)

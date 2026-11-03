@@ -608,7 +608,9 @@ export const INDUSTRIAL_POLL = { air: 0.25, water: 0, radius: 3 } as const;
 /** medical survival = MED_SURVIVE - MED_DELAY_LOSS x smoothstep(5, 16, D days) (- 0.1 when the hospital is overcrowded) */
 export const MED_SURVIVE = 0.97;
 export const MED_DELAY_LOSS = 0.67;
-/** response-layer task (scheduler 'emergency.response'): station searches settle at most EMERG_SEARCH_CHUNK road
+/** PRE-B2 (41ae570) response-layer chunks and costs, kept for the frozen original (tests/sim/exact/emergencyOriginal.ts)
+ *  and the search bench (tools/bench/roadTransitSearch/secondary.ts); B2 (G4) sizes the response pieces in emergency.ts
+ *  (ES, EM). Pre-B2: response-layer task (scheduler 'emergency.response'): station searches settle at most EMERG_SEARCH_CHUNK road
  *  nodes per step and the building fill covers EMERG_FILL_CHUNK buildings per step, so every step stays bounded on
  *  any map. Estimated ms (measured on the 256² stress city): EMERG_SEARCH_COST per 36k settled nodes,
  *  EMERG_FILL_CELLS_COST per 65k cells (the land fill of all three layers), EMERG_FILL_BLD_COST per 20k buildings,

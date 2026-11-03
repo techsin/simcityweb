@@ -766,7 +766,10 @@ const EM_EST = 1;
 /**
  * B2 cost model (design §9): estimated warm wall µs per work unit of each kind of response piece. Start values: the
  * services + emergency mapping's in-schedule fits (search 0.05 ms + 0.050 µs per settled node, slack 0.0026 µs per node;
- * the land fill 0.14 ms + 0.0113 µs per cell; the building fill 0.05 ms + 0.14 µs per building).
+ * the land fill 0.14 ms + 0.0113 µs per cell; the building fill 0.05 ms + 0.14 µs per building). G4 refit (dense1m and
+ * bot256 --warm 300 --days 120, 3 runs each, the geometric mean of each label's median est / ms): the building fill / 1.34,
+ * the land fill x 1.24, the slack x 1.3, a search's start 5 -> 40 µs (+ 0.003 per node), the resets 3 -> 20. None of them
+ * sizes a piece (ES does).
  */
 const EM = {
   /** per piece (dispatch, the epoch check, saveResp) */
@@ -774,12 +777,16 @@ const EM = {
   /** the graph signature per node; the station scan per building, its install per station; the siren times per node */
   sig: 0.01, scan: 0.03, install: 10, station: 1.5, times: 0.006,
   /** the snapshot of the station scan per building; the resets (fixed) + the siren-time copy per node */
-  snapTake: 0.014, reset: 3, copy: 0.0004,
+  snapTake: 0.014, reset: 20, copy: 0.0004,
   /** a search's start (fixed + its fills per node), per settled node, the slack per node */
-  start: 5, fill: 0.002, settle: 0.05, slack: 0.0026,
+  start: 40, fill: 0.003, settle: 0.05, slack: 0.0034,
   /** the land fill per cell (+ the RESP_NONE fills per cell), the building fill per building */
-  cell: 0.0113, none: 0.0004, bld: 0.14,
+  cell: 0.014, none: 0.0004, bld: 0.105,
 } as const;
+/** the chunk sizes, in estimated µs per unit (emUnits; kept apart from the EM estimate coefficients, so a refit of the
+ *  estimates never moves a piece boundary): a signature node, a scanned building, a siren-time node, a settled node, a
+ *  slack node, a land-fill cell, a filled building */
+const ES = { sig: 0.01, scan: 0.03, times: 0.006, settle: 0.05, slack: 0.0026, cell: 0.0113, bld: 0.14 } as const;
 /** units of one piece of a once-per-sequence loop costing `us` per unit (the cold cell / Building floor: `floor`) */
 function emUnits(us: number, floor = INFRA_CELL_SIZING_US): number {
   return pieceUnits(us > floor ? us : floor, 1, EM_COLD);
@@ -3144,7 +3151,7 @@ export class EmergencySystem implements SimSystem {
       h[0] = 0x811c9dc5 | 0;
       h[1] = 0x2545f491 | 0;
     }
-    const n = g.n, v1 = Math.min(n, this.sigV + emUnits(EM.sig));
+    const n = g.n, v1 = Math.min(n, this.sigV + emUnits(ES.sig));
     sigRange(g, this.sigV, v1, h);
     this.sigV = v1;
     if (v1 < n) return;
@@ -3170,13 +3177,13 @@ export class EmergencySystem implements SimSystem {
     if (!this.graphReady(st)) {
       const tg = this.trafficGraph(st)!;
       const v0 = this.sigRunG === tg && this.sigRunVer === tg.version ? this.sigV : 0;
-      return Math.max(0, Math.min(emUnits(EM.sig), tg.n - v0)) * EM.sig;
+      return Math.max(0, Math.min(emUnits(ES.sig), tg.n - v0)) * EM.sig;
     }
     if (this.respStep < 0) {
       switch (this.respSub) {
         case ES_IDLE: case ES_SIG: return EM.start + (this.stDirty ? st.buildings.size * EM.snapTake : this.timesUs() + EM.reset + n * EM.copy);
         case ES_SCAN: {
-          const left = this.stSnap.n - this.respCur, k = emUnits(EM.scan, INFRA_BLD_SIZING_US);
+          const left = this.stSnap.n - this.respCur, k = emUnits(ES.scan, INFRA_BLD_SIZING_US);
           return Math.max(0, Math.min(k, left)) * EM.scan + (left <= k ? EM.install + this.stScan.length * EM.station : 0);
         }
         default: return this.timesUs() + EM.reset + n * EM.copy;
@@ -3185,24 +3192,24 @@ export class EmergencySystem implements SimSystem {
     if (this.respStep < 3) {
       switch (this.respSub) {
         case RS_START: return EM.start + n * EM.fill;
-        case RS_RUN: return Math.max(0, Math.min(emUnits(EM.settle), n - this.cs.settled)) * EM.settle;
-        default: return Math.max(0, Math.min(emUnits(EM.slack), n - this.respCur)) * EM.slack;
+        case RS_RUN: return Math.max(0, Math.min(emUnits(ES.settle), n - this.cs.settled)) * EM.settle;
+        default: return Math.max(0, Math.min(emUnits(ES.slack), n - this.respCur)) * EM.slack;
       }
     }
     if (this.respStep === 3) {
-      const N = st.size, rows = Math.max(1, Math.floor(emUnits(EM.cell) / Math.max(1, N)));
+      const N = st.size, rows = Math.max(1, Math.floor(emUnits(ES.cell) / Math.max(1, N)));
       const none = (this.hasStation[0] ? 0 : 1) + (this.hasStation[1] ? 0 : 1) + (this.hasStation[2] ? 0 : 1);
       return Math.max(0, Math.min(rows, N - this.respCur)) * N * EM.cell + (this.respCur === 0 ? none * st.cells * EM.none : 0);
     }
     const nbld = st.buildings.size;
-    return Math.max(0, Math.min(emUnits(EM.bld, INFRA_BLD_SIZING_US), nbld - this.respBCur)) * EM.bld;
+    return Math.max(0, Math.min(emUnits(ES.bld, INFRA_BLD_SIZING_US), nbld - this.respBCur)) * EM.bld;
   }
 
   /** µs of the next siren-times piece (0 when they are fresh) */
   private timesUs(): number {
     if (!this.tmDirty && this.tmVer === this.gEpoch) return 0;
     const n = this.g.n, v0 = this.tmRun && this.tmRunEpoch === this.gEpoch && this.tmRunGen === this.tmGen ? this.respCur : 0;
-    const k = emUnits(EM.times);
+    const k = emUnits(ES.times);
     return Math.max(0, Math.min(k, n - v0)) * EM.times + (n - v0 <= k ? n * EM.copy : 0);
   }
 
@@ -3322,7 +3329,7 @@ export class EmergencySystem implements SimSystem {
   private stScanPiece(sim: Simulation): boolean {
     if (!this.stDirty) { this.stSnap.release(); this.stScan.length = 0; return true; }
     const L = this.stSnap.list, n = this.stSnap.n, found = this.stScan;
-    const i1 = Math.min(n, this.respCur + emUnits(EM.scan, INFRA_BLD_SIZING_US));
+    const i1 = Math.min(n, this.respCur + emUnits(ES.scan, INFRA_BLD_SIZING_US));
     for (let i = this.respCur; i < i1; i++) {
       const b = L[i];
       if (fleetOfDef(b.def) && isFunctional(b)) found.push(b);
@@ -3353,7 +3360,7 @@ export class EmergencySystem implements SimSystem {
       this.respCur = 0;
       if (this.tmN.length < n) this.tmN = new Float32Array(n + (n >> 3) + 16);
     }
-    const v1 = Math.min(n, this.respCur + emUnits(EM.times));
+    const v1 = Math.min(n, this.respCur + emUnits(ES.times));
     this.tmFree = sirenTimes(g, st.traffic, this.tmN, this.respCur, v1, this.tmFree);
     this.respCur = v1;
     if (v1 < n) return false;
@@ -3397,14 +3404,14 @@ export class EmergencySystem implements SimSystem {
         return false;
       }
       case RS_RUN:
-        if (!cs.step(g, g.fwd, this.respTm, emUnits(EM.settle))) return false;
+        if (!cs.step(g, g.fwd, this.respTm, emUnits(ES.settle))) return false;
         this.csActive = false;
         this.respSub = RS_SLACK;
         this.respCur = 0;
         return false;
       default: {
         const dist = cs.dist;
-        const v1 = Math.min(n, this.respCur + emUnits(EM.slack));
+        const v1 = Math.min(n, this.respCur + emUnits(ES.slack));
         for (let v = this.respCur; v < v1; v++) {
           const d = dist[v];
           if (d === Infinity) { slack[v] = -EMERG_RMAX; continue; }
@@ -3435,14 +3442,14 @@ export class EmergencySystem implements SimSystem {
       for (let ri = 0; ri < 3; ri++) if (!has[ri]) L[ri].fill(RESP_NONE);
       if (!h0 && !h1 && !h2) return true;
     }
-    const z0 = this.respCur, z1 = Math.min(N, z0 + Math.max(1, Math.floor(emUnits(EM.cell) / Math.max(1, N))));
+    const z0 = this.respCur, z1 = Math.min(N, z0 + Math.max(1, Math.floor(emUnits(ES.cell) / Math.max(1, N))));
     respFillRows(st, noc, this.nodeSlack, L, h0, h1, h2, z0, z1);
     this.respCur = z1;
     return z1 >= N;
   }
 
   /** building footprints: best slack over the perimeter road nodes (= the dispatch search seeds), all three layers;
-   *  pieceUnits(EM.bld) buildings of the building list per step (the live list with the cursor respBCur, as pre-B2).
+   *  pieceUnits(ES.bld) buildings of the building list per step (the live list with the cursor respBCur, as pre-B2).
    *  Returns true when every building is done. */
   private respFillBuildingsPiece(st: CityState): boolean {
     const L = this.respLayers(st);
@@ -3450,7 +3457,7 @@ export class EmergencySystem implements SimSystem {
     if (noc.length !== st.cells) return true;
     const list = buildingList(st);
     const q0 = Math.min(this.respBCur, list.length);
-    const q1 = Math.min(list.length, q0 + emUnits(EM.bld, INFRA_BLD_SIZING_US));
+    const q1 = Math.min(list.length, q0 + emUnits(ES.bld, INFRA_BLD_SIZING_US));
     this.respBCur = q1;
     const N = st.size;
     const bld = st.building;

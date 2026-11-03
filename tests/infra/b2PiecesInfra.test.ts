@@ -624,8 +624,9 @@ describe('B2 G4 emergency response: a sequence in one go = in pieces = the froze
         if (est > (max.get(name) ?? 0)) max.set(name, est);
       });
     }
-    // (a quarter of INFRA_PIECE_COLD_MS for every piece; the station scan's snapshot, one building-list copy, excepted)
-    for (const [name, est] of max) expect(est, `${name} estimate`).toBeLessThanOrEqual(name === 'resp0.stations' ? 0.5 : INFRA_PIECE_COLD_MS * 0.5);
+    // (a quarter of INFRA_PIECE_COLD_MS for every piece; the station scan's snapshot, one building-list copy, and a search's
+    // start — the seeds and ChunkedSearch.start's native O(n) fills — excepted)
+    for (const [name, est] of max) expect(est, `${name} estimate`).toBeLessThanOrEqual(name === 'resp0.stations' ? 0.5 : name.endsWith('.start') ? INFRA_PIECE_COLD_MS : INFRA_PIECE_COLD_MS * 0.5);
     expect(max.size).toBeGreaterThan(10);
   }, 300_000);
 });
