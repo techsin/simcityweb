@@ -4,7 +4,7 @@
 - **Base:** `41ae570` = the dev branch + the exact J-fixes + LG-01 + the guide copy + B1 (`5bb5467`). B1's 128 × 15 seed-7 2015 reference is 196,101.
 - **Branch:** `b2-step-split` (local only).
 - **Inputs:** the three mapping reports (traffic, services + emergency, crime + pollution + utilities) and their data under `scratchpad/b2work/map-*`. Every number below is from those reports unless it says otherwise.
-- **Status:** design, with the design reviews' changes. G1 (`G1-core-traffic`) is built: §15 lists what it changed against this text and which review items it applied. The build order is §10, in four groups: `G1-core-traffic`, `G2-services-nimby`, `G3-crime-pollution`, `G4-utilities-emergency-recalibration`.
+- **Status:** design, with the design reviews' changes. G1 (`G1-core-traffic`) is built: §15 lists what it changed against this text and which review items it applied. G2 (`G2-services-nimby`) is built: §16, and the "as built" notes in §4. The build order is §10, in four groups: `G1-core-traffic`, `G2-services-nimby`, `G3-crime-pollution`, `G4-utilities-emergency-recalibration`.
 
 ## 0. Summary
 
@@ -71,8 +71,9 @@ Terms used below:
 - Exceptions to the budget, each bounded in cold ms (review 2, item 5):
   - one call of a shared kernel (`blur.ts`, `saturate`, the police `needOf`): where it can exceed 3 ms cold it is split by rows or columns, which is exact for separable passes (review 2, item 3d; G2 / G3);
   - publish pieces: their content is computed in ordinary pieces into private buffers, and the publish piece only swaps or `.set()`s (review 2, item 5a). Its estimate counts the copy;
-  - the edit-only lazy caches that other code also calls synchronously. Traffic runs `refreshAttach` in its own piece (the first piece of prep and of prepTransit) when it is dirty. When another task's query triggers it first, it runs inside that task's piece (about 0.3 ms at 256²); G2 / G3 add its cost to the estimates of the pieces that can trigger it (review 2, item 5e). Emergency `syncStations` (G4).
+  - the edit-only lazy caches that other code also calls synchronously. Traffic runs `refreshAttach` in its own piece (the first piece of prep and of prepTransit) when it is dirty. When another task's query triggers it first, it runs inside that task's piece (about 0.3 ms at 256²); G2 / G3 add its cost to the estimates of the pieces that can trigger it (review 2, item 5e). As built (G2): services runs it in a piece of its own instead, right before prep's building chunks and before the stop disks, while `TrafficSystem.attachRefreshMs(st)` reports it pending (`stopAttached(-1)` refreshes; the refresh is a pure function of the state, so its time does not change any result). Emergency `syncStations` (G4).
 - **Loops whose cold cost is extreme** (the stop disks 37×, shopB's bilinear output 25×, finish's legacy combos 27×) use the cold budget from the start, not after a failed gate run.
+- **Services as built (G2):** the tier engine's steps use half `INFRA_PIECE_MS`; every other services loop uses half `INFRA_PIECE_COLD_MS`, like traffic's once-per-cycle loops — NIMBY and foot included (listed above at `INFRA_PIECE_MS`): they run once per pass, NIMBY every second pass, so they stay cold the longest. The stop disks use a quarter of `INFRA_PIECE_COLD_MS`. A once-per-pass cell loop also takes at most the cells of a cold floor, `INFRA_CELL_SIZING_US = 0.004` µs per cell (params.ts; about 16,000 cells per piece), however cheap it is warm: on their first executions after a load these loops ran at about 0.1 µs per cell, 25–70× their warm cost. A once-per-pass Building loop likewise takes at most `INFRA_BLD_SIZING_US = 0.2` µs per building (about 325 buildings per piece): prep's chunks, the stop list, the access seeds and homes, shopB's block sums, the EQ / HQ fallback, the police scan and job sites ran at 1–8 µs per building on first executions and after Building-shape deopts. The tier engine's final row items (a slot's clamp and stats) run alone in their step under the same floor. Pure native fills and copies use `INFRA_PIECE_MS`. The estimates carry one absolute scale, `SV_EST` (traffic's `TR_EST` pattern), and §16 gives the cold measurements.
 - **Traffic as built (G1, measured at dense1m):** its searches use `INFRA_PIECE_MS`; every other traffic loop uses half `INFRA_PIECE_COLD_MS`. Those loops run once per cycle (or once per matching round), so they stay cold for the first 10–15 cycles after a load: 10–37× their warm cost in days 0–80, and the matching's accept loop about 45× on its first executions. Traffic's estimates also carry one absolute scale, `TR_EST`: the TC table sets the relative costs, and so the chunk sizes; `TR_EST` makes the estimate honest warm ms without moving a chunk (§15).
 
 **R3. Same statements, same order.**
@@ -136,7 +137,7 @@ Terms used below:
 - **Flags.** Computed per chunk into a desired-value array (or a list of the buildings whose bit changes, with the new bits), applied in one piece in snapshot order with `setFlagQuiet`. The `changed` list comes out in today's order. One rule for every task (review 2, item 5d): the applying piece has its own coefficient and a cold measurement, and is chunked only if it exceeds 3 ms cold.
 - **Events.** Emitted after all the state they announce is published, in today's order. They may be spread over consecutive pieces (`pieceUnits(0.4 µs per event)`).
 - **Exceptions.** A few states already pass through intermediate states between steps today, and B2 leaves them as they are:
-  - the services per-facility records written by each tier step;
+  - the services per-facility records written by each tier step (as built, G2: and their stale-record clear at the pass end, by id ranges; a record of a facility the pass did not process can stay readable until its range runs, and `facilityLoadOf` already drops removed and re-tiered buildings itself);
   - `transitCov` between the transit slot, `S_STOPS` and `S_FOOT`;
   - the emergency response layers between `resp3` and the `resp4` chunks;
   - the inspector-only per-id arrays `airById` and the garbage `served` / `reach` stamps.
@@ -164,13 +165,13 @@ Terms used below:
 - No new saved field. Every cursor, snapshot and scratch field is reset in `init()` (so in `replaceState` too) and at each pass start.
 - A save never holds a pass in progress. The one exception is emergency's `p.resp = [respLast, pending]`, as today: `pending = 2` while `respStep ≥ 0`, written by `saveResp()` after every piece.
 - Traffic keeps `saveTransport()` and `cycles++` in the cycle's last piece. `runCycleSync` still loops until `phase < 0`.
-- **Saved data that changes within one step today changes within one piece** (review 1, R4). Traffic: `st.traffic` and `st.congestion` (final's publish piece), the building flags (final2's publish piece), `stats`, and `systemData.infraTransport` (the cycle's last piece; `parkingQ` is quantised into a new buffer on recompute cycles, never in place inside the live save). G3: the brownfield `st.soil` / `st.landfillFill` writes, collected in scan order and applied in one piece. G4: the Powered / Watered flags, staged per chunk and applied in one piece.
+- **Saved data that changes within one step today changes within one piece** (review 1, R4). Traffic: `st.traffic` and `st.congestion` (final's publish piece), the building flags (final2's publish piece), `stats`, and `systemData.infraTransport` (the cycle's last piece; `parkingQ` is quantised into a new buffer on recompute cycles, never in place inside the live save). Services (G2): each saved coverage layer (`policeCov`, `fireCov`, `healthCov`, `eduCov`, `parkCov`) in its publish piece, `transitCov` in the three states that wrote it pre-B2, and `stats.needs` with `stats.eq` / `hq` in finish's last piece. G3: the brownfield `st.soil` / `st.landfillFill` writes, collected in scan order and applied in one piece. G4: the Powered / Watered flags, staged per chunk and applied in one piece.
 - Two pre-existing reload leaks stay as they are, because fixing them would change save / load behaviour (review 1, O10): pollution's `ground` is not reset on a same-size `replaceState`, and the scheduler's credit, carry and `lastDay` survive `replaceState`.
 
 **R10. JIT hygiene.**
 - Each piece is its own method with one main loop. The dispatcher is a thin `switch`. The mapping found that TurboFan takes 15–46 ms to compile today's big step functions, and they deoptimise on never-executed code after the loop.
 - No allocation per piece: scratch grows once. Today's per-call `new Float32Array` in `shopLand` and the closures built per call become fields.
-- The services tier engine gets per-facility typed arrays (strength, tier + 1, id, powered-flag, op, cap) built in prep. Then `allocSeats`, `reportDemand`, `splatUnion` and `record` never read a `Building`. This targets the 277–340 'wrong map' deopts the mapping found in `allocSeats`.
+- The services tier engine gets per-facility typed arrays (strength, tier + 1, id, powered-flag, op, cap) built in prep. Then `allocSeats`, `reportDemand`, `splatUnion` and `record` never read a `Building`. This targets the 277–340 'wrong map' deopts the mapping found in `allocSeats`. As built (G2): the value arrays are not built (review 2, optional item 5), and `powById` keeps its pre-B2 read at the tier step. Two smaller changes took their place (§16): the per-facility scratch of the current slot (`facStart`, `facEnd`, `facSig`, `facSeat`) is typed and grown once — pre-B2's JS arrays, emptied per slot and filled in seat order, made `allocSeats` deoptimise on an out-of-bounds store and run unoptimised for whole tier steps — and each tier function reads a facility's `id` / `flags` once, at its top. Later in G2: the seat-order comparator reads a typed copy of the ids instead of the Buildings, and the footprint max's max and fill loops are separate functions (§16.2).
 
 **R11. Determinism.**
 - Chunk sizes are constants derived from coefficients.
@@ -411,6 +412,15 @@ No fixture has P&R garages.
 - New fields: `sub` and the per-state cursors.
 - Services' pass snapshot is taken in prep and serves prep, stops, accSeed, the accLand footprints, shopB and the EQ / HQ fallback.
 - "hot" figures in this section are the services mapping's forced-pass medians, which matched the late headless window.
+
+**As built (G2; the tables below are the design, these are the differences; §16 has the measurements):**
+- **Budgets and estimates.** R2 "Services as built". Every piece kind has an `SC` coefficient (µs per unit); its chunk is `pieceUnits(SC.x, 1, budget)` — for a once-per-pass cell loop at most `pieceUnits(INFRA_CELL_SIZING_US, 1, budget)` cells — and its estimate `SV_EST × (SC.piece + units × SC.x)`. Row loops take `floor(cells / N)` rows, at least one.
+- **Prep.** PR0a's hashes run by ranges: the corridor hash, then `hashBytes` of the network and of the water (each a sequential hash carried in a field). The first piece consumes the pass inputs (R5) and calls `ensure`; the NIMBY decision follows the corridor hash, the reach invalidation (`checkNetwork`) the water hash, in the pre-B2 order. Then the setup, the back need rasters (native fills), traffic's pending attachment refresh in a piece of its own (review 2 item 5e), the snapshot (the per-id arrays are sized there, so every snapshot id fits), its chunk plan in pieces, the building chunks, the provider slots (the police need as a resumable run, review 2 item 5b: the monthly scan in chunks over the pass list, installed with the list's `nextBuildingId`, the job sites, the cell pass; then the sum by ranges), the road count by ranges, the publish, the work estimate by facility ranges.
+- **Tiers.** The re-weighted units as designed, plus per-cell units for the final items (clamp 0.11, stats 0.11, publish 0.02, foot 0.22 per lot cell); `seatOrder` counts as an item (n log2 n). The step's budget is half `INFRA_PIECE_MS`. A lot item takes as many lots as the step has room for, at least one, and at most S_FOOT's lots per piece (`SC.foot` per lot cell at the cold budget, about 3,900 lot cells; its max and fill loops are separate functions, §16.2); a row item (clamp, stats) runs alone in its step, at most the cold floor's rows. **A fresh reach is a resumable item** (the design ran it as one item, alone when over the budget): catchments `ReachRun`, on its own engine, repeats reachRaw's loop bodies; its Dial drain stops between queue entries (`U_REACH_POP` = 4.5 units each: 0.39 entries per reached cell, 0.10 warm µs per entry at dense1m) and a disk between rows (`U_REACH_DISK` = 1.4 per cell visited), so a piece holds about 1,350 queue entries. The item is held across tier steps (`reachPh`, the facility's cursor advances when it completes); its pool copy, cache entry, record and union splat run in its last piece, or first in the next step when they do not fit. R10's per-facility arrays are not built (R10 as built).
+- **Stops.** The compose writes into a byte copy of `transitCov` (cells without stop coverage keep their exact bits; pre-B2 left them untouched), published by `.set()`; traffic's attachment refresh, when pending, has a piece of its own before the disks.
+- **NIMBY.** A building chunk ends once its estimate (per building + per kernel touch) reaches the budget; landfill row pairs likewise (pairs without landfill are free); corridor ranges start and end on multiples of 4. Each run owns its scratch: the services instance one, `rebuildNimby` one per state.
+- **Foot.** On a byte copy of `transitCov`, by lots, published by `.set()` (review 2 item 5a).
+- **Finish.** The legacy combos by rows into private buffers, then their publish piece (review 2 item 5a); the per-tier stats by rows; the stale records by id ranges (R7 exceptions); the EQ / HQ fallback by snapshot chunks; `stats.needs` is written in the last piece with `stats.eq` / `hq` (R9).
 
 ### S_PREP
 
@@ -920,6 +930,9 @@ New: save in the middle of every task's pass, with tiny pieces so that every tas
 | `tests/sim/exact/j10.test.ts` | atomic passes compared at pass ends, B2 fields excluded by name, edits between passes (G4) | it traces per-step costs and boundaries (review 1, R7a) |
 | `tests/sim/servicesTrigger.test.ts` 'urgent change after prep' | step while `stepIdx === S_PREP` instead of one step (G2) | prep is several pieces (review 1, R7b) |
 | `tests/infra/catchments.test.ts` 'bulldozed mid-pass' | step until prep is done (G2) | review 1, R7c |
+| `tests/wasm/servicesTierEngine.test.ts` §2–§4 (G2) | the engine is installed into the frozen pre-B2 class (`tests/sim/exact/servicesOriginal.ts`), which replaces the live `ServicesSystem` in those sections' `createSystems()` | the port mirrors the pre-B2 pass structure; the B2 pieces equal the frozen class at every pass end (§11.6 as built) |
+| `tests/infra/perf.test.ts` P0-8 (G2) | services' largest piece estimate ≤ 1.0, like traffic's | every services piece is estimated at about one budget |
+| `tests/infra/emergencyBot.test.ts` EM-1 normal play (G2) | the invariants are checked on the first of seeds 2, 4, 5, 6, 1, 3, 8 whose 4-year town raises at least two prompts (G1 had moved it from seed 7 to seed 2) | the bot's schedule follows the estimates; G2's tier pieces left seed 2 with one prompt |
 
 ### 11.6 The WASM ports: a decision for the lead
 
@@ -938,6 +951,12 @@ New: save in the middle of every task's pass, with tiny pieces so that every tas
 - The kernel-level sections stay. So does the nimby live-module test, because `rebuildNimby` / `nimbyCost` keep their semantics.
 - This is PI-6's archive, done early for two ports. **It needs the lead's OK.**
 - The alternative is PI-6 before B2.
+
+**As built (G2): no skip needed for services.** Review 1 (R6) suggested frozen originals as the alternative, and they also keep these sections running:
+- `tests/sim/exact/servicesOriginal.ts` is services.ts at 41ae570, frozen. In the live-instance sections it replaces the live `ServicesSystem` in `createSystems()`, and the engine is installed into it. All 18 tests run and pass (the fixture section needs `SIM_FIXTURES`; §16).
+- `tests/infra/b2PiecesServices.test.ts` proves the B2 pieces equal to the frozen class at every pass end, so the chain WASM port = frozen pre-B2 class = B2 holds.
+- `tests/wasm/fieldPasses.test.ts` §5 'whole city' still passes, but its NIMBY swap (a `vi.mock` of `rebuildNimby` / `nimbyCost`) no longer reaches the services pass, which runs its own `NimbyRun`. Its live-module section still compares `rebuildNimby` with the port. G3 can keep the pollution sections the same way, with a frozen pollution class.
+- The bench tools that install the services engine into a live `ServicesSystem` (`tools/bench/servicesTierEngine*`, outside B2's files) need the frozen class too: the engine's `tierWork` override expects its own `prep`, which the split pass no longer calls, so an install into the live system fails at its first tier step.
 
 ## 12. Acceptance protocol (gates role, G4)
 
@@ -1148,3 +1167,188 @@ W's p99 ranged 1.96–2.29, 1.29–1.77, 0.41–0.45 and 0.95–1.02 over its ru
 - **Cold factors decide the sizes.** A loop that runs once per pass stays cold for many passes: 10–37× its warm cost in days 0–80, about 45× on its first executions, and deopt waves (the day-148 Building wave) hit 0.05 ms pieces at 3–4 ms. Size such loops for that, then calibrate.
 - **Warm costs move with the chunk size.** In one run each, prep's node-time loop measured 52 ns per node in 13,000-node chunks and 5 ns per node in 2,000-node chunks (days 80–220). Choose the sizes first, calibrate after, and keep the absolute scale of the estimates separate from the chunking (traffic's `TR_EST`), so the final calibration does not move a chunk.
 - **One method per piece kind** (R10) is cheap to keep from the start; splitting the dispatchers later was a mechanical move of each `case` body.
+
+## 16. G2 as built (`G2-services-nimby`, Oct 28 – Nov 3)
+
+**Commits** (branch `b2-step-split`, on G1's `7599eb8`): `11e2267` the kernels (`RoadTimeRun`, `RoadDistRun`, `transitCoverageRange`, `NimbyRun`, the police need run, `TrafficSystem.attachRefreshMs`), `a8ebea0` every services state in pieces with the cost model per piece and the test adaptations of §11.5, `2270de9` one method per piece kind (R10), `0faa81a` the cold cell floor and smaller tier steps, `8d1736b` the cost fit, `a168442` the cold Building floor and the typed tier scratch, `817e677` the resumable fresh reach and the footprint-max pieces, `d76ca80` the seat-order comparator, then this document. `npx tsc --noEmit` clean; the full `npx vitest run` at `803c7bc` (one worker, low priority: the timing lock was taken by other workers for hours): 136 files passed, 1 skipped (1,381 tests passed, 18 skipped), no unhandled errors. The first full run, at `d76ca80`, failed only `emergencyBot` EM-1 normal play (the bot's town moved; `803c7bc` adapts the test, §11.5).
+
+### 16.1 Review items applied
+
+| item | where |
+|---|---|
+| R4 / R9 (saved data in one piece) | each saved coverage layer (`policeCov`, `fireCov`, `healthCov`, `eduCov`, `parkCov`) changes in its publish piece (`layer.set(finBuf)`, the combos from private buffers); `transitCov` in the three states that wrote it pre-B2 (the transit slot's publish, stops' and foot's publish from byte copies); `stats.needs` with `stats.eq` / `hq` in finish's last piece. b2PiecesServices "R9": a save taken in the middle of a pass loads idle, and loads the same twice |
+| R5 (inputs at the stage start) | prep's first piece consumes `dirtyUrgent`, `dirty`, `accessDirty`, `nimbyDirty` and the pass inputs; an urgent change arriving after it stays pending for the next pass (`servicesTrigger`) |
+| R6 (proof against today's code) | `tests/sim/exact/servicesOriginal.ts` (services.ts at 41ae570, frozen): b2PiecesServices compares every original field at every pass end; `passdigest --mode atomic` B vs W on dense1m, bot256, dense1m without WP1, and three services cities generated with B's code, each with and without WP1 (16.3) |
+| R7 (the three tests) | `servicesTrigger` and `catchments` 'bulldozed mid-pass' step until prep is done (§11.5); b2PiecesServices "R7": every external output changes in at most one piece per state visit (`transitCov` in its three states) |
+| R8 (other code of the same city between pieces) | b2PiecesServices "R8": after every piece, traffic `findPath`, `stopsNear`, `stopAttached` / `freightRailCells` with the attachment forced dirty, `routeInfo`; `facilityReport`; services `needRaster` / `unservedClusters`; utilities `waterQualityAt` / `gridInfo`; an emergency `probe`; a facility reach preview (`reachRaw`): same digests as without them |
+| O3 (`cost()` side-effect free) | `stepCost` reads cursors and sizes only; the snapshot and its plan are taken by prep's pieces |
+| O4 (mode invariance) | b2PiecesServices "O4": the stepName sequence and the digests are identical with frames active and headless |
+| O7 | moot: R10's per-facility arrays are not built (16.2) |
+| O8 (explicit pass start) | `stepIdx < 0` resets every cursor (`resetPieces`) before the first piece, as at the pass end and in `init()`; a direct `stepIdx = -1` or a `compute()` in mid-pass starts clean |
+| review 2, item 1 (cold sizes) | R2 "Services as built": half `INFRA_PIECE_COLD_MS` for every once-per-pass loop, the cold cell and Building floors, the tier steps at half `INFRA_PIECE_MS` with their row items alone, the stop disks at a quarter of the cold budget |
+| review 2, item 3 (windows from load; edits) | measured `--warm 0 --days 220`, reported per window (16.4), and the edit and disaster scenario (16.4) |
+| review 2, item 4 (warm cost error) | `SV_EST` and the fixed costs fitted on dense1m warm; checked on dense1m and bot256 (16.4) |
+| review 2, item 5a (publish pieces) | the combos, the stop compose, the foot and the tier layers are computed into private buffers and published by `.set()`; the need rasters and the providers' rasters by swaps; NIMBY by `.set()` |
+| review 2, item 5b (police need) | `PoliceNeedRun`: the monthly scan in chunks over the pass list (installed at its end with the list's `nextBuildingId`), the job sites, the cell pass |
+| review 2, item 5e (lazy caches) | traffic's attachment refresh runs in a services piece of its own (`attachRefreshMs` > 0), before prep's building chunks and before the stop disks |
+| review 2, item 5f (largest indivisible items) | 16.4; the tier engine's largest item, one fresh reach, is no longer indivisible (16.2) |
+
+Not applied: R1–R3 (traffic, G1), R5's pollution part and R7a (G3 / G4), O10 / O11 (no services part), review 2 item 2 (the Building-shape fix is outside B2's files; §14 item 4).
+
+### 16.2 Deviations from §4, and why
+
+- **R10's per-facility value arrays are not built** (review 2's optional item), so `powById` keeps its pre-B2 read at the tier step and O7 is moot. Two smaller changes met the targets instead: the per-facility scratch of the current slot (`facStart`, `facEnd`, `facSig`, `facSeat`) is typed and grown once — pre-B2's JS arrays, emptied per slot and filled in seat order, made `allocSeats` deoptimise on an out-of-bounds store on day 25 and run unoptimised for five tier steps (up to 8.4 ms) — and `reachOf`, `splatUnion` and `allocSeats` read a facility's `id` / `flags` once, at their top (`reachOf` deoptimised about 1,500 times in 40 days on a later read of `b.id`).
+- **NIMBY and foot use half `INFRA_PIECE_COLD_MS`** (§4 listed them at `INFRA_PIECE_MS`): NIMBY runs every second pass and stays cold the longest.
+- **The tier steps' budget is half `INFRA_PIECE_MS`, and a final row item (clamp, stats) runs alone.** At `INFRA_PIECE_MS` the first scheduled passes after a load ran tier steps of 2–4.4 ms.
+- **Cold floors, `INFRA_CELL_SIZING_US` and `INFRA_BLD_SIZING_US`** (new, params.ts). The once-per-pass cell loops ran at about 0.1 µs per cell in the first passes after a load (25–70× warm), and the once-per-pass Building loops at 1–8 µs per building on first executions and after Building-shape deopts, so their pieces hold at most about 16,000 cells or 325 buildings however cheap they are warm. Sizes only: the estimates keep the loops' coefficients. The police scan and job sites use the Building floor too.
+- **Traffic's attachment refresh in a services piece of its own** (R2 offered "add its cost to the estimates"): `attachRefreshMs(st)` reports it pending, and services calls `stopAttached(-1)` in its own piece before its first reader. The refresh is a pure function of the state, so results do not move.
+- **A fresh reach is a resumable item** (§4 S_TIERS c: "a single item over the budget runs alone"; review 2 item 5f listed it as the tier engine's largest indivisible item). Warm, dense1m's largest fresh reach is a hospital's (8,700 cells, about 0.3 ms), but the search kernel stays cold between passes, because cached reaches never call it: in the edit scenario at `a168442`, the fresh reaches after an edit (a road cut invalidates every road reach) ran as single `tiers.search` steps of 1.4–3.2 ms and once 5.1 ms. Catchments `ReachRun` repeats reachRaw's loop bodies on its own engine (other code calls reachRaw between the pieces: a facility preview, the inspector, another city); its Dial drain stops between queue entries, a disk between rows. The bucket being drained is detached before it drains (as in `RoadDistRun`), so the cells, their order and their weights equal reachRaw's for any cut. The services item is held across tier steps; its pool copy, cache entry, record and union splat run in its last piece, in pre-B2's order. `U_REACH_POP` = 4.5 units per queue entry (dense1m's 2,428 facilities: 0.39 entries per reached cell, 0.10 warm µs per entry), about 1,350 entries per piece. The split bounds the largest reach, not the cold factor: at `817e677` the reach pieces after an edit still ran at 1.4–2.3 ms (about 10–17× their warm 0.135 ms) and once at 4.3 ms, within R2's rule (3 ms at the p99 factor, 5 ms at the max); halving `U_REACH_POP`'s pieces is the next step if G4's edit gate needs it.
+- **The tier footprint max: its max and fill loops are separate functions (R10), and a piece holds at most S_FOOT's lots** (`SC.foot` per lot cell at the cold budget, about 3,900 lot cells; it was the cold cell floor's ~12,000). The first call of a load's second pass (police, day 31 after the load) ran at 2–3 ms in about half the runs at `a168442` and at 10.2 ms once (1 of 5 runs), for a slot's few thousand lot cells: a `--trace-deopt` run showed `lotMaxRange` deoptimising ten times in the first pass, in its OSR code, on the fill loop that had never run when the max loop was compiled. With the loops split (the fill a native `fill`) that step's max over 5 runs is 0.89 ms. The cap does not bind at dense1m (a slot's whole footprint max is still one piece; the step count is unchanged): it bounds cities with more lot cells. (`817e677`'s message credits the cap; the split is what removed the slow calls.)
+- **The seat-order sort reads typed ids** (R10's per-facility arrays in miniature). Its comparator read `list[a].id` from Buildings of many maps: one tier item of 0.9–2.7 ms on every pass day at dense1m (play and green, 500–900 facilities, about 10,000 comparisons), the slowest tier step of each pass from a load. It now reads a typed copy of the ids: every comparison returns the same value, so the order is identical.
+- **The stale-record clear runs by id ranges at the pass end** (an R7 exception, recorded there).
+- **The WASM tier engine sections run against the frozen class** (§11.6 as built) instead of being skipped.
+- **The catchments perf test compares the tier steps** (§10 G2's fallback): with honest units the whole cached pass is 0.64 of the fresh one, because it also holds the fixed costs and the states the cache does not touch, and the second pass is the one that rebuilds NIMBY. The tier steps: 0.41. The whole pass is still asserted below 0.75.
+- **A separate test file**, `tests/infra/b2PiecesServices.test.ts`, on the G1 harness, instead of extending `b2Pieces.test.ts`.
+- **`facilities.ts` is also touched by B3** (the month-boundary work): the police need run only adds a class and splits `monthlyScan` into parts; a merge keeps both.
+
+### 16.3 Exactness evidence
+
+- `tests/infra/b2PiecesServices.test.ts` (18 tests): the kernels in random chunks equal their whole-call originals (`roadTimeMulti`, `roadDistMulti`, `reachRaw` for walk, drive and disk reaches with other reaches between the pieces, `computeTransitCoverage`, `rebuildNimby` and the frozen pre-J4 rebuild, `policeNeed` with its per-state lists); three services cities (48 with infra only, 64 with every system, 96) give identical cities and services fields at every pass end in one go, at the production size and in tiny / random pieces across network, building and funding edits; production and random pieces equal the frozen original in every original field; R8, R7, R9, O4; two cities stepped interleaved equal their solo runs; every piece estimate within its budget.
+- `tests/sim/exact/nimby.test.ts`: piecewise and whole rebuilds against `nimbyOriginal`. `tests/wasm/servicesTierEngine.test.ts`: 18 of 18 against the frozen class.
+- `passdigest --mode atomic`, B vs W at `d76ca80`, digests at days 30 and 100: dense1m, bot256, dense1m without WP1 (day 30), and `services96_s7`, `services128_s11`, `services64_s5` (generated with B's code; every service kind, transit, landfills, prestige and campus buildings), each with and without WP1. All 15 checkpoints identical (every part and layer digest; `pdcmp.py`). The step counts differ by design: at dense1m by day 30, services 40 steps in B and 1,842 in W, traffic 292 and 8,785.
+
+### 16.4 Measurements (dense1m, headless, wall clock)
+
+Tool: `b2work/G2-services-nimby/cpumapS.ts` (G1's cpumap with services labelled by `stepName` in W and by state in B), `--noinputs`. Every pair in one timing-lock hold (`timed.py`: other processes averaged 0.026 cores), B and W interleaved, B first on odd pairs. From load (`--warm 0 --days 220`): 5 runs per side. Warm (`--warm 300 --days 120`): 3 per side, on dense1m and on bot256. The edit and disaster scenario (`editmapS.ts`, review 2 item 3c): 3 per side. Per run, the p99 and the max of the services steps; the tables give the median over runs, and the worst run's max in brackets. W is `817e677`. The seat-order fix (`d76ca80`) came after this measurement; it changes one item's speed, no boundary (16.2). The previous G2 measurement (`a168442`, same protocol) had worst runs of 3.42, 10.17 and 3.90 ms from load (the day-31 footprint max, 16.2), 4.39 ms warm (a GC pause) and 5.14 ms in the edit scenario (a road cut's fresh reaches). The all-task p99 and max of these runs are still pre-B2's: crime, pollution, utilities and emergency are G3 / G4.
+
+**Services steps, all states** (ms; W `817e677`):
+
+| window | B p99 | B max | W p99 | W max | W max, worst run | W max without GC, worst run | W steps > 3 / > 5 ms (all runs) |
+|---|---|---|---|---|---|---|---|
+| days 0–20 | 34.88 | 34.88 | 1.43 | 2.39 | 2.90 | 2.55 | 0 / 0 |
+| days 20–80 | 28.96 | 28.96 | 0.65 | 2.71 | 3.12 | 2.73 | 1 / 0 |
+| days 80–220 | 13.97 | 13.97 | 0.38 | 3.54 | 3.96 | 3.19 | 4 / 0 |
+| warm, days 300–420 | 7.08 | 7.08 | 0.36 | 0.61 | 2.26 | 2.18 | 0 / 0 |
+| bot256 warm, days 300–420 | 5.68 | 5.68 | 0.47 | 1.83 | 3.28 | 3.28 | 1 / 0 |
+
+W p99 ranges over its runs: days 0–20 1.36–1.63; days 20–80 0.63–0.79; days 80–220 0.36–0.40; warm, days 300–420 0.35–0.37; bot256 warm, days 300–420 0.44–0.49.
+
+**Cost error of services** (median of estimate / measured − 1, per run; median, range, and B): days 0–20 −0.21 (−0.59…−0.19; B −0.57); days 20–80 −0.22 (−0.28…−0.12; B −0.37); days 80–220 −0.05 (−0.19…−0.01; B −0.18); warm, days 300–420 −0.01 (−0.03…+0.03; B −0.16); bot256 warm, days 300–420 −0.01 (−0.12…+0.07; B −0.04).
+
+**Busy-time-weighted p99 of W** (review 2's optional item: the step length below which 99 % of the services step time falls; median over runs): days 0–20 2.39, 20–80 2.31, 80–220 2.16, warm 0.47, bot256 warm 1.71 ms. It sits near the max, because 1 % of a window's services time is one or two steps.
+
+**Piece estimates.** The largest services piece estimate in every W run is 0.278 ms (`prep.attach`, traffic's pending attachment refresh, estimated by `attachRefreshMs`), every other piece below it (`INFRA_PIECE_MS` is 0.3).
+
+**The edit and disaster scenario** (dense1m, `--warm 30 --gap 30`: a road cut, its restore, a bulldoze, an earthquake and a meteor 30 days apart; the services steps of the 10 days from each edit, most of them urgent):
+
+| edit (10 days) | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| bld | 15 | 15.98 | 15.98 [23.40] | 676 | 0.38 | 1.51 [1.62] |
+| meteor | 11 | 6.08 | 6.08 [12.25] | 1408 | 0.32 | 1.05 [1.62] |
+| quake | - | - | - | 1086 | 0.38 | 3.69 [4.33] |
+| road | 27 | 26.90 | 26.90 [37.31] | 1145 | 1.28 | 2.69 [4.55] |
+| unroad | 6 | 11.62 | 11.62 [13.24] | 410 | 0.43 | 1.59 [2.34] |
+
+W's longest steps in these windows: 4.55 ms `accSearch.run` (road + 4 d), 4.33 ms `tiers.search` (quake + 3 d), 3.69 ms `tiers.seatOrder` (quake + 3 d), 2.69 ms `stops.disks` (road + 1 d), 2.63 ms `stops.disks` (road + 1 d), 2.34 ms `tiers.search` (unroad + 1 d).
+
+**Pieces and cadence** (medians over runs; the headless schedule spends `INFRA_DAY_BUDGET` estimated ms a day): from load (220 days): services 12 passes in W (7 in B) in 8921 pieces (114 steps), 3.30 real ms a day (2.47); traffic 7 cycles (9), crime 10 passes (10), pollution 16 (10), utilities 67 (41); all infra steps 11.03 real ms a day (9.65), 6.36 estimated (3.68); warm (120 days): services 4 passes in W (3 in B) in 3074 pieces (42 steps), 1.44 real ms a day (0.83); traffic 3 cycles (5), crime 6 passes (6), pollution 9 (6), utilities 36 (22); all infra steps 6.30 real ms a day (3.98), 5.51 estimated (3.31).
+
+Services runs more passes in W: its estimates are honest, so the day budget buys more of it, and the real infra ms a day grew with them and with G1's traffic. G4 sets the final budget (§9.4).
+
+**Per state, before (B) and after (W)** (median over runs of each run's p99 / max; worst run's max in brackets):
+
+| days 0–20 | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| prep | 1 | 34.88 | 34.88 [49.27] | 193 | 1.30 | 1.64 [1.81] |
+| tiers | 9 | 12.60 | 12.60 [14.11] | 265 | 1.81 | 2.39 [2.90] |
+| stops | 1 | 11.26 | 11.26 [11.94] | 114 | 1.25 | 1.42 [1.92] |
+| foot | 1 | 0.30 | 0.30 [0.38] | 9 | 0.07 | 0.07 [0.11] |
+| finish | 1 | 15.27 | 15.27 [22.33] | 51 | 0.20 | 0.20 [1.82] |
+| **all services** | 13 | 34.88 | 34.88 [49.27] | 632 | 1.43 | 2.39 [2.90] |
+
+| days 20–80 | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| prep | 3 | 28.96 | 28.96 [36.90] | 597 | 0.48 | 1.51 [2.56] |
+| tiers | 27 | 11.25 | 11.25 [16.81] | 1064 | 0.56 | 2.15 [2.73] |
+| stops | 3 | 12.01 | 12.01 [17.71] | 456 | 0.96 | 1.71 [1.87] |
+| nimby | 2 | 10.95 | 10.95 [16.65] | 98 | 0.81 | 0.81 [3.12] |
+| accSeed | 1 | 9.12 | 9.12 [9.91] | 108 | 0.39 | 0.53 [0.55] |
+| accSearch | 1 | 10.80 | 10.80 [11.37] | 76 | 0.96 | 0.96 [1.30] |
+| accLand | 1 | 14.42 | 14.42 [16.25] | 168 | 0.20 | 0.76 [1.19] |
+| shopA | 1 | 6.10 | 6.10 [6.85] | 28 | 0.73 | 0.73 [1.08] |
+| shopB | 1 | 15.81 | 15.81 [18.91] | 198 | 0.46 | 0.71 [2.34] |
+| foot | 3 | 0.56 | 0.56 [2.41] | 36 | 0.12 | 0.12 [0.17] |
+| finish | 3 | 13.97 | 13.97 [27.36] | 204 | 0.16 | 0.40 [0.82] |
+| **all services** | 46 | 28.96 | 28.96 [36.90] | 3033 | 0.65 | 2.71 [3.12] |
+
+| days 80–220 | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| prep | 3 | 11.50 | 11.50 [13.97] | 1106 | 0.28 | 1.42 [3.96] |
+| tiers | 27 | 4.94 | 4.94 [6.61] | 1870 | 0.48 | 2.13 [3.54] |
+| stops | 3 | 2.45 | 2.45 [6.66] | 798 | 0.09 | 0.21 [0.46] |
+| nimby | 1 | 1.97 | 1.97 [3.35] | 196 | 0.18 | 0.22 [2.16] |
+| accSeed | 3 | 9.77 | 9.77 [10.08] | 162 | 0.42 | 0.54 [3.74] |
+| accSearch | 3 | 2.22 | 2.22 [11.82] | 113 | 0.10 | 0.17 [0.24] |
+| accLand | 3 | 2.89 | 2.89 [16.25] | 252 | 0.14 | 0.21 [1.63] |
+| shopA | 3 | 1.88 | 1.88 [6.63] | 42 | 0.31 | 0.31 [0.39] |
+| shopB | 3 | 8.73 | 8.73 [19.03] | 297 | 0.13 | 0.18 [0.19] |
+| foot | 3 | 0.40 | 0.40 [2.58] | 63 | 0.14 | 0.14 [0.25] |
+| finish | 3 | 1.95 | 1.95 [2.06] | 357 | 0.13 | 0.24 [0.49] |
+| **all services** | 55 | 13.97 | 13.97 [19.03] | 5256 | 0.38 | 3.54 [3.96] |
+
+| warm, days 300–420 | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| prep | 3 | 6.23 | 6.23 [9.16] | 622 | 0.16 | 0.28 [0.36] |
+| tiers | 19 | 3.87 | 3.87 [4.81] | 1072 | 0.41 | 0.57 [2.18] |
+| stops | 2 | 2.11 | 2.11 [3.62] | 458 | 0.08 | 0.14 [0.15] |
+| nimby | 1 | 2.10 | 2.10 [5.13] | 98 | 0.23 | 0.23 [2.26] |
+| accSeed | 2 | 2.15 | 2.15 [2.97] | 110 | 0.11 | 0.15 [0.15] |
+| accSearch | 2 | 1.50 | 1.50 [2.18] | 76 | 0.15 | 0.15 [0.61] |
+| accLand | 2 | 2.25 | 2.25 [5.35] | 170 | 0.10 | 0.19 [0.27] |
+| shopA | 2 | 1.04 | 1.04 [1.40] | 28 | 0.10 | 0.10 [0.11] |
+| shopB | 3 | 4.39 | 4.39 [7.08] | 200 | 0.10 | 0.16 [0.24] |
+| foot | 3 | 0.41 | 0.41 [0.59] | 36 | 0.10 | 0.10 [0.11] |
+| finish | 3 | 2.95 | 2.95 [3.12] | 204 | 0.09 | 0.11 [0.12] |
+| **all services** | 42 | 7.08 | 7.08 [9.16] | 3074 | 0.36 | 0.61 [2.26] |
+
+| bot256 warm | B steps | B p99 | B max | W steps | W p99 | W max |
+|---|---|---|---|---|---|---|
+| prep | 3 | 5.68 | 5.68 [5.92] | 966 | 0.17 | 0.51 [1.49] |
+| tiers | 20 | 3.43 | 3.43 [4.04] | 1050 | 0.65 | 1.01 [3.28] |
+| stops | 4 | 0.65 | 0.65 [0.82] | 338 | 0.09 | 0.18 [0.23] |
+| nimby | 2 | 2.46 | 2.46 [5.54] | 120 | 0.11 | 0.12 [0.17] |
+| accSeed | 4 | 1.28 | 1.28 [1.80] | 108 | 0.07 | 0.07 [0.10] |
+| accSearch | 4 | 0.93 | 0.93 [0.98] | 66 | 0.14 | 0.14 [0.25] |
+| accLand | 4 | 2.79 | 2.79 [3.13] | 198 | 0.11 | 1.12 [1.83] |
+| shopA | 4 | 0.45 | 0.45 [0.49] | 21 | 0.20 | 0.20 [0.24] |
+| shopB | 4 | 2.29 | 2.29 [4.20] | 318 | 0.12 | 0.16 [0.48] |
+| foot | 3 | 0.00 | 0.00 [0.00] | 8 | 0.15 | 0.15 [0.22] |
+| finish | 3 | 1.93 | 1.93 [2.28] | 384 | 0.11 | 0.15 [0.16] |
+| **all services** | 55 | 5.68 | 5.68 [5.92] | 3577 | 0.47 | 1.83 [3.28] |
+
+**The largest items** (review 2 item 5f; the max over all W runs of each piece kind, steps that overlap a GC pause left out; `tiers.seatOrder` is the seat-order sort, the last `tiers.search` step of a shared slot):
+
+| label | 0-20 | 20-80 | 80-220 |
+|---|---|---|---|
+| prep.bld | 0.55 | 0.65 | 3.19 |
+| tiers.search | 1.81 | 2.73 | 0.88 |
+| tiers.alloc | 2.55 | 2.16 | 0.90 |
+| tiers.seatOrder | 2.43 | 2.31 | 2.30 |
+| shopB.out | 0.00 | 1.91 | 0.15 |
+| stops.compose | 1.28 | 1.87 | 0.13 |
+| accSeed.bld | 0.00 | 0.55 | 1.83 |
+| finish.combo | 1.82 | 0.26 | 0.24 |
+| prep.netHash | 1.81 | 0.16 | 0.09 |
+| prep.attach | 1.77 | 1.78 | 1.05 |
+| stops.disks | 1.42 | 1.75 | 0.21 |
+| stops.collectB | 1.49 | 0.10 | 0.10 |
+
+**The bot** (128 × 15, seed 7, `tools/balance-json.ts`, W): 2015 population 193,577, approval 79.2, totalMsPerDay 6.00. B1's reference is 196,101; G1 (`2a4cb3f`) gave 193,525. The results move by design through the schedule (the headless schedule follows the estimates); G4 records the new hashes.
+
+### 16.5 Notes for G3–G4
+
+- **Size once-per-pass loops by a cold floor, not by their warm cost.** The cheapest loops (a native-like pass over C cells at 1–2 ns per cell warm) were the worst cold offenders: their pieces were sized at tens of thousands of cells and ran interpreted. `INFRA_CELL_SIZING_US` caps the cells per piece; crime, pollution and utilities can reuse it.
+- **Keep sizing and estimate apart.** Fixed costs and the absolute scale (`SV_EST`) never enter a chunk size, so the fit moved no boundary and the cold measurements stayed valid.
+- **Cached results keep kernels cold.** A kernel that runs only on a cache miss (the reach search) is cold exactly when an edit invalidates the caches: split it like a once-per-pass loop, not like the hot items around it.
+- **Frozen originals** (`servicesOriginal.ts`) keep the WASM sections and the bench tools running; pollution can do the same for the field-pass sections.
+- **Tools** (in `scratchpad/b2work/G2-services-nimby/`): `cpumapS.ts` (cpumap with services labelled by `stepName`), `passdigestS.ts` (`--infra`: without WP1), `genfxS.ts` (synthetic services fixtures from B's code), `editmapS.ts` (the edit and disaster scenario), `anS.py` / `anTableS.py` / `anEd.py` / `anFit.py` / `calS.py` (windows, tables, edits, per-label error, the fixed-cost model), `catchPerf.ts` (the stress city's per-label estimates, fresh vs cached).
