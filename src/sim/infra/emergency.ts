@@ -286,6 +286,10 @@ export function dispatchWindowEnd(inc: Pick<Incident, 'kind' | 'start' | 'deadli
   else if (d - inc.start < G) d++;
   return Math.min(inc.deadline, d);
 }
+
+function manualDispatchExpired(inc: Incident, now: number): boolean {
+  return (inc.manualDispatchWindowMultiplier ?? 1) < 1 && now >= dispatchWindowEnd(inc) - EPS;
+}
 const RESPONDER_SERVICE: Readonly<Record<Responder, ServiceKind>> = { fire: 'fire', police: 'police', medical: 'health' };
 const RESPONDER_STATION: Readonly<Record<Responder, string>> = { fire: 'fire station', police: 'police station', medical: 'clinic or hospital' };
 const RESPONDER_STATIONS: Readonly<Record<Responder, string>> = { fire: 'fire stations', police: 'police stations', medical: 'clinics and hospitals' };
@@ -994,6 +998,7 @@ export class EmergencySystem implements SimSystem {
       inc.firstAt ??= {};
       inc.units ??= [];
       inc.need ??= {};
+      if (manualDispatchExpired(inc, st.day)) inc.manualPossible = inc.canSend = false;
       const fl = inc.fires;
       let n = 0;
       for (let k = 0; k < fl.length; k++) {
@@ -1240,7 +1245,7 @@ export class EmergencySystem implements SimSystem {
   /** player dispatch options for an incident: every station of a needed type city-wide (ETA from a full-map search, cached 3 days) */
   dispatchOptions(sim: Simulation, incidentId: number): DispatchOption[] {
     const inc = this.byId.get(incidentId);
-    if (!inc) return [];
+    if (!inc || manualDispatchExpired(inc, this.now(sim))) return [];
     const st = sim.state;
     this.syncStations(sim);
     const ver = this.gEpoch;
@@ -1281,6 +1286,7 @@ export class EmergencySystem implements SimSystem {
   dispatch(sim: Simulation, incidentId: number, stationId: number, units = 1): DispatchResult {
     const inc = this.byId.get(incidentId);
     if (!inc) return { ok: false, reason: 'This emergency is already over' };
+    if (manualDispatchExpired(inc, this.now(sim))) return { ok: false, reason: 'The manual dispatch window has closed' };
     this.syncStations(sim);
     const s = this.stById.get(stationId);
     if (!s) return { ok: false, reason: 'Not an emergency station' };
@@ -1340,6 +1346,7 @@ export class EmergencySystem implements SimSystem {
   dispatchBest(sim: Simulation, incidentId: number): DispatchResult {
     const inc = this.byId.get(incidentId);
     if (!inc) return { ok: false, reason: 'This emergency is already over' };
+    if (manualDispatchExpired(inc, this.now(sim))) return { ok: false, reason: 'The manual dispatch window has closed' };
     if (!this.missingAny(inc)) {
       // everything it needs is assigned (e.g. a unit came back and was sent automatically a moment ago)
       return { ok: false, reason: this.onSceneAny(inc) ? 'Responders are already on scene' : 'Help is already on the way' };
@@ -1870,7 +1877,7 @@ export class EmergencySystem implements SimSystem {
       // the player's call: LIVE mode only while a dispatch still changes the outcome — a free unit can arrive before the
       // deadline, sent before the window closes (an industrial accident: before the plant ignites)
       const manualPossible = inTime && now < dispatchWindowEnd(inc) - EPS;
-      const canSend = !!freeAny;
+      const canSend = !!freeAny && !manualDispatchExpired(inc, now);
       inc.bestEta = Number.isFinite(muEta) ? r2(muEta) : undefined;
       inc.bestFrom = mu ? mu.s.id : undefined;
       const unit = RESPONDER_UNIT[r];
@@ -1903,7 +1910,7 @@ export class EmergencySystem implements SimSystem {
         inc.retry = day + 2;
       } else if (freeAny) {
         const near = mu?.s ?? this.nearestFree(r, inc.x, inc.z) ?? freeAny;
-        this.setUncovered(sim, inc, 'outOfRange', manualPossible, true,
+        this.setUncovered(sim, inc, 'outOfRange', manualPossible, canSend,
           `Outside ${RESPONDER_LABEL[r].toLowerCase()} coverage — nearest free ${unit[0]}: ${near.name}${manualPossible ? '' : ' (too far to make it in time)'}`);
         inc.retry = day + 5;
       } else if (this.stations.some((s) => s.responder === r && s.units > 0 && s.nodes.length && this.freeOf(s) <= 0)) {
@@ -2158,6 +2165,7 @@ export class EmergencySystem implements SimSystem {
       this.redo = false;
       // a player dispatch stops mattering (LIVE mode ends) once even the nearest free unit cannot make it any more
       for (const inc of this.list) {
+        if (manualDispatchExpired(inc, st.day)) inc.manualPossible = inc.canSend = false;
         if (!inc.manualPossible || inc.bestEta === undefined || !(inc.state === 'uncovered' || inc.state === 'queued')) continue;
         if (inc.bestEta > (inc.deadline - st.day) / EMERG_DAYS_PER_MIN + EPS || st.day >= dispatchWindowEnd(inc) - EPS) inc.manualPossible = false;
       }
