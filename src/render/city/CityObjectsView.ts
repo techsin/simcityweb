@@ -29,7 +29,7 @@ import { PowerLines } from './props/PowerLines';
 import { BuildingRenderer } from './buildings/BuildingRenderer';
 import { Effects } from './effects/Effects';
 import { Disasters } from './effects/Disasters';
-import { Fireworks, LaunchSiteIndex, type LaunchSite, type SiteSource } from './effects/Fireworks';
+import { Fireworks, LaunchSiteIndex, collectLaunchSites, type LaunchSite, type SiteSource } from './effects/Fireworks';
 import { getDef } from '../../sim/catalog';
 import { VehicleRenderer, type TrafficRoute } from './vehicles/VehicleRenderer';
 import { Previews } from './previews/Previews';
@@ -274,7 +274,9 @@ export class CityObjectsView implements CityObjectsViewApi {
 
   /** fireworks launch sites: parks / plazas, landmarks, stadium, waterfront, tallest roofs, city centre */
   private launchSites(): LaunchSite[] {
-    return this.launchSiteIndex!.collect(this.launchSiteSource());
+    const src = this.launchSiteSource();
+    // (no index only inside rebuildAll's building pass or after dispose: the full scan gives the same sites)
+    return this.launchSiteIndex ? this.launchSiteIndex.collect(src) : collectLaunchSites(src);
   }
 
   private launchSiteSource(): SiteSource {

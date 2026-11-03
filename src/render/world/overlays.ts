@@ -174,7 +174,11 @@ const DEMO = (title: string, what: string): DefCore => ({
 });
 
 export type EmergencyColourVision = 'standard' | 'red-green' | 'blue-yellow';
-/** T036's AppSettings.colourVision has not landed: keep today's palette until the setting is wired here. */
+/**
+ * The palette overlayDef / overlayLegend use when no colourVision is passed. AppSettings.colourVision (T036, the same
+ * names as ColourVision in src/region/settings.ts) exists but stays hidden until a lane wires it here and shows the
+ * control in the same change (NOTE-042, A11Y_WIRED.colourVision); until then every view keeps today's palette.
+ */
 const EMERGENCY_COLOUR_VISION: EmergencyColourVision = 'standard';
 const EMERGENCY_SAFE_COLOURS = { auto: '#2a7de1', near: '#f5a623', far: '#9b1d6a', none: '#c8ccd2' };
 
@@ -216,7 +220,10 @@ const EMERGENCY = (title: string, unit: string, station: string, fire = false, s
       fire
         ? `${near}: fires wait for your dispatch — a truck sent at once still makes it. ${far}; an industrial accident there is still saved by a fire truck sent ${INDUSTRIAL_WINDOW_TEXT}.`
         : `${safe ? 'Just out of reach / You must dispatch' : 'Amber / red'}: major emergencies there wait for your dispatch (live speed by default); minor ones get a slower unit.`,
-      `${safe ? 'Out of reach' : 'Red'} on a single building: no road reaches it — build one beside it.`,
+      // (a roadless building takes the third band: name its legend label, not "out of reach", the second band's)
+      safe
+        ? `A single building marked “${fire ? 'Too far' : 'You must dispatch'}”: no road reaches it — build one beside it.`
+        : 'Red on a single building: no road reaches it — build one beside it.',
     ],
     // whole cells: a bilinear blend from a roadless building (t 0.08) to an auto-dispatch neighbour passes through near —
     // a half-cell "Just out of reach" ring that hovers as "Auto-dispatch" (the cells are categories, not a field)

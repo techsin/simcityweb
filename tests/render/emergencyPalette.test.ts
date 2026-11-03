@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { Overlay } from '../../src/core/types';
 import { EMG_FIRE, EMG_MEDICAL, EMG_POLICE, OVERLAY_VARIANTS } from '../../src/sim/infra/overlays';
-import { OVERLAYS, overlayDef, overlayLegend, type RampStop } from '../../src/render/world/overlays';
+import { OVERLAYS, overlayDef, overlayLegend, type EmergencyColourVision, type RampStop } from '../../src/render/world/overlays';
 import { makeRampTexture } from '../../src/render/world/textures';
+import { COLOUR_VISIONS, DEFAULT_SETTINGS, type ColourVision } from '../../src/region/settings';
+
+// AppSettings.colourVision and the palette's modes are one set of names (tsc checks both directions)
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const SAME_NAMES: Same<ColourVision, EmergencyColourVision> = true;
 
 const RESPONDERS = [EMG_FIRE, EMG_POLICE, EMG_MEDICAL];
 const SAFE_MODES = ['red-green', 'blue-yellow'] as const;
@@ -94,8 +99,25 @@ describe('FH-20: Emergency palette', () => {
       expect(legend.notes[1]).toContain(v === EMG_FIRE ? 'sent within 3.0 min' : 'minor ones get a slower unit');
       if (v === EMG_FIRE) expect(legend.stops[2].label).toBe('Too far — fires burn down first');
       else expect(legend.stops[2].label).toBe('You must dispatch');
+      // a roadless building takes the third band, so its note names that label, never the second band's "out of reach"
+      expect(safe.ramp[2].color).toBe(legend.stops[2].color);
+      expect(legend.notes[2]).toContain(v === EMG_FIRE ? '“Too far”' : '“You must dispatch”');
+      expect(legend.notes[2]).not.toMatch(/out of reach/i);
     }
     expect(overlayDef(Overlay.Emergency, -1, mode)).toEqual(overlayDef(Overlay.Emergency, EMG_FIRE, mode));
+  });
+
+  it('takes every AppSettings.colourVision value; the setting\'s default is the default palette', () => {
+    expect(SAME_NAMES).toBe(true);
+    expect([...COLOUR_VISIONS].sort()).toEqual(['blue-yellow', 'red-green', 'standard']);
+    expect(DEFAULT_SETTINGS.colourVision).toBe('standard');
+    for (const v of RESPONDERS) {
+      expect(overlayDef(Overlay.Emergency, v, DEFAULT_SETTINGS.colourVision)).toEqual(overlayDef(Overlay.Emergency, v));
+      for (const mode of COLOUR_VISIONS) {
+        const colours = overlayLegend(Overlay.Emergency, v, mode).stops.map((s) => s.color);
+        expect(colours).toEqual(mode === 'standard' ? ['#3fb45a', '#f0a030', '#c8322a', '#6a4c93'] : ['#2a7de1', '#f5a623', '#9b1d6a', '#c8ccd2']);
+      }
+    }
   });
 
   it('leaves every other overlay and variant unchanged in safe modes', () => {

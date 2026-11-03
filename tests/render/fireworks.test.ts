@@ -230,6 +230,13 @@ describe('CityObjectsView fireworks wiring', () => {
       fresh.buildings.set(next.id, next); grid(fresh, next, true);
       sim.replaceState(fresh); same();
       sim.events.emit('reset', undefined); same();
+      // a show asking for sites during rebuildAll's building pass (no index yet) gets the full scan's sites
+      const pass = view.buildings.rebuildAll.bind(view.buildings);
+      let during: LaunchSite[] | null = null;
+      view.buildings.rebuildAll = () => { pass(); during = fw.launchSites(); };
+      try { view.rebuildAll(); } finally { view.buildings.rebuildAll = pass; }
+      expect(during).toStrictEqual(collectLaunchSites(fw.launchSiteSource()));
+      same();
       view.dispose(); disposed = true;
       expect(fw.launchSiteIndex).toBeNull();
       const update = vi.spyOn(LaunchSiteIndex.prototype, 'update');
