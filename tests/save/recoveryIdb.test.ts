@@ -30,10 +30,15 @@ describe('recovery IDB records', () => {
       expect(await idb.findRecoverySnapshot(kv)).toBeNull();
       expect(await idb.peekRecoveryMarker(kv, f.marker)).toBeNull();
     }
+    // W1.3: findRecoverySnapshot also offers a journal alone, so it drops one that can never apply, as such snapshots:
+    // this one is bound to the save the loop replaced
+    expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
     await kv.put('cities', f.record, f.record.key); await kv.delete('regions', 'rtest');
     await idb.storeRecoveryIdb(kv, f.marker, f.payload);
+    await idb.storeJournalIdb(kv, journalFixture());
     expect(await idb.findRecoverySnapshot(kv)).toBeNull();
-    expect(await kv.get('recovery', 'rtest:0_0#journal')).toEqual(journalFixture());
+    // and one whose region is gone
+    expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
   });
 
   it('awaits both deletions, reports an IDB-only newer snapshot, and leaves other cities alone', async () => {

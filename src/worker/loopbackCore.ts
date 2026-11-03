@@ -9,11 +9,10 @@ import { Replica, type ReplicaHooks } from './replica';
 import { cloneMessage, errorText, type Journal, type M2W, type Packet, type Ready, type ViewState, type W2M, type Reply } from './protocol';
 import type { CityPersistence } from './SimHost';
 import { SeededLag, type LagProfile } from './lag';
-import { ProtocolInbox, type InboxStore } from './protocolInbox';
+import { ProtocolInbox } from './protocolInbox';
+import { idbStore } from './idbStore';
 import { getRecoveryBase } from '../save/cities';
-import { openKV } from '../save/db';
-import { readRecoveryJournal, storeRecoveryIdb } from '../save/recoveryIdb';
-import type { JournalBase, RecoveryJournal } from '../save/recoveryCodec';
+import { bootJournal, type BootJournal } from './journal';
 
 export interface LoopbackOptions {
   cadence?: 'design' | 'live';
@@ -35,30 +34,10 @@ export interface LoopbackOptions {
   /** T033 (§4.3): a journal bound to the loaded save, replayed after init and before the first tick */
   journal?: BootJournal;
 }
-export interface BootJournal { journal: RecoveryJournal; base: JournalBase }
+export type { BootJournal };
+/** T033: the journal bound to the save the page loaded (journal.ts; W1.3 shares it with LocalSimHost) */
+export { bootJournal };
 export interface ProtocolTiming { flushMs: number; cloneMs: number; applyMs: number; packets: number }
-
-/** T033: as the worker reads `recovery/<key>#journal` itself (§4.3): the journal bound to the save the page loaded
- *  (its recovery base), or none. One bound to another save or snapshot is deleted on the way. */
-export async function bootJournal(persistence: CityPersistence | undefined): Promise<BootJournal | undefined> {
-  if (!persistence) return undefined;
-  const record = getRecoveryBase(persistence.regionId, persistence.tileKey);
-  if (!record) return undefined;
-  const kv = await openKV();
-  if (!kv.persistent) return undefined;
-  const base: JournalBase = { regionId: record.regionId, tileKey: record.tileKey, savedAt: record.savedAt };
-  const journal = await readRecoveryJournal(kv, base);
-  return journal ? { journal, base } : undefined;
-}
-
-/** The loopback writes IndexedDB itself, as LocalSimHost does (and the worker will, in W1.3). */
-function idbStore(core: SimCore): InboxStore {
-  return {
-    putSave: async (copy) => ({ recoveryDropped: await core.putSave(copy) }),
-    putSnapshot: async ({ marker, payload }) => { const kv = await openKV(); await storeRecoveryIdb(kv, marker, payload); return kv.persistent; },
-    recoveryBase: getRecoveryBase,
-  };
-}
 
 export class LoopbackCore {
   readonly core: SimCore;
@@ -103,6 +82,8 @@ export class LoopbackCore {
       signal: this.abort.signal, persistence: opts.persistence, store: idbStore(this.core), fatal: (e) => this.fatal(e) });
     // after init, before the first tick; the inbox counts the replay's change events, so the city reads as unsaved
     const carried = opts.journal ? this.replay(opts.journal) : undefined;
+    // W1.3: no save holds them, so the city reads as unsaved even when none emits a change event (a tax, a funding move)
+    if (carried) this.inbox.changes += carried.ops.length;
     const ready = this.ready();
     if (carried) ready.journal = carried;
     this.deliver(ready);
@@ -114,14 +95,8 @@ export class LoopbackCore {
   /** §4.3's boot replay. The loopback's Ready is synchronous, so no save can precede it: the replayed edits ride in
    *  it renumbered with seqs ≤ 0 (the design's failed-save path). The page's mirror starts from them, its journal
    *  stays bound to the loaded save, and the session's first save, which contains them, trims them. */
-  private replay({ journal, base }: BootJournal): Journal | undefined {
-    let result: ReturnType<SimCore['replayRecoveryJournal']> = null;
-    try { result = this.core.replayRecoveryJournal(journal, base); }
-    catch (e) { this.core.report('Recovery journal could not be replayed', e, { key: 'recovery' }); return undefined; }
-    if (!result?.applied.length) return undefined;
-    const applied = new Set(result.applied), ops = journal.ops.filter((entry) => applied.has(entry.seq)), n = ops.length;
-    return { v: 1, regionId: base.regionId, tileKey: base.tileKey, at: Math.max(Date.now(), base.savedAt),
-      base: { kind: 'save', savedAt: base.savedAt }, fromCmd: -n, ops: ops.map((entry, i) => ({ ...entry, seq: i + 1 - n })) };
+  private replay(boot: BootJournal): Journal | undefined {
+    return this.core.replayBootJournal(boot).carried;
   }
   private ready(): Ready {
     const ready = this.recorder.ready(this.inbox.cmd, this.live), p = this.opts.persistence;

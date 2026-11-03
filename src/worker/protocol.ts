@@ -4,7 +4,7 @@ import type { Overlay } from '../core/types';
 import type { RegionContext } from '../region/regionEffects';
 import type { RegionCitySummary } from '../region/types';
 import type { CityRecord } from '../save/cities';
-import type { RecoveryMarker, WriteResult } from '../save/recoveryCodec';
+import type { RecoveryInfo, RecoveryMarker, WriteResult } from '../save/recoveryCodec';
 import type { AnyTypedArray, SerializedCity } from '../save/serialize';
 import type { Building, CityState, HistorySeries } from '../sim/CityState';
 import type { EmergencyEvent } from '../sim/Simulation';
@@ -41,6 +41,9 @@ export interface Journal {
   fromCmd: number;
   /** FH-07a (T033): a bulldoze carries its ack's charge, net `cost` and gross `refund`, not the refund rule */
   ops: { seq: number; op: JournalOp; args: unknown[]; cost?: number; refund?: number }[];
+  /** W1.3: the city as the page last saw it (name, day, population, funds) and why it was written, for the title
+   *  screen's offer of a journal alone */
+  info?: RecoveryInfo & { why?: string };
 }
 export type M2W =
   | { t: 'init'; v: number; city: CitySource; rctx: RegionContext | null; initialSpeed: number; settings: SimSettings;
@@ -59,7 +62,9 @@ export type W2M =
       /** a resync's: the request ids whose replies it dropped (W1.1b). Main rejects only these; the rest still reply. */
       lost?: number[] }
   | { t: 'pkt'; p: Packet }
-  | { t: 'fatal'; message: string; stack?: string };
+  /** `code` (W1.3): 'idb-unavailable' is the boot error of §4.1 step 3, after which the host restarts the worker with
+   *  persistence 'main' */
+  | { t: 'fatal'; message: string; stack?: string; code?: string };
 export type Ready = Extract<W2M, { t: 'ready' }>;
 // W1.1b: captured watermarks survive delayed delivery; all outcomes travel after the packet's log.
 export type Reply =

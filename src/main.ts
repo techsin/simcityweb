@@ -64,6 +64,8 @@ import {
 } from './save';
 import { regionContext, type RegionContext } from './region/regionEffects';
 import type { CityPersistence, HostState, SaveReason, SimHost, SnapshotWhy } from './worker/SimHost';
+// W1.3: the packet hosts' snapshot cadence, min(30 s, 90 sim days) (WORKER_DESIGN §4.3)
+import { periodicSnapshotDue } from './worker/recoveryMirror';
 // W1.2: type-only here; the worker host and its module load with the first worker city (or the region screen's spawn)
 import type { WorkerSimHost } from './worker/WorkerSimHost';
 import type { WorkerPort } from './worker/workerProtocol';
@@ -100,6 +102,8 @@ interface CitySceneOptions {
   host?: WorkerSimHost;
   rctx?: RegionContext;
   persistence?: CityPersistence;
+  /** W1.3: false starts a local or loopback host without the save's recovery journal (§4.4) */
+  replayJournal?: boolean;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
   onSave: (state: HostState, reason?: SaveReason) => Promise<void>;
   /** app-level settings; CityScene treats these keys as overrides of its stored in-game prefs */
@@ -199,6 +203,9 @@ class App {
     /** the last recovery snapshot was a lean (periodic) one */
     snapLean?: boolean;
     lastSnap: number;
+    /** W1.3: the sim day of the last recovery snapshot and of the last save (the 90-day bound) */
+    snapDay: number;
+    saveDay: number;
     saving: number;
     saveFailed: boolean;
     status?: SaveStatus;
@@ -295,7 +302,8 @@ class App {
     const p = found.p;
     if (choice !== 'recovered' || !p || !this.title) return;
     const data = await loadRegion(p.marker.regionId).catch(() => null);
-    if (data) await this.continueInCity(data, p.marker.tileKey);
+    // the player just chose: no second offer of the journal the restore left for the boot to replay (W1.3)
+    if (data) await this.continueInCity(data, p.marker.tileKey, false);
   }
 
   /** before entering a city: if a snapshot of it is pending, ask first. false = don't enter (dismissed / superseded) */
@@ -525,9 +533,9 @@ class App {
     }
   }
 
-  /** Continue straight into the city the player was in when the page was closed */
-  async continueInCity(data: RegionData, tileKey: string): Promise<void> {
-    if (!(await this.recoveryGate(data.id, tileKey))) return;
+  /** Continue straight into the city the player was in when the page was closed (`gate`: ask about its recovery) */
+  async continueInCity(data: RegionData, tileKey: string, gate = true): Promise<void> {
+    if (gate && !(await this.recoveryGate(data.id, tileKey))) return;
     const ld = new LoadingScreen(this.root);
     ld.set('Generating terrain…', 0.15);
     await paint();
@@ -541,7 +549,9 @@ class App {
     await this.playCity(tile, ld);
   }
 
-  async playCity(tile: RegionTile, existing?: LoadingScreen): Promise<void> {
+  /** `replay` (W1.3, §4.4): false loads the save without the recovery journal bound to it (the crash dialog's "Restart
+   *  from autosave" and "Continue on the main thread"); by default the host replays it */
+  async playCity(tile: RegionTile, existing?: LoadingScreen, replay = true): Promise<void> {
     const t0 = performance.now();
     if (this.busy || !this.region) {
       existing?.remove();
@@ -558,7 +568,7 @@ class App {
       ld.set(`Loading ${tile.city?.name ?? 'city'}…`, 0.25);
       await paint();
       // W1.2: main reads the record without deserializing it, and the worker boots on it (O6, R14)
-      const worker = this.useWorker() ? await this.bootWorker(this.region, tile, ld) : null;
+      const worker = this.useWorker() ? await this.bootWorker(this.region, tile, ld, replay) : null;
       if (worker) {
         await this.enterCity(this.region, tile, worker.host.state, ld, t0, worker);
         return;
@@ -572,7 +582,7 @@ class App {
         await this.regionScreen?.refresh();
         return;
       }
-      await this.enterCity(this.region, tile, st, ld, t0);
+      await this.enterCity(this.region, tile, st, ld, t0, undefined, replay);
     } catch (e) {
       console.error('[main] failed to load city', e);
       toast(`Could not load the city: ${(e as Error).message}`, 'bad', 6000);
@@ -583,7 +593,7 @@ class App {
   }
 
   /** `t0`: when the player asked for the city (FH-21); `worker`: W1.2's booted worker host, whose replica `st` is */
-  private async enterCity(model: RegionModel, tile: RegionTile, st: CityState, ld: LoadingScreen, t0 = performance.now(), worker?: WorkerBoot): Promise<void> {
+  private async enterCity(model: RegionModel, tile: RegionTile, st: CityState, ld: LoadingScreen, t0 = performance.now(), worker?: WorkerBoot, replay = true): Promise<void> {
     ld.set('Building the city…', 0.7);
     await paint();
     this.clearScreens();
@@ -603,7 +613,7 @@ class App {
     const rctx = regionContext(model, tile);
     // the state was just loaded / founded + saved: clean
     const now = Date.now();
-    this.city = { scene: null, tile, host: null, lastSave: now, cleanChanges: 0, snapChanges: 0, cleanFp: cityFingerprint(st), snapFp: '', lastSnap: now, saving: 0, saveFailed: false };
+    this.city = { scene: null, tile, host: null, lastSave: now, cleanChanges: 0, snapChanges: 0, cleanFp: cityFingerprint(st), snapFp: '', lastSnap: now, snapDay: st.day, saveDay: st.day, saving: 0, saveFailed: false };
     audio.setAmbience({ population: st.stats.population, zoom: 0.5, night: false, water: 0, month: st.month, climate: st.config.climate, construction: 0, activity: 1 });
     audio.startAmbienceAfterLoading(this.root);
     audio.setMusicContext({ screen: 'city', night: false, population: st.stats.population, activity: 0.5 });
@@ -618,6 +628,7 @@ class App {
         host: worker?.host,
         rctx,
         persistence: { regionId: model.data.id, tileKey: tile.key, regionName: model.data.name },
+        replayJournal: replay,
         settings: cityOverrides(this.settings),
         onExitToRegion: (thumb) => void this.exitCity(thumb),
         onSave: (_state, reason = 'manual') => this.saveCityState(reason),
@@ -688,8 +699,14 @@ class App {
     }
     const dirty = this.isDirty();
     c.status?.set(!dirty ? 'saved' : c.saveFailed ? 'error' : 'dirty', c.lastSave);
-    if (dirty && this.persistent && !document.hidden && Date.now() - c.lastSnap >= SNAPSHOT_INTERVAL_MS) {
+    // W1.3: a packet host's worker snapshot every min(30 s, 90 sim days), counted from the last snapshot or save (a save
+    // in the window is the better base); the local host keeps its 30 s on the main thread
+    const day = this.currentState()?.day ?? c.snapDay;
+    const due = c.host?.kind === 'local' || !c.host ? Date.now() - c.lastSnap >= SNAPSHOT_INTERVAL_MS
+      : periodicSnapshotDue({ now: Date.now(), day, snapAt: c.lastSnap, snapDay: c.snapDay, saveAt: c.lastSave, saveDay: c.saveDay });
+    if (dirty && this.persistent && !document.hidden && due) {
       c.lastSnap = Date.now(); // (re)armed now; the snapshot itself runs when the main thread is idle
+      c.snapDay = day;
       const ric = (window as Window & { requestIdleCallback?: (fn: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
       if (ric) ric(() => { if (this.city === c) this.snapshotNow('periodic'); }, { timeout: 5000 });
       else this.snapshotNow('periodic');
@@ -763,6 +780,7 @@ class App {
       c.cleanChanges = saved.changes;
       c.saveFailed = false;
       c.lastSave = saved.savedAt;
+      c.saveDay = this.currentState()?.day ?? c.saveDay;
       // this save made the city's recovery snapshots obsolete; the next one is a delta of it. A snapshot taken while
       // it was being written (newer, but a delta of the replaced save) is dropped too: take a fresh one soon.
       if (saved.recoveryDropped) c.lastSnap = 0;
@@ -876,7 +894,7 @@ class App {
    * loading screen. null when it does not boot (a script error, a version mismatch, a fatal message, 20 s without
    * progress): the caller then loads the city on the main thread, after one toast (§4.1 step 4).
    */
-  private async bootWorker(model: RegionModel, tile: RegionTile, ld: LoadingScreen): Promise<WorkerBoot | null> {
+  private async bootWorker(model: RegionModel, tile: RegionTile, ld: LoadingScreen, replay = true): Promise<WorkerBoot | null> {
     const errors = new ErrorSink();
     let boot: WorkerBoot | null = null;
     try {
@@ -891,6 +909,9 @@ class App {
         .finally(() => clearTimeout(waited));
       const host = await loadWorkerSimHost(model.data.id, tile.key, {
         port, scriptLoaded, dev: SIM_WORKER_DEV, rctx: regionContext(model, tile), regionName: model.data.name, errors,
+        // W1.3: the worker reads and writes its own IndexedDB; one whose IndexedDB falls back to memory is replaced by a
+        // fresh worker with persistence 'main' (§4.1 step 3)
+        respawn: () => browserSimWorker(SIM_WORKER_URL), replayJournal: replay,
         // paused until the scene knows from the replica whether the city is new (CityScene applies the speed)
         initialSpeed: 0,
         flags: { simwasm: pageSimWasmFlag() },
@@ -937,8 +958,10 @@ class App {
       const pending = await findRecoverySnapshot(city).catch(() => null);
       if (pending) await this.restoreRecovery(pending);
     }
-    // the player has chosen: no second recovery offer (a loading screen handed over skips it)
-    await this.playCity(c.tile, ld);
+    // the player has chosen: no second recovery offer (a loading screen handed over skips it). W1.3: only Recover
+    // replays the journal; Restart and Continue on the main thread load the save as it is, and the journal stays as
+    // the snapshot does, until the next save or recovery write replaces it
+    await this.playCity(c.tile, ld, choice === 'recover');
   }
 
   /** stand-in when src/game/CityScene.ts is not available yet */

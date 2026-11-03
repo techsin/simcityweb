@@ -18,8 +18,14 @@ import { LoopbackSimHost } from '../../src/worker/LoopbackSimHost';
 import type { WorkerSimHost } from '../../src/worker/WorkerSimHost';
 import { exactDigest } from '../../src/worker/queries';
 import { buildWorkerTest } from '../../tools/bench/worker/buildTests.mjs';
-import { bootNode, hash, initialCity, send, stripCells, waitFor, within } from './workerHarness';
-import { MemStorage } from '../save/fixtures';
+import { bootIdb, bootNode, hash, initialCity, send, stripCells, waitFor, within } from './workerHarness';
+import { existsSync } from 'node:fs';
+import { grownFixture } from '../../tools/bench/worker/fixtures';
+import { decodeBundle } from '../../src/save/bundle';
+import { gunzipSync } from 'node:zlib';
+import { readFileSync } from 'node:fs';
+import { loadCity } from '../../src/save/cities';
+import { MemStorage, PersistentMemoryKV, regionData } from '../save/fixtures';
 
 beforeAll(async () => { await buildWorkerTest(); }, 60000);
 afterEach(() => { clearRecoveryBase(); setKV(new MemoryKV()); vi.unstubAllGlobals(); });
@@ -102,6 +108,59 @@ describe('Local, Loopback and the real Worker', () => {
       expect(hash(await saved(other, backKv)), 'Local save, Worker load').toBe(hash(serializeCity(local.sim.state, { copy: true })));
     } finally { await first.dispose(); await local?.dispose(); await other?.dispose(); }
   });
+
+  it('W1.3 (S2): with the worker\'s own IndexedDB, a save in one host loads in the other and continues identically', { timeout: 120000 }, async () => {
+    const kv = new PersistentMemoryKV(); setKV(kv);
+    await kv.put('regions', regionData('hosts', 'Hosts'));
+    const city = initialCity();
+    await kv.put('cities', { key: 'hosts:0', regionId: 'hosts', tileKey: '0', savedAt: city.savedAt, city }, 'hosts:0');
+    const boot = () => bootIdb('hosts', '0', { kv, deterministic: true });
+    let first: WorkerSimHost | undefined, local: LocalSimHost | undefined, other: WorkerSimHost | undefined;
+    try {
+      first = await boot();
+      expect(first.persistence).toBe('worker-idb');
+      await send(first, 'setTax', [DevType.R1, 10.5]);
+      await first.runDays(45);
+      await first.save('manual'); await first.dispose();
+      // the worker's save, loaded by LocalSimHost (loadCity) and by a second worker, both from the same store
+      local = new LocalSimHost((await loadCity('hosts', '0'))!, { persistence: { regionId: 'hosts', tileKey: '0' } });
+      await local.start({ createSystems, CityActions });
+      other = await boot();
+      local.sim.runDays(45); await other.runDays(45);
+      await other.save('manual');
+      const fromWorker = (await getCityRecord(kv, 'hosts', '0'))!.city;
+      expect(hash(fromWorker), 'Worker save, Local and Worker loads').toBe(hash(serializeCity(local.sim.state, { copy: true })));
+      await other.dispose();
+      // and back: LocalSimHost's save, loaded by a worker from its IndexedDB
+      await local.save('manual');
+      await local.dispose();
+      local = new LocalSimHost((await loadCity('hosts', '0'))!, { persistence: { regionId: 'hosts', tileKey: '0' } });
+      await local.start({ createSystems, CityActions });
+      other = await boot();
+      local.sim.runDays(30); await other.runDays(30);
+      expect(exactDigest(other.state)).toBe(exactDigest(local.state));
+      await other.save('manual');
+      expect(hash((await getCityRecord(kv, 'hosts', '0'))!.city), 'Local save, Worker load').toBe(hash(serializeCity(local.sim.state, { copy: true })));
+    } finally { await first?.dispose(); await local?.dispose(); await other?.dispose(); }
+  });
+
+  it.runIf(existsSync(grownFixture()))('W1.3: an old save (the grown fixture) loads through the worker\'s IndexedDB and continues as LocalSimHost does', { timeout: 300000 }, async () => {
+    const kv = new PersistentMemoryKV(); setKV(kv);
+    const raw = new Uint8Array(readFileSync(grownFixture()));
+    const city = decodeBundle(raw[0] === 0x1f && raw[1] === 0x8b ? new Uint8Array(gunzipSync(raw)) : raw) as SerializedCity;
+    await kv.put('regions', regionData('hosts', 'Hosts'));
+    await kv.put('cities', { key: 'hosts:0', regionId: 'hosts', tileKey: '0', savedAt: city.savedAt || 1, city }, 'hosts:0');
+    const local = new LocalSimHost((await loadCity('hosts', '0'))!, { persistence: { regionId: 'hosts', tileKey: '0' } });
+    await local.start({ createSystems, CityActions });
+    const host = await bootIdb('hosts', '0', { kv, deterministic: true });
+    try {
+      expect(exactDigest(host.state), 'the loaded replica').toBe(exactDigest(local.state));
+      local.sim.runDays(8); await host.runDays(8);
+      expect(exactDigest(host.state)).toBe(exactDigest(local.state));
+      await host.save('manual');
+      expect(hash((await getCityRecord(kv, 'hosts', '0'))!.city)).toBe(hash(serializeCity(local.sim.state, { copy: true })));
+    } finally { await host.dispose(); await local.dispose(); }
+  });
 });
 
 describe('persistence main (R14)', () => {
@@ -128,7 +187,8 @@ describe('persistence main (R14)', () => {
       expect(record.savedAt).toBe(ack.savedAt);
       expect(snap.marker.baseSavedAt, 'a delta of the save main stored').toBe(record.savedAt);
       expect(deserializeCity(rebuildRecoveredCity({ marker: snap.marker, payload: snap.payload, record })).budget.taxRates[DevType.R1]).toBe(11.5);
-      expect(() => host.recovery!.writeNow('pagehide')).not.toThrow();
+      // W1.3: no journal mirror while the page's store does not persist (the App takes no snapshots then either)
+      expect(host.recovery).toBeNull();
       expect(() => serializeCity(host.state as CityState)).toThrow(/replica/i);
     } finally { await host.dispose(); }
     expect(() => host.post('setTax', [DevType.R1, 12])).toThrow(/disposed/);
@@ -171,26 +231,30 @@ describe('persistence main (R14)', () => {
       expect(deserializeCity(rebuildRecoveredCity({ marker: snapped.marker, payload: snapped.payload, record })).budget.taxRates[0]).toBe(13);
     } finally { release(); await host.dispose(); }
   });
-  it('with localStorage, the unload write keeps the worker\'s last snapshot and no journal; a crash writes it as such', { timeout: 30000 }, async () => {
-    // R14: no journal in W1.2. T033's page journal would bind here (persistence and localStorage), and its journal-only
-    // unload write would replace the snapshot payload that the worker built
+  it('with a persistent store (the boot fallback), the unload write keeps the worker\'s last snapshot and the journal after it; a crash writes them as such', { timeout: 30000 }, async () => {
+    // W1.3: T033's journal mirror binds in persistence 'main' too (W1.2 had none, R14), fed by main's own stores
     const storage = new MemStorage(); vi.stubGlobal('localStorage', storage);
-    const kv = new MemoryKV(), host = await bootNode(initialCity(), { kv, deterministic: true, onCrash: () => {} });
+    const kv = new PersistentMemoryKV(); setKV(kv);
+    const host = await bootNode(initialCity(), { kv, deterministic: true, onCrash: () => {} });
     try {
       await send(host, 'setTax', [DevType.R1, 11.5]);
       const snap = await host.snapshot('hidden');
       if (!snap) throw new Error('missing snapshot');
-      await send(host, 'plantTrees', [{ x0: 3, z0: 3, x1: 8, z1: 8 }]);
+      expect(snap).toMatchObject({ ok: true, idb: true, cmd: 1 });
+      const trees = await send(host, 'plantTrees', [{ x0: 3, z0: 3, x1: 8, z1: 8 }]);
       host.recovery!.writeNow('pagehide');
       const slot = readLsSnapshot();
-      expect(slot?.marker).toMatchObject({ at: snap.marker.at, baseSavedAt: snap.marker.baseSavedAt, why: 'pagehide' });
-      expect(slot?.payload?.length, 'the worker\'s payload, not a journal-only slot').toBe(snap.payload.length);
-      expect(readLsJournal()).toBeNull();
-      // §4.4: the crash path writes the snapshot first, as a crash
+      expect(slot?.marker).toMatchObject({ at: snap.marker.at, baseSavedAt: snap.marker.baseSavedAt, why: 'pagehide', kind: 'snapshot' });
+      expect(slot?.payload?.length, 'the worker\'s payload').toBe(snap.payload.length);
+      expect(readLsJournal(), 'and the edit after it').toMatchObject({ base: { kind: 'snapshot', at: snap.marker.at }, fromCmd: 1, ops: [{ seq: 2, op: 'plantTrees' }] });
+      expect(trees).toMatchObject({ ok: true });
+      expect(await kv.get('recovery', 'hosts:0#journal'), 'and its IndexedDB copy').toMatchObject({ fromCmd: 1 });
+      // §4.4: the crash path writes them first, as a crash
       (host as unknown as { link: { post(m: unknown): void } }).link.post({ t: 'tick', seq: 1, dt: -1, ack: 0 });
       await waitFor(() => host.isDisposed, 'the crash path');
       expect(peekRecoveryMarker()).toMatchObject({ at: snap.marker.at, why: 'crash' });
       expect(readLsSnapshot()?.payload?.length).toBe(snap.payload.length);
+      expect(readLsJournal()?.ops).toHaveLength(1);
     } finally { await host.dispose(); }
   });
 });

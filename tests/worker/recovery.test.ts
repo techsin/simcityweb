@@ -176,7 +176,9 @@ describe('RecoveryMirror', () => {
   it('discards a journal when the stored record changed, including a LocalSimHost save', async () => {
     const f = await fixture(); f.post({ op: 'setTax', args: [DevType.R1, 15] }); f.mirror.writeNow('pagehide');
     const old = readLsJournal()!, record = (await getCityRecord(kv, city.regionId, city.tileKey))!;
-    const local = new LocalSimHost(codec.deserializeCity(record.city), { persistence: city });
+    // W1.3: a local session replays a matching journal at start; this one is booted without it (the crash dialog's
+    // "Continue on the main thread"), so its save is what replaces the record the journal extends
+    const local = new LocalSimHost(codec.deserializeCity(record.city), { persistence: city, replayJournal: false });
     hosts.push(local); await local.start({ CityActions }); now = 1200; await local.save('manual');
     const current = (await getCityRecord(kv, city.regionId, city.tileKey))!;
     // An unload copy from another realm/tab can arrive after the local save's cleanup.
@@ -291,7 +293,8 @@ describe('RecoveryMirror', () => {
     expect(requestSnapshot).toHaveBeenCalledOnce();
     expect(JSON.stringify(mirror.journal).length * 2).toBeGreaterThan(JOURNAL_RESERVE_BYTES);
     const put = vi.spyOn(kv, 'put'); mirror.writeNow('beforeunload');
-    expect(put).toHaveBeenCalledExactlyOnceWith('recovery', mirror.journal, 'rtest:0_0#journal');
+    // W1.3: a journal alone carries its description for the title screen's offer
+    expect(put).toHaveBeenCalledExactlyOnceWith('recovery', { ...mirror.journal, info: expect.objectContaining({ cityName: f.l.primary.config.name, why: 'beforeunload' }) }, 'rtest:0_0#journal');
     expect(peekRecoveryMarker()).toMatchObject({ kind: 'journal', journalIdbOnly: true, bytes: 0 });
     expect(readLsJournal()).toBeNull();
     expect((await readRecoveryJournal(kv, { ...city, savedAt: f.savedAt }))?.ops).toHaveLength(4);
@@ -376,8 +379,8 @@ describe('RecoveryMirror: FH-07a and restoring (T033 carry-over)', () => {
     f.mirror.writeNow('pagehide'); put.mockRestore();
     expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
     expect(readLsJournal()?.ops).toHaveLength(1);
-    // a journal alone is not offered at title time (W1.3 adds that offer); the slot is moved, not dropped
-    expect(await findPendingRecovery()).toBeNull();
+    // the slot is moved, not dropped; W1.3 offers the journal alone at title time
+    expect(await findPendingRecovery()).toMatchObject({ marker: { kind: 'journal', baseSavedAt: f.savedAt, why: 'pagehide' }, journal: { ops: [{ seq: 1, op: 'setTax' }] } });
     expect(peekRecoveryMarker()).toBeNull();
     expect((await readRecoveryJournal(kv, { ...city, savedAt: f.savedAt }))?.ops).toMatchObject([{ seq: 1, op: 'setTax' }]);
   });
