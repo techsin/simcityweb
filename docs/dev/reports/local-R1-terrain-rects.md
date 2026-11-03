@@ -192,3 +192,33 @@ The worker did the rest:
 - the real-GPU timing;
 - the readback method and runs;
 - this report.
+
+## Cloud carry-over (Nov 3)
+
+The desktop is unavailable (NOTE-044), so the cloud verified this lane. The branch is `cloud/r1`, from
+`local/R1-terrain-rects` @ `255239b`.
+- Dev `821a8d6` was already merged in (`a0bd25a`). This run was interrupted once (a container restart) and resumed;
+  by then dev had moved to `50a6b29`, merged at `90f153f` with no conflicts.
+- Since the desktop's audit tree `af62daf`, dev changed render files (`Fireworks.ts`, `CityObjectsView.ts`,
+  `render/world/overlays.ts`), src/ui, and in src/game only `NewYear.ts`, `CityScene.ts` and `context.ts` (T036 step
+  3's toast budget). None of them writes a layer R1 reads; nothing changed in src/sim, src/save, src/worker or
+  src/core.
+- NOTE-048 accepts the second edge frame (0.165-0.170 ms) as a minor and calls a follow-up optional. The follow-up
+  was contained, so this lane takes it (item 8 below).
+
+### Gap list (written before any work)
+
+Required by T021, WORKER_DESIGN §6 row R1 and NOTE-013/017/021/022/046, compared with what the branch held:
+
+| # | required | state on `255239b` | cloud action |
+|---|---|---|---|
+| 1 | Union rects per texture group, padded by one and clamped; refill and upload only the union; Red ranges in texel × 4; a full upload above half the rows; exits only near the edge; full paths clear the pending ranges; first upload and context restore stay full | done (`c6818fd`, Codex-written, desktop-reviewed) | re-review line by line against three r186's `WebGLTextures.updateTexture` |
+| 2 | NOTE-017: the fallback `plantTrees` writes only after the price check and emits `treesChanged`; the fallback terraform emits the water ring | done | re-review; revert each fix and check that its test fails |
+| 3 | Writer audit with file:line | done at `af62daf` | re-sweep the writers on the merged tree; check the cited lines |
+| 4 | tsc clean; full vitest passes | green on the desktop | rerun here |
+| 5 | Node exactness test: every tool action, plus 60 years of a 128 bot city with disasters on | present (`terrainRects`, `terrainGrowth`) | rerun; mutation-test that the tests catch rect bugs |
+| 6 | Test that the ranges cover exactly the union's rows, for RGBA and Red | present | mutation-test |
+| 7 | Bot identical to dev (`[ 61124, 93804, 37971 ]`) | identical on the desktop | rerun here, against a clean export of dev |
+| 8 | Real-GPU timing ≤ 0.15 ms per event frame, ≥ 8 reps, with a Chrome trace for the upload | median 0.010 ms; **47 of 48 frames**. One edge frame took 0.165-0.170 ms. Uploads were counted and timed by wrapping `texSubImage2D`, not with a Chrome trace | real GPU: a remaining item. Check the edge frame's CPU cost here, and take the desktop's suggested `updateExits` follow-up if it is contained |
+| 9 | Pixel-identical LOW and HIGH screenshots of base and branch (paused, fixed camera): 0 pixels, or explain each difference | not 0. The A/A noise came from time-driven animation and was explained; a GPU texture readback was bit-identical; one LOW pair was 0 px | rerun here on SwiftShader with a frozen page clock, plus the texture readback |
+| 10 | Report, small JPEGs, `.done` line | present | add this section and a cloud `.done` line |
