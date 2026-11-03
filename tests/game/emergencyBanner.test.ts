@@ -575,6 +575,32 @@ describe('EmergencyBanner: final-fix round 2', () => {
     expect(h.banner.liveActive).toBe(false);
   });
 
+  it('T029: a major fire inside a busy station\'s range gets no banner, no LIVE mode and no place in the "N more" pill', () => {
+    // the far station (x = 4) has a free truck that can still make it; the near one (x = 56) has every truck out
+    const { st, sim, station } = fireTown();
+    const near = place(st, 't_fire', 56, 19);
+    sim.events.emit('buildingAdded', near);
+    const home = place(st, 't_r2', 60, 21, { pop: 60 });
+    const h = harness(sim);
+    const em = emergencyOf(sim)!;
+    sim.speed = 3;
+    sim.runDays(0.05); // the new station's fleet is up
+    h.tick();
+    const units = em.stationFleet(near.id)!.total;
+    expect(units).toBeGreaterThan(0);
+    (em as unknown as { out: Map<number, number> }).out.set(near.id, units);
+    (em as unknown as { stVer: number }).stVer++;
+    triggerDisaster(sim, 'fire', home.x, home.z);
+    const fire = em.incidents()[0];
+    h.tick();
+    expect([fire.state, fire.reason, fire.major, fire.manualPossible, fire.bestFrom]).toEqual(['uncovered', 'busy', true, true, station.id]);
+    expect(h.banner.bannerIds).toEqual([]);
+    expect(h.banner.liveActive).toBe(false);
+    expect([sim.speed, sim.liveSlowdown]).toEqual([3, 1]);
+    const more = (h.banner as unknown as { more: FakeEl }).more;
+    expect(shown(more)).toBe(false);
+  });
+
   it('EM-4: the Send button keeps its label / ETA spans and the pill its text span: a press and release across the update still clicks', () => {
     const { st, sim } = fireTown();
     const homes = [40, 48].map((x) => place(st, 't_r2', x, 21, { pop: 60 }));
