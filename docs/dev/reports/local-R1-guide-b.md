@@ -142,8 +142,8 @@ The desktop was unavailable (NOTE-044), so the cloud finishes this lane on `clou
   name T037b and ask nothing of it (T054 publishes `full` after this lane lands; T037b is one of the cloud's lanes that
   interleave with wave 1).
 
-The gates were run again at the head `c65901f` (section "At the head" below the gates table); the table's earlier rows
-are kept as the record of each merge.
+The gates were run again at `c65901f` and at the final head `ddc6680` (section "At the head" below the gates table);
+the table's earlier rows are kept as the record of each merge.
 
 tsc is clean at `67b567d`, `954306d`, `f077faf`, `5f634f6`, `533178a`, `270b709`, `c65901f` and `ddc6680`. NOTE-045 to NOTE-047 keep T037b on the
 cloud (the desktop is back, but must not touch it); NOTE-047 moves T037a and T037e to the desktop, T037e to start once
@@ -218,7 +218,7 @@ class) fails the coach-update test; F3's no-zoned-land guard removed fails its t
 
 Heavy runs under the shared lock, tsc under the CPU semaphore. Logs in `scratchpad/t037b/gates/` (the `m3_*` files are
 the runs at `954306d`; `5f634f6`'s code was byte-identical to it). This table is the record up to `5f634f6`; the runs at
-the final head `c65901f` (FEEL-02a's merge in) are in "At the head" below it.
+`c65901f` (FEEL-02a's merge in) and at the final head `ddc6680` are in "At the head" below it.
 
 | Gate | Result |
 |---|---|
@@ -240,7 +240,7 @@ the final head `c65901f` (FEEL-02a's merge in) are in "At the head" below it.
 | Browser checklist (below) | **19 of 19 checks pass** (C0 is the setup), "Connect a highway" included |
 | §8.1's round-1 verifier list | not this sub-lane's: it runs once every GUIDE and META round-1 item is in |
 
-**At the head `c65901f`** (the code of `270b709`: FEEL-02a's toast budget merged and wired; logs `scratchpad/t037b/gates/m9_*`,
+**At the head, `c65901f` then `ddc6680`.** At `c65901f` (the code of `270b709`: FEEL-02a's toast budget merged and wired; logs `scratchpad/t037b/gates/m9_*`,
 `m10_*`, `m11_*`). The earlier run of this step was cut by the machine's restart (Nov 3, 22:16) before these ran. Its gap
 list on resuming: dev had moved on by three NOTE commits (merged: `c65901f`); after the FEEL-02a merge `270b709` the full
 vitest, the bot against dev and the browser recheck of scenario A had not run (its `m8_*` runs were cut by the restart);
@@ -261,7 +261,8 @@ lane's):
 - tsc clean (`m12_tsc.log`);
 - this lane's three test files with T052's five new or changed ones, under the CPU semaphore: 8 files, 103 tests passed
   (`m12_targeted.log`);
-- the full vitest (lock): pending, queued for the lock (`m13_vitest.log`);
+- the full vitest (lock, fixtures present): **226 files passed, 2 skipped; 2,270 tests passed, 8 skipped** (468.9 s;
+  `m13_vitest.log`; T052 adds the 4 files and 35 tests over `c65901f`'s run);
 - the bot is not rerun: everything it runs (src/sim, src/core, tools/simbot.ts) is byte-identical to `c65901f`, where it
   was identical to dev's, and dev's T052 merge left those files unchanged too;
 - the browser is not rerun: T052 changed src/render's props and src/assets only, which none of this lane's checks reads.
@@ -363,7 +364,7 @@ any run.
 | C6 | the RCI popover's cap hints show "The city is built out" with the same text, Rezone and Connect a highway | pass | `shots-BC/C6-rci-popover-built-out.png` |
 | C7 | the popover's Rezone: the Land value view, the Zones flyout, the popover closed | pass | `shots-BC/C7-rezone-landvalue.png` |
 
-Scenario A (A1-A3) ran again at the head `c65901f`, after FEEL-02a's budget came in: 4 of 4 pass (the gates' "At the head"
+Scenario A (A1-A3) ran again at `c65901f`, after FEEL-02a's budget came in: 4 of 4 pass (the gates' "At the head"
 table, `qa/shots-m10/`). B and C were not rerun: of what the FEEL-02a merge changed, they reach only the toast's button
 lookup (the same hook for every advice id, C1's built-out toast included), which A1-A2 exercise in the browser and
 `adviceActions.test.ts` covers in the unit tests (the queue over budget, the ref lookup, a button with a place).
@@ -425,4 +426,4 @@ hangs just under the segment (`f9fd2a9`).
     (day 30), and its toast shows at once when the budget allows; when the tick's other news has spent it, the toast
     waits in FEEL-02a's queue, at most `Toasts.QUEUE_MAX_MS` (50 s of real time), and is never dropped. That is FH-03
     change 3 as the plan words it, so this lane reads acceptance 1 as met; the unit test bounds the wait at 50 s, and the
-    browser recheck at the head (A1, `qa/shots-m10/log.txt`) shows the toast 5 ms after the tick, the budget allowing it.
+    browser recheck at `c65901f` (A1, `qa/shots-m10/log.txt`) shows the toast 5 ms after the tick, the budget allowing it.
