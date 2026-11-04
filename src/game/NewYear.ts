@@ -19,6 +19,12 @@
  * to 0.1 s, so at a low frame rate a 90 s show lasted 15 real minutes.
  * Everything runs in real time (independent of the sim speed; keeps going while paused).
  * Batch-simulated years (headless runDays, loading) are skipped: only years reached while the game loop runs party.
+ * FEEL-02a (D17), settings.newYearPacing = 'milestones' (the default): the full show above (and its fanfare) plays on the
+ * city's first New Year, on a New Year in which it reached a new city rank (LG-01's CITY_RANKS), and otherwise at most
+ * once per 10 real minutes; two full shows are never under 3 real minutes apart, and at most 2 play in any 10 real
+ * minutes. Every other New Year gets a burst at 1x and 2x (Fireworks' shortest show, its sparks gone ~10 s after the
+ * start: no countdown, no fanfare, no camera or clock takeover) and its yearly toast without the fanfare; at ultra only
+ * a silent compact toast ("2034 · 812,400 residents, up 6%"). 'everyYear' keeps the full show every year.
  *
  *   const ny = new NewYearCelebration({ sim, world: () => w, objects: () => o, settings: () => s, toast, audio });
  *   loop (before world.update): ny.frame(dt)        dev: ny.celebrate({ instant: true })
@@ -29,6 +35,7 @@ import { DAYS_PER_MONTH, MONTHS_PER_YEAR } from '../core/constants';
 import type { Fireworks, FireworksSoundKind } from '../render/city/effects/Fireworks';
 import type { FireworksAudio, FireworksAudioOut, FireworksListener, FireworksSpatial } from '../audio/fireworks';
 import type { GameSettings, NewYearMode } from './settings';
+import { CITY_RANKS } from '../sim/economy/rewards';
 
 export interface NewYearDeps {
   sim: Simulation;
@@ -37,13 +44,17 @@ export interface NewYearDeps {
   world: () => WorldViewApi;
   objects: () => CityObjectsViewApi;
   settings: () => GameSettings;
-  toast: (text: string, kind?: string, cell?: { x: number; z: number }, title?: string) => void;
+  toast: (text: string, kind?: string, cell?: { x: number; z: number }, title?: string, opts?: { silent?: boolean; ttl?: number }) => void;
   /** UI sound by name (optional) */
   sound?: (name: string) => void;
   /** the audio engine (fireworks audio uses its getSfxOutput()) */
   audio?: () => unknown;
   /** element for the countdown overlay (the HUD root) */
   overlayRoot?: HTMLElement;
+  /** hold or release the calendar through the host (NOTE-041's holdCalendar command); without it the date runs on */
+  holdCalendar?: (on: boolean) => void;
+  /** real time in ms for the pacing (default performance.now; tests and the pacing probe pass their own clock) */
+  now?: () => number;
 }
 
 export interface CelebrateOptions {
@@ -66,13 +77,81 @@ export interface CelebrateOptions {
   quiet?: boolean;
   /** show camera on / off (default: settings.newYearCamera in cinematic mode; off for instant / fast-forwarded dev shows) */
   camera?: boolean;
+  /** FEEL-02a's burst instead of the full show: Fireworks' shortest show at once, with no countdown, no fanfare and no
+   *  camera, clock or calendar takeover (implies quiet: the caller shows the yearly toast without the fanfare) */
+  burst?: boolean;
+}
+
+/** FEEL-02a (D17): New Year pacing in real time, at every speed (settings.newYearPacing = 'milestones') */
+export const NEW_YEAR_PACING = {
+  /** a full show that is not a milestone plays at most once per this long (real ms) */
+  periodMs: 10 * 60_000,
+  /** two full shows are never closer than this (real ms), milestones included */
+  minGapMs: 3 * 60_000,
+  /** at most this many full shows in any periodMs (Goal 8: "rank-ups included") */
+  maxPerPeriod: 2,
+  /** the burst: Fireworks' shortest show (its minimum duration), the opening salvo launched at once, at most this show
+   *  size (0..1); its sparks are gone 8.6-12.4 s after the start (measured on the real Fireworks, 3 hamlet to megacity
+   *  populations x 20 seeds x camera distances from 300 m to 9 km; over 12 s only from 4.5 km away) */
+  burstDuration: 6,
+  burstDelay: 0,
+  burstSize: 0.4,
+  /** a burst is never on screen longer than this (s of show time): sparks still alive then are cleared */
+  burstMaxS: 12,
+  /** a game year shorter than this (real s) is ultra speed: no burst, only the compact toast */
+  ultraYearSec: 45,
+  /** how long the compact ultra toast stays (ms; an ultra year is 18 s) */
+  compactTtlMs: 4500,
+} as const;
+
+/** what a New Year gets: the full show, a burst (1x, 2x) or the compact toast alone (ultra) */
+export type NewYearShow = 'full' | 'burst' | 'quiet';
+
+/** the real-time rules for full shows (FEEL-02a; pure, so the probe and the tests read the same decisions) */
+export class NewYearPacer {
+  /** real times (ms) of the full shows in the last period, oldest first */
+  private fulls: number[] = [];
+  /** what the last New Years got (newest last; for the QA probes and the dev console) */
+  readonly log: { year: number; at: number; show: NewYearShow; milestone: boolean }[] = [];
+
+  /** full on a milestone (first New Year, rank-up) or once the period has passed, within the gap and per-period caps */
+  decide(now: number, milestone: boolean, ultra: boolean): NewYearShow {
+    const P = NEW_YEAR_PACING;
+    this.prune(now);
+    const last = this.fulls.length ? this.fulls[this.fulls.length - 1] : -Infinity;
+    const gap = now - last;
+    if (gap >= P.minGapMs && this.fulls.length < P.maxPerPeriod && (milestone || gap >= P.periodMs)) return 'full';
+    return ultra ? 'quiet' : 'burst';
+  }
+
+  /** a full show played now (also 'everyYear' ones, so switching to milestones mid-session counts them) */
+  noteFull(now: number): void {
+    this.prune(now);
+    this.fulls.push(now);
+  }
+
+  note(year: number, at: number, show: NewYearShow, milestone: boolean): void {
+    this.log.push({ year, at, show, milestone });
+    if (this.log.length > 64) this.log.splice(0, this.log.length - 64);
+  }
+
+  private prune(now: number): void {
+    while (this.fulls.length && now - this.fulls[0] >= NEW_YEAR_PACING.periodMs) this.fulls.shift();
+  }
+}
+
+/** the highest CITY_RANKS index a population reaches */
+function rankOf(pop: number): number {
+  let r = 0;
+  while (r + 1 < CITY_RANKS.length && pop >= CITY_RANKS[r + 1].population) r++;
+  return r;
 }
 
 type Phase = 'idle' | 'lapse' | 'countdown' | 'show' | 'restore';
 type TimeWorld = WorldViewApi & { timeScale?: number };
 /** the parts of the fireworks the celebration uses (duck-typed: tests pass a stand-in) */
 type FireworksLike = Pick<Fireworks, 'start' | 'stop' | 'fastForward' | 'active' | 'midnight' | 'timeScale' | 'onSound'> &
-  Partial<Pick<Fireworks, 'settled' | 'isRunning' | 'centre' | 'showSize' | 'lengthFor'>>;
+  Partial<Pick<Fireworks, 'settled' | 'isRunning' | 'centre' | 'showSize' | 'lengthFor' | 'time' | 'liveCount'>>;
 /** WorldView's camera controller (CameraController): only what the show camera needs */
 interface CamCtl {
   enabled: boolean;
@@ -109,7 +188,7 @@ const DAYS_PER_YEAR = DAYS_PER_MONTH * MONTHS_PER_YEAR;
 /** at most this much real time (s) advances the celebration in one frame (a hidden tab or a long stall skips nothing) */
 const REAL_STEP_MAX = 1;
 /** keys the camera controller acts on: pressing one hands the camera back to the player */
-const CAMERA_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'pageup', 'pagedown', 'home', '+', '=', '-', '_']);
+const CAMERA_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'NumpadEqual']);
 const DEG = 180 / Math.PI;
 
 const nf = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
@@ -117,9 +196,13 @@ const nf = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
+/** show size 0..1 for a population (the curve of Fireworks' fireworksShowSize) */
+function showSizeFor(pop: number): number {
+  return clamp01((Math.log10(Math.max(pop, 30)) - 1.7) / 4.0);
+}
 /** default show length when the fireworks don't say (same curve as Fireworks.lengthFor) */
 function defaultShowLength(pop: number): number {
-  return 20 + 70 * Math.pow(clamp01((Math.log10(Math.max(pop, 30)) - 1.7) / 4.0), 1.4);
+  return 20 + 70 * Math.pow(showSizeFor(pop), 1.4);
 }
 function smooth(t: number): number {
   t = clamp01(t);
@@ -175,9 +258,13 @@ export class NewYearCelebration {
   /** real time (performance.now ms) of the last frame (the celebration's timer follows real elapsed time) */
   private lastNow = 0;
   /** the calendar hold during the time-lapse and the countdown: the sim's days-per-frame cap it replaced */
-  private dateHold: { prevMax: number; at: number } | null = null;
+  private dateHold: { at: number } | null = null;
   /** the sim speed when the celebration began: the player raising it ends the celebration (dev shows: -1 = off) */
   private speedAtStart = -1;
+  /** FEEL-02a: which New Years get the full show (real time) */
+  readonly pacer = new NewYearPacer();
+  /** a burst is running: frame() ends it at burstMaxS of show time */
+  private burstOn = false;
 
   constructor(deps: NewYearDeps) {
     this.deps = deps;
@@ -207,21 +294,79 @@ export class NewYearCelebration {
     // a brand-new city (day 0) or years simulated in a batch (headless runDays / loading) don't get a party
     const batch = this.frames === 0 || st.day - this.lastFrameDay > 8;
     if (st.day > 0 && !batch && (popNow > 0 || st.buildings.size > 0)) {
-      // a show that is still running is never cut short: this year only gets its toast
-      if (this.busy) this.toastYear(year, true);
-      else this.celebrate({ year });
+      if (this.deps.settings().newYearPacing === 'everyYear') {
+        // today's pacing: a show that is still running is never cut short, this year only gets its toast
+        if (this.busy) this.toastYear(year, { checkMode: true });
+        else this.celebrate({ year });
+      } else this.paced(year);
     }
     this.lastYearPop = popNow;
   }
 
-  private toastYear(year: number, checkMode = false): void {
+  /** FEEL-02a: the full show on a milestone or once per period; otherwise a burst (1x, 2x) or the compact toast (ultra) */
+  private paced(year: number): void {
+    if (this.deps.settings().newYear === 'off') return;
+    const now = this.realNow();
+    const ultra = this.yearSeconds() < NEW_YEAR_PACING.ultraYearSec;
+    const milestone = this.isMilestone(year);
+    // a show that is still running is never cut short: this year only gets its toast (without the fanfare)
+    const show: NewYearShow = this.busy ? 'quiet' : this.pacer.decide(now, milestone, ultra);
+    this.pacer.note(year, now, show, milestone);
+    if (show === 'full') this.celebrate({ year });
+    else if (ultra) this.compactToast(year);
+    else {
+      this.toastYear(year, { fanfare: false });
+      if (show === 'burst') this.celebrate({ year, burst: true });
+    }
+  }
+
+  /** the city's first New Year (1 January after the founding: a day-0 bot city and a 1 April one alike), or a New Year
+   *  in which it reached a new city rank (the peak population of the last 12 months against the peak before them;
+   *  reached ranks survive population drops, as in rewards.ts; the replica mirrors the history but not systemData) */
+  private isMilestone(year: number): boolean {
+    const st = this.deps.sim.state;
+    const founded = typeof st.systemData?.foundedDay === 'number' ? st.systemData.foundedDay : 0;
+    if (year === st.config.startYear + Math.floor(founded / DAYS_PER_YEAR) + 1) return true;
+    const hp = st.history?.pop ?? [];
+    const cut = hp.length - MONTHS_PER_YEAR;
+    if (cut <= 0) return false;
+    let before = 0;
+    for (let i = 0; i < cut; i++) if (hp[i] > before) before = hp[i];
+    let peak = Math.max(before, st.stats.population);
+    for (let i = cut; i < hp.length; i++) if (hp[i] > peak) peak = hp[i];
+    return rankOf(peak) > rankOf(before);
+  }
+
+  /** real time (ms) for the pacing */
+  private realNow(): number {
+    if (this.deps.now) return this.deps.now();
+    return typeof performance !== 'undefined' ? performance.now() : Date.now();
+  }
+
+  /** the yearly toast; fanfare (default on) only with a full show (FEEL-02a), checkMode: nothing when New Year is off */
+  private toastYear(year: number, o: { checkMode?: boolean; fanfare?: boolean } = {}): void {
     const s = this.deps.settings();
-    if ((checkMode && s.newYear === 'off') || s.toasts === false) return;
+    if ((o.checkMode && s.newYear === 'off') || s.toasts === false) return;
     try {
+      if (o.fanfare === false) {
+        // (silent: a 'reward' toast would otherwise play the fanfare's sound itself)
+        this.deps.toast(this.statsLine(year), 'reward', undefined, `🎆 Happy New Year ${year}!`, { silent: true });
+        return;
+      }
       // fanfare first: the toast then stays quiet instead of requesting it again (and the fanfare can't be lost to the
       // toast's "a sound just played" rule when the month's budget tick lands on the same boundary)
       this.deps.sound?.('reward');
       this.deps.toast(this.statsLine(year), 'reward', undefined, `🎆 Happy New Year ${year}!`);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** ultra speed's New Year without a full show: one silent, short toast "2034 · 812,400 residents, up 6%" */
+  private compactToast(year: number): void {
+    if (this.deps.settings().toasts === false) return;
+    try {
+      this.deps.toast(this.compactLine(year), 'reward', undefined, 'New Year', { silent: true, ttl: NEW_YEAR_PACING.compactTtlMs });
     } catch {
       /* ignore */
     }
@@ -243,10 +388,13 @@ export class NewYearCelebration {
     const s = this.deps.settings();
     let mode: NewYearMode = opts.mode ?? s.newYear ?? 'cinematic';
     if (mode === 'off') return false;
+    const burst = !!opts.burst;
+    if (burst) mode = 'fireworks';
     this.cancel(true);
+    this.burstOn = burst;
     const st = this.deps.sim.state;
     const year = (this.year = opts.year ?? st.year);
-    if (!opts.quiet) this.toastYear(year);
+    if (!opts.quiet && !burst) this.toastYear(year);
     const world = this.deps.world() as TimeWorld;
     this.t = 0;
     this.shownCount = 0;
@@ -254,12 +402,12 @@ export class NewYearCelebration {
     const dev = !!(opts.instant || opts.fastForward);
     const population = opts.population ?? st.stats.population;
     const fw = (this.deps.objects() as { fireworks?: FireworksLike }).fireworks ?? null;
-    let duration = opts.duration ?? (typeof fw?.lengthFor === 'function' ? fw.lengthFor(population) : defaultShowLength(population));
+    let duration = opts.duration ?? (burst ? NEW_YEAR_PACING.burstDuration : typeof fw?.lengthFor === 'function' ? fw.lengthFor(population) : defaultShowLength(population));
     // fast game years: the show has to end well before the next New Year; without room for the night switch the
-    // show runs in 'fireworks' mode, and very short years skip the countdown
+    // show runs in 'fireworks' mode, and very short years skip the countdown (a burst is short at every speed)
     const yearSec = this.yearSeconds();
-    const fast = !dev && opts.duration === undefined && Number.isFinite(yearSec);
-    let countdown = !opts.fastForward;
+    const fast = !dev && !burst && opts.duration === undefined && Number.isFinite(yearSec);
+    let countdown = !opts.fastForward && !burst;
     if (fast && mode === 'cinematic') {
       const budget = yearSec / 2 - (3.2 + COUNTDOWN + 10);
       if (budget >= 20) duration = Math.min(duration, budget);
@@ -271,7 +419,7 @@ export class NewYearCelebration {
     // show camera (cinematic only; dev shows keep the camera unless asked)
     const wantCam = this.timeControlled && (opts.camera ?? (!dev && s.newYearCamera !== false));
     this.lapseDur = 0;
-    let delay = countdown ? COUNTDOWN : 2.8;
+    let delay = countdown ? COUNTDOWN : burst ? NEW_YEAR_PACING.burstDelay : 2.8;
     this.startHour = this.hasClock(world) ? world.timeOfDay : 12;
     if (this.timeControlled) {
       this.savedScale = typeof world.timeScale === 'number' && world.timeScale > 0 && world.timeScale < 30 ? world.timeScale : 2;
@@ -303,13 +451,15 @@ export class NewYearCelebration {
     // show without either, keep it running); the player raising the speed ends the party
     this.speedAtStart = dev ? -1 : this.simSpeed();
     if (!dev && (this.lapseDur > 0 || countdown)) this.holdDate();
+    // (a full show counts for the pacing, whatever started it; a dev show does not)
+    if (!burst && !dev) this.pacer.noteFull(this.realNow());
     // fireworks
     this.fw = fw;
     if (fw) {
       try {
         fw.timeScale = 1;
         fw.onSound = (k, x, y, z, size, extra) => this.onSound(k, x, y, z, size, extra);
-        fw.start({ population, delay, seed: opts.seed, duration });
+        fw.start({ population, delay, seed: opts.seed, duration, ...(burst ? { intensity: Math.min(showSizeFor(population), NEW_YEAR_PACING.burstSize) } : {}) });
         if (opts.fastForward && opts.fastForward > 0) {
           fw.fastForward(opts.fastForward);
           this.t = opts.fastForward;
@@ -374,6 +524,9 @@ export class NewYearCelebration {
       else if (now - this.dateHold.at > (this.midnightAt + 10) * 1000) this.releaseDate();
     }
     if (!this.pointerOffs.length && this.frames % 30 === 1) this.watchPointer();
+    // a burst's last embers never outlast burstMaxS, also after the celebration settled (only a show seen from far away
+    // gets there). Its show clock: the fireworks advance at most 0.1 s a frame
+    if (this.burstOn) this.capBurst();
     if (this.phase === 'idle' && this.camPhase === 'off') {
       this.releaseDate();
       return;
@@ -422,6 +575,21 @@ export class NewYearCelebration {
     const fw = this.fw;
     const fwDone = !fw || !fw.active || fw.settled === true;
     if (this.phase === 'show' && ((fwDone && this.t > this.midnightAt + 5) || this.t > this.midnightAt + 160)) this.finish();
+  }
+
+  private capBurst(): void {
+    const fw = this.fw;
+    if (!fw) {
+      this.burstOn = false;
+      return;
+    }
+    if ((fw.time ?? this.t) < NEW_YEAR_PACING.burstMaxS) return;
+    this.burstOn = false;
+    try {
+      if (fw.active && (fw.liveCount ?? 0) > 0) fw.stop(true);
+    } catch {
+      /* ignore */
+    }
   }
 
   // ------------------------------------------------------------------------------------------------ time of day
@@ -537,20 +705,17 @@ export class NewYearCelebration {
    * the city's frame-rate systems keep running
    */
   private holdDate(): void {
-    const sim = this.deps.sim as { maxDaysPerFrame?: unknown };
-    if (this.dateHold || typeof sim.maxDaysPerFrame !== 'number') return;
+    if (this.dateHold || !this.deps.holdCalendar) return;
     // (`at`: the first frame's clock after the hold began — frame() measures the watchdog on its own clock)
-    this.dateHold = { prevMax: sim.maxDaysPerFrame, at: -1 };
-    sim.maxDaysPerFrame = 0;
+    this.dateHold = { at: -1 };
+    this.deps.holdCalendar(true);
   }
 
   /** let the calendar run again (midnight, the end of the celebration, a cancel, dispose) */
   private releaseDate(): void {
-    const h = this.dateHold;
-    if (!h) return;
+    if (!this.dateHold) return;
     this.dateHold = null;
-    const sim = this.deps.sim as { maxDaysPerFrame?: unknown };
-    if (sim.maxDaysPerFrame === 0) sim.maxDaysPerFrame = h.prevMax > 0 ? h.prevMax : 4;
+    this.deps.holdCalendar?.(false);
   }
 
   /** hand the clock back to the settings */
@@ -704,7 +869,7 @@ export class NewYearCelebration {
     }
     if (typeof window !== 'undefined') {
       const kd = (e: KeyboardEvent) => {
-        if (CAMERA_KEYS.has(e.key.toLowerCase())) this.camUser = true;
+        if (CAMERA_KEYS.has(e.code)) this.camUser = true;
       };
       window.addEventListener('keydown', kd, { capture: true, signal: this.deps.signal });
       this.camOffs.push(() => window.removeEventListener('keydown', kd, true));
@@ -747,16 +912,31 @@ export class NewYearCelebration {
     const st = this.deps.sim.state;
     const pop = st.stats.population;
     const name = st.config.name || 'The city';
-    // population a year ago: the monthly history (12 samples back), else what we saw at the last New Year
-    const hp = st.history.pop;
-    const prev = hp.length >= 13 ? hp[hp.length - 13] : this.lastYearPop;
     if (pop <= 0) return `${name} rings in ${year}. Here's to the first residents!`;
+    const g = this.growth();
     let growth = '';
-    if (prev !== null && prev > 0) {
-      const g = ((pop - prev) / prev) * 100;
+    if (g !== null) {
       growth = Math.abs(g) < 0.05 ? ` · steady vs ${year - 1}` : ` · ${g > 0 ? '▲' : '▼'} ${Math.abs(g).toFixed(Math.abs(g) >= 100 ? 0 : 1)}% vs ${year - 1}`;
     } else growth = ' · its first year';
     return `${name} celebrates with ${nf.format(pop)} residents${growth}.`;
+  }
+
+  /** the compact ultra toast's line: "2034 · 812,400 residents, up 6%" */
+  private compactLine(year: number): string {
+    const pop = this.deps.sim.state.stats.population;
+    if (pop <= 0) return `${year} · no residents yet`;
+    const g = this.growth();
+    const a = g === null ? 0 : Math.abs(g);
+    const trend = g === null ? '' : a < 0.05 ? ', steady' : `, ${g > 0 ? 'up' : 'down'} ${a >= 1 ? Math.round(a) : a.toFixed(1)}%`;
+    return `${year} · ${nf.format(pop)} residents${trend}`;
+  }
+
+  /** growth in % against a year ago (the monthly history, 12 samples back, else the last New Year's); null if unknown */
+  private growth(): number | null {
+    const st = this.deps.sim.state;
+    const hp = st.history.pop;
+    const prev = hp.length >= 13 ? hp[hp.length - 13] : this.lastYearPop;
+    return prev !== null && prev > 0 ? ((st.stats.population - prev) / prev) * 100 : null;
   }
 
   // ------------------------------------------------------------------------------------------------ countdown overlay

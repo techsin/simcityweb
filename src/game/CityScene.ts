@@ -1,5 +1,5 @@
 /**
- * CityScene — the in-city game screen: canvas + HUD, Simulation, CityActions, WorldView, CityObjectsView, tools,
+ * CityScene — the in-city game screen: canvas + HUD, SimHost, WorldView, CityObjectsView, tools,
  * main loop, autosave, keyboard, settings. Constructed by the meta layer (src/main.ts):
  *
  *   const scene = new CityScene({ container, state, onExitToRegion, onSave, settings });
@@ -16,15 +16,19 @@ import { Overlay } from '../core/types';
 import type { CityObjectsViewApi, WorldViewApi } from '../render/contracts';
 import type { CityActionsApi } from '../sim/actions';
 import type { CityState } from '../sim/CityState';
-import { Simulation, type SimSystem } from '../sim/Simulation';
+import type { Simulation } from '../sim/Simulation';
+import type { RegionContext } from '../region/regionEffects';
+import { LocalSimHost, type CityPersistence, type HostState, type SaveReason } from '../worker/SimHost';
+// W1.1b: explicit opt-in; the local host remains the default.
+import { LoopbackSimHost } from '../worker/LoopbackSimHost';
+import type { ViewState } from '../worker/protocol';
+import { pageSimWasmFlag } from '../wasm/simWasm';
 import type { GameContext, QueryTarget, SoundOpts, UIEvents } from './context';
-import { ActionsProxy } from './ActionsProxy';
-import { FallbackActions } from './fallback/FallbackActions';
 import { FallbackObjectsView } from './fallback/FallbackObjectsView';
 import { FallbackWorldView } from './fallback/FallbackWorldView';
 import { NullObjectsView, NullWorldView } from './fallback/NullViews';
 import { loadGameModules, type GameModules } from './modules';
-import { loadSettings, saveSettings, type GameSettings } from './settings';
+import { loadPref, loadSettings, savePref, saveSettings, type GameSettings } from './settings';
 import { NewYearCelebration, type CelebrateOptions } from './NewYear';
 import { GameSounds } from './GameSounds';
 import { HOTKEY_CYCLES, PANEL_HOTKEYS } from './toolCatalog';
@@ -33,7 +37,7 @@ import { CursorTip } from '../ui/CursorTip';
 import { h, isTyping } from '../ui/dom';
 import { MiniMap } from '../ui/MiniMap';
 import { ErrorOverlay, HelpPanel, PauseMenu, SavePill, confirmOpen } from '../ui/Modals';
-import { CameraMemory, validCamera } from './cameraStart';
+import { CameraMemory, applyCamera, readCamera, validCamera } from './cameraStart';
 import { NewsTicker, Toasts } from '../ui/Notifications';
 import { Onboarding } from '../ui/Onboarding';
 import { PanelManager } from '../ui/Panel';
@@ -54,7 +58,6 @@ import { EmergencyBanner } from '../ui/EmergencyBanner';
 import { EmergenciesPanel } from '../ui/panels/EmergenciesPanel';
 import { Sirens, type SirenOut, type SirenSource } from '../audio/sirens';
 import type { EmergencyVehicles } from '../render/city/vehicles/EmergencyVehicles';
-import type { EmergencySystem } from '../sim/infra/emergency';
 import { DemographicsPanel } from '../ui/panels/DemographicsPanel';
 import { attachOverlays } from '../sim/infra/overlays';
 import { windVector } from '../sim/infra/wind';
@@ -64,8 +67,10 @@ export type { GameSettings } from './settings';
 export interface CitySceneOptions {
   container: HTMLElement;
   state: CityState;
+  rctx?: RegionContext;
+  persistence?: CityPersistence;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
-  onSave: (state: CityState) => Promise<void>;
+  onSave: (state: HostState, reason?: SaveReason) => Promise<void>;
   /** initial settings (e.g. the app-level settings); keys given here win over the stored in-game prefs */
   settings?: Partial<GameSettings>;
   /** called whenever the player changes a setting in-game (the passed `settings` object is also updated in place) */
@@ -76,16 +81,8 @@ export interface CitySceneOptions {
   initialSpeed?: number;
 }
 
-type ActionsCtor = new (sim: Simulation) => CityActionsApi;
-
-/** keys the camera controller binds that we also use (we stop propagation only when we act on them) */
-const CAMERA_KEYS = new Set(['r', 'f']);
-
-/**
- * Sim systems and CityActions are imported lazily: they are large, actively developed module graphs and a broken
- * import there must not take down the whole city screen (the UI keeps working with stand-ins).
- */
-const SIM_MODULES = import.meta.glob(['../sim/systems/index.ts', '../sim/actions.ts']);
+/** physical camera keys: skip character hotkeys, and stop propagation when a tool consumes one */
+const CAMERA_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'NumpadEqual']);
 
 /** UI sound aliases -> audio engine sound names (src/audio/sfx.ts; any other name is passed through) */
 const SOUND_MAP: Record<string, string> = {
@@ -95,9 +92,16 @@ const SOUND_MAP: Record<string, string> = {
 /** game-action sounds that follow the cursor's screen x (stereo) */
 const SPATIAL = new Set(['road', 'rail', 'power', 'pipe', 'zone', 'dezone', 'bulldoze', 'plop', 'terraform', 'tree', 'construct', 'error', 'rotate', 'query']);
 
+/** FH-21's slow-frame prompt: after this long on High / Ultra at a median under SLOW_FPS, offer Medium once per profile */
+const SLOW_WINDOW_S = 20;
+const SLOW_FPS = 25;
+/** the prompt's answer, per profile ('metropolis.ui.slowPrompt': shown, then 'switch' / 'keep') */
+const SLOW_PREF = 'slowPrompt';
+
 export class CityScene {
-  readonly sim: Simulation;
-  readonly actions: CityActionsApi;
+  readonly host: LocalSimHost | LoopbackSimHost;
+  get sim(): Simulation { return this.host.sim; }
+  get actions(): CityActionsApi { return this.host.actions; }
   readonly ctx: GameContext;
   readonly root: HTMLDivElement;
   private canvas: HTMLCanvasElement;
@@ -150,18 +154,22 @@ export class CityScene {
   /** fps readout, measured with the real (unclamped) frame delta from performance.now() — the sim dt is clamped */
   private fps = { frames: 0, t: 0, value: 0, last: 0 };
   private renderFailures = 0;
-  /** what the guarded systems' wrappers report to (guardSystem): cleared at dispose, so a system that outlives the scene
-   *  reaches neither the scene nor its HUD (close-out c4) */
-  private guard: { errors: ErrorOverlay | null } = { errors: null };
   private degraded = { world: false, objects: false, actions: false };
   private resizeObs: ResizeObserver | null = null;
-  private actionsProxy: ActionsProxy;
   private simReady = false;
   private abort = new AbortController();
   /** founded just now (never saved with a camera, nothing built yet): starts paused, camera on the best buildable land */
   private readonly newCity: boolean;
   /** the view stored in the save (state.systemData.camera), only once the real view's camera has been placed */
   private camMemory = new CameraMemory();
+  /** FH-21: the graphics context was lost: the card, and whether a rebuild of the views is running */
+  private ctxLost: { card: HTMLElement; restoring: boolean } | null = null;
+  /** FH-21: fps samples (value, seconds) of the last SLOW_WINDOW_S on High / Ultra; null once the prompt was shown */
+  private slow: { fps: number; dt: number }[] | null = loadPref<unknown>(SLOW_PREF, null) === null ? [] : null;
+  /** FH-21: the real views rendered their first frame (the app's loading screen goes then): the slow-frame window starts */
+  private firstFrame = false;
+  /** FH-21: ms from "Found City" / "Play" to the first interactive frame (main.ts reports it), for the fps readout */
+  private loadMs: number | null = null;
 
   constructor(opts: CitySceneOptions) {
     this.opts = opts;
@@ -175,32 +183,36 @@ export class CityScene {
     this.veil = h('div', { class: 'loading-veil' }, h('div', { class: 'spin' }), h('div', null, 'Loading city…'));
     this.root.append(this.canvas, this.uiRoot, this.veil);
     opts.container.appendChild(this.root);
-    this.errors = new ErrorOverlay(this.uiRoot, { pause: () => (this.sim.speed = 0), signal: this.abort.signal });
-    this.guard.errors = this.errors;
+    this.errors = new ErrorOverlay(this.uiRoot, { pause: () => this.host.setSpeed(0, 'error'), signal: this.abort.signal });
 
-    // ---- simulation: systems are attached in loadSim() (guarded so one broken system can't take the game down)
-    this.sim = new Simulation(state, []);
+    // ---- simulation: the local host attaches guarded systems and actions once their modules load
     // a brand-new city starts PAUSED (build first, then press play); saved cities keep running at normal speed. (Not
     // keyed on day 0: the calendar may open later in the year.)
     this.newCity = !validCamera(state.systemData.camera, state) && state.buildings.size === 0;
-    if (opts.initialSpeed !== undefined) this.sim.speed = opts.initialSpeed;
-    else if (this.newCity) this.sim.speed = 0;
-
-    // ---- actions: stand-in until sim-core's CityActions has loaded (see loadSim)
-    this.actionsProxy = new ActionsProxy(new FallbackActions(this.sim));
+    const Host = new URLSearchParams(typeof location === 'undefined' ? '' : location.search).get('simworker') === 'loopback' ? LoopbackSimHost : LocalSimHost;
+    this.host = new Host(state, {
+      rctx: opts.rctx, initialSpeed: opts.initialSpeed ?? (this.newCity ? 0 : undefined), errors: this.errors,
+      flags: { simwasm: pageSimWasmFlag() },
+      signal: this.abort.signal,
+      persistence: opts.persistence,
+    });
     this.degraded.actions = true;
-    this.actions = this.actionsProxy;
 
     // ---- context
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
     this.tip = new CursorTip(this.uiRoot);
     const ctx: GameContext = {
+      host: this.host,
       get state() {
-        return self.sim.state;
+        return self.host.state;
       },
-      sim: this.sim,
-      actions: this.actions,
+      get sim() {
+        return self.host.sim;
+      },
+      get actions() {
+        return self.host.actions;
+      },
       get world() {
         return self.world;
       },
@@ -245,7 +257,7 @@ export class CityScene {
       focusCell: (x, z, d) => this.focusCell(x, z, d),
       showQuery: (t, o) => this.showQuery(t, o),
       applySettings: (p) => this.applySettings(p),
-      toast: (text, kind, cell, title) => this.toasts?.show(text, kind, cell, title),
+      toast: (text, kind, cell, title, opts) => this.toasts?.show(text, kind, cell, title, opts),
       openFlyout: (id, tab) => this.toolbar?.openFlyout(id, tab),
       showOnboarding: () => this.onboarding?.show(),
       save: () => this.save(false),
@@ -285,11 +297,13 @@ export class CityScene {
       world: () => this.world,
       objects: () => this.objects,
       settings: () => this.settings,
-      toast: (text, kind, cell, title) => this.toasts.show(text, kind, cell, title),
+      toast: (text, kind, cell, title, opts) => this.toasts.show(text, kind, cell, title, opts),
       sound: (n) => this.sound(n),
       audio: () => this.mods.audio,
       overlayRoot: this.uiRoot,
       signal: this.abort.signal,
+      // NOTE-041: a command, so a worker's clock holds too (the host is already gone when the scene disposes)
+      holdCalendar: (on) => { if (!this.disposed) this.host.act('holdCalendar', [on], { tag: this.newYear }); },
     });
     // event-driven sounds (news, disasters, rewards, budget ticks, construction) + generic control feedback
     this.gameSounds = new GameSounds({ sim: this.sim, sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox() });
@@ -302,24 +316,24 @@ export class CityScene {
     this.panels.register(new EmergenciesPanel(ctx));
     // WP5: demographics panel; derived data-view rasters follow the sim's layer updates
     this.panels.register(new DemographicsPanel(ctx));
-    this.offs.push(attachOverlays(this.sim));
+    this.offs.push(attachOverlays(this.host.sim));
     this.emgBanner = new EmergencyBanner(ctx, this.uiRoot);
     this.pause = new PauseMenu(ctx, this.uiRoot, { onSettings: () => this.panels.open('settings'), onHelp: () => this.panels.open('help') });
 
     // ---- events
     const on = <K extends keyof WindowEventMap>(t: Window | Document, k: K, f: (e: WindowEventMap[K]) => void) => {
-      t.addEventListener(k, f as EventListener);
+      t.addEventListener(k, f as EventListener, { signal: this.abort.signal });
       this.offs.push(() => t.removeEventListener(k, f as EventListener));
     };
     // capture phase: runs before the camera controller so keys we act on that it also binds (R = tilt) can be consumed
     const kd = (e: KeyboardEvent) => this.onKey(e);
-    window.addEventListener('keydown', kd, true);
+    window.addEventListener('keydown', kd, { capture: true, signal: this.abort.signal });
     this.offs.push(() => window.removeEventListener('keydown', kd, true));
     on(window, 'keyup', (e) => {
       if (!isTyping(e)) this.tools.key(e);
     });
     const vis = () => this.onVisibility();
-    document.addEventListener('visibilitychange', vis);
+    document.addEventListener('visibilitychange', vis, { signal: this.abort.signal });
     this.offs.push(() => document.removeEventListener('visibilitychange', vis));
     on(window, 'pointermove', (e) => {
       this.mouse.x = e.clientX;
@@ -337,6 +351,10 @@ export class CityScene {
       this.sim.events.on('unlocked', () => this.topBar.setBadge('rewards', 1)),
       this.uiEvents.on('panel', ({ id, open }) => {
         if (id === 'rewards' && open) this.topBar.setBadge('rewards', 0);
+        this.view.panels = this.view.panels.filter((p) => p !== id);
+        if (open) this.view.panels.push(id);
+        if (id === 'info' && !open) this.view.focus = [];
+        this.host.setView(this.view);
       }),
     );
     if (typeof ResizeObserver !== 'undefined') {
@@ -373,7 +391,7 @@ export class CityScene {
     // (close-out c4) every listener the scene and its HUD registered goes with the signal. A plain reason: abort() alone
     // makes a DOMException whose captured stack holds this frame's receiver, the scene, for as long as the signal lives
     this.abort.abort('dispose');
-    this.guard.errors = null;
+    void this.host.dispose();
     for (const f of this.offs) f();
     this.resizeObs?.disconnect();
     try {
@@ -414,44 +432,11 @@ export class CityScene {
     return this.mods;
   }
 
-  /** attach sim-core / sim-infra systems and the real CityActions (lazily imported, guarded) */
-  private async loadSim(): Promise<void> {
-    const [sysMod, actMod] = await Promise.all([
-      SIM_MODULES['../sim/systems/index.ts']?.().catch((e: unknown) => {
-        this.errors.report('Simulation systems failed to load — the city will not grow', e, { sim: true });
-        return null;
-      }),
-      SIM_MODULES['../sim/actions.ts']?.().catch((e: unknown) => {
-        this.errors.report('City actions failed to load — using stand-in actions', e);
-        return null;
-      }),
-    ]) as [{ createSystems?: () => SimSystem[] } | null | undefined, { CityActions?: ActionsCtor } | null | undefined];
-    if (this.disposed) return;
-    let systems: SimSystem[] = [];
-    try {
-      systems = sysMod?.createSystems?.() ?? [];
-    } catch (e) {
-      this.errors.report('Simulation systems failed to start', e, { sim: true });
-    }
-    for (const s of systems) {
-      this.guardSystem(s);
-      this.sim.systems.push(s);
-    }
-    for (const s of systems) s.init?.(this.sim);
-    const Ctor = actMod?.CityActions;
-    if (typeof Ctor === 'function') {
-      try {
-        this.actionsProxy.target = new Ctor(this.sim);
-        this.degraded.actions = false;
-      } catch (e) {
-        this.errors.report('CityActions failed to construct — using stand-in actions', e);
-      }
-    }
-    this.simReady = true;
-  }
-
   private async initViews(): Promise<void> {
-    await this.loadSim();
+    await this.host.start();
+    if (this.disposed) return;
+    this.simReady = true;
+    this.degraded.actions = this.host.degradedActions;
     try {
       this.mods = await loadGameModules();
     } catch (e) {
@@ -465,6 +450,21 @@ export class CityScene {
     } catch {
       /* ignore */
     }
+    this.createViews();
+    this.resize();
+    this.applySettings({});
+    this.placeInitialCamera();
+    if (this.mods.errors.length) console.warn('[game] module load issues', this.mods.errors);
+    this.showDevBadge();
+    this.feedWind();
+    this.uiEvents.emit('viewsReady', undefined);
+    this.readyPending = true; // resolved after the next rendered frame (see loop)
+    this.veil.classList.add('gone');
+    setTimeout(() => this.veil.remove(), 600);
+  }
+
+  /** the world and city-objects views on this.canvas (real ones, else stand-ins); at start and after a lost context */
+  private createViews(): void {
     const state = this.sim.state;
     const events = this.sim.events;
     const force = this.opts.forceFallback;
@@ -490,10 +490,9 @@ export class CityScene {
     this.world = world;
     this.hookCameraSounds(world);
     // ---- objects
-    const traffic = () => this.sim.getSystem<SimSystem & { getSampleRoutes?: (max: number) => unknown }>('traffic');
     const getTrafficRoutes = (max: number) => {
       try {
-        return traffic()?.getSampleRoutes?.(max) ?? [];
+        return this.host.traffic.sampleRoutes(max);
       } catch {
         return [];
       }
@@ -502,8 +501,7 @@ export class CityScene {
     const hasScene = !(world as NullWorldView).isNull;
     if (hasScene && this.mods.CityObjectsView && force !== 'objects' && force !== 'all') {
       try {
-        const emergency = () => this.sim.getSystem<EmergencySystem>('emergency');
-        const getEmergency = { vehicles: () => emergency()?.vehicles() ?? [], incidents: () => emergency()?.incidents() ?? [], time: () => this.sim.simTime() };
+        const getEmergency = { vehicles: () => this.host.emergency.vehicles(), incidents: () => this.host.emergency.incidents(), time: () => this.host.simTime() };
         const octx = { scene: world.scene, camera: world.camera, renderer: world.renderer, canvas: this.canvas, getTrafficRoutes, getState: () => this.sim.state, quality: this.settings.quality, getEmergency };
         objects = new this.mods.CityObjectsView(state, events, octx);
       } catch (e) {
@@ -519,16 +517,78 @@ export class CityScene {
       }
     }
     this.objects = objects ?? new NullObjectsView();
+    this.watchContext(this.canvas);
+  }
+
+  // ------------------------------------------------------------------------------------------------ lost graphics (FH-21)
+  /**
+   * a driver reset or a GPU-starved machine can take the WebGL context away: pause, save, and offer to rebuild. One canvas
+   * is watched at a time: the views' dispose forces a context loss on their old canvas (WorldView.dispose), which must
+   * not read as a new loss after a rebuild.
+   */
+  private watchContext(canvas: HTMLCanvasElement): void {
+    this.ctxWatch?.abort();
+    const watch = (this.ctxWatch = new AbortController());
+    const signal = AbortSignal.any ? AbortSignal.any([this.abort.signal, watch.signal]) : this.abort.signal;
+    canvas.addEventListener('webglcontextlost', (e) => {
+      // (preventDefault: the browser may hand the context back, webglcontextrestored)
+      e.preventDefault();
+      if (!watch.signal.aborted) this.onContextLost();
+    }, { signal });
+    canvas.addEventListener('webglcontextrestored', () => { if (!watch.signal.aborted) void this.restoreViews(); }, { signal });
+  }
+  private ctxWatch: AbortController | null = null;
+
+  private onContextLost(): void {
+    if (this.disposed || this.ctxLost) return;
+    this.host.setSpeed(0, 'error');
+    // the camera goes into the save, and the rebuilt view opens on it
+    this.storeCamera();
+    void this.save(false);
+    const restore = h('button', { class: 'btn primary', type: 'button' }, 'Restore');
+    const card = h('div', { class: 'ctx-lost mp-glass', role: 'alertdialog', style: 'position:absolute; left:50%; top:38%; transform:translate(-50%,-50%); z-index:60; max-width:360px; padding:18px 20px; text-align:center; pointer-events:auto' },
+      h('div', { style: 'font-weight:700; font-size:16px; margin-bottom:6px' }, 'Graphics reset'),
+      h('div', { style: 'opacity:0.8; margin-bottom:14px; line-height:1.45' }, 'The graphics card stopped drawing the city. The game is paused and your city is saved.'),
+      restore,
+    );
+    restore.addEventListener('click', () => void this.restoreViews(), { signal: this.abort.signal });
+    this.uiRoot.appendChild(card);
+    this.ctxLost = { card, restoring: false };
+    this.sound('error');
+  }
+
+  /**
+   * Restore (or the browser's webglcontextrestored): rebuild the world and city views on a fresh canvas and context, at the
+   * camera of the lost view. The simulation is not touched (it stays paused: the player resumes it).
+   */
+  private async restoreViews(): Promise<void> {
+    const lost = this.ctxLost;
+    if (!lost || lost.restoring || this.disposed) return;
+    lost.restoring = true;
+    const cam = readCamera(this.world.controls) ?? validCamera(this.sim.state.systemData.camera, this.sim.state);
+    // stop watching the old canvas first: disposing its views forces a (second) context loss on it
+    this.ctxWatch?.abort();
+    for (const v of [this.objects, this.world]) {
+      try {
+        v.dispose();
+      } catch (e) {
+        console.warn('[game] disposing a lost view', e);
+      }
+    }
+    this.world = new NullWorldView();
+    this.objects = new NullObjectsView();
+    // a lost context stays lost on its canvas: the new views get a new one
+    this.swapCanvas();
+    this.createViews();
     this.resize();
     this.applySettings({});
-    this.placeInitialCamera();
-    if (this.mods.errors.length) console.warn('[game] module load issues', this.mods.errors);
-    this.showDevBadge();
-    this.feedWind();
-    this.uiEvents.emit('viewsReady', undefined);
-    this.readyPending = true; // resolved after the next rendered frame (see loop)
-    this.veil.classList.add('gone');
-    setTimeout(() => this.veil.remove(), 600);
+    const c = this.world.controls;
+    if (c && cam) applyCamera(c, cam);
+    else this.placeInitialCamera();
+    this.minimap.markDirty();
+    lost.card.remove();
+    this.ctxLost = null;
+    this.sound('confirm');
   }
 
   /**
@@ -555,9 +615,9 @@ export class CityScene {
    * remember the view in the save (state.systemData.camera). A no-op until placeInitialCamera() ran on the real views:
    * the stand-in view's camera (map corner, 800 m) must not overwrite the saved / start view while the modules load.
    */
-  private storeCamera(): void {
+  storeCamera(): void {
     try {
-      this.camMemory.store(this.sim.state, this.world.controls, !!(this.world as NullWorldView).isNull);
+      this.camMemory.store(this.host, this.world.controls, !!(this.world as NullWorldView).isNull);
     } catch {
       /* ignore */
     }
@@ -595,30 +655,6 @@ export class CityScene {
     this.uiRoot.appendChild(b);
   }
 
-  private guardSystem(s: SimSystem): void {
-    const methods = ['init', 'daily', 'monthly', 'yearly', 'frame'] as const;
-    // (close-out c4) the wrappers hold `guard`, not the scene: a system kept by anything after exit (it was the
-    // inspector's breakdown context, c2) no longer reaches the scene, its HUD and its renderer
-    const guard = this.guard;
-    for (const m of methods) {
-      const f = s[m] as ((...a: unknown[]) => void) | undefined;
-      if (typeof f !== 'function') continue;
-      let errors = 0;
-      const report = (e: unknown) => {
-        errors++;
-        guard.errors?.report(`Simulation system “${s.name}” failed (${m})${errors > 20 ? ' — disabled' : ''}`, e, { key: `sys:${s.name}:${m}`, sim: true });
-      };
-      (s as unknown as Record<string, unknown>)[m] = function (this: unknown, ...args: unknown[]) {
-        if (errors > 20) return;
-        try {
-          return f.apply(this, args);
-        } catch (e) {
-          report(e);
-        }
-      };
-    }
-  }
-
   // ------------------------------------------------------------------------------------------------ main loop
   private loop = (now: number): void => {
     if (this.disposed) return;
@@ -631,7 +667,7 @@ export class CityScene {
       this.errors.report('Tool error', e);
     }
     try {
-      if (this.simReady) this.sim.update(dt);
+      this.host.frame(dt);
     } catch (e) {
       this.errors.report('Simulation error', e, { sim: true, key: 'sim.update' });
     }
@@ -653,27 +689,30 @@ export class CityScene {
     }
     if (this.readyPending) {
       this.readyPending = false;
+      this.firstFrame = true;
       this.resolveReady();
     }
-    this.minimap.frame(dt);
+    const cameraStopped = this.minimap.frame(dt);
     this.ticker.frame(dt);
     this.onboarding.frame(dt);
     // UI ticks (~6 Hz)
     this.uiAcc += dt;
-    if (this.uiAcc > 0.16) {
-      this.uiAcc = 0;
+    if (this.uiAcc > 0.16 || cameraStopped) {
+      const tick = this.uiAcc > 0.16;
+      if (tick) this.uiAcc = 0;
       try {
         this.topBar.update();
-        this.panels.tick();
-        this.uiEvents.emit('uiTick', undefined);
+        if (tick) {
+          this.panels.tick();
+          this.uiEvents.emit('uiTick', undefined);
+        }
       } catch (e) {
         this.errors.report('Interface error', e, { key: 'ui' });
       }
     }
     this.slowAcc += dt;
-    this.ambAcc += dt;
-    if (this.ambAcc > 0.5) {
-      this.ambAcc = 0;
+    if (now - this.ambAcc >= 500) {
+      this.ambAcc = now;
       this.updateAmbience();
     }
     if (this.slowAcc > 2) {
@@ -692,11 +731,54 @@ export class CityScene {
     this.fps.last = tNow;
     if (this.fps.t >= 0.5) {
       this.fps.value = this.fps.frames / this.fps.t;
+      this.checkSlow(this.fps.value, this.fps.t);
       this.fps.frames = 0;
       this.fps.t = 0;
       if (this.settings.showFps) this.updatePerf();
     }
   };
+
+  /**
+   * FH-21: a machine that cannot carry High or Ultra gets one offer, once per profile: after SLOW_WINDOW_S of play on the
+   * real views (from their first rendered frame) at a median under SLOW_FPS. Hidden tabs, a lost context and other
+   * qualities restart the window.
+   */
+  private checkSlow(fps: number, dt: number): void {
+    const w = this.slow;
+    if (!w) return;
+    const q = this.settings.quality;
+    // (not before the first frame: a slow first render, behind the loading screen, filled the window and the question
+    // expired unseen)
+    if ((q !== 'high' && q !== 'ultra') || !this.firstFrame || this.ctxLost || (typeof document !== 'undefined' && document.hidden)) {
+      w.length = 0;
+      return;
+    }
+    w.push({ fps, dt });
+    let total = 0;
+    for (const x of w) total += x.dt;
+    while (w.length > 1 && total - w[0].dt >= SLOW_WINDOW_S) total -= w.shift()!.dt;
+    if (total < SLOW_WINDOW_S) return;
+    const sorted = w.map((x) => x.fps).sort((a, b) => a - b);
+    const mid = sorted.length >> 1;
+    const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    if (median >= SLOW_FPS) return;
+    this.slow = null;
+    savePref(SLOW_PREF, { shown: true, median: Math.round(median * 10) / 10 });
+    const answer = (a: 'switch' | 'keep') => savePref(SLOW_PREF, { shown: true, answer: a });
+    this.toasts.show('The city is running slowly — switch graphics to Medium?', 'warning', undefined, 'Graphics', {
+      buttons: [
+        { label: 'Switch', primary: true, run: () => { answer('switch'); this.applySettings({ quality: 'medium' }); } },
+        { label: 'Keep', run: () => answer('keep') },
+      ],
+    });
+  }
+
+  /** FH-21: the time from "Found City" (or "Play") to the first interactive frame, measured by the app; shown in the fps readout */
+  reportLoadTime(ms: number): void {
+    this.loadMs = ms;
+    console.info(`[metropolis] first interactive frame ${Math.round(ms)} ms after the click`);
+    if (this.settings.showFps) this.updatePerf();
+  }
 
   /** QA readout: fps + frame time, world / city draw calls and triangles (world.stats, objects.stats()) */
   private updatePerf(): void {
@@ -723,6 +805,7 @@ export class CityScene {
     }
     const st = this.sim.state;
     lines.push(`sim day ${st.day} · ${st.buildings.size} buildings · speed ${this.sim.speed}`);
+    if (this.loadMs !== null) lines.push(`load ${(this.loadMs / 1000).toFixed(1)} s to the first interactive frame`);
     this.fpsEl.innerHTML = lines.join('<br>');
   }
 
@@ -853,21 +936,25 @@ export class CityScene {
     if (k === ' ') {
       e.preventDefault();
       if (document.activeElement instanceof HTMLButtonElement) document.activeElement.blur();
-      this.sim.speed = this.sim.speed === 0 ? this.lastSpeed || 1 : 0;
+      this.host.setSpeed(this.host.speed === 0 ? this.lastSpeed || 1 : 0, 'keyboard');
       if (this.sim.speed) this.lastSpeed = this.sim.speed;
       this.sound(this.sim.speed === 0 ? 'pause' : 'speed' + this.sim.speed);
       return;
     }
-    if (k === '1' || k === '2' || k === '3') {
-      if (this.sim.speed !== Number(k)) this.sound('speed' + k);
-      this.sim.speed = Number(k);
+    const speed = /^(?:Digit|Numpad)([123])$/.exec(e.code);
+    if (speed) {
+      e.preventDefault();
+      if (this.sim.speed !== Number(speed[1])) this.sound('speed' + speed[1]);
+      this.host.setSpeed(Number(speed[1]), 'keyboard');
       this.lastSpeed = this.sim.speed;
       return;
     }
-    if (k === 'Delete') {
+    if (k === 'Delete' || k === 'Backspace') {
+      e.preventDefault();
       this.tools.select('bulldoze');
       return;
     }
+    if (CAMERA_KEYS.has(e.code)) return;
     const lk = k.toLowerCase();
     const cycle = HOTKEY_CYCLES[lk];
     if (cycle && !e.shiftKey) {
@@ -891,7 +978,7 @@ export class CityScene {
   /** we handled this key: keep it from the camera controller too when the camera also binds it */
   private consume(e: KeyboardEvent): void {
     e.preventDefault();
-    if (CAMERA_KEYS.has(e.key.toLowerCase())) e.stopImmediatePropagation();
+    if (CAMERA_KEYS.has(e.code)) e.stopImmediatePropagation();
   }
 
   private onVisibility(): void {
@@ -899,10 +986,10 @@ export class CityScene {
     if (document.hidden) {
       if (this.sim.speed > 0) {
         this.hiddenPausedFrom = this.sim.speed;
-        this.sim.speed = 0;
+        this.host.setSpeed(0, 'visibility');
       }
     } else if (this.hiddenPausedFrom !== null) {
-      this.sim.speed = this.hiddenPausedFrom;
+      this.host.setSpeed(this.hiddenPausedFrom, 'visibility');
       this.hiddenPausedFrom = null;
       this.last = performance.now();
     }
@@ -915,17 +1002,20 @@ export class CityScene {
     if (n > 0 && this.monthsSinceSave >= n) void this.save(true);
   }
 
-  async save(auto = false): Promise<void> {
+  async save(auto = false, reason: SaveReason = auto ? 'autosave' : 'manual'): Promise<void> {
+    if (this.disposed) return;
     if (this.saving) return this.saving;
     this.savePill.saving(auto);
     this.storeCamera();
     this.saving = (async () => {
       try {
-        await this.opts.onSave(this.sim.state);
+        await this.opts.onSave(this.host.state, reason);
+        if (this.disposed) return;
         this.monthsSinceSave = 0;
         this.savePill.done(true, auto ? 'Autosaved' : 'City saved');
         this.sound(auto ? 'autosave' : 'save', auto ? { volume: 0.8 } : undefined);
       } catch (e) {
+        if (this.disposed) return;
         this.savePill.done(false);
         this.sound('error');
         this.errors.report('Saving failed', e, { key: 'save' });
@@ -937,10 +1027,12 @@ export class CityScene {
   }
 
   async exitToRegion(): Promise<void> {
-    this.sim.speed = 0;
+    if (this.disposed) return;
+    this.host.setSpeed(0, 'exit');
     this.tools.select(null, { silent: true });
     this.panels.closeAll();
-    await this.save(false);
+    await this.save(false, 'exit');
+    if (this.disposed) return;
     let thumb: string | undefined;
     try {
       thumb = this.world.capture(512, 512, true) || undefined;
@@ -952,12 +1044,16 @@ export class CityScene {
 
   /** the variant each data view was last shown with (-1 = its default) */
   private overlayVariants = new Map<Overlay, number>();
+  private view: ViewState = { overlay: Overlay.None, variant: -1, panels: [], focus: [] };
 
   private setOverlay(o: Overlay, variant?: number): void {
     if (variant !== undefined) this.overlayVariants.set(o, variant);
     const v = this.overlayVariants.get(o) ?? -1;
     this.ctx.overlay = o;
     this.ctx.overlayVariant = v;
+    this.view.overlay = o;
+    this.view.variant = v;
+    this.host.setView(this.view);
     try {
       this.world.setOverlay(o);
     } catch (e) {
@@ -994,7 +1090,7 @@ export class CityScene {
     // camera flight (toast / news / advisor / emergency "jump"): a very soft whoosh
     this.sound('whoosh', { volume: 0.7 });
     try {
-      this.world.controls.focusOn(x * CELL_SIZE + CELL_SIZE / 2, z * CELL_SIZE + CELL_SIZE / 2, distance);
+      this.world.controls.focusOn(x * CELL_SIZE + CELL_SIZE / 2, z * CELL_SIZE + CELL_SIZE / 2, distance, { fly: true });
     } catch (e) {
       console.warn(e);
     }
@@ -1008,6 +1104,8 @@ export class CityScene {
     // silent: the inspect ping / camera jump that led here is the sound (the panel's 'open' swish doubled it)
     this.panels.open('info', opts);
     this.info.show(t);
+    this.view.focus = t.buildingId == null ? [] : [t.buildingId];
+    this.host.setView(this.view);
     try {
       this.objects.setSelected(t.buildingId ?? null);
     } catch {
@@ -1036,8 +1134,8 @@ export class CityScene {
   /** feed the audio engine's city ambience (~2 Hz) */
   private updateAmbience(): void {
     this.feedSirens();
-    const a = this.mods.audio as (GameModules['audio'] & { setAmbience?: (p: Record<string, unknown>) => void }) | undefined;
-    if (!a?.setAmbience) return;
+    const a = this.mods.audio as (GameModules['audio'] & { setCityAmbience?: import('../audio/AudioEngine').AudioEngine['setCityAmbience'] }) | undefined;
+    if (!a?.setCityAmbience) return;
     try {
       const st = this.sim.state;
       const dist = this.world.controls.distance || 800;
@@ -1051,7 +1149,8 @@ export class CityScene {
         }
         constructing = Math.min(1, k / Math.max(1, n) * 5);
       }
-      a.setAmbience({ population: st.stats.population, zoom: Math.max(0, Math.min(1, (dist - 60) / (st.size * CELL_SIZE))), night: hour < 6 || hour > 19.5, construction: constructing, activity: this.sim.speed / 3 });
+      const target = this.world.controls.target;
+      a.setCityAmbience(st, target.x, target.z, dist, hour < 6 || hour > 19.5, constructing, this.sim.speed / 3);
       // soundtrack context: night, city size, liveliness (sim speed + recent growth + construction)
       const m = this.musicPop;
       const now = performance.now();

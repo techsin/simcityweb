@@ -11,6 +11,7 @@ import { NullWorldView } from '../../src/game/fallback/NullViews';
 import { createCityState } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { CELL_SIZE } from '../../src/core/constants';
+import { LocalSimHost } from '../../src/worker/SimHost';
 
 /** stand-in for the real CameraController: setView places immediately (like the game's controller) */
 class FakeControls {
@@ -34,17 +35,18 @@ class FakeControls {
 const city = () => createCityState(defaultCityConfig({ size: 64, seed: 7, terrain: 'hills', climate: 'temperate' }));
 
 /** the 2 s ticks (and an autosave) that happen while loadGameModules() is still pending */
-function loadingTicks(mem: CameraMemory, st: ReturnType<typeof city>, standIn: NullWorldView, n = 3): void {
-  for (let i = 0; i < n; i++) mem.store(st, standIn.controls, true);
+function loadingTicks(mem: CameraMemory, host: LocalSimHost, standIn: NullWorldView, n = 3): void {
+  for (let i = 0; i < n; i++) mem.store(host, standIn.controls, true);
   // even without the stand-in flag nothing may be stored before the real view's camera was placed
-  mem.store(st, standIn.controls, false);
+  mem.store(host, standIn.controls, false);
 }
 
 describe('camera start / memory', () => {
   it('new city: slow module loading does not store the stand-in camera; the view opens on the best buildable land', () => {
     const st = city();
+    const host = new LocalSimHost(st);
     const mem = new CameraMemory();
-    loadingTicks(mem, st, new NullWorldView());
+    loadingTicks(mem, host, new NullWorldView());
     expect(st.systemData.camera).toBeUndefined();
     const c = new FakeControls();
     mem.place(st, c);
@@ -53,7 +55,7 @@ describe('camera start / memory', () => {
     expect(c.target.z).toBeCloseTo((cell.z + 0.5) * CELL_SIZE);
     expect(c.target.x + c.target.z).toBeGreaterThan(0);
     // from now on the real view is remembered
-    mem.store(st, c);
+    mem.store(host, c);
     const saved = validCamera(st.systemData.camera, st)!;
     expect(saved.x).toBeCloseTo(c.target.x, 0);
     expect(saved.z).toBeCloseTo(c.target.z, 0);
@@ -61,27 +63,29 @@ describe('camera start / memory', () => {
 
   it('saved city: the stored camera survives the load and is restored', () => {
     const st = city();
+    const host = new LocalSimHost(st);
     const cam: SavedCamera = { x: 610, z: 455, distance: 450, yaw: 30, tilt: 40 };
     st.systemData.camera = { ...cam };
     const mem = new CameraMemory();
-    loadingTicks(mem, st, new NullWorldView(), 5);
+    loadingTicks(mem, host, new NullWorldView(), 5);
     expect(st.systemData.camera).toEqual(cam);
     expect(startCamera(st, 900)).toEqual(cam);
     const c = new FakeControls();
     mem.place(st, c);
     expect([c.target.x, c.target.z, c.distance]).toEqual([610, 455, 450]);
-    mem.store(st, c);
+    mem.store(host, c);
     expect(validCamera(st.systemData.camera, st)).toMatchObject({ x: 610, z: 455, distance: 450, yaw: 30, tilt: 40 });
   });
 
   it('a stand-in view (no WebGL) never overwrites the save, even after placement', () => {
     const st = city();
+    const host = new LocalSimHost(st);
     const cam: SavedCamera = { x: 300, z: 700, distance: 520 };
     st.systemData.camera = { ...cam };
     const mem = new CameraMemory();
     const nv = new NullWorldView();
     mem.place(st, nv.controls);
-    mem.store(st, nv.controls, nv.isNull);
+    mem.store(host, nv.controls, nv.isNull);
     expect(st.systemData.camera).toEqual(cam);
   });
 });

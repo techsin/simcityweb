@@ -1,6 +1,7 @@
 /**
  * FROZEN crime.ts at 41ae570 (B2's base: the pre-B2 pass structure, three steps per pass). Only import paths and the class
- * name differ. B2 (G3) compares the split CrimeSystem with it at pass ends (tests/infra/b2PiecesEnv.test.ts).
+ * name differ; blur3 comes from the wasm drop-in, as in the dev branch B2 merged (W0.1, bc117d8; JS by default). B2
+ * (G3) compares the split CrimeSystem with it at pass ends (tests/infra/b2PiecesEnv.test.ts).
  */
 /**
  * Crime system (every CRIME_PERIOD days, 3 scheduler steps): state.crime (0..1) per cell.
@@ -22,7 +23,7 @@ import { DevType, Zone } from '../../../src/core/types';
 import type { Building, CityState } from '../../../src/sim/CityState';
 import { BF } from '../../../src/sim/CityState';
 import type { SimSystem, Simulation } from '../../../src/sim/Simulation';
-import { blur3 } from '../../../src/sim/infra/blur';
+import { blur3 } from '../../../src/wasm/kernels/blur';
 import { Fam, infoOf, isFunctional, nowMs, readEffects, setFlagQuiet, wealthOf, buildingList, type DefInfo } from '../../../src/sim/infra/common';
 import {
   CRIME_GARBAGE, CRIME_NIGHTLIFE, CRIME_SPILL, CRIME_THRESHOLD, LOCAL_UNEMP_CI, LOCAL_UNEMP_R, YOUTH_CRIME,

@@ -19,6 +19,9 @@
  * is unavailable — for A/B runs that must not silently measure JS). Global or per kernel. Sources: env SIM_WASM
  * (node), URL ?simwasm=… or localStorage 'metropolis.simwasm' (browser), setSimWasmPreference(). Syntax:
  * "js" | "wasm" | "auto" | "0" | "1", optionally followed by per-kernel entries: "auto,blur:js", "js,blur:wasm".
+ * Kernel defaults: while no source names a kernel or chooses the global preference, the kernel keeps its own default.
+ * Blur's is 'js' until its gate (WASM_PLAN PI-6): the simulation imports the blur bindings, and the opt-in must not
+ * switch on by itself in the bot, the tests or a page without a flag.
  *
  * Imports: the binary imports the engine's own Math.exp / Math.log (env.js_exp / env.js_log, used by the traffic core),
  * so kernels and JS compute identical values on every engine by construction. Every instantiation of the binary —
@@ -94,7 +97,13 @@ let state: SimWasmState = 'idle';
 let inst: SimWasmInstance | null = null;
 let lastError: string | null = null;
 let globalPref: SimWasmPreference = 'auto';
+/** set once a source or setSimWasmPreference chooses the global preference: kernel defaults yield to it */
+let globalChosen = false;
 const kernelPrefs = new Map<string, SimWasmPreference>();
+/** kernels a source named ('auto' included): their defaults no longer apply */
+const kernelsNamed = new Set<string>();
+/** a kernel's own preference until a source names it or chooses the global one */
+const KERNEL_DEFAULTS = new Map<string, SimWasmPreference>([['blur', 'js']]);
 let prefsLoaded = false;
 /** bumped whenever state / preferences change; KernelSlot caches its decision per version */
 let version = 1;
@@ -135,13 +144,45 @@ export function parseSimWasmFlag(value: string | null | undefined): { global: Si
   return out;
 }
 
+function takeFlag(f: ReturnType<typeof parseSimWasmFlag>): void {
+  if (f.global) {
+    globalPref = f.global;
+    globalChosen = true;
+  }
+  for (const [k, p] of Object.entries(f.kernels)) {
+    kernelPrefs.set(k, p);
+    kernelsNamed.add(k);
+  }
+}
+
 /** apply a flag string (see parseSimWasmFlag) on top of the current preferences */
 export function applySimWasmFlag(value: string | null | undefined): void {
-  const f = parseSimWasmFlag(value);
-  if (f.global) globalPref = f.global;
-  for (const [k, p] of Object.entries(f.kernels)) kernelPrefs.set(k, p);
+  takeFlag(parseSimWasmFlag(value));
   prefsLoaded = true;
   bump();
+}
+
+/** whether `flag` alone (a page's or host's flag, see parseSimWasmFlag) lets `kernel` use wasm */
+export function simWasmFlagSelects(flag: string | null | undefined, kernel: string): boolean {
+  const f = parseSimWasmFlag(flag);
+  const k = f.kernels[kernel];
+  if (k === 'js' || k === 'wasm') return k === 'wasm';
+  return (f.global ?? (k === 'auto' ? 'auto' : KERNEL_DEFAULTS.get(kernel) ?? 'auto')) !== 'js';
+}
+
+/** the page's flag for its host: ?simwasm= over localStorage 'metropolis.simwasm'; null when neither is set */
+export function pageSimWasmFlag(): string | null {
+  const g = globalThis as { location?: { search?: string }; localStorage?: Storage };
+  try {
+    const search = g.location?.search;
+    const q = search && typeof URLSearchParams !== 'undefined' ? new URLSearchParams(search).get('simwasm') : null;
+    if (q != null) return q;
+  } catch { /* no location */ }
+  try {
+    return g.localStorage?.getItem('metropolis.simwasm') ?? null;
+  } catch {
+    return null; // storage blocked
+  }
 }
 
 /** initial preferences from the environment (env SIM_WASM, ?simwasm=, localStorage 'metropolis.simwasm') */
@@ -164,21 +205,19 @@ function loadPrefs(): void {
       if (q != null) flag = q;
     }
   } catch { /* no location */ }
-  if (flag != null) {
-    const f = parseSimWasmFlag(flag);
-    if (f.global) globalPref = f.global;
-    for (const [k, p] of Object.entries(f.kernels)) kernelPrefs.set(k, p);
-  }
+  if (flag != null) takeFlag(parseSimWasmFlag(flag));
 }
 
 /** set the preference globally (kernel omitted) or for one kernel ('auto' for a kernel = follow the global one) */
 export function setSimWasmPreference(pref: SimWasmPreference, kernel?: string): void {
   loadPrefs();
   if (kernel) {
+    kernelsNamed.add(kernel);
     if (pref === 'auto') kernelPrefs.delete(kernel);
     else kernelPrefs.set(kernel, pref);
   } else {
     globalPref = pref;
+    globalChosen = true;
   }
   bump();
 }
@@ -197,6 +236,8 @@ export function simWasmPreference(kernel?: string): SimWasmPreference {
   if (kernel) {
     const p = kernelPrefs.get(kernel);
     if (p && p !== 'auto') return p;
+    const d = KERNEL_DEFAULTS.get(kernel);
+    if (d && !globalChosen && !kernelsNamed.has(kernel)) return d;
   }
   return globalPref;
 }

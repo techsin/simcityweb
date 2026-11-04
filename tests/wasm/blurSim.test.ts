@@ -1,14 +1,16 @@
 /**
- * End-to-end: the real simulation (stress city, all infra systems) with src/sim/infra/blur.ts replaced by the wasm
- * bindings (vi.mock — no sim file is edited).
+ * End-to-end: the real simulation (stress city, all infra systems) on the blur bindings it imports
+ * (src/wasm/kernels/blur.ts, WASM_PLAN PI-6), shadowed through vi.mock. The call counts below prove the systems reach
+ * the mock, so the comparison cannot pass vacuously.
  *  1. shadow mode: every blur call the systems make (pollution, crime, ...) also runs the JS original on copies of
  *     the arguments; outputs must be bit-identical, call by call, on live data.
  *  2. determinism: a city simulated with preference 'js' and one simulated with the wasm kernels end up with
  *     bit-identical layers and identical stats (after a JS-vs-JS baseline confirms the sim itself is deterministic).
  * B2 (G3): the split pollution and crime passes blur in row pieces (blur.ts Blur3Run / boxHRows / BoxVRun /
  * downsampleRows / upsampleAddRows), which the wasm bindings do not cover; the simulation here runs the frozen pre-B2
- * PollutionSystem and CrimeSystem (tests/sim/exact/*Original.ts = 41ae570) in their place, which call the whole-call
- * kernels. tests/infra/b2PiecesEnv.test.ts proves the split passes equal to the frozen ones at every pass end.
+ * PollutionSystem and CrimeSystem (tests/sim/exact/*Original.ts = 41ae570, importing the drop-in as the pre-B2 dev
+ * files do) in their place, which call the whole-call kernels. tests/infra/b2PiecesEnv.test.ts proves the split passes
+ * equal to the frozen ones at every pass end.
  */
 import { describe, expect, it, vi } from 'vitest';
 import type * as BlurModule from '../../src/sim/infra/blur';
@@ -20,8 +22,8 @@ interface Shadow {
   mismatches: string[];
 }
 
-vi.mock('../../src/sim/infra/blur', async (importOriginal) => {
-  const orig = await importOriginal<typeof BlurModule>();
+vi.mock('../../src/wasm/kernels/blur', async () => {
+  const orig: typeof BlurModule = await import('../../src/sim/infra/blur');
   const { makeBlurKernels, BLUR_KERNEL } = await import('../../src/wasm/kernels/blurBind');
   const wasm = makeBlurKernels(orig);
   const shadow: Shadow = { enabled: false, calls: {}, wasmCalls: 0, mismatches: [] };
@@ -54,7 +56,7 @@ vi.mock('../../src/sim/infra/blur', async (importOriginal) => {
       return rw;
     };
   }
-  return api;
+  return { ...api, BLUR_KERNEL, makeBlurKernels };
 });
 
 // imported after the mock is registered (vitest hoists vi.mock)

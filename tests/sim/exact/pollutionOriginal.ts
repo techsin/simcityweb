@@ -1,6 +1,7 @@
 /**
  * FROZEN pollution.ts at 41ae570 (B2's base: the pre-B2 pass structure, ten steps per pass). Only import paths and the
- * class name differ. B2 (G3) compares the split PollutionSystem with it at pass ends (tests/infra/b2PiecesEnv.test.ts),
+ * class name differ; the blur kernels come from the wasm drop-in, as in the dev branch B2 merged (W0.1, bc117d8; JS by
+ * default). B2 (G3) compares the split PollutionSystem with it at pass ends (tests/infra/b2PiecesEnv.test.ts),
  * and the WASM field-pass sections install their overrides into it (tests/wasm/fieldPasses.test.ts: the frozen port
  * overrides this pass structure's stage methods). The helpers it imports keep their pre-B2 whole-call semantics (blur.ts
  * blurDown / upsampleAdd / boxAverage / blurDownAdd).
@@ -50,7 +51,7 @@ import { DevType, Network, Zone, isRoad } from '../../../src/core/types';
 import type { Building, CityState } from '../../../src/sim/CityState';
 import { BF } from '../../../src/sim/CityState';
 import type { SimSystem, Simulation } from '../../../src/sim/Simulation';
-import { blurDown, blurDownAdd, blurSigma2, boxAverage, upsampleAdd } from '../../../src/sim/infra/blur';
+import { blurDown, blurDownAdd, blurSigma2, boxAverage, upsampleAdd } from '../../../src/wasm/kernels/blur';
 import {
   DX, DZ, Fam, activeJobs, detectJobsUnknown, ensureIdArray, ensureIdFloat, fundingFactor, infoOf, isFunctional, nowMs,
   readEffects, setFlagQuiet, activity, type DefInfo, type OrdEffects, buildingList, wealthOf,

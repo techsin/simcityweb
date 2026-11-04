@@ -121,7 +121,13 @@ export function overlayVariantLabel(o: Overlay, variant = -1): string {
 }
 
 // ================================================================================================ derived-raster cache
-interface Entry {
+/** A supplied raster; version advances on every delivery, including while the sim is paused. */
+export interface Entry {
+  data: Float32Array;
+  scale: number;
+  version: number;
+}
+interface CachedEntry {
   data: Float32Array;
   /** extra scale computed with the raster (truck volumes) */
   scale: number;
@@ -137,8 +143,11 @@ interface Cache {
   sim?: Simulation;
   /** a simulation's layerUpdated events invalidate the entries (else: valid for one sim day) */
   subscribed: boolean;
-  entries: Map<number, Entry>;
-  /** bumped by every buildingAdded / buildingRemoved / buildingChanged event (see Entry.perBuilding) */
+  entries: Map<number, CachedEntry>;
+  source?: (o: Overlay, v: number) => Entry | null;
+  ready?: (o: Overlay, v: number) => boolean;
+  rendered?: Map<number, number>;
+  /** bumped by every buildingAdded / buildingRemoved / buildingChanged event (see CachedEntry.perBuilding) */
   bver: number;
 }
 const caches = new WeakMap<CityState, Cache>();
@@ -155,10 +164,46 @@ function cacheOf(st: CityState): Cache {
  */
 export const PER_BUILDING_DAYS = 7;
 /** the cached raster must be rebuilt before it is read (see derived) */
-function entryStale(c: Cache, e: Entry, st: CityState): boolean {
+function entryStale(c: Cache, e: CachedEntry, st: CityState): boolean {
   return e.dirty || (!c.subscribed && e.day !== st.day) || (e.perBuilding && e.bver !== c.bver && (st.day - e.day >= PER_BUILDING_DAYS || st.day < e.day));
 }
 const keyOf = (o: Overlay, v: number) => o * 64 + v;
+
+/**
+ * Supply worker rasters before trying a local build. Null means no supplied raster; the three worker-built views
+ * wait for one, while NIMBY / Emergency / Trucks still build on main. ready checks subscribed input layers and
+ * streams for those and the direct views. LocalSimHost registers nothing. Re-register on each fresh replica state.
+ */
+export function registerDerivedSource(st: CityState, source: (o: Overlay, v: number) => Entry | null, ready?: (o: Overlay, v: number) => boolean): () => void {
+  const c = cacheOf(st);
+  c.source = source;
+  c.ready = ready;
+  c.rendered = new Map();
+  c.entries.clear();
+  return () => {
+    if (c.source !== source) return;
+    delete c.source;
+    delete c.ready;
+    delete c.rendered;
+    c.entries.clear();
+  };
+}
+
+/** O9: a missing subscription has no colour or hover value. This never builds a raster. */
+export function overlayReady(st: CityState, o: Overlay, variant = -1): boolean {
+  if (o === Overlay.None || o === Overlay.Zones) return true;
+  const c = caches.get(st), v = resolveVariant(o, variant);
+  if (c?.ready && !c.ready(o, v)) return false;
+  if (!c?.source || !(o === Overlay.Demographics || (o === Overlay.Water && v === 1) || (o === Overlay.Desirability && v >= DEV_TYPE_COUNT))) return true;
+  return c.source(o, v)?.data.length === st.cells;
+}
+
+/** Only the renderer acknowledges a supplied version; a hover / legend read must not consume its refresh. */
+export function markOverlayRendered(st: CityState, o: Overlay, variant = -1): void {
+  const c = caches.get(st), v = resolveVariant(o, variant);
+  const e = c?.source?.(o, v);
+  if (e) c!.rendered!.set(keyOf(o, v), e.version);
+}
 
 /**
  * Bind a simulation to its state for the derived rasters (water quality, emergency readiness) and invalidate them on
@@ -209,8 +254,10 @@ const NO_RASTER = new Float32Array(0);
  * `build` returns is cached (e.g. the truck overlay's scale), no raster is allocated. zero = false: `build` writes
  * every cell itself (no zero fill first)
  */
-function derived(st: CityState, o: Overlay, v: number, deps: readonly string[], build: (out: Float32Array) => number | void, raster = true, perBuilding = false, zero = true): Entry {
+function derived(st: CityState, o: Overlay, v: number, deps: readonly string[], build: (out: Float32Array) => number | void, raster = true, perBuilding = false, zero = true): Pick<Entry, 'data' | 'scale'> {
   const c = cacheOf(st);
+  const supplied = c.source?.(o, v);
+  if (supplied) return supplied;
   const k = keyOf(o, v);
   let e = c.entries.get(k);
   const size = raster ? st.cells : 0;
@@ -232,11 +279,15 @@ function derived(st: CityState, o: Overlay, v: number, deps: readonly string[], 
 /**
  * The derived raster of an overlay + variant was invalidated since it was last built (its layer was recomputed, or —
  * per-building views — buildings changed and a sim day passed): the renderer refreshes its texture. false for direct
- * layers (they refresh on their layerUpdated event) and rasters not built yet.
+ * layers (they refresh on their layerUpdated event) and local rasters not built yet. Supplied versions stay stale
+ * until markOverlayRendered acknowledges their upload, independently of hover reads.
  */
 export function overlayStale(st: CityState, o: Overlay, variant = -1): boolean {
   const c = caches.get(st);
-  const e = c?.entries.get(keyOf(o, resolveVariant(o, variant)));
+  const v = resolveVariant(o, variant), k = keyOf(o, v);
+  const supplied = c?.source?.(o, v);
+  if (supplied) return c!.rendered?.get(k) !== supplied.version;
+  const e = c?.entries.get(k);
   return !!c && !!e && e.data.length === st.cells && entryStale(c, e, st);
 }
 
@@ -436,7 +487,7 @@ export interface EmergencyReach {
  * hover and inspector never disagree.
  */
 export function emergencyReachAt(st: CityState, i: number, variant = -1): EmergencyReach | null {
-  if (i < 0 || i >= st.cells || !respReady(st)) return null;
+  if (i < 0 || i >= st.cells || !overlayReady(st, Overlay.Emergency, variant) || !respReady(st)) return null;
   const v = resolveVariant(Overlay.Emergency, variant);
   const L = respLayer(st, v);
   const bid = st.building[i];
@@ -779,6 +830,7 @@ export function overlayDeps(o: Overlay, variant = -1): readonly string[] {
 /** the layer behind an overlay + variant, or null (None / Zones are drawn by the renderer from zone data) */
 export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLayer | null {
   const v = resolveVariant(o, variant);
+  if (!overlayReady(st, o, v)) return null;
   const deps = overlayDeps(o, v);
   switch (o) {
     case Overlay.Traffic: {
@@ -811,7 +863,7 @@ export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLa
     case Overlay.Water: {
       if (v === 1) {
         const e = derived(st, o, v, deps, (out) => buildTapWater(st, out), true, false, false);
-        return L(e.data, 1, 'good', 'Tap water quality', v, deps);
+        return L(e.data, e.scale, 'good', 'Tap water quality', v, deps);
       }
       return L(st.watered, 1, 'binary', 'Water', v, deps);
     }
@@ -820,7 +872,7 @@ export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLa
         const e = derived(st, o, v, deps, (out) => buildAppeal(st, v, out));
         const who = v === DESIR_FAMILIES ? 'families' : v === DESIR_SENIORS ? 'seniors' : 'students';
         // appeal 0..1 (0.5 = neutral: the renderer draws it on the desirability colours)
-        return L(e.data, 1, 'good', `Appeal for ${who}`, v, deps);
+        return L(e.data, e.scale, 'good', `Appeal for ${who}`, v, deps);
       }
       return L(st.desirability[v], 1, 'diverging', `Desirability (${DEV_TYPE_LABELS[v]})`, v, deps, { maskNet: true });
     }
@@ -834,7 +886,7 @@ export function overlayLayer(st: CityState, o: Overlay, variant = -1): OverlayLa
     case Overlay.Shops: return L(st.shopAccess, 1, 'good', 'Shops within reach', v, deps);
     case Overlay.Demographics: {
       const e = derived(st, o, v, deps, (out) => buildDemographics(st, v, out), true, true);
-      return L(e.data, 1, 'good', DEMO_LABELS[v], v, deps);
+      return L(e.data, e.scale, 'good', DEMO_LABELS[v], v, deps);
     }
     case Overlay.Tourism: return L(st.visitors, 1, 'good', 'Tourist visitors', v, deps);
     case Overlay.Nimby: {

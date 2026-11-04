@@ -9,8 +9,18 @@ const BUILDING_GROUPS = new Set(['residential', 'commercial', 'industrial', 'uti
 describe('catalog', () => {
   it('has a def for every building model of the manifest', () => {
     const models = new Set(CATALOG.map((d) => d.model));
-    const missing = MANIFEST.filter((m) => BUILDING_GROUPS.has(m.group) && !models.has(m.id)).map((m) => m.id);
+    // entries flagged pendingCatalog get their def with a later item (see the guard below)
+    const missing = MANIFEST.filter((m) => BUILDING_GROUPS.has(m.group) && !m.pendingCatalog && !models.has(m.id)).map((m) => m.id);
     expect(missing).toEqual([]);
+  });
+
+  it('pendingCatalog flags only building models that still have no def', () => {
+    const models = new Set(CATALOG.map((d) => d.model));
+    const pending = MANIFEST.filter((m) => m.pendingCatalog);
+    // the def has landed: remove the entry's pendingCatalog flag
+    expect(pending.filter((m) => models.has(m.id)).map((m) => `${m.id} (${m.pendingCatalog})`)).toEqual([]);
+    // outside the building groups the def check never applies, so the flag would mean nothing there
+    expect(pending.filter((m) => !BUILDING_GROUPS.has(m.group)).map((m) => `${m.id} (${m.group})`)).toEqual([]);
   });
 
   it('ids are unique, footprints match the manifest', () => {

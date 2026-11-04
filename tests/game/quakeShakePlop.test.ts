@@ -17,6 +17,7 @@ import type { GameContext } from '../../src/game/context';
 import type { ToolPointer } from '../../src/game/tools/Tool';
 import { PREVIEW_JITTER, PlopTool } from '../../src/game/tools/PlopTool';
 import { CityScene } from '../../src/game/CityScene';
+import { LocalSimHost } from '../../src/worker/SimHost';
 import { newSim, newState, roadLine } from '../infra/cityGen';
 
 // ------------------------------------------------------------------------------------------------ feedShake
@@ -54,16 +55,20 @@ describe('quake camera shake while paused (close-out c2 item 6)', () => {
 function fakeCtx(sim: Simulation) {
   const calls = { plops: [] as { x: number; z: number; rot: number; ok: boolean }[], toasts: [] as string[] };
   const actions = new CityActions(sim);
+  const host = new LocalSimHost(sim.state);
+  const plop = actions.plop.bind(actions);
+  actions.plop = (id, x, z, rot, dry = false) => {
+    const r = plop(id, x, z, rot, dry);
+    if (!dry) calls.plops.push({ x, z, rot, ok: r.ok });
+    return r;
+  };
+  host.actions.target = actions;
   const ctx = {
     state: sim.state,
     sim,
-    actions: {
-      plop: (id: string, x: number, z: number, rot: 0 | 1 | 2 | 3, dry: boolean) => {
-        const r = actions.plop(id, x, z, rot, dry);
-        if (!dry) calls.plops.push({ x, z, rot, ok: r.ok });
-        return r;
-      },
-    },
+    host,
+    signal: new AbortController().signal,
+    actions: host.actions,
     world: { setHighlight: () => {}, setHighlightRect: () => {} },
     objects: { setGhost: () => {}, setNetworkPreview: () => {} },
     tip: { show: () => {}, hide: () => {}, move: () => {} },

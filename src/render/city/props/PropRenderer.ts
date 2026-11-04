@@ -20,12 +20,16 @@ import * as THREE from 'three';
 import { getModelGeometry, hasModel } from '../../../assets/registry';
 import { MANIFEST_BY_ID } from '../../../assets/manifest';
 import { ModelBuilder } from '../../../assets/ModelBuilder';
-import { Surf } from '../../../core/types';
+import { Surf, isRoad } from '../../../core/types';
+import { CELL_SIZE, DAYS_PER_MONTH } from '../../../core/constants';
+import type { CellRect } from '../../../core/events';
+import { BF, type Building, type CityState } from '../../../sim/CityState';
 import { sharedUniforms } from '../../../assets/materials';
 import { DynamicBatch, type TileCuller } from '../common/batch';
 import { getCityMaterial } from '../common/cityMaterial';
 import type { PoolItem, PropItem } from '../roads/mesher';
 import { lampUniforms } from '../roads/roadMaterial';
+import type { RoadSurface } from '../common/surface';
 import { propLodGeometry } from './propLod';
 import { SEASONAL_TREES, seasonalVariant, treeSeason } from '../../../assets/builders/nat_season';
 
@@ -43,6 +47,92 @@ interface Group {
   big: number[];
   tiles: number[];
   pools: PoolItem[];
+}
+
+type GarbageBuilding = Pick<Building, 'id' | 'x' | 'z' | 'w' | 'd' | 'rot' | 'baseY'>;
+interface GarbageEpisode {
+  b: GarbageBuilding;
+  active: boolean;
+  from: number;
+  since: number;
+}
+interface GarbageLot extends GarbageEpisode {
+  count: number;
+  tile: number;
+  mask: number;
+  positions: Float64Array;
+  matrices: Float32Array;
+}
+interface GarbageTile {
+  lots: Set<GarbageLot>;
+  bounds: THREE.Box3;
+  boundsDirty: boolean;
+  contentDirty: boolean;
+  mode: number;
+}
+type GarbageSurface = Pick<RoadSurface, 'terrain'> & { state?: Pick<CityState, 'size' | 'network'> };
+/** Same-state re-entry only; no renderer references, serialized data or strong city keys. */
+const garbageSessions = new WeakMap<object, Map<number, GarbageEpisode>>();
+
+/** Cosmetic hashes never consume the simulation RNG. */
+function garbageHash(id: number): number {
+  let h = Math.imul(id ^ 0x6d2b79f5, 0x5bd1e995);
+  h = Math.imul(h ^ (h >>> 13), 0x5bd1e995);
+  return (h ^ (h >>> 15)) >>> 0;
+}
+
+function garbageAmount(lot: GarbageEpisode, day: number): number {
+  const h = garbageHash(lot.b.id), target = lot.active ? 1 + h % 4 : 0;
+  const days = lot.active ? DAYS_PER_MONTH + (h >>> 8) % (DAYS_PER_MONTH + 1) : 8 + (h >>> 8) % 13;
+  const t = Math.min(1, Math.max(0, (day - lot.since) / days));
+  return lot.from + (target - lot.from) * t;
+}
+
+function garbageCount(lot: GarbageEpisode, day: number): number {
+  const amount = garbageAmount(lot, day);
+  return lot.active ? Math.max(1, Math.floor(amount + 1e-9)) : Math.ceil(amount - 1e-9);
+}
+
+const GARBAGE_FX = [0, 1, 0, -1] as const;
+const GARBAGE_FZ = [1, 0, -1, 0] as const;
+
+/** Stable first road edge on the mirrored network, falling back to the model's front. */
+function garbageFront(b: GarbageBuilding, state?: GarbageSurface['state']): number {
+  if (!state) return b.rot;
+  const N = state.size, net = state.network;
+  const road = (x: number, z: number) => x >= 0 && z >= 0 && x < N && z < N && isRoad(net[z * N + x]);
+  const edge = (side: number) => {
+    if (side & 1) {
+      const x = side === 1 ? b.x + b.w : b.x - 1;
+      for (let z = b.z; z < b.z + b.d; z++) if (road(x, z)) return true;
+    } else {
+      const z = side === 0 ? b.z + b.d : b.z - 1;
+      for (let x = b.x; x < b.x + b.w; x++) if (road(x, z)) return true;
+    }
+    return false;
+  };
+  // the building's own front first (the entrance), when a road runs along it; else the first road edge
+  if (edge(b.rot & 3)) return b.rot & 3;
+  for (let side = 0; side < 4; side++) if (edge(side)) return side;
+  return b.rot;
+}
+
+/** Two shapes share one vertex stream: pad the shorter variant with degenerate triangles, not another draw. */
+function garbageGeometry(): THREE.BufferGeometry {
+  const bag = propGeometry('garbage_pile', 0), bin = propGeometry('garbage_pile', 1);
+  const n = Math.max(bag.getAttribute('position').count, bin.getAttribute('position').count);
+  const g = new THREE.BufferGeometry();
+  for (const [source, prefix] of [[bag, ''], [bin, 'garbage']] as const) {
+    for (const name of ['position', 'normal', 'color', 'surf']) {
+      if (prefix && name === 'surf') continue; // both variants use Plain
+      const a = source.getAttribute(name), data = new Float32Array(n * 3);
+      data.set(a.array);
+      if (name === 'normal') for (let k = a.count; k < n; k++) data[k * 3 + 1] = 1;
+      const key = prefix ? prefix + name[0].toUpperCase() + name.slice(1) : name;
+      g.setAttribute(key, new THREE.BufferAttribute(data, 3));
+    }
+  }
+  return g;
 }
 
 /** procedural stand-ins used when an asset builder has not registered the model (avoids magenta boxes) */
@@ -190,6 +280,23 @@ export class PropRenderer {
   readonly pylons: DynamicBatch;
   readonly pools: THREE.InstancedMesh;
   readonly glows: THREE.Mesh;
+  /** Kerbside bags / bins: one draw, no shadow passes, compacted to instances below 900 m. */
+  readonly garbage: THREE.InstancedMesh;
+  private garbageLots = new Map<number, GarbageLot>();
+  private garbageTiles = new Map<number, GarbageTile>();
+  private garbagePosesDirty = new Set<GarbageLot>();
+  private garbageChanging = new Set<GarbageLot>();
+  private garbageSession: object | undefined;
+  private garbageCap = 256;
+  private garbageDirty = true;
+  private garbageCountsDirty = false;
+  private garbageBoundsDirty = false;
+  private garbageDay = -1;
+  private garbageCamKey = new Float64Array(32).fill(NaN);
+  private garbageCam = new THREE.Vector3();
+  private garbageFrustum = new THREE.Frustum();
+  private garbageProjection = new THREE.Matrix4();
+  private garbagePoint = new THREE.Vector3();
   private glowGeo: THREE.InstancedBufferGeometry;
   private glowCap = 4096;
   private groups = new Map<string, Group>();
@@ -321,6 +428,280 @@ export class PropRenderer {
     this.glows.frustumCulled = false;
     this.glows.renderOrder = 4;
     this.glows.name = 'lampGlows';
+    const garbageMat = city.clone();
+    garbageMat.onBeforeCompile = (shader, renderer) => {
+      cityCompile.call(city, shader, renderer);
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+attribute float garbageVariant;
+attribute vec3 garbagePosition;
+attribute vec3 garbageNormal;
+attribute vec3 garbageColor;`)
+        .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\nobjectNormal = mix(normal, garbageNormal, garbageVariant);')
+        .replace('#include <color_vertex>', `#include <color_vertex>
+#ifdef USE_COLOR
+  vColor.xyz = mix(color, garbageColor, garbageVariant);
+#endif`)
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed = mix(position, garbagePosition, garbageVariant);')
+        .replace('vObjPos = position;', 'vObjPos = transformed;')
+        .replace('vObjNormal = normal;', 'vObjNormal = objectNormal;');
+    };
+    garbageMat.customProgramCacheKey = () => city.customProgramCacheKey() + '|garbage-v1';
+    this.garbage = this.makeGarbage(garbageGeometry(), garbageMat);
+    this.batch.mesh.add(this.garbage);
+  }
+
+  private makeGarbage(geometry: THREE.BufferGeometry, material: THREE.Material): THREE.InstancedMesh {
+    geometry.setAttribute('garbageVariant', new THREE.InstancedBufferAttribute(new Float32Array(this.garbageCap), 1).setUsage(THREE.DynamicDrawUsage));
+    const mesh = new THREE.InstancedMesh(geometry, material, this.garbageCap);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.count = 0;
+    mesh.visible = false;
+    mesh.frustumCulled = false; // the compacted list already passed tight tile / prop frustum and distance tests
+    mesh.receiveShadow = true;
+    mesh.name = 'garbage';
+    return mesh;
+  }
+
+  /** Event-time mirrored flags; keep our own transition state because replica records mutate in place. */
+  garbageBuildingChanged(b: Building, day: number): void {
+    const active = !!(b.flags & BF.NoGarbage), old = this.garbageLots.get(b.id);
+    if (!old && !active) return;
+    if (old) {
+      if (active !== old.active) {
+        old.from = Math.max(active ? 1 : 0, garbageCount(old, day));
+        old.since = day;
+        old.active = active;
+        this.garbageChanging.add(old);
+        this.garbageCountsDirty = true;
+      }
+      const p = old.b;
+      if (p.x === b.x && p.z === b.z && p.w === b.w && p.d === b.d && p.rot === b.rot && p.baseY === b.baseY) return;
+    }
+    const pose = { id: b.id, x: b.x, z: b.z, w: b.w, d: b.d, rot: b.rot, baseY: b.baseY };
+    if (old) { old.b = pose; this.garbagePosesDirty.add(old); }
+    else {
+      const lot: GarbageLot = { b: pose, active, from: 1, since: day, count: 1, tile: -1, mask: 0, positions: new Float64Array(12), matrices: new Float32Array(64) };
+      this.garbageLots.set(b.id, lot);
+      this.garbagePosesDirty.add(lot);
+      this.garbageChanging.add(lot);
+    }
+  }
+
+  removeGarbage(id: number): void {
+    const lot = this.garbageLots.get(id);
+    if (!lot) return;
+    if (lot.mask) this.garbageDirty = true;
+    const tile = this.garbageTiles.get(lot.tile);
+    if (tile) {
+      tile.lots.delete(lot);
+      tile.boundsDirty = tile.contentDirty = true;
+      this.garbageBoundsDirty = true;
+      if (!tile.lots.size) this.garbageTiles.delete(lot.tile);
+    }
+    this.garbageLots.delete(id);
+    this.garbagePosesDirty.delete(lot);
+    this.garbageChanging.delete(lot);
+  }
+
+  private saveGarbageSession(): void {
+    if (!this.garbageSession) return;
+    const episodes = new Map<number, GarbageEpisode>();
+    for (const [id, lot] of this.garbageLots) episodes.set(id, { b: { ...lot.b }, active: lot.active, from: lot.from, since: lot.since });
+    garbageSessions.set(this.garbageSession, episodes);
+  }
+
+  /** Rebuilds and same-state re-entry retain episodes; a freshly loaded state has no cosmetic history. */
+  resetGarbage(buildings: Iterable<Building>, day: number, session?: object): void {
+    if (!session || session !== this.garbageSession) {
+      this.saveGarbageSession();
+      this.garbageLots.clear();
+      this.garbageTiles.clear();
+      this.garbagePosesDirty.clear();
+      this.garbageChanging.clear();
+      this.garbageSession = session;
+      const saved = session && garbageSessions.get(session);
+      if (saved) for (const [id, e] of saved) {
+        const lot: GarbageLot = { ...e, b: { ...e.b }, count: garbageCount(e, day), tile: -1, mask: 0, positions: new Float64Array(12), matrices: new Float32Array(64) };
+        this.garbageLots.set(id, lot);
+        this.garbageChanging.add(lot);
+      }
+    }
+    const seen = new Set<number>();
+    for (const b of buildings) {
+      seen.add(b.id);
+      const known = this.garbageLots.has(b.id);
+      this.garbageBuildingChanged(b, day);
+      const lot = this.garbageLots.get(b.id);
+      if (lot && !known) {
+        lot.from = lot.count = 1 + garbageHash(b.id) % 4;
+        this.garbageChanging.delete(lot);
+      }
+    }
+    for (const id of this.garbageLots.keys()) if (!seen.has(id)) this.removeGarbage(id);
+    this.invalidateGarbage();
+    this.garbageDirty = true;
+    this.garbageDay = -1;
+  }
+
+  invalidateGarbage(rect?: CellRect): void {
+    for (const lot of this.garbageLots.values()) {
+      const b = lot.b;
+      if (!rect || b.x - 1 <= rect.x1 && b.x + b.w >= rect.x0 && b.z - 1 <= rect.z1 && b.z + b.d >= rect.z0) this.garbagePosesDirty.add(lot);
+    }
+  }
+
+  /** Pose construction is independent of the camera, day and ramp count. */
+  private prepareGarbage(surf: GarbageSurface): void {
+    this.garbageBoundsDirty = false;
+    for (const lot of this.garbagePosesDirty) {
+      if (lot.mask) this.garbageDirty = true;
+      const prev = this.garbageTiles.get(lot.tile);
+      if (prev) {
+        prev.lots.delete(lot);
+        prev.boundsDirty = prev.contentDirty = true;
+        if (!prev.lots.size) this.garbageTiles.delete(lot.tile);
+      }
+      const b = lot.b, h = garbageHash(b.id), side = garbageFront(b, surf.state), yaw = side * Math.PI / 2;
+      const fx = GARBAGE_FX[side], fz = GARBAGE_FZ[side];
+      const cx = (b.x + b.w / 2) * CELL_SIZE, cz = (b.z + b.d / 2) * CELL_SIZE;
+      const front = (side & 1 ? b.w : b.d) * CELL_SIZE / 2 - 0.75;
+      const shift = ((h >>> 16) / 65536 - 0.5) * 3;
+      for (let k = 0; k < 4; k++) {
+        const along = shift + (k - 1.5) * 1.25;
+        const x = cx + fx * front + fz * along, z = cz + fz * front - fx * along;
+        const y = Math.max(b.baseY, surf.terrain(x, z)) + 0.08;
+        lot.positions[k * 3] = x; lot.positions[k * 3 + 1] = y; lot.positions[k * 3 + 2] = z;
+        const turn = yaw + (((h >>> (k * 4)) & 15) / 15 - 0.5) * 0.4;
+        this.q.setFromAxisAngle(this.up, turn);
+        this.m4.compose(this.v.set(x, y, z), this.q, this.s.set(1, 1, 1));
+        this.m4.toArray(lot.matrices, k * 16);
+      }
+      lot.tile = this.culler.tileOfWorld(cx + fx * front, cz + fz * front);
+      let tile = this.garbageTiles.get(lot.tile);
+      if (!tile) {
+        tile = { lots: new Set(), bounds: new THREE.Box3(), boundsDirty: true, contentDirty: true, mode: 0 };
+        this.garbageTiles.set(lot.tile, tile);
+      }
+      tile.lots.add(lot);
+      tile.boundsDirty = tile.contentDirty = true;
+    }
+    this.garbagePosesDirty.clear();
+    for (const tile of this.garbageTiles.values()) if (tile.boundsDirty) {
+      const b = tile.bounds;
+      b.makeEmpty();
+      for (const lot of tile.lots) for (let k = 0; k < 4; k++) {
+        const p = lot.positions, i = k * 3;
+        b.expandByPoint(this.garbagePoint.set(p[i] - 0.9, p[i + 1] - 0.3, p[i + 2] - 0.9));
+        b.expandByPoint(this.garbagePoint.set(p[i] + 0.9, p[i + 1] + 1.5, p[i + 2] + 0.9));
+      }
+      tile.boundsDirty = false;
+    }
+  }
+
+  /** 0 rejected, 1 wholly in view, 2 boundary: only boundary tiles need per-prop camera tests. */
+  private garbageTileMode(box: THREE.Box3, frustum: boolean): number {
+    const c = this.garbageCam, a = box.min, b = box.max;
+    const dx = Math.max(a.x - c.x, 0, c.x - b.x), dy = Math.max(a.y - c.y, 0, c.y - b.y), dz = Math.max(a.z - c.z, 0, c.z - b.z);
+    if (dx * dx + dy * dy + dz * dz >= 900 * 900) return 0;
+    const fx = Math.max(Math.abs(a.x - c.x), Math.abs(b.x - c.x));
+    const fy = Math.max(Math.abs(a.y - c.y), Math.abs(b.y - c.y));
+    const fz = Math.max(Math.abs(a.z - c.z), Math.abs(b.z - c.z));
+    let full = fx * fx + fy * fy + fz * fz < 900 * 900;
+    if (frustum) for (const plane of this.garbageFrustum.planes) {
+      const n = plane.normal;
+      if (n.x * (n.x > 0 ? b.x : a.x) + n.y * (n.y > 0 ? b.y : a.y) + n.z * (n.z > 0 ? b.z : a.z) + plane.constant < 0) return 0;
+      if (n.x * (n.x > 0 ? a.x : b.x) + n.y * (n.y > 0 ? a.y : b.y) + n.z * (n.z > 0 ? a.z : b.z) + plane.constant < 0) full = false;
+    }
+    return full ? 1 : 2;
+  }
+
+  /** Compare membership before repacking: a pan within the same visible tiles usually uploads nothing. */
+  updateGarbage(day: number, view: THREE.Vector3 | THREE.Camera, surf: GarbageSurface): void {
+    const camera = view instanceof THREE.Camera ? view : null, key = this.garbageCamKey;
+    let moved = false;
+    if (camera) {
+      camera.updateMatrixWorld();
+      const a = camera.projectionMatrix.elements, b = camera.matrixWorldInverse.elements;
+      for (let i = 0; i < 16; i++) {
+        if (key[i] !== a[i] || key[i + 16] !== b[i]) moved = true;
+        key[i] = a[i]; key[i + 16] = b[i];
+      }
+      this.garbageCam.setFromMatrixPosition(camera.matrixWorld);
+      if (moved) this.garbageFrustum.setFromProjectionMatrix(this.garbageProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+    } else {
+      const p = view as THREE.Vector3;
+      moved = key[0] !== p.x || key[1] !== p.y || key[2] !== p.z || key[3] !== Infinity;
+      key[0] = p.x; key[1] = p.y; key[2] = p.z; key[3] = Infinity;
+      this.garbageCam.copy(p);
+    }
+    if (day !== this.garbageDay || this.garbageCountsDirty) {
+      for (const lot of this.garbageChanging) {
+        const count = garbageCount(lot, day);
+        if (!count) { this.removeGarbage(lot.b.id); continue; }
+        if (count !== lot.count) {
+          lot.count = count;
+          const tile = this.garbageTiles.get(lot.tile);
+          if (tile) tile.contentDirty = true;
+        }
+        if (lot.active && count === 1 + garbageHash(lot.b.id) % 4) this.garbageChanging.delete(lot);
+      }
+      this.garbageDay = day;
+      this.garbageCountsDirty = false;
+    }
+    if (this.garbagePosesDirty.size || this.garbageBoundsDirty) this.prepareGarbage(surf);
+    for (const tile of this.garbageTiles.values()) {
+      if (!moved && !tile.contentDirty) continue;
+      const mode = this.garbageTileMode(tile.bounds, !!camera);
+      if (mode === tile.mode && !tile.contentDirty && mode !== 2) continue;
+      for (const lot of tile.lots) {
+        let mask = mode === 1 ? (1 << lot.count) - 1 : 0;
+        if (mode === 2) for (let k = 0; k < lot.count; k++) {
+          const p = lot.positions, i = k * 3, c = this.garbageCam;
+          const dx = p[i] - c.x, dy = p[i + 1] - c.y, dz = p[i + 2] - c.z;
+          if (dx * dx + dy * dy + dz * dz >= 900 * 900) continue;
+          let visible = true;
+          if (camera) for (const plane of this.garbageFrustum.planes) {
+            if (plane.normal.x * p[i] + plane.normal.y * (p[i + 1] + 0.6) + plane.normal.z * p[i + 2] + plane.constant < -0.9) { visible = false; break; }
+          }
+          if (visible) mask |= 1 << k;
+        }
+        if (mask !== lot.mask) { lot.mask = mask; this.garbageDirty = true; }
+      }
+      tile.mode = mode;
+      tile.contentDirty = false;
+    }
+    if (!this.garbageDirty) return;
+    this.garbageDirty = false;
+    let n = 0;
+    for (const tile of this.garbageTiles.values()) if (tile.mode) for (const lot of tile.lots) {
+      for (let k = 0; k < lot.count; k++) if (lot.mask & (1 << k)) n++;
+    }
+    if (n > this.garbageCap) {
+      while (this.garbageCap < n) this.garbageCap *= 2;
+      const old = this.garbage, parent = old.parent;
+      const fresh = this.makeGarbage(old.geometry.clone(), old.material as THREE.Material);
+      if (parent) { parent.remove(old); parent.add(fresh); }
+      old.dispose(); old.geometry.dispose();
+      (this as { garbage: THREE.InstancedMesh }).garbage = fresh;
+    }
+    const mesh = this.garbage, variants = mesh.geometry.getAttribute('garbageVariant') as THREE.InstancedBufferAttribute;
+    const matrices = mesh.instanceMatrix.array as Float32Array, variantData = variants.array as Float32Array;
+    n = 0;
+    for (const tile of this.garbageTiles.values()) if (tile.mode) for (const lot of tile.lots) {
+      const h = garbageHash(lot.b.id);
+      for (let k = 0; k < lot.count; k++) if (lot.mask & (1 << k)) {
+        matrices.set(lot.matrices.subarray(k * 16, k * 16 + 16), n * 16);
+        variantData[n++] = (h >>> k) & 1;
+      }
+    }
+    mesh.count = n;
+    mesh.visible = n > 0;
+    mesh.instanceMatrix.clearUpdateRanges(); variants.clearUpdateRanges();
+    if (n) {
+      mesh.instanceMatrix.addUpdateRange(0, n * 16); variants.addUpdateRange(0, n);
+      mesh.instanceMatrix.needsUpdate = true; variants.needsUpdate = true;
+    }
   }
 
   /** distance LOD for small props; call once per frame with the camera position (see the file comment) */
@@ -346,6 +727,8 @@ export class PropRenderer {
     }
     const m = this.propMat, city = getCityMaterial();
     m.envMapIntensity = city.envMapIntensity; m.roughness = city.roughness; m.metalness = city.metalness;
+    const gm = this.garbage.material as THREE.MeshStandardMaterial;
+    gm.envMapIntensity = city.envMapIntensity; gm.roughness = city.roughness; gm.metalness = city.metalness;
   }
 
   /**
@@ -742,14 +1125,24 @@ export class PropRenderer {
   }
 
   get propCount(): number {
-    return this.batch.instanceCount + this.pylons.instanceCount;
+    return this.batch.instanceCount + this.pylons.instanceCount + this.garbage.count;
   }
 
   clear(): void {
     for (const k of [...this.groups.keys()]) this.setGroup(k, [], []);
+    this.garbageLots.clear();
+    this.garbageTiles.clear();
+    this.garbagePosesDirty.clear();
+    this.garbageChanging.clear();
+    if (this.garbageSession) garbageSessions.delete(this.garbageSession);
+    this.garbage.count = 0;
+    this.garbage.visible = false;
+    this.garbageDirty = true;
   }
 
   dispose(): void {
+    this.saveGarbageSession();
+    this.garbageSession = undefined;
     this.batch.dispose();
     this.pylons.dispose();
     this.propMat.dispose();
@@ -757,5 +1150,12 @@ export class PropRenderer {
     this.poolMat.dispose();
     this.glowGeo.dispose();
     (this.glows.material as THREE.Material).dispose();
+    this.garbageLots.clear();
+    this.garbageTiles.clear();
+    this.garbagePosesDirty.clear();
+    this.garbageChanging.clear();
+    this.garbage.dispose();
+    this.garbage.geometry.dispose();
+    (this.garbage.material as THREE.Material).dispose();
   }
 }

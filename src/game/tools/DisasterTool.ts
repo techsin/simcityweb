@@ -26,21 +26,23 @@ export class DisasterTool extends Tool {
     if (r && (r.x !== p.hit.x || r.z !== p.hit.z)) this.refused = null;
     this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(this.label)}</b></div>` + (this.refused ? `<div class="tip-reason">${escapeHtml(this.refused.why)}</div>` : '<div class="tip-sub">Click to unleash</div>'), 'bad');
   }
-  override down(p: ToolPointer): void {
+  override async down(p: ToolPointer): Promise<void> {
     if (!p.hit) return;
-    const f = this.ctx.mods.triggerDisaster;
-    if (!f) {
+    if (!this.ctx.mods.triggerDisaster) {
       this.ctx.toast('Disasters are not available yet', 'warning');
       return;
     }
-    let started: unknown = false;
+    let started = false;
     try {
       // the alarm comes from the sim's 'disaster' event / news (src/game/GameSounds.ts)
-      started = f(this.ctx.sim, this.kind, p.hit.x, p.hit.z);
+      if (this.kind !== 'fire' || this.fireSite(p.hit.x, p.hit.z)) {
+        started = await this.ctx.host.act('triggerDisaster', [this.kind, p.hit.x, p.hit.z]).done;
+      }
     } catch (e) {
       console.warn('[disaster] failed', e);
       started = false;
     }
+    if (this.ctx.signal.aborted || this.ctx.tools.active !== this) return;
     // triggerDisaster returns false when it could not start (e.g. a fire with no building nearby): keep the tool
     // selected so the player can pick another spot, and say why
     if (started === false) {
@@ -53,16 +55,16 @@ export class DisasterTool extends Tool {
     }
     this.ctx.tools.select(null, { silent: true });
   }
+  private fireSite(x: number, z: number): boolean {
+    for (let dz = -3; dz <= 3; dz++) for (let dx = -3; dx <= 3; dx++) {
+      if (this.ctx.state.buildingAt(x + dx, z + dz)) return true;
+    }
+    return false;
+  }
   /** why triggerDisaster refused (a fire needs a building within 3 tiles that is not already burning / burnt out) */
   private failReason(x: number, z: number): string {
     if (this.kind === 'fire') {
-      let near = false;
-      for (let dz = -3; dz <= 3 && !near; dz++) for (let dx = -3; dx <= 3; dx++) {
-        if (this.ctx.state.buildingAt(x + dx, z + dz)) {
-          near = true;
-          break;
-        }
-      }
+      const near = this.fireSite(x, z);
       return near ? 'Everything here is already burning or burnt out — pick another building' : 'No building here to set on fire — click on or next to a building';
     }
     return `Could not start a ${this.label.toLowerCase()} here`;

@@ -24,6 +24,8 @@ import { DevType, Zone } from '../../core/types';
 import type { Building, CityState } from '../CityState';
 import { BF } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
+// B2: the spread runs blur3 in row pieces (BoxVRun / boxHRows, JS: the wasm drop-in ../../wasm/kernels/blur covers
+// whole-call kernels only, and the split pass calls none)
 import { BoxVRun, boxHRows } from './blur';
 import { BuildingSnapshot, Fam, infoOf, isFunctional, nowMs, readEffects, setFlagQuiet, wealthOf, type DefInfo } from './common';
 import {

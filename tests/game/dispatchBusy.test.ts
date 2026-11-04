@@ -15,6 +15,7 @@ import { getFire } from '../../src/sim/systems/infra';
 import { DispatchTool, allBusyText, freeUnitsText } from '../../src/game/tools/DispatchTool';
 import type { ToolPointer } from '../../src/game/tools/Tool';
 import type { GameContext } from '../../src/game/context';
+import { queryHost } from './queryHost';
 import { newSim, newState, place, roadLine } from '../infra/cityGen';
 
 describe('Dispatch tool: a station with every unit out (final fixes r4 U3)', () => {
@@ -52,6 +53,8 @@ describe('Dispatch tool: a station with every unit out (final fixes r4 U3)', () 
     const ctx = {
       get state() { return sim.state; },
       sim,
+      host: queryHost(sim),
+      signal: new AbortController().signal,
       tip: { show: (html: string) => tips.push(html), hide: () => undefined, move: () => undefined },
       world: { setHighlight: () => undefined },
       ui: { on: () => () => undefined },

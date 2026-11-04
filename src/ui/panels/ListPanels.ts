@@ -3,33 +3,15 @@ import type { GameContext } from '../../game/context';
 import { allDefs, defIcon } from '../../game/toolCatalog';
 import type { OrdinanceInfo, RewardInfo } from '../../game/modules';
 import type { BuildingDef } from '../../sim/catalogTypes';
-import { BF, type Building } from '../../sim/CityState';
-import type { SimSystem } from '../../sim/Simulation';
-import type { EconRuntime } from '../../sim/economy/runtime';
+import type { Building } from '../../sim/CityState';
 import { Panel } from '../Panel';
 import { confirmDialog } from '../Modals';
 import { clear, escapeHtml, h, toggle } from '../dom';
 import { icon } from '../icons';
 import { money, titleCase } from '../format';
 import { upkeepEstimate } from '../upkeepModel';
-
-/** the plopped buildings by def: the defs with a standing building, and one ruin (BF.Burnt) of every def that has one */
-export interface RuinState {
-  live: Set<string>;
-  ruin: Map<string, Building>;
-}
-
-/** RuinState of a list of buildings (the economy runtime's plopped list, or every building: only plopped ones count) */
-export function ruinState(list: Iterable<Building>): RuinState {
-  const live = new Set<string>(), ruin = new Map<string, Building>();
-  for (const b of list) {
-    if (!(b.flags & BF.Plopped)) continue;
-    if (b.flags & BF.Burnt) {
-      if (!ruin.has(b.def)) ruin.set(b.def, b);
-    } else live.add(b.def);
-  }
-  return { live, ruin };
-}
+import { ruinsFor, type RuinState } from '../ruinState';
+export { ruinState, type RuinState } from '../ruinState';
 
 /**
  * The ruin a reward lies in (final fixes r3): one of its buildings is a ruin — burnt down, or flattened by a tornado, a
@@ -79,6 +61,7 @@ export class OrdinancesPanel extends Panel {
   override width = 480;
   private listEl!: HTMLDivElement;
   private sig = '';
+  private pending = new Map<string, boolean>();
 
   protected build(): void {
     this.listEl = h('div', { class: 'list' });
@@ -102,7 +85,7 @@ export class OrdinancesPanel extends Panel {
 
   override update(): void {
     const items = this.list();
-    const sig = items ? items.map((o) => `${o.id}:${o.enabled}:${o.available}:${o.monthlyCost}`).join('|') + this.ctx.state.budget.ordinances.join(',') : 'none';
+    const sig = items ? items.map((o) => `${o.id}:${o.enabled}:${o.available}:${o.monthlyCost}:${this.pending.get(o.id)}`).join('|') + this.ctx.state.budget.ordinances.join(',') : 'none';
     if (sig === this.sig) return;
     this.sig = sig;
     clear(this.listEl);
@@ -113,50 +96,46 @@ export class OrdinancesPanel extends Panel {
     const enabledIds = new Set(this.ctx.state.budget.ordinances);
     let total = 0;
     for (const o of items) {
-      const on = o.enabled || enabledIds.has(o.id);
+      const on = this.pending.get(o.id) ?? (o.enabled || enabledIds.has(o.id));
       if (on) total += o.monthlyCost;
-      const sw = toggle(on, (v) => {
-        let r: { ok: boolean; reason?: string; needsConfirm?: boolean } | null = null;
+      const sw = toggle(on, async (v) => {
+        if (this.pending.has(o.id)) return;
+        this.pending.set(o.id, v);
+        this.update();
         try {
-          r = this.ctx.actions.setOrdinance(o.id, v);
+          let r = await this.ctx.host.act('setOrdinance', [o.id, v]).done;
+          if (this.ctx.signal.aborted) return;
+          if (!r.ok && r.needsConfirm) {
+            // WP5-6: it would shut existing buildings down (nuclear-free zone) — ask first, then enact with confirm
+            const yes = await confirmDialog(this.ctx, {
+              title: `Enact ${o.name}?`,
+              message: 'This ordinance takes effect immediately:',
+              items: [(r.reason ?? 'It shuts existing buildings down').replace(/^Demolish (.*) first: this ordinance would shut (it|them) down/, 'It shuts down $1'), 'The lost power must come from other plants — check the grid first'],
+              confirm: 'Enact anyway',
+              danger: true,
+            });
+            if (!yes || this.ctx.signal.aborted) return;
+            r = await this.ctx.host.act('setOrdinance', [o.id, true, { confirm: true }]).done;
+            if (this.ctx.signal.aborted) return;
+          }
+          if (!r.ok) {
+            this.ctx.toast(r.reason ?? 'The council rejected this ordinance', 'error');
+            this.ctx.sound('error');
+          } else this.ctx.sound(v ? 'toggleOn' : 'toggleOff');
         } catch (e) {
           console.warn(e);
-        }
-        if (r && !r.ok && r.needsConfirm) {
-          // WP5-6: it would shut existing buildings down (nuclear-free zone) — ask first, then enact with confirm
-          void confirmDialog(this.ctx, {
-            title: `Enact ${o.name}?`,
-            message: 'This ordinance takes effect immediately:',
-            items: [(r.reason ?? 'It shuts existing buildings down').replace(/^Demolish (.*) first: this ordinance would shut (it|them) down/, 'It shuts down $1'), 'The lost power must come from other plants — check the grid first'],
-            confirm: 'Enact anyway',
-            danger: true,
-          }).then((yes) => {
-            if (yes) {
-              let r2: { ok: boolean; reason?: string } | null = null;
-              try {
-                r2 = this.ctx.actions.setOrdinance(o.id, true, { confirm: true });
-              } catch (e) {
-                console.warn(e);
-              }
-              if (r2 && !r2.ok) {
-                this.ctx.toast(r2.reason ?? 'The council rejected this ordinance', 'error');
-                this.ctx.sound('error');
-              } else this.ctx.sound('toggleOn');
-            }
+          if (!this.ctx.signal.aborted) {
+            this.ctx.toast('Action unavailable', 'error');
+            this.ctx.sound('error');
+          }
+        } finally {
+          this.pending.delete(o.id);
+          if (!this.ctx.signal.aborted) {
             this.sig = '';
             this.update();
-          });
-          this.sig = '';
-          this.update();
-          return;
+          }
         }
-        if (r && !r.ok) {
-          this.ctx.toast(r.reason ?? 'The council rejected this ordinance', 'error');
-          this.ctx.sound('error');
-        } else this.ctx.sound(v ? 'toggleOn' : 'toggleOff');
-        this.sig = '';
-        this.update();
-      }, !o.available, this.ctx.signal);
+      }, !o.available || this.pending.has(o.id), this.ctx.signal);
       const cost = o.monthlyCost;
       const effects = h('div', { class: 'li-e' });
       for (const e of o.effects.slice(0, 5)) effects.appendChild(h('span', { class: 'chip ' + effectTone(e) }, e));
@@ -214,21 +193,9 @@ export class RewardsPanel extends Panel {
     this.resetGate();
   }
 
-  /** the city's plopped buildings as standing / in ruins: the economy runtime's plopped list (the StatsPanel pattern),
-   *  else every building — read on each update (a disaster can flatten a reward while the game is paused) */
+  /** Share the catalog's mirrored index, including same-day flag changes. */
   private ruins(): RuinState {
-    const st = this.ctx.state;
-    let list: Iterable<Building> = st.buildings.values();
-    try {
-      const rt = this.ctx.sim.getSystem<SimSystem & { rt?: EconRuntime }>('economy.population')?.rt;
-      if (rt) {
-        rt.ensureLists();
-        list = rt.plopped;
-      }
-    } catch {
-      /* the whole city */
-    }
-    return ruinState(list);
+    return ruinsFor(this.ctx);
   }
 
   /** open the inspector on a reward's ruin, where its Clear rubble button is (the camera goes there). This panel closes

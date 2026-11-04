@@ -549,6 +549,8 @@ export class TrafficSystem implements SimSystem {
   private stopBins: Int32Array<ArrayBuffer> = new Int32Array(0);
   private stopBinStart: Int32Array<ArrayBuffer> = new Int32Array(0);
   private stopBinFill: Int32Array<ArrayBuffer> = new Int32Array(0);
+  /** stop x / z, parallel to this.stops as of the last stop-bin build (prepTransit); only nearStops and the transfer
+   *  pass read them, and every cycle rebuilds the bins before either runs */
   private stX: Float64Array<ArrayBuffer> = new Float64Array(0);
   private stZ: Float64Array<ArrayBuffer> = new Float64Array(0);
   private binN = 0;
@@ -1994,18 +1996,23 @@ export class TrafficSystem implements SimSystem {
   ferryRidersAt(id: number): number {
     return this.ferryRidersBy.get(id) ?? 0;
   }
-  /** plop preview: partners a ferry terminal at (x, z, w, d, rot) would link to */
-  ferryPartnersFor(st: CityState, x: number, z: number, w: number, d: number, rot: number): FerryPartner[] {
-    this.refreshAttach(st);
+  /**
+   * plop preview: partners a ferry terminal at (x, z, w, d, rot) would link to. `refresh: false` (queries and previews)
+   * reads the last refresh's terminals: a read must not move when this system recomputes its attachments, or the
+   * simulation's own later passes would depend on when the player looked (W1.1b querySideEffects)
+   */
+  ferryPartnersFor(st: CityState, x: number, z: number, w: number, d: number, rot: number, refresh = true): FerryPartner[] {
+    if (refresh) this.refreshAttach(st);
     return ferryPartnersAt(st, this.ferryTerms, x, z, w, d, rot);
   }
   /**
    * attached stops within r cells (+ half the footprint) of a footprint (garage preview), nearest first; ride = a
    * transit path from the stop rides a vehicle in the last assignment (false: its riders walk to jobs beside it — a
-   * garage there is parking only, no park & ride; undefined: not assessed yet)
+   * garage there is parking only, no park & ride; undefined: not assessed yet). `refresh: false` (queries and previews):
+   * the attachments of the last refresh, as ferryPartnersFor
    */
-  stopsNear(st: CityState, x: number, z: number, w: number, d: number, r = PR_STOP_RADIUS): { id: number; mode: number; dist: number; ride?: boolean }[] {
-    this.refreshAttach(st);
+  stopsNear(st: CityState, x: number, z: number, w: number, d: number, r = PR_STOP_RADIUS, refresh = true): { id: number; mode: number; dist: number; ride?: boolean }[] {
+    if (refresh) this.refreshAttach(st);
     const cx = x + (w >> 1), cz = z + (d >> 1), R = r + (Math.max(w, d) >> 1);
     const out: { id: number; mode: number; dist: number; ride?: boolean }[] = [];
     // stops of the last assignment (a stop placed since shows after the next one; previews run on every mouse move)
@@ -3893,6 +3900,8 @@ export class TrafficSystem implements SimSystem {
   }
 
   /** Stable 11-bit LSD radix sort of the packed (cost, origin) keys; keep the native order outside safe integers.
+   *  Below 1024 keys the native sort is faster: the radix path pays up to 5 × 2048 histogram clears and prefix sums
+   *  per call (measured crossover 700-1024 keys); both paths give the same bytes.
    *  (whole call: tests; the matching runs it piece by piece, sortPiece) */
   private sortCandidates(nc: number): Float64Array {
     this.srtStage = 0;
@@ -3909,7 +3918,7 @@ export class TrafficSystem implements SimSystem {
   private sortPiece(nc: number): boolean {
     const key = this.candKey, hist = this.candHist;
     if (this.srtStage === 0) {
-      if (nc < 64) { key.subarray(0, nc).sort(); return true; }
+      if (nc < 1024) { key.subarray(0, nc).sort(); return true; }
       this.srtMax = 0;
       this.srtCur = 0;
       this.srtStage = 1;
@@ -3989,7 +3998,7 @@ export class TrafficSystem implements SimSystem {
   private sortPieceUs(nc: number): number {
     const chunk = (us: number, left: number) => Math.max(0, Math.min(coldUnits(us), left)) * us;
     switch (this.srtStage) {
-      case 0: return nc < 64 ? nc * 0.05 : chunk(TC.sortScan, nc);
+      case 0: return nc < 1024 ? nc * 0.05 : chunk(TC.sortScan, nc);
       case 1: return chunk(TC.sortScan, nc - this.srtCur);
       case 2: return chunk(TC.sortHist, nc - this.srtCur);
       case 3: return 2048 * TC.sortPrefix + (this.srtP + 1 >= this.srtPasses ? nc * TC.fill : 0);

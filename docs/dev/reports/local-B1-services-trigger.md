@@ -1,8 +1,8 @@
 # local-B1-services-trigger: the services dirty trigger (WASM_PLAN B1 / PI-5a; T015)
 
 > **Status: work in progress, pushed early for NOTE-014.** Every gate below has run except the speed A/B's
-> replication: dense1m in the reverse order, and bot256 again with a tighter A/A. The `.done` marker comes with the final
-> report.
+> replication (dense1m in the reverse order, and bot256 again with a tighter A/A) and the frames runs of NOTE-015's
+> dirty-only cap. Both need a quiet machine. The `.done` marker comes with the final report.
 
 Branch `local/B1-services-trigger`, base **`bf8b6e2`** (the dev-branch head when the task started).
 
@@ -28,7 +28,7 @@ Machine: Windows 10, Ryzen 7 9800X3D (8 cores / 16 threads), node 22.12 (no `pro
 | Determinism, D1 for 120 days | identical: dense1m, bot256 y60 (the snapshot and the live city) |
 | Speed, whole design-cadence day | dense1m **1.31×** (process CPU, median; mean 1.29×), A/A 1.017. bot256 **1.38×** and **1.43×** in the two orders (provisional). **Still to run:** dense1m in reverse order, and bot256 again with a tighter A/A |
 | Services passes, design cadence | dense1m 90 → 14 per 180 days (30.0 → 4.7 per 60 days; target ≤ 10). bot256 135 → 18 per 270 days |
-| Ultra emulation (frames mode) | passes per day: dense1m 0.089 → 0.050, bot256 0.094 → 0.050. The 1 s live cap holds B1 to 75 % of the periodic cadence at ultra (see that section) |
+| Ultra emulation (frames mode) | with the first cap (1 s on every pass start): passes per day dense1m 0.089 → 0.050, bot256 0.094 → 0.050, 75 % of the periodic cadence. **The dirty-only 2 s cap (NOTE-015) is measured in the next quiet slot** against S5's ≥ 90 % |
 | Old saves | 6 of 6 load, run 45 days, and reload identically |
 | `npx tsc --noEmit` / full vitest | clean / 1,115 passed, 6 skipped, 1 failed: `tests/wasm/binary.test.ts`, the Windows CRLF case that T012's `.gitattributes` fixes (this branch's base predates T012) |
 
@@ -53,9 +53,12 @@ on a coverage-relevant building. That included traffic's `Congested` flips, so b
 
 - **Urgent** means the scheduler runs the task's steps first (up to 8 per day, or per frame) until that pass finishes.
   A change that arrives after a pass has captured its inputs stays pending for the next pass.
-- **Live cap** (`SERVICES_MIN_PASS_MS` = 1000): in live mode (frames ticking) at most one pass *starts* per real second,
-  urgent ones included. A pass already running keeps going. Headless and design-cadence paths never read the clock, so
-  determinism is unaffected.
+- **Live cap** (`SERVICES_MIN_CYCLE_MS` = 2000, as WORKER_DESIGN §6 B1 names it; NOTE-015).
+  - In live mode (frames ticking) a *dirty* pass starts at most once per 2 real seconds after the last pass start.
+  - Periodic and urgent passes are never held, and a pass already running keeps going.
+  - Headless and design-cadence paths never read the clock, so determinism is unaffected.
+  - This version replaced a 1 s cap on every pass start. The balance tables, the latency tables, D1 and the A/B all
+    run headless or at design cadence, where neither cap applies, so they stand without a re-run.
 - **NIMBY** keeps its own flag: only NIMBY-source buildings (stigma, prestige, campus) and corridor changes mark it.
 
 ## Review: what I checked and the one trigger I added
@@ -89,6 +92,8 @@ on a coverage-relevant building. That included traffic's `Congested` flips, so b
 - **Tourism:** `balance-json` has no tourism column, so the tourist column comes from the bot's printout. Tourism jobs are
   tourists × `CS_JOBS_PER_VISITOR` (`tourism.ts:454`), so their ratio is the same.
 - **Gate line:** under each table, as the script computes it.
+- **Tourism:** single years fall outside ±30 % on every run, but six 128 × 15 seeds give a year-15 geometric mean of
+  0.996 (section below). The lead accepted these misses as bot noise (NOTE-015).
 
 ### 256 × 60, seed 7
 
@@ -384,14 +389,12 @@ the fixture and counts the services passes. Single runs, not the A/B method.
 | dense1m | 16 → 9 | 0.089 → 0.050 | 19.0 → 18.2 |
 | bot256 y60 (live) | 17 → 9 | 0.094 → 0.050 | 16.1 → 17.1 |
 
-- **The live cap binds at ultra.** `SERVICES_MIN_PASS_MS` = 1000 lets one pass start per real second. At about 18 days
-  per second that is at most one pass every 18 days. So B1 gets 9 passes in 180 days: 75 % of the 12 periodic passes
-  (`SERVICES_PERIOD` 15), and 64 % of the 14 it runs at design cadence over the same days.
-- **Against S5.** S5's acceptance (AC4) asks for services at ≥ 90 % of design cadence at ultra.
-- **The fix is one constant.** A cap near 700 ms (about 12.6 days at ultra) would no longer bind. S5 makes these caps
-  host-overridable. I can set 700 here if you prefer it in B1.
-- **Naming.** The constant is `SERVICES_MIN_PASS_MS`: it limits pass *starts*. WORKER_DESIGN §6 row S2 calls it
-  `SERVICES_MIN_CYCLE_MS`. I can rename it to match.
+- **These runs used the first cap: 1 s on every pass start.** At about 18 days per second that allows at most one pass
+  every 18 days, so B1 got 9 passes in 180 days: 75 % of the 12 periodic passes (`SERVICES_PERIOD` 15), and 64 % of
+  the 14 it runs at design cadence over the same days. S5's acceptance (AC4) asks for ≥ 90 %.
+- **The fix (NOTE-015).** The cap now holds dirty passes only, at 2 s (`SERVICES_MIN_CYCLE_MS`, the design's name and
+  value), so periodic and urgent passes are never held. Its frames runs go in the next quiet slot: dense1m and bot256,
+  each with base, the first cap and the new cap, against the design-cadence count over the same 180 days.
 
 ## Speed: the whole design-cadence day (finding 4's method)
 
@@ -425,6 +428,7 @@ Speed-up = base ÷ B1 (above 1 means B1 is faster). ms/day are process CPU (medi
 
 - **dense1m, reverse order (A = B1).** The first attempt stopped at round 13 of 24 and wrote no result.
 - **bot256, both orders again**, aiming for an A/A within ±3 % on the hierarchical median as well.
+- **Frames runs of the dirty-only 2 s cap** (NOTE-015), against S5's ≥ 90 % of design cadence.
 - **Then** the final report and `docs/dev/queue/T015-b1-services-trigger.done`.
 
 ## Who wrote what

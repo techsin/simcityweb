@@ -50,7 +50,10 @@ import { DevType, Network, Zone, isRoad } from '../../core/types';
 import type { Building, CityState } from '../CityState';
 import { BF } from '../CityState';
 import type { SimSystem, Simulation } from '../Simulation';
-import { Blur3Run, BoxVRun, blurSigma2, boxAverage, boxHRows, downsampleRows, upsampleAddRows } from './blur';
+// B2: the passes blur in row pieces (Blur3Run / BoxVRun / boxHRows / downsampleRows / upsampleAddRows, JS); the
+// whole-call kernels still called (the tree cover's boxAverage, blurSigma2) go through the wasm drop-in (W0.1, PI-6)
+import { Blur3Run, BoxVRun, boxHRows, downsampleRows, upsampleAddRows } from './blur';
+import { blurSigma2, boxAverage } from '../../wasm/kernels/blur';
 import {
   BuildingSnapshot, DX, DZ, Fam, activeJobs, detectJobsUnknown, ensureIdArray, ensureIdFloat, fundingFactor, infoOf, isFunctional, nowMs,
   readEffects, setFlagQuiet, activity, type DefInfo, type OrdEffects, buildingList, wealthOf,
