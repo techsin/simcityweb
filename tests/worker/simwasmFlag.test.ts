@@ -2,8 +2,10 @@
  * W0.1 + WASM_PLAN PI-6: the simulation imports the blur drop-in, and wasm blur is opt-in. With no flag the JS blur
  * runs and wasm is never instantiated (the bot's plain Simulation included); SIM_WASM=wasm or the host's simwasm flag
  * selects the wasm blur. Each case loads fresh modules, so the switchboard starts from its defaults.
- * B2: crime and pollution blur in row pieces (blur.ts BoxVRun / boxHRows / Blur3Run ..., JS only); the whole-call kernel
- * the live systems still reach through the drop-in is pollution's tree cover (boxAverage, at init), so it is the marker.
+ * B2: crime's and pollution's passes (and traffic's parking boxes) blur in row pieces (blur.ts BoxVRun / boxHRows /
+ * Blur3Run ..., JS only), so no pass reaches a whole-call kernel any more. The one the live systems still reach through
+ * the drop-in is pollution's tree-cover refresh after a tree edit (boxAverage, on a day its pass is idle), so the runs
+ * report a tree edit every day and that boxAverage is the marker.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as BlurModule from '../../src/sim/infra/blur';
@@ -53,18 +55,26 @@ async function load() {
 }
 type Loaded = Awaited<ReturnType<typeof load>>;
 
+/** a tree edit every day (the event the tree tool emits): pollution refreshes its tree cover through the drop-in */
+function advanceWithTreeEdits(sim: InstanceType<Loaded['Simulation']>): void {
+  for (let d = 0; d < DAYS; d++) {
+    sim.events.emit('treesChanged', { x0: 0, z0: 0, x1: 1, z1: 1 });
+    sim.advanceDay();
+  }
+}
+
 /** the bot's way: a plain Simulation, no SimCore */
 function runPlain(m: Loaded): void {
   const { st } = m.stressCity(128);
   const sim = new m.Simulation(st, m.createSystems());
-  for (let d = 0; d < DAYS; d++) sim.advanceDay();
+  advanceWithTreeEdits(sim);
 }
 
 function runCore(m: Loaded, simwasm: string | null): void {
   const { st } = m.stressCity(128);
   const core = new m.SimCore(st, undefined, { simwasm });
   core.boot(null, { createSystems: m.createSystems, CityActions: m.CityActions });
-  for (let d = 0; d < DAYS; d++) core.sim.advanceDay();
+  advanceWithTreeEdits(core.sim);
   core.dispose();
 }
 
