@@ -1,10 +1,11 @@
-# local-B2-step-split: the InfraScheduler steps in pieces of at most 3 ms (B2)
+# local-B2-step-split: the InfraScheduler steps in pieces (B2)
 
 Branch `b2-step-split` (local only), base **`41ae570`** (the dev branch + the exact J-fixes + LG-01 + the guide copy +
 B1). The design, the review items and each group's as-built notes are in `docs/dev/B2_DESIGN.md`: G1 traffic §15, G2
 services and NIMBY §16, G3 crime and pollution §17, G4 utilities, the emergency response and the recalibration §18. This
-report collects the results; every number below is from those sections unless it says otherwise. The final code is
-**`2d2940a`** (`2db4097` records its bot rows).
+report collects the results; every number below is from those sections unless it says otherwise. G4's final code was
+**`2d2940a`** (`2db4097` records its bot rows); the fix round after the gates role and the two verify reviews (§19, the
+section below) is the final code now: **`2c4f75b`** (`00ae9e5` records its bot rows).
 
 Machine: the cloud container (Linux, node 22, 4 cores shared with other workflows), headless, wall clock
 (`performance.now`). The timing lock (`scratchpad/timing.lock`) was taken for every timing run listed as "locked".
@@ -25,7 +26,45 @@ Machine: the cloud container (Linux, node 22, 4 cores shared with other workflow
   one 12 ms call.
 - No UI, render or save-format change.
 
-## Results at a glance (G4's part; G1–G3's gates are in §15.4, §16.4 and §17.4)
+## The fix round (§19; after the gates role and the two verify reviews)
+
+The gates role failed gate 4 (max ≤ 5 ms at dense1m, measured from a load); the code review found one major (a
+`replaceState` in the middle of the commute pool's car flows carried `cmFlowing` into the new city), the numbers review
+the same latency failure, an unsplit cached `inbound.0` and a cost-model gap (warm utilities per task on dense1m).
+
+**What changed** (chunk sizes and estimates only; whole passes are unchanged):
+- traffic: `endCycle()` resets `cmFlowing`; the cached inbound / shop / freight pieces by ranges; the cold loops at a
+  quarter of `INFRA_PIECE_COLD_MS` (half before) with a sizing floor of 0.01 µs per unit;
+- services: the cold and tier budgets halved; the Building sizing floor `INFRA_BLD_SIZING_US` 0.2 → 0.4 (services,
+  crime, pollution, utilities); utilities' footprint sizing 20 → 40 ns per cell;
+- utilities `cost()`: the per-piece constant 1.5 → 1 µs, the six building-chunk kinds / 1.15;
+- the live urgent cap `INFRA_URGENT_FRAME_MS` = `INFRA_FRAME_BUDGET_MS` (was 2 ×);
+- tests: R9 `replaceState` at every traffic piece kind; P0-15's cadence check; `grownCity` within 1.5 % (was 1 %: the
+  gap is the schedule's chaos, B sits at 0.97 % on its seed).
+
+**At a glance** (one timing-lock hold, B and W interleaved; dense1m headless, wall clock; §19.3 has the tables):
+
+| Gate | Result at the final code |
+|---|---|
+| p99 ≤ 3 ms from a load (6 runs per side) | **passes**: worst run 0.60 / 0.35 / 0.16 ms (days 0–20 / 20–80 / 80–220; B 48.0 / 38.8 / 20.4). Time-weighted p99 (99 % of the infra time under it): median 4.17 / 3.37 / 1.98 — above 3 in days 0–80 |
+| max ≤ 5 ms from a load, median over runs | with every step 4.17 / 4.82 / **6.22 — fails in days 80–220** (GC pauses of 5.4–9.0 ms inside steps in 3 of 6 runs); without GC-overlapping steps **3.83 / 3.36 / 2.26 — passes**; clean (no GC, no run-queue wait) 3.63 / 2.85 / 2.26. B 33.3 / 27.8 / 21.8 |
+| max ≤ 5 ms from a load, worst run | 8.48 / 8.56 / 16.25 (run-queue waits of another process; one 16 ms blocked snapshot take with 0.38 ms on the CPU); clean 4.64 / 4.43 / 16.25 |
+| The lead's profile setting (`--warm 20 --days 60`, GC included) | W `maxStepMsWall` 3.91 / 4.65 / 2.80 (median 3.91); B 31.2 / 32.7 / 32.7 |
+| Warm (`--warm 300 --days 120`) | dense1m max 1.99, p99 0.09; bot256 max 1.48, p99 0.13 |
+| Edit and disaster scenario (2 runs per side) | all tasks max 5.45 (worst 5.67, B 26.8 / 28.9): two single pieces over 5 ms in 2 × 74k steps |
+| Cost error, warm | pooled +0.08 (dense1m) / −0.08 (bot256); **every task within ±30 % on both fixtures** (utilities +0.14 / −0.13, was +0.30 to +0.49 on dense1m) |
+| Cost error, from a load | pooled −0.19 / −0.05 / +0.08 (B −0.80 / −0.44 / −0.26); per task outside ±30 %: crime −0.80 and pollution −0.76 in days 0–20, crime −0.34 in days 20–80; the estimates cover 30 / 48 / 77 % of the real time (B 16 / 32 / 54 %) |
+| Balance, 256 × 60 seed 7 | **passes**: pop 177,444 at year 15, 1,509,269 at year 60, lowest ratio to B1 0.925; approval ≥ 78.9 from year 30; EQ 121.0 at year 30; funds ≥ 7,706; tourism (B1's rule, six 128 × 15 seeds at year 15) 0.992; `totalMsPerDay` **+1.89** (B 9.75, W 11.64, side by side under the lock) |
+| Balance, seed 11 and 128 × 15 seed 7 | seed 11 lowest ratio 0.957, approval ≥ 77.0, funds ≥ 5,767; 128 × 15: **2015 = 193,416** (B1 196,101, G4 191,840), lowest ratio 0.921; its tourism stays low (0.72 × B at year 15) |
+| Cost of the smaller pieces | real infra ms per day 1.36 × B (dense1m) / 1.32 × (bot256) warm; services on bot256 17 passes per 360 days against B's 19; dense1m traffic 10 cycles against 13 |
+| Same-hold reference, G4's code | W0 max 3.81 / 3.44 / 3.35 (this hold was quiet); the fix round cut the clean steps over 2 ms per run from 8 / 5 / 2 to 3 / 1 / 0.5 |
+| `npx tsc --noEmit` / full vitest at `2c4f75b` | clean / 139 files passed, 1 skipped (1,430 tests passed, 18 skipped) |
+
+**Open for the lead**: whether max ≤ 5 counts GC-overlapping steps (§14 item 2) and stalled steps; which p99 and which
+window the plan means (§9.5); the `grownCity` tolerance (±1 % → ±1.5 %); the Building-shape fix (§14 item 4), which would
+remove most of the cold tail and let the pieces grow back (§19.5).
+
+## Results at a glance at G4's code (`2d2940a`; superseded by the fix round above; G1–G3's gates are in §15.4, §16.4 and §17.4)
 
 | Gate | Result |
 |---|---|
@@ -34,7 +73,7 @@ Machine: the cloud container (Linux, node 22, 4 cores shared with other workflow
 | Latency, utilities (dense1m, locked hold 6 at `2d2940a`, 3 runs per side from load) | p99 **12.16 / 10.24 / 12.62 → 0.26 / 0.24 / 0.07 ms** (days 0–20 / 20–80 / 80–220, median over runs); max **12.16 / 10.24 / 12.62 → 2.03 / 4.13 / 1.41 ms** (worst run 10.01 / 5.10 / 2.41; the 10.01 is a process stall that hit pollution's pieces too, the 5.10 the Building-shape deopt wave on day 22, §18.4) |
 | Latency, emergency response (same hold) | p99 **8.36 / 9.24 → 0.52 / 0.15 ms** (days 20–80 / 80–220; no sequence in days 0–20); max **8.36 / 9.24 → 2.68 / 0.18 ms** (the 2.68 has a GC pause inside; 0.94 without) |
 | Latency, edit and disaster scenario (2 runs per side) | utilities max 13.80 → 1.79 ms (worst 2.26); emergency 10.95 → 3.76 (worst 5.71, one first rows piece); the meteor's sea-mask rebuild 12.2 ms in one piece → 195 pieces of ≤ 0.38 ms |
-| Latency, all tasks (same hold) | W's p99 **1.00 / 0.54 / 0.25 ms** (B 47.1 / 27.8 / 16.5); the all-task max without GC per run 3.4–10.0 / 4.1–5.1 / 1.6–2.7 ms; other groups' pieces above 5 ms are listed in §18.7 |
+| Latency, all tasks (same hold) | W's p99 **1.00 / 0.54 / 0.25 ms** (B 47.1 / 27.8 / 16.5); the all-task max without GC per run 3.4–10.0 / 4.1–5.1 / 1.6–2.7 ms; other groups' pieces above 5 ms are listed in §18.7. **Verdict at G4's code: max ≤ 5 ms fails from a load** (the gates' 6 runs per side, days 20–80: median 5.84 ms, 5.25 without GC-overlapping steps; the verify runs 5.02 / 5.46); it passes warm |
 | Cost error, warm (final code, hold 6) | pooled over every task: dense1m **+0.14**, bot256 **−0.06**. Per task within ±30 % but utilities on dense1m (+0.42; its building chunks run at 3–10 µs warm). A refit that centred it moved the bot below the population gate, so it was reverted (§18.2). From load: pooled −0.18 / +0.01 / +0.11 (B −0.75 / −0.35 / −0.21) |
 | Cadence (§9.4, §18.5) | at 4.6 every task runs at B's cadence or above per 360 days but dense1m's traffic (10 cycles instead of 13); real infra ms per day 1.26 × B warm on dense1m, 1.44 × on bot256, 1.07 × from load |
 | Balance, 256 × 60 seed 7 (`2d2940a`) | **pass**: pop 184,844 at year 15, 1,552,965 at year 60, lowest ratio to B1 1.001; approval ≥ 79.7 from year 30; EQ 121.6 at year 30; funds ≥ 9,185; tourism judged as B1 did (geometric mean of six 128 × 15 seeds at year 15: 1.062); `totalMsPerDay` **+1.42** (≤ +3; under the timing lock) |
