@@ -140,7 +140,7 @@ not wait for B2 and can merge alone.
 3. **Recovery snapshots leave the continuity records out when lean or over their budget, and the city still loads.**
 
 Each fails with its fix reverted (each file put back to dev's version, alone, in an export of the final tree
-`co/t057-revert`; re-run in the resume, `t057work/out/revert5.log`; the unchanged tree passes 3 of 3 before and after):
+`co/t057-revert`, removed after; re-run in the resume, `t057work/out/revert5.log`; the unchanged tree passes 3 of 3 before and after):
 
 | reverted | first failure (test 1, unless named) | also |
 |---|---|---|
@@ -229,3 +229,8 @@ src/sim, src/save and src/worker equal `821a8d6`'s, the base of the dev digest r
    `desirability.ts` and `landValue.ts`: the breakdown's context cache), in other hunks than this lane's, so the two
    should merge without a conflict. Whichever merges second should re-run test 1 and the economy-mode digest (gate 1b),
    since B2 may reorder what the economy systems read from the infra passes.
+10. **Dev moved again after the gates** (`086152a`: T034 with T034b, the sim in a real Web Worker; T052). No file is
+   changed on both sides and `git merge-tree` merges the two cleanly; the real worker saves through the same
+   `SimCore` → `createCityRecord` → `serializeCity` path. Not merged here: NOTE-057 asks a lane to merge dev when a
+   landed lane conflicts with it, which these do not, and re-gating would wait hours behind the shared lock; the merge
+   step gates the merged tree.
