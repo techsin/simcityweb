@@ -110,6 +110,49 @@ function pushId(a: Int32Array<ArrayBuffer>, n: number, v: number): Int32Array<Ar
   return a;
 }
 
+/** Geometry in building-list order, gathered with the sums and reused by results within the same step.
+ *  Keep number-valued fields in f64: only utility uses / results retain their existing f32 / integer stores. */
+class UtilityBuildings {
+  ids = new Float64Array(0);
+  cells = new Float64Array(0);
+  x0 = new Float64Array(0);
+  z0 = new Float64Array(0);
+  x1 = new Float64Array(0);
+  z1 = new Float64Array(0);
+  single = new Uint8Array(0);
+  length = 0;
+
+  ensure(n: number): void {
+    this.length = n;
+    if (this.ids.length >= n) return;
+    const size = Math.max(n, this.ids.length * 2, 256);
+    this.ids = new Float64Array(size);
+    this.cells = new Float64Array(size);
+    this.x0 = new Float64Array(size);
+    this.z0 = new Float64Array(size);
+    this.x1 = new Float64Array(size);
+    this.z1 = new Float64Array(size);
+    this.single = new Uint8Array(size);
+  }
+
+  set(i: number, b: Building, N: number): void {
+    const x = b.x, z = b.z, w = b.w, d = b.d;
+    this.ids[i] = b.id;
+    this.cells[i] = z * N + x;
+    this.x0[i] = x;
+    this.z0[i] = z;
+    this.x1[i] = x + w;
+    this.z1[i] = z + d;
+    this.single[i] = w * d === 1 ? 1 : 0;
+  }
+
+  read(st: CityState): void {
+    const list = buildingList(st);
+    this.ensure(list.length);
+    for (let i = 0; i < list.length; i++) this.set(i, list[i], st.size);
+  }
+}
+
 function occupancy(inf: DefInfo, b: Building, jobsUnknown: boolean): number {
   if (b.capacity <= 0) return 1;
   if (inf.fam === Fam.R) return Math.min(1, b.pop / b.capacity);
@@ -232,6 +275,7 @@ export class UtilitiesSystem implements SimSystem {
   private producers = new Map<number, ProducerInfo>();
   /** treatment-scan prefix, overwritten on every prepareUses call (list order, never building ids) */
   private useInfo: DefInfo[] = [];
+  private records = new UtilityBuildings();
   private intakeById = new Float32Array(1024);
   private wasShort = false;
   private lastShortNotify = -1e9;
@@ -818,12 +862,15 @@ export class UtilitiesSystem implements SimSystem {
     const bUse = this.bUse;
     const cSupply = this.cSupply, cDemand = this.cDemand, cLeft = this.cLeft;
     const list = buildingList(st);
+    const records = this.records;
+    records.ensure(list.length);
     cSupply.fill(0, 0, nc);
     cDemand.fill(0, 0, nc);
     let supplyTot = 0, demandTot = 0;
     for (let bI = 0; bI < list.length; bI++) {
       const b = list[bI];
-      const c = comp[b.z * N + b.x];
+      records.set(bI, b, N);
+      const c = comp[records.cells[bI]];
       if (c < 0) continue;
       const u = bUse[b.id];
       if (u < 0) { cSupply[c] -= u; supplyTot -= u; }
@@ -950,19 +997,21 @@ export class UtilitiesSystem implements SimSystem {
         powered[i] = c >= 0 ? okComp[c] : 0;
       }
     }
-    const result = this.bPow;
-    const list = buildingList(st);
-    for (let bI = 0; bI < list.length; bI++) {
-      const b = list[bI];
-      const c = comp[b.z * N + b.x];
+    const result = this.bPow, records = this.records;
+    // Brownouts run in a later scheduler step; buildings may have changed since the sums.
+    if (brownout) records.read(st);
+    for (let bI = 0; bI < records.length; bI++) {
+      const id = records.ids[bI], cell = records.cells[bI];
+      const c = comp[cell];
       let on = false;
-      if (c >= 0 && cSupply[c] > 0) on = cDemand[c] <= cSupply[c] ? true : served[b.id] === stampNo;
+      if (c >= 0 && cSupply[c] > 0) on = cDemand[c] <= cSupply[c] ? true : served[id] === stampNo;
       const v = on ? 1 : 0;
-      result[b.id] = v;
-      if (b.w * b.d === 1) { powered[b.z * N + b.x] = v; continue; }
-      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
+      result[id] = v;
+      if (records.single[bI]) { powered[cell] = v; continue; }
+      const x0 = records.x0[bI], z0 = records.z0[bI], x1 = records.x1[bI], z1 = records.z1[bI];
+      for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) {
         const i = z * N + x;
-        if (bld[i] === b.id) powered[i] = v;
+        if (bld[i] === id) powered[i] = v;
       }
     }
     // empty zoned cells adjacent to a powered conductor
@@ -1038,10 +1087,13 @@ export class UtilitiesSystem implements SimSystem {
     const bComp = this.bWComp; // per-building component (+1), 0 = none
     const bUse = this.bWUse, bNeedPow = this.bNeedPow, bPow = this.bPow, intake = this.intakeById;
     const list = buildingList(st);
+    const records = this.records;
+    records.ensure(list.length);
     let supplyTot = 0, demandTot = 0, nSeeds = 0;
     for (let bI = 0; bI < list.length; bI++) {
       const b = list[bI];
-      const c = adjacentComp(comp, N, b);
+      records.set(bI, b, N);
+      const c = adjacentComp(comp, N, records.x0[bI], records.z0[bI], records.x1[bI], records.z1[bI]);
       bComp[b.id] = c + 1;
       if (c < 0) continue;
       const u = bUse[b.id];
@@ -1147,19 +1199,20 @@ export class UtilitiesSystem implements SimSystem {
         watered[i] = c >= 0 ? okW[c] : 0;
       }
     }
-    const result = this.bWat;
-    const list = buildingList(st);
-    for (let bI = 0; bI < list.length; bI++) {
-      const b = list[bI];
-      const c = bComp[b.id] - 1;
+    const result = this.bWat, records = this.records;
+    if (brownout) records.read(st);
+    for (let bI = 0; bI < records.length; bI++) {
+      const id = records.ids[bI], cell = records.cells[bI];
+      const c = bComp[id] - 1;
       let on = false;
-      if (c >= 0 && wSupply[c] > 0) on = wDemand[c] <= wSupply[c] ? true : served[b.id] === stamp;
+      if (c >= 0 && wSupply[c] > 0) on = wDemand[c] <= wSupply[c] ? true : served[id] === stamp;
       const v = on ? 1 : 0;
-      result[b.id] = v;
-      if (b.w * b.d === 1) { watered[b.z * N + b.x] = v; continue; }
-      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
+      result[id] = v;
+      if (records.single[bI]) { watered[cell] = v; continue; }
+      const x0 = records.x0[bI], z0 = records.z0[bI], x1 = records.x1[bI], z1 = records.z1[bI];
+      for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) {
         const i = z * N + x;
-        if (bld[i] === b.id) watered[i] = v;
+        if (bld[i] === id) watered[i] = v;
       }
     }
     // empty zoned cells within 1 cell of a watered road
@@ -1198,8 +1251,7 @@ function needsWater(st: CityState, b: Building): boolean {
   return (def.stage ?? 1) >= WATER_REQUIRED_STAGE || zoneDensity(st.zone[b.z * st.size + b.x]) >= 2;
 }
 
-function adjacentComp(comp: Int32Array, N: number, b: Building): number {
-  const x0 = b.x, z0 = b.z, x1 = b.x + b.w, z1 = b.z + b.d;
+function adjacentComp(comp: Int32Array, N: number, x0: number, z0: number, x1: number, z1: number): number {
   for (let x = x0; x < x1; x++) {
     if (x < 0 || x >= N) continue;
     if (z0 > 0) { const c = comp[(z0 - 1) * N + x]; if (c >= 0) return c; }

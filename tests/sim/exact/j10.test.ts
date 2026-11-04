@@ -155,7 +155,8 @@ type Arm = ReturnType<typeof arm>;
 function compare(a: Arm, b: Arm, label: string): void {
   exact(a.sim.state, b.sim.state, `${label}.state`);
   exact(fields(a.rt, ['sim', 'subscribedTo', 'initializedFor', 'unsub']), fields(b.rt, ['sim', 'subscribedTo', 'initializedFor', 'unsub']), `${label}.runtime`);
-  exact(fields(a.util, ['simRef', 'unsub', 'useInfo']), fields(b.util, ['simRef', 'unsub', 'useInfo']), `${label}.utilities`);
+  // per-pass scratch (J10 useInfo, J11 records) is not state: it is rewritten before every read
+  exact(fields(a.util, ['simRef', 'unsub', 'useInfo', 'records']), fields(b.util, ['simRef', 'unsub', 'useInfo', 'records']), `${label}.utilities`);
   exact(fields(schedulerOf(a.sim), ['tasks']), fields(schedulerOf(b.sim), ['tasks']), `${label}.scheduler`);
   const ta = schedulerOf(a.sim).tasks[0], tb = schedulerOf(b.sim).tasks[0];
   exact([ta.cost(a.sim), ta.due(a.sim), ta.urgent(a.sim)], [tb.cost(b.sim), tb.due(b.sim), tb.urgent(b.sim)], `${label}.nextStep`);
