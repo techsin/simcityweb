@@ -119,6 +119,19 @@ function brokenWall(b: ModelBuilder, rng: RNG, len: number, hMax: number, hw: nu
 }
 
 export const models: ModelBuilders = {
+  // Kerbside garbage: v0 tied bag, v1 lidded bin. 28 / 24 tris; no random draws.
+  garbage_pile(b, v) {
+    if (v === 0) {
+      b.paint(0x292f32, Surf.Plain);
+      lathe(b, 0, 0, [[0, 0], [0.46, 0.19], [0.4, 0.52], [0.06, 0.77], [0, 0.85]], 4, { smooth: true, twist: 0.12 });
+      b.paint(0x3b4244, Surf.Plain).pyramid(0, 0, 0.24, 0.14, 0.78, 0.15);
+    } else {
+      b.paint(0x3c6150, Surf.Plain).box(-0.32, 0, -0.28, 0.32, 0.98, 0.28, { top: null, bottom: null });
+      b.paint(0x737a76, Surf.Plain).box(-0.36, 0.98, -0.32, 0.36, 1.08, 0.32, { bottom: null });
+      b.paint(0x343c38, Surf.Plain).box(-0.22, 1.08, -0.25, 0.22, 1.17, -0.14, { bottom: null, nz: null, pz: null });
+    }
+  },
+
   // Street light: plinth, tapered pole, curved arm(s) toward -X, cobra head with warm emissive lens. 60 / 98 tris.
   streetlight(b, v) {
     const top = 9.0;
