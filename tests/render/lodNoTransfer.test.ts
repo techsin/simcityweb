@@ -38,7 +38,6 @@ describe('LOD proxy builder: J0, no transfer from the main thread', () => {
           expect(a).not.toBe((g.getAttribute(k) as THREE.BufferAttribute).array);
         }
       }
-      pb.dispose?.();
     } finally {
       vi.unstubAllGlobals();
     }

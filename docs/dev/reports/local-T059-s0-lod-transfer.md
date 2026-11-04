@@ -18,7 +18,7 @@ Found by T028's harness review: its protector check failed on dev.
 
 | Gate | Result |
 |---|---|
-| tsc | clean |
+| tsc | clean since the fix that follows this report; **not clean at `ad0bb73`**: the new test called a `dispose()` that `LodProxyBuilder` does not have (its fake workers need no teardown; the line is gone). The gate's log recorded the failure and I missed it; vitest does not type-check |
 | Full vitest, with the fixtures | **219 files passed, 1 skipped; 2,169 tests passed, 7 skipped; 0 failing** |
 | The bot, 128x15 seed 7, with the action log | **identical to dev: residents [ 61124, 93804, 37971 ] = 192,899** |
 | New `tests/render/lodNoTransfer.test.ts` | passes: no transfer list, the posted arrays stay attached, and they are copies. **It fails on the old code** (the negative control: the fix stashed) |
