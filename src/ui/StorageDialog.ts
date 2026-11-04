@@ -2,8 +2,10 @@
 import './storage.css';
 import type { RegionData } from '../region/types';
 import { uiRoot } from '../region/ui/modal';
-import { clearRecoveryBase, deleteRegion, downloadBlob, exportRegion, findRecoverySnapshot, listRegions, loadRegion, peekRecoveryMarker, safeFileName, type PendingRecovery, type RecoveryCity } from '../save';
+import { buildRegionFile, clearRecoveryBase, deleteRegion, deserializeCity, downloadBlob, exportRegion, findRecoverySnapshot, getCityRecord, getRecoveryBase, listRegions, loadRegion, packFile, peekRecoveryMarker, rebuildRecoveredCity, safeFileName, type PendingRecovery, type RecoveryCity, type RegionFile } from '../save';
 import { markRegionExported, openKV, regionSaveAccess, RegionSaveLock, restrictRegionSaveAccess, storageEstimate } from '../save/db';
+import type { SimHost } from '../worker/SimHost';
+import { summarizeCity } from '../region/citySummary';
 import { h } from './dom';
 
 export const STORAGE_FULL_MESSAGE = "Your browser's storage for Metropolis is full. Export this region, or delete old regions or save history to free space.";
@@ -22,6 +24,10 @@ interface StorageActions {
 let session: RegionStorageSession | null = null;
 let errorDialog: HTMLElement | null = null;
 const dialogs: HTMLElement[] = [];
+const takenOver = new Map<string, number>();
+
+export function storageDialogOpen(): boolean { return dialogs.length > 0; }
+export function regionTakenOver(regionId: string, snapshotAt: number): boolean { return snapshotAt <= (takenOver.get(regionId) ?? -Infinity); }
 
 function removeDialog(back: HTMLElement): void {
   const i = dialogs.indexOf(back);
@@ -31,7 +37,7 @@ function removeDialog(back: HTMLElement): void {
 
 /** Error text is visible only on request; quota errors always have the same guided recovery actions. */
 export async function showStorageError(error: unknown, actions: StorageActions): Promise<void> {
-  if (actions.signal?.aborted || errorDialog) return;
+  if (actions.signal?.aborted || errorDialog || (session && !regionSaveAccess(session.region.id))) return;
   const abort = new AbortController(), signal = abort.signal;
   const previous = document.activeElement as HTMLElement | null;
   const close = () => {
@@ -83,10 +89,34 @@ export async function showStorageError(error: unknown, actions: StorageActions):
 export async function exportStorageRegion(region: RegionData | string | undefined = session?.region): Promise<void> {
   if (typeof region === 'string') region = await loadRegion(region) ?? undefined;
   if (!region) throw new Error('No region is open');
-  // Export reads the last stored region even when saving failed or this tab is read-only.
-  downloadBlob(await exportRegion(region.id), safeFileName(region.name));
+  const live = session?.region.id === region.id ? session.city() : null;
+  const host = live?.host;
+  const blob = host?.snapshot ? new Blob([await packFile(await snapshotRegionFile(region.id, host as Pick<SimHost, 'snapshot'>)) as BlobPart], { type: 'application/octet-stream' }) : await exportRegion(region.id);
+  downloadBlob(blob, safeFileName(region.name));
   markRegionExported(region.id);
   window.dispatchEvent(new CustomEvent('metropolis:region-exported', { detail: region.id }));
+}
+
+/** Rebuild the host's current snapshot into a downloadable region without saving the live city to the store. */
+export async function snapshotRegionFile(regionId: string, host: Pick<SimHost, 'snapshot'>): Promise<RegionFile> {
+  const snapshot = await host.snapshot('hidden');
+  if (!snapshot || snapshot.marker.regionId !== regionId) throw new Error('The city snapshot is unavailable');
+  const { marker, payload } = snapshot;
+  const cached = getRecoveryBase(regionId, marker.tileKey);
+  const record = marker.baseSavedAt === 0 ? null : cached?.savedAt === marker.baseSavedAt ? cached : await getCityRecord(await openKV(), regionId, marker.tileKey) ?? null;
+  if (marker.baseSavedAt !== 0 && record?.savedAt !== marker.baseSavedAt) throw new Error('The snapshot base is no longer available');
+  const city = rebuildRecoveredCity({ marker, payload, record });
+  const file = await buildRegionFile(regionId);
+  file.cities[marker.tileKey] = city;
+  const tile = file.region.tiles.find((t) => t.key === marker.tileKey);
+  if (tile) tile.city = summarizeCity(deserializeCity(city), tile.city);
+  const totals = { population: 0, cities: 0, r: 0, c: 0, i: 0 };
+  for (const t of file.region.tiles) if (t.city) {
+    totals.cities++; totals.population += t.city.population;
+    totals.r += t.city.r; totals.c += t.city.c; totals.i += t.city.i;
+  }
+  file.region.totals = totals;
+  return file;
 }
 
 /** A closed region can still be open in another tab. Never delete it without its own lock. */
@@ -151,7 +181,7 @@ export function handleRecoveryStorageError(error: unknown, city: RecoveryCity, a
 
 export interface StorageCity {
   scene: { dispose(): void } | null;
-  host: { dispose(): void | Promise<void> } | null;
+  host: { dispose(): void | Promise<void>; snapshot?: SimHost['snapshot'] } | null;
   ticker?: number;
   status?: { dispose(): void };
   labels?: { dispose(): void };
@@ -246,7 +276,7 @@ export class RegionStorageSession {
   readonly lock: RegionSaveLock;
   private renderAbort = new AbortController();
   private banner: HTMLElement;
-  constructor(public region: RegionData, root: HTMLElement, private reload: () => Promise<void>) {
+  constructor(public region: RegionData, root: HTMLElement, private reload: () => Promise<void>, readonly city: () => StorageCity | null = () => null) {
     this.lock = new RegionSaveLock(region.id);
     this.banner = h('div', { class: 'storage-lock-notice glass', role: 'status' });
     root.appendChild(this.banner);
@@ -262,8 +292,9 @@ export class RegionStorageSession {
     this.banner.hidden = this.lock.writable;
     this.banner.replaceChildren(h('span', null, this.lock.lost ? 'This region is now open in another tab' : 'This region is open in another tab'),
       h('button', { class: 'btn', signal, onclick: async () => {
-        try { await this.lock.acquire(true, this.reload); }
-        catch (e) { void showStorageError(e, { retry: () => this.lock.acquire(true, this.reload).then(() => undefined) }); }
+        const reload = async () => { takenOver.set(this.region.id, Date.now()); await this.reload(); };
+        try { await this.lock.acquire(true, reload); }
+        catch (e) { void showStorageError(e, { retry: () => this.lock.acquire(true, reload).then(() => undefined) }); }
       } }, 'Use it here instead'));
   }
   dispose(): void {

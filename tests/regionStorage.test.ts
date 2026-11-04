@@ -20,12 +20,12 @@ const sessions = vi.hoisted(() => {
   const instances: Session[] = [];
   return { Session, instances };
 });
-vi.mock('../src/save', () => ({ loadRegion: mocks.load, deleteRegion: mocks.remove }));
-vi.mock('../src/save/db', () => ({ regionSaveAccess: mocks.access, requestPersistentStorage: mocks.persist }));
+vi.mock('../src/save', () => ({ loadRegion: mocks.load, deleteRegion: mocks.remove, cityKey: vi.fn(), deserializeCity: vi.fn() }));
+vi.mock('../src/save/db', () => ({ openKV: vi.fn(async () => ({})), regionSaveAccess: mocks.access, requestPersistentStorage: mocks.persist }));
 vi.mock('../src/region/NewCityDialog', () => ({ openNewCityDialog: mocks.dialog }));
 vi.mock('../src/ui/StorageDialog', () => ({ RegionStorageSession: sessions.Session, reopenStoredRegion: mocks.reopen }));
 
-const data = { id: 'region', name: 'Harbour' } as RegionData;
+const data = { id: 'region', name: 'Harbour', tiles: [], totals: { population: 0, cities: 0, r: 0, c: 0, i: 0 } } as RegionData;
 const tile = { key: '0_0' } as RegionTile;
 const config = { name: 'Port City' } as CityConfigData;
 const model = { data } as RegionModel;

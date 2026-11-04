@@ -10,7 +10,7 @@ import { randomRegionName } from '../names';
 import { Modal, segmented, slider, toggle, confirmDialog, toast } from './modal';
 import { button, formatMoney, formatPop, h, icon, timeAgo } from './dom';
 import { importRegion, listRegions, type RecoveryMarker } from '../../save';
-import { deleteStorageRegion, exportStorageRegion } from '../../ui/StorageDialog';
+import { deleteStorageRegion, exportStorageRegion, regionTakenOver } from '../../ui/StorageDialog';
 import { EMBLEM_SVG } from './emblem';
 
 // ------------------------------------------------------------------ settings
@@ -66,7 +66,7 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
     h(
       'div',
       { class: 'field' },
-      h('label', {}, 'Every N game months, at most once a minute'),
+      h('label', {}, 'Autosave · Every N game months, at most once a minute'),
       segmented({
         chips: true,
         items: [
@@ -459,9 +459,11 @@ export function openRecoverDialog(m: RecoveryMarker): Promise<'recover' | 'disca
     const body = h(
       'div',
       { class: 'recover-body' },
-      m.why === 'exit'
-        ? h('p', {}, 'Saving ', h('b', {}, m.cityName), ' failed when you left it. A recovery snapshot of your progress was kept on this device.')
-        : h('p', {}, 'Metropolis closed before ', h('b', {}, m.cityName), ' was saved. A recovery snapshot of your last session was kept on this device.'),
+      regionTakenOver(m.regionId, m.at)
+        ? h('p', {}, 'This region was opened in another tab. Unsaved progress for ', h('b', {}, m.cityName), ' was kept in a recovery snapshot on this device.')
+        : m.why === 'exit'
+          ? h('p', {}, 'Saving ', h('b', {}, m.cityName), ' failed when you left it. A recovery snapshot of your progress was kept on this device.')
+          : h('p', {}, 'Metropolis closed before ', h('b', {}, m.cityName), ' was saved. A recovery snapshot of your last session was kept on this device.'),
       h(
         'div',
         { class: 'rv-grid' },

@@ -323,4 +323,8 @@ export class SavePill {
     if (!ok) (this.el.querySelector('.ok') as HTMLElement).innerHTML = icon('alert', 14);
     this.t = window.setTimeout(() => (this.el.className = 'save-pill mp-glass'), 1800);
   }
+  cancel(): void {
+    clearTimeout(this.t);
+    this.el.className = 'save-pill mp-glass';
+  }
 }

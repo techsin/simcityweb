@@ -62,7 +62,7 @@ import { DemographicsPanel } from '../ui/panels/DemographicsPanel';
 import { attachOverlays } from '../sim/infra/overlays';
 import { windVector } from '../sim/infra/wind';
 import { regionSaveAccess } from '../save/db';
-import { showStorageError } from '../ui/StorageDialog';
+import { showStorageError, storageDialogOpen } from '../ui/StorageDialog';
 
 export type { GameSettings } from './settings';
 
@@ -887,8 +887,8 @@ export class CityScene {
   // ------------------------------------------------------------------------------------------------ input
   private onKey(e: KeyboardEvent): void {
     if (isTyping(e) || this.disposed) return;
-    // a confirmation dialog handles Enter / Esc itself; no hotkeys underneath it
-    if (confirmOpen()) return;
+    // dialogs handle their keys themselves; no hotkeys underneath them
+    if (confirmOpen() || storageDialogOpen()) return;
     if (this.pause.isOpen) {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -1014,7 +1014,7 @@ export class CityScene {
 
   async save(auto = false, reason: SaveReason = auto ? 'autosave' : 'manual', retry = false): Promise<void> {
     if (this.disposed || !regionSaveAccess(this.opts.persistence?.regionId)) return;
-    if (auto && !retry && performance.now() - this.lastSaveAt < AUTOSAVE_FLOOR_MS) return;
+    if (auto && !retry && (storageDialogOpen() || performance.now() - this.lastSaveAt < AUTOSAVE_FLOOR_MS)) return;
     if (this.saving) return this.saving;
     this.savePill.saving(auto);
     this.storeCamera();
@@ -1027,8 +1027,10 @@ export class CityScene {
         if (!auto) this.sound('save');
       } catch (e) {
         if (this.disposed) return;
+        if (auto) this.lastSaveAt = performance.now();
+        if (!regionSaveAccess(this.opts.persistence?.regionId)) { this.savePill.cancel(); return; }
         this.savePill.done(false);
-        this.sound('error');
+        if (!auto) this.sound('error');
         if (reason !== 'exit') void showStorageError(e, { retry: () => this.save(auto, reason, true), signal: this.abort.signal });
       } finally {
         this.saving = null;

@@ -2,8 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegionData } from '../../src/region/types';
 import type { PendingRecovery, RecoveryCity } from '../../src/save';
-import { exportStorageRegion, handleRecoveryStorageError, recoveryStorageGate, RegionStorageSession, reopenStoredRegion, showStorageError, storageRecoveryChoice, STORAGE_FULL_MESSAGE, withRecoveryStorage } from '../../src/ui/StorageDialog';
+import { exportStorageRegion, handleRecoveryStorageError, recoveryStorageGate, regionTakenOver, RegionStorageSession, reopenStoredRegion, showStorageError, storageDialogOpen, storageRecoveryChoice, STORAGE_FULL_MESSAGE, withRecoveryStorage } from '../../src/ui/StorageDialog';
 import { FEl, FNode, installFakeDom, textOf } from './fakeDom';
+import { smallCity } from '../save/fixtures';
+import { serializeCity } from '../../src/save/serialize';
 
 const page = vi.hoisted(() => ({ root: null as unknown as HTMLElement }));
 const store = vi.hoisted(() => ({
@@ -13,6 +15,8 @@ const store = vi.hoisted(() => ({
   put: vi.fn(), remove: vi.fn(), keys: vi.fn(), get: vi.fn(), peekRecoveryMarker: vi.fn(),
   acquireLock: vi.fn(), disposeLock: vi.fn(), restrictRegionSaveAccess: vi.fn(), unrestrict: vi.fn(),
   loadRegion: vi.fn(), clearRecoveryBase: vi.fn(), regionSaveAccess: vi.fn(), findRecoverySnapshot: vi.fn(),
+  buildRegionFile: vi.fn(), getCityRecord: vi.fn(), getRecoveryBase: vi.fn(), packFile: vi.fn(),
+  rebuildRecoveredCity: vi.fn(), deserializeCity: vi.fn(),
 }));
 const lockState = vi.hoisted(() => ({
   instances: [] as { regionId: string; writable: boolean; active: boolean }[],
@@ -24,6 +28,8 @@ vi.mock('../../src/save', () => ({
   deleteRegion: store.deleteRegion, saveCity: store.saveCity, saveRegion: store.saveRegion,
   peekRecoveryMarker: store.peekRecoveryMarker,
   loadRegion: store.loadRegion, clearRecoveryBase: store.clearRecoveryBase, findRecoverySnapshot: store.findRecoverySnapshot,
+  buildRegionFile: store.buildRegionFile, getCityRecord: store.getCityRecord, getRecoveryBase: store.getRecoveryBase, packFile: store.packFile,
+  rebuildRecoveredCity: store.rebuildRecoveredCity, deserializeCity: store.deserializeCity,
   safeFileName: (name: string) => `${name}.metropolis`,
 }));
 vi.mock('../../src/save/db', () => ({
@@ -37,7 +43,11 @@ vi.mock('../../src/save/db', () => ({
     constructor(readonly regionId: string, readonly active = true) { lockState.instances.push(this); }
     subscribe(fn: (writable: boolean) => void): () => void { fn(this.writable); return () => {}; }
     canSave(): boolean { return this.writable; }
-    async acquire(): Promise<boolean> { return this.writable = !!store.acquireLock(this.regionId, this.active); }
+    async acquire(steal = false, beforeWrite?: () => Promise<void>): Promise<boolean> {
+      const allowed = !!store.acquireLock(this.regionId, this.active);
+      if (allowed && steal) await beforeWrite?.();
+      return this.writable = allowed;
+    }
     dispose(): void { this.writable = false; store.disposeLock(this.regionId); }
   },
 }));
@@ -94,6 +104,43 @@ const pendingRecovery = (at: number): PendingRecovery => ({
 });
 
 describe('storage error dialog', () => {
+  it('counts error and Manage storage dialogs until the last one closes', async () => {
+    expect(storageDialogOpen()).toBe(false);
+    await showStorageError(new DOMException('Full', 'QuotaExceededError'), { retry: async () => {}, signal: life.signal });
+    expect(storageDialogOpen()).toBe(true);
+    button('Manage storage').click(); await flush();
+    life.abort(); // the city-owned error closes; the independent manager remains
+    expect(storageDialogOpen()).toBe(true);
+    button('Close').click();
+    expect(storageDialogOpen()).toBe(false);
+  });
+
+  it('lets the ownership banner explain a save rejected after lock loss', async () => {
+    const session = new RegionStorageSession(region, root as unknown as HTMLElement, async () => {});
+    try {
+      store.regionSaveAccess.mockReturnValue(false);
+      await showStorageError(new DOMException('Taken over', 'NotAllowedError'), { retry: async () => {}, signal: life.signal });
+      expect(root.querySelector('.storage-dialog')).toBeNull();
+      expect(storageDialogOpen()).toBe(false);
+    } finally { session.dispose(); }
+  });
+
+  it('records that a region came from another tab only when takeover reloads it', async () => {
+    const takenRegion = { ...region, id: 'taken-copy' };
+    vi.spyOn(Date, 'now').mockReturnValue(1000);
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const session = new RegionStorageSession(takenRegion, root as unknown as HTMLElement, reload);
+    try {
+      expect(regionTakenOver(takenRegion.id, 1000)).toBe(false);
+      store.acquireLock.mockReturnValue(true);
+      button('Use it here instead').click(); await flush();
+      expect(reload).toHaveBeenCalledOnce();
+      expect(regionTakenOver(takenRegion.id, 999)).toBe(true);
+      expect(regionTakenOver(takenRegion.id, 1000)).toBe(true);
+      expect(regionTakenOver(takenRegion.id, 1001)).toBe(false);
+    } finally { session.dispose(); }
+  });
+
   it('replaces a raw quota exception with the guided message and working Export, Manage storage and Retry actions', async () => {
     const actions = { export: vi.fn().mockResolvedValue(undefined), manage: vi.fn().mockResolvedValue(undefined), retry: vi.fn().mockResolvedValue(undefined), signal: life.signal };
     await showStorageError(new DOMException('RAW IDB QUOTA ERROR', 'QuotaExceededError'), actions);
@@ -147,6 +194,31 @@ describe('storage error dialog', () => {
 });
 
 describe('export during a storage failure', () => {
+  it('uses the running host snapshot for the quota dialog Export button', async () => {
+    const state = smallCity();
+    state.day = 100;
+    state.funds = 777;
+    const serialized = serializeCity(state, { copy: true });
+    const file = { region: { ...region, tiles: [{ key: '0_0' }] }, cities: { '0_0': serialized } };
+    const snapshot = vi.fn().mockResolvedValue({ marker: { regionId: region.id, tileKey: '0_0', baseSavedAt: 0 }, payload: new Uint8Array([1]) });
+    const session = new RegionStorageSession(region, root as unknown as HTMLElement, async () => {}, () => ({ scene: null, host: { dispose() {}, snapshot } }));
+    store.rebuildRecoveredCity.mockReturnValue(serialized);
+    store.deserializeCity.mockReturnValue(state);
+    store.buildRegionFile.mockResolvedValue(file);
+    store.packFile.mockResolvedValue(new Uint8Array([5]));
+    try {
+      await showStorageError(new DOMException('Full', 'QuotaExceededError'), { retry: async () => {}, signal: life.signal });
+      button('Export').click(); await flush(); await flush();
+      expect(snapshot).toHaveBeenCalledExactlyOnceWith('hidden');
+      expect(store.packFile).toHaveBeenCalledExactlyOnceWith(file);
+      expect(store.exportRegion).not.toHaveBeenCalled();
+      expect(store.downloadBlob).toHaveBeenCalledExactlyOnceWith(expect.any(Blob), 'Harbour.metropolis');
+      expect(store.markRegionExported).toHaveBeenCalledExactlyOnceWith(region.id);
+      expect(store.saveCity).not.toHaveBeenCalled();
+      expect(store.saveRegion).not.toHaveBeenCalled();
+    } finally { session.dispose(); }
+  });
+
   it('can export a recovery region by id before a region session is open', async () => {
     store.loadRegion.mockResolvedValueOnce(region);
     await exportStorageRegion(region.id);

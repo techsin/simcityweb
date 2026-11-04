@@ -5,7 +5,7 @@ import type { HostState, SaveReason } from '../../src/worker/SimHost';
 import { showStorageError } from '../../src/ui/StorageDialog';
 import { deferred, smallCity } from '../save/fixtures';
 
-vi.mock('../../src/ui/StorageDialog', () => ({ showStorageError: vi.fn() }));
+vi.mock('../../src/ui/StorageDialog', () => ({ showStorageError: vi.fn(), storageDialogOpen: () => false }));
 beforeEach(() => vi.clearAllMocks());
 
 function fixture() {
@@ -17,7 +17,7 @@ function fixture() {
     host: { state, setSpeed: vi.fn(() => { order.push('pause'); }) },
     storeCamera: vi.fn(() => { order.push('camera'); }),
     opts: { onSave, onExitToRegion: vi.fn(() => { order.push('region'); }) },
-    savePill: { saving: vi.fn(), done: vi.fn() }, sound: vi.fn(), errors: { report: vi.fn() },
+    savePill: { saving: vi.fn(), done: vi.fn(), cancel: vi.fn() }, sound: vi.fn(), errors: { report: vi.fn() },
     tools: { select: vi.fn() }, panels: { closeAll: vi.fn() },
     world: { capture: vi.fn(() => { order.push('capture'); return 'thumbnail'; }) },
     recordSaved() { CityScene.prototype.recordSaved.call(this as unknown as CityScene); },

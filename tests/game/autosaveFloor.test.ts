@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CityScene } from '../../src/game/CityScene';
 import { PauseMenu, SavePill } from '../../src/ui/Modals';
 import type { GameContext } from '../../src/game/context';
-import { showStorageError } from '../../src/ui/StorageDialog';
+import { showStorageError, storageDialogOpen } from '../../src/ui/StorageDialog';
 import { FEl, installFakeDom, textOf } from './fakeDom';
 
 const access = vi.hoisted(() => ({ allowed: true, listeners: new Set<() => void>() }));
@@ -17,7 +17,7 @@ vi.mock('../../src/save/db', async (importOriginal) => ({
     return off;
   },
 }));
-vi.mock('../../src/ui/StorageDialog', () => ({ showStorageError: vi.fn() }));
+vi.mock('../../src/ui/StorageDialog', () => ({ showStorageError: vi.fn(), storageDialogOpen: vi.fn(() => false) }));
 
 installFakeDom();
 let now = 0;
@@ -28,6 +28,7 @@ beforeEach(() => {
   vi.spyOn(performance, 'now').mockImplementation(() => now);
   vi.stubGlobal('window', { setTimeout: globalThis.setTimeout });
   vi.clearAllMocks();
+  vi.mocked(storageDialogOpen).mockReturnValue(false);
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -124,6 +125,42 @@ describe('the real-time autosave floor', () => {
     expect(f.internals.opts.onSave).not.toHaveBeenCalled();
   });
 
+  it('restarts the minute when an autosave fails, without an error sound', async () => {
+    const f = fixture();
+    let fail!: (error: Error) => void;
+    f.internals.opts.onSave.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
+    now = 60_000;
+    const saving = f.scene.save(true);
+    now = 70_000;
+    fail(new DOMException('quota', 'QuotaExceededError'));
+    await saving;
+    expect(f.internals.lastSaveAt).toBe(70_000);
+    for (const at of [85_000, 100_000, 115_000, 129_999]) await f.month(at);
+    expect(f.internals.opts.onSave).toHaveBeenCalledTimes(1);
+    await f.month(130_000);
+    expect(f.internals.opts.onSave).toHaveBeenCalledTimes(2);
+    expect(f.internals.sound).not.toHaveBeenCalled();
+    expect(f.parent.querySelector('.save-pill.show')).toBeNull();
+  });
+
+  it('skips autosave while a storage dialog is open', async () => {
+    const f = fixture();
+    vi.mocked(storageDialogOpen).mockReturnValue(true);
+    for (const at of [60_000, 120_000, 180_000]) await f.month(at);
+    expect(f.internals.opts.onSave).not.toHaveBeenCalled();
+    vi.mocked(storageDialogOpen).mockReturnValue(false);
+    await f.month(195_000);
+    expect(f.internals.opts.onSave).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the error sound and pill for a failed manual save', async () => {
+    const f = fixture();
+    f.internals.opts.onSave.mockRejectedValueOnce(new DOMException('quota', 'QuotaExceededError'));
+    await f.scene.save();
+    expect(f.internals.sound).toHaveBeenCalledExactlyOnceWith('error');
+    expect(textOf(f.parent.querySelector('.save-pill.show')!)).toContain('Save failed');
+  });
+
   it('sends quota failures to the guided dialog and permits its retry', async () => {
     const f = fixture();
     const error = new DOMException('raw quota message', 'QuotaExceededError');
@@ -131,7 +168,8 @@ describe('the real-time autosave floor', () => {
     now = 60_000;
     await f.scene.save(true);
     expect(showStorageError).toHaveBeenCalledWith(error, expect.objectContaining({ retry: expect.any(Function), signal: expect.any(AbortSignal) }));
-    expect(f.internals.lastSaveAt).toBe(0);
+    expect(f.internals.lastSaveAt).toBe(60_000);
+    vi.mocked(storageDialogOpen).mockReturnValue(true);
     const retry = vi.mocked(showStorageError).mock.calls[0][1].retry!;
     await retry();
     expect(f.internals.opts.onSave).toHaveBeenCalledTimes(2);
@@ -152,12 +190,61 @@ describe('the real-time autosave floor', () => {
     const retry = vi.mocked(showStorageError).mock.calls[0][1].retry;
     await retry();
     expect(f.internals.opts.onSave).toHaveBeenCalledTimes(2);
-    expect(f.internals.sound).toHaveBeenCalledExactlyOnceWith('error');
+    expect(f.internals.sound).not.toHaveBeenCalled();
     expect(f.parent.querySelector('.save-pill.show')).toBeNull();
   });
 });
 
+describe('storage dialog keyboard handling', () => {
+  function keys() {
+    const scene = Object.assign(Object.create(CityScene.prototype) as { onKey(e: KeyboardEvent): void }, {
+      disposed: false,
+      host: { sim: { speed: 0 }, setSpeed: vi.fn() },
+      tools: { key: vi.fn(() => false) },
+      pause: { isOpen: false, open: vi.fn() },
+      sound: vi.fn(), save: vi.fn(),
+    });
+    const press = (key: string, code: string, ctrlKey = false) => scene.onKey({
+      key, code, ctrlKey, metaKey: false, altKey: false, repeat: false,
+      target: new FEl('div'), preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent);
+    return { scene, press };
+  }
+
+  it.each([
+    ['3', 'Digit3', false], [' ', 'Space', false], ['Escape', 'Escape', false], ['s', 'KeyS', true],
+  ] as const)('keeps %s from reaching the city beneath a storage dialog', (key, code, ctrlKey) => {
+    const f = keys();
+    vi.mocked(storageDialogOpen).mockReturnValue(true);
+    f.press(key, code, ctrlKey);
+    expect(f.scene.host.setSpeed).not.toHaveBeenCalled();
+    expect(f.scene.pause.open).not.toHaveBeenCalled();
+    expect(f.scene.save).not.toHaveBeenCalled();
+    expect(f.scene.tools.key).not.toHaveBeenCalled();
+  });
+
+  it('allows a speed key when storage dialogs are closed', () => {
+    const f = keys();
+    f.press('3', 'Digit3');
+    expect(f.scene.host.setSpeed).toHaveBeenCalledExactlyOnceWith(3, 'keyboard');
+  });
+});
+
 describe('SavePill', () => {
+  for (const auto of [false, true]) it(`drops ${auto ? 'autosave' : 'manual save'} failure feedback after another tab takes ownership`, async () => {
+    const f = fixture();
+    now = 60_000;
+    f.internals.opts.onSave.mockImplementationOnce(async () => {
+      access.allowed = false;
+      throw new DOMException('Region was taken over', 'NotAllowedError');
+    });
+    await f.scene.save(auto);
+    expect(showStorageError).not.toHaveBeenCalled();
+    expect(f.internals.sound).not.toHaveBeenCalled();
+    expect(f.parent.querySelector('.save-pill.show')).toBeNull();
+    expect(f.internals.saving).toBeNull();
+  });
+
   it('never displays an autosave pill, including a failed autosave', () => {
     const f = fixture();
     f.internals.savePill.saving(true);

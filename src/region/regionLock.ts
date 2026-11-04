@@ -1,11 +1,35 @@
 /** Region storage ownership follows the player between the region and its cities. */
 import type { CityConfigData } from '../sim/config';
-import { deleteRegion, loadRegion } from '../save';
-import { regionSaveAccess, requestPersistentStorage } from '../save/db';
+import { cityKey, deleteRegion, deserializeCity, loadRegion, type CityRecord } from '../save';
+import { openKV, regionSaveAccess, requestPersistentStorage } from '../save/db';
 import { RegionStorageSession, reopenStoredRegion, type StorageCity } from '../ui/StorageDialog';
 import { openNewCityDialog } from './NewCityDialog';
 import type { RegionModel } from './RegionModel';
+import { summarizeCity } from './citySummary';
 import type { RegionData, RegionTile } from './types';
+
+/** A city write can finish after takeover without its old tab updating the region summary. */
+export async function loadCurrentRegion(id: string): Promise<RegionData | null> {
+  const region = await loadRegion(id);
+  if (!region) return null;
+  const kv = await openKV();
+  for (const tile of region.tiles) {
+    const record = await kv.get<CityRecord>('cities', cityKey(id, tile.key));
+    if (!record || tile.city && record.savedAt <= tile.city.lastPlayed) continue;
+    try { tile.city = { ...summarizeCity(deserializeCity(record.city), tile.city), lastPlayed: record.savedAt }; }
+    catch { /* An unreadable city must not prevent opening the other tiles. */ }
+  }
+  const totals = { population: 0, cities: 0, r: 0, c: 0, i: 0 };
+  for (const { city } of region.tiles) if (city) {
+    totals.cities++;
+    totals.population += city.population;
+    totals.r += city.r;
+    totals.c += city.c;
+    totals.i += city.i;
+  }
+  region.totals = totals;
+  return region;
+}
 
 interface RegionStorageContext {
   root: HTMLElement;
@@ -27,7 +51,7 @@ export class RegionStorage {
     const current = new RegionStorageSession(data, this.context().root, async () => {
       const context = this.context();
       await reopenStoredRegion(current.region.id, context.city, context);
-    });
+    }, () => this.context().city);
     this.session = current;
     await current.acquire();
     return regionSaveAccess(data.id);
@@ -35,7 +59,7 @@ export class RegionStorage {
 
   async open(data: RegionData): Promise<RegionData> {
     await this.hold(data);
-    return await loadRegion(data.id) ?? data;
+    return await loadCurrentRegion(data.id) ?? data;
   }
 
   /** Fixed-id testing entry points must not delete a region already open in another tab. */
