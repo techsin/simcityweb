@@ -1,5 +1,11 @@
-/** Mini-map (bottom-right): terrain / water / zones / roads / buildings + camera frustum; click or drag to jump. */
+/**
+ * Mini-map (bottom-right): terrain / water / zones / roads / buildings + camera frustum; click or drag to jump.
+ * FEEL-05: the land follows the season. The tint is a layer over the cached base, never a base repaint: the renderer's
+ * season uniforms (materials.ts uFoliageDry / uFoliageTint, which WorldView sets from the month) blend the map's open land
+ * toward a dormant straw colour, as the lot lawns do. A month that changes them costs two drawImage calls.
+ */
 import * as THREE from 'three';
+import { sharedUniforms } from '../assets/materials';
 import { CELL_SIZE } from '../core/constants';
 import { Network, Overlay } from '../core/types';
 import type { GameContext } from '../game/context';
@@ -14,6 +20,25 @@ const BC: Record<number, [number, number, number]> = {
   1: [210, 245, 215], 2: [180, 235, 195], 3: [150, 225, 175], 4: [200, 220, 255], 5: [175, 205, 255], 6: [150, 185, 255],
   7: [235, 235, 170], 8: [255, 220, 140], 9: [250, 200, 120], 10: [180, 150, 120],
 };
+/** FEEL-05: the dormant colour open land blends toward (lum × this), as materials.ts's lawns do with uFoliageDry */
+const DRY_RGB: readonly [number, number, number] = [1.18, 1.02, 0.68];
+/** land above this (m) is snow on the map: it keeps its colour in every season */
+const SNOW_LINE = 170;
+
+/** the season the map shows (the renderer's uniforms) and the base paint it was composed over */
+interface SeasonLook { dry: number; r: number; g: number; b: number; base: number }
+/** the season composite and its layers, built from one completed base paint */
+interface SeasonLayers {
+  /** what draw() blits */
+  out: HTMLCanvasElement;
+  /** open land at its dormant colour, transparent elsewhere (null until a season dries the land) */
+  dry: HTMLCanvasElement | null;
+  /** the base with its open land times the climate tint (null for a white tint) */
+  tinted: HTMLCanvasElement | null;
+  /** the base paint and the tint they were built from */
+  built: number;
+  tint: string;
+}
 
 export class MiniMap {
   readonly el: HTMLDivElement;
@@ -39,6 +64,13 @@ export class MiniMap {
   private collapsed = false;
   private disposed = false;
   private offs: (() => void)[] = [];
+  /** completed base paints (the season layers are built from the cached image of one) */
+  private baseVersion = 0;
+  /** FEEL-05: what draw() blits instead of the base while a season tints it (null: the base itself) */
+  private seasonal: HTMLCanvasElement | null = null;
+  /** built when a season first tints the map */
+  private season: SeasonLayers | null = null;
+  private look: SeasonLook = { dry: 0, r: 1, g: 1, b: 1, base: -1 };
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
     const N = ctx.state.size;
@@ -180,12 +212,76 @@ export class MiniMap {
     return new THREE.Vector3(cam.position.x, planeY, cam.position.z).addScaledVector(hd, m * 1.5);
   }
 
+  /**
+   * FEEL-05: follow the renderer's season. When its uniforms or the base changed, compose the base (or its tinted copy) and
+   * the dormant land at uFoliageDry: two drawImage calls. The layers are rebuilt only from a completed base paint (the
+   * cached image is complete then): one pass over the cells, never a paintBase. Returns true when the map changed.
+   */
+  private updateSeason(): boolean {
+    const dry = sharedUniforms.uFoliageDry.value, t = sharedUniforms.uFoliageTint.value, l = this.look;
+    if (l.dry === dry && l.r === t.r && l.g === t.g && l.b === t.b && l.base === this.baseVersion) return false;
+    const was = this.seasonal;
+    Object.assign(l, { dry, r: t.r, g: t.g, b: t.b, base: this.baseVersion });
+    const white = t.r === 1 && t.g === 1 && t.b === 1;
+    if (dry <= 0 && white) {
+      this.seasonal = null;
+      return was !== null;
+    }
+    const s = this.seasonLayers(dry > 0, white);
+    const g = s.out.getContext('2d')!;
+    g.globalAlpha = 1;
+    g.globalCompositeOperation = 'copy';
+    g.drawImage(s.tinted ?? this.base, 0, 0);
+    g.globalCompositeOperation = 'source-over';
+    if (dry > 0 && s.dry) {
+      g.globalAlpha = Math.min(1, dry);
+      g.drawImage(s.dry, 0, 0);
+      g.globalAlpha = 1;
+    }
+    this.seasonal = s.out;
+    return true;
+  }
+
+  /** the season layers for the current base and climate tint (rebuilt only when either changed, or the land dries) */
+  private seasonLayers(needDry: boolean, white: boolean): SeasonLayers {
+    const st = this.ctx.state;
+    const N = st.size, l = this.look;
+    const tint = white ? '' : `${l.r},${l.g},${l.b}`;
+    const old = this.season;
+    if (old && old.built === this.baseVersion && old.tint === tint && old.out.width === N && (old.dry || !needDry)) return old;
+    const sized = (c: HTMLCanvasElement | null | undefined): HTMLCanvasElement => {
+      const cv = c ?? document.createElement('canvas');
+      if (cv.width !== N || cv.height !== N) cv.width = cv.height = N;
+      return cv;
+    };
+    const s: SeasonLayers = { out: sized(old?.out), dry: needDry ? sized(old?.dry) : null, tinted: white ? null : sized(old?.tinted), built: this.baseVersion, tint };
+    const src = this.img.data;
+    const dg = s.dry?.getContext('2d'), tg = s.tinted?.getContext('2d');
+    const dryImg = dg?.createImageData(N, N), tintImg = tg?.createImageData(N, N);
+    const d = dryImg?.data, td = tintImg?.data;
+    if (td) td.set(src);
+    for (let z = 0; z < N; z++)
+      for (let x = 0; x < N; x++) {
+        const i = z * N + x, o = i * 4;
+        // open land only: zones, buildings, networks, water and snow keep their colours
+        if (st.water[i] || st.network[i] || st.zone[i] || st.building[i] >= 0 || st.cellHeight(x, z) > SNOW_LINE) continue;
+        if (d) {
+          const lum = src[o] * 0.3 + src[o + 1] * 0.59 + src[o + 2] * 0.11;
+          d[o] = lum * DRY_RGB[0] * l.r; d[o + 1] = lum * DRY_RGB[1] * l.g; d[o + 2] = lum * DRY_RGB[2] * l.b; d[o + 3] = 255;
+        }
+        if (td) { td[o] = src[o] * l.r; td[o + 1] = src[o + 1] * l.g; td[o + 2] = src[o + 2] * l.b; }
+      }
+    if (dg && dryImg) dg.putImageData(dryImg, 0, 0);
+    if (tg && tintImg) tg.putImageData(tintImg, 0, 0);
+    return (this.season = s);
+  }
+
   private draw(): void {
     const g = this.g;
     const W = this.canvas.width;
     g.imageSmoothingEnabled = false;
     g.clearRect(0, 0, W, W);
-    g.drawImage(this.base, 0, 0, W, W);
+    g.drawImage(this.seasonal ?? this.base, 0, 0, W, W);
     let cam: THREE.PerspectiveCamera | null = null;
     try {
       cam = this.ctx.world.camera;
@@ -244,9 +340,12 @@ export class MiniMap {
       }
       if (this.paintBase()) {
         this.painted = true;
+        this.baseVersion++;
         this.viewDirty = true;
       }
     }
+    // (between sweeps only: mid-sweep the cached image is part old, part new)
+    if (this.painted && !this.paintState && this.updateSeason()) this.viewDirty = true;
     const drawDue = this.frAcc >= 0.1 || stopped || !this.drawn || (!moving && this.viewDirty);
     if (this.painted && drawDue && (moving || stopped || this.viewDirty)) {
       this.frAcc = 0;

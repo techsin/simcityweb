@@ -94,6 +94,17 @@ const PRESETS: { id: Exclude<TerrainPreset, 'region'>; label: string; icon: stri
 
 const PREVIEW_RES = 96;
 
+/**
+ * FEEL-05: a player's new city is founded on 1 April (day 90), in spring, so its first view is green; its first New Year
+ * is 1 January of the next year. main.ts calls startInSpring right after it creates the state. The CityState constructor
+ * keeps day 0, so the bot, the tests and the baselines found on day 0 as before, and a loaded save keeps its own day.
+ */
+export const FOUNDING_DAY = 90;
+export function startInSpring(st: CityState): void {
+  st.day = FOUNDING_DAY;
+  st.systemData.foundedDay = FOUNDING_DAY;
+}
+
 /** terrain options (sampler etc.) for a config on a region tile — also used by main to generate the real city */
 export function terrainOptionsFor(cfg: CityConfigData, region?: RegionModel, tile?: RegionTile): TerrainOptions {
   if (cfg.terrain === 'region' && region && tile) return { sampler: region.samplerForTile(tile), forestSampler: forestWithDensity(region, tile, cfg.treeDensity) };

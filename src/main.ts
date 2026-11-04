@@ -26,7 +26,7 @@ import type { TerrainPreset, Difficulty, Climate } from './core/types';
 import { RegionModel, createRegionData, PRESET_BY_ID } from './region/RegionModel';
 import type { RegionData, RegionPresetId, RegionTile, TileSize } from './region/types';
 import { RegionScreen } from './region/RegionScreen';
-import { loadNewCityChoice, openNewCityDialog, terrainOptionsFor } from './region/NewCityDialog';
+import { loadNewCityChoice, openNewCityDialog, startInSpring, terrainOptionsFor } from './region/NewCityDialog';
 import { summarizeCity } from './region/citySummary';
 import { cityThumbnail, drawCityMap, normalizeThumbnail, regionPreviewDataUrl, regionPreviewKey } from './region/mapPreview';
 import { randomCityName, randomMayorName } from './region/names';
@@ -440,6 +440,8 @@ class App {
       ld.set('Generating terrain…', 0.1);
       await paint();
       const st = new CityStateClass(cfg);
+      // FEEL-05: founded on 1 April (day 90), with systemData.foundedDay; the constructor keeps day 0 for the bot and tests
+      startInSpring(st);
       const topts = terrainOptionsFor(cfg, model, tile);
       generateTerrain(st, { ...topts, skipTrees: true });
       ld.set('Planting trees…', 0.35);
