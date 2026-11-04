@@ -126,8 +126,8 @@ describe('advice actions: by id, each opening its tool or view', () => {
     adviceAction('rezone')!.run(ctx, { x: 32, z: 28 });
     expect(calls.overlay).toEqual([Overlay.LandValue]);
     expect(calls.flyout).toEqual(['zones']);
-    // (the built-out card's own post offers its first option; the view already on is left on)
-    adviceAction('builtOut')!.run(ctx, null);
+    // (the view already on is left on)
+    adviceAction('rezone')!.run(ctx, null);
     expect(calls.overlay).toEqual([Overlay.LandValue]);
     expect(calls.flyout).toEqual(['zones', 'zones']);
     adviceAction('connect')!.run(ctx, { x: 63, z: 32 });
@@ -136,7 +136,10 @@ describe('advice actions: by id, each opening its tool or view', () => {
   });
 
   it('no button for other ids, and the lookups never read a text', () => {
-    for (const id of ['garbage', 'zoneDev2', 'toString', '', undefined, null]) expect(adviceAction(id)).toBeNull();
+    // ('builtOut' has none of its own: its post's ref is its card's first option, and a card with none has no button)
+    for (const id of ['garbage', 'zoneDev2', 'builtOut', 'toString', '', undefined, null]) expect(adviceAction(id)).toBeNull();
+    expect(newsAction({ ref: { advice: 'builtOut' } })).toBeNull();
+    expect(issueButtons({ id: 'builtOut' })).toEqual([]);
     expect(newsAction({ ref: { advice: 'zoneR' } })?.label).toBe('Zone homes');
     expect(newsAction({})).toBeNull();
     expect(newsAction({ ref: { reward: 'mayor_house' } })).toBeNull();
@@ -258,6 +261,35 @@ describe('the toast of an advice post (FH-03)', () => {
     expect(parent().map(textOf).join('|')).not.toContain('no room to grow');
     parent()[0].click();
     expect(t.calls.selected).toEqual(['zone:1']);
+  });
+
+  it('a built-out city\'s toast offers its card\'s first option: "Rezone" at the cheapest block, else "Connect a highway" at the edge', () => {
+    for (const [setup, label, at, run] of [
+      [builtOut, 'Rezone', [32, 28], (c: Calls) => expect([c.overlay, c.flyout]).toEqual([[Overlay.LandValue], ['zones']])],
+      // (only homes wanted, every block already high-density homes: no rezoning candidate, the neighbour's jobs remain)
+      [(st: CityState) => {
+        builtOut(st);
+        for (let i = 0; i < st.cells; i++) if (st.zone[i] === Zone.ComLow) st.zone[i] = Zone.ResHigh;
+        st.stats.demand.fill(0);
+        st.stats.demand[0] = 0.8;
+        st.stats.unemployment = 0.09;
+      },
+        'Connect a highway', [63, 32], (c: Calls) => expect(c.selected).toEqual(['net:5'])],
+    ] as const) {
+      const { sim, tick } = citySim(setup);
+      const h = harness(sim);
+      const parent = new FEl('div');
+      new Toasts(h.ctx, parent as unknown as HTMLElement);
+      const seen = appeared(parent);
+      tick(30);
+      for (let k = 0; k < 60 && !seen.some((s) => textOf(s.el).includes('built out')); k++) vi.advanceTimersByTime(1000);
+      const t = seen.find((s) => textOf(s.el).includes('built out'));
+      expect(t, label).toBeDefined();
+      expect(textOf(t!.el)).toContain(label);
+      t!.el.click();
+      expect(h.calls.focus).toEqual([at]);
+      run(h.calls);
+    }
   });
 
   it('a post with a place: its button goes there first (the click no longer only jumps)', () => {

@@ -11,10 +11,10 @@ import type { CityState } from '../../src/sim/CityState';
 import { Simulation, type SimSystem } from '../../src/sim/Simulation';
 import { EconRuntime } from '../../src/sim/economy/runtime';
 import { BUILT_OUT_FREE, MONTH_SCAN_DAYS, advisorsSystem, type AdvisorData, type AdvisorsSystem } from '../../src/sim/economy/advisors';
-import { emptyFrontTiles, zoneRoom } from '../../src/ui/adviceActions';
+import { emptyFrontTiles, issueButtons, zoneRoom } from '../../src/ui/adviceActions';
 import { TopBar } from '../../src/ui/TopBar';
 import { ZONE_BADGE_LOTS, builtOut, builtOutIssue, zoneBadge } from '../../src/ui/topbar/rciGuide';
-import { newState, place, roadLine } from '../infra/cityGen';
+import { newState, place, registerTestDefs, roadLine } from '../infra/cityGen';
 import { queryHost } from './queryHost';
 import { LoopbackSimHost } from '../../src/worker/LoopbackSimHost';
 import { FEl, installFakeDom, textOf } from './fakeDom';
@@ -86,7 +86,7 @@ describe('the "+ zone" badge model (FH-03)', () => {
     expect(zoneBadge(room([0, 0, 0]), 4096, [0.5, 0.5, 0.5]).fam).toBe(-1);
   });
 
-  it('never on a built-out map (free land under 1%): zoning more is not possible there', () => {
+  it('never on a full map (free land under 1%): zoning more is not possible there', () => {
     expect(builtOut(room([0, 0, 0], 40), 4096)).toBe(true);
     expect(builtOut(room([0, 0, 0], 41), 4096)).toBe(false);
     expect(BUILT_OUT_FREE * 4096).toBeCloseTo(40.96);
@@ -235,6 +235,58 @@ describe('the "+ zone" badge on the replica (LoopbackSimHost)', () => {
       now += 1000;
       bar.update();
       expect(badge.style.display, '14 empty lots on the replica').toBe('none');
+    } finally { abort.abort('dispose'); await host.dispose(); }
+  }, 60000);
+});
+
+describe('the advisors\' buttons on the replica (LoopbackSimHost, NOTE-048: src/worker additions tested on a packet host)', () => {
+  it('advisorIssues carries a built-out card\'s options and a zone-rule variant\'s ref through the packet seam', async () => {
+    registerTestDefs();
+    const st = newState(64);
+    st.systemData.infraVersion = 1;
+    builtOutCity(st);
+    // every road-facing shop lot taken (growth counts the room from the map: EconRuntime.emptyFront) …
+    for (let k = 0; k < 7; k++) for (const z of [8 * k + 1, 8 * k + 7]) for (let x = 0; x < 64; x++) {
+      if (st.building[st.idx(x, z)] < 0) place(st, 't_cs', x, z, { jobs: 10 });
+    }
+    // … and the last strip homes no road reaches, cut off from the shops by a lake row (not free land either)
+    for (let x = 0; x < 64; x++) {
+      const i = st.idx(x, 56);
+      st.network[i] = Network.None;
+      st.water[i] = 1;
+      for (let z = 57; z < 64; z++) st.zone[st.idx(x, z)] = Zone.ResLow;
+    }
+    expect(zoneRoom(st)).toEqual({ front: [0, 0, 0], free: 0 });
+    const abort = new AbortController();
+    const host = new LoopbackSimHost(st, { initialSpeed: 0, signal: abort.signal, loopback: { cadence: 'design' } });
+    await host.start();
+    try {
+      await host.drain();
+      // the month tick on the core (no day runs: the demand stays as set)
+      const core = host.harness.core.sim;
+      core.state.stats.demand.fill(0);
+      core.state.stats.demand[0] = 0.8;
+      core.state.stats.demand[3] = 0.8;
+      core.getSystem<AdvisorsSystem>('economy.advisors')!.monthly!(core);
+      const pending = host.query('advisorIssues', {});
+      await host.drain();
+      const rows = await pending;
+      const card = rows.find((a) => a.id === 'builtOut')!;
+      expect(card.text).toMatch(/^Commercial demand is strong, but the city is built out: no free land is left\. Rezone the lowest-value blocks/);
+      expect(card.options?.map((o) => o.id)).toEqual(['rezone', 'connect']);
+      expect(card.options?.[1]).toEqual({ id: 'connect', x: 63, z: 32 });
+      expect(card).toMatchObject({ ref: 'rezone', x: card.options![0].x, z: card.options![0].z });
+      expect(issueButtons(card).map((b) => [b.action.label, b.at])).toEqual([['Rezone', { x: card.options![0].x, z: card.options![0].z }], ['Connect a highway', { x: 63, z: 32 }]]);
+      // the homes have no room, but a road would open 448 tiles: not built out — zoneR's "Build roads" variant
+      const homes = rows.find((a) => a.id === 'zoneR')!;
+      expect(homes.text).toMatch(/^Residential demand is strong, but 448 residential tiles have no road access/);
+      expect(homes.ref).toBe('noRoadAccess');
+      expect(issueButtons(homes).map((b) => b.action.label)).toEqual(['Build roads']);
+      // (copies: the core's own rows are not handed out)
+      card.options![0].x = -1;
+      const again = host.query('advisorIssues', {});
+      await host.drain();
+      expect((await again).find((a) => a.id === 'builtOut')!.options![0].x).not.toBe(-1);
     } finally { abort.abort('dispose'); await host.dispose(); }
   }, 60000);
 });

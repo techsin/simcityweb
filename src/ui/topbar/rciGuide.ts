@@ -3,8 +3,9 @@
  * - FH-03's "+ zone" badge: a family whose demand is above ZONE_BADGE_DEMAND with fewer than ZONE_BADGE_LOTS empty
  *   road-facing lots (zoneRoom, src/ui/adviceActions.ts) — "zone more", where the tall bar used to offer no action. A
  *   click runs that family's zoning action (the toast's "Zone homes / shops / industry").
- * - Never on a built-out map (free land under BUILT_OUT_FREE of the map, the advisors' own test): zoning more is not
- *   possible there, and the RCI popover shows LG-05's built-out advice (builtOutIssue) with its buttons instead.
+ * - Never on a full map (free land under BUILT_OUT_FREE of the map, the advisors' own free-land test): zoning more is not
+ *   possible there. When a family also has no room left, the advisors call the city built out, and the RCI popover shows
+ *   LG-05's built-out advice (builtOutIssue) with its buttons instead.
  */
 import { BUILT_OUT_FREE, type OpenAdvice } from '../../sim/economy/advisors';
 import type { ZoneRoom } from '../adviceActions';
@@ -17,7 +18,7 @@ export const ZONE_ADVICE = ['zoneR', 'zoneC', 'zoneI'] as const;
 const FAMILY = ['residential', 'commercial', 'industrial'];
 const ZONE_WHAT = ['homes', 'shops', 'industry'];
 
-/** free land under BUILT_OUT_FREE of the map's `cells` tiles (LG-05) */
+/** free land under BUILT_OUT_FREE of the map's `cells` tiles (LG-05's full map: no new land to zone) */
 export function builtOut(room: Pick<ZoneRoom, 'free'>, cells: number): boolean {
   return room.free < BUILT_OUT_FREE * cells;
 }

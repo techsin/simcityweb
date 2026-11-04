@@ -508,7 +508,11 @@ describe('LG-05: a built-out city hears options that exist', () => {
     expect(planning(c.st, 'zoneC')).toBeUndefined();
     expect(planning(c.st, 'unemployment')).toBeUndefined();
     expect(Object.values(advisorIssues(c.st)).flat().some((a) => /zone more/i.test(a.text))).toBe(false);
-    expect(zonePosts(c.st, 'builtOut')).toHaveLength(1);
+    // (its post's button and place are its first option's: "Rezone" at the cheapest block)
+    expect(b.ref).toBe('rezone');
+    const post = c.st.news.filter((n) => n.text === b.text);
+    expect(post).toHaveLength(1);
+    expect(post[0]).toMatchObject({ kind: 'warning', ref: { advice: 'rezone' }, x: 32, z: 28 });
   });
 
   it('a founded neighbour with spare jobs and no highway to it: "connect" is listed, with the middle of the shared edge', () => {
@@ -532,6 +536,98 @@ describe('LG-05: a built-out city hears options that exist', () => {
     expect(b.text).toBe('Residential demand is strong, but the city is built out: no free land is left. Rezone the lowest-value blocks (around (32, 12) and (32, 60) to housing; around (32, 44) to denser housing).');
     expect(b.options).toEqual([{ id: 'rezone', x: 32, z: 12 }]);
     expect([b.x, b.z]).toEqual([32, 12]);
+  });
+
+  it('a full map whose family with demand still has empty lots is not built out: no card, no rezoning (the lots are its room)', () => {
+    // (zoned to the last tile, commercial demand 0.8 and 300 empty road-facing shop lots: rezoning would demolish
+    // buildings to add more empty land)
+    const { c, sim, adv } = town({ unemployment: 0 });
+    c.rt.emptyFront[Zone.ComLow] = 300;
+    monthTick(sim, adv, 30);
+    expect(planning(c.st, 'builtOut')).toBeUndefined();
+    expect(planning(c.st, 'zoneC'), 'its zone rule is quiet too: it has room').toBeUndefined();
+    expect(c.st.news.some((n) => /built out|rezone/i.test(n.text))).toBe(false);
+    // its unemployment advice, on a map with no land to zone, asks for rezoning (keyed on the free land alone)
+    const j = town();
+    j.c.rt.emptyFront[Zone.ComLow] = 300;
+    monthTick(j.sim, j.adv, 30);
+    expect(planning(j.c.st, 'builtOut')).toBeUndefined();
+    expect(planning(j.c.st, 'unemployment')?.text).toBe('Unemployment is at 9%. There is almost no free land left: rezone low-value blocks to commercial or industrial land.');
+  });
+
+  it('only the family with no room left counts: homes are built out, the shops with empty lots are not', () => {
+    const { c, sim, adv } = town({ zones: { 3: Zone.ResLow, 5: Zone.ResLow }, demand: { 0: 0.8, 3: 0.8 }, unemployment: 0 });
+    c.rt.emptyFront[Zone.ComLow] = 300;
+    monthTick(sim, adv, 30);
+    expect(planning(c.st, 'builtOut')?.text).toBe('Residential demand is strong, but the city is built out: no free land is left. Rezone the lowest-value blocks (around (32, 28) and (32, 44) to denser housing; around (32, 12) to housing).');
+    expect(planning(c.st, 'zoneR')).toBeUndefined();
+    expect(planning(c.st, 'zoneC')).toBeUndefined();
+    // rubble is room once cleared, and so are roadless zones once a road reaches them: then the zone rule speaks, as on
+    // any map, and names them (the month's saved scan says so)
+    const homesWith = (edit: (z: NonNullable<NonNullable<ReturnType<typeof advisorData>['scan']>['zone']>) => void) => {
+      const r = town({ zones: { 3: Zone.ResLow, 5: Zone.ResLow }, demand: { 0: 0.8 }, unemployment: 0 });
+      for (const d of MONTH_SCAN_DAYS) { r.c.st.day = d; r.adv.daily!(r.sim); }
+      edit(advisorData(r.c.st).scan!.zone!);
+      monthTick(r.sim, r.adv, 30);
+      expect(planning(r.c.st, 'builtOut')).toBeUndefined();
+      return planning(r.c.st, 'zoneR')?.text;
+    };
+    expect(homesWith((z) => { z.noAccessFam = [40, 0, 0]; })).toMatch(/^Residential demand is strong, but 40 residential tiles have no road access/);
+    expect(homesWith((z) => { z.rubbleZ = []; z.rubbleZ[Zone.ResLow] = 20; })).toMatch(/^Residential demand is strong, but there is no room: some residential lots lie in rubble — bulldoze them/);
+  });
+
+  it('on a full map nothing else asks for new land: no sub-type "zone some" for a built-out family, no "zone new" lot advice', () => {
+    // (CO$$$ and I-HT want in too: the card speaks for both families)
+    const { c, sim, adv } = town({ demand: { 3: 0.8, 7: 0.8, 11: 0.8 }, unemployment: 0 });
+    monthTick(sim, adv, 30);
+    expect(planning(c.st, 'builtOut')?.text).toBe('Commercial and industrial demand is strong, but the city is built out: no free land is left. Rezone the lowest-value blocks (around (32, 28), (32, 12) and (32, 44)) to denser shops and offices or industrial land.');
+    expect(planning(c.st, 'zoneDev7')).toBeUndefined();
+    expect(planning(c.st, 'zoneDev11')).toBeUndefined();
+    const texts = Object.values(advisorIssues(c.st)).flat().map((a) => a.text);
+    expect(texts.filter((t) => /\bzone\b/i.test(t)), 'no "zone" as an ask: only "rezone"').toEqual([]);
+    // the lot rules: odd or steep tiles are all a family has left — on a full map they name no new land to zone
+    const lots = (small: boolean, freeStrip: boolean) => {
+      const t = town({ freeStrip, unemployment: 0 });
+      t.c.rt.emptyFront[Zone.ComLow] = 14;
+      t.c.rt.jobFill = 0.5;
+      for (const d of MONTH_SCAN_DAYS) { t.c.st.day = d; t.adv.daily!(t.sim); }
+      const z = advisorData(t.c.st).scan!.zone!;
+      z.lotOk = [0, 0, 0];
+      z.lotSmall = small ? [0, 14, 0] : [0, 0, 0];
+      z.lotSteep = small ? [0, 0, 0] : [0, 14, 0];
+      z.lotSmallAt = z.lotSteepAt = [-1, t.c.st.idx(10, 9), -1];
+      delete z.lotSmallZ;
+      // (a confirm rule: seen at the month tick before)
+      advisorData(t.c.st).seen[small ? 'lotsSmallC' : 'lotsSteepC'] = 0;
+      monthTick(t.sim, t.adv, 30);
+      expect(planning(t.c.st, 'builtOut'), 'the shops have 14 empty lots: not built out').toBeUndefined();
+      return [planning(t.c.st, small ? 'lotsSmallC' : 'lotsSteepC')?.text, planning(t.c.st, 'workers')?.text];
+    };
+    expect(lots(true, false)).toEqual(['Shops and offices want to move in, but your 14 empty commercial lots are odd tiles left between buildings and roads — too small for shops, which need at least 2×2 tiles along a road.',
+      'Shops and factories would expand, but every worker has a job. Rezone low-value blocks to housing — new residents bring the workers.']);
+    expect(lots(false, false)?.[0]).toBe('Shops and offices want to move in, but your 14 empty commercial lots are too steep to build on. Level them with the terrain tool.');
+    // (free land left: as before)
+    expect(lots(true, true)).toEqual(['Shops and offices want to move in, but your 14 empty commercial lots are odd tiles left between buildings and roads — too small for shops, which need at least 2×2 tiles along a road. Zone new commercial land along roads.',
+      'Shops and factories would expand, but every worker has a job. Zone residential land — new residents bring the workers.']);
+    expect(lots(false, true)?.[0]).toBe('Shops and offices want to move in, but your 14 empty commercial lots are too steep to build on. Level them with the terrain tool, or zone flatter commercial land.');
+  });
+
+  it('the post offers what the card offers first: the neighbour when no block qualifies, and no button without an option', () => {
+    // (only homes wanted, every block already high-density homes: no rezoning candidate)
+    const all = { 0: Zone.ResHigh, 1: Zone.ResHigh, 2: Zone.ResHigh, 3: Zone.ResHigh, 4: Zone.ResHigh, 5: Zone.ResHigh, 6: Zone.ResHigh, 7: Zone.ResHigh };
+    const nb = town({ zones: all, demand: { 0: 0.8 }, neighbour: true });
+    monthTick(nb.sim, nb.adv, 30);
+    const b = planning(nb.c.st, 'builtOut')!;
+    expect(b.text).toBe('Unemployment is at 9% and residential demand is strong, but the city is built out: no free land is left. Connect a highway to Fooville on the east edge, which has 30,000 jobs to spare.');
+    expect(b).toMatchObject({ ref: 'connect', options: [{ id: 'connect', x: 63, z: 32 }], x: 63, z: 32 });
+    expect(nb.c.st.news.find((n) => n.text === b.text)).toMatchObject({ ref: { advice: 'connect' }, x: 63, z: 32 });
+    const none = town({ zones: all, demand: { 0: 0.8 }, unemployment: 0 });
+    monthTick(none.sim, none.adv, 30);
+    const n = planning(none.c.st, 'builtOut')!;
+    expect(n.text).toBe('Residential demand is strong, but the city is built out: no free land is left.');
+    expect([n.ref, n.options, n.x, n.z]).toEqual([undefined, undefined, undefined, undefined]);
+    // (its post carries the rule's own id, which has no button: src/ui/adviceActions.ts)
+    expect(none.c.st.news.find((p) => p.text === n.text)?.ref).toEqual({ advice: 'builtOut' });
   });
 
   it('room left to zone (the y15 case): no built-out card, the zone rule as before; the scan counts the free land', () => {

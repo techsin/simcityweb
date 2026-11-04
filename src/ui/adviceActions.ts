@@ -105,8 +105,8 @@ const ACTIONS: Readonly<Record<string, AdviceAction>> = {
   noRoadAccess: toolAction('Build roads', 'road', 'Selects the Road tool: run roads into the zones', 'net:2', 'transport'),
   rezone: REZONE,
   connect: toolAction('Connect a highway', 'highway', 'Selects the Highway tool at the neighbour’s edge', 'net:5', 'transport'),
-  // (the built-out card's toast offers its first option)
-  builtOut: REZONE,
+  // (no entry for 'builtOut': its post's ref is its first option's id, so its toast offers what its card offers first,
+  // and no button when the card names no option)
 };
 
 /** the action of advice id `id`; null: it has no button */

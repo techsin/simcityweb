@@ -36,9 +36,10 @@
  * (src/ui/adviceActions.ts). Below ZONE_WARN_POP residents "no room to grow" (zoneR / zoneC / zoneI) is an amber warning
  * at most once per ZONE_WARN_DAYS — none for a family with no zoned land yet, and the cooldown starts over once the player
  * zones more of the family (AdvisorData.zoned). The day-28 zone scan also counts the zoned tiles per family and the free
- * land: under BUILT_OUT_FREE of the map, with a family's demand at least 0.5, one 'builtOut' card names what can still be
- * done (rezone the lowest-value blocks, each to what it is not; connect to a neighbour with spare jobs; Advice.options)
- * instead of the zone-more and unemployment texts.
+ * land: under BUILT_OUT_FREE of the map, with a family's demand at least 0.5 and no room left for it (its zone rule's
+ * test: ROOM_RULE), one 'builtOut' card names what can still be done (rezone the lowest-value blocks, each to what it is
+ * not; connect to a neighbour with spare jobs; Advice.options, its toast offering the first) instead of the zone-more and
+ * unemployment texts; on a map that full no other advice asks for new land.
  *
  * SIM_DEPTH_SPEC §F / WP5-4 rules (each with a map location): schools / health / playgrounds from the catchment needs
  * (unservedClusters), overcrowded schools / hospitals / police stations (facilityLoad), one fire rule (response gap
@@ -170,6 +171,15 @@ export const ZONE_WARN_POP = 20000;
 export const ZONE_WARN_DAYS = 180;
 /** the "no room to grow" rules per family (0 R, 1 C, 2 I) */
 const ZONE_RULE_IDS = ['zoneR', 'zoneC', 'zoneI'] as const;
+/** their test per family (0 R, 1 C, 2 I): its demand's DevTypes (first, last), the empty road-facing lots (growth's room,
+ *  EconRuntime.emptyFront) under which it has no room to grow, and its zones; LG-05's built-out test uses the same */
+const ROOM_RULE: readonly (readonly [number, number, number, readonly Zone[]])[] = [
+  [DevType.R1, DevType.R3, 12, [Zone.ResLow, Zone.ResMed, Zone.ResHigh]],
+  [DevType.CS1, DevType.CO3, 8, [Zone.ComLow, Zone.ComMed, Zone.ComHigh]],
+  [DevType.IA, DevType.IHT, 8, [Zone.IndAg, Zone.IndMed, Zone.IndHigh]],
+];
+/** the family (0 R, 1 C, 2 I) of a DevType */
+const famOfDev = (dev: number): 0 | 1 | 2 => (dev <= DevType.R3 ? 0 : dev <= DevType.CO3 ? 1 : 2);
 /** LG-05: free land (ZoneScan.free) under this share of the map, with a family's demand at least 0.5: built out */
 export const BUILT_OUT_FREE = 0.01;
 /** LG-05: the built-out card names this many rezoning candidates; a zone block of fewer tiles is a sliver, not one */
@@ -1358,10 +1368,12 @@ function builtOutAdvice(st: CityState, free: number, strong: readonly boolean[],
     said.push(`connect a highway to ${nb.name ?? 'our neighbour'} on the ${EDGE_NAME[nb.edge] ?? nb.edge} edge, which has ${int(nb.spare)} jobs to spare`);
     options.push({ id: 'connect', x: nb.x, z: nb.z });
   }
+  // (the post's button and place are its first option's: a toast offers what the card offers first, and none without one)
+  const first = options[0];
   return {
-    id: 'builtOut', cooldown: 180, priority: 7, kind: 'warning', advisor: 'planning', ...(blocks.length ? { x: blocks[0].x, z: blocks[0].z } : {}),
+    id: 'builtOut', cooldown: 180, priority: 7, kind: 'warning', advisor: 'planning',
+    ...(first ? { x: first.x, z: first.z, ref: first.id, options } : {}),
     text: `${lead}, but the city is built out: ${land}.${said.length ? ` ${capital(said.join(', or '))}.` : ''}`,
-    ...(options.length ? { options } : {}),
   };
 }
 /** a need tier's unreached share (0 without need) */
@@ -2126,14 +2138,14 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         text: `${what} demand is capped (${h.devs.map((x) => DEV_TYPE_LABELS[x]).join(', ')}) — ${fix}!` });
     }
     const famDemand = (a: number, b: number) => { let m = -1; for (let k = a; k <= b; k++) m = Math.max(m, s.demand[k]); return m; };
-    const room = (zs: number[]) => zs.reduce((t, z) => t + rt.emptyFront[z], 0);
+    const room = (zs: readonly number[]) => zs.reduce((t, z) => t + rt.emptyFront[z], 0);
     // ---------------- rubble (final fixes SF-2): growth never rebuilds on rubble (growth.ts) — it waits for the bulldozer or
     // the Municipal Demolition Crews ordinance (cleared after RUBBLE_CLEAR_DAYS; quiet while enacted). 55 burnt lots sat
     // for years while this planner asked for more residential land: rubble counts as room in the "no room" rules below,
     // which name it first
     const crewsOn = ordinanceEffect(st, 'add.rubble.cleanup') > 0;
     const rubLots = scan.rubbleLots ?? [0, 0, 0];
-    const rubbleRoom = (zs: number[]) => (scan.rubbleZ ? zs.reduce((t, z) => t + (scan.rubbleZ![z] ?? 0), 0) : 0);
+    const rubbleRoom = (zs: readonly number[]) => (scan.rubbleZ ? zs.reduce((t, z) => t + (scan.rubbleZ![z] ?? 0), 0) : 0);
     const crews = getOrdinance('rubble_cleanup');
     /** the fix for rubble: the bulldozer, or the ordinance once it is available */
     const clearIt = (them: string) => (crews && ordinanceAvailable(st, crews)
@@ -2181,10 +2193,17 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       },
     };
     // ---------------- LG-05: a built-out map. Free land (the zone scan's count) under BUILT_OUT_FREE of the map while a
-    // family's demand is at least 0.5: "zone more" (the rules below) and the unemployment rule's "zone more commercial
-    // and industrial land" cannot be followed, so one card names what can (scans saved before LG-05: never built out)
+    // family's demand is at least 0.5 and it has no room left (fewer than its zone rule's minimum of empty road-facing
+    // lots, its rubble counted, and no roadless zones a road would open): "zone more" (the rules below) and the
+    // unemployment rule's "zone more commercial and industrial land" cannot be followed, so one card names what can
+    // (scans saved before LG-05: never built out). A family with empty lots left is not built out, whatever the map: its
+    // lots are the room, and rezoning would demolish buildings to add more
     const full = scan.free !== undefined && scan.free < BUILT_OUT_FREE * st.cells;
-    const strong = full ? [famDemand(0, 2) >= 0.5, famDemand(3, 7) >= 0.5, famDemand(8, 11) >= 0.5] : [false, false, false];
+    const noRoomLeft = (f: 0 | 1 | 2) => {
+      const [a, b, minRoom, zs] = ROOM_RULE[f];
+      return famDemand(a, b) >= 0.5 && room(zs) + rubbleRoom(zs) < minRoom && scan.noAccessFam[f] < NO_ACCESS_MIN_TILES;
+    };
+    const strong = full ? [noRoomLeft(0), noRoomLeft(1), noRoomLeft(2)] : [false, false, false];
     const builtOut = strong[0] || strong[1] || strong[2];
     if (builtOut) {
       // (a neighbour's spare jobs help only when jobs are what is missing)
@@ -2207,8 +2226,10 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       }
       advisorData(st).zoned = [zonedFam[0], zonedFam[1], zonedFam[2]];
     }
-    const zoneRule = (id: string, f: 0 | 1 | 2, a: number, b: number, picky: number, minRoom: number, zs: number[], what: string, lead: string, more: string) => {
-      if (builtOut || (young && zonedFam?.[f] === 0) || !(famDemand(a, b) > 0.5) || room(zs) >= minRoom) return;
+    const zoneRule = (id: string, f: 0 | 1 | 2, picky: number, what: string, lead: string, more: string) => {
+      const [a, b, minRoom, zs] = ROOM_RULE[f];
+      // (LG-05: the built-out card speaks for a family with no room left on a full map)
+      if (strong[f] || (young && zonedFam?.[f] === 0) || !(famDemand(a, b) > 0.5) || room(zs) >= minRoom) return;
       const base = { id, cooldown: young ? ZONE_WARN_DAYS : 90, priority: 6, kind: young ? 'warning' as const : 'info' as const, advisor: 'planning' };
       const rl = roadless(f, what, lead);
       // (the fix is a road, not more land: its button is noRoadAccess's)
@@ -2239,14 +2260,15 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       }
       out.push({ ...base, text: more });
     };
-    zoneRule('zoneR', 0, 0, 2, DevType.R3, 12, [Zone.ResLow, Zone.ResMed, Zone.ResHigh], 'residential', 'Residential demand is strong',
+    zoneRule('zoneR', 0, DevType.R3, 'residential', 'Residential demand is strong',
       'Residential demand is strong but there is no room to grow — zone more residential land along roads.');
-    zoneRule('zoneC', 1, 3, 7, DevType.CO3, 8, [Zone.ComLow, Zone.ComMed, Zone.ComHigh], 'commercial', 'Businesses want to open shops and offices',
+    zoneRule('zoneC', 1, DevType.CO3, 'commercial', 'Businesses want to open shops and offices',
       'Businesses want to open shops and offices — zone more commercial land.');
-    zoneRule('zoneI', 2, 8, 11, DevType.IHT, 8, [Zone.IndAg, Zone.IndMed, Zone.IndHigh], 'industrial', 'Industry wants to move in',
+    zoneRule('zoneI', 2, DevType.IHT, 'industrial', 'Industry wants to move in',
       'Industry wants to move in — zone industrial land, ideally near highways or rail.');
     // sub-type specific: strong demand for a DevType whose zones have no room at all (a picky type whose zones exist
-    // but do not suit it hears what it needs instead; the family rule above may already have said it)
+    // but do not suit it hears what it needs instead; the family rule above may already have said it). LG-05: not for a
+    // family the built-out card speaks for (its "zone some" is the card's "rezone … to denser …")
     const SUBTYPE_HINT: [number, number[], string][] = [
       [DevType.IHT, [Zone.IndHigh], 'High-tech industry wants to move in, but there is no high-density industrial zone. Zone some — clean, educated areas are best.'],
       [DevType.IA, [Zone.IndAg], 'Farmers are looking for land. Zone agricultural land on flat ground away from pollution.'],
@@ -2254,12 +2276,12 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       [DevType.R3, [Zone.ResLow, Zone.ResMed, Zone.ResHigh], 'Wealthy residents are looking for homes. Zone residential land near parks and water.'],
     ];
     for (const [dev, zs, text] of SUBTYPE_HINT) {
-      if (!(s.demand[dev] > 0.6) || room(zs) !== 0) continue;
+      if (!(s.demand[dev] > 0.6) || room(zs) !== 0 || strong[famOfDev(dev)]) continue;
       // (SF-2) its zones hold rubble: room once cleared — the rubble advice or the family rule may have named it
       const rub = rubbleRoom(zs);
       if (rub > 0) {
         if (crewsOn || rubbleCard || rubbleSaid) continue;
-        out.push({ id: 'zoneDev' + dev, cooldown: 150, priority: 6, kind: 'info', advisor: 'planning', ...cellAt(scan.rubbleAt?.[dev <= DevType.R3 ? 0 : dev <= DevType.CO3 ? 1 : 2] ?? -1),
+        out.push({ id: 'zoneDev' + dev, cooldown: 150, priority: 6, kind: 'info', advisor: 'planning', ...cellAt(scan.rubbleAt?.[famOfDev(dev)] ?? -1),
           text: `${SUBTYPE_LEAD[dev] ?? 'Businesses want to move in'}, but the only room is ${count(rub, 'tile')} of rubble — ${clearIt('it')} so they can build there.` });
         continue;
       }
@@ -2297,9 +2319,10 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         const side = zMax >= 0 ? minLotSide(zMax) : 2;
         const them = zMax === Zone.IndAg ? 'farms' : noun;
         out.push({ id: (smallMost ? 'lotsSmall' : 'lotsSteep') + 'RCI'[f], cooldown: 120, priority: 6, kind: 'warning', advisor: 'planning', confirm: true, ...cellAt(at),
+          // (LG-05: on a full map there is no new land to zone — the built-out card names what can be done)
           text: smallMost
-            ? `${who} to move in, but ${which} odd tiles left between buildings and roads — too small for ${them}, which need at least ${side}×${side} tiles along a road. Zone new ${what} land along roads.`
-            : `${who} to move in, but ${which} too steep to build on. Level them with the terrain tool, or zone flatter ${what} land.` });
+            ? `${who} to move in, but ${which} odd tiles left between buildings and roads — too small for ${them}, which need at least ${side}×${side} tiles along a road.${full ? '' : ` Zone new ${what} land along roads.`}`
+            : `${who} to move in, but ${which} too steep to build on. Level them with the terrain tool${full ? '' : `, or zone flatter ${what} land`}.` });
       }
     }
     if (scan.fitEmpty && scan.emptyReady) {
@@ -2335,7 +2358,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     const lab = d.labour;
     if (pop > 5000 && ((lab && lab.scale < 0.5 && s.unemployment < 0.03) || (rt.jobFill < 0.8 && rt.jobFill > 0))) {
       out.push({ id: 'workers', cooldown: 120, priority: 5, kind: 'info', advisor: 'planning',
-        text: 'Shops and factories would expand, but every worker has a job. Zone residential land — new residents bring the workers.' });
+        text: `Shops and factories would expand, but every worker has a job. ${full ? 'Rezone low-value blocks to housing' : 'Zone residential land'} — new residents bring the workers.` });
     }
     // (final fixes SF-2: the population totals count rubble as abandoned — after a tornado "29 buildings stand
     // abandoned, check power, water, …" sent the player hunting for causes; the ruins have their own advice above)
