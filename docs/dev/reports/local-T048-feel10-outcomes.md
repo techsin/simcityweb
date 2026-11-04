@@ -270,6 +270,11 @@ The desktop's evidence (`r2-ev1` to `r2-ev3`, `ev6`) shows the same states on th
    - A real second chime needs a main-thread stall of more than 6 s, so nothing is changed.
 5. **The lane's requests** (reinforcement provenance, the loopback speedChanged order, the clock cap) are T061's by
    NOTE-049, not this lane's gaps. NOTE-048's earlier approval of a T048 provenance commit is superseded by NOTE-049.
+6. **Dev moved on after the gates** (to `63c8f58`: T052 merged, plus NOTE-053 to NOTE-058). I did not merge it again.
+   - Its code is render, assets and their tests only, and it shares no file with this lane.
+   - `git merge-tree` of `cloud/t048` with it is clean.
+   - The gates above hold for `aba092d`, and the merge step reruns them on the merged tree.
+   - NOTE-057 orders T048 before T036s5 (EmergencyBanner.ts) and before T053 (GameSounds.ts).
 
 ### Remaining
 
