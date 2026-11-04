@@ -288,8 +288,9 @@ export class CrimeSystem implements SimSystem {
       default:
         switch (this.sub) {
           case CF_BLD: return snap.countOf(this.cur) * CR.flagB + snap.cellsOf(this.cur) * CR.flagF;
-          case CF_PUB: return this.cand.length * CR.apply + 2;
-          default: return Math.max(0, Math.min(pieceUnits(CR.event, 1, COLD), this.changed.length - this.cur)) * CR.event + 2;
+          // (the publish piece also emits the events: see flagPiece)
+          case CF_PUB: return this.cand.length * (CR.apply + CR.event) + 2;
+          default: return 2;
         }
     }
   }
@@ -312,7 +313,7 @@ export class CrimeSystem implements SimSystem {
       case -1: return 'sources.start';
       case 0: return 'sources.' + ['start', 'snap', 'plan', 'bld', 'spill', 'clamp'][this.sub] + (this.sub === CS_BLD ? '#' + this.cur : '');
       case 1: return 'spread.' + ['copy', 'blur', 'mix', 'publish'][this.sub];
-      default: return 'flags.' + ['bld', 'publish', 'events'][this.sub];
+      default: return 'flags.' + ['bld', 'publish', 'end'][this.sub];
     }
   }
 
@@ -575,7 +576,9 @@ export class CrimeSystem implements SimSystem {
         if (this.cur >= this.snap.chunks) { this.sub = CF_PUB; this.cur = 0; }
         return false;
       case CF_PUB: {
-        // (the publish piece: the flags in snapshot order — pre-B2's changed list — and stats.avgCrime)
+        // (the publish piece: the flags in snapshot order — pre-B2's changed list — stats.avgCrime, and the flags'
+        // buildingChanged events in the same piece: a flag must never be visible between pieces without its event, or
+        // the worker's replica (W1.1, EXACT_FIELDS) would miss it at a packet boundary)
         const list = this.snap.list, changed = this.changed;
         changed.length = 0;
         for (let k = 0; k < this.cand.length; k++) {
@@ -584,23 +587,25 @@ export class CrimeSystem implements SimSystem {
           if (setFlagQuiet(b, BF.Crime, (q & 1) !== 0)) changed.push(b);
         }
         st.stats.avgCrime = this.fW > 0 ? this.fSum / this.fW : 0;
+        this.emitChanged(sim, changed);
         this.sub = CF_EV;
-        this.cur = 0;
+        this.cur = changed.length;
         return false;
       }
-      default: {
-        const changed = this.changed;
-        const k1 = Math.min(changed.length, this.cur + pieceUnits(CR.event, 1, COLD));
-        for (let k = this.cur; k < k1; k++) {
-          const b = changed[k];
-          // (R4: a snapshot building removed since gets no event; in an uninterrupted pass every one is live)
-          if (st.buildings.get(b.id) === b) sim.events.emit('buildingChanged', b);
-        }
-        this.cur = k1;
-        if (k1 < changed.length) return false;
+      default:
+        // (the pass end: the events ran in the publish piece)
         sim.events.emit('layerUpdated', 'crime');
         return true;
-      }
+    }
+  }
+
+  /** the flags' buildingChanged events, in the changed list's order (pre-B2's) */
+  private emitChanged(sim: Simulation, changed: readonly Building[]): void {
+    const st = sim.state;
+    for (let k = 0; k < changed.length; k++) {
+      const b = changed[k];
+      // (R4: a snapshot building removed since gets no event; in an uninterrupted pass every one is live)
+      if (st.buildings.get(b.id) === b) sim.events.emit('buildingChanged', b);
     }
   }
 

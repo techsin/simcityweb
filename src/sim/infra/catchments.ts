@@ -802,7 +802,9 @@ export class RoadTimeRun {
     this.cur = 0; this.e = -1; this.open = false; this.seedAt = 0; this.settled = 0;
   }
 
-  private grow(): void {
+  /** doubles the edge lists (not named `grow`: tests/worker/hygiene.test.ts reads any `.grow()` call as a wasm
+   *  memory growth) */
+  private growEdges(): void {
     const c = this.enode.length * 2;
     const a = new Int32Array(c); a.set(this.enode); this.enode = a;
     const b = new Int32Array(c); b.set(this.enext); this.enext = b;
@@ -819,7 +821,7 @@ export class RoadTimeRun {
       if (l < 0) continue;
       if (l > limitQ || netTimeQ[net[i]] === 0) { out[i] = -1; continue; }
       const e = this.en++;
-      if (e >= this.enode.length) this.grow();
+      if (e >= this.enode.length) this.growEdges();
       this.enode[e] = i; this.enext[e] = head[l]; head[l] = e;
       this.pending++;
     }
@@ -869,7 +871,7 @@ export class RoadTimeRun {
           if (oj < 0 || nd < oj) {
             out[j] = nd;
             const en = this.en++;
-            if (en >= this.enode.length) this.grow();
+            if (en >= this.enode.length) this.growEdges();
             this.enode[en] = j; this.enext[en] = head[nd]; head[nd] = en;
             this.pending++;
           }

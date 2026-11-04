@@ -1465,8 +1465,8 @@ export class TrafficSystem implements SimSystem {
           case 1: return chunk(TC.f2Origin, this.oN - this.f2Cur);
           case 2: return chunk(TC.f2Site, this.jB - this.f2Cur);
           case 3: return this.sN * TC.fill * 4 + (this.jN - this.jB) * 2;
-          case 4: return C * TC.finPub + (this.f2OFlag.length + this.f2JFlag.length) * 0.05;
-          case 5: return chunk(TC.event, this.f2Changed.length - this.f2Cur);
+          // (the publish piece also emits the flags' events: one per candidate pair)
+          case 4: return C * TC.finPub + (this.f2OFlag.length + this.f2JFlag.length) * (0.05 + TC.event / 2);
           case 6: return chunk(TC.saveRamp, n - this.f2Cur);
           case 7: return this.svPq ? chunk(TC.saveParking, C - this.f2Cur) : 1;
           case 8: return this.jN * TC.savePrice + this.sinkIds.length;
@@ -7002,8 +7002,9 @@ export class TrafficSystem implements SimSystem {
    * per cycle: origins and job sites are disjoint buildings), the commute footprint into a back raster, the buildings
    * whose NoJobs / Congested flag flips listed with their new bits; GJ the job sites likewise; customers + the
    * connection report; GP PUBLISH: the per-id buffers, st.commute, cutIds and connLast swapped in, the flags applied in
-   * the pre-B2 order (origins, then job sites: the same `changed` list); GE the buildingChanged events in batches (only
-   * for buildings still in the city — interrupted mode); GS1 the save precompute; GR the sample routes; GS2 cycles++
+   * the pre-B2 order (origins, then job sites: the same `changed` list), then their buildingChanged events in the same
+   * piece (only for buildings still in the city — interrupted mode; a flag must never be visible between pieces without
+   * its event, or the worker's replica (W1.1, EXACT_FIELDS) would miss it at a packet boundary); GS1 the save precompute; GR the sample routes; GS2 cycles++
    * and the transport save (the cycle's last write).
    */
   private final2Piece(sim: Simulation): boolean {
@@ -7013,7 +7014,6 @@ export class TrafficSystem implements SimSystem {
       case 2: return this.final2Piece2(sim);
       case 3: return this.final2Piece3(sim);
       case 4: return this.final2Piece4(sim);
-      case 5: return this.final2Piece5(sim);
       case 6: case 7: case 8: return this.final2Piece6(sim);
       case 9: return this.final2Piece9(sim);
       case 10: return this.final2Piece10(sim);
@@ -7180,23 +7180,15 @@ export class TrafficSystem implements SimSystem {
       if (!b) continue;
       if (setFlagQuiet(b, BF.Congested, (JF[k + 1] & 2) !== 0)) changed.push(b);
     }
-    this.f2Cur = 0;
-    this.f2Sub = changed.length > 0 ? 5 : 6;
-    return false;
-  }
-
-  /** final2Piece, sub-state 5 (B2 R10: one small method per piece kind) */
-  private final2Piece5(sim: Simulation): boolean {
-    const st = sim.state;
-    const changed = this.f2Changed;
-    const k0 = this.f2Cur, k1 = Math.min(changed.length, k0 + coldUnits(TC.event));
-    for (let k = k0; k < k1; k++) {
+    // the events, after every flag they announce (sub-state 5 is gone: see final2Piece)
+    for (let k = 0; k < changed.length; k++) {
       const b = changed[k];
-      // (a building removed since the publish piece gets no event — interrupted mode only)
+      // (a building removed since the snapshot gets no event — interrupted mode only)
       if (st.buildings.get(b.id) === b) sim.events.emit('buildingChanged', b);
     }
-    this.f2Cur = k1;
-    if (k1 >= changed.length) { changed.length = 0; this.f2Sub = 6; this.f2Cur = 0; }
+    changed.length = 0;
+    this.f2Cur = 0;
+    this.f2Sub = 6;
     return false;
   }
 

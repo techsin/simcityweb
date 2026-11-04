@@ -441,7 +441,7 @@ describe('B2 G1 traffic: a cycle in one go = in pieces', () => {
 
   it('the test cities exercise the WP7b stages: park & ride, the overflow, the freight sinks, parking, the depot BFS, rebuilds', () => {
     for (const k of ['parkRide.search', 'parkRide.options', 'overflow.alloc', 'overflow.rest', 'sinks.2', 'parking.8', 'prepTransit.depotBfs',
-      'prep.rb3', 'prep.rbPublish', 'freight.5', 'commute.ovLegs', 'transit.search', 'roundMatch.accept', 'final2.5',
+      'prep.rb3', 'prep.rbPublish', 'freight.5', 'commute.ovLegs', 'transit.search', 'roundMatch.accept', 'final2.4',
       // (B2 fix round: the cached inbound / shop / freight pieces by ranges, and the pool's car flows)
       'inbound.cachedSites', 'inbound.cachedVol', 'inbound.cachedRamp', 'shop.cached', 'freight.cached', 'commute.poolFlows']) expect(visited.has(k), k).toBe(true);
   });
@@ -581,7 +581,7 @@ describe('B2 G1 traffic: a cycle in one go = in pieces', () => {
         if (i > 0) expect(diffDigests(ref, run(c, i)), `cycle ${c}: replaceState before the first '${n}' piece (#${i})`).toEqual([]);
       }
     }
-    for (const k of ['commute.poolFlows', 'inbound.cachedSites', 'inbound.cachedVol', 'shop.cached', 'freight.cached', 'roundMatch.flows', 'final2.5']) expect(kinds.has(k), k).toBe(true);
+    for (const k of ['commute.poolFlows', 'inbound.cachedSites', 'inbound.cachedVol', 'shop.cached', 'freight.cached', 'roundMatch.flows', 'final2.4']) expect(kinds.has(k), k).toBe(true);
   }, 600_000);
 
   it('O4: the piece sequence and the results do not depend on the host mode (frames active or headless)', () => {

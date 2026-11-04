@@ -802,8 +802,9 @@ export class PollutionSystem implements SimSystem {
           case GA_BLD: return snap.countOf(k) * PC.gaB + snap.cellsOf(k) * PC.gaF;
           case GA_LF: return PC.setup + this.lfOrderN() * PC.lfCell;
           case GA_LEFT: return ops();
-          case GA_PUB: return PC.pub + C * PC.copy + this.cand.length * PC.apply;
-          default: return chunk(PC.event, this.changed.length - k) + PC.end;
+          // (the publish piece also emits the flags' events: see garbApplyPiece)
+          case GA_PUB: return PC.pub + C * PC.copy + this.cand.length * (PC.apply + PC.event);
+          default: return PC.end;
         }
       case S_SRC_BLD:
         switch (this.sub) {
@@ -828,8 +829,8 @@ export class PollutionSystem implements SimSystem {
         switch (this.sub) {
           case FL_SOIL: return ops();
           case FL_BLD: return snap.countOf(k) * PC.flB + snap.cellsOf(k) * PC.flF;
-          case FL_PUB: return PC.pub + this.cand.length * PC.apply;
-          default: return chunk(PC.event, this.changed.length - k) + PC.end;
+          case FL_PUB: return PC.pub + this.cand.length * (PC.apply + PC.event);
+          default: return PC.end;
         }
       default: return ops();
     }
@@ -867,14 +868,14 @@ export class PollutionSystem implements SimSystem {
       case -1: return 'garbSrc.start';
       case S_GARB_SRC: return 'garbSrc.' + ['start', 'snap', 'plan', 'bld', 'lf0', 'lf', 'end'][this.sub] + (this.sub === GS_BLD ? '#' + this.cur : '');
       case S_GARB_ROUTE: return 'garbRoute.' + ['start', 'sum', 'check', 'bfs', 'bld', 'sort', 'scat', 'alloc', 'publish'][this.sub];
-      case S_GARB_APPLY: return 'garbApply.' + ['start', 'bld', 'lf', 'left', 'publish', 'events'][this.sub] + (this.sub === GA_LEFT ? '.' + op : '');
+      case S_GARB_APPLY: return 'garbApply.' + ['start', 'bld', 'lf', 'left', 'publish', 'end'][this.sub] + (this.sub === GA_LEFT ? '.' + op : '');
       case S_SRC_BLD: return 'srcBld.' + ['fill', 'setup', 'bld', 'end'][this.sub] + (this.sub === SB_FILL ? '.' + op : '');
       case S_SRC_CELLS: return 'srcCells.' + ['cells', 'attach', 'freight', 'trees'][this.sub] + (this.sub === SC_CELLS || this.sub === SC_TREES ? '.' + op : '');
       case S_AIR_NEAR: return 'airNear.' + op;
       case S_AIR_FAR: return 'airFar.' + op;
       case S_NOISE: return 'noise.' + op;
       case S_WATER: return 'water.' + (this.sub === WA_LIST ? 'list' + this.wlPh : op);
-      default: return 'flags.' + ['soil', 'bld', 'publish', 'events'][this.sub] + (this.sub === FL_SOIL ? '.' + op : '');
+      default: return 'flags.' + ['soil', 'bld', 'publish', 'end'][this.sub] + (this.sub === FL_SOIL ? '.' + op : '');
     }
   }
 
@@ -1546,23 +1547,17 @@ export class PollutionSystem implements SimSystem {
         sm.noRoadBuildings = this.gaNoRoadN;
         sm.landfillFill = this.gaLfCells > 0 ? this.gaFillSum / this.gaLfCells : 0;
         st.stats.landfillFill = sm.landfillFill;
+        // (the flags' buildingChanged events in the same piece as the flags: a flag must never be visible between
+        // pieces without its event, or the worker's replica (W1.1, EXACT_FIELDS) would miss it at a packet boundary)
+        this.emitChanged(sim, changed);
         this.sub = GA_EV;
         this.cur = 0;
         return false;
       }
-      default: {
-        const changed = this.changed;
-        const k1 = Math.min(changed.length, this.cur + pieceUnits(PC.event, 1, COLD));
-        for (let k = this.cur; k < k1; k++) {
-          const b = changed[k];
-          // (R4: a snapshot building removed since gets no event; in an uninterrupted pass every one is live)
-          if (st.buildings.get(b.id) === b) sim.events.emit('buildingChanged', b);
-        }
-        this.cur = k1;
-        if (k1 < changed.length) return false;
+      default:
+        // (the state's end: the events ran in the publish piece)
         this.garbageNews(sim, this.gaOutRangeN, this.gaOutRangeX, this.gaOutRangeZ);
         return true;
-      }
     }
   }
 
@@ -1633,6 +1628,16 @@ export class PollutionSystem implements SimSystem {
     }
     this.gaFillSum = fillSum;
     this.gaLfCells = lfCells;
+  }
+
+  /** the flags' buildingChanged events, in the changed list's order (pre-B2's) */
+  private emitChanged(sim: Simulation, changed: readonly Building[]): void {
+    const st = sim.state;
+    for (let k = 0; k < changed.length; k++) {
+      const b = changed[k];
+      // (R4: a snapshot building removed since gets no event; in an uninterrupted pass every one is live)
+      if (st.buildings.get(b.id) === b) sim.events.emit('buildingChanged', b);
+    }
   }
 
   /** legible feedback for the new garbage rules: out-of-range districts and filling landfills (news, with cooldowns) */
@@ -2412,20 +2417,14 @@ export class PollutionSystem implements SimSystem {
         s.avgNoise = this.flResW > 0 ? this.flNSum / this.flResW : 0;
         s.avgAir = this.flResW > 0 ? this.flASum / this.flResW : 0;
         s.avgWaterPollution = this.flResW > 0 ? this.flWSum / this.flResW : 0;
+        // (the events in the same piece as the flags, as in garbApply's publish)
+        this.emitChanged(sim, changed);
         this.sub = FL_EV;
         this.cur = 0;
         return false;
       }
       default: {
-        const changed = this.changed;
-        const k1 = Math.min(changed.length, this.cur + pieceUnits(PC.event, 1, COLD));
-        for (let k = this.cur; k < k1; k++) {
-          const b = changed[k];
-          // (R4: a snapshot building removed since gets no event; in an uninterrupted pass every one is live)
-          if (st.buildings.get(b.id) === b) sim.events.emit('buildingChanged', b);
-        }
-        this.cur = k1;
-        if (k1 < changed.length) return false;
+        // (the pass end: the events ran in the publish piece)
         sim.events.emit('layerUpdated', 'pollution');
         return true;
       }

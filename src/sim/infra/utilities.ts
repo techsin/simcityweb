@@ -196,10 +196,10 @@ const S_WSUM = 15, S_WCELLS = 16, S_WBLD = 17, S_WZONED = 18;
 // U_WATER_BROWN: cells, seeds, the BFS pieces (then S_WBLD / S_WZONED)
 const S_WBCELLS = 19, S_WBSEED = 20, S_WBBFS = 21;
 // the finish (in U_WATER / U_WATER_BROWN): building chunks (flag candidates, cooling water, the cut tally), the flags'
-// publish, the events (the last piece: the news, layerUpdated, the pass end)
+// publish with their events, the end (the last piece: the news, layerUpdated, the pass end)
 const S_FBLD = 22, S_FAPPLY = 23, S_FEV = 24;
 const SUB_NAMES = ['start', 'snap', 'plan', 'sea', 'scan', 'bld', 'plabel', 'wlabel', 'sum', 'cells', 'bld', 'zoned', 'cells', 'seed', 'bfs',
-  'sum', 'cells', 'bld', 'zoned', 'cells', 'seed', 'bfs', 'flags', 'apply', 'events'];
+  'sum', 'cells', 'bld', 'zoned', 'cells', 'seed', 'bfs', 'flags', 'apply', 'end'];
 const STATE_NAMES = ['uses', 'label', 'power', 'brownout', 'water', 'waterBrownout'];
 const CHUNKED = new Set([S_USES, S_PSUM, S_PBLD, S_WSUM, S_WBLD, S_FBLD]);
 /**
@@ -535,11 +535,9 @@ export class UtilitiesSystem implements SimSystem {
       case S_WBSEED: return 8 + this.nWSeeds * UT.wseed;
       case S_WBBFS: return pieceUnits(US.wbfs, 1, COLD) * UT.wbfs;
       case S_FBLD: return snap.countOf(k) * UT.finB + snap.cellsOf(k) * UT.finF;
-      case S_FAPPLY: return 6 + this.cand.length * UT.apply;
-      default: {
-        const left = this.changed.length - k, n = pieceUnits(US.event, 1, COLD);
-        return Math.max(0, Math.min(n, left)) * UT.event + (left <= n ? UT.end : 0);
-      }
+      // (the flags' publish also emits their events: see applyFlags)
+      case S_FAPPLY: return 6 + this.cand.length * (UT.apply + UT.event);
+      default: return UT.end;
     }
   }
 
@@ -613,7 +611,7 @@ export class UtilitiesSystem implements SimSystem {
       case S_WBSEED: this.waterBrownSeeds(st); break;
       case S_WBBFS: this.waterBrownBfsPiece(st); break;
       case S_FBLD: this.finishPiece(st); break;
-      case S_FAPPLY: this.applyFlags(); break;
+      case S_FAPPLY: this.applyFlags(sim); break;
       default: this.eventsPiece(sim); break;
     }
     this.lastMs = nowMs() - t0;
@@ -1649,9 +1647,13 @@ export class UtilitiesSystem implements SimSystem {
     }
   }
 
-  /** the flags' publish: every candidate's Powered / Watered bits in snapshot order (pre-B2's changed list), in one piece */
-  private applyFlags(): void {
-    const list = this.snap.list, cand = this.cand, changed = this.changed;
+  /**
+   * the flags' publish: every candidate's Powered / Watered bits in snapshot order (pre-B2's changed list), in one piece,
+   * then their buildingChanged events in the same piece (after the flags they announce): a flag must never be visible
+   * between pieces without its event, or the worker's replica (W1.1, EXACT_FIELDS) would miss it at a packet boundary
+   */
+  private applyFlags(sim: Simulation): void {
+    const st = sim.state, list = this.snap.list, cand = this.cand, changed = this.changed;
     changed.length = 0;
     for (let k = 0; k < cand.length; k++) {
       const q = cand[k];
@@ -1660,21 +1662,18 @@ export class UtilitiesSystem implements SimSystem {
       const f2 = setFlagQuiet(b, BF.Watered, (q & 2) !== 0);
       if (f1 || f2) changed.push(b);
     }
-    this.sub = S_FEV;
-    this.cur = 0;
-  }
-
-  /** the events in batches (after the flags they announce); the last piece: news, layerUpdated, the pass end */
-  private eventsPiece(sim: Simulation): void {
-    const st = sim.state, changed = this.changed;
-    const k1 = Math.min(changed.length, this.cur + pieceUnits(US.event, 1, COLD));
-    for (let k = this.cur; k < k1; k++) {
+    for (let k = 0; k < changed.length; k++) {
       const b = changed[k];
       // (R4: a snapshot building removed since gets no event; in an uninterrupted pass every one is live)
       if (st.buildings.get(b.id) === b) sim.events.emit('buildingChanged', b);
     }
-    this.cur = k1;
-    if (k1 < changed.length) return;
+    this.sub = S_FEV;
+    this.cur = changed.length;
+  }
+
+  /** the last piece (the events ran in applyFlags): news, layerUpdated, the pass end */
+  private eventsPiece(sim: Simulation): void {
+    const st = sim.state;
     this.finishNews(sim);
     this.stepIdx = -1;
     this.lastServe = st.day;
