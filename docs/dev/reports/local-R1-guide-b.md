@@ -114,7 +114,7 @@ road-facing land a player could zone; the bot's patterns leave it.
 ## Cloud carry-over (Nov 3)
 
 The desktop was unavailable (NOTE-044), so the cloud finishes this lane on `cloud/t037b`: `local/R1-guide-b`
-(`ba37339`) with dev merged in seven times:
+(`ba37339`) with dev merged in eight times:
 - `67b567d` (dev `5b12abe`): advisors.ts and queries.ts merged without conflicts, T037d's `taxHigh` hunk and this
   lane's zone rules being separate;
 - `00b96cb` (dev `48991d7`: B3 and T036 step 2): no conflicts; B3 moves the advisors' month-boundary work, and
@@ -134,12 +134,18 @@ The desktop was unavailable (NOTE-044), so the cloud finishes this lane on `clou
   budget, and a second toast within 4 s is dropped); a new test checks the queue through this lane's hook. With the
   hook removed, 4 of the file's tests fail. dev's own sim, worker and save code is unchanged
   since `97f1a9c`, and src/game's change (NewYear.ts, CityScene.ts, context.ts) is not in the bot.
+- `c65901f` (dev `50a6b29`: NOTE-050, NOTE-051, NOTE-052): docs only, no conflicts. The code at the head is `270b709`'s
+  (src, tests, tools and wasm unchanged), and dev's code is unchanged since `683d02b`.
 
-The gates below ran again at this head (`270b709`, with the report commits after it).
+The gates were run again at the head `c65901f` (section "At the head" below the gates table); the table's earlier rows
+are kept as the record of each merge.
 
-tsc is clean at `67b567d`, `954306d`, `f077faf`, `5f634f6`, `533178a` and `270b709`. NOTE-045 to NOTE-047 keep T037b on the
+tsc is clean at `67b567d`, `954306d`, `f077faf`, `5f634f6`, `533178a`, `270b709` and `c65901f`. NOTE-045 to NOTE-047 keep T037b on the
 cloud (the desktop is back, but must not touch it); NOTE-047 moves T037a and T037e to the desktop, T037e to start once
-this lane is in dev.
+this lane is in dev. NOTE-048 and NOTE-050 also name T037b, and ask nothing of it: T054 publishes the built-out flag
+from this lane's LG-05 block (`full = scan.free < BUILT_OUT_FREE * st.cells`, advisors.ts:2186, which is there as
+NOTE-048 quotes it) once this lane is in dev, and T041 changes the taxHigh wording in advisors.ts after it. NOTE-051 is
+T037a's.
 
 ### Gap list (required against done, written before any new work)
 
