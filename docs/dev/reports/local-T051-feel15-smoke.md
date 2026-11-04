@@ -1,9 +1,74 @@
 # T051: smoke that reads output
 
-Round 1 is committed as `745fa6e`. This round starts at merge `a0590b5`, including T040's `6bf60ee` hook.
-Round-2 changes are uncommitted; no push or `.done` file.
+Round 1 is committed as `745fa6e`; round 2 as `51a04e0`. Round 3 starts at `d8e007c`, containing T040's test
+fix and dev `759bbd4`. The worker reports that merged base passed 225 files / 2,268 tests and the identical bot.
+Round-3 changes are uncommitted; no push or `.done` file. Read NOTE-054 and NOTE-048's standing worker rule.
 
-## Round 2: shared budget hook
+## Round 3: approved plant-load input, split for separate commits
+
+**(a) `src/worker/SimHost.ts` and `tests/worker/plantLoadLocal.test.ts`.** Adds
+`UtilitiesView.plantLoad?(id): number | null` (temporarily optional until T061 forwarding); the Local view delegates to the existing public
+`UtilitiesSystem.plantLoad(id)`. Missing systems, negative values and non-finite values become null. Five new
+tests cover reader identity through lazy system attachment/removal, valid values and normalization.
+
+**(b) `src/worker/protocol.ts`.** Adds optional `Streams.utilities` with
+`plantLoads: { ids: Uint32Array; loads: Float32Array }`. Ready/resync and Packet already share Streams, so no
+protocol-version bump or other message-path edit is needed. Older messages without this member still decode.
+
+**(c) `src/worker/recorder.ts`, `src/worker/replica.ts` and `tests/worker/plantLoadStream.test.ts`.** The recorder
+enumerates live building records whose definition has `powerOut > 0`, including incinerators, on full ready/resync
+or when a completed utilities group is delivered. It respects the existing 250 ms utilities-group throttle and
+does not poll loads on ordinary packets or view/focus changes. Publication is completed-pass-triggered and samples
+flush-time values, matching NOTE-020 / WORKER_DESIGN F4: a delivery may include newer in-progress writes if a prior
+completion was waiting under the throttle. After a completed
+pass it publishes only if a producer was added/removed, availability changed, or any load differs by more than
+**0.005 of the 0..1 share** (0.5 percentage points) from the **last sent** snapshot. Smaller drift accumulates.
+The comparison uses Float32 wire values, matching the existing UtilitiesSystem load store; numerical boundaries
+therefore follow Float32 precision. A full snapshot always includes all producer ids; unknown loads use -1.
+The replica owns scalar id-to-load values, returns null before data arrives or for unavailable values, clears on
+adopt or an explicit empty snapshot, and retains the last map for an omitted stream. New arrays are allocated only
+for published snapshots. Twelve new clone-only packet tests cover these rules and owned buffers.
+
+**(e) `src/game/CityScene.ts` and `tests/render/smokeLocalHost.test.ts`.** Adds the requested single caller property
+`getPlantLoad: (id: number) => this.host.utilities.plantLoad?.(id) ?? null` in `createViews`. Three headless tests exercise the
+actual caller and CityObjectsView using a real LocalSimHost and UtilitiesSystem: disconnected coal grids at 15%
+and full load, the 25% activity floor, monthly load changes, shutdown and unavailable local data. Only the outer
+DOM/WebGL world shell is replaced; the producer/read/activity/particle paths are real. The third test removes the
+optional capability from a host fixture, matching the packet hosts' current water-only view, and verifies the real
+object renderer stays active with no plume rather than falling back because the caller threw.
+
+The five source files above are explicitly approved this round, including worker/game files outside the original
+two render-owned files. **No infra hunks, host-forwarding edits, save changes or RNG draws.** The round-2 hook and
+all existing smoke files remain untouched. T061 owns (d); LoopbackSimHost.ts, WorkerSimHost.ts, protocolInbox.ts,
+simWorker and WorkerLink were not edited.
+
+### Round-3 verification
+
+Verification is queued through the quiet gate while a real-GPU timing run holds the machine; results pending.
+
+### Round-3 compatibility difference and cloud handoff
+
+This checkout's PacketSimHost/LoopbackSimHost utilities object still has only `waterQualityAt`. A required view
+method would make it structurally incomplete until T061 (d) lands, and the direct caller would throw while
+constructing a plant view. To preserve NOTE-054's explicitly expected interim "unavailable" behavior, (a) makes
+the capability temporarily optional and (e) guards the caller with `?.(id) ?? null`. These are the only differences
+from the signature/caller shown in the task. The Local reader itself is present and real. No forbidden forwarding
+file was edited. After T061 provides the reader on both packet hosts, the optional marker/guard may be tightened
+if the lead wants a required interface; forwarding remains cloud-owned.
+
+Round-3 browser checklist:
+
+- [ ] Local host: inspect 15% and full coal grids; expect activity 0.25/1 and <=40% of full particles.
+- [ ] Change one grid's load and advance a month: its plume follows its own grid. Check zero staffing/power stops it.
+- [ ] After T061 forwarding lands, repeat on loopback and real worker; verify unavailable before the first stream.
+- [ ] Confirm unchanged months send no utilities stream, and significant load/add/remove changes send one after
+  completion; load/resync and explicit empty snapshots leave no stale producer data.
+- [ ] Full Vitest and real-GPU smoke/frame checks remain with the lead.
+
+## Round 2: shared budget hook (historical; committed 51a04e0)
+
+The no-registration fixture blocker below was fixed by T040 and merged before round 3; the worker's full merged
+gate is green. The remainder records the checks made in the round-2 worktree before that fix.
 
 - `src/render/city/buildings/BuildingRenderer.ts`: registers `activityWork` from a field initializer beside the
   activity fields. Its cheap `pending()` performs the month comparison and creates a monthly iterator only when
