@@ -24,6 +24,12 @@ do:
   5. **Plant loads on the packet hosts** (T051's request d, NOTE-054): forward `utilities.plantLoad(id)` in LoopbackSimHost
      and WorkerSimHost to the replica's id→load map. T051 adds the stream, the recorder publishing, the replica map and
      SimHost's UtilitiesView type. Test that a plant's load reaches the page on the loopback host and clears on adopt.
+  6. **`policy.teaching` on the worker host** (NOTE-055): T036 step 5 adds the missing getter to LoopbackSimHost.ts.
+     Check WorkerSimHost for the same gap, and add `get teaching()` there if it is missing, with a test.
+  7. **Save errors keep their name** (T036 step 4's B9, NOTE-058): Worker-protocol save replies drop the error name
+     (protocolInbox.ts:134, LoopbackSimHost.ts:456), so a QuotaExceededError on the packet hosts arrives nameless and the
+     guided quota dialog fails on loopback. Carry the error's name (and message) through the reply, on both packet hosts.
+     Test that a quota failure on the loopback host opens the same dialog as on the local host.
 gates:
   - each item's test, plus tsc, the full vitest and the worker hygiene test;
   - the bot identical to dev (residents [ 61124, 93804, 37971 ]);
