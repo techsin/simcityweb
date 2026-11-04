@@ -31,12 +31,6 @@ const MAP_LAYERS: Partial<Record<EventName, readonly CellLayer[]>> = {
   powerLinesChanged: ['powerLines'], subwayChanged: ['subway'], treesChanged: ['trees'], treesDamaged: ['trees'],
 };
 const EMPTY_POLICY: PolicyState = { alerts: [], live: false };
-/** T061 item 6: what a packet carries of the authority's policy view (LivePolicy.view): every field the view has, so one
- *  a lane adds there (T036 step 5's `teaching`) reaches the replica too; not its subscribe; the alerts copied */
-export function policyState(view: { readonly alerts: readonly Readonly<PolicyState['alerts'][number]>[] }): PolicyState {
-  const { alerts, subscribe: _subscribe, ...rest } = view as PolicyState & { subscribe?: unknown };
-  return { alerts: alerts.map((a) => ({ ...a })), ...rest };
-}
 
 /** Only the shown inputs are subscribed. Utilities / traffic are added separately and always mirrored. */
 export function viewLayers(view: ViewState): LayerName[] {
