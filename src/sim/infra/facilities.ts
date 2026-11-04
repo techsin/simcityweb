@@ -32,6 +32,7 @@
 import { BF, type Building, type CityState, type NeedTier } from '../CityState';
 import type { Simulation } from '../Simulation';
 import { Network, Zone } from '../../core/types';
+import { DAYS_PER_MONTH, MONTHS_PER_YEAR } from '../../core/constants';
 import { capReliefOf, getDef } from '../catalog';
 import type { BuildingCategory, BuildingDef, ServiceKind } from '../catalogTypes';
 import { COV_KINDS, Fam, SERVICE_TIERS, buildingList, centerCell, fundingFactor, infoOf, isFunctional, setFlag, type DefInfo } from './common';
@@ -43,6 +44,7 @@ import {
   JUSTICE_CRIME_K, JUSTICE_POLICE_K, OVERCROWDED_UTIL, PATIENTS_PER_BED, POLICE_CAP, POLICE_CRIME_BASE, POLICE_JOB_W, RECYCLE_MAX_SHARE, SEAPORT_TRUCKS,
   SOLAR_SUMMER, SOLAR_WINTER, STAFF_CITY_INFO, STAFF_CITY_MIN, STAFF_FLAG, STAFF_OP_MIN, STAFF_STEP, THERMAL_UNWATERED, UNPOWERED_SERVICE_EFF,
   UNWATERED_HEALTH_EFF, USE_FACTOR_MIN, USE_FULL, WIND_TURBINE_BASE, WIND_TURBINE_GAIN,
+  EXPRESS_SUBWAY_TIME, EXPRESS_WAIT_SUBWAY, EXPRESS_STOP_CAP_SUBWAY, SUBWAY_TIME, STOP_CAP_SUBWAY,
 } from './params';
 import { emergencyOf, fleetOfDef, stationRange } from './emergency';
 import * as TF from './transportFacilities';
@@ -55,6 +57,7 @@ import { onStrike, venueIncomeFactor } from '../economy/budget';
 import { OPEX_UNIT, buildingUpkeep, expectedUpkeep, facilityOpex, opexRateOf } from '../economy/opex';
 import { getOrdinance, ordinanceEffect } from '../economy/ordinances';
 import { OPEX_TYPICAL_LOAD, RECYCLING_INCOME_PER_T } from '../economy/tuning';
+import { completedProject, expoDrawMultiplier, projectPauseReason, projectProgress } from '../economy/projects';
 
 export interface FacilityLine {
   /** stable id ('patrolLoad', 'beds', 'riders', ...) */
@@ -1327,6 +1330,8 @@ function noPowerWarning(c: Ctx, idle: boolean): string {
 
 function roleOf(c: Ctx): string {
   const { def, inf } = c;
+  if (def.project?.kind === 'expressMetro') return 'Mega-project: improves subway travel times, waits and station capacity citywide once open';
+  if (def.project?.kind === 'expo') return 'World Expo: a temporary boost to citywide tourist draw after opening';
   const cv = def.coverage;
   const r = cv ? Math.round(cv.radius) : 0;
   const how = cv?.metric === 'walk' ? `a ~${r}-tile walk` : cv?.metric === 'euclid' ? `${r} tiles` : `~${r} tiles by road`;
@@ -1363,6 +1368,40 @@ const CATEGORY_ROLE: Partial<Record<BuildingCategory, string>> = {
 };
 
 const APPROVAL_CIVIC: Readonly<Record<string, number>> = { civ_mayor_house: 2, civ_statue: 3, civ_city_hall: 2 };
+
+/** The same tuned network upgrade in the static facts and the completed project's report. */
+function metroProjectFacts(): FacilityLine[] {
+  return [
+    { key: 'subwayTime', label: 'Subway travel time', value: `${change(EXPRESS_SUBWAY_TIME / SUBWAY_TIME)} citywide` },
+    { key: 'subwayWait', label: 'Base subway wait', value: `${EXPRESS_WAIT_SUBWAY} min` },
+    { key: 'subwayCapacity', label: 'Station capacity', value: `${fmt(EXPRESS_STOP_CAP_SUBWAY)} riders/day (${change(EXPRESS_STOP_CAP_SUBWAY / STOP_CAP_SUBWAY)})` },
+  ];
+}
+
+/** Ledger reads only: construction has no operating output, staff or upkeep to report yet. */
+function projectLines(c: Ctx): void {
+  const { st, b, def } = c;
+  const p = projectProgress(st, b.id);
+  if (b.built < 1) {
+    c.warnings.push('Under construction');
+    if (p) {
+      add(c, 'construction', 'Construction', `${fmt(p.progressDays)} / ${fmt(p.totalDays)} days`, { ratio: p.progressDays / p.totalDays });
+      add(c, 'paid', 'Paid', `${money(p.paid)} / ${money(p.totalCost)}`);
+      const paused = projectPauseReason(st, b.id);
+      if (paused) c.warnings.push(paused);
+    } else add(c, 'construction', 'Construction', pct(b.built));
+    add(c, 'operation', 'Operating effects', 'Start on opening');
+  } else if (def.project?.kind === 'expressMetro') {
+    const active = completedProject(st, 'expressMetro');
+    add(c, 'metro', 'Metro upgrade', active ? 'active citywide' : 'inactive', { status: active ? 'ok' : 'warn' });
+    if (active) c.lines.push(...metroProjectFacts());
+  } else if (def.project?.kind === 'expo') {
+    const mul = expoDrawMultiplier(st);
+    const end = p?.completedDay === undefined ? undefined : p.completedDay + DAYS_PER_MONTH * MONTHS_PER_YEAR;
+    add(c, 'expoDraw', 'Citywide tourist draw', mul > 1 ? `×${mul}` : end !== undefined && st.day >= end ? 'exhibition ended' : 'no active exhibition');
+    if (mul > 1 && end !== undefined) add(c, 'expoRemaining', 'Exhibition remaining', `${fmt(end - st.day)} ${end - st.day === 1 ? 'day' : 'days'}`);
+  }
+}
 
 /** airport / seaport use lines: passengers or trucks against the rating, and the share of the benefit delivered now */
 function useLines(c: Ctx): void {
@@ -1407,11 +1446,16 @@ export function facilityReport(sim: Simulation, buildingId: number): FacilityRep
   // cause-neutral words (BF.Burnt records no cause: a tornado or a quake flattens too), and a venue / deal says its income
   // stopped (budget.ts books none for a ruin) — without the line the inspector header showed the catalog income
   if (b.flags & BF.Burnt) {
-    c.warnings.push('In ruins — bulldoze it and build it again');
-    add(c, 'status', 'Status', 'in ruins — no service until rebuilt', { status: 'bad' });
+    const spentExpo = def.project?.kind === 'expo' && projectProgress(st, b.id)?.completedDay !== undefined;
+    c.warnings.push(spentExpo ? 'In ruins — this once-per-city exhibition cannot be rebuilt' : 'In ruins — bulldoze it and build it again');
+    add(c, 'status', 'Status', spentExpo ? 'in ruins — no active exhibition' : 'in ruins — no service until rebuilt', { status: 'bad' });
     if ((def.income ?? 0) > 0) add(c, 'income', def.category === 'reward' ? 'Deal income' : 'Income', 'none — in ruins', { status: 'bad' });
-    upkeepLine(c, true);
+    if (def.buildMonths === undefined || b.built >= 1) upkeepLine(c, true);
     return { title: def.name, role: roleOf(c), lines: c.lines, warnings: c.warnings };
+  }
+  if (def.buildMonths !== undefined) {
+    projectLines(c);
+    if (b.built < 1) return { title: def.name, role: roleOf(c), lines: c.lines, warnings: c.warnings };
   }
   c.load = inf.tier >= 0 ? facilityLoad(sim, b.id) : null;
   // ---- status warnings (a fix in each)
@@ -1508,6 +1552,19 @@ export function facilityDefFacts(defId: string, st: CityState | null = null): Fa
   if (!def || def.category === 'growable') return [];
   const out: FacilityLine[] = [];
   const f = (key: string, label: string, value: string, hint?: string) => out.push(hint ? { key, label, value, hint } : { key, label, value });
+  if (def.buildMonths !== undefined) {
+    f('construction', 'Construction', `${def.buildMonths} months · ${money(def.cost ?? 0)} in installments`, 'Operating effects and upkeep begin on opening');
+    const gate = def.project;
+    if (gate) {
+      const parts = [`${fmt(gate.population)} residents`];
+      if (gate.stations !== undefined) parts.push(`${gate.stations} completed subway stations`);
+      if (gate.education !== undefined) parts.push(`EQ ${gate.education}`);
+      if (gate.attractiveness !== undefined) parts.push(`attractiveness ${gate.attractiveness}`);
+      f('projectGate', 'Requires', parts.join(' · '));
+      if (gate.kind === 'expressMetro') out.push(...metroProjectFacts());
+      if (gate.kind === 'expo') f('exhibition', 'Exhibition', `${MONTHS_PER_YEAR} months of citywide tourist draw after opening`, 'Once per city');
+    }
+  }
   const cv = def.coverage;
   const tier = cv?.tier;
   const reach = cv ? (cv.metric === 'walk' ? `~${cv.radius}-tile walk` : cv.metric === 'euclid' ? `${cv.radius} tiles` : `~${cv.radius} tiles by road`) : '';

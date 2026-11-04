@@ -46,7 +46,7 @@ describe('W0.3b upkeep display values', () => {
 
   it('keeps every ploppable card and reward upkeep chip on the same city-wide or flat values', () => {
     const st = city(), abort = new AbortController();
-    const ctx = { state: st, mods: {}, sandbox: () => false, signal: abort.signal } as unknown as GameContext;
+    const ctx = { state: st, host: { ...queryHost(new Simulation(st)), state: st }, mods: {}, sandbox: () => false, signal: abort.signal } as unknown as GameContext;
     // Exercise the rendered price methods without the toolbar's unrelated layout/listeners.
     const toolbar = Object.assign(Object.create(Toolbar.prototype), { ctx }) as { costLine(spec: ToolSpec): string };
     const rewards = new RewardsPanel(ctx) as unknown as { upkeepChip(def: BuildingDef): HTMLElement | null };
