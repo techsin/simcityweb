@@ -32,6 +32,24 @@ test the acceptance names), FEEL-22 (the user of `ticker.push`), FEEL-02a (its t
 | 15 | Gates: tsc, the full vitest, the bot identical to dev (192,899), browser checks at 1280×720 | — | **run them** |
 | 16 | The report section and a `.done` line | — | **write them** |
 
+### Resumed (the step was interrupted at 22:15 and continued at 22:21)
+
+What the interrupted run left on `cloud/t060feel01`: four commits (`78faa8f` the ticker, `d405962` a 1 s step cap and
+`qa-ticker`'s 3D-view switch, `22b4f88` the 120 px entry, `ce74794` a test literal), a clean tree, and this report
+without its gates. Against the gap list above, what was still open:
+
+| left | why | done in the resumed run |
+|---|---|---|
+| the revert check on the final code | the last run stopped at revert 14 of 23 (its tree was still mutated) | rerun on `ce74794`: 23 of 23 fail (below) |
+| the real-save probes on the final code | they ran at 21:39, before `d405962` and `22b4f88` | rerun on `ce74794` (below) |
+| the browser checks | run 1 (22:10) predates the last two fixes and failed on SwiftShader's frame a second; run 2 never started | run 2 on `ce74794` (below) |
+| tsc, the full vitest, the bot | never run on the final code | run (below) |
+| decision D8 | named in the CSS paragraph, never written | written |
+| the `.done` line | — | written |
+
+The code itself was re-read line by line against FEEL-01's Change and Acceptance (`NewsTicker`, its helpers and the
+two CSS rules); nothing in it was saved mid-edit, and no code change was needed.
+
 ### What this step did
 
 **The ticker (`src/ui/Notifications.ts`, `NewsTicker` and its helpers only; `Toasts` is untouched).** One item at a
@@ -80,15 +98,17 @@ for the Gazette label. `.hud-bl`'s width is unchanged (decision D8).
   frame or per swap with a ResizeObserver, one per swap without; the scroll uses the reported widths; the sequence
   alone invalidates. W0.5's loop now steps 6 s per headline (`ticker.frame(6)`), so each one ends the previous hold.
 - `tests/game/toastBudget.test.ts` is byte-identical to dev's.
-- **Each new test fails with its fix reverted:** 22 single-fix reverts of the final `Notifications.ts`, each run against
-  `newsTicker.test.ts` in a private copy of the tree (`mutate.py` in the scratchpad): all 22 fail. The short date and
-  the halved burst rests are margin, so they are reverted together (the busy 2× case goes 11.8 s → 17.8 s; each alone
-  14.2 s / 14.9 s).
+- **Each new test fails with its fix reverted:** 23 reverts of the final `Notifications.ts` (`ce74794`), each run
+  against `newsTicker.test.ts` in a private copy of the tree (`t060feel01-mut/mutate.py` in the scratchpad; log
+  `t060feel01-mut/mutate-final2.log`): all 23 fail, and the unreverted copy passes (38 passed, the probe skipped). The
+  short date and the halved burst rests are margin, so they are reverted together (`t060feel01-mut/margin.log`, the
+  final code: the busy 2× case's slowest headline goes 11.8 s → 17.8 s; each alone 14.2 s / 14.9 s).
 
 | fix reverted | result |
 |---|---|
 | a new item preempts the rotation | 2 failed |
-| a 0.5 s entry (6 s instead) | 2 failed |
+| a 0.5 s entry (6 s instead) | 1 failed |
+| the entry starts 120 px right of its place (from the view's right edge instead) | 1 failed |
 | real-time clock (the clamped dt instead) | 1 failed |
 | one clause (the full text) / the tooltip | 1 failed / 1 failed |
 | the " — " split / the ". " split past abbreviations | 1 failed / 1 failed |
@@ -151,6 +171,12 @@ can show (38-95 items in under a minute); it is reported, not gated (decision D3
 - **D7 · FH-18's `src/ui`-wide text test stays FH-18's (GUIDE lane).** `AdvisorsPanel.ts:66` still says "connect it
   with power lines", which FH-18 fixes; a `src/ui`-wide scan would fail on it today. This lane tests the ticker's tip
   (the welcome items, and a scan of `Notifications.ts`) with FH-18's regular expression.
+- **D8 · `.hud-bl`'s width is unchanged.** The plan's Problem names the small window (`clamp(240px, 50% − 340px,
+  460px)`: 460 css px, 368 screen px at 1280×720) and its Files line cites `hud.css:345-359`, but its Change does not
+  ask for a wider block. At 1280×720 there is no room: the browser measured the ticker's box at 10-378 screen px and
+  the centred toolbar's at 375-905 (3 px of overlap already, dev's layout, the glass edges meet; the screenshots show
+  no clash). The one-clause, one-item ticker fits its 389 css px view (305 screen px): every flavour headline's clause
+  shows whole or scrolls once. Widening it waits for a layout change of the bottom bar (the lead's call).
 - **D9 · The bot was not run.** Its import closure (tools/simbot.ts, 89 files, walked from the imports) holds no
   `src/ui` file, and nothing under `src/sim`, `src/worker`, `src/game` or `src/save` changed: it is dev's by
   construction (dev's reference: residents [ 61124, 93804, 37971 ] = 192,899).
