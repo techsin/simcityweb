@@ -2,6 +2,15 @@
 
 **Final (desktop, real GPU): done.** The autosave floor, silent autosaves (only the minimap chip) and the backoff after a failed autosave pass on the real GPU; the results, gates and B1-B8 are in docs/dev/reports/local-R1-meta-NEW-04.md, T036 step 4's final section.
 
+## Cloud carry-over (Nov 3)
+
+Verified on `cloud/t036s4` with dev (T034's WorkerSimHost, T040) merged in. Everything is in the NEW-04 report's
+section of the same name: the gap list, the line-by-line check of the round-4 snapshot `091a181` (src and tests equal
+to `cb58ab8`), and the gates. Those are tsc clean, and 15 files / 145 tests passed, among them the 29 of
+autosaveFloor.test.ts. Five mutation checks of the floor, the silence, the backoff, the one sound per streak and the
+pill are all caught. On the worker host, `persistence` reaches the CityScene and the replica's `month` event drives
+`onMonth`, so the floor and the silent autosave apply there unchanged. Remaining: the recovery check after W1.3 (T039).
+
 ## Review round 4 · NOTE-058 failure streaks
 
 Round 3 is committed (`ad1b095`, `37c7605`, `9a53182`). This round is one uncommitted autosave-failure change following NOTE-058; it supersedes round 3's zero-error-sound policy.

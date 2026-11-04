@@ -8,6 +8,153 @@ report is docs/dev/reports/local-R1-meta-FEEL-02b.md.
 Branch `local/T036s4-storage`: `2f040cc` main.ts's small storage hunks, kept apart; `8229b70` the lane; `9dee989` round 1;
 QA fixes `ad1b095` (B2), `37c7605` (B1, B3-B8), `cb58ab8` (B1's backoff, NOTE-058); dev `63c8f58` merged in.
 
+## Cloud carry-over (Nov 3)
+
+Branch `cloud/t036s4` (worktree `scratchpad/co/t036s4`), from `local/T036s4-storage` (`3e7c299`, DONE on the desktop),
+with dev merged in twice: `086152a` (T034 with T034b, the WorkerSimHost behind `?simworker=1`) at `dc2a27d`, then
+`f1c9713` (T040 merged, the Nov 4 handoff) at `fa7e3e2`. This is a cloud verification, not new work. As the lead set
+this step, it ran only tsc and the lane's own test files (under the CPU semaphore, `--maxWorkers=2`) and started no
+browser. The real-GPU checks are the desktop's (16 runs on `833fc2f`, above). The full vitest and the bot run at the
+merge step.
+
+Read: T036s4-new04-feel02b.md, T036-polish-r1-meta.md step 4, NOTE-044, NOTE-047 item 4, NOTE-058, and the T036 lines
+in NOTE-045, 046, 048, 049, 055 and 057. Also: POLISH_PLAN NEW-04 and FEEL-02b in full with their Acceptance, D6 and
+D16; this report and the FEEL-02b one; the diff against dev; the Nov 4 handoff's `wip/co_t036s4.uncommitted.patch` and
+`bundles/cloud_t036s4.bundle`.
+
+### Gap list (required versus done, at `3e7c299`)
+
+| # | Required (source) | State at `3e7c299` |
+|---|---|---|
+| G1 | Dev merged in, keeping T034's WorkerSimHost (this step) | **Missing.** One conflict (`App.snapshotNow`'s guard) and, after it, one type error: T034 made `startNewCity`'s `st` nullable |
+| G2 | NEW-04: a second tab cannot save (save buttons off, autosave off); "Use it here instead" both ways; the first tab says "This region is now open in another tab"; the lock API's own steal; a BroadcastChannel fallback | Done (`db.ts` `RegionSaveLock`, `StorageDialog.ts` `RegionStorageSession`, the CityScene / PauseMenu / SaveStatus gating); unit tests with a fake `navigator.locks`; real-GPU PASS |
+| G3 | NEW-04: a `QuotaExceededError`, or an estimate within 5% of the quota, opens the guided dialog (Export, Manage storage, Retry), never the raw exception; other errors get one sentence plus Details | Done; unit tests; real-GPU PASS on the default host |
+| G4 | NEW-04: `persist()` once inside the Found click; the backup reminder until an export, then 7 days | Done; unit tests; real-GPU PASS |
+| G5 | FEEL-02b: 60 s real-time floor; silent autosave (minimap chip only; Ctrl+S keeps pill and chime); both labels | Done; real GPU: 5 autosaves in 5 min at ultra, 0 chimes, 0 pills; the 1x autosave at 67.6 s |
+| G6 | NOTE-058 B1: a backoff and one error sound per failure streak | Done in `cb58ab8`; real GPU: gaps 60.7, 121.5, 240.1, 481.2, 900.5 s |
+| G7 | Saves through `host.save` and `host.snapshot` (W0.6) | Done |
+| G8 | Desktop work saved mid-edit, verified line by line (`2f040cc` wip; the `091a181` snapshot of round 4) | To verify here |
+| G9 | NEW-04 on dev's new host, WorkerSimHost: the lock fence, the quota error's name, Export of the live city | **Untested.** The lane predates T034; its report asks for a "worker ownership fence" |
+| G10 | main.ts hunks small and listed; save-path edits limited to NEW-04/FEEL-02b; no src/sim change | To confirm on the merged tree |
+| G11 | Manage storage lists "regions and NEW-03 slots with their sizes" | NEW-03 is not in dev; regions, city saves and recovery snapshots are listed with sizes |
+| G12 | FEEL-02b's recovery check (kill the tab 50 s after an autosave) | Waits for W1.3 (T039) |
+| G13 | B9: the loopback's quota dialog | T061 item 7 (NOTE-058) |
+| G14 | Gates: tsc, the full vitest, the bot identical (192,899) | tsc here; the full vitest and the bot at the merge step |
+
+### What the carry-over did
+
+- **G1, the merges.**
+  - `dc2a27d`: `snapshotNow` keeps both guards, dev's `c.crashed` and the lane's `regionSaveAccess(model.data.id)`.
+  - The founding write passes `st!` into `withRegionSaveAccess`'s closure. A second `const` binding would keep main's
+    founding state alive past T034's `st = null` (O6: main keeps no state of its own on the worker path).
+  - The handoff's `co_t036s4` WIP patch is an earlier cloud agent's uncommitted merge of the same T034. It resolved both
+    places the same way and holds nothing else. Its bundle's `cloud/t036s4` is `3e7c299` itself.
+  - `fa7e3e2`: dev's T040 merged cleanly. Its files (BuildingRenderer, Fireworks, their tests) are not the lane's.
+- **The merge, beyond its conflict:**
+  - **`exitCity` retries a failed exit save on every host.** W0.6 limited it to `c.host?.kind === 'local'`, and dev
+    still has that check. The lane dropped it, so the guided dialog and Retry cover the packet hosts too; the merge
+    keeps the lane's line (decision 1).
+  - **The worker path passes `persistence` to the CityScene** (`enterCity`). So `regionSaveAccess(this.opts.persistence?.regionId)`
+    in `CityScene.save` and `onMonth` holds on the worker host, and the replica's `month` event drives the floor there.
+  - **WorkerSimHost stores the worker's saves and snapshots on the page**, through `openKV()`'s KV (R14:
+    `storeSave` and `storeSnapshot`). So `db.ts`'s per-write guard in `IdbKV` / `MemoryKV` `put` and `delete` fences
+    them, and a page-side `QuotaExceededError` reaches `host.save` with its name. This answers the lane's "worker
+    ownership fence" request for W1.2. W1.3 is still open (Remaining).
+- **G9, the new test** `tests/worker/workerStorage.test.ts` (`27e3ca1`). It runs the real worker under worker_threads
+  (`workerHarness.bootNode`) and has three cases:
+  - A tab that lost the region lock (a second `RegionSaveLock` steals it) stores neither a save nor a snapshot. The
+    record stays the lock holder's, and both reject with `NotAllowedError`.
+  - A store whose `cities` put throws `QuotaExceededError` makes `host.save` reject with an error that
+    `StorageDialog.isQuotaError` accepts.
+  - `snapshotRegionFile` (the guided dialog's Export) writes the running city from the worker's snapshot (tax 13 after
+    a change) and saves nothing (the record keeps 9).
+  - Each case fails with its code reverted:
+    - without the `requireStoreSaveAccess` line in `MemoryKV.put`, case 1 fails ("promise resolved … instead of
+      rejecting");
+    - with `WorkerSimHost.write` rejecting with a new `Error`, cases 1 and 2 fail;
+    - without `file.cities[marker.tileKey] = city` in `snapshotRegionFile`, case 3 fails ("expected 9 to be 13").
+- **G8, the desktop's mid-edit work.**
+  - The round-4 snapshot `091a181` ("a Codex lane is still editing") has src and tests identical to the committed
+    `cb58ab8`: `git diff 091a181 3e7c299 -- src tests` is empty. The QA'd tree is the snapshot's.
+  - Read line by line and correct:
+    - `CityScene.save` / `onMonth` / `recordSaved`: the floor on `performance.now()`, counted from the last save or
+      from scene start;
+    - the streak's `retryAt` set from the failure's own completion, `min(15 min, 60 s x 2^(n-1))`;
+    - the error sound only on a streak's first failure or a manual save;
+    - ownership loss cancels the pill and opens no dialog;
+    - an `'exit'` failure leaves the dialog to `exitCity`.
+  - Also read: `SavePill`'s silent auto path, the `NewCityDialog` `onFound` hook (one call, guarded against a
+    repeated click), `regionLock.ts`, `StorageDialog.ts` and `db.ts`'s lock.
+  - `2f040cc`'s main.ts hunks are each in their listed place (the imports, the session, guarded writes, save-button
+    state, `recordSaved`, the guided errors, and the fixed-id entry points' `reset`).
+- **Mutation checks of the lane's own tests: 8 of 8 caught.**
+
+  | Fix reverted | File | Result |
+  |---|---|---|
+  | floor 60 s → 0 | autosaveFloor | 13 failed |
+  | the autosave chime back | autosaveFloor | 3 failed |
+  | backoff multiplier 2 → 1 | autosaveFloor | 4 failed |
+  | an error sound on every failure | autosaveFloor | 8 failed |
+  | the autosave pill shown | autosaveFloor | 6 failed |
+  | `onFound` not called in the Found click | foundingPersistence | 1 failed |
+  | quota errors not recognised | storageDialog | 6 failed |
+  | the takeover without `steal` | storageDb | 5 failed |
+
+- **G10, confirmed on the merged tree.**
+  - `git diff origin/claude/beautiful-johnson-u2jqoz HEAD -- src/sim src/worker` is empty.
+  - The lane's src against dev:
+    - `CityScene.ts` +40/-9 and `main.ts` +45/-26;
+    - `db.ts` +308: the guards, persist / estimate and the lock; `DB_VERSION` stays 2, with no store or schema change;
+    - `recoveryLs.ts` +4: an import and three guards;
+    - `NewCityDialog.ts` +4;
+    - the owned UI files.
+  - Every save-path hunk serves NEW-04 (the lock, the guided errors, persist) or FEEL-02b (the floor, the silent
+    autosave). No save format, balance or RNG change.
+
+### Gates (this step)
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` (semaphore) | **clean** after each merge and on `27e3ca1` |
+| The lane's 13 new or changed test files, plus the new `tests/worker/workerStorage.test.ts`, plus `tests/worker/hygiene.test.ts`, the worker graph gate T034 added after the lane's base (`--maxWorkers=2`) | **15 files passed, 145 tests passed, 0 failed** (16.4 s) on `27e3ca1`: the 13 lane files 124, workerStorage 3, hygiene 18. The same 13 files gave 124 of 124 on `dc2a27d` |
+| New test fails with its code reverted | 3 of 3 (above) |
+| The lane's tests fail with their fix reverted | 8 of 8 (above) |
+| Full vitest | **not run in this step** (the merge step runs it) |
+| Bot 128x15 s7 | **not run in this step.** It is required at the merge step because src/game and src/save changed. No sim change by design: expected identical to dev, `residents [ 61124, 93804, 37971 ]` = 192,899 |
+| Browser | **none in this step** (the lead's instruction). The evidence is the desktop's real-GPU QA above (RTX 5070 Ti, 16 runs on `833fc2f`; notes in the desktop's scratchpad `qa/T036s4/qa.md`) |
+
+### Decisions
+
+1. **The exit retry on every host (merge).** W0.6's rule was that "the non-local branch never re-saves a replica",
+   and it still holds: `PacketSimHost.save` posts a `save` to the worker or loopback core and never serializes the
+   replica. So the lane's version stays. A failed exit on the worker host gets the guided dialog and Retry and keeps the
+   city, instead of closing it behind a recovery snapshot.
+2. **Manage storage without NEW-03 slots.** NEW-03 is not in dev. Manage storage lists each region, its city saves and
+   its recovery snapshots with their sizes. NEW-03 adds its history slots there when it lands.
+3. **The floor counts from the scene's start.** The city was just loaded, or founded and saved, so the first autosave
+   comes at least 60 s after entry. That matches the plan's "60 s after the last save" and the 1x acceptance.
+4. **Export from a full store on the worker host is left failing visibly, not fixed here.** `WorkerSimHost.storeSnapshot`
+   writes the snapshot to IndexedDB before it resolves. So with the store full, or in a tab without the lock, the live
+   Export rejects ("That could not be completed"). The local host still returns the payload. The fix is in
+   WorkerSimHost.ts, which NOTE-049 keeps for T061, so it goes to Remaining. The worker host is opt-in
+   (`?simworker=1`); the default host passes.
+5. **No browser on `?simworker=1` in this step.** The worker-host integration is covered by the unit tests above. A
+   two-tab and quota-stub check on `?simworker=1` is the merge step's or the desktop's choice.
+
+### Remaining
+
+- FEEL-02b's recovery check after W1.3 (T039): kill the tab 50 s after an autosave; the restore offers the last
+  snapshot (at most 30 s and 90 game days old) and every journaled edit.
+- B9, the loopback's quota dialog: T061 item 7 (NOTE-058).
+- **For T039 (W1.3):** `cloud/w13` adds `'worker-idb'` persistence, where the worker writes its own IndexedDB. Those
+  writes bypass the page's `db.ts` guard, so the region lock must reach the worker. T039 should add the
+  `tests/worker/workerStorage.test.ts` lock case for `'worker-idb'`.
+- **For T061 (or the lead):** `WorkerSimHost.storeSnapshot` should resolve the encoded payload with `idb: false` when
+  `storeRecoveryIdb` fails for quota or ownership, as the local host does. Then a full or read-only tab can still export
+  the running city on the worker host. This is the lane's "Additional Worker live-export request", restated for the
+  real worker.
+- The merge step: the full vitest and the bot against dev.
+
 ## Gates
 
 | Gate | Result |
