@@ -124,3 +124,156 @@ four evidence images, and T061 (the cloud task that takes the lane's worker-host
 | 7 | Desktop WIP commits (`cb430ce`, `f73b320` are "wip" Codex-lane commits) | reviewed by the desktop | review line by line; check the `-snap` branch holds nothing newer |
 | 8 | NOTE-046 Q3: the EmergencyBanner hunk in its own commit | mixed into the two WIP commits | cannot be split without rewriting the lane's history; decision below |
 | 9 | The lane's requests (reinforcement provenance, the speedChanged order, the clock cap) | open | **not this lane's gaps:** NOTE-049 moves them to T061 |
+
+### What the cloud did
+
+1. **Merged dev twice** (`9badcc2` at dev `683d02b`, `aba092d` at dev `50a6b29`).
+   - One conflict, in `src/game/context.ts` `GameContext.toast`: both sides added the `opts` parameter. I kept dev's
+     wider type (`{ silent, ttl, budget }`), which includes the lane's `silent` flag.
+   - CityScene's toast passthrough was identical on both sides. The second merge brought in docs only (NOTE-050 to
+     NOTE-052).
+   - tsc is clean after both merges.
+2. **No sim, worker or save file is touched**, confirmed from `git diff origin/claude/beautiful-johnson-u2jqoz HEAD`.
+   - The diff has 21 files.
+   - src: `src/audio/{AudioEngine,ducking,sfx}.ts`, `src/game/{CityScene,GameSounds}.ts`, `src/ui/EmergencyBanner.ts`
+     and the new `src/ui/fx.css`.
+   - Tests and docs make up the rest.
+   - Nothing under `src/sim`, `src/worker` or `src/save` changed. GameSounds and EmergencyBanner only *import types*
+     from `src/sim` and `src/worker`. Outcomes are read through `host.events`, `host.emergency`, `host.policy` and
+     `host.cause`.
+3. **Desktop WIP reviewed line by line** (`cb430ce`, `f73b320`; the Codex lane's two "wip" commits):
+   - the stings and their rate limit (`GameSounds.onEmergency`, `OUTCOME_GAP`, `ready('emergencyOutcome')`);
+   - the player-provenance bookkeeping (`answered === 2` or a cause-tagged dispatch), and the seeding at boot and on
+     `reset`;
+   - the restore-toast silencing (`emergencyStingPending` over the episode's incidents);
+   - the LIVE duck: a renewable envelope with its own hold and explicit release, and `syncMusic`'s scheduling of the
+     quieter of the two envelopes, including the crossing point;
+   - the flash timers and their cleanup on reset, dispose and abort;
+   - the vignette CSS.
+
+   `local/T048-feel10-outcomes-snap` (`fdb6610`, 14:56) is older than `f73b320` (15:01). It holds nothing `f73b320`
+   lacks: their diff is additive.
+4. **One real gap fixed (`0c7966e`): `debugMusicBusGain`**, the acceptance's instrument (gap row 5).
+   - Before, it multiplied the gain nodes' `AudioParam.value`, which Chromium stops updating while the music input is
+     silent.
+   - It now computes the reading: the music volume `applyVolumes` sets, times `AudioDucking.musicGainAt(now)`, which is
+     the minimum of the two duck envelopes that `syncMusic` schedules.
+   - What plays does not change.
+   - New test: `tests/audio/emergencyDuckHold.test.ts` ("the debug getter reads the scheduled duck while no song
+     plays…"). It freezes both gains' `.value` and reads −6 dB, the release midpoint and the baseline. It fails with
+     the fix reverted.
+5. **Every new test must fail without the lane.** I ran 11 mutations, each reverting one piece of behaviour, against
+   the lane's 5 test files (47 tests). Every one is caught (summary in the scratch dir, `t048work/mut/summary.txt`):
+
+   | Mutation | Failing tests |
+   |---|---|
+   | "saved" → `good` | 13 |
+   | "lost" → `bad` | 10 |
+   | `OUTCOME_GAP` 10 s → 0 | 1 |
+   | restore toast never silent | 4 |
+   | LIVE duck 0 dB | 7 |
+   | LIVE duck 3 dB | 7 |
+   | vignette class ignores the pause | 3 |
+   | no flash class | 4 |
+   | flash 1,200 ms | 2 |
+   | getter back to `AudioParam.value` | 1 |
+   | no LIVE release | 7 |
+
+6. **Browser checks on SwiftShader**, the default host and `?simworker=loopback`, in the real game page (details
+   below).
+
+### Gates
+
+| Gate | Result |
+|---|---|
+| tsc (`aba092d`) | clean |
+| Full vitest with the fixtures (`aba092d`, `SIM_FIXTURES`/`SIM_SNAP` from the main checkout) | **225 files passed, 2 skipped; 2,247 tests passed, 8 skipped; 0 failing** (429 s) |
+| Hygiene (`tests/worker/hygiene.test.ts`, also inside the full run) | 17 passed, 1 skipped (W1.2's gate, skipped by design until that step lands) |
+| The lane's 5 test files | 47 of 47 pass |
+| The bot, 128x15 seed 7: dev (a clean export of `50a6b29`) and lane (`aba092d`) | **both `residents [ 61124, 93804, 37971 ]`**. The two logs are identical apart from the ms/day timing columns. |
+
+### Browser evidence (SwiftShader, function and visuals only)
+
+**Setup:**
+- City `vet_s7_y21` (304,650 residents), 1280x720, quality low, headless Chromium with the game's own audio graph
+  running.
+- Real clicks on the speed buttons and Send nearest. The fires come from `host.act('triggerDisaster')`.
+- Targets came from a headless probe of the same save:
+  - A: Shack (52,12), outside coverage, Send nearest 4.08 min, predicted lossless;
+  - B: Villa (12,198), outside coverage, no unit can make it, predicted failed with 1 building lost.
+- The page ran at **one frame per ~5.2-5.5 s** (median frame gap 5,473 ms on the default host, 5,188 ms on loopback;
+  max 14 s). Every timing below is that slow page, not the game.
+- Scripts: `t048work/qa/feel10.mjs` and `analyze.mjs`. The raw recordings are `t048work/qa/out/*-raw.json`. The
+  summary is committed as `docs/dev/reports/local-T048/cloud-aggregate.json`.
+
+| Acceptance | Default host (LocalSimHost) | Loopback |
+|---|---|---|
+| The player's dispatch saves the fire: exactly one "saved", no second chime | **"saved" once**. The restore toast ("Emergencies handled") is silent, and nothing chimes with it. | **"saved" once**; the restore toast is silent |
+| The banner flashes green on the save | **no flash:** the banner had already closed (see the decisions) | **green flash**: `emg-saved` 11 ms after the sting, on "Fire under control" |
+| A failed alert plays "lost"; red flash | **"lost" once**, and `emg-lost` on "No fire truck could reach it in time — 1 building lost" (border `rgb(255, 93, 93)`, the `--bad` glow) | **"lost" once**, and `emg-lost` with the same text |
+| The vignette exactly while the LIVE pill shows | 78 pill frames: the vignette is visible in 70. The other 8 are the script forcing the layer off for the comparison shot. 89 frames without the pill: hidden in 87; the other 2 are the 0.5 s fade sampled at 5 s spacing. | 75 of 75 pill frames show the vignette. Without the pill it is hidden in 52 of 54; the other 2 are the fade. |
+| The vignette's look | the ×20 difference of LIVE with and without the layer shows the red edge. Edge band mean ΔR +1.14, ΔG −1.20, ΔB −1.13 levels; centre −0.26/−0.26/−0.21 (scene motion). | during the urgent pause (no pill) the same difference is flat: edge −0.13/−0.14/−0.15 |
+| The music bus is 6 ± 1 dB lower during LIVE (debug getter) | exactly **−6.00 dB** right after a renewal; most other pill frames read the duck released | the same |
+| Errors | 0 page errors, 0 console errors | 0 and 0 |
+
+**The duck reading on this page.** The LIVE duck is a 0.3 s hold renewed every 100 ms. Frames about 5 s apart starve
+that renewal, so most pill frames read the duck partly or fully released:
+- default host: −6.00 dB in 6 of 78 pill frames, 0 dB in 25;
+- loopback: −6.00 dB in 3 of 75, 0 dB in 28.
+
+This is the report's known limitation ("stalls longer than the 300 ms hold lift the duck briefly"), magnified 15
+times. The desktop measured −6.00 dB in every LIVE segment on the real GPU, including injected 100-250 ms stalls.
+Where the two readings exist together, the getter agrees with the `AudioParam` product within a render quantum while
+music plays.
+
+Images, all looked at. Committed, compressed, in `docs/dev/reports/local-T048/`:
+- `cloud-default-live-on.jpg`: the LIVE pill after Send nearest, with the truck on its way;
+- `cloud-default-vignette-diff-x20.jpg`: the red edge, ×20 around grey 128;
+- `cloud-loopback-saved-outcome.jpg`: "Fire under control" on the saved banner;
+- `cloud-loopback-lost-outcome.jpg`: "No fire truck could reach it in time — 1 building lost" under the saved one.
+
+The full set is in the scratch dir, `t048work/qa/out/`:
+- default host: A1, A1b, A2, A2c, A2d, A4, B1 and B2;
+- loopback: A1, A1b, A2, A4 and B2;
+- the two `*-diff-x20.png` images.
+
+The desktop's evidence (`r2-ev1` to `r2-ev3`, `ev6`) shows the same states on the real GPU:
+- the green border with the silent restore toast;
+- the red border on a lost alert;
+- the LIVE pill;
+- the red-edged ×20 difference.
+
+### Decisions
+
+1. **NOTE-046 Q3 (the EmergencyBanner hunk in its own commit):** not split.
+   - Splitting needs a rewrite of the lane's history, which this step does not do.
+   - The hunk is small: +45/−5 lines, the restore toast's `silent` flag, the flash class, and `renderLive` reading the
+     event's speed.
+   - NOTE-049 orders FEEL-10 to merge first, and FH-08 (T036 step 5) rebases onto it, so the split's purpose (an
+     easy second merge) holds either way.
+2. **The LIVE duck's 0.3 s renewable hold:** kept as the lane tuned it.
+   - On SwiftShader it lapses between ~5 s frames.
+   - A longer hold trades robustness against stalls for a slower self-release if a release were ever missed. Every
+     path calls `releaseDuck` today.
+   - That tuning is the lead's call. Evidence: the desktop's −4.2 dB for under 100 ms after a 400 ms stall, and the
+     frame counts above.
+3. **The banner can close before a slow outcome (default host here), so the flash is missed.**
+   - `src/worker/SimCore.ts:438-445` closes an alert 4 s of real time after its incident leaves the follow window.
+     On this page the fire went out 43 s later. The sting and the "thanks to your dispatch" news still came.
+   - On the real GPU the outcome lands 15-253 ms after the restore (the desktop: green flashes 9 of 9).
+   - Not changed here: it is `src/worker` (NOTE-049: worker-host changes go to T061) and it depends on the
+     environment. For the lead: T061 or FH-08 could keep a player-dispatched alert's banner until its outcome.
+4. **The "good" / "bad" news chime 9-11 s after a sting (both hosts):** not a bug in the game.
+   - The outcome news is posted in the same tick as the sting. GameSounds flushes news after 120 ms and drops it
+     within 6 s (`NEWS_GAP`) of any event sound.
+   - Here the 120 ms timer ran 9-11 s late (the ~5 s frames), past both windows.
+   - A real second chime needs a main-thread stall of more than 6 s, so nothing is changed.
+5. **The lane's requests** (reinforcement provenance, the loopback speedChanged order, the clock cap) are T061's by
+   NOTE-049, not this lane's gaps. NOTE-048's earlier approval of a T048 provenance commit is superseded by NOTE-049.
+
+### Remaining
+
+- Nothing required.
+- Optional, when a real GPU is available: re-read the −6 dB during LIVE with the new computed `debugMusicBusGain`,
+  across a rest between songs. The desktop's −6.00 dB used the old getter. The new one is covered by the unit test
+  and agrees with the old one while music plays.
