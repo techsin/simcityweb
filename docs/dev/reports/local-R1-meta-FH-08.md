@@ -1,9 +1,58 @@
 # T036s5 / FH-08 — first emergency teaching
 
 Desktop implementation on `local/T036s5-fh08`, initially based on `821a8d6`, committed as WIP `d6d5421`, then
-review-round-1 fix `e5a234d` and round-2 integration `a3cd741`. The owner verified round 2 with tsc, the full Vitest
-suite (223 files / 2,257 tests), and the unchanged bot. **Round 3 below is uncommitted.**
+review-round-1 fix `e5a234d` and round-2 integration `a3cd741`. Round 3 was committed as `681a89c`, `79d36b5` and
+`0aa56b7`; the owner verified tsc, the full Vitest suite (223 files / 2,268 tests), and the unchanged bot.
+**Round 4 below is uncommitted.**
 No `.done` file was changed, following the explicit instruction not to write done markers.
+
+## Review round 4 — B5 public packet policy getter
+
+Read NOTE-055 in full. Its one-off exception explicitly authorizes this single read-only getter; the user's
+instruction to leave changes uncommitted takes precedence over the note's request for a separate commit.
+
+1. **`src/worker/LoopbackSimHost.ts`**: exactly one added line beside the existing policy getters:
+   `get teaching() { return host.replica.policy.teaching; }`. Nothing else in this file changed.
+2. **`tests/worker/emergencyTeachingHost.test.ts`**: adds “keeps the public teaching getter equal to subscribed
+   episodes after packet updates”. It retains the public policy view and checks its `teaching` against the
+   subscribed snapshot across `undefined → E1b → undefined → E1a`, including acknowledgement and a new episode.
+   The expected non-empty episodes ensure a permanently undefined getter fails the regression.
+
+This report records the handoff. No infra hunks, other production hunks, RNG draws, simulation/balance/save changes,
+or new dependencies. `WorkerSimHost.ts` remains untouched for T061 item 6. B5 is implemented; the separate TopBar
+LIVE-title request remains pending, as does the owner's later FEEL-10 merge/QA work. No new plan-versus-code
+differences: this exposes the optional teaching state already present in the packet replica and subscriptions.
+
+Round-4 validation waited until the quiet gate released the active real-GPU timing block:
+
+- **Passed:** quiet-gated `npx tsc --noEmit`, `git diff --check`, exact one-line LoopbackSimHost diff and unchanged
+  WorkerSimHost review.
+- **Passed diagnostic:** the existing native `fh08-host-probe.mjs` now retains `host.policy` and compares its public
+  `teaching` getter to the subscribed value after every settings/incident update, including non-empty E1a, absence
+  after acknowledgement, and non-empty E1b. Both LocalSimHost and packet loopback passed. Its exact native loader
+  command remains in round 2 below; this is a direct source probe, not Vitest.
+- **Blocked at startup:** the three targeted Vitest files below were attempted separately and sequentially through
+  the quiet gate. All failed before test execution loading Vite config with `spawn EPERM` in the optional Windows
+  `net use` path probe. No Vitest pass is claimed. The owner must rerun them and the full suite.
+- **Not run:** browser/GPU, bot, Hard digest and old-save continuation. The owner already verified the bot at
+  **`[61124, 93804, 37971]` = 192,899** after round 3. A read-only getter has no simulation effect; no new bot run is
+  needed for this correction. The exact standard bot command remains in round 3 below.
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsc --noEmit
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/worker/emergencyTeachingHost.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/worker/policy.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/worker/hygiene.test.ts --maxWorkers=1
+```
+
+Browser checklist on `?simworker=loopback`, fresh profile, Medium / Disasters on or debug spawn:
+
+- [ ] Public `host.policy.teaching` matches the subscribed E1a/E1b episode and updates after acknowledgement or a
+      subsequent episode; confirm B5 is closed in real-GPU QA.
+- [ ] Original FH-08 checks still hold: uncovered E1a pauses, Send nearest dispatches/closes, a never-savable fire
+      gets E1b, the next savable fire follows T029, and LIVE teaches once.
+- [ ] Round-3 E3 timing/readability and full-show New Year suppression retain their results on default and packet
+      hosts. The full existing browser checklist remains below; no browser was run in this lane.
 
 ## Review round 3 — GPU QA corrections
 
