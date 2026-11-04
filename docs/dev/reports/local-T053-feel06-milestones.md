@@ -1,4 +1,51 @@
-# T053: milestone moments — review rounds 2–3
+# T053 report: FEEL-06, milestone moments (desktop, real GPU)
+
+**Verdict: done.** Every FEEL-06 acceptance line passes on the real GPU, on the default host and on
+`?simworker=loopback`, after three review rounds. One low leftover (R4-1, below) is in docs/dev/POLISH_BACKLOG.md. No
+infra hunk. NOTE-057 merges T053 after T054 (CityScene.ts) and after T048 (GameSounds.ts).
+
+Branch `local/T053-feel06-milestones`:
+- `b297f35` the lane (round 1); `8d806bd` dev `683d02b` merged in;
+- round 2, one commit per change: `956d40d` listMilestones is replica-safe (the same line as T054's, so the second
+  merge is clean); `9367b90` the card yields to emergency alerts, resumes once, reads listMilestones; `c6a839c` the
+  rank-up burst skips reduced motion; `0a0e99d` reward and landmark toasts get Place it; `787fad4` the report;
+- round 3: `eb37f61` the card waits for alerts to stay empty for 300 ms; `99a9672` capped reward toasts come out at
+  least BUDGET_GAP_MS / 2 apart; `248a011` the report.
+
+## Gates
+
+| Gate | Result |
+|---|---|
+| tsc | clean |
+| Full vitest with the fixtures (`248a011`) | **226 files passed, 2 skipped; 2,289 tests passed, 11 skipped; 0 failing** |
+| 128×15 s7 bot with the action log | **identical to dev:** residents [ 61124, 93804, 37971 ] = 192,899 |
+| FEEL-02a's toast-budget tests | unchanged, passing |
+
+## Real-GPU QA (RTX 5070 Ti, driver 610.47, ANGLE D3D11, Chromium 141)
+
+| FEEL-06 line (and the findings fixed on the way) | Result | Measured |
+|---|---|---|
+| The card shows 4 s with one milestone sound per crossing, on both hosts | **PASS** | 3.993-4.005 s across runs, one sound each |
+| At ultra, at most one card per 30 s; rank-ups update the card in place | **PASS** | entrances 30.00 / 30.01 s apart |
+| One tower item at 35k; old and big saves post nothing (the 1.51M save too) | **PASS** | also after save → exit → reopen |
+| Reduced motion | **PASS** | card shown without its slide; no rank-up burst |
+| Clear of flyouts, panels, the save pill and the New Year show | **PASS** | 0 px² of overlap with the save pill |
+| Rank-up fireworks: 8 s each, none in the New Year or LIVE | **PASS** | 7.98-8.0 s; about +0.2 ms of loop CPU |
+| Place it on reward and landmark toasts | **PASS** | Rewards opens scrolled to the item, its row highlighted |
+| Round 2's medium finding: the card covered the emergency banner | **fixed** | 0 px² in every frame while an alert is live, and while the last banner fades (round 4) |
+| Round 2's medium-low: an interrupted card came back with no limit | **fixed** | it resumes once with its remaining time; a stale one never returns (3+ New Years) |
+| Round 3's lows: a fade overlap and 3-frame flashes; capped reward toasts released together | **fixed** | entrances only after 333-417 ms of empty alerts, none on 27-262 ms gaps; capped toasts exactly 2.00 s apart, smallest gap 1.35 s |
+| Console and page errors | **PASS** | none |
+
+QA notes: scratchpad `qa/T053/qa.md` (rounds 1-4), with data and screenshots.
+
+**R4-1 (low, in the backlog):** in an alert-heavy city a card can still be cut a few frames after it enters (a new
+alert 33 ms after the 300 ms quiet window), and its one resume can be cut the same way: one 750,000 card was on screen
+0.79 s in total. A fix must not bring back round 2's unlimited resumes; the backlog entry says how.
+
+The lane's own round notes follow.
+
+## The lane's notes (review rounds 2-3)
 
 Round-2 record: branch `local/T053-feel06-milestones`, review base `8d806bd` (round-1 commit `b297f35` plus dev `683d02b`). The lead has committed these changes and verified 226 files / 2,286 tests and the bot. The new uncommitted round-3 changes are recorded below.
 
