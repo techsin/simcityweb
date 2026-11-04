@@ -9,7 +9,8 @@
 .storage-lock-notice, .storage-backup { position: absolute; z-index: 95; pointer-events: auto; display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 12px; color: var(--text, #eef3fa); background: #172332f2; border: 1px solid #dfb56a80; }
 .storage-lock-notice { top: 82px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 32px); }
 .storage-lock-notice[hidden], .storage-backup[hidden] { display: none; }
-.storage-backup { left: 20px; bottom: 70px; max-width: min(620px, calc(100% - 40px)); flex-wrap: wrap; }
+.storage-backup { z-index: 4; top: 150px; left: 50%; transform: translateX(-50%); width: 300px; flex-wrap: wrap; }
+.storage-backup > div { flex-basis: 100%; }
 .storage-backup p { margin: 0; font-size: 13px; line-height: 1.5; }
 .storage-region { border-top: 1px solid #ffffff20; padding: 14px 0; }
 .storage-region-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
