@@ -188,11 +188,12 @@ the next item, whose ResizeObserver report read the new widths (2 reads, after l
 |---|---|
 | tsc (sem) | clean on `ce74794` (9.5 s) and on `7e6ef7b` (6.6 s) |
 | full vitest (lock), run 1 on `ce74794` | 2195 passed, 31 skipped, 1 failed: `tests/worker/hygiene.test.ts` "NOTE-041: maxDaysPerFrame writers…" timed out at its 5 s while this lane's 23 revert runs used 2 cores beside it (a `src`-wide text scan; this lane changes no file it reads but `src/ui/Notifications.ts`). That file alone: 17 passed, 1 skipped |
-| full vitest (lock), run 2 on `7e6ef7b` | pending (queued for the lock) |
+| full vitest (lock), run 2 on `7e6ef7b` | **221 files passed, 3 skipped; 2196 tests passed, 31 skipped, 0 failed** (252 s; log `t060feel01-vitest-full3.log`) |
 | the bot (lock) | lane `7e6ef7b` and a clean export of dev `50a6b29` (`t060feel01-devbase`): residents [ 61124, 93804, 37971 ] = 192,899 both, every line the same apart from the timing columns |
 | FEEL-02a's toast budget | `tests/game/toastBudget.test.ts` byte-identical to dev's, passing |
 | each new test fails with its fix reverted | 23 of 23 (above) |
 | FEEL-01's acceptance | the four items, in the unit tests (20 in `newsTicker.test.ts`), on two real saves (above) and in the browser (above) |
+| merge with dev | dev (`origin/claude/beautiful-johnson-u2jqoz`, 64 commits past this lane's base at 04:00) touches none of this lane's files, and `git merge-tree` merges the two cleanly |
 
 ### Decisions (the conservative reading, with the evidence; the lead's to confirm)
 
