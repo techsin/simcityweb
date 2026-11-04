@@ -222,3 +222,85 @@ Required by T021, WORKER_DESIGN §6 row R1 and NOTE-013/017/021/022/046, compare
 | 8 | Real-GPU timing ≤ 0.15 ms per event frame, ≥ 8 reps, with a Chrome trace for the upload | median 0.010 ms; **47 of 48 frames**. One edge frame took 0.165-0.170 ms. Uploads were counted and timed by wrapping `texSubImage2D`, not with a Chrome trace | real GPU: a remaining item. Check the edge frame's CPU cost here, and take the desktop's suggested `updateExits` follow-up if it is contained |
 | 9 | Pixel-identical LOW and HIGH screenshots of base and branch (paused, fixed camera): 0 pixels, or explain each difference | not 0. The A/A noise came from time-driven animation and was explained; a GPU texture readback was bit-identical; one LOW pair was 0 px | rerun here on SwiftShader with a frozen page clock, plus the texture readback |
 | 10 | Report, small JPEGs, `.done` line | present | add this section and a cloud `.done` line |
+
+### What the cloud did
+
+**1. The code review (gap items 1, 2), line by line against three r186.**
+- `WebGLTextures.updateTexture` (r186, `WebGLTextures.js:797`) decodes every range with `componentStride = 4` and
+  uploads one row per range with `UNPACK_ROW_LENGTH` = the width. `uploadCells` gives each row of the union as
+  `((z * N + x0) * 4, (x1 - x0) * 4)`, which is right for the RGBA8UI zone texture (4 bytes per texel) and for the two
+  R8 textures (three divides by 4 again). Each range stays inside its row, so three's in-place merge never joins rows.
+- **First upload and storage re-creation.** three applies the ranges even when it allocates fresh storage
+  (`allocateMemory`, `WebGLTextures.js:948-1020`), so a partial first upload would leave garbage. The lane covers
+  every way storage is (re)created: the constructor's full refill stores `null` (a full upload) until three's
+  `onUpdate` clears it; a pending full upload is never narrowed; texture `dispose` and the canvas's context loss and
+  restore queue full uploads; the exit texture (N × 4) always uploads whole.
+- `markCells` pads by one, clamps, and ignores empty and wholly outside rects; full refills (`rebuildAll`, `reset`,
+  `setQuality`, the climate path) clear the pending rects first. The quality switch keeps the one WebGLRenderer
+  (`WorldView.ts:251` creates it once), so it needs no restore.
+- The fallback hunks: `plantTrees` counts, checks the price, then writes and emits `treesChanged`; the preview and
+  both refusals write nothing. The terraform emits the ring that `computeWater` rewrites.
+- Two notes, no change: `reset()` and the constructor refill the cells twice (`applyClimate` and `rebuildAll` both
+  call `rebuildCells`), about 0.7 ms per load, never per frame. The context-lost listener is redundant with the
+  restored one (mutant M6b below), and harmless.
+
+**2. The `updateExits` follow-up (gap item 8), `888ba62`.** The desktop's one frame over 0.15 ms (the second edge
+terraform, 0.165-0.170 ms) ran the whole-edge exit scan, which allocated four tuples per edge cell.
+`updateExits(r)` now recomputes only the edge rows whose two outer rings the padded union touches, with no
+allocations; a full refill still scans all four; the N × 4 texture still uploads whole. Node, 256 map, the cell
+refill of one edge raise (`r1work/bench/edgeBench.mts`, 2,000 reps, three runs each):
+
+| | `255239b` (median, p90) | `888ba62` (median, p90) |
+|---|---|---|
+| edge raise rect (0..5, 45..51), `markCells` + `update()` | 0.025-0.027, 0.051-0.053 ms | **0.003-0.004**, 0.005-0.029 ms |
+| `updateExits` alone (all four rows) | 0.022-0.028 ms | **0.003** ms |
+| interior rect (100..106) | 0.002-0.003 ms | 0.002-0.003 ms |
+| a whole-map rect (what dev refills on every event frame) | 0.72-0.73 ms | 0.67-0.68 ms |
+
+In node the change removes about 85 % of an edge frame's refill (median 0.025 → 0.004 ms), so the desktop's
+0.165-0.170 ms frame should fall well under 0.15 ms. That is a projection: the real-GPU rerun is a remaining item.
+
+**3. Mutation testing (gap items 5, 6, and "each new test must fail with its fix reverted").** Each mutant was applied
+alone on the merged tree, and `tests/render/terrainRects.test.ts` was run (`r1work/mutate3.mjs`, `mutate4.mjs`;
+results in `mutations3.json`, `mutations4.json`):
+
+| mutant | failing tests |
+|---|---|
+| R0: TerrainRenderer.ts reverted to dev | 9 |
+| R1: TerrainRenderer.ts at `255239b` (the whole-edge exit scan) | 1 (the exit-row selection) |
+| F0: FallbackActions.ts reverted to dev | 2 (the refused planting; the water ring) |
+| F1: the fallback terraform emits the bare edit rect | 1 |
+| M1 no union (the last rect wins) | 5 |
+| M2 no one-cell padding | 7 |
+| M3 Red ranges in texel units (not × 4) | 3 |
+| M4 an unconsumed range is replaced, not merged | 5 |
+| M5 exits only on full refills | 3 |
+| M6 no context-restored listener | 1 |
+| M6b no context-lost listener | **0: equivalent** (the restored listener alone queues the full uploads; a test checks a restore without a loss) |
+| M7 no half-rows threshold | 1 |
+| M8 `setQuality` without a full refill | 1 |
+| M9 no texture-dispose listener | 1 |
+| M10 `onTerrainChanged` does not mark the cells | 2 |
+| M11 a full refill keeps a stale pending rect | 1 |
+| M12 the first upload is not tracked as full | 5 |
+| M13 the climate path without a full refill | 1 |
+| X1 the +z row's inward neighbour off by a row | 2 |
+| X2 a highway joins a street | 1 |
+| X5 the tunnel flag ignored | 2 |
+| X3, X4, X6, X7: one edge row selected one ring late (+x, -z, -x, +z) | 1 each, **after `5d14db0`** |
+| X8-X11: one edge row selected one ring early | 1 each, **after `5d14db0`** |
+
+Before `5d14db0`, the row-selection test checked the third ring on +x only: the -x, -z and +z "late" mutants (which
+drop the one-cell guard against an emitter off by one) and every "early" mutant passed. The test now checks the
+third and fourth ring on every edge, alone and inside a union that refreshes another edge. The code is unchanged.
+
+**4. The writer audit (gap item 3), re-swept on the merged tree.** A grep for every write to zone, building, network,
+netFlags, trees, water and powerLines (indexed stores, `fill`, `set`, `copyWithin`, `computeWater`) in src/sim,
+src/game, src/save, src/worker and src/core finds exactly the writers in the desktop's table, at the same lines
+(`sim/actions.ts` 257, 275, 412-430, 478-480, 596-599, 671-672, 758, 764-766, 800; `economy/buildings.ts` 17, 32;
+`economy/growth.ts` 570; `infra/common.ts` 513; `infra/disasters.ts` 321, 407, 414-416; `FallbackActions.ts` 60, 75,
+119-121, 129, 145, 185-188, 200, 243-245, 288, 308; `worker/protocol.ts` 236 via `replica.ts` 161; `replica.ts` 281;
+init-only `save/serialize.ts` 351-353 and `terrainGen.ts`). Since `af62daf` no file in src/sim, src/save, src/worker
+or src/core changed, and dev's src/game hunks (NewYear's toast budget) write no layer. The audit stands as written,
+including the open T034 item (the loopback resync's state handoff, `WorldView.ts:388`), which NOTE-048 routes to
+T034.
