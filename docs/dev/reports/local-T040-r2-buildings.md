@@ -1,4 +1,78 @@
-# T040: BuildingRenderer geometry budget
+# T040 report: R2, BuildingRenderer's geometry work at 2 ms a frame (desktop, real GPU)
+
+**Verdict: done.** Every T040 gate passes, on the real GPU in a quiet slot and in the suite. Live adds and visual
+changes now queue and build within a 2 ms budget a frame (at least one entry), so a burst no longer lands in one frame.
+After the queue drains, every building's instances are identical to dev's.
+
+Branch `local/T040-r2-buildings`:
+- `52a5063` the lane; `0b6e2b1` review round 1; `23c68ea` review round 2; `8ff4fd0` dev `50a6b29` merged in;
+- `6bf60ee` round 3: `BudgetedWork`, one hook for later lanes' work in the same budget (T049, T050 and T051 register
+  their queues from their own fields; NOTE-054 agreed it); `8ce2f1d` its test fix (lanes register works, so the
+  no-work case empties the registry itself, and a new case shows idle registered works keep the build order).
+
+## Gates
+
+| Gate | Result |
+|---|---|
+| tsc | clean |
+| Full vitest with the fixtures (`8ce2f1d`) | **222 files passed, 2 skipped; 2,231 tests passed, 11 skipped; 0 failing** |
+| 128×15 s7 bot with the action log | **identical to dev:** residents [ 61124, 93804, 37971 ] = 192,899 |
+| Node tests | after the drain the instance buffers equal the synchronous path's (adds, changes, removes, id reuse, remove-before-build); no frame builds longer than the budget plus one entry; the queue drains without starving under a steady stream (`buildingBudget`, 22 tests; `buildingWork`, 12) |
+
+## Real GPU: dev against T040
+
+Quiet slot, 3-4 November, 01:05-02:13 UTC, 62 valid runs: dev `683d02b` against T040 `8ce2f1d`, each run with a fresh
+Vite and a fresh browser, ABBA by rep. RTX 5070 Ti, ANGLE D3D11, Chromium 141 headless, cross-origin isolated
+(5 µs timers). Harness and tables: scratchpad `qa/T040perf/` (`run_full.sh`, `full1/tables.md`).
+
+**1. BuildingRenderer work per frame at ultra** (ms; per-run values, then the median over runs, worst in brackets):
+
+| City | Tree | Runs | p50 | p99 | max |
+|---|---|---|---|---|---|
+| bot256_s7_y60 (652k) | dev | 5 | 0.010 | 0.740 (0.790) | 26.60 (29.73) |
+| bot256_s7_y60 | T040 | 5 | 0.015 | 0.775 (0.800) | **12.79** (28.21) |
+| dense1m_s7 (1.1M) | dev | 8 | 0.015 | 0.738 (0.860) | 3.12 (4.18) |
+| dense1m_s7 | T040 | 8 | 0.018 | 0.800 (0.855) | 3.17 (3.83) |
+
+The queue costs +0.04-0.06 ms at p99 and halves bot256's median worst frame. **The worst frame left is one
+indivisible build** of about 27 ms (`bmax` 26-29 ms in both trees, at sim days 22,500-23,100 of the bot256 city). On dev
+it lands in the building event; on T040 in the drain, which by design admits at least one entry. The queue moves it off
+the event frame but cannot split it; it is in docs/dev/POLISH_BACKLOG.md. The other worst frames (9-15 ms at the
+window's first frame, `nev` 118) are a non-build entry point, present in both trees.
+
+**2. Bursts with the sim held** (dense1m, HIGH; medians over 8 runs, worst in brackets):
+
+| Scenario | dev: burst frame ms | T040: burst frame ms | T040 frames to drain | frames > 16.7 ms, dev → T040 | T040 drain over budget |
+|---|---|---|---|---|---|
+| 200 buildings regrow, cold geometry | 16.12 (20.97) | **2.77** (4.45) | 7 (8) | 1 → **0** | 0 |
+| 200 regrow, warm geometry | 2.66 (3.88) | 2.27 (2.35) | 1 (1) | 0 → 0 | 0 |
+| churn: 1,500 changes, then 4 × 500 | 7.25-7.68 (10.15) | **3.88-4.03** (4.45) | 5 (10) | 0 → 0 | 0 |
+| churn at LOW | 11.03 (11.51) | **4.06** (4.08) | 7 (7) | 0 → 0 | 0 |
+| bulldoze 200 | 0.53-0.54 | 0.60 | 0 | 0 → 0 | 0 |
+
+Total work rises because it is spread (cold regrow 16.1 → 21.6 ms over 7 frames; churn 14.5 → 21.4 ms), and no drain
+in any run went over its budget (2 ms plus its longest single build plus 0.25 ms).
+
+**3. AC2 at ultra** (p99 ≤ 33 ms, p99 ≤ paused p99 + 4 ms, no frame over 100 ms after the first 10 s):
+- bot256: dev 5/5, T040 5/5.
+- dense1m: dev 8/8, T040 7/8. The failing run (r5, 01:48 UTC) had its **paused** window at 33.3 ms too, where every
+  other paused window in both trees read 16.67 ms: the machine was disturbed while it ran. **Rerun** right after
+  (two ABBA pairs, 02:25-02:36 UTC, `ac2rerun1/`): dev 2/2, T040 2/2, every paused window 16.67 ms.
+
+**4. Identity after the queue drains** (per building, the multiset of its instances: geometry key, matrix to 1e-4,
+colour and flags, visibility, shadow mask, culling tile): **0 differing buildings in all 18 T040 snapshots** (pre-burst,
+after bulldoze and regrow, after churn; rounded and exact; the renderer's own per-building state too), 17,154
+buildings each, no orphan instances; A/A inside each tree is 0 as well. Screenshots are kept for visual sanity only,
+since time-driven animation differs between any two runs.
+
+**NOTE-054, the hook costs nothing when no work is registered:** T040 just before the hook (`8ff4fd0`) against T040
+with it and nothing registered (`6bf60ee`, with `8ce2f1d`'s tests), 6 ABBA reps of every burst (`hookab1/`): burst frames
+within ±0.3 ms and total drain time +0.6 to +2.0 % (cold regrow 20.16 → 20.36 ms, churn 20.54 → 20.78 ms), inside the
+runs' own spread.
+
+The lane's own round notes follow.
+
+## The lane's notes (rounds 1-2)
 
 Branch `local/T040-r2-buildings`, now at merged base `b89dfd0`: WIPs `52a5063` / `0b6e2b1` plus dev `821a8d6`,
 including T038's incremental fireworks index. The round-2 review fixes are uncommitted; no push or `.done` file.
