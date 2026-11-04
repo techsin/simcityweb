@@ -1,5 +1,7 @@
 # T036s4 · FEEL-02b quiet autosave
 
+**Final (desktop, real GPU): done.** The autosave floor, silent autosaves (only the minimap chip) and the backoff after a failed autosave pass on the real GPU; the results, gates and B1-B8 are in docs/dev/reports/local-R1-meta-NEW-04.md, T036 step 4's final section.
+
 ## Review round 4 · NOTE-058 failure streaks
 
 Round 3 is committed (`ad1b095`, `37c7605`, `9a53182`). This round is one uncommitted autosave-failure change following NOTE-058; it supersedes round 3's zero-error-sound policy.

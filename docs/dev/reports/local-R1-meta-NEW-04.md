@@ -1,4 +1,44 @@
-# T036s4 · NEW-04 storage you can trust
+# T036 step 4 report: NEW-04, storage you can trust (with FEEL-02b's autosave floor) (desktop, real GPU)
+
+**Verdict: done.** Every NEW-04 and FEEL-02b acceptance line passes on the real GPU after one fix round, with B1 as
+the lead set it (NOTE-058). One known host issue is the cloud's: B9, the Worker-protocol save reply drops the error
+name, so the guided quota dialog shows only on the default host until T061 item 7 lands (NOTE-058). FEEL-02b's own
+report is docs/dev/reports/local-R1-meta-FEEL-02b.md.
+
+Branch `local/T036s4-storage`: `2f040cc` main.ts's small storage hunks, kept apart; `8229b70` the lane; `9dee989` round 1;
+QA fixes `ad1b095` (B2), `37c7605` (B1, B3-B8), `cb58ab8` (B1's backoff, NOTE-058); dev `63c8f58` merged in.
+
+## Gates
+
+| Gate | Result |
+|---|---|
+| tsc | clean |
+| Full vitest with the fixtures (`833fc2f`) | **235 files passed, 2 skipped; 2,344 tests passed, 11 skipped; 0 failing** |
+| 128×15 s7 bot with the action log | **identical to dev:** residents [ 61124, 93804, 37971 ] = 192,899 |
+
+## Real-GPU QA, round 2 (RTX 5070 Ti, driver 610.47, ANGLE D3D11, Chromium; 16 runs)
+
+| Line or finding | Result | Measured |
+|---|---|---|
+| Two real tabs: the second cannot save; "Use it here instead" both ways | **PASS** | only the lock holder's writes reach the store; the old tab's AbortError arrives in the same millisecond as the steal; also with BroadcastChannel and with two cities of one region |
+| 5 minutes at ultra on a 304k city: at most 5 autosaves, 0 chimes, 0 pills | **PASS** | 5 autosaves, the shortest gap 60.65 s |
+| The 1x floor: an autosave at the first month end at least 60 s after the last save | **PASS** | at 67.6 s, none at 52.3 s |
+| The quota path: the guided dialog (Export, Manage storage, Retry), never the raw exception | **PASS** | Export writes the running city (day 5087 = live), also with every store write failing |
+| persist() once inside the Found click; the backup reminder until an export | **PASS** | |
+| Both labels: "Every N game months, at most once a minute" | **PASS** | "Autosave · Every N game months, at most once a minute" |
+| B1: a failed autosave backs off with one error sound per streak | **fixed** | gaps 60.7, 121.5, 240.1, 481.2, 900.5 s (the 15-min cap); one sound per streak, 0 pills; none while a storage dialog is open; a success, cleanup or manual save resets it; Ctrl+S keeps its own feedback |
+| B2: the backup reminder covered the tile card and drew above dialogs | **fixed** | 300×127 px, top-centre at y 150, z-index 4, at 1024×600 to 1920×1080: clear of the tile card's buttons and below the New City, Settings and Recover dialogs |
+| B3: keys passed through storage dialogs | **fixed** | `3` and Space do nothing; Escape closes only the dialog |
+| B4-B8: takeover mid-save, the chip and Settings copy, the takeover recovery offer, Export of the live city | **fixed** | no dialog or sound after a takeover mid-save; the new holder's tile shows the record |
+| B9 on loopback | recorded | owned by T061 item 7 (NOTE-058) |
+| Console and page errors | **PASS** | none, apart from two expected console.error lines under the quota stub |
+
+By design (NOTE-058) the guided dialog reopens on each failed autosave of a streak. QA notes: scratchpad
+`qa/T036s4/qa.md` (rounds 1-2), with data and screenshots.
+
+The lane's own notes follow.
+
+## The lane's notes (rounds 1-4): T036s4 · NEW-04 storage you can trust
 
 ## Review round 4 · NOTE-058
 
