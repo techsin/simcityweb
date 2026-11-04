@@ -102,3 +102,28 @@ In `scratchpad/b2work/G4-utilities-emergency-recalibration/`: `cpumapG4.ts`, `ed
 `genfxG4.ts`, `balanceG4.ts` (+ `bundle-dir.mjs`), `anG4.py`, `anEditG4.py`, `docG4.py`, `cadG4.py`, `balcmp.py`,
 `timedG4.py`, the hold scripts `hold1.sh`–`hold6.sh`, `budget.sh`, `holdbal5.sh`, the unlocked runs `balfree*.sh`,
 `bal6.sh`, `pd*.sh`; the runs in `runs/` (`h6` is the final code's hold).
+
+## Cloud carry-over (Nov 3)
+
+Lane **b2m** (chain b2m, the lane finisher), branch `cloud/b2m` in `scratchpad/co/b2m`, started from `b2-step-split`
+(`1abb357`: final code `2c4f75b`, docs `1abb357`). Dev: `origin/claude/beautiful-johnson-u2jqoz` at `63c8f58`.
+
+### Gap list (required against done, at the start)
+
+Read: WASM_PLAN B2 (the row, its table of the largest steps, §7.9) and WORKER_DESIGN §6 S3 (acceptance: `maxStepMs`
+p99 ≤ 3 ms (max ≤ 5) at dense1m, the median cost-model error within ±30 %, the balance procedure, new bot hashes);
+`docs/dev/B2_DESIGN.md` §0–§19 (the acceptance protocol §12, the fix round §19); this report; the NOTEs naming B2
+(NOTE-014, 021, 032, 035, 038, 044, 045, 046, 047, 048, 050, 053, 054, 057) and NOTE-044; the lead's brief for this
+lane (the gate 4 amendment below); the diff of `b2-step-split` against dev.
+
+| # | required | state at the start |
+|---|---|---|
+| 1 | Every InfraScheduler task in pieces, `cost()` per piece, recalibrated; exact by construction | done on the branch (G1–G4 + the fix round, `2c4f75b`); no uncommitted WIP in the `b2` worktree |
+| 2 | Integrate with dev: B3 (`530d570`, the month spread) and the 52 later `src/sim` commits, keeping both sides' behaviour | **not done**: the branch sits on `41ae570` (the premerge stack + B1); dev has W0.1's blur drop-in, J2's radix cutoff, B1's final live cap, W1.1b's `refresh: false` previews, B3 and others |
+| 3 | The plan's acceptance on the merged tree, under the lead's gate 4 amendment | measured on B2's base only; gate 4 failed as written (GC pauses, cold first runs); **the merged tree is not measured** |
+| 4 | The gate 4 amendment recorded as a plan amendment (this report and the merge body) | **not done** |
+| 5 | The residual cold first-run cost as a WORKER_DESIGN S5 (frame budget) follow-up in `docs/dev/POLISH_BACKLOG.md` | **not done** |
+| 6 | `grownCity`'s continuation tolerance 1 % → 1.5 % (accepted by the lead) | in the branch (`2c4f75b`); to be recorded as accepted |
+| 7 | Gates on the merged tree: tsc; the full vitest; the bot 128 × 15 seed 7 (new reference, by design); exactness (passdigest atomic, W against dev, dense1m and bot256, days 30 and 100); determinism (cityDigest 120 days twice); B2's save / load mid-pass checks; one timing hold (gate 4 from a load, 3 runs per side, W against dev); the balance 256 × 60 seed 7 | **none run** |
+| 8 | Report: 'Integration with dev (B3 and later)', this section, the done line in the header | **not done** |
+| 9 | Browser checks | none for this lane (sim and tests only; no UI, render or save-format change) |
