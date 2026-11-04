@@ -42,7 +42,7 @@ import { frontHasRoad, removeBuilding } from './buildings';
 import { ordinanceEffect } from './ordinances';
 import { conditionDesirability, garbageFade, lotCell } from './factors';
 import type { FactorTerm } from '../explain';
-import { getDef } from '../catalog';
+import { getDef, growablesFor } from '../catalog';
 import {
   type DemographicsCtx, DemographicsCache, REC_NOISE, REC_RAW, REC_UNMET, bindDemographics, demographicsCtx,
   EQHQ_SLICES, demographicsData, demographicsSim, eqHqDaily, evaluateNeeds, needsOf, updateDemographics,
@@ -297,15 +297,82 @@ const EQHQ_DAY = 25;
 /** EMPLOYED_EMA per day compounded over one OCC_PERIOD (the traffic ledger is sampled every OCC_PERIOD days) */
 const EMPLOYED_EMA_PERIOD = 1 - Math.pow(1 - EMPLOYED_EMA, OCC_PERIOD);
 
+/** Per-id def indices keep the aggregate's per-dev array accesses integer-keyed. Runtime-only scratch. */
+class PopulationDefIndex {
+  private index = new Uint32Array(0);
+  private defs: BuildingDef[] = [];
+  private byDef = new Map<BuildingDef, number>();
+  private code = new Uint8Array(0);
+  private totals: EconRuntime['totals'] | null = null;
+  private catalog = growablesFor(DevType.R1);
+
+  reset(): void {
+    this.index = new Uint32Array(0);
+    this.defs = [];
+    this.byDef.clear();
+    this.code = new Uint8Array(0);
+    this.totals = null;
+  }
+
+  prepare(rt: EconRuntime): void {
+    // rebuildCatalogIndex replaces these lists even for same-length catalog edits. A runtime reset replaces totals.
+    const catalog = growablesFor(DevType.R1);
+    if (this.totals !== rt.totals || this.catalog !== catalog) {
+      this.reset();
+      this.totals = rt.totals;
+      this.catalog = catalog;
+    }
+    // Def objects can also be edited in place without rebuilding the catalog (including adding a devType).
+    for (let i = 0; i < this.defs.length; i++) this.code[i] = this.encode(this.defs[i]);
+  }
+
+  private encode(def: BuildingDef): number {
+    const dev = def.devType;
+    return dev === undefined ? 255 : dev === (dev | 0) && dev >= 0 && dev < 12 ? dev : 254;
+  }
+
+  of(b: Building, def: BuildingDef): number | undefined {
+    const id = b.id;
+    // Fractional / negative / very sparse ids use the original lookup, without truncation or large allocations.
+    if (id !== (id | 0) || id < 0 || id >= 0x100000) return def.devType;
+    let di = id < this.index.length ? this.index[id] - 1 : -1;
+    if (di < 0 || this.defs[di] !== def) {
+      let found = this.byDef.get(def);
+      if (found === undefined) {
+        found = this.defs.length;
+        this.defs.push(def);
+        this.byDef.set(def, found);
+        if (found >= this.code.length) {
+          const code = new Uint8Array(Math.max(found + 1, this.code.length * 2, 64));
+          code.set(this.code);
+          this.code = code;
+        }
+        this.code[found] = this.encode(def);
+      }
+      di = found;
+      if (id >= this.index.length) {
+        const index = new Uint32Array(Math.max(id + 1, this.index.length * 2, 1024));
+        index.set(this.index);
+        this.index = index;
+      }
+      this.index[id] = di + 1;
+    }
+    const dev = this.code[di];
+    return dev === 255 ? undefined : dev === 254 ? def.devType : dev;
+  }
+}
+
 export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } {
   let cursor = 0;
   const burntSince = new Map<number, number>();
+  const defIndex = new PopulationDefIndex();
   const defOf = (b: Building): BuildingDef | undefined => rt.defOf(b);
   /** EQ / HQ's daily slice: the runtime's bucket (when the slicings agree, as they do: both DAYS_PER_MONTH) */
   const sliceOf = EQHQ_SLICES === GROWABLE_SLICES ? (k: number) => rt.growablesOfSlice(k) : undefined;
   // home access records (demographics.ts): refilled after every services pass (monthly without the services system)
   let cache = new DemographicsCache();
   let unsubLayers: (() => void) | null = null;
+  let unsubReset: (() => void) | null = null;
   /** days left in which occupancy refills today's slice of access records in a pre-pass (after an invalidation) */
   let refillDays = 0;
   const invalidate = () => { cache.invalidate(); refillDays = OCC_PERIOD; };
@@ -356,11 +423,16 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     const accArr = tAcc && traffic!.accessById instanceof Float32Array ? traffic!.accessById : undefined;
     let accE = 0, accW = 0, unW = 0;
     const list = rt.growables;
+    defIndex.prepare(rt);
+    // A workerAccess callback may edit defs during the loop; keep those reads live.
+    const indexed = !sample || !tAcc || !!accArr;
     for (let k = 0; k < list.length; k++) {
       const b = list[k];
+      // Keep the shared runtime cache in step for other systems and for same-id upgrades.
       const def = rt.defOf(b);
-      if (!def || def.devType === undefined) continue;
-      const dev: number = def.devType;
+      if (!def) continue;
+      const dev = indexed ? defIndex.of(b, def) : def.devType;
+      if (dev === undefined) continue;
       const blk = (((b.z + (b.d >> 1)) / COARSE) | 0) * cw + (((b.x + (b.w >> 1)) / COARSE) | 0);
       if (b.flags & (BF.Abandoned | BF.Burnt)) { t.abandoned++; continue; }
       t.countByDev[dev]++;
@@ -685,6 +757,7 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     rt,
     init(sim) {
       rt.attach(sim);
+      defIndex.reset();
       bindDemographics(sim);
       // a save from before WP1 (no education stock yet): the residents it already has keep the saved EQ's education
       // level instead of the first-settler EDU_NEWCOMER (EQ, CO / I-HT demand and the EQ rewards would otherwise
@@ -701,9 +774,11 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       for (const b of sim.state.buildings.values()) cache.sync(b);
       if (layersSim !== sim) {
         unsubLayers?.();
+        unsubReset?.();
         unsubLayers = sim.events.on('layerUpdated', (name) => {
           if (name === 'services') invalidate();
         });
+        unsubReset = sim.events.on('reset', () => defIndex.reset());
         layersSim = sim;
       }
       cursor = Math.max(0, demographicsData(sim.state).cursor ?? 0); // a loaded city keeps its visiting order
