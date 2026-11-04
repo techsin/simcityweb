@@ -1,4 +1,45 @@
-# T036s5 / FH-08 — first emergency teaching
+# T036 step 5 report: FH-08, the first emergency teaches (desktop, real GPU)
+
+**Verdict: done.** Every FH-08 acceptance line passes on the real GPU, on the default host and on
+`?simworker=loopback`, after one fix round (NOTE-055's condition: lines 4 and 5 on both hosts). Two items wait on
+others: the TopBar LIVE-title hunk waits for the cloud's TopBar split (NOTE-048), and NOTE-057 merges FEEL-10 (T048)
+before this lane, so I merge dev into this branch the day T048 lands and resolve EmergencyBanner.ts then.
+
+Branch `local/T036s5-fh08`: `d6d5421` the lane, `e5a234d` round 1, `a3cd741` round 2 (the protocol fields and the
+New Year hook); QA fixes `681a89c` (B1: only a never-savable alert teaches E1b), `79d36b5` (B2-B4, N3, N4: E3's
+numbers, its 12 s toast, a stale E2 waits, the copy), `5252302` (B5: the loopback `policy.teaching` getter, NOTE-055's
+one-off exception); dev `63c8f58` merged in.
+
+## Gates
+
+| Gate | Result |
+|---|---|
+| tsc | clean |
+| Full vitest with the fixtures (`00d35b2`) | **227 files passed, 2 skipped; 2,304 tests passed, 11 skipped; 0 failing** |
+| 128×15 s7 bot with the action log | **identical to dev:** residents [ 61124, 93804, 37971 ] = 192,899 |
+
+## Real-GPU QA, round 2 (RTX 5070 Ti, driver 610.47, ANGLE D3D11, Chromium 141; vet_s7_y21, 304k residents)
+
+| FH-08 line | Default host | Loopback | Measured |
+|---|---|---|---|
+| 1. E1a pauses and shows the card; Send nearest dispatches and closes it | PASS | PASS | the card names Fire Station #3 (4.0 min); LIVE, then Fast again after 7 s |
+| 2. E1b, the too-far card | PASS | PASS | no speed change; the Fire tab works |
+| 3. E2, the LIVE toast, exactly once | PASS | PASS | once |
+| 4. E3 explains the failure with real numbers and a distance hint | PASS | PASS | spreading fire: "needed 6.9 min; the building burned down 5.3 / 5.6 min after the alarm"; the explanation continues as a toast for 12.3 s naming the place, and its Fire tab action works; the outcome line is not repeated |
+| 5. A second uncovered fire behaves as today | PASS | PASS | a fire savable when alerted that then lapses teaches nothing and leaves E1b unseen; T029's rules hold (cooldown banner only, in-range never alerted, the urgent pause after 32 s, a same-profile reload shows nothing) |
+| 6. Nothing teaches during the New Year show; deferred lessons show once afterwards | PASS | PASS | a deferred E2 is dropped, unseen, when LIVE has ended, and teaches at the next real slowdown |
+| 7. The loading line with Send disabled; "No free unit" | PASS | PASS | loading line 60 ms on loopback; Send disabled with no free unit, then recovered |
+| N4: a failure without a banner does not use E3 up | PASS | PASS | the next bannered failure gets E3 |
+| B5: `host.policy.teaching` on loopback | – | PASS | equals the subscribed value |
+
+0 console or page errors. Round 1 (`a3cd741`) found B1-B5 (line 4 partial, line 5 failing); round 2 confirms each
+fixed. Two loopback notes are not regressions: the packet host fires two `speedChanged` events for the player's own
+pause click (seen in round 1 too), and the show's first busy frame still drew the E1b card for
+30 ms. QA notes: scratchpad `qa/FH08/qa.md` (rounds 1-2), with data and screenshots.
+
+The lane's own round notes follow.
+
+## The lane's notes (rounds 1-4)
 
 Desktop implementation on `local/T036s5-fh08`, initially based on `821a8d6`, committed as WIP `d6d5421`, then
 review-round-1 fix `e5a234d` and round-2 integration `a3cd741`. Round 3 was committed as `681a89c`, `79d36b5` and

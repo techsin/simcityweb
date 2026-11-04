@@ -1,4 +1,5 @@
 schema (step 1, POLISH_PLAN 7.5): local/R1-meta-schema, report docs/dev/reports/local-R1-meta-schema.md; gates green, browser check 8 of 8
+FH-08 (step 5): local/T036s5-fh08, report docs/dev/reports/local-R1-meta-FH-08.md; the first emergency teaches (E1a/E1b cards, E2, E3), deferred during the New Year show, on both hosts; every acceptance line passes on the real GPU after one fix round (NOTE-055); tsc, vitest 227 files / 2,304 tests, bot identical; the TopBar LIVE title waits for the TopBar split
 NOTE-042 #2-3 (step 2): cloud/t036s2, report docs/dev/reports/local-R1-meta-step2.md; text size, motion and colour vision hidden until wired (A11Y_WIRED), motion stores 'system'; gates green, browser 21 of 21 + 8 of 8
 FH-11 (step 2): cloud/t036s2, report docs/dev/reports/local-R1-meta-step2.md; difficulty blurbs, Easy + Guided start for a first city, Disasters note, one recommended tile; gates green, browser checks pass (1280x720 after a city: nothing clipped)
 FEEL-05 (step 2): cloud/t036s2, report docs/dev/reports/local-R1-meta-step2.md; new cities on Apr 1 (foundedDay 90), advisors from foundedDay, seasonal minimap; bot 128x15 s7 identical (196,101)
