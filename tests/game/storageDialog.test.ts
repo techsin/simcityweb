@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegionData } from '../../src/region/types';
 import type { PendingRecovery, RecoveryCity } from '../../src/save';
-import { exportStorageRegion, handleRecoveryStorageError, recoveryStorageGate, regionTakenOver, RegionStorageSession, reopenStoredRegion, showStorageError, storageDialogOpen, storageRecoveryChoice, STORAGE_FULL_MESSAGE, withRecoveryStorage } from '../../src/ui/StorageDialog';
+import { deleteStorageRegion, exportStorageRegion, handleRecoveryStorageError, recoveryStorageGate, regionTakenOver, RegionStorageSession, reopenStoredRegion, showStorageError, storageConditionVersion, storageDialogOpen, storageRecoveryChoice, STORAGE_FULL_MESSAGE, withRecoveryStorage } from '../../src/ui/StorageDialog';
 import { FEl, FNode, installFakeDom, textOf } from './fakeDom';
 import { smallCity } from '../save/fixtures';
 import { serializeCity } from '../../src/save/serialize';
@@ -32,7 +32,8 @@ vi.mock('../../src/save', () => ({
   rebuildRecoveredCity: store.rebuildRecoveredCity, deserializeCity: store.deserializeCity,
   safeFileName: (name: string) => `${name}.metropolis`,
 }));
-vi.mock('../../src/save/db', () => ({
+vi.mock('../../src/save/db', async (importOriginal) => ({
+  MemoryKV: (await importOriginal<typeof import('../../src/save/db')>()).MemoryKV,
   markRegionExported: store.markRegionExported, openKV: store.openKV, storageEstimate: store.storageEstimate,
   checkStorageSpace: store.checkStorageSpace, requireRegionSaveAccess: store.requireRegionSaveAccess,
   regionSaveAccess: store.regionSaveAccess,
@@ -252,6 +253,45 @@ describe('export during a storage failure', () => {
     expect(store.downloadBlob).not.toHaveBeenCalled();
     expect(store.markRegionExported).not.toHaveBeenCalled();
     expect(windowEvents.dispatchEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('cleared storage conditions', () => {
+  it('advances the condition version only after a region was deleted under its own lock', async () => {
+    const version = storageConditionVersion();
+    let finish!: () => void;
+    store.acquireLock.mockReturnValue(true);
+    store.deleteRegion.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const deleting = deleteStorageRegion('old-region');
+    await flush();
+    expect(store.acquireLock).toHaveBeenCalledExactlyOnceWith('old-region', false);
+    expect(store.deleteRegion).toHaveBeenCalledExactlyOnceWith('old-region');
+    expect(storageConditionVersion()).toBe(version);
+    finish();
+    expect(await deleting).toBe(true);
+    expect(storageConditionVersion()).toBe(version + 1);
+    expect(store.disposeLock).toHaveBeenCalledExactlyOnceWith('old-region');
+  });
+
+  it('keeps the condition version when deletion is refused or fails', async () => {
+    const version = storageConditionVersion();
+    expect(await deleteStorageRegion('busy-region')).toBe(false);
+    expect(store.deleteRegion).not.toHaveBeenCalled();
+    store.acquireLock.mockReturnValue(true);
+    store.deleteRegion.mockRejectedValueOnce(new Error('delete failed'));
+    await expect(deleteStorageRegion('old-region')).rejects.toThrow('delete failed');
+    expect(storageConditionVersion()).toBe(version);
+    expect(store.disposeLock.mock.calls).toEqual([['busy-region'], ['old-region']]);
+  });
+
+  it('does not treat a backup or closing its error dialog as freed storage', async () => {
+    const version = storageConditionVersion();
+    await exportStorageRegion(region);
+    await showStorageError(new DOMException('Full', 'QuotaExceededError'), { retry: async () => {}, signal: life.signal });
+    button('Close').click();
+    expect(store.markRegionExported).toHaveBeenCalledExactlyOnceWith(region.id);
+    expect(storageDialogOpen()).toBe(false);
+    expect(storageConditionVersion()).toBe(version);
   });
 });
 

@@ -25,7 +25,7 @@ vi.mock('../src/save/db', () => ({ openKV: vi.fn(async () => ({})), regionSaveAc
 vi.mock('../src/region/NewCityDialog', () => ({ openNewCityDialog: mocks.dialog }));
 vi.mock('../src/ui/StorageDialog', () => ({ RegionStorageSession: sessions.Session, reopenStoredRegion: mocks.reopen }));
 
-const data = { id: 'region', name: 'Harbour', tiles: [], totals: { population: 0, cities: 0, r: 0, c: 0, i: 0 } } as RegionData;
+const data = { id: 'region', name: 'Harbour', tiles: [], totals: { population: 0, cities: 0, r: 0, c: 0, i: 0 } } as unknown as RegionData;
 const tile = { key: '0_0' } as RegionTile;
 const config = { name: 'Port City' } as CityConfigData;
 const model = { data } as RegionModel;

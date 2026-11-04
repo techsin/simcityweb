@@ -25,8 +25,10 @@ let session: RegionStorageSession | null = null;
 let errorDialog: HTMLElement | null = null;
 const dialogs: HTMLElement[] = [];
 const takenOver = new Map<string, number>();
+let conditionVersion = 0;
 
 export function storageDialogOpen(): boolean { return dialogs.length > 0; }
+export function storageConditionVersion(): number { return conditionVersion; }
 export function regionTakenOver(regionId: string, snapshotAt: number): boolean { return snapshotAt <= (takenOver.get(regionId) ?? -Infinity); }
 
 function removeDialog(back: HTMLElement): void {
@@ -126,6 +128,7 @@ export async function deleteStorageRegion(regionId: string): Promise<boolean> {
   try {
     if (!(await lock.acquire())) return false;
     await deleteRegion(regionId);
+    conditionVersion++;
     return true;
   } finally { lock.dispose(); }
 }

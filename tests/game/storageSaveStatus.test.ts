@@ -14,7 +14,7 @@ class StatusEl extends FEl {
 
 installFakeDom();
 let status: SaveStatus;
-let onSave: ReturnType<typeof vi.fn>;
+let onSave: () => void;
 beforeEach(() => {
   vi.useFakeTimers();
   vi.stubGlobal('Node', FNode);

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CityScene } from '../../src/game/CityScene';
 import { PauseMenu, SavePill } from '../../src/ui/Modals';
 import type { GameContext } from '../../src/game/context';
-import { showStorageError, storageDialogOpen } from '../../src/ui/StorageDialog';
+import { showStorageError, storageConditionVersion, storageDialogOpen } from '../../src/ui/StorageDialog';
 import { FEl, installFakeDom, textOf } from './fakeDom';
 
 const access = vi.hoisted(() => ({ allowed: true, listeners: new Set<() => void>() }));
@@ -17,7 +17,7 @@ vi.mock('../../src/save/db', async (importOriginal) => ({
     return off;
   },
 }));
-vi.mock('../../src/ui/StorageDialog', () => ({ showStorageError: vi.fn(), storageDialogOpen: vi.fn(() => false) }));
+vi.mock('../../src/ui/StorageDialog', () => ({ showStorageError: vi.fn(), storageConditionVersion: vi.fn(() => 0), storageDialogOpen: vi.fn(() => false) }));
 
 installFakeDom();
 let now = 0;
@@ -28,9 +28,11 @@ beforeEach(() => {
   vi.spyOn(performance, 'now').mockImplementation(() => now);
   vi.stubGlobal('window', { setTimeout: globalThis.setTimeout });
   vi.clearAllMocks();
+  vi.mocked(storageConditionVersion).mockReturnValue(0);
   vi.mocked(storageDialogOpen).mockReturnValue(false);
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -39,6 +41,7 @@ function fixture(months = 3) {
   const parent = new FEl('div');
   const standIn = Object.assign(Object.create(CityScene.prototype) as object, {
     disposed: false, saving: null, monthsSinceSave: 0, lastSaveAt: 0,
+    autosaveFailure: { count: 0, retryAt: 0 }, storageCondition: 0,
     abort: new AbortController(),
     settings: { autosaveMonths: months },
     opts: { persistence: { regionId: 'region' }, onSave: vi.fn().mockResolvedValue(undefined) },
@@ -125,7 +128,7 @@ describe('the real-time autosave floor', () => {
     expect(f.internals.opts.onSave).not.toHaveBeenCalled();
   });
 
-  it('restarts the minute when an autosave fails, without an error sound', async () => {
+  it('starts the first backoff at failure completion and sounds once', async () => {
     const f = fixture();
     let fail!: (error: Error) => void;
     f.internals.opts.onSave.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
@@ -139,7 +142,7 @@ describe('the real-time autosave floor', () => {
     expect(f.internals.opts.onSave).toHaveBeenCalledTimes(1);
     await f.month(130_000);
     expect(f.internals.opts.onSave).toHaveBeenCalledTimes(2);
-    expect(f.internals.sound).not.toHaveBeenCalled();
+    expect(f.internals.sound).toHaveBeenCalledExactlyOnceWith('error');
     expect(f.parent.querySelector('.save-pill.show')).toBeNull();
   });
 
@@ -190,8 +193,111 @@ describe('the real-time autosave floor', () => {
     const retry = vi.mocked(showStorageError).mock.calls[0][1].retry;
     await retry();
     expect(f.internals.opts.onSave).toHaveBeenCalledTimes(2);
-    expect(f.internals.sound).not.toHaveBeenCalled();
+    expect(f.internals.sound).toHaveBeenCalledExactlyOnceWith('error');
     expect(f.parent.querySelector('.save-pill.show')).toBeNull();
+  });
+});
+
+describe('autosave failure backoff at ultra', () => {
+  function failingUltra() {
+    vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    vi.stubGlobal('window', { setTimeout: globalThis.setTimeout });
+    const f = fixture();
+    const attempts: number[] = [];
+    f.internals.opts.onSave.mockImplementation(async () => {
+      attempts.push(performance.now());
+      throw new DOMException('quota', 'QuotaExceededError');
+    });
+    const timer = setInterval(() => f.internals.onMonth(), 1500);
+    return { ...f, attempts, stop: () => clearInterval(timer) };
+  }
+
+  it('backs off 60 seconds, then 2, 4, 8 and capped 15 minutes with one error sound', async () => {
+    const f = failingUltra();
+    await vi.advanceTimersByTimeAsync(2_760_000);
+    f.stop();
+    expect(f.attempts).toEqual([60_000, 120_000, 240_000, 480_000, 960_000, 1_860_000, 2_760_000]);
+    expect(f.internals.sound).toHaveBeenCalledExactlyOnceWith('error');
+    expect(f.parent.querySelector('.save-pill.show')).toBeNull();
+  });
+
+  it.each(['auto', 'manual', 'hidden'] as const)('a successful %s save resets the backoff and permits one new error sound', async (kind) => {
+    const f = failingUltra();
+    await vi.advanceTimersByTimeAsync(120_000);
+    const savedAt = kind === 'auto' ? 240_000 : 150_000;
+    if (kind === 'auto') {
+      f.internals.opts.onSave.mockImplementationOnce(async () => { f.attempts.push(performance.now()); });
+      await vi.advanceTimersByTimeAsync(savedAt - performance.now());
+    } else {
+      await vi.advanceTimersByTimeAsync(savedAt - performance.now());
+      if (kind === 'manual') {
+        f.internals.opts.onSave.mockImplementationOnce(async () => { f.attempts.push(performance.now()); });
+        await f.scene.save();
+      } else f.scene.recordSaved();
+    }
+    const before = f.attempts.length;
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(f.attempts).toHaveLength(before);
+    await vi.advanceTimersByTimeAsync(60_001);
+    f.stop();
+    expect(f.attempts.slice(before)).toEqual([savedAt + 60_000, savedAt + 120_000]);
+    expect(f.internals.sound.mock.calls.filter(([name]) => name === 'error')).toEqual([['error'], ['error']]);
+    expect(f.internals.sound.mock.calls.filter(([name]) => name === 'save')).toHaveLength(kind === 'manual' ? 1 : 0);
+  });
+
+  it('cleared storage resets the streak without bypassing the minute floor', async () => {
+    const f = failingUltra();
+    await vi.advanceTimersByTimeAsync(150_000);
+    vi.mocked(storageConditionVersion).mockReturnValue(1);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(f.attempts).toEqual([60_000, 120_000]);
+    await vi.advanceTimersByTimeAsync(60_001);
+    f.stop();
+    expect(f.attempts).toEqual([60_000, 120_000, 180_000, 240_000]);
+    expect(f.internals.sound.mock.calls).toEqual([['error'], ['error']]);
+  });
+
+  it('retains a storage-clear reset that happens while an autosave is in flight', async () => {
+    const f = failingUltra();
+    await vi.advanceTimersByTimeAsync(120_000);
+    let fail!: (error: Error) => void;
+    f.internals.opts.onSave.mockImplementationOnce(() => {
+      f.attempts.push(performance.now());
+      return new Promise<void>((_resolve, reject) => { fail = reject; });
+    });
+    await vi.advanceTimersByTimeAsync(120_000);
+    vi.mocked(storageConditionVersion).mockReturnValue(1);
+    await vi.advanceTimersByTimeAsync(1500);
+    fail(new DOMException('quota', 'QuotaExceededError'));
+    await f.internals.saving;
+    await vi.advanceTimersByTimeAsync(60_000);
+    f.stop();
+    expect(f.attempts).toEqual([60_000, 120_000, 240_000, 301_500]);
+    expect(f.internals.sound.mock.calls).toEqual([['error'], ['error']]);
+  });
+
+  it('a failed manual save keeps its feedback without changing the autosave streak', async () => {
+    const f = failingUltra();
+    await vi.advanceTimersByTimeAsync(150_000);
+    await f.scene.save();
+    expect(textOf(f.parent.querySelector('.save-pill.show')!)).toContain('Save failed');
+    await vi.advanceTimersByTimeAsync(120_000);
+    f.stop();
+    expect(f.attempts).toEqual([60_000, 120_000, 150_000, 240_000]);
+    expect(f.internals.sound.mock.calls).toEqual([['error'], ['error']]);
+  });
+
+  it('a partial city acknowledgement cannot reset a streak of failed region writes', async () => {
+    const f = failingUltra();
+    f.internals.opts.onSave.mockImplementation(async () => {
+      f.attempts.push(performance.now());
+      f.scene.recordSaved();
+      throw new DOMException('region quota', 'QuotaExceededError');
+    });
+    await vi.advanceTimersByTimeAsync(480_000);
+    f.stop();
+    expect(f.attempts).toEqual([60_000, 120_000, 240_000, 480_000]);
+    expect(f.internals.sound).toHaveBeenCalledExactlyOnceWith('error');
   });
 });
 
