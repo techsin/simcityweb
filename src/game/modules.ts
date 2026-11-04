@@ -33,7 +33,7 @@ export interface LoanOfferInfo {
   maxAmount: number;
 }
 
-export type WorldViewCtor = new (canvas: HTMLCanvasElement, state: CityState, events: Emitter<CityEvents>, opts: { quality: QualityLevel }) => WorldViewApi;
+export type WorldViewCtor = new (canvas: HTMLCanvasElement, state: CityState, events: Emitter<CityEvents>, opts: { quality: QualityLevel; getState?: () => CityState }) => WorldViewApi;
 export type CityObjectsViewCtor = new (
   state: CityState,
   events: Emitter<CityEvents>,
