@@ -1,7 +1,7 @@
-/** W1.1b: recovery against W1.1a's unchanged loopback core, without the parallel host/worker lanes. */
+/** W1.1b: recovery against the loopback core, then through T032's packet host and a fresh loopback boot (T033). */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DevType, Network, Zone } from '../../src/core/types';
-import { clearRecoveryBase, getCityRecord, getRecoveryBase, saveCity } from '../../src/save/cities';
+import { clearRecoveryBase, getCityRecord, getRecoveryBase, loadCity, saveCity } from '../../src/save/cities';
 import { setKV } from '../../src/save/db';
 import {
   JOURNAL_OPS, JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, buildRecoverySnapshot, journalMatches, rebuildRecoveredCity,
@@ -9,21 +9,25 @@ import {
 } from '../../src/save/recoveryCodec';
 import { adoptRecoveryJournal, findRecoverySnapshot, readRecoveryJournal, storeJournalIdb, storeRecoveryIdb } from '../../src/save/recoveryIdb';
 import { peekRecoveryMarker, readLsJournal, readLsSnapshot } from '../../src/save/recoveryLs';
+import * as page from '../../src/save/recovery';
 import { writeRecoverySnapshot } from '../../src/save/recovery';
 import * as codec from '../../src/save/serialize';
 import { ReplicaSaveError } from '../../src/save/state';
 import { BF, type CityState } from '../../src/sim/CityState';
+import { Simulation } from '../../src/sim/Simulation';
 import { CityActions, type ActionResult } from '../../src/sim/actions';
 import { LoopbackCore } from '../../src/worker/loopbackCore';
-import { assertOwnedBuffers, cloneMessage, type M2W } from '../../src/worker/protocol';
+import { LoopbackSimHost, type LoopbackSimHostOptions } from '../../src/worker/LoopbackSimHost';
+import { assertOwnedBuffers, cloneMessage, CommandOutcomeLost, type M2W } from '../../src/worker/protocol';
+import { exactDigest } from '../../src/worker/queries';
 import { RecoveryMirror } from '../../src/worker/recoveryMirror';
-import { LocalSimHost, type Command } from '../../src/worker/SimHost';
+import { LocalSimHost, type Command, type SnapshotWhy } from '../../src/worker/SimHost';
 import { newState, place } from '../infra/cityGen';
 import { MemStorage, PersistentMemoryKV, regionData } from '../save/fixtures';
 
 const city = { regionId: 'rtest', tileKey: '0_0' };
 const rect = { x0: 3, z0: 3, x1: 6, z1: 6 };
-const loops: LoopbackCore[] = [], mirrors: RecoveryMirror[] = [], hosts: LocalSimHost[] = [];
+const loops: LoopbackCore[] = [], mirrors: RecoveryMirror[] = [], hosts: LocalSimHost[] = [], packetHosts: LoopbackSimHost[] = [];
 let now: number, kv: PersistentMemoryKV, storage: MemStorage;
 beforeEach(() => {
   now = 1000; vi.spyOn(Date, 'now').mockImplementation(() => now);
@@ -34,6 +38,7 @@ afterEach(async () => {
   for (const m of mirrors.splice(0)) m.dispose();
   for (const l of loops.splice(0)) l.dispose();
   for (const h of hosts.splice(0)) await h.dispose();
+  for (const h of packetHosts.splice(0)) await h.dispose();
   clearRecoveryBase(); vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 
@@ -207,7 +212,7 @@ describe('RecoveryMirror', () => {
   it('journals only the explicit op whitelist and rejects excluded ops at replay too', async () => {
     const f = await fixture();
     const included = Object.keys(JOURNAL_OPS);
-    const excluded = ['setSpeed', 'resume', 'setCamera', 'dispatch', 'dispatchBest', 'dismissAlert', 'setSettings',
+    const excluded = ['setSpeed', 'resume', 'setCamera', 'dispatch', 'dispatchBest', 'dismissAlert', 'setSettings', 'holdCalendar',
       'triggerDisaster', 'debug.runDays', 'debug.verify', 'debug.setStepBudget', 'debug.setTrafficMinCycle', 'future.op', 'toString'];
     [...included, ...excluded].forEach((op, i) => f.mirror.onCommand(i + 1, op, []));
     expect(f.mirror.journal.ops.map((e) => e.op)).toEqual(included);
@@ -261,10 +266,11 @@ describe('RecoveryMirror', () => {
     const result = f.post({ op: 'bulldoze', args: [r] }) as ActionResult;
     expect(result.ok).toBe(true); expect(result.cost).toBeLessThan(0);
     const journal = f.mirror.journal;
-    expect(journal.ops[0]).toMatchObject({ op: 'bulldoze', cost: result.cost });
+    expect(journal.ops[0]).toMatchObject({ op: 'bulldoze', cost: result.cost, refund: result.refund });
     expect(journal.ops[0]).not.toHaveProperty('cells');
+    expect(journal.ops[0]).not.toHaveProperty('refundNote');
     const restored = loop(codec.deserializeCity(record.city));
-    // A changed replay quote models a refund window closing; this base has no FH-07a clock/fields yet.
+    // A changed replay quote: the street is cheaper, and the replay's fresh CityActions never built it today (FH-07a).
     for (const p of path) restored.primary.network[restored.primary.idx(p.x, p.z)] = Network.Street;
     expect(restored.core.replayRecoveryJournal(journal, record)?.failed).toEqual([]);
     expect(restored.primary.funds).toBe(Number(record.city.scalars.funds) - result.cost);
@@ -342,5 +348,231 @@ describe('RecoveryMirror', () => {
     expect(() => codec.serializeCity(replica)).toThrow(ReplicaSaveError);
     await expect(saveCity(city.regionId, city.tileKey, replica)).rejects.toThrow(ReplicaSaveError);
     expect(() => writeRecoverySnapshot(city.regionId, city.tileKey, replica, info(replica))).toThrow(ReplicaSaveError);
+  });
+
+  it('keeps an in-flight ordinance as posted, and replays an applied one as a confirmed set', async () => {
+    const f = await fixture();
+    f.mirror.onCommand(1, 'setOrdinance', ['nuclear_free_zone', true]);
+    expect(f.mirror.journal.ops[0].args).toEqual(['nuclear_free_zone', true]);
+    f.mirror.onAck(1, { ok: false, cost: 0, needsConfirm: true });
+    expect(f.mirror.journal.ops).toEqual([]);
+    f.mirror.onCommand(2, 'setOrdinance', ['nuclear_free_zone', true]);
+    f.mirror.onAck(2, { ok: true, cost: 0 });
+    expect(f.mirror.journal.ops[0].args).toEqual(['nuclear_free_zone', true, { confirm: true }]);
+  });
+
+  it('books the refund the player got on its own budget line when the replay quotes a bigger one', async () => {
+    const f = await fixture(), r = { x0: 3, z0: 8, x1: 5, z1: 9 };
+    const built = f.post({ op: 'buildNetwork', args: [[{ x: 3, z: 8 }, { x: 4, z: 8 }], Network.Road] }) as ActionResult;
+    f.l.runDays(2); // no longer built today: a quarter of the price comes back
+    const charged = f.post({ op: 'bulldoze', args: [r] }) as ActionResult;
+    expect(charged.refund).toBe(-charged.cost);
+    expect(charged.refund).toBe(built.cost / 4);
+    const journal = f.mirror.journal, record = getRecoveryBase(city.regionId, city.tileKey)!;
+    expect(journal.ops[1]).toMatchObject({ op: 'bulldoze', cost: charged.cost, refund: charged.refund });
+    const restored = loop(codec.deserializeCity(record.city)), budget = restored.primary.budget;
+    // replayed on the save's day, the road is built and bulldozed the same day: its quote is the full price
+    expect(restored.core.replayRecoveryJournal(journal, record)).toEqual({ applied: [1, 2], failed: [] });
+    expect(budget.curIncome['oneoff:refund']).toBe(charged.refund);
+    expect(budget.curExpense['oneoff:demolition']).toBeUndefined();
+    expect(restored.primary.funds).toBe(Number(record.city.scalars.funds) - built.cost - charged.cost);
+  });
+});
+
+/** T033: the mirror on T032's packet host; a fresh loopback boot of the same save replays what it journaled (§4.3). */
+describe('RecoveryMirror through the loopback host', () => {
+  const road = [{ x: 3, z: 8 }, { x: 4, z: 8 }], roadRect = { x0: 3, z0: 8, x1: 5, z1: 9 };
+  const trees = { x0: 20, z0: 4, x1: 24, z1: 6 };
+  const ops = () => readLsJournal()?.ops.map((e) => [e.seq, e.op]);
+
+  /** the stored city a session starts from */
+  async function storedCity(): Promise<void> {
+    const state = newState(32); state.funds = 100000;
+    place(state, 't_r1', 10, 10);
+    await kv.put('regions', regionData());
+    await saveCity(city.regionId, city.tileKey, state);
+  }
+  /** main.ts's playCity: the load sets the recovery base, then the scene's host starts (paused: no day passes) */
+  async function boot(loopback?: LoopbackSimHostOptions['loopback']): Promise<LoopbackSimHost> {
+    const state = (await loadCity(city.regionId, city.tileKey))!;
+    const host = new LoopbackSimHost(state, { persistence: { ...city, regionName: 'Test Region' }, initialSpeed: 0, loopback });
+    packetHosts.push(host);
+    await host.start(); await host.drain();
+    return host;
+  }
+  /** the page goes away: App's synchronous unload write, then the host and the realm's recovery base */
+  async function unload(host: LoopbackSimHost, why: SnapshotWhy = 'pagehide'): Promise<void> {
+    host.recovery!.writeNow(why);
+    await host.dispose();
+    clearRecoveryBase();
+  }
+  /** packets wait in flight until drained and the core never stalls: a resync drops what is in flight */
+  const held = { lag: { seed: 3, packetTicks: 1000, longUnitChance: 0 } };
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('replays the journal of a session onto a fresh boot of its save: the same city, without the excluded ops', async () => {
+    await storedCity(); now = 1100;
+    const host = await boot(), id = [...host.state.buildings.keys()][0];
+    host.post('zone', [rect, Zone.ResLow]);
+    host.post('buildNetwork', [road, Network.Road]);
+    host.post('setTax', [DevType.R1, 12]); host.post('setTax', [DevType.R1, 13]);
+    host.post('plop', ['park_small', 4, 12, 0]);
+    host.post('terraform', ['raise', 20, 20, 1, 0.5]);
+    host.post('plantTrees', [trees]);
+    host.post('setFunding', ['fire', 120]);
+    host.post('setHistoric', [id, true]);
+    host.post('holdCalendar', [true]);
+    host.post('setOrdinance', ['nuclear_free_zone', true, { confirm: true }]);
+    host.post('takeLoan', [10000]);
+    host.post('bulldoze', [roadRect]);
+    host.post('dismissAlert', [99]);
+    host.post('setSettings', [{ emergencyUncovered: 'pause', emergencyLiveSlowmo: 2, emergencyAlerts: 'all' }]);
+    host.post('holdCalendar', [false]);
+    await host.drain();
+    const expected = exactDigest(host.harness.primary);
+    expect(exactDigest(host.state)).toBe(expected);
+    await unload(host);
+    expect(ops()).toEqual([[1, 'zone'], [2, 'buildNetwork'], [3, 'setTax'], [4, 'plop'], [5, 'terraform'], [6, 'plantTrees'],
+      [7, 'setFunding'], [8, 'setHistoric'], [10, 'setOrdinance'], [11, 'takeLoan'], [12, 'bulldoze']]);
+    expect(readLsJournal()?.ops[2].args).toEqual([DevType.R1, 13]);
+    // the title-time check moves the slot's journal into IDB; a journal alone has nothing to rebuild
+    expect(await page.findRecoverySnapshot(city)).toBeNull();
+    now = 1200;
+    const fresh = await boot();
+    expect(fresh.harness.recovered).toEqual({ applied: [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12], failed: [] });
+    expect(exactDigest(fresh.harness.primary)).toBe(expected);
+    expect(exactDigest(fresh.state)).toBe(expected);
+    expect(fresh.changes).toBeGreaterThan(0); // App's dirty check sees the replayed edits as unsaved
+  });
+
+  it('restores from the journal alone after a save, edits and an unload, booking the bulldoze the player was charged', async () => {
+    await storedCity(); now = 1100;
+    const host = await boot();
+    host.post('buildNetwork', [road, Network.Road]);
+    now = 1200;
+    const saved = host.save('manual'); await host.drain();
+    expect(await saved).toMatchObject({ savedAt: 1200, cmd: 1 });
+    // built today in this session: a full refund. Replayed on the save, the road is a base road quoted at 25 %.
+    const bulldoze = host.post('bulldoze', [roadRect]); host.post('setTax', [DevType.R1, 9]);
+    await host.drain();
+    const charged = await bulldoze.done as ActionResult;
+    const base = codec.deserializeCity((await getCityRecord(kv, city.regionId, city.tileKey))!.city);
+    expect(new CityActions(new Simulation(base, [])).bulldoze(roadRect, true).refund).toBeLessThan(charged.refund!);
+    const expected = exactDigest(host.harness.primary);
+    now = 1300;
+    // the unload's IDB write dies with the page: only the synchronous slot has these edits
+    const put = vi.spyOn(kv, 'put').mockRejectedValueOnce(new Error('unloading'));
+    await unload(host, 'beforeunload');
+    put.mockRestore();
+    expect(peekRecoveryMarker()).toMatchObject({ kind: 'journal', bytes: 0, baseSavedAt: 1200 });
+    expect(readLsJournal()).toMatchObject({ base: { kind: 'save', savedAt: 1200 }, fromCmd: 1,
+      ops: [{ seq: 2, op: 'bulldoze', cost: charged.cost, refund: charged.refund }, { seq: 3, op: 'setTax' }] });
+    expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
+    expect(await page.findRecoverySnapshot(city)).toBeNull();
+    expect(peekRecoveryMarker()).toBeNull();
+    now = 1400;
+    const fresh = await boot();
+    expect(fresh.harness.recovered).toEqual({ applied: [2, 3], failed: [] });
+    expect(exactDigest(fresh.harness.primary)).toBe(expected);
+    // its first save holds the replayed edits: they leave the journal, and the save's cleanup deletes the record
+    now = 1500;
+    const resaved = fresh.save('manual'); await fresh.drain();
+    expect((await resaved).cmd).toBe(0);
+    expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
+    fresh.recovery!.writeNow('pagehide');
+    expect(peekRecoveryMarker()).toBeNull();
+  });
+
+  it('keeps a correct journal across a resync: the snapshot it asks for replaces the entries whose acks were lost', async () => {
+    await storedCity(); now = 1100;
+    const host = await boot(held);
+    const tickets = [host.post('zone', [rect, Zone.ResLow]), host.post('plop', ['missing_def', 1, 1, 0]),
+      host.post('buildNetwork', [road, Network.Road]), host.post('bulldoze', [roadRect])];
+    await settle();
+    expect(host.harness.inbox.cmd).toBe(4);
+    now = 1200;
+    host.harness.post({ t: 'resync' });
+    await settle();
+    for (const t of tickets) await expect(t.done).rejects.toBeInstanceOf(CommandOutcomeLost);
+    // until that snapshot lands the four stay journaled, the failed plop too (a replay drops it), with no charges
+    host.recovery!.writeNow('hidden');
+    expect(readLsJournal()).toMatchObject({ base: { kind: 'save', savedAt: 1000 }, fromCmd: 0 });
+    expect(ops()).toEqual([[1, 'zone'], [2, 'plop'], [3, 'buildNetwork'], [4, 'bulldoze']]);
+    expect(readLsJournal()?.ops[3]).not.toHaveProperty('cost');
+    await host.drain();
+    host.post('setTax', [DevType.R1, 15]); host.post('plantTrees', [trees]);
+    await host.drain();
+    const expected = exactDigest(host.harness.primary);
+    now = 1300;
+    await unload(host);
+    expect(readLsJournal()).toMatchObject({ base: { kind: 'snapshot', at: 1200, baseSavedAt: 1000 }, fromCmd: 4 });
+    expect(ops()).toEqual([[5, 'setTax'], [6, 'plantTrees']]);
+    expect(readLsSnapshot()?.payload).not.toBeNull();
+    // Recover: the snapshot becomes the save, and its journal follows it there
+    const pending = (await page.findRecoverySnapshot(city))!;
+    expect(pending.marker).toMatchObject({ at: 1200, baseSavedAt: 1000 });
+    await page.restoreRecoverySnapshot(pending);
+    expect(await kv.get('recovery', 'rtest:0_0')).toBeUndefined();
+    expect(await kv.get('recovery', 'rtest:0_0#journal')).toMatchObject({ base: { kind: 'save', savedAt: 1300 }, fromCmd: 4 });
+    now = 1400;
+    const fresh = await boot();
+    expect(fresh.harness.recovered).toEqual({ applied: [5, 6], failed: [] });
+    expect(exactDigest(fresh.harness.primary)).toBe(expected);
+  });
+
+  it('rebinds the journal to a save whose reply a resync dropped, so the snapshot of that save is kept', async () => {
+    await storedCity(); now = 1100;
+    const host = await boot(held);
+    host.post('zone', [rect, Zone.ResLow]);
+    const saved = host.save('manual');
+    host.post('buildNetwork', [road, Network.Road]);
+    await settle(); // the save is written at the zone's watermark; its reply waits in flight
+    expect((await getCityRecord(kv, city.regionId, city.tileKey))?.savedAt).toBe(1100);
+    now = 1200;
+    host.harness.post({ t: 'resync' });
+    await expect(saved).rejects.toThrow(/interrupted by resync/);
+    await host.drain();
+    host.post('setFunding', ['fire', 125]); await host.drain();
+    const expected = exactDigest(host.harness.primary);
+    now = 1300;
+    await unload(host);
+    expect(readLsJournal()).toMatchObject({ base: { kind: 'snapshot', at: 1200, baseSavedAt: 1100 }, fromCmd: 2 });
+    expect(ops()).toEqual([[3, 'setFunding']]);
+    const pending = (await page.findRecoverySnapshot(city))!;
+    expect(pending.marker.baseSavedAt).toBe(1100);
+    await page.restoreRecoverySnapshot(pending);
+    now = 1400;
+    const fresh = await boot();
+    expect(fresh.harness.recovered).toEqual({ applied: [3], failed: [] });
+    expect(exactDigest(fresh.harness.primary)).toBe(expected);
+  });
+
+  it('carries the replayed edits until a save holds them, so a second crash loses nothing', async () => {
+    await storedCity(); now = 1100;
+    const first = await boot();
+    first.post('zone', [rect, Zone.ResLow]); first.post('setTax', [DevType.R1, 12]);
+    await first.drain();
+    await unload(first);
+    await page.findRecoverySnapshot(city);
+    now = 1200;
+    const second = await boot();
+    expect(second.harness.recovered).toEqual({ applied: [1, 2], failed: [] });
+    second.post('buildNetwork', [road, Network.Road]);
+    await second.drain();
+    const expected = exactDigest(second.harness.primary);
+    now = 1300;
+    await unload(second);
+    expect(readLsJournal()).toMatchObject({ base: { kind: 'save', savedAt: 1000 }, fromCmd: -2 });
+    expect(ops()).toEqual([[-1, 'zone'], [0, 'setTax'], [1, 'buildNetwork']]);
+    await page.findRecoverySnapshot(city);
+    now = 1400;
+    const third = await boot();
+    expect(third.harness.recovered).toEqual({ applied: [-1, 0, 1], failed: [] });
+    expect(exactDigest(third.harness.primary)).toBe(expected);
+    const saved = third.save('manual'); await third.drain();
+    expect((await saved).cmd).toBe(0);
+    expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
+    third.recovery!.writeNow('pagehide');
+    expect(peekRecoveryMarker()).toBeNull();
   });
 });

@@ -34,6 +34,11 @@ export async function adoptRecoveryJournal(kv: KV, journal: RecoveryJournal, bas
   if (!current || current.at <= journal.at) await storeJournalIdb(kv, journal);
 }
 
+/** The snapshot record alone: a restore rebinds its journal to the save the snapshot became. */
+export function discardSnapshotRecord(kv: KV, city: RecoveryCity): Promise<void> {
+  return kv.delete('recovery', recKey(city));
+}
+
 export async function peekRecoveryMarker(kv: KV, city: RecoveryCity): Promise<RecoveryMarker | null> {
   return (await kv.get<IdbRecoveryRecord>('recovery', recKey(city)))?.marker ?? null;
 }

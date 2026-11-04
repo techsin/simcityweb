@@ -18,9 +18,9 @@
  *
  * Pure codec (encodeCityDelta / applyCityDelta / packBytes / unpackBytes) is headless and unit-tested.
  */
-import { getRecoveryBase, putCityRecord, cityKey } from './cities';
-import { openedKV, openKV } from './db';
-import { buildRecoverySnapshot, rebuildRecoveredCity, type PendingRecovery, type RecoveryCity, type RecoverySnapshot, type SnapshotInfo, type WriteResult } from './recoveryCodec';
+import { getCityRecord, getRecoveryBase, putCityRecord, cityKey } from './cities';
+import { openedKV, openKV, type KV } from './db';
+import { buildRecoverySnapshot, rebindJournal, rebuildRecoveredCity, type PendingRecovery, type RecoveryCity, type RecoveryMarker, type RecoverySnapshot, type SnapshotInfo, type WriteResult } from './recoveryCodec';
 import * as idb from './recoveryIdb';
 import * as ls from './recoveryLs';
 import { assertSavableCity, type SavableCityState } from './state';
@@ -60,6 +60,7 @@ export async function findRecoverySnapshot(city?: RecoveryCity): Promise<Pending
   if (local) {
     try {
       if (local.payload) await idb.adoptRecoverySnapshot(kv, local.marker, local.payload);
+      await adoptLsJournal(kv, local.marker);
       const current = ls.peekRecoveryMarker();
       if (current?.at === local.marker.at && current.regionId === local.marker.regionId && current.tileKey === local.marker.tileKey) ls.discardRecoverySnapshot(local.marker);
     } catch { /* keep the localStorage copy */ }
@@ -67,14 +68,30 @@ export async function findRecoverySnapshot(city?: RecoveryCity): Promise<Pending
   return idb.findRecoverySnapshot(kv, city);
 }
 
-/** Make the recovered snapshot the full save, then clear both recovery copies. */
+/** W1.1b: the slot's journal joins the IDB copy, bound to the save or the snapshot its marker names. A packet host's
+ *  boot reads only IDB (§4.3), so dropping it with the slot would lose the edits its unload IDB write did not land. */
+async function adoptLsJournal(kv: KV, marker: RecoveryMarker): Promise<void> {
+  const journal = ls.readLsJournal();
+  const record = journal && await getCityRecord(kv, marker.regionId, marker.tileKey);
+  if (!journal || !record) return;
+  await idb.adoptRecoveryJournal(kv, journal, { regionId: marker.regionId, tileKey: marker.tileKey, savedAt: record.savedAt,
+    snapshot: journal.base?.kind === 'snapshot' ? marker : undefined });
+}
+
+/** Make the recovered snapshot the full save, then clear both recovery copies. A journal bound to that snapshot follows
+ *  it onto the new save (W1.1b), for the next packet-host boot to replay. */
 export async function restoreRecoverySnapshot(p: PendingRecovery): Promise<void> {
   const city = rebuildRecoveredCity(p);
   const kv = await openKV();
   const { regionId, tileKey } = p.marker;
+  const journal = p.record ? await idb.readRecoveryJournal(kv, { regionId, tileKey, savedAt: p.record.savedAt, snapshot: p.marker }) : null;
   city.savedAt = Date.now();
   await putCityRecord(kv, { key: cityKey(regionId, tileKey), regionId, tileKey, savedAt: city.savedAt, city });
-  await discardRecoverySnapshot(p.marker);
+  if (!journal) return discardRecoverySnapshot(p.marker);
+  // KV has no transaction across stores: a failure from here on loses the journal, which every restore did before
+  await idb.storeJournalIdb(kv, rebindJournal(journal, city.savedAt));
+  ls.discardRecoverySnapshot(p.marker);
+  await idb.discardSnapshotRecord(kv, p.marker);
 }
 
 export async function discardRecoverySnapshot(city?: RecoveryCity): Promise<void> {
