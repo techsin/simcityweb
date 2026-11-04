@@ -1,5 +1,16 @@
 # T036s4 · FEEL-02b quiet autosave
 
+## Review round 3
+
+The worker measured five autosaves in five minutes at ultra on a 304k city (minimum gap 60.37s), zero chimes/pills, and the correct 1×/Ctrl+S behavior. This round addresses the failed-save and dialog cases from that QA:
+
+1. `CityScene.ts`: a failed automatic attempt restarts the 60-second floor, automatic saves skip while a storage dialog is open, and automatic failures play no error sound. Manual saves keep their feedback; explicit Retry remains available within the minute.
+2. `storage.css`: the 300px-wide backup reminder now sits at top-center, 150px below the top, at z4. It stays visible between the side panels and above the tile actions, below dialogs and the lock banner. No RegionScreen markup change is required.
+3. `CityScene.onKey` checks `storageDialogOpen()` beside confirmation state. Tests cover 3, Space, Escape and Ctrl+S while dialogs are open.
+4. Lost-owner failures cancel pending pills and show no error dialog/sound. The disabled chip wording, settings/recovery copy, fresh takeover summaries and live host-snapshot exports are detailed in the NEW-04 round-3 section. `main.ts` and `recoveryLs.ts` are unchanged; no infra or balance change.
+
+Round-3 validation is blocked by the shared `QUIET` flag: the gated TypeScript command never started during about 50 minutes of waiting, and only this lane's waiter was cancelled. No new TypeScript or Vitest result is claimed. `git diff --check` and UTF-8/no-BOM checks pass; main.ts is +0/−0 this round. The NEW-04 report lists all 17 pending targeted files and the browser rechecks. Original bot acceptance remains worker-verified at 192,899. B9's worker exception-name transport remains pending. The report also records the Worker snapshot request needed to export a built live payload when recovery persistence fails; the local-host behavior has new regression tests awaiting execution. No worker file was edited. Changes are uncommitted.
+
 Branch: `local/T036s4-storage`; base: `821a8d6`. Initial implementation is committed as WIP (`2f040cc`, `8229b70`); review-round fixes remain uncommitted. No `.done` file was changed.
 
 ## Review round 1

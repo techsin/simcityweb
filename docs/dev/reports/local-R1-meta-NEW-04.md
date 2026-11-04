@@ -1,5 +1,56 @@
 # T036s4 · NEW-04 storage you can trust
 
+## Review round 3 · real-GPU QA follow-up
+
+Starting commit `68aa888`; changes in this round are uncommitted. The worker's real-GPU QA passed every original acceptance item on the default host, then identified B1–B8 below. B9 remains cloud-owned and pending. No browser or timing run is started by this lane.
+
+1. **B1 — failed autosaves:** `CityScene.ts` restarts the minute floor when an automatic attempt fails, makes no automatic attempt while a storage dialog is open, and leaves error sounds to manual saves. Explicit Retry still bypasses the floor. `autosaveFloor.test.ts` covers the failed-attempt timestamp, repeated month ends, open-dialog suppression and manual feedback.
+2. **B2 — reminder layout:** `storage.css` places the reminder at top-center, 150px from the top, 300px wide, at HUD z4 below dialogs (z40). It sits between the region card and city list, below the toolbar/lock banner and above the lower tile card, remaining visible when a tile is selected. At 1024px wide its x362–662 span clears the region card ending at x318 and the city list starting at x736; at 600px high it remains above the tile card. The change is CSS-only.
+3. **B3 — keyboard isolation:** `StorageDialog.ts` exports `storageDialogOpen()` for the actual dialog stack; `CityScene.onKey` checks it beside `confirmOpen()`. Tests cover 3, Space, Escape and Ctrl+S, plus the closed-dialog baseline and nested manager/error lifetime.
+4. **B4–B8 — small fixes:**
+   - `CityScene.ts`, `Modals.ts` and `StorageDialog.ts`: ownership loss cancels pending save feedback and suppresses the unworkable error dialog. `regionLock.ts` repairs stale or absent tile summaries/totals from newer stored city records after acquisition, preserving founding date and thumbnail without writing them during takeover. Tests include in-flight loss and stored-record reload.
+   - `region/ui/SaveStatus.ts`: existing disabled-chip wiring now renders “Open in another tab” and explains that this tab cannot save. No App change is required.
+   - `region/ui/dialogs.ts`: restores “Autosave” in the app/region Settings label and explains a takeover recovery as progress from another tab. `StorageDialog.ts` records takeover before reloading and compares the snapshot timestamp, preserving the explanation on Retry without applying it to a later failed exit from this tab.
+   - `StorageDialog.ts`: a live-city Export asks `host.snapshot('hidden')`, reconstructs that payload against its matching base, replaces the running city in the downloaded region, and updates its exported tile summary/totals. Other cities remain stored copies. It makes no city/region save; the host may refresh its recovery slot. Quota/readonly recovery writes may fail while the returned payload still supplies the backup. Missing or mismatched snapshots fail visibly rather than silently exporting older progress. The coordinator passes the current city through a live callback, with no `main.ts` hunk.
+
+New tests: `storageSaveStatus.test.ts`, `storageCopy.test.ts`, `liveRegionExport.test.ts`, `regionSummaryReload.test.ts`; expanded `autosaveFloor.test.ts` and `storageDialog.test.ts`. Existing `citySaves.test.ts` learns the new dialog-state export and pill cancellation; `regionStorage.test.ts` supplies the new summary-read mocks. The `SaveStatus.ts` hunk is outside the original task list but directly implements round-3 B5. **`main.ts` and `recoveryLs.ts` are unchanged in this round. Infra hunks: none.** No balance, save-schema or simulation-RNG change.
+
+Round-3 validation: `git diff --check` passes; all 17 changed files are valid UTF-8 without a BOM. `main.ts` has **+0/−0** this round, and `recoveryLs.ts` and `RegionScreen.ts` are unchanged. The quiet-gated `npx tsc --noEmit` never started because the shared `QUIET` flag remained set for about 50 minutes. Only this lane's waiting command was cancelled; the flag and timing processes were left untouched. There is no new TypeScript or Vitest result for this round. The worker already verified the unchanged 192,899 bot total on this base; no balance change or new bot run was made here. Full-suite and real-GPU regression remain with the lead.
+
+Pending targeted files, one process at a time through the quiet gate:
+
+- `tests/game/autosaveFloor.test.ts`
+- `tests/game/storageDialog.test.ts`
+- `tests/game/citySaves.test.ts`
+- `tests/game/storageSaveStatus.test.ts`
+- `tests/game/storageCopy.test.ts`
+- `tests/game/labelFrame.test.ts`
+- `tests/game/newCityStart.test.ts`
+- `tests/game/titleSettings.test.ts`
+- `tests/regionStorage.test.ts`
+- `tests/storageDb.test.ts`
+- `tests/save/foundingPersistence.test.ts`
+- `tests/save/liveRegionExport.test.ts`
+- `tests/save/recoveryStorageLock.test.ts`
+- `tests/save/regionEffects.test.ts`
+- `tests/save/regionSaveAccess.test.ts`
+- `tests/save/regionSummaryReload.test.ts`
+- `tests/worker/hygiene.test.ts`
+
+Use the working native-loader invocation recorded below: set `NODE_OPTIONS=--experimental-transform-types`, then `node <quietrun.mjs> npx vitest run <file> --maxWorkers=1 --configLoader native --pool threads`. No full suite, bot or browser was started in this round.
+
+Browser recheck:
+
+- [ ] Keep quota failure active for several ultra months: one failed attempt, no automatic retry while either storage dialog is open, zero automatic error sounds; after Close, respect the restarted minute floor.
+- [ ] Recheck the reminder and tile controls at 1024×600, 1280×720, 1366×768 and taller sizes; Settings/New City dialogs cover the HUD completely.
+- [ ] With a storage dialog open, press 3, Space, Ctrl+S and Escape; city speed and pause menu stay unchanged. Escape closes only the top storage dialog.
+- [ ] Take over during a save: old tab gets the ownership banner without failed-save feedback; new holder sees current city-record summaries.
+- [ ] Read-only chip explains that this tab cannot save; restored ownership restores normal state wording.
+- [ ] Quota Export contains the running city's day/funds/population and imports successfully, including a read-only tab; neighbour saves remain intact.
+- [ ] Check the Autosave label and takeover recovery explanation.
+- [ ] **Pending B9:** preserve exception names in worker failure replies (`protocolInbox.ts` save/snapshot handlers, `protocol.ts` failed reply shapes, `LoopbackSimHost.ts` reply rejection), then repeat the Worker-protocol quota test. No worker file is changed here.
+- [ ] **Additional Worker live-export request:** `ProtocolInbox.snapshot()` in `src/worker/protocolInbox.ts` currently discards a successfully encoded marker/payload when `store.putSnapshot()` rejects for quota or ownership. Return that payload with truthful failed-persistence fields (`idb: false`, initially `ok: false`); encoding failures should still reject. In `src/worker/LoopbackSimHost.ts`, the snapped reply should expose the payload, attempt the existing guarded localStorage mirror, and derive `SnapshotAck.ok` from actual IDB/LS results. Keep ownership guards. This lets the Worker export current progress without requiring a recovery write, matching the tested local host. Worker live export under quota/read-only conditions is not verified until this lands.
+
 Branch: `local/T036s4-storage`; base: `821a8d6`. Initial WIP: `2f040cc` (App/recovery guards) and `8229b70` (owned files). Review-round fixes below are uncommitted. No `.done` file was changed.
 
 ## Review round 1
