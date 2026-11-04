@@ -18,7 +18,8 @@ import {
 /** W0.6's save guards refuse this brand; it is declared in the save layer (save/state.ts), below this module. */
 export { REPLICA };
 export type ReplicaState = CityState & { readonly [REPLICA]: true };
-export interface ReplicaCause { seq: number; tag: object | null }
+/** T061 item 3: `dispatchIncidentId`, the incident a dispatch or dispatchBest command sends units to */
+export interface ReplicaCause { seq: number; tag: object | null; dispatchIncidentId?: number }
 export interface EmergencyReplicaView {
   readonly active: boolean;
   readonly layersReady: boolean;
@@ -35,6 +36,11 @@ export interface ReplicaHooks {
   policy?(policy: PolicyState, cmd: number): void;
   building?(building: Building, cmd: number): void;
   clock?(clock: Clock, cmd: number): void;
+  /** T061 item 1: a speedChanged of the log, before it is emitted: the authority's speed from that entry on (`cmd`: the
+   *  commands acked so far) */
+  speed?(speed: number, cmd: number): void;
+  /** T061 item 3: the incident an unacknowledged command dispatches units to, if it is a dispatch */
+  dispatchIncident?(seq: number): number | undefined;
   ack?(seq: number, result: unknown): void;
   tag?(seq: number): object | null;
   watch?(value: NonNullable<Packet['watch']>[number]): void;
@@ -239,7 +245,8 @@ export class Replica {
   private replay(entry: Entry, p: Packet): void {
     const [type, day, arg, cause] = entry;
     this.state.day = day;
-    this.cause = cause === undefined ? null : { seq: cause, tag: this.hooks.tag?.(cause) ?? null };
+    const incident = cause === undefined ? undefined : this.hooks.dispatchIncident?.(cause);
+    this.cause = cause === undefined ? null : { seq: cause, tag: this.hooks.tag?.(cause) ?? null, ...(incident !== undefined ? { dispatchIncidentId: incident } : {}) };
     if (type === EntryType.Ack) {
       if (cause === undefined || cause <= this.applied || !p.acks || typeof arg !== 'number' || arg < 0 || arg >= p.acks.length) throw new Error('Invalid Ack entry');
       this.applied = cause;
@@ -270,7 +277,7 @@ export class Replica {
       this.state.news.push(item);
       if (this.state.news.length > 200) this.state.news.splice(0, this.state.news.length - 200);
       this.newsSeq++; value = item;
-    }
+    } else if (type === EntryType.SpeedChanged) this.hooks.speed?.(value as number, this.applied);
     this.events.emit(name, value);
     this.cause = null;
   }

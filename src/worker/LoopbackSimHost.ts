@@ -12,11 +12,11 @@ import { CHANGE_EVENTS } from '../save/fingerprint';
 import { clearRecoveryAfterSave, storeRecoveryLs } from '../save/recoveryLs';
 import { gameDateLabel, type RecoveryInfo } from '../save/recoveryCodec';
 import { RecoveryMirror as JournalMirror } from './recoveryMirror';
-import { Gesture, type ActOptions, type Cause, type Command, type CommandArgs, type CommandOp, type CommandResult,
+import { Gesture, dispatchIncidentOf, type ActOptions, type Cause, type Command, type CommandArgs, type CommandOp, type CommandResult,
   type GestureOwner, type LocalSimHostOptions, type PolicySnapshot, type PolicyView, type RecoveryMirror,
   type SaveAck, type SaveReason, type SimHost, type SnapshotAck, type SnapshotWhy, type SpeedSource, type Ticket, type WatchHandle } from './SimHost';
 import { exactDigest, queryKey, type QueryArgs, type QueryName, type QueryResult, type WatchPolicy } from './queries';
-import { cloneMessage, CommandOutcomeLost, copyOwned, EVENT_TYPES, type M2W, type Packet, type PolicyState,
+import { cloneMessage, CommandOutcomeLost, copyOwned, EVENT_TYPES, replyError, type M2W, type Packet, type PolicyState,
   type RasterPatch, type Ready, type Reply, type ViewState, type W2M, type WatchValue } from './protocol';
 import { Replica } from './replica';
 import { NO_PENDING, type PendingView } from './PendingEdits';
@@ -67,6 +67,12 @@ function deferred<T>(): Deferred & { promise: Promise<T> } {
   void promise.catch(() => {});
   return { promise, resolve, reject };
 }
+
+/** T061 item 2 (WORKER_DESIGN §3.5): how far the page's clock may run past the last packet's time, one packet interval
+ *  as §3.5 counts it (the recorder's 250 ms heartbeat, then the unit and the transport it waits for: up to 0.5 s) */
+const CLOCK_LEAD_MS = 500;
+/** the page's clock closes a gap to its prediction over about this long, changing no frame's step by more than NUDGE */
+const CLOCK_BLEND_MS = 250, CLOCK_NUDGE = 0.25;
 
 /** A keyed, bounded watch cache. A delayed value for another target never appears under the current target. */
 export class PacketWatch<K extends QueryName> implements WatchHandle<QueryResult<K>, QueryArgs<K>> {
@@ -153,6 +159,9 @@ export class PacketSimHost implements SimHost {
   private hasReady = false;
   private receivedAt = 0;
   private lastTime = 0;
+  /** T061 item 2: when simTime() last ran; whether the page holds the calendar (NOTE-041: the clock stays in its day) */
+  private shownAt = 0;
+  private holding = false;
   private pausedFrom = 1;
   private speedMirror = 1;
   private stop = () => { void this.dispose(); };
@@ -180,6 +189,9 @@ export class PacketSimHost implements SimHost {
       building: (building, cmd) => this.reapply(cmd, building),
       policy: (policy, cmd) => this.reapply(cmd, undefined, policy),
       clock: (clock, cmd) => { this.speedMirror = clock.speed; this.reapply(cmd); },
+      // T061 item 1: the mirror moves before the log's speedChanged is emitted, not after the packet
+      speed: (speed, cmd) => this.rebaseSpeed(speed, cmd),
+      dispatchIncident: (seq) => dispatchIncidentOf(this.edits.get(seq)),
       adopt: (_replica, cmd) => this.adopt(cmd),
       watch: (value) => {
         this.assertWatermark(value.cmd);
@@ -196,7 +208,7 @@ export class PacketSimHost implements SimHost {
       get state() { return host.state; }, get events() { return host.events; }, systems: [],
       get speed() { return host.speed; }, set speed(v: number) { host.setSpeed(v, 'facade'); },
       get liveSlowdown() { return host.liveSlowdown; },
-      get dayFraction() { return host.simTime() - host.state.day; },
+      get dayFraction() { return Math.max(0, Math.min(1, host.simTime() - host.state.day)); },
       simTime: () => host.simTime(), secondsPerDay: () => host.secondsPerDay(), update: (dt: number) => host.frame(dt),
       getSystem: (name: string) => name === 'emergency' ? host.emergency : name === 'traffic' ? host.replica.traffic
         : name === 'utilities' ? host.utilities : name === 'disasters' ? { active: host.replica.disasters } : undefined,
@@ -380,6 +392,7 @@ export class PacketSimHost implements SimHost {
       case 'resume': this.speedMirror = this.pausedFrom; this.events.emit('speedChanged', this.speed); break;
       case 'dismissAlert': this.replica.policy.alerts = this.replica.policy.alerts.filter((a) => a.id !== command.args[0]); this.publishPolicy(); break;
       case 'setCamera': this.state.systemData.camera = copyOwned(command.args[0]); break;
+      case 'holdCalendar': this.holding = command.args[0]; break;
     }
   }
   /** Rebase without events; the authoritative event that follows sees the latest pending field value. */
@@ -397,10 +410,33 @@ export class PacketSimHost implements SimHost {
       }
     }
   }
+  /** T061 item 1: a speedChanged of the authority's: its speed, unless a newer speed command of the page's is pending */
+  private rebaseSpeed(speed: number, cmd: number): void {
+    this.speedMirror = speed;
+    for (const [seq, c] of this.edits) if (seq > cmd) {
+      if (c.op === 'setSpeed') this.speedMirror = Math.max(0, Math.min(3, c.args[0] | 0));
+      if (c.op === 'resume') this.speedMirror = this.pausedFrom;
+    }
+  }
+  /**
+   * T061 item 2 (WORKER_DESIGN §3.5): the page's sim time. The prediction runs on from the last packet past the day's
+   * end (a day's packet comes late by the day's own work, and the old day + 0.999 cap stopped every vehicle there and
+   * then made it leap), but at most CLOCK_LEAD_MS past that packet's time, never past a day's end the authority holds at
+   * (frac 1: the New Year hold or maxDaysPerFrame) or the page asked it to hold at. What is shown runs at the real rate
+   * and is nudged towards the prediction. It never goes back; a gap larger than the lead is taken at once.
+   */
   simTime(): number {
-    const c = this.replica.clock;
-    const f = c.frac + (this.speed > 0 ? Math.max(0, this.now() - this.receivedAt) / 1000 / this.secondsPerDay() : 0);
-    return this.lastTime = Math.max(this.lastTime, c.day + Math.min(0.999, f));
+    const c = this.replica.clock, now = this.now(), spd = this.secondsPerDay();
+    const rate = this.speed > 0 && spd > 0 && Number.isFinite(spd) ? 1 / (1000 * spd) : 0;
+    const base = c.day + c.frac, lead = c.frac >= 1 ? 0 : Math.min(this.holding ? 1 - c.frac : 1, CLOCK_LEAD_MS * rate);
+    const target = base + Math.min(lead, Math.max(0, now - this.receivedAt) * rate);
+    const elapsed = Math.max(0, now - this.shownAt), step = elapsed * rate;
+    this.shownAt = now;
+    let t = this.lastTime + step;
+    const gap = target - t;
+    if (!(rate > 0) || gap > lead) t = target;
+    else t += Math.max(-CLOCK_NUDGE * step, Math.min(CLOCK_NUDGE * step, gap * Math.min(1, elapsed / CLOCK_BLEND_MS)));
+    return this.lastTime = Math.max(this.lastTime, Math.min(t, base + lead));
   }
   secondsPerDay(): number { return SECONDS_PER_DAY[this.speed] * (this.speed === 1 ? Math.max(1, this.liveSlowdown || 1) : 1); }
   frame(dt: number): void {
@@ -460,7 +496,7 @@ export class PacketSimHost implements SimHost {
    *  (WorkerSimHost) stores the worker's record or payload first. */
   protected settle(reply: Extract<Reply, { t: 'saved' | 'snapped' }>, wait: Settle | undefined): void {
     if (reply.t === 'saved') {
-      if (!reply.ok) { this.mirror?.onSaveFailed(); wait?.reject(new Error(reply.error)); return; }
+      if (!reply.ok) { this.mirror?.onSaveFailed(); wait?.reject(replyError(reply.error, reply.errorName)); return; }
       const p = this.options.persistence;
       const dropped = p ? clearRecoveryAfterSave(p.regionId, p.tileKey, reply.savedAt!) : false;
       // T033: the journal rebinds to this save and keeps only the commands newer than its copy
@@ -468,7 +504,7 @@ export class PacketSimHost implements SimHost {
       wait?.resolve({ savedAt: reply.savedAt!, cmd: reply.cmd, pktSeq: reply.pktSeq!, fp: reply.fp!, summary: reply.summary!,
         changes: reply.changes ?? this.changes, recoveryDropped: dropped || !!reply.recoveryDropped } satisfies SaveAck);
     } else if (reply.ok === false) {
-      if (reply.error) wait?.reject(new Error(reply.error)); else wait?.resolve(null);
+      if (reply.error) wait?.reject(replyError(reply.error, reply.errorName)); else wait?.resolve(null);
     } else {
       // T033: with a journal, localStorage keeps the payload and the journal of the same base; a snapshot of a replaced
       // save is not taken up (its IndexedDB copy is dropped at restore)
@@ -507,7 +543,7 @@ export class PacketSimHost implements SimHost {
     }
     if (message.t !== 'pkt') return;
     this.packet = message.p;
-    if (message.p.clock.day < this.replica.clock.day) this.lastTime = message.p.clock.day;
+    if (message.p.clock.day < this.replica.clock.day) this.lastTime = -Infinity; // the next simTime() starts from it
     this.receivedAt = this.now();
     if (this.replica.apply(message.p)) {
       // the worker's count when the packet carries it (save and snapshot acks carry the same counter); else the log's
@@ -520,7 +556,7 @@ export class PacketSimHost implements SimHost {
   }
   private adopt(cmd: number): void {
     this.offViews();
-    this.speedMirror = this.replica.clock.speed; this.receivedAt = this.now(); this.lastTime = this.replica.clock.day;
+    this.speedMirror = this.replica.clock.speed; this.receivedAt = this.now(); this.lastTime = -Infinity;
     this.controller?.pending.rebase(cmd);
     this.reapply(cmd); this.reapply(cmd, undefined, this.replica.policy);
     for (const b of this.state.buildings.values()) this.reapply(cmd, b);

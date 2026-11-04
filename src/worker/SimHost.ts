@@ -200,7 +200,13 @@ export type CommandResult<K extends CommandOp> = ReturnType<Commands[K]>;
 export type Command = { [K in CommandOp]: { op: K; args: CommandArgs<K> } }[CommandOp];
 export interface Ticket<R> { readonly seq: number; readonly predicted?: R; readonly exact: boolean; readonly done: Promise<R> }
 export interface ActOptions { tag?: object; gesture?: Gesture }
-export interface Cause { seq: number; tag: object | null }
+/** T061 item 3 (T048's request a): `dispatchIncidentId` is the incident a dispatch or dispatchBest sends units to, so a
+ *  reinforcement the player sends to an incident the city already answered counts as the player's */
+export interface Cause { seq: number; tag: object | null; dispatchIncidentId?: number }
+/** the incident a command dispatches units to: dispatch's and dispatchBest's first argument */
+export function dispatchIncidentOf(command: { op: CommandOp; args: readonly unknown[] } | undefined): number | undefined {
+  return command && (command.op === 'dispatch' || command.op === 'dispatchBest') ? command.args[0] as number : undefined;
+}
 export type GestureOwner = object;
 
 /** W0.5: read-only system data, shared by local readers and the replica's streams. */
@@ -424,7 +430,8 @@ export class LocalSimHost implements SimHost {
     const seq = ++this.seq;
     const gesture = opts.gesture ?? this.gesture;
     const before = this.emitting;
-    this.emitting = { seq, tag: opts.tag ?? null };
+    const incident = dispatchIncidentOf({ op, args });
+    this.emitting = { seq, tag: opts.tag ?? null, ...(incident !== undefined ? { dispatchIncidentId: incident } : {}) };
     try {
       const predicted = cloneResult(this.core.applyCommand({ op, args } as Command, this.actions.target)) as CommandResult<K>;
       const done = Promise.resolve(predicted);
