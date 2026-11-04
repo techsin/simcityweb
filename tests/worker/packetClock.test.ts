@@ -107,7 +107,9 @@ describe('the packet hosts\' clock across day boundaries (T061 item 2)', () => {
     const r = await rig(0);
     try {
       r.host.setSpeed(1, 'keyboard'); await r.host.drain();
-      for (let i = 0; i < 10; i++) await r.frame();
+      // well into a day: one packet interval (a day at 1x) from here would run into the next one
+      for (let i = 0; i < 90 && !(r.host.replica.clock.frac > 0.4 && r.host.replica.clock.frac < 0.6); i++) await r.frame();
+      expect(r.host.replica.clock.frac).toBeGreaterThan(0.4);
       const day = r.host.state.day;
       r.host.act('holdCalendar', [true]);
       r.hold(true); // the hold's own packets are late

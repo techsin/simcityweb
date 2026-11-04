@@ -14,7 +14,7 @@ import { deserializeCity } from '../save/serialize';
 import type { CityRecord } from '../save/cities';
 import { initSimWasm, simWasmFlagSelects, simWasmStatus } from '../wasm/simWasm';
 import { SimCore, type CitySaveCopy, type SimModules } from './SimCore';
-import { ChangeRecorder } from './recorder';
+import { ChangeRecorder, policyState } from './recorder';
 import { ProtocolInbox, type InboxStore } from './protocolInbox';
 import { exactDigest } from './queries';
 import { PROTOCOL_VERSION, assertOwnedBuffers, errorText, type M2W, type Packet, type Reply } from './protocol';
@@ -113,8 +113,8 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
     schedulerOf(c.sim).hostDriven = true;
     setLive(!m.deterministic);
     recorder = new ChangeRecorder(c.sim, { dev: m.flags.dev, signal: abort.signal, policy: () => {
-      const { alerts, live, toast, warn } = c.livePolicy.view;
-      return { alerts: alerts.map((a) => ({ ...a })), live, toast, warn };
+      // T061 item 6: every field of the view, not a list of them (T036 step 5's `teaching` reaches the worker host too)
+      return policyState(c.livePolicy.view);
     } });
     store = new MainStore(m.city);
     protocol = new ProtocolInbox(c, recorder, {
