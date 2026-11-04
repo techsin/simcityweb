@@ -114,7 +114,7 @@ road-facing land a player could zone; the bot's patterns leave it.
 ## Cloud carry-over (Nov 3)
 
 The desktop was unavailable (NOTE-044), so the cloud finishes this lane on `cloud/t037b`: `local/R1-guide-b`
-(`ba37339`) with dev merged in eight times:
+(`ba37339`) with dev merged in nine times:
 - `67b567d` (dev `5b12abe`): advisors.ts and queries.ts merged without conflicts, T037d's `taxHigh` hunk and this
   lane's zone rules being separate;
 - `00b96cb` (dev `48991d7`: B3 and T036 step 2): no conflicts; B3 moves the advisors' month-boundary work, and
@@ -134,13 +134,18 @@ The desktop was unavailable (NOTE-044), so the cloud finishes this lane on `clou
   budget, and a second toast within 4 s is dropped); a new test checks the queue through this lane's hook. With the
   hook removed, 4 of the file's tests fail. dev's own sim, worker and save code is unchanged
   since `97f1a9c`, and src/game's change (NewYear.ts, CityScene.ts, context.ts) is not in the bot.
-- `c65901f` (dev `50a6b29`: NOTE-050, NOTE-051, NOTE-052): docs only, no conflicts. The code at the head is `270b709`'s
-  (src, tests, tools and wasm unchanged), and dev's code is unchanged since `683d02b`.
+- `c65901f` (dev `50a6b29`: NOTE-050, NOTE-051, NOTE-052): docs only, no conflicts. Its code is `270b709`'s (src,
+  tests, tools and wasm unchanged), and dev's code is unchanged since `683d02b`.
+- `ddc6680` (dev `63c8f58`: T052, FEEL-17's garbage on the street, and NOTE-053 to NOTE-058): no conflicts. Dev's code
+  change is src/assets, src/render, tests/render and tests/assets only: none of this lane's files, and src/sim,
+  src/worker, src/game, src/save, src/core and tools are unchanged by it, so the bot cannot move. NOTE-056 and NOTE-057
+  name T037b and ask nothing of it (T054 publishes `full` after this lane lands; T037b is one of the cloud's lanes that
+  interleave with wave 1).
 
 The gates were run again at the head `c65901f` (section "At the head" below the gates table); the table's earlier rows
 are kept as the record of each merge.
 
-tsc is clean at `67b567d`, `954306d`, `f077faf`, `5f634f6`, `533178a`, `270b709` and `c65901f`. NOTE-045 to NOTE-047 keep T037b on the
+tsc is clean at `67b567d`, `954306d`, `f077faf`, `5f634f6`, `533178a`, `270b709`, `c65901f` and `ddc6680`. NOTE-045 to NOTE-047 keep T037b on the
 cloud (the desktop is back, but must not touch it); NOTE-047 moves T037a and T037e to the desktop, T037e to start once
 this lane is in dev. NOTE-048 and NOTE-050 also name T037b, and ask nothing of it: T054 publishes the built-out flag
 from this lane's LG-05 block (`full = scan.free < BUILT_OUT_FREE * st.cells`, advisors.ts:2186, which is there as
@@ -236,15 +241,30 @@ the final head `c65901f` (FEEL-02a's merge in) are in "At the head" below it.
 | §8.1's round-1 verifier list | not this sub-lane's: it runs once every GUIDE and META round-1 item is in |
 
 **At the head `c65901f`** (the code of `270b709`: FEEL-02a's toast budget merged and wired; logs `scratchpad/t037b/gates/m9_*`,
-`m10_*`, `m11_*`). The earlier run of this step was cut by the machine's restart (Nov 3, 22:16) before these ran.
+`m10_*`, `m11_*`). The earlier run of this step was cut by the machine's restart (Nov 3, 22:16) before these ran. Its gap
+list on resuming: dev had moved on by three NOTE commits (merged: `c65901f`); after the FEEL-02a merge `270b709` the full
+vitest, the bot against dev and the browser recheck of scenario A had not run (its `m8_*` runs were cut by the restart);
+NOTE-048 and NOTE-050, which name T037b, were not yet in the report (above). Nothing else was open: the code, its tests
+and the revert checks were complete at `270b709` (`m7_revert.log`: 4 of `adviceActions.test.ts`'s tests fail with the
+hook removed).
 
 | Gate | Result |
 |---|---|
 | `npx tsc --noEmit` (CPU semaphore) | clean (`m9_tsc.log`) |
-| Full vitest (lock, fixtures present) | first run (`m9_vitest.log`, 602.7 s at a load average of 7 to 10): 221 files passed, 1 failed, 2 skipped; 2,232 tests passed, **3 failed**, 8 skipped. The 3 are 5 s timeouts in `tests/worker/hygiene.test.ts` (W0.2, W0.4, NOTE-041: whole-`src` scans, 5.7-9.6 s each on the loaded machine), a file this lane and the merge do not touch; alone it passes on the lane and on dev (17 passed, 1 skipped, 18.7 s and 17.9 s; `m9_hyg_lane.log`, `m9_hyg_dev.log`). VITEST_RERUN |
+| Full vitest (lock, fixtures present) | **222 files passed, 2 skipped; 2,235 tests passed, 8 skipped** (440.8 s, load average 3; `m11_vitest.log`). The skips are dev's (the second skipped file and the four more skipped tests came with T036 step 3 and T038; none is in this lane's test files). A first run (`m9_vitest.log`, 602.7 s at a load average of 7 to 10) had 3 failures, all 5 s timeouts in `tests/worker/hygiene.test.ts` (W0.2, W0.4, NOTE-041: whole-`src` scans, 5.7-9.6 s each on the loaded machine), a file neither this lane nor the merge touches; alone it passed on the lane and on dev (17 passed, 1 skipped, 18.7 s and 17.9 s; `m9_hyg_lane.log`, `m9_hyg_dev.log`), and it passes in the clean run |
 | The bot, 128 × 15, seed 7: the lane against a fresh clean export of dev `50a6b29` (`co/t037b-devbase`; dev's code is `683d02b`'s) | **identical**: both `residents [ 61124, 93804, 37971 ]` = 192,899; the whole log is identical but for its two timing columns, the run time and the ms/day line (`m9_bot_lane.log`, `m9_bot_dev.log`), and identical in the same way to the lane's run at `954306d` (`m3_bot_lane.log`) |
 | The newcomer, Medium and Easy, seed 7 | identical to the run at `954306d` but for the run time (`m9_nc.log` against `m3_nc.log`): the numbers in the next section stand at the head (the bot runs src/sim and src/core only, and neither changed since) |
 | Browser, scenario A again (FH-03's toast now under FEEL-02a's budget) | **4 of 4 pass** (`qa/shots-m10/log.txt`): A1 the "Zone homes" toast at the day-30 tick, shown 5 ms after the tick (the budget allowed it; the fire-station advice shows beside it), `qa/shots-m10/A1-zone-homes-toast.png`; A2 a real click selects `zone:1` (the Low density tool and the zone grid, the toast closed), `qa/shots-m10/A2-zones-pulse.png`; A3 the Zones pulse lasts 6,028 ms of page time under the coaching card (3 class changes from the coach meanwhile); no page or console errors. The first attempt (`qa/shots-m9/`) passed A1 and then hung for 60 s in Playwright's "performing click action" on the toast, at a load average of 7 to 10 on 4 cores (other lanes' balance runs outside the lock); run again at a load of 2, the same script passed |
+
+**After the ninth merge, at the final head `ddc6680`** (dev `63c8f58`: T052's render and asset files, none of this
+lane's):
+- tsc clean (`m12_tsc.log`);
+- this lane's three test files with T052's five new or changed ones, under the CPU semaphore: 8 files, 103 tests passed
+  (`m12_targeted.log`);
+- the full vitest (lock): pending, queued for the lock (`m13_vitest.log`);
+- the bot is not rerun: everything it runs (src/sim, src/core, tools/simbot.ts) is byte-identical to `c65901f`, where it
+  was identical to dev's, and dev's T052 merge left those files unchanged too;
+- the browser is not rerun: T052 changed src/render's props and src/assets only, which none of this lane's checks reads.
 
 ### The newcomer gates, re-measured after F3
 
