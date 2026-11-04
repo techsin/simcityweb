@@ -1,9 +1,142 @@
 # T055 — LG-03 production content
 
-## Round 2 — facility invariants after `ff336d4`
+## Round 3 review — NOTE-056/058 scope and Local-host proof
 
-Round 1 is committed as `ff336d4`. The following fixes are uncommitted and explicitly requested by the worker's
-round-2 review. No definitions, balance values, project lifecycle rules or pending catalog entries changed.
+This review starts from `c949bd5`: round-2 infra `a5b2d37`, content/tests `955b230`, then the worker's merge of
+dev `63c8f58`. The manifest conflict correctly leaves both project stubs and `garbage_pile` out of `STUBS`.
+The changes in this review remain uncommitted. No runtime source, definition, balance, art or framework change is
+needed: Fusion has no special round-3 SIM, and Expo adds only T046's existing draw hook. Space Center remains pending.
+
+**Current acceptance supersedes the historical gate tables below.** NOTE-056/058 judge round 2 on §8.2 verifier
+check 5 (installments, pause, cancel, exact mid-construction save/load and the Express Metro effect), Express Metro
+completion in the opted-in 256×60 seed-7 bot, and a lowest daily balance ≥ 0. Among the item's balance numbers,
+only that minimum balance gates now. The worker runs NOTE-053's five-run ensembles; other single-run values below
+are screens, not ensemble medians or balance sign-off.
+
+The “≥ 3 projects in 2030–2060” and “2045 funds ≤ 12 expense-months” targets wait for round 3 and Space Center's SIM.
+They are not weakened. Round 3 must also check that the bot keeps saving after its last available project and fix
+LG-03's spending strategy if banking then still breaks the funds target. The backlog note records that follow-up.
+
+| File | Current review change |
+|---|---|
+| `tests/sim/megaprojectRound2.test.ts` (new) | Boot the real Local host; place through tagged `host.act` commands; verify zero Fusion grid output on every pre-completion day, including every construction month, then the full catalog output in the actual connected grid after real completion and the normal utilities refresh. Expo has no own attraction, cap relief or other catalog effects; real completion activates only the existing draw hook, creates no tourists without a venue and adds no direct approval term with visitor inputs held fixed. |
+| `docs/dev/POLISH_BACKLOG.md` — outside original named files; NOTE-058's requested note | One isolated round-3 LG-03 follow-up about saving after the last project and the deferred count/funds targets. |
+| This report | Current acceptance scope, precise simulation limits, validation and fresh single-run bot evidence. |
+
+**Infra hunks: none in this review. Cloud-held source hunks: none.** All former infra hunks are already committed
+as `a5b2d37`. No new cloud implementation request is added.
+
+Fusion retains the settled T046 contract's **ordinary** `powerOut: 4000`, `jobs: 600`, `upkeep: 40000` and utilities
+funding bucket. Jobs and upkeep are normal operating fields, gated by completion, not extra Fusion mechanics.
+There is no Fusion-specific simulation branch: it is an ordinary power producer. No pollution, cooling-water,
+nuclear ordinance, area-effect, cap-relief or attraction field was added. The new Local-host test does not force a
+utilities recompute or inject a completed ledger. The producer supplies 0 MW while `built < 1`; after exact real
+completion, its 4,000 MW reaches a road-connected library on the scheduled utilities pass. Supply publication can
+lag the completion day by the normal refresh cadence.
+
+**Plan/code wording difference:** NOTE-056 says “draw hook only” and defers a “tourism multiplier”. In this tree these
+are not two separate mechanisms: T046's `expoDrawMultiplier()` is the existing ×1.5 draw hook consumed once by
+`tourism.ts`. T055 adds no second multiplier. Expo has no `ATTRACTIONS` entry, separate draw, approval bonus, jobs,
+upkeep, income, prestige, campus, cap relief or Tower conversion. Ordinary visitors can still create the existing
+tourism income/jobs/pride; the test holds visitor pride fixed when excluding a direct +3 approval bonus. The hook
+is active for exactly 360 days; cached visitor totals update on the ordinary scheduled venue pass, so earlier
+forced-refresh tests do not assert immediate live publication on the opening/expiry day. Expo's direct approval,
+site-to-Tower lifecycle and remaining round-3 tourism work remain deferred.
+
+The worker's reported `--quiet` screen completed three projects: one by the end of 2026, then 2040 and 2042; its
+lowest daily balance was **§4,481**. After the real-GPU timing block ended, the fresh `SIMBOT_LOG=1` screen reproduced
+those completion rows and that minimum, using the rebuilt equivalent of the requested command (no `--quiet`).
+
+| Live project | Started (exact ledger day) | Completed (exact ledger day) | First annual row showing completion |
+|---|---|---|---:|
+| Express Metro | 1 Aug 2023 (8490) | **1 Feb 2025 (9030)** | **2026** |
+| Fusion Power Plant | 1 Mar 2037 (13380) | 1 Sep 2039 (14280) | 2040 |
+| World Expo | 1 Sep 2039 (14280) | 1 Sep 2041 (15000) | 2042 |
+
+The annual rows are emitted at the next year boundary: a completion first reported on row 2026 can occur in 2025.
+All three paid their exact catalog prices (total **§8.5M**) and completed after their full construction durations;
+none remains active. Space Center is the only missing project kind and remains in `pendingCatalog`.
+
+| Current single-run screen number | Fresh result | Current interpretation |
+|---|---:|---|
+| Express Metro completed | Yes, 1 Feb 2025 | **Round-2 gate passes** |
+| Lowest daily balance | **§4,481** | **Round-2 gate ≥ 0 passes** |
+| Completions in the exact 2030–2060 interval | 2 (3 total) | ≥ 3 target deferred to round 3 |
+| 2045 funds / expense-months | §6,545,706 / §486,733 = **13.448248 months** | ≤ 12 target deferred to round 3 |
+| Lowest tax while saving | **8%** | Report now; ensemble judgment by the worker |
+| Year-60 population | **1,496,069** ([404542, 729596, 361931]) | Report now; ensemble judgment by the worker |
+| Lowest approval from year 30 | **78.209037** | Report now; ensemble judgment by the worker |
+| Best EQ through year 30 | **119.562384** | Report now; existing screen threshold 100; Fusion's action still requires EQ 120 at placement |
+
+Final funds are §18,200,489; approval 79.936176; EQ 131.254221. The bot stops saving once all three available projects
+are complete (`saving: false`), with 27.017362 expense-months banked at year 60. This is the NOTE-058 round-3
+follow-up, not a reason to enable Space Center early, change prices or tune from this single path. The run took
+82 seconds; these are simulation screens, not performance measurements.
+
+The fresh default 128×15 seed-7 run is unchanged: **[62577, 92903, 38351] = 193,831**, funds **§178,743**, zero signed
+fixture mismatches and **zero differences in all 15 annual hashes** against round 2/T046. The final canonical hash
+remains `f2696df0dba4e54bfe926313fd355871b1e9266387525d9ce900cb988101c6db`.
+
+All checks ran serially through the supplied quiet gate, with the same scratch-only native Vitest config used in
+the earlier reviews. The final new test includes the direct opening-day approval assertion as well as raw-term
+comparison; it does not rely on replacing an approval bonus during a later refresh.
+
+| Current review test file | Result |
+|---|---:|
+| `tests/sim/megaprojectRound2.test.ts` | 2 passed |
+| `tests/sim/projects.test.ts` | 18 passed |
+| `tests/sim/projectHooks.test.ts` | 4 passed |
+| `tests/sim/megaprojectContent.test.ts` | 10 passed |
+| `tests/infra/megaprojectFacilities.test.ts` | 8 passed |
+| `tests/infra/facilities.test.ts` | 15 passed |
+| `tests/game/upkeepReads.test.ts` | 21 passed |
+| `tests/sim/catalog.test.ts` | 9 passed |
+| `tests/assets/manifest.test.ts` | 15 passed |
+| `tests/worker/hygiene.test.ts` | 17 passed, 1 existing skip |
+| **Total** | **119 passed, 1 existing skip** |
+
+`projects.test.ts` rechecks exact rounded installments, affordability pause/resume, both cancellation paths,
+half-paid refunds, and file-bundle save/load of running and paused projects followed by identical payments/progress.
+`projectHooks.test.ts` rechecks the actual Express time/wait/capacity effects and city isolation. This supplies
+§8.2 check 5's automatic evidence; real Worker save/recovery UI checks still require the existing cloud handoff.
+`tsc --noEmit` and `git diff --check` pass. No full suite, browser/GPU run, benchmark or ensemble was run here.
+
+Using `T055Quiet` / `T055Scratch` defined below, the requested CLI and the actual equivalent are:
+
+```powershell
+$env:SIMBOT_LOG = '1'
+node $T055Quiet npx tsx tools/simbot.ts --size 256 --years 60 --seed 7 --megaprojects
+# Actual command: rebuilds from this tree, runs the real SimBot/botSystems with SIMBOT_LOG=1,
+# writes all actions plus ledger dates/annual rows, then rebuilds/runs the default 128×15 screen.
+node $T055Quiet node "$T055Scratch/round3-launch.mjs"
+# The variant driver alone accepts the exact requested bot options:
+node $T055Quiet node "$T055Scratch/round3-screen-driver/round3-screen.js" "$T055Scratch/round3-projects256-s7.json" --size 256 --years 60 --seed 7 --megaprojects
+node $T055Quiet npx tsc --noEmit
+# Run individually for each test file in the table:
+node $T055Quiet npx vitest run tests/sim/megaprojectRound2.test.ts --maxWorkers=1 --config "$T055Scratch/vitest.config.mjs" --configLoader native --reporter default --reporter json --outputFile "$T055Scratch/round3-megaprojectRound2-results.json"
+node $T055Quiet node "$T055Scratch/round3-evidence.mjs"
+```
+
+`tsx` was unavailable in the offline cache in the earlier reviews; the user explicitly permits the rebuilt
+equivalent, used directly here. `round3-screen.ts` imports the actual bot/systems and reads the real project ledger;
+it neither injects definitions nor changes strategy. `round3-launch.mjs` preserves UTF-8 full action output in
+`round3-projects256-s7.log`. Other evidence: `round3-projects256-s7.json`, `round3-base128.json`, per-file
+`round3-*-results.json` and `round3-final-evidence.json`. The latter confirms 119 passes, one skip, all 15 base
+hashes unchanged, Express completed and nonnegative minimum balance.
+
+Current browser checklist for the lead (no browser/GPU run in this review):
+
+- [ ] Installments appear on the budget; a missed installment pauses, resumes when funded and never overdraws.
+- [ ] Cancel/bulldoze returns exactly half paid; running and paused mid-construction saves restore exact progress.
+- [ ] Express Metro completes through construction; faster subway time, 2.5-minute wait and ×1.5 capacity apply.
+- [ ] Fusion stays a construction site with zero grid supply, then feeds its connected grid once built.
+- [ ] Expo shows only the existing temporary draw hook; pending Space Center stays out of build lists.
+- [ ] Original day/night/winter model screenshots and full Vitest; NOTE-053 ensemble medians/bands by the worker.
+
+## Historical round 2 — facility invariants after `ff336d4`
+
+Round 1 is committed as `ff336d4`. The following fixes were committed as `a5b2d37` (infra), then `955b230`, after
+the worker's round-2 review. No definitions, balance values, project lifecycle rules or pending catalog entries changed.
 
 The four reported failures were:
 
