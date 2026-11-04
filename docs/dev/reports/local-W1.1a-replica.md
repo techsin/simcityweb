@@ -145,11 +145,12 @@ absent, which is why Codex's sandbox could not run those cases.
 **Pending.** The bench is queued for the next quiet slot, after T014's speed reviewer and W0.1's A/A. It will run:
 
 ```
-node tools/bench/worker/run.mjs --dense dense1m_s7.metropolis --bot bot256_s7_y60.metropolis
+node tools/bench/worker/run.mjs --dense .fixtures/fixtures/dense1m_s7.metropolis --bot .fixtures/live/bot256_s7_y60.metropolis
 ```
 
-The bot city has 1,368,806 residents, inside the bench's 1.3M-1.5M check for bot256-1.4M. This table and the
-`.done` marker follow then.
+These are the cities of B1's and W0.1's timing runs: the snapshot dense1m (the plan's §2 city, 1,118,755 residents)
+and the live-tree bot256 (1,368,806). The bench refuses the snapshot's bot256 (652,568) as not the 1.4M city. A 2-day
+smoke on a busy machine ran end to end. This table and the `.done` marker follow then.
 
 ## Who wrote what
 
