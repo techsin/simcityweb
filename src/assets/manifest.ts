@@ -270,6 +270,7 @@ export const MANIFEST: ManifestEntry[] = [
   E('streetlight', 'prop', [1, 1], 2, [8, 10], 'Street light pole with arm and emissive lamp head (arm points toward -X).'),
   E('traffic_light', 'prop', [1, 1], 1, [5, 6], 'Traffic light pole with signal heads.'),
   E('bench', 'prop', [1, 1], 1, [0.8, 1], 'Park bench.'),
+  E('garbage_pile', 'prop', [1, 1], 2, [0.8, 1.2], 'Kerbside garbage: tied bag / lidded bin, 28 / 24 triangles.'),
   E('fountain', 'prop', [1, 1], 2, [2, 4], 'Small fountain with water surface.'),
   E('billboard', 'prop', [1, 1], 2, [8, 12], 'Roadside billboard on pole, emissive panel.'),
   E('container_stack', 'prop', [1, 1], 3, [2.6, 8], 'Stack of shipping containers, varied colors.'),
@@ -294,7 +295,6 @@ export const MANIFEST: ManifestEntry[] = [
   E('lm_firefighters_memorial', 'placeholder', [2, 2], 1, [6, 10], "STUB LG-20: Firefighters' Memorial honour reward (landmark)."),
   E('rw_honour_plaque', 'placeholder', [1, 1], 1, [2, 2], 'STUB LG-20: shared completion plaque for the twelve honours (reward).'),
   E('civ_emergency_operations_center', 'placeholder', [3, 3], 1, [16, 20], 'STUB LG-15: Emergency Operations Center (civic).'),
-  E('garbage_pile', 'placeholder', [1, 1], 2, [0.8, 1.2], 'STUB FEEL-17: kerbside garbage (prop), variants 0 bags / 1 bin.'),
   E('for_lease_sign', 'placeholder', [1, 1], 1, [2, 2], 'STUB FEEL-18: For lease sign (prop).'),
 ];
 
