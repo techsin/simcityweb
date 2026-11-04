@@ -1,6 +1,100 @@
 # T055 — LG-03 production content
 
-Implemented on `local/T055-lg03-content`, base `5173611` plus task commit `1f192f4`. Changes are uncommitted.
+## Round 2 — facility invariants after `ff336d4`
+
+Round 1 is committed as `ff336d4`. The following fixes are uncommitted and explicitly requested by the worker's
+round-2 review. No definitions, balance values, project lifecycle rules or pending catalog entries changed.
+
+The four reported failures were:
+
+- Matrix **part 1/4: `lm_world_expo`** had no effect metric in the civic table, and a 60-day run could not open its
+  720-day project anyway.
+- Matrix **part 4/4: `util_fusion_plant`** had unchanged power supply after 60 days because construction takes 900 days.
+- Static facts **`tr_express_metro`** returned zero lines: it has no ordinary power, jobs, coverage or upkeep fields.
+  Its real effect is the completed network upgrade. It also previously passed the matrix's transport report-only
+  path without an effect metric; round 2 now measures it too.
+- Upkeep **`util_fusion_plant`** exposed the test context's missing `host` when project lock hints read the replica.
+  Its flat price is still §40,000/month in both displays; there was no pricing discrepancy.
+
+| File | Round-2 change |
+|---|---|
+| **`src/sim/infra/facilities.ts` — INFRA, outside original named files; authorized by round 2** | Additive imports for project queries/calendar/Express tuning; two project role overrides; adjacent project facts/report helpers; an unfinished-site report return and ruined-unfinished-site upkeep guard; truthful completed-Expo ruin wording; a static facts block. No refactor, moved code, scheduler or accounting changes. |
+| `tests/infra/facilities.test.ts` — outside original named files; named in round 2 | Extend existing prerequisite setups for six connected stations and an Expo visitor venue. Run real construction plus 60 operating days, with controls advanced for exactly the same time and setup. Require full paid cost, exact completion day and `built === 1`. Measure Metro's actual public station wait, Fusion's existing actual power supply metric and Expo's actual venue gross draw. Check decreasing metrics' direction too. No exemptions or invariant removals. |
+| `tests/game/upkeepReads.test.ts` — outside original named files; named in round 2 | Supply the query seam plus `host.state` in the minimal display fixture (`queryHost` itself deliberately exposes only queries/events). Every original price/chip assertion remains. |
+| `tests/infra/megaprojectFacilities.test.ts` (new) | Eight cases for catalog/tuned facts, real ledger pause/progress, no premature operating rows, ruined construction upkeep, completed Metro activation, exact Expo expiry and completed Expo's permanent commissioning prohibition. Completion and pause use the existing projects/budget systems. |
+| This report | Round-2 diagnosis, verification and remaining checks. |
+
+The matrix still enumerates every non-hidden ploppable; Space Center and the standalone Tower remain absent because
+they have no production definitions. It does not shorten construction, overwrite `built`/completion ledgers, reduce
+costs or add an artificial effect. Metro runs 540 + 60 days, Expo 720 + 60 and Fusion 900 + 60 in both treatment and
+control. Expo's witness plaza and Metro's subway stations exist in both branches, like the existing station/ferry
+partner setups. Their metrics read the real tourism pass and traffic assignment, rather than the completion flag.
+
+Tooltip construction costs/months/gates come from the definitions; Metro's time/wait/capacity numbers come from
+`EXPRESS_*` tuning. Expo's current multiplier comes from `expoDrawMultiplier`, and its one-year window uses the same
+calendar constants as the lifecycle. No unimplemented approval, prestige or Tower-conversion benefit is claimed.
+Completed Fusion retains the existing ordinary power report and upkeep display behavior.
+Completed Expo ruins no longer promise rebuilding: its retained commissioning history really forbids that.
+
+After waiting for the timing block to release, all commands ran serially through the supplied quiet gate. The same
+scratch-only native Vitest config as round 1 was used; no repository configuration changed.
+
+| Round-2 test file | Result |
+|---|---:|
+| `tests/infra/facilities.test.ts` (all matrix parts and static-facts invariant) | 15 passed |
+| `tests/game/upkeepReads.test.ts` | 21 passed |
+| `tests/infra/megaprojectFacilities.test.ts` | 8 passed |
+| `tests/sim/megaprojectContent.test.ts` | 10 passed |
+| `tests/game/megaprojectTools.test.ts` | 4 passed |
+| `tests/assets/megaprojectModels.test.ts` | 17 passed |
+| `tests/sim/catalog.test.ts` | 9 passed |
+| `tests/assets/manifest.test.ts` | 16 passed |
+| `tests/worker/hygiene.test.ts` | 17 passed, 1 existing skip |
+| **Total** | **117 passed, 1 existing skip** |
+
+The matrix observes Metro station wait **3.50 → 2.50 min**, Fusion city power supply **400 → 4,400 MW**, and the
+Expo witness plaza's gross draw **41.04 → 61.72** (rounded). Expo is measured 60 days after opening, with 300 active
+days remaining. Its actual citywide draw multiplier is 1.5; the matched cities can also develop slightly different
+attractiveness, so the final gross-draw ratio need not be exactly 1.5. The separate production integration test pins
+the exact multiplier and expiry with controlled attractiveness.
+
+The final `tsc --noEmit` and `git diff --check` pass. The fresh round-2 128×15 seed-7 bot gives
+**[62577, 92903, 38351] = 193,831**, funds **§178,743**, zero non-timing fixture differences and **zero differences
+in all 15 annual hashes** against round 1 (which already matched T046). Final hash remains
+`f2696df0dba4e54bfe926313fd355871b1e9266387525d9ce900cb988101c6db`.
+
+Using `T055Quiet` and `T055Scratch` as defined in the round-1 commands below, the exact round-2 commands are:
+
+```powershell
+node $T055Quiet npx tsc --noEmit
+# Run separately for every file in the table; this is the formerly failing matrix command:
+node $T055Quiet npx vitest run tests/infra/facilities.test.ts --maxWorkers=1 --config "$T055Scratch/vitest.config.mjs" --configLoader native --reporter default --reporter json --outputFile "$T055Scratch/round2-facilities-results.json"
+# Requested bot entry point was retried; it still fails before simulation with npm ENOTCACHED (tsx unavailable).
+node $T055Quiet npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
+# Rebuild the equivalent driver from the current worktree, then run its real SimBot/systems:
+node $T055Quiet node node_modules/rolldown/bin/cli.mjs "$T055Scratch/check-base.ts" --platform node --format esm --dir "$T055Scratch/round2-bot-driver"
+node $T055Quiet node "$T055Scratch/round2-bot-driver/check-base.js" "$T055Scratch/round2-base128.json" --size 128 --years 15 --seed 7 --quiet
+```
+
+Scratch evidence: `round2-*-results.json`, `round2-base128.json`, `round2-final-evidence.json` and its
+`round2-evidence.mjs` comparison driver. The report's matrix values are also recorded there as rounded observations.
+Full Vitest, browser/GPU checks and the 256×60 acceptance run remain with the lead. No cloud-held source file was
+edited and no new cloud request is added; round-1 Worker and round-3 requests below are unchanged.
+
+Round-2 browser checklist:
+
+- [ ] Inspect the three Mega-projects tooltips: actual cost/months/gates, tuned Metro numbers, Fusion power/jobs/upkeep,
+  and no unimplemented Expo approval/prestige promises.
+- [ ] Inspect running and paused sites: exact paid/progress values, pause amount, no operating output/jobs/upkeep;
+  inspect a ruined unfinished Fusion site too.
+- [ ] Complete through normal construction: Metro's upgrade and real station wait, Fusion grid output, Expo active
+  draw/remaining window and ended wording at expiry. Titles match the catalog throughout.
+- [ ] Confirm Fusion's toolbar/reward upkeep chips agree, and pending Space Center/Tower stay out of build lists.
+- [ ] Run the full suite and the original round-1 GPU/256×60 checklist below.
+
+## Round 1 — committed implementation and evidence
+
+Implemented on `local/T055-lg03-content`, base `5173611` plus task commit `1f192f4`; subsequently committed as `ff336d4`.
 No push, merge, `.done` file, browser, full-suite run or 256×60 bot run was made, as explicitly requested.
 
 Express Metro, Fusion and World Expo are live. Space Center and the standalone Expo Tower have final models with

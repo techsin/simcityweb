@@ -1,6 +1,6 @@
 /**
  * WP7a "every facility genuinely works" (docs/SIM_DEPTH_PART_B.md §5 WP7a, critic items 7, 8, 12-16): the matrix over every
- * non-hidden ploppable catalog def (placed with road + power + water in a small populated city, 60 days: facilityReport
+ * non-hidden ploppable catalog def (placed with road + power + water in a small populated city, 60 days after opening: facilityReport
  * with its title and >= 1 line, and its effect metric — read at the facility — differs from the same city without it;
  * two runs without it are identical, a burnt copy does nothing), staffing (unreachable -> Understaffed / op 0.6 ->
  * recovery; power is not staffing; labour-short cities), police capacity (two stations beat one overloaded station),
@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Network, Zone } from '../../src/core/types';
+import { DAYS_PER_MONTH } from '../../src/core/constants';
 import { BF, type Building, type CityState } from '../../src/sim/CityState';
 import { CATALOG, getDef } from '../../src/sim/catalog';
 import type { BuildingDef } from '../../src/sim/catalogTypes';
@@ -17,6 +18,8 @@ import { CityActions, lPath } from '../../src/sim/actions';
 import { createCityState, computeWater } from '../../src/sim/terrainGen';
 import { defaultCityConfig } from '../../src/sim/config';
 import { computeMonthlyBudget } from '../../src/sim/economy/budget';
+import { projectProgress } from '../../src/sim/economy/projects';
+import { venueVisits } from '../../src/sim/economy/tourism';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import {
   airportPassengers, facilityDefFacts, facilityOpFactor, facilityQuality, facilityReport, facilityUseFactor, policeCapacityOf, staffingOf, understaffed,
@@ -96,8 +99,26 @@ function branch(): { st: CityState; sim: Sim; A: CityActions } {
  */
 interface Setup { prep(A: CityActions): void; at: [number, number, 0 | 1 | 2 | 3] }
 const RAIL_Z = SITE.z0 + 9;
+const METRO_X = SITE.x0 + 4;
+const EXPO_VENUE_X = SITE.x1 + 1;
 const railToEdge = (A: CityActions) => { const r = A.buildNetwork(lPath({ x: SITE.x0, z: RAIL_Z }, { x: N - 1, z: RAIL_Z }), Network.Rail); if (!r.ok) throw new Error(`rail: ${r.reason}`); };
 const SETUPS: Readonly<Record<string, Setup>> = {
+  tr_express_metro: {
+    prep: (A) => {
+      const r = A.buildSubway(lPath({ x: METRO_X, z: SITE.z0 }, { x: METRO_X + 30, z: SITE.z0 }));
+      if (!r.ok) throw new Error(`Express subway: ${r.reason}`);
+      for (let x = METRO_X; x <= METRO_X + 30; x += 6) {
+        if (!A.plop('tr_subway_station', x, SITE.z0, 0).ok) throw new Error('Express prerequisite station');
+      }
+    },
+    at: [SITE.x0, SITE.z0, 0],
+  },
+  lm_world_expo: {
+    prep: (A) => {
+      if (!A.plop('park_plaza', EXPO_VENUE_X, SITE.z0, 0).ok) throw new Error('Expo visitor venue');
+    },
+    at: [SITE.x0, SITE.z0, 0],
+  },
   tr_subway_station: {
     prep: (A) => {
       const r = A.buildSubway(lPath({ x: SITE.x0, z: SITE.z0 }, { x: SITE.x0 + 12, z: SITE.z0 }));
@@ -157,6 +178,16 @@ const incomeM = (id: string): Metric => ({ name: `income ${id}`, dir: 1, f: (sim
 
 /** the civic table: the effect each (non-transport) def is built for, read at the facility / its own stat */
 function metricOf(def: BuildingDef): Metric | null {
+  if (def.project?.kind === 'expressMetro') return { name: 'subway station wait', dir: -1, f: (sim) => {
+    const station = sim.state.buildingAt(METRO_X, SITE.z0);
+    const load = station && sim.getSystem<TrafficSystem>('traffic')!.stopLoad(station.id);
+    if (!load) throw new Error('Express matrix needs an assigned subway station in both cities');
+    return load.waitMin;
+  } };
+  if (def.project?.kind === 'expo') return statM('Expo venue gross draw', (st) => {
+    const venue = st.buildingAt(EXPO_VENUE_X, SITE.z0);
+    return venue ? venueVisits(st, venue.id)?.gross ?? 0 : 0;
+  });
   const tier = def.coverage?.tier;
   if (def.category === 'power') return statM('power supply', (st) => st.stats.powerSupply);
   if (def.category === 'water') return statM('water supply', (st) => st.stats.waterSupply);
@@ -192,35 +223,47 @@ function ploppableDefs(): BuildingDef[] {
   return CATALOG.filter((d) => d.category !== 'growable' && !d.hidden && !testIds.has(d.id) && !d.id.startsWith('wp') && !d.id.includes('_wp2') && !d.id.endsWith('_np') && !d.id.endsWith('_pw'));
 }
 
-/** the matrix control: the base city without any facility after 60 days (read only; shared by the matrix parts) */
-let controlCache: Sim | null = null;
-function controlRun(): Sim {
-  if (!controlCache) { const c = branch(); c.sim.runDays(60); controlCache = c.sim; }
-  return controlCache;
+/** Controls advance for the same elapsed time as their facility, including a project's real construction duration. */
+const controlCache = new Map<number, Sim>();
+function controlRun(days = 60): Sim {
+  let ctl = controlCache.get(days);
+  if (!ctl) { const c = branch(); c.sim.runDays(days); controlCache.set(days, (ctl = c.sim)); }
+  return ctl;
 }
-/** controls of the defs with a setup (the setup without the def, 60 days), one per setup */
-const setupControls = new Map<Setup['prep'], Sim>();
+/** Like partner stations, project prerequisites are present in the matched control too. */
+const setupControls = new Map<Setup['prep'], Map<number, Sim>>();
 
-/** one matrix row: place the def (after its setup), 60 days, report + effect metric vs the same city without it */
+/** Projects use the ordinary lifecycle until opening, then the same 60-day operating window as other facilities. */
 function matrixRow(def: BuildingDef, failures: string[], burnt: { n: number; max: number }): string | null {
   const { st, sim, A } = branch();
   const setup = SETUPS[def.id];
-  let ctl = controlRun();
+  const constructionDays = (def.buildMonths ?? 0) * DAYS_PER_MONTH;
+  const days = constructionDays + 60;
+  let ctl: Sim;
   if (setup) {
     setup.prep(A);
-    let c = setupControls.get(setup.prep);
+    let controls = setupControls.get(setup.prep);
+    if (!controls) setupControls.set(setup.prep, (controls = new Map()));
+    let c = controls.get(days);
     if (!c) {
       const x = branch();
       setup.prep(x.A);
-      x.sim.runDays(60);
-      setupControls.set(setup.prep, (c = x.sim));
+      x.sim.runDays(days);
+      controls.set(days, (c = x.sim));
     }
     ctl = c;
-  }
+  } else ctl = controlRun(days);
   const b = plopDef(A, st, def);
   if (!b) { failures.push(`${def.id}: could not be placed`); return null; }
   const touches = (() => { for (let x = b.x - 1; x <= b.x + b.w; x++) for (let z = b.z - 1; z <= b.z + b.d; z++) { if (x >= b.x && x < b.x + b.w && z >= b.z && z < b.z + b.d) continue; if (st.inBounds(x, z) && st.network[st.idx(x, z)] >= Network.Street && st.network[st.idx(x, z)] <= Network.Highway) return true; } return false; })();
-  sim.runDays(60);
+  const startedDay = st.day;
+  sim.runDays(days);
+  if (constructionDays) {
+    const progress = projectProgress(st, b.id);
+    if (b.built !== 1 || progress?.completedDay !== startedDay + constructionDays || progress.paid !== def.cost) {
+      failures.push(`${def.id}: did not open through the fully paid construction lifecycle`);
+    }
+  }
   const rep = facilityReport(sim, b.id);
   if (!rep) { failures.push(`${def.id}: no report`); return null; }
   if (rep.title !== def.name) failures.push(`${def.id}: title "${rep.title}"`);
@@ -236,6 +279,7 @@ function matrixRow(def: BuildingDef, failures: string[], burnt: { n: number; max
     res = `${m.name} ${v0.toFixed(2)} -> ${v.toFixed(2)}`;
     if (!(Math.abs(v - v0) > 1e-6)) failures.push(`${def.id}: ${m.name} unchanged (${v0} -> ${v})`);
     else if (m.dir > 0 && !(v > v0)) failures.push(`${def.id}: ${m.name} fell (${v0} -> ${v})`);
+    else if (m.dir < 0 && !(v < v0)) failures.push(`${def.id}: ${m.name} rose (${v0} -> ${v})`);
     // a burnt copy does nothing (metrics that are exactly 0 without the facility)
     if (Math.abs(v0) < 1e-9 && burnt.n < burnt.max && def.category !== 'power' && def.category !== 'water') {
       const x = branch();
