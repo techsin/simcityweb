@@ -1,5 +1,37 @@
 # T036s4 · NEW-04 storage you can trust
 
+## Review round 4 · NOTE-058
+
+One uncommitted behavior change replaces round 3's constant failed-autosave delay/zero error sounds with exponential real-time backoff and one error sound per failure streak. `CityScene.ts` uses named 60-second initial delay, 2× multiplier and 15-minute cap; successful complete saves and successful storage cleanup reset the streak. `StorageDialog.ts` supplies the small cleanup revision after successful region deletion. Export/Close and failed manual saves do not reset it. The normal minute floor, dialog-open suppression, silent successful autosaves, manual feedback and ownership cancellation remain in place. Partial city acknowledgements cannot erase a streak of failed region writes.
+
+Fake ultra timers in `tests/game/autosaveFloor.test.ts` cover the retry schedule/cap, one error per streak, success/cleanup resets and in-flight/partial-save cases; `storageDialog.test.ts` tests the cleanup signal; `citySaves.test.ts` has minimal fixture additions. No main.ts, recoveryLs.ts, worker or infra hunk; no simulation, balance, save-format or RNG change. The companion FEEL-02b round-4 section has exact timing expectations and the browser checklist. The worker's bot baseline remains **192,899** (`[61124, 93804, 37971]`); command below, not rerun here.
+
+Validation: **TypeScript passes; 17 serial quiet-gated files pass, 163 tests passed / one existing skip**, using the native-loader/thread-pool command below after the timing block ended. `git diff --check` and UTF-8/no-BOM checks pass. These results supersede round 3's blocked targeted validation. The full suite and browser checks remain with the lead.
+
+Minimal fixes to committed round-3 test fixtures were needed for these checks: `storageSaveStatus.test.ts` declares its callback as `() => void`; `regionStorage.test.ts` explicitly casts its intentionally partial fixture through `unknown`; `storageDialog.test.ts` exposes real `MemoryKV` in its db mock for the existing fixture import. Assertions and production behavior are unchanged by these fixture fixes. The first two are additional one-line existing-test hunks outside this round's behavior tests. `main.ts` remains **+0/−0** this round; infra hunks: none.
+
+| Test file | Result |
+|---|---:|
+| `tests/game/autosaveFloor.test.ts` | 29 passed |
+| `tests/game/storageDialog.test.ts` | 27 passed |
+| `tests/game/citySaves.test.ts` | 7 passed |
+| `tests/game/storageSaveStatus.test.ts` | 5 passed |
+| `tests/regionStorage.test.ts` | 9 passed |
+| `tests/worker/hygiene.test.ts` | 17 passed, 1 skipped |
+| `tests/game/storageCopy.test.ts` | 5 passed |
+| `tests/game/labelFrame.test.ts` | 5 passed |
+| `tests/game/newCityStart.test.ts` | 7 passed |
+| `tests/game/titleSettings.test.ts` | 12 passed |
+| `tests/storageDb.test.ts` | 14 passed |
+| `tests/save/foundingPersistence.test.ts` | 2 passed |
+| `tests/save/liveRegionExport.test.ts` | 8 passed |
+| `tests/save/recoveryStorageLock.test.ts` | 5 passed |
+| `tests/save/regionEffects.test.ts` | 3 passed |
+| `tests/save/regionSaveAccess.test.ts` | 4 passed |
+| `tests/save/regionSummaryReload.test.ts` | 4 passed |
+
+**Known host issue — T061 item 7:** per `docs/dev/queue/NOTE-058-lg03-b9.md`, B9 (Worker save replies dropping the exception name) is now owned by T061. The loopback quota-dialog check is a known host issue until T061 lands, not a T036s4 failure. No worker edit is requested from this lane for B9.
+
 ## Review round 3 · real-GPU QA follow-up
 
 Starting commit `68aa888`; changes in this round are uncommitted. The worker's real-GPU QA passed every original acceptance item on the default host, then identified B1–B8 below. B9 remains cloud-owned and pending. No browser or timing run is started by this lane.
@@ -48,7 +80,7 @@ Browser recheck:
 - [ ] Read-only chip explains that this tab cannot save; restored ownership restores normal state wording.
 - [ ] Quota Export contains the running city's day/funds/population and imports successfully, including a read-only tab; neighbour saves remain intact.
 - [ ] Check the Autosave label and takeover recovery explanation.
-- [ ] **Pending B9:** preserve exception names in worker failure replies (`protocolInbox.ts` save/snapshot handlers, `protocol.ts` failed reply shapes, `LoopbackSimHost.ts` reply rejection), then repeat the Worker-protocol quota test. No worker file is changed here.
+- [ ] **Known host issue — B9, T061 item 7:** exception names are lost in worker failure replies (`protocolInbox.ts` save/snapshot handlers, `protocol.ts` failed reply shapes, `LoopbackSimHost.ts` reply rejection). Repeat the loopback quota-dialog check after T061 lands; this is not a T036s4 failure. No worker file is changed here.
 - [ ] **Additional Worker live-export request:** `ProtocolInbox.snapshot()` in `src/worker/protocolInbox.ts` currently discards a successfully encoded marker/payload when `store.putSnapshot()` rejects for quota or ownership. Return that payload with truthful failed-persistence fields (`idb: false`, initially `ok: false`); encoding failures should still reject. In `src/worker/LoopbackSimHost.ts`, the snapped reply should expose the payload, attempt the existing guarded localStorage mirror, and derive `SnapshotAck.ok` from actual IDB/LS results. Keep ownership guards. This lets the Worker export current progress without requiring a recovery write, matching the tested local host. Worker live export under quota/read-only conditions is not verified until this lands.
 
 Branch: `local/T036s4-storage`; base: `821a8d6`. Initial WIP: `2f040cc` (App/recovery guards) and `8229b70` (owned files). Review-round fixes below are uncommitted. No `.done` file was changed.
@@ -147,7 +179,7 @@ Required 2015 residents: `[61124, 93804, 37971]`, total **192,899**. These are t
 - NEW-03 history slots do not exist in this base. Manage storage shows existing city saves and recovery records with their sizes; adding and deleting history slots remains NEW-03's work.
 - The Found click is in `NewCityDialog.ts`, rather than `main.ts`; the four-line hook was necessary to keep persist inside the gesture.
 - Host saves do not publish a saved-time watch, so the small `recordSaved()` App notification resets the UI floor after hidden/App saves too.
-- **Cloud request — worker quota names:** in `src/worker/protocol.ts`, add an optional exception-name field to failed `saved`/`snapped` replies; in `src/worker/protocolInbox.ts` save/snapshot failure builders, preserve `err.name`; in `src/worker/LoopbackSimHost.ts` `PacketSimHost.reply()`, restore it before rejecting. Currently a worker `QuotaExceededError` becomes plain `Error`, preventing the guided quota classification after a store failure. Page-side preflight estimates already work.
+- **Known host issue — T061 item 7, worker quota names:** in `src/worker/protocol.ts`, add an optional exception-name field to failed `saved`/`snapped` replies; in `src/worker/protocolInbox.ts` save/snapshot failure builders, preserve `err.name`; in `src/worker/LoopbackSimHost.ts` `PacketSimHost.reply()`, restore it before rejecting. Currently a worker `QuotaExceededError` becomes plain `Error`, preventing the guided quota classification after a store failure. NOTE-058 assigns this to T061; the loopback quota-dialog check is not a T036s4 failure. Page-side preflight estimates already work.
 - **Cloud request — worker ownership fence:** propagate an optional region write permission/lease epoch through `PacketSimHost` and the worker persistence queues. In `PacketSimHost.bindRecovery()` gate reserve-triggered snapshots, and invalidate stale writes on ownership loss before worker save/snapshot/journal mutations. Audit `src/worker/recoveryMirror.ts` `checkReserve`, `writeNow`, `onSaved` and `src/worker/loopbackCore.ts` `bootJournal`/persistence handlers. Page-side KV and localStorage guards cover their own isolate; a separate worker's db module has no active page lock. Retain the read-only tab's in-memory journal, and rebuild it only after takeover loads current data. No worker file was edited here.
 - W1.3's automatic 30-second floor/recovery work is absent from this base and remains a follow-up. The UI floor is 60 seconds, so the larger floor will apply once both are present.
 
@@ -156,7 +188,7 @@ Required 2015 residents: `[61124, 93804, 37971]`, total **192,899**. These are t
 - [ ] Use the real Worker in two real tabs on one region, including different cities. The second tab has disabled Save controls and no autosaves; its banner says the region is open elsewhere.
 - [ ] Take over in each direction. The previous owner immediately says “This region is now open in another tab”; the receiver opens fresh stored region data, and can save after reopening a city.
 - [ ] Exercise the BroadcastChannel fallback with Web Locks absent; verify takeover and old-owner write denial.
-- [ ] Stub the city store to throw `QuotaExceededError`. Confirm Export, Manage storage and Retry, with no raw exception; verify the worker error-name cloud change first.
+- [ ] Stub the city store to throw `QuotaExceededError`. Confirm Export, Manage storage and Retry, with no raw exception. The loopback failure is a **known host issue owned by T061 item 7** until its error-name fix lands.
 - [ ] Set an estimate at or above 95% quota; confirm the same guided path before a save.
 - [ ] Export while full/read-only. Confirm it makes no preliminary save and the downloaded region can be imported.
 - [ ] Make `persist()` resolve false on the actual first Found click. Confirm the region reminder until export, no reminder for the next seven days, and Dismiss works.

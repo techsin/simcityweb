@@ -5,7 +5,7 @@ import type { HostState, SaveReason } from '../../src/worker/SimHost';
 import { showStorageError } from '../../src/ui/StorageDialog';
 import { deferred, smallCity } from '../save/fixtures';
 
-vi.mock('../../src/ui/StorageDialog', () => ({ showStorageError: vi.fn(), storageDialogOpen: () => false }));
+vi.mock('../../src/ui/StorageDialog', () => ({ showStorageError: vi.fn(), storageConditionVersion: () => 0, storageDialogOpen: () => false }));
 beforeEach(() => vi.clearAllMocks());
 
 function fixture() {
@@ -13,6 +13,7 @@ function fixture() {
   const onSave = vi.fn((_state: HostState, reason?: SaveReason) => { order.push(reason!); return gate.promise; });
   const scene = {
     disposed: false, saving: null as Promise<void> | null, monthsSinceSave: 3, lastSaveAt: -Infinity,
+    autosaveFailure: { count: 0, retryAt: 0 }, storageCondition: 0,
     abort: new AbortController(),
     host: { state, setSpeed: vi.fn(() => { order.push('pause'); }) },
     storeCamera: vi.fn(() => { order.push('camera'); }),

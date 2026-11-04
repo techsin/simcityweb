@@ -62,7 +62,7 @@ import { DemographicsPanel } from '../ui/panels/DemographicsPanel';
 import { attachOverlays } from '../sim/infra/overlays';
 import { windVector } from '../sim/infra/wind';
 import { regionSaveAccess } from '../save/db';
-import { showStorageError, storageDialogOpen } from '../ui/StorageDialog';
+import { showStorageError, storageConditionVersion, storageDialogOpen } from '../ui/StorageDialog';
 
 export type { GameSettings } from './settings';
 
@@ -100,6 +100,9 @@ const SLOW_FPS = 25;
 /** the prompt's answer, per profile ('metropolis.ui.slowPrompt': shown, then 'switch' / 'keep') */
 const SLOW_PREF = 'slowPrompt';
 const AUTOSAVE_FLOOR_MS = 60_000;
+const AUTOSAVE_BACKOFF_INITIAL_MS = AUTOSAVE_FLOOR_MS;
+const AUTOSAVE_BACKOFF_MULTIPLIER = 2;
+const AUTOSAVE_BACKOFF_MAX_MS = 15 * 60_000;
 
 export class CityScene {
   readonly host: LocalSimHost | LoopbackSimHost;
@@ -152,6 +155,8 @@ export class CityScene {
   private offs: (() => void)[] = [];
   private monthsSinceSave = 0;
   private lastSaveAt = performance.now();
+  private autosaveFailure = { count: 0, retryAt: 0 };
+  private storageCondition = storageConditionVersion();
   private saving: Promise<void> | null = null;
   private hiddenPausedFrom: number | null = null;
   private mouse = { x: -1, y: -1, inside: false };
@@ -1010,12 +1015,20 @@ export class CityScene {
   recordSaved(): void {
     this.monthsSinceSave = 0;
     this.lastSaveAt = performance.now();
+    this.autosaveFailure = { count: 0, retryAt: 0 };
   }
 
   async save(auto = false, reason: SaveReason = auto ? 'autosave' : 'manual', retry = false): Promise<void> {
     if (this.disposed || !regionSaveAccess(this.opts.persistence?.regionId)) return;
-    if (auto && !retry && (storageDialogOpen() || performance.now() - this.lastSaveAt < AUTOSAVE_FLOOR_MS)) return;
     if (this.saving) return this.saving;
+    const condition = storageConditionVersion();
+    if (condition !== this.storageCondition) {
+      this.storageCondition = condition;
+      this.autosaveFailure = { count: 0, retryAt: 0 };
+    }
+    // App can acknowledge the city before its region write fails; retain the streak until the whole save succeeds.
+    const failure = this.autosaveFailure;
+    if (auto && !retry && (storageDialogOpen() || performance.now() - this.lastSaveAt < AUTOSAVE_FLOOR_MS || performance.now() < failure.retryAt)) return;
     this.savePill.saving(auto);
     this.storeCamera();
     this.saving = (async () => {
@@ -1029,8 +1042,13 @@ export class CityScene {
         if (this.disposed) return;
         if (auto) this.lastSaveAt = performance.now();
         if (!regionSaveAccess(this.opts.persistence?.regionId)) { this.savePill.cancel(); return; }
+        if (auto) {
+          const count = failure.count + 1;
+          const backoff = Math.min(AUTOSAVE_BACKOFF_MAX_MS, AUTOSAVE_BACKOFF_INITIAL_MS * AUTOSAVE_BACKOFF_MULTIPLIER ** (count - 1));
+          this.autosaveFailure = { count, retryAt: this.lastSaveAt + backoff };
+        } else this.autosaveFailure = failure;
         this.savePill.done(false);
-        if (!auto) this.sound('error');
+        if (!auto || this.autosaveFailure.count === 1) this.sound('error');
         if (reason !== 'exit') void showStorageError(e, { retry: () => this.save(auto, reason, true), signal: this.abort.signal });
       } finally {
         this.saving = null;

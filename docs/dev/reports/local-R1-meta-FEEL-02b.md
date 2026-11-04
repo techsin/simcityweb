@@ -1,5 +1,26 @@
 # T036s4 · FEEL-02b quiet autosave
 
+## Review round 4 · NOTE-058 failure streaks
+
+Round 3 is committed (`ad1b095`, `37c7605`, `9a53182`). This round is one uncommitted autosave-failure change following NOTE-058; it supersedes round 3's zero-error-sound policy.
+
+- `src/game/CityScene.ts`: named initial delay, multiplier and cap give a real-time retry schedule of 60 seconds, 2, 4, 8 and then 15 minutes, capped at 15 minutes. Each deadline starts at failure completion on `performance.now()`. The first autosave failure in a streak plays one error sound; later failures are silent. Manual Ctrl+S keeps its own feedback and does not escalate or reset an existing failed-autosave streak unless it succeeds. Successful autosaves, manual saves and external/hidden save acknowledgements reset the streak. A partial city acknowledgement followed by a failed region write retains the prior failure streak. Storage dialogs still suppress automatic attempts, and explicit Retry remains available.
+- `src/ui/StorageDialog.ts`: a small condition revision advances after successful, lock-protected region deletion. The next eligible save resets the backoff/streak while retaining the normal minute floor. Refused/failed deletion, Export and Close do not reset it. A cleanup notification arriving during an in-flight save is retained for the next attempt.
+- `tests/game/autosaveFloor.test.ts`: fake timers drive ultra month ends every 1,500ms. Repeated failures must occur at `[60000, 120000, 240000, 480000, 960000, 1860000, 2760000]`ms, with exactly one error sound and no pills. Additional cases cover auto/manual/hidden success resets, cleanup (including during a save), manual failure feedback and partial region-save failures. `tests/game/storageDialog.test.ts` covers successful cleanup versus failure/refusal/Export/Close. The existing `citySaves.test.ts` fixture learns the new revision and failure state.
+
+Validation: **TypeScript passes; all 17 serial quiet-gated test files pass, 163 passed / one existing hygiene skip.** This also clears the round-3 pending targeted checks. The NEW-04 round-4 table lists every file/result. `git diff --check` and UTF-8/no-BOM checks pass. The native config-loader/thread-pool invocation below was used after the timing block ended. Three committed round-3 fixture issues were corrected without changing assertions: the save-chip callback has a callable type, the deliberately partial region fixture uses an explicit `unknown` cast, and the storage-dialog db mock exposes the real `MemoryKV` needed by its existing fixture import. No other production behavior changed.
+
+No browser, full suite or bot was run here; those gates remain with the lead. The worker's unchanged bot acceptance remains residents `[61124, 93804, 37971]` = **192,899** in 2015; the exact command is below. No balance, save schema, simulation RNG or infra change. `main.ts` and `recoveryLs.ts` are unchanged (+0/−0); no cloud-held file is edited.
+
+**Known host issue — T061 item 7:** NOTE-058 assigns B9's lost exception name in Worker-protocol save replies to T061. Until it lands, the loopback quota-dialog check is a known host issue owned by T061, not a T036s4 failure. The additional Worker live-export payload request remains in the NEW-04 report.
+
+Round-4 browser rechecks:
+
+- [ ] At ultra, keep storage failing and dismiss the error dialog between eligible attempts: delays grow through 1/2/4/8/15 minutes and remain capped; one error sound per streak, no autosave pills.
+- [ ] Leave a storage dialog open across month ends: no autosave attempts. Retry remains usable; Close/Export alone do not reset the streak.
+- [ ] Allow a save to succeed, or free storage via Manage storage, then fail again: the next streak begins with a one-minute delay and one error sound. Ctrl+S retains its own pill/sound.
+- [ ] Loopback quota classification: known host issue, **T061 item 7**; recheck after that host fix lands.
+
 ## Review round 3
 
 The worker measured five autosaves in five minutes at ultra on a 304k city (minimum gap 60.37s), zero chimes/pills, and the correct 1×/Ctrl+S behavior. This round addresses the failed-save and dialog cases from that QA:
