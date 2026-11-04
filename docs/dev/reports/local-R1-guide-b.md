@@ -212,11 +212,12 @@ class) fails the coach-update test; F3's no-zoned-land guard removed fails its t
 ### Gates (cloud)
 
 Heavy runs under the shared lock, tsc under the CPU semaphore. Logs in `scratchpad/t037b/gates/` (the `m3_*` files are
-the runs at `954306d`; the head's code is byte-identical to it).
+the runs at `954306d`; `5f634f6`'s code was byte-identical to it). This table is the record up to `5f634f6`; the runs at
+the final head `c65901f` (FEEL-02a's merge in) are in "At the head" below it.
 
 | Gate | Result |
 |---|---|
-| `npx tsc --noEmit` | clean at `67b567d`, `954306d`, `f077faf` and the head `5f634f6` |
+| `npx tsc --noEmit` | clean at `67b567d`, `954306d`, `f077faf` and `5f634f6` (and at every later merge, above) |
 | Full vitest (`--configLoader runner`, fixtures present), at `954306d` | **218 files passed, 1 skipped; 2,182 tests passed, 4 skipped** (474.8 s; `m3_vitest.log`) |
 | The bot, 128 × 15, seed 7: the lane at `954306d` against a clean export of dev `97f1a9c` (`co/t037b-devbase`) | **identical**: both `residents [ 61124, 93804, 37971 ]` = 192,899, NOTE-045's reference after B3; the whole log is identical but for its two timing columns (`m3_bot_lane.log`, `m3_bot_dev.log`). Before B3, at `67b567d` against dev `5b12abe`: both `[ 59288, 95301, 41512 ]` = 196,101 |
 | FH-03 acceptance 1: R demand above 0.5 and fewer than 12 empty R front lots: the toast within one month tick, at most once per 180 days | met (unit tests; browser A1, A4; F3's reset is decision 4) |
@@ -233,6 +234,17 @@ the runs at `954306d`; the head's code is byte-identical to it).
 | The badge's recount (UI thread, at most once a real second) | `zoneRoom` on the 256 fixtures (node, 300 rounds; `gates/m5_roombench.json`): bot256_s7_y60 median **1.55 ms** (p90 2.24, max 4.40); dense1m_s7 median **0.59 ms** (p90 0.62, max 1.21). Once a second, so under 0.2 % of the main thread; decision 10 |
 | Browser checklist (below) | **19 of 19 checks pass** (C0 is the setup), "Connect a highway" included |
 | §8.1's round-1 verifier list | not this sub-lane's: it runs once every GUIDE and META round-1 item is in |
+
+**At the head `c65901f`** (the code of `270b709`: FEEL-02a's toast budget merged and wired; logs `scratchpad/t037b/gates/m9_*`,
+`m10_*`, `m11_*`). The earlier run of this step was cut by the machine's restart (Nov 3, 22:16) before these ran.
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` (CPU semaphore) | clean (`m9_tsc.log`) |
+| Full vitest (lock, fixtures present) | first run (`m9_vitest.log`, 602.7 s at a load average of 7 to 10): 221 files passed, 1 failed, 2 skipped; 2,232 tests passed, **3 failed**, 8 skipped. The 3 are 5 s timeouts in `tests/worker/hygiene.test.ts` (W0.2, W0.4, NOTE-041: whole-`src` scans, 5.7-9.6 s each on the loaded machine), a file this lane and the merge do not touch; alone it passes on the lane and on dev (17 passed, 1 skipped, 18.7 s and 17.9 s; `m9_hyg_lane.log`, `m9_hyg_dev.log`). VITEST_RERUN |
+| The bot, 128 × 15, seed 7: the lane against a fresh clean export of dev `50a6b29` (`co/t037b-devbase`; dev's code is `683d02b`'s) | **identical**: both `residents [ 61124, 93804, 37971 ]` = 192,899; the whole log is identical but for its two timing columns, the run time and the ms/day line (`m9_bot_lane.log`, `m9_bot_dev.log`), and identical in the same way to the lane's run at `954306d` (`m3_bot_lane.log`) |
+| The newcomer, Medium and Easy, seed 7 | identical to the run at `954306d` but for the run time (`m9_nc.log` against `m3_nc.log`): the numbers in the next section stand at the head (the bot runs src/sim and src/core only, and neither changed since) |
+| Browser, scenario A again (FH-03's toast now under FEEL-02a's budget) | **4 of 4 pass** (`qa/shots-m10/log.txt`): A1 the "Zone homes" toast at the day-30 tick, shown 5 ms after the tick (the budget allowed it; the fire-station advice shows beside it), `qa/shots-m10/A1-zone-homes-toast.png`; A2 a real click selects `zone:1` (the Low density tool and the zone grid, the toast closed), `qa/shots-m10/A2-zones-pulse.png`; A3 the Zones pulse lasts 6,028 ms of page time under the coaching card (3 class changes from the coach meanwhile); no page or console errors. The first attempt (`qa/shots-m9/`) passed A1 and then hung for 60 s in Playwright's "performing click action" on the toast, at a load average of 7 to 10 on 4 cores (other lanes' balance runs outside the lock); run again at a load of 2, the same script passed |
 
 ### The newcomer gates, re-measured after F3
 
@@ -331,6 +343,11 @@ any run.
 | C6 | the RCI popover's cap hints show "The city is built out" with the same text, Rezone and Connect a highway | pass | `shots-BC/C6-rci-popover-built-out.png` |
 | C7 | the popover's Rezone: the Land value view, the Zones flyout, the popover closed | pass | `shots-BC/C7-rezone-landvalue.png` |
 
+Scenario A (A1-A3) ran again at the head `c65901f`, after FEEL-02a's budget came in: 4 of 4 pass (the gates' "At the head"
+table, `qa/shots-m10/`). B and C were not rerun: of what the FEEL-02a merge changed, they reach only the toast's button
+lookup (the same hook for every advice id, C1's built-out toast included), which A1-A2 exercise in the browser and
+`adviceActions.test.ts` covers in the unit tests (the queue over budget, the ref lookup, a button with a place).
+
 The browser check moved the badge: it first sat over the segment's R C I letters (`qa/shots-try3/B2-zone-badge.png`); it now
 hangs just under the segment (`f9fd2a9`).
 
@@ -387,5 +404,5 @@ hangs just under the segment (`f9fd2a9`).
 11. **FH-03's "a toast within one month tick" with FEEL-02a's budget in dev.** The advice still posts at the month tick
     (day 30), and its toast shows at once when the budget allows; when the tick's other news has spent it, the toast
     waits in FEEL-02a's queue, at most `Toasts.QUEUE_MAX_MS` (50 s of real time), and is never dropped. That is FH-03
-    change 3 as the plan words it, so this lane reads acceptance 1 as met; the unit test bounds the wait at 50 s and the
-    browser recheck (A1) records it.
+    change 3 as the plan words it, so this lane reads acceptance 1 as met; the unit test bounds the wait at 50 s, and the
+    browser recheck at the head (A1, `qa/shots-m10/log.txt`) shows the toast 5 ms after the tick, the budget allowing it.
