@@ -131,6 +131,8 @@ export class DisastersSystem implements SimSystem {
   readonly active: ActiveDisaster[] = [];
   private rng = new RNG(1);
   private lastFrameMs = -1e9;
+  /** O7: hosts set the mode; direct Simulation users keep the legacy inference. */
+  live: boolean | undefined;
   private lastEmitCell = new Map<ActiveDisaster, number>();
   /** the persisted record (systemData.infraDisasters; its `active` is this.active) */
   private save: DisastersSave = { v: 1, rng: 1, active: this.active };
@@ -184,7 +186,7 @@ export class DisastersSystem implements SimSystem {
   }
 
   daily(sim: Simulation): void {
-    const framesActive = nowMs() - this.lastFrameMs < 750;
+    const framesActive = this.live ?? nowMs() - this.lastFrameMs < 750;
     for (let k = this.active.length - 1; k >= 0; k--) {
       const d = this.active[k];
       if (d.kind === 'tornado') {

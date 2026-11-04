@@ -1,0 +1,108 @@
+diff --git a/docs/dev/reports/cloud-W1.3.md b/docs/dev/reports/cloud-W1.3.md
+index cef548e..e9d0c96 100644
+--- a/docs/dev/reports/cloud-W1.3.md
++++ b/docs/dev/reports/cloud-W1.3.md
+@@ -70,3 +70,103 @@ replay reports), and the report commits.
+ | G11 | `playCity(…, replay)`: the crash dialog's **Recover** restores (snapshot plus journal, or the journal alone) and boots with the replay; **Restart from autosave** and **Continue on the main thread** boot the save without it (`replay: false` at init, `replayJournal: false` for LocalSimHost and the loopback, through CityScene). The journal stays, as T034 left the crash snapshot, until the next save or recovery write replaces it. |
+ | G12 | tests/worker/workerRecovery.test.ts, the §5.3 recovery row through the real worker (node `worker_threads`, its IndexedDB being the test's KV through a request / reply bridge over parentPort: tools/bench/worker/nodeWorker.ts and nodePort.ts; without the bridge the worker's `openKV()` falls back to memory, as a browser's can). T033's 25 loopback cases stay in recovery.test.ts, plus two new ones. |
+ | G13, G14 | hosts.test: *W1.3 (S2): with the worker's own IndexedDB, a save in one host loads in the other and continues identically* (Worker → Local and Worker, Local → Worker) and *an old save (the grown fixture) loads through the worker's IndexedDB and continues as LocalSimHost does*. |
++| G15 | tools/qa-journal.mjs (`984ec54`), §5.4's W1.3 step as its own scenario (decision 10): the production build, `?quickstart=1&size=small&seed=7&simworker=1&simdev=1`, one Chromium (SwiftShader). The tab is closed for real (`page.close({runBeforeUnload: true})`, then its `close` event) right after a zone edit is posted, with the host's asynchronous snapshot held, so only the unload writes can land. Results below (*Browser evidence*). |
++| G16 | tests/perf/saveCost.test.ts, a measurement skipped unless `SIM_SAVE_COST=1` (it loads dense1m twice). Numbers in *Gates*; decision 14. |
++| G17 (b) | Not done here: T061's (NOTE-049). |
++| G18 | *Gates* below. |
++
++### Resumed run (Nov 3, after the 22:16 container restart)
++
++The first run was stopped after `98750f4`, with its gates queued and tools/qa-journal.mjs written but neither run nor
++committed. This run:
++- re-read the task file, NOTE-044 and every NOTE that names T039 (NOTE-044 to NOTE-049, and **NOTE-051**, which
++  arrived on dev after the first run: see below), and §4.1-§4.5, §5.3, §5.4 and row W1.3 again;
++- merged dev `50a6b29` into `cloud/w13` (`79268af`; NOTE-050, NOTE-051, NOTE-052, docs only);
++- reviewed the first run's diff line by line against §4 (`2c02529..98750f4`: src/worker, src/save, main.ts,
++  dialogs.ts, CityScene.ts and the tests). No defect found; nothing was reverted;
++- ran the browser check for the first time (it passed), made its kill step wait for the tab's `close` event and fail
++  when the tab stays open, and committed it (`984ec54`); then ran every gate on the final code.
++
++**Each new test fails with its fix reverted** (the first run's tools: w13work/mutate.py, which reverts one fix, runs
++the test that covers it under the semaphore and restores the file): 23 reversions, M1-M19 with M3b, M6b, M11b and M12b,
++all fail their test. M11b (the host dropping the change count of the worker's first Ready) passed at first; `98750f4`
++added the check, after which it fails too. Logs: w13work/mutate-final.log, w13work/mutate-m11b.log.
++
++### NOTE-051 (T037a's two save-path entries)
++
++T037a is not in dev or in any fetched branch yet. W1.3 leaves the whitelist where T033 put it (recoveryCodec.ts
++`JOURNAL_OPS`, `isJournalOp`) and the change events in fingerprint.ts `CHANGE_EVENTS`, so T037a's two additive entries
++merge in place. The worker-side paths are generic: the boot replay (`SimCore.replayBootJournal` →
++`replayRecoveryJournal` → `applyCommand`) and `carriedJournal` filter by applied seqs, never by op name; the change
++count is protocolInbox.ts's `CHANGE_EVENTS` listener. So `setOnboarding` replays like any whitelisted op and
++`savedDataChanged` dirties the city like any change event, in the worker, the loopback and LocalSimHost alike. Nothing
++in this lane needs to change for it; no conflict is expected beyond the import lines.
++
++### Gates
++
++GATES_TABLE
++
++### Browser evidence
++
++BROWSER_EVIDENCE
++
++### Decisions (conservative readings, for the lead)
++
++1. **The base.** T034 is not in dev, and W1.3 is built on its worker. `cloud/w13` merges `cloud/t034` at `042efa5`; the
++   merge step brings T034 with it, or merges T034 first (this branch then merges dev cleanly: T034's commits are the same).
++2. **G17 (b), the `speedChanged` order, is T061's** (NOTE-049 queued it after this lane started, "beside W1.3"; it owns
++   that fix in LoopbackSimHost.ts). This lane's WorkerSimHost.ts changes are the persistence paths only, so T061's
++   items there merge around them.
++3. **The crash dialog's Restart and Continue on the main thread boot the save without the journal**, and leave it in
++   place, as T034 left the crash snapshot (decision 4 there): it is offered again when the city is next opened, until
++   the next save or recovery write replaces it. Only Recover replays it. The alternative, discarding it, would delete
++   progress the player did not choose to delete.
++4. **The cadence of min(30 s, 90 sim days) applies to the packet hosts only** (the worker, and the loopback, which has
++   the journal). LocalSimHost, the default until W1.4, keeps its 30 s: its snapshot runs on the main thread (50-110 ms at
++   1M), and the 90-day bound would add one every 4.5 s at ultra with autosave off. Both skip a request when a save is
++   newer, the local host as before (its window counts from its last snapshot), the packet hosts from the later of the two.
++5. **LocalSimHost replays but does not save after the replay.** §4.3 has the worker save before its Ready; the local host
++   has no Ready, so it takes the design's failed-save path: the city reads as unsaved and the journal stays bound to the
++   save until the first save deletes it. A second crash before that save replays it again, onto the same save.
++6. **Persistence 'main' keeps the journal only when the page's store persists** (the boot fallback after
++   IDB_UNAVAILABLE). With MemoryKV there is nothing to recover after a reload, and the App takes no snapshots then.
++7. **A city's snapshot wins over a journal alone bound to its save** at the title screen (§4.3 offers "either a snapshot,
++   with its journal if one matches, or a journal alone"): replaying a save-bound journal under a snapshot that already
++   holds its edits would apply them twice. A worker snapshot whose reply was lost in a crash is the one case where that
++   journal is newer; the snapshot is still the offer, as before W1.3.
++8. **`findRecoverySnapshot` now deletes journals that can never apply** (bound to a replaced save or snapshot, city or
++   region gone, no edits), as it deletes such snapshots. W0.6's `recoveryIdb.test` case that expected a stale journal to
++   survive is updated to say so.
++9. **Two additive protocol fields:** `Journal.info` (the description of a journal alone) and `fatal.code` (the
++   IDB_UNAVAILABLE boot error). `WorkerInit.replay` is W1.3's own (workerProtocol.ts).
++10. **The kill-the-tab check is a scenario of its own** (tools/qa-journal.mjs, committed with this lane), not a step in
++    tools/qa-worker.mjs: the worker-mode acceptance harness is T028's lane, on the desktop since NOTE-047, and folding the
++    step in there is that lane's merge.
++11. **FH-22's `setOnboarding`** (NOTE-048: "journaled like setTax. T039 confirms the recovery treatment"; NOTE-051
++    has T037a add it) is not in dev or in any fetched branch yet. The treatment for T037a: it is journaled only once `'setOnboarding'` is added to
++    `JournalOp` (protocol.ts) and `JOURNAL_OPS` (recoveryCodec.ts); it is a whole-record set, so it replays
++    idempotently at the base's day through `SimCore.applyCommand`, in every host's boot replay. Journal it.
++12. **Test changes to earlier lanes' cases, by design:** T033's *discards a journal when the stored record changed,
++    including a LocalSimHost save* boots that local host with `replayJournal: false` (a local host now replays the
++    journal, which would make its save contain the edit); T033's *moves the unload journal into IndexedDB at title time*
++    now expects the journal alone to be offered (its own comment said "W1.3 adds that offer"); T034's hosts.test cases
++    for persistence 'main' now expect no mirror with MemoryKV, and the mirror's snapshot plus journal with a persistent
++    store.
++13. **The region tile's summary is not refreshed by the boot save** (it has no `saved` reply); the next save refreshes it.
++14. **The 1M save cost is measured in node, not gated.** Row W1.3's "a save blocks the worker ≤ 60 ms and the main
++    thread ≤ 2 ms" is a browser number on a quiet machine; here it is node on a 4-core container shared with other
++    agents, and the test prints the load average with its numbers. tests/perf/saveCost.test.ts times the worker's two
++    units on dense1m (save:copy, then the put's structured clone) and the page's handling of the packet that carries the
++    `saved` reply from the real worker; it asserts no time. The numbers are in *Gates*; a Chromium (and real-GPU)
++    reading belongs to the measurement lanes.
++15. **The browser check closes the tab with the host's asynchronous snapshot held** (`host.snapshot` replaced by a
++    promise that never settles), so the worker's own IndexedDB snapshot, taken on `hidden`, cannot stand in for the
++    journal; what is checked is the unload path alone, the worst case of §4.3. Step 2 then lets the worker store a
++    snapshot first and checks the journal bound to it.
++
++### Left for others
++
++- T061 (NOTE-049): the `speedChanged` order in PacketSimHost (G17 b), the dispatch provenance, the clock cap.
++- T028 / qa-worker.mjs: fold tools/qa-journal.mjs in as its W1.3 step, if wanted.
++- Real-GPU and Chromium numbers for the save costs (decision 14).
++- When T034 merges into dev, this branch merges dev again (decision 1).
