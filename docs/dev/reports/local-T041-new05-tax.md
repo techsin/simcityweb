@@ -1,4 +1,50 @@
-# T041 — gradual tax response, signed Option B
+# T041 report: NEW-05, taxes cost growth gradually (option B, signed under D2) (desktop)
+
+**Verdict: done; merges in wave 2, after B2 (NOTE-057).** The lead signed option B under D2 (NOTE-050). Every NEW-05
+gate passes, and NOTE-053's re-check on ensemble medians keeps the sign-off closed: no row's endpoint median leaves
+±3 % of dev. No infra hunks.
+
+bot reference: residents [ 62577, 92903, 38351 ] = 193831
+
+Branch `local/T041-new05-tax`:
+- `2521f5c` option B (option A preserved in `098d038` and its rows); `46b20b2` B recorded under `polish`, A's rows removed;
+- GUIDE's requests (NOTE-050), one commit each: `af4cddd` the tax tab says higher taxes gradually slow growth;
+  `f27c324` the sliders turn red at 14 %, where the signed sweep's one-point step first exceeds 10 %;
+  `8ac9668` a copy fix from the real-GPU check (the − / + buttons step a slider, not the keys);
+- still pending: the advisor's taxHigh wording waits for T037b, which rewrites advisors.ts (NOTE-050).
+
+## Gates
+
+| Gate | Result |
+|---|---|
+| tsc | clean |
+| Full vitest with the fixtures (`8ac9668`) | **224 files passed, 2 skipped; 2,266 tests passed, 11 skipped; 0 failing** |
+| 128×15 s7 bot | **193,831** [62577, 92903, 38351], by design (+0.48 % against dev's 192,899); every yearly row matches signed B |
+| Fixed-tax sweep, 128×15 s7 at 10-14 % | monotone: 193,860 > 187,547 > 173,781 > 167,809 > 146,245; steps 3.3, 7.3, 3.4, 12.9 %, each inside 3-15 % |
+| 256×30 s7, 12 % from year 21 | −6.23 % in 2030 (gate: at least −3 %) |
+| §8.0 base rows, single runs (NOTE-050's D2 sign-off) | endpoints +0.48 % (128×15 s7), −0.16 % (256×60 s7), +2.87 % (256×60 s11) |
+| Real-GPU tax UI (default host and loopback) | PASS: the hint's numbers from tuning; amber at 10-13.5 %, red at 14 and 15 % on every slider and every All slider; keyboard and steppers |
+
+## NOTE-053 ensemble medians
+
+T062's runner (`local/T062-sim-aa-envelope`), five members per row: the control, ±§100 on day 1 and ±§100 on day 1441.
+T041 was measured on a throwaway tree, `f9c94d5` (this branch's `8ac9668` plus T062's `--aa-funds-nudge` flag commit
+`3833c8d`, which this branch does not carry). Dev's members are T062's own. Each cell is the median [min, max].
+
+| Row, endpoint | Dev population | T041 population | Median Δ | Within ±3 %? |
+|---|---:|---:|---:|---|
+| 128×15 s7, 2015 | 191,588 [190,132, 193,108] | 193,098 [191,999, 193,831] | +1,510 (+0.79 %) | yes |
+| 256×60 s7, 2060 | 1,461,087 [1,379,922, 1,513,835] | 1,477,908 [1,378,044, 1,511,394] | +16,821 (+1.15 %) | yes |
+| 256×60 s11, 2060 | 1,483,518 [1,427,340, 1,503,201] | 1,468,252 [1,449,829, 1,483,998] | −15,266 (−1.03 %) | yes |
+
+By design, as NOTE-050 records: mid-run medians leave ±3 % in years ≥ 10 in 0 of 6 years (128×15 s7), 31 of 51
+(256×60 s7) and 44 of 51 (256×60 s11). NOTE-053 reopens the sign-off only when an endpoint median leaves ±3 %, and
+none does. The annual tables, per-year bands and member commands are in T062's report
+(`docs/dev/reports/sim-aa-envelope.md`, "NOTE-053 SIM ensembles").
+
+The lane's own round notes follow.
+
+## The lane's notes (rounds 1-4)
 
 **Option B is signed under D2**, by [NOTE-050-new05-option-b.md](../queue/NOTE-050-new05-option-b.md), following
 [NOTE-048-desk-requests.md](../queue/NOTE-048-desk-requests.md). B's simulation calibration and bot strategy are unchanged.
