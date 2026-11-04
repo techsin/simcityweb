@@ -501,3 +501,37 @@ export function openRecoverDialog(m: RecoveryMarker): Promise<'recover' | 'disca
     recover.classList.add('autofocus');
   });
 }
+
+/** W1.2's crash path (WORKER_DESIGN §4.4): the simulation worker stopped during play. */
+export type SimCrashChoice = 'restart' | 'recover' | 'local';
+export function openSimCrashDialog(o: { cityName: string; message: string; recoverable: boolean }): Promise<SimCrashChoice> {
+  return new Promise((resolve) => {
+    let result: SimCrashChoice = 'restart';
+    const pick = (c: SimCrashChoice) => () => { result = c; dlg.close(true); };
+    const body = h(
+      'div',
+      { class: 'recover-body' },
+      h('p', {}, 'The simulation of ', h('b', {}, o.cityName), o.recoverable
+        ? ' stopped. Progress since the last save is not in it, but a recovery snapshot was kept on this device.'
+        : ' stopped. Progress since the last save is not in it.'),
+      h('p', { class: 'rv-note' }, o.recoverable
+        ? 'Restart reloads the last save. Recover replaces it with the snapshot first. Continue on the main thread reloads the last save without the simulation worker, for the rest of this visit.'
+        : 'Restart reloads the last save. Continue on the main thread reloads it without the simulation worker, for the rest of this visit.'),
+      h('details', {}, h('summary', {}, 'Details'), h('pre', { class: 'rv-note' }, o.message)),
+    );
+    const restart = button('Restart from autosave', { icon: 'refresh', cls: 'lg primary', sound: 'confirm', onClick: pick('restart') });
+    const recover = o.recoverable ? button('Recover unsaved progress', { icon: 'download', cls: 'lg', onClick: pick('recover') }) : null;
+    const local = button('Continue on the main thread', { icon: 'play', cls: 'lg ghost', onClick: pick('local') });
+    const dlg: Modal = new Modal({
+      title: 'The simulation stopped',
+      subtitle: o.cityName,
+      icon: 'info',
+      body,
+      closable: false,
+      footer: [h('div', { class: 'grow' }), local, ...(recover ? [recover] : []), restart],
+      onEnter: () => restart.click(),
+      onClose: () => resolve(result),
+    });
+    restart.classList.add('autofocus');
+  });
+}
