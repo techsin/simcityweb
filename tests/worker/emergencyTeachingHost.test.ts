@@ -112,6 +112,26 @@ function mountBanner(host: LocalSimHost | LoopbackSimHost) {
   return { root, close, tick: () => ui.emit('uiTick', undefined) };
 }
 
+describe('FH-08 packet policy view', () => {
+  it('keeps the public teaching getter equal to subscribed episodes after packet updates', async () => {
+    const f = await fixture(true), policy = f.host.policy;
+    const expectCurrent = (teaching: PolicySnapshot['teaching']) => {
+      expect(f.snapshot.teaching).toEqual(teaching);
+      expect(policy.teaching).toEqual(f.snapshot.teaching);
+    };
+    expectCurrent(undefined);
+    await f.set({ ...settings, teachFirst: true, teachTooFar: true });
+    await f.raise(incident(1, false));
+    expectCurrent({ id: 1, variant: 'E1b' });
+    const updates = f.updates.length;
+    await f.set({ ...settings, teachFirst: true, teachTooFar: true, teachingAck: 1 });
+    expect(f.updates.length).toBeGreaterThan(updates);
+    expectCurrent(undefined);
+    await f.raise(incident(2));
+    expectCurrent({ id: 2, variant: 'E1a' });
+  });
+});
+
 for (const packet of [false, true]) describe(`FH-08 teaching on ${packet ? 'LoopbackSimHost packets' : 'LocalSimHost'}`, () => {
   it('arms the real host from profile preferences, acknowledges through the card, and respects seen on a new city', async () => {
     const storage = new Map<string, string>(), pref = 'metropolis.ui.emergencyTeaching';
