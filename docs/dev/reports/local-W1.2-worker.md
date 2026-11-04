@@ -133,8 +133,8 @@ timeout, raised in `796d1b9`).
 
 - *(Done in the fix round: qa-worker run B, below.)* WASM_PLAN §7.8's worker-mode browser check with the kernels on
   (`?simworker=1&simwasm=…`).
-- *(Done in the fix round, decision 11 for the protector.)* The protector probe in the browser and the 10-minute run
-  (decision 7); the held-brush check of §5.4.
+- *(Done in the fix round; the protector gated in Chromium 153 since T034b, decision 11.)* The protector probe in the
+  browser and the 10-minute run (decision 7); the held-brush check of §5.4.
 - Real-GPU timings: the freeze test's 1 s, boot time, FPS with the worker (SwiftShader here).
 - T039 (W1.3): the worker's own IndexedDB, the journal and its boot replay; worker mode then drops `journal: false`.
 
@@ -174,19 +174,25 @@ timeout, raised in `796d1b9`).
     that stalls without an error event never completes. So the deadline starts 60 s after entry at the latest: such a
     city falls back to the main thread about 70 s after entry instead of showing the loading screen for good. 60 s is my
     choice (a slow connection's worker chunk, 269 KB gzipped, should be in by then); the lead may prefer another figure.
-11. *(Fix round.)* **Risk 7 in Chromium 153: there is no ArrayBufferDetaching protector to keep intact.** In Playwright's
-    Chromium 153.0.8010.12 (V8 15.3), a detach deoptimizes no TurboFan typed-array loop, in fresh classic and module
-    workers and on the page, and V8 traces no invalidation of it, while a protector this V8 does have (ArraySpecies) is
-    traced on the right thread and deoptimizes the TurboFan code that depends on it (`local-W1.2/protector-chromium153.txt`;
-    node 22's V8 shows both effects for both protectors). So the probe of §5.4 reads intact whatever the worker does, and
-    "the worker's protector intact after 10 min" cannot be observed in this browser as written. The conservative reading:
-    qa-worker runs the probe's positive and negative controls first (its `control` step, every run) and gates the
-    worker's probe only where a detach deoptimizes it, so it gates on a V8 that has the protector (an older Chrome, or
-    the desktop's if it differs) with no change; here it checks that the worker isolate made its probe (natives syntax,
-    the dev flag and TurboFan code reached it) and logs a NOTE. What still holds here: the 10-minute soaks in both kernel
-    modes, the wasm heap that never grew (the one detach the worker could cause by itself), and S1's node test with the
-    protector, the production worker loop under worker_threads. Whether the J0 work (keeping the page's protector)
-    still pays on this V8, where every typed-array access may carry the check, is a real-GPU timing question for the lead.
+11. *(Fix round; corrected in T034b.)* **Risk 7 in Chromium 153: the ArrayBufferDetaching protector exists, and V8 tracks
+    array buffer views.** In Playwright's Chromium 153.0.8010.12 (V8 15.3), a detach of a buffer with no view, or with
+    exactly one TypedArray view, updates that view in place and leaves the protector intact: a single-view transfer (a
+    postMessage transfer list of lone Float32Arrays, as lodBuilder's, or a lone view's `ArrayBuffer.prototype.transfer`)
+    is free. A detach of a buffer with two or more views (of one kind or two), a DataView or a detach key invalidates it,
+    for good and per isolate, and V8 traces it on the thread that did it; a wasm `memory.grow` counts by the old buffer's
+    views like any other detach (`local-W1.2/protector-chromium153.txt`, experiment 9: ten variants, each in a fresh
+    module worker). The fix round read "no protector" from controls that each detached `new ArrayBuffer(8)`, a buffer with
+    no view, so `control.observable` was false in both of its runs and the worker's probe was never gated. Since T034b,
+    qa-worker's `control` step detaches a buffer with a Uint8Array and a Float32Array view (the positive control, which
+    deoptimizes the probe and traces ArrayBufferDetaching on the worker thread) and keeps the no-view detach as a second
+    negative control (free here; on a V8 that invalidates on any detach, such as node 22's, it deoptimizes too). With
+    `observable` true on this Chromium, `protector: the worker's probe intact <when>` is a gate: after boot, after the
+    freeze, after the soak (the wasm run's) and in the founded city, in both T034b runs (below). Keeping the protector means never
+    detaching a buffer with two or more views, a DataView or a detach key, in the worker and on the page; the worker's
+    kernels make several views of their wasm heap, so its pre-sized memory must keep never growing. The J0 question for
+    the lead becomes narrower: on this V8 the page's lodBuilder transfers (one view per buffer) keep the page's protector
+    (the page's probe read intact in every run here), so what J0 buys on a current Chrome is a real-GPU timing question,
+    and a V8 that invalidates on any detach (node 22's V8 12.4, so presumably a Chrome of that V8) still needs it.
 
 ### Fix round after the review (Nov 3)
 
@@ -198,7 +204,7 @@ probe in Chromium 153, below), `a8f3521`, `ffa2fa4`, `83a1636` and `e47f273` (qa
 
 | Finding | Severity | Change | Evidence |
 |---|---|---|---|
-| W1.2 acceptance: the worker's protector intact after 10 min (§5.4, risk 7) | major | `src/worker/protectorProbe.ts`: simWorker makes the probe first thing at boot when `init.flags.dev` is set (before the city is deserialized and before the wasm loader), reads it once per frame (sticky), and answers `debug.verify` (§2.2's debug op, acked in the command sequence) with it, the worker's wasm state and its digest: `WorkerSimHost.debugVerify()`. `&simdev=1` turns `flags.dev` on in a production build. qa-worker launches Chromium with `--js-flags=--allow-natives-syntax` and checks the probe after boot, after the freeze, after `--soak-min`, and in the founded city of the region step, with `?simwasm` unset and `=wasm`. Since `22339b4` the browser worker makes the probe when the bundle is evaluated (simWorker.ts imports protectorProbe.ts first), before every other module and the init. **Chromium 153's V8 has no ArrayBufferDetaching protector** (decision 11), so qa-worker first runs the probe's controls and gates the probe only where a detach deoptimizes it | Chromium 153: a detach deoptimizes the TurboFan probe loop in no isolate (fresh classic and module workers, the page) and V8 traces no invalidation, while ArraySpecies is traced on the worker thread and deoptimizes the code that depends on it (`local-W1.2/protector-chromium153.txt`; node 22 shows both). qa-worker's `control` step repeats it in every run. Both runs below: the worker made its probe after boot, after the freeze, after **10 minutes** at speed 3 and in the founded city (NOTE: not evidence in this V8); the soak alive and advancing; with `=wasm`, blur on wasm in the worker and its heap never grown, at boot and after the soak. S1's node test (V8 with the protector) passes in the full vitest |
+| W1.2 acceptance: the worker's protector intact after 10 min (§5.4, risk 7) | major | `src/worker/protectorProbe.ts`: simWorker makes the probe first thing at boot when `init.flags.dev` is set (before the city is deserialized and before the wasm loader), reads it once per frame (sticky), and answers `debug.verify` (§2.2's debug op, acked in the command sequence) with it, the worker's wasm state and its digest: `WorkerSimHost.debugVerify()`. `&simdev=1` turns `flags.dev` on in a production build. qa-worker launches Chromium with `--js-flags=--allow-natives-syntax` and checks the probe after boot, after the freeze, after `--soak-min`, and in the founded city of the region step, with `?simwasm` unset and `=wasm`. Since `22339b4` the browser worker makes the probe when the bundle is evaluated (simWorker.ts imports protectorProbe.ts first), before every other module and the init. *(Corrected in T034b: Chromium 153's V8 has the protector and tracks array buffer views, decision 11.)* qa-worker first runs the probe's controls and gates the probe only where the positive control deoptimizes it | Chromium 153: a detach of a buffer with no view (the fix round's only control; T034b) deoptimizes the TurboFan probe loop in no isolate (fresh classic and module workers, the page) and V8 traces no invalidation, while ArraySpecies is traced on the worker thread and deoptimizes the code that depends on it (`local-W1.2/protector-chromium153.txt`; node 22 shows both). qa-worker's `control` step repeats it in every run. Both runs below: the worker made its probe after boot, after the freeze, after **10 minutes** at speed 3 and in the founded city (NOTE: not evidence in this V8); the soak alive and advancing; with `=wasm`, blur on wasm in the worker and its heap never grown, at boot and after the soak. S1's node test (V8 with the protector) passes in the full vitest |
 | G4: a pre-spawned port that queued an error before the host listened | minor | `WorkerLink.start()` listens after the boot assigned the link (and stops if a queued item closed it); the init is posted only if the boot is still running | workerTransport `a pre-spawned port that queued a failure delivers it inside listen()`: a script error, a wrong-version hello, a fatal after hello; each rejects with HostCrashed, calls `onCrash(…, true)` once, terminates the port and posts nothing. Fails on the old code with the reviewer's `ReferenceError: Cannot access 'link' before initialization`. In the browser: qa-worker's `region fallback` step (a worker that fails to load while the region screen shows) |
 | G6: a crash between `bootWorker` and the CityScene | minor | `enterCity` builds no scene on a host that closed meanwhile (it sets the city's host and lets the deferred crash dialog decide), and a crash while the scene starts (`start()`, `waitForScene`) is logged instead of thrown as a load error; the dialog then opens at the end of `enterCity` on `crashed` or `isDisposed` | code path only: the window is a paint and a chunk import, not reproduced in the browser (as the reviewer found) |
 | G7 / O6: main kept the generated CityState of a new city | minor | `startNewCity` passes the worker's replica to `enterCity` and drops its own state, as `playCity` does | qa-worker `region`: `sceneOnReplica: true` (the scene's `opts.state` is the host's replica), not dirty, "Saved" |
@@ -223,7 +229,8 @@ probe in Chromium 153, below), `a8f3521`, `ffa2fa4`, `83a1636` and `e47f273` (qa
 **Run A, step by step** (Chromium 153.0.8010.12, SwiftShader; main-thread long tasks up to 40 s, the watchdog read none
 of them as a dead worker):
 - **control**: the technique works (ArraySpecies traced on the worker thread, its TurboFan user deoptimized); a detach
-  deoptimizes the probe: no, so the worker's probe is not evidence here (decision 11).
+  deoptimizes the probe: no, so the worker's probe is not evidence here (decision 11). *(T034b: that control detached a
+  buffer with no view, which this V8 does not count; the protector steps of both runs were never gated.)*
 - **boot**: quickstart on a worker host in 9.0 s, paused; the worker made its probe (`01-boot`).
 - **tools** (`02-tools`): road (41 cells), zone (180), power line (33), dezone (180 to 162), bulldoze (41 to 38), trees
   (127,773 to 127,855), each acked with nothing pending; the park and the held brush as above.
@@ -262,6 +269,109 @@ crash-dialog screenshots waited out the 30 s settle limit (the modal's finished 
 
 **Not covered by the runs**: the G6 window (a crash between the worker's Ready and the scene: code path only); real-GPU
 numbers (SwiftShader: function, not timings).
+
+### T034b, the protector control (cloud carry-over, Nov 3)
+
+Branch `cloud/t034b` (worktree `scratchpad/co/t034b`), from `cloud/t034` (`042efa5`), with dev `9fcc2ec` and then
+`50a6b29` (docs only: NOTE-051, NOTE-052) merged in, both clean. Read: the task file; NOTE-041, 044, 045, 046, 047, 048,
+049 (the NOTEs that name T034) and T061's task file; WORKER_DESIGN §5.4 and §6 row W1.2; this report; the diff against
+dev; the re-review's one major.
+
+#### Gap list (required versus done, at the start of T034b)
+
+| # | Required (source) | State on `cloud/t034` (`042efa5`) |
+|---|---|---|
+| B1 | The re-review's major: qa-worker's positive control must invalidate the protector. V8 15.3 (Chromium 153) has the ArrayBufferDetaching protector but tracks views: a detach of a buffer with no view or one TypedArray view leaves it intact; two or more views, a DataView or a detach key invalidate it | **Invalid.** `CONTROL_WORKER` detached `new ArrayBuffer(8)` with no view, so `control.observable` was false in every run and the worker's probe was never gated (both runs logged "the worker made its probe" and a NOTE) |
+| B2 | qa-worker on the production build, once with `--soak-min 10 --simwasm wasm` and once without the soak and with `?simwasm` unset, with the protector gated | **Not run** with a valid control |
+| B3 | Corrections: decision 11, `protector-chromium153.txt`, the `.done` line's open item, the "Left open" line, the comments of `src/worker/protectorProbe.ts`, `tools/bench/trafficCore/protector.ts:8` and the qa-worker header | **Wrong**: each says Chromium 153's V8 has no ArrayBufferDetaching protector |
+| B4 | NOTE-048 / T061 item 1: check WorkerSimHost for LoopbackSimHost.ts:180's order (speedChanged re-emitted before the speed mirror moves); fix it there with a test, leave LoopbackSimHost to T061 | **Present.** `WorkerSimHost extends PacketSimHost`: the replica replays a packet's log (a speedChanged the worker made, such as an urgent pause) before the base class's clock hook sets `speedMirror`, so a handler that re-reads `host.speed` inside the event reads the old speed |
+| B5 | NOTE-041 item 2, NOTE-048's WorldView.ts:388 (the resync rebuilt from the old state), T061 item 4 | **Done on `cloud/t034`**: `src/render/world/WorldView.ts:393` rebuilds from `getState()` (CityScene passes `() => this.sim.state`); tests/worker/worldResync.test.ts. Dev still has the old line 388 until T034 merges |
+| B6 | Gates: tsc, the full vitest, the bot identical to dev (`residents [ 61124, 93804, 37971 ]`), the two qa-worker runs | To run on the final tree |
+| B7 | The fix round's last qa-worker commit (`e47f273`, the crash dialog's settle wait) had not run in a browser | Runs in B2 |
+
+#### What T034b did
+
+Commits: `3d4f2f1` (the control), `d1cae66` (WorkerSimHost's speed), `178877d` (the gap list), `0d85c13` (the bench's
+`invalidateProtector()` back to its old detach, decision T1), and this report's commit (the corrections and the gates).
+
+| Item | Change | Evidence |
+|---|---|---|
+| B1, the control | `tools/qa-worker.mjs` `CONTROL_WORKER`: after the probe is made and read twice (negative control 1), it detaches a buffer with no view (negative control 2), then `new ArrayBuffer(8)` with a `Uint8Array` and a `Float32Array` view (the positive control), then invalidates ArraySpecies (the technique). `observable` is true when either detach deoptimizes the probe (the no-view one does on a V8 that invalidates on any detach, which leaves the two-view one nothing to show); `noViewFree` is logged | both runs: `made`, `before`, `afterNoView` true, `afterDetach` false, the trace `ArrayBufferDetaching (DedicatedWorker thread)` then `ArraySpeciesLookupChain (DedicatedWorker thread)`; `observable: true`, `noViewFree: true`. So every protector step ran as the gate `protector: the worker's probe intact <when>` |
+| B1, the experiment | `scratchpad/t034bwork/probe-views.mjs`: ten detach variants, each in a fresh module worker with the probe made first, under a Chrome trace of `V8.InvalidateProtector` | `local-W1.2/protector-chromium153.txt`, experiment 9: free (probe intact, no trace) for no view, one Float32Array view (structuredClone transfer, a postMessage transfer list as lodWorker's, `ArrayBuffer.prototype.transfer`), and a wasm `memory.grow` with no view or one; invalidated (probe deoptimized, `ArrayBufferDetaching` traced on the worker thread) for two views of two kinds or of one kind, one DataView, and a `memory.grow` of a memory with two views |
+| B3, the corrections | decision 11 rewritten; `protector-chromium153.txt` opens with the correction and experiment 9; the `.done` file's open item (1) closed, and a T034b line; "Left open"; the fix round's table row and its run A control line marked; the comments of `src/worker/protectorProbe.ts`, `tools/bench/trafficCore/protector.ts` (header and `invalidateProtector()`) and the qa-worker header (the `control` step, the page's probe) | each now says: the protector exists in Chromium 153; a detach of a buffer with no view or one TypedArray view is free; it is invalidated by a detach of a buffer with two or more views, a DataView or a detach key; keeping it means never detaching such a buffer |
+| B4, the speedChanged order | Present in WorkerSimHost (it inherits PacketSimHost's order: the replica replays the packet's log, then the clock hook moves `speedMirror`). `WorkerSimHost` now reads the packet's clock speed while a packet is applied (`packetSpeed`, set around `super.receive`), unless a `setSpeed` or `resume` of the page's is newer than the packet's command watermark (`speedSeq > p.cmd`), in which case the mirror keeps that command's speed, as before. LoopbackSimHost and PacketSimHost are untouched (T061 item 1); the override's comment says it goes once T061 moves the mirror in PacketSimHost | `tests/worker/workerSpeed.test.ts` on the real worker (worker_threads): (1) the emergency policy's urgent pause, a handler that re-reads `host.speed` inside the worker's own `speedChanged`, reads `[{ event: 0, speed: 0 }]`; (2) a page `setSpeed(2)` held back on its way to the worker, so the worker's pause arrives first: `[{ event: 2, speed: 2 }, { event: 0, speed: 2 }]` and `host.speed` 2. Both fail with the fix reverted or loosened, rerun here: without the override, (1) reads `[ { event: +0, speed: 3 } ]`; with a fix that always takes the packet's clock, (2) fails (the pause's event reads speed 0 while the page's newer 2 is pending) |
+| B5, WorldView's resync | nothing to do: `src/render/world/WorldView.ts:393` rebuilds from `getState()` on `'reset'` (CityScene passes `getState: () => this.sim.state`), covered by `tests/worker/worldResync.test.ts`. NOTE-041 item 2 is done on this branch; T061 item 4 closes when T034 merges (dev's line 388 still rebuilds from `this.state`) | the full vitest below |
+| B7, `e47f273` in a browser | the crash dialog's settle wait | both runs: every crash-dialog screenshot shows the dialog fully drawn, and no step waited out the 30 s settle limit |
+
+#### Gates (T034b; heavy commands under the shared lock)
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | clean, on `0d85c13` |
+| Full vitest (`SIM_FIXTURES`, `SIM_SNAP` set), on `0d85c13` | **225 files passed, 2 skipped; 2,228 tests passed, 7 skipped**; 420 s. It includes the new `workerSpeed` tests, `worldResync`, hosts, hygiene and S1's protector test on the production worker loop (node's V8) |
+| `tests/worker/workerSpeed.test.ts` alone, and with each mutation | 2 passed; without the override 1 failed (test 1); with "always the packet's clock" 1 failed (test 2) |
+| The bot, 128 x 15, seed 7, on `0d85c13`, against a clean export of dev `50a6b29` | **identical** apart from the timing (the two ms columns, the "done in" and ms/day lines): `residents [ 61124, 93804, 37971 ]`, 193k in 2015, every year row equal |
+| qa-worker run A: production build, size 256, quality low, `--soak-min 10 --simwasm wasm` (`local-W1.2/qa-worker-t034b-a.txt`) | **39 of 39 passed**, the protector gated |
+| qa-worker run B: production build, size 256, quality low, no soak, `?simwasm` unset (`local-W1.2/qa-worker-t034b-b.txt`) | **35 of 35 passed**, the protector gated |
+| The detach experiment (experiment 9) | 10 variants, as above |
+
+**The protector, gated** (Chromium 153.0.8010.12, SwiftShader; the page's own probe reported, not gated):
+
+| Step | Run A (`=wasm`, soak 10 min) | Run B (`?simwasm` unset) |
+|---|---|---|
+| control | observable, the no-view detach free | the same |
+| after boot | intact; kernels ready, blur on wasm, 64 MiB, `grows: 0`; page intact | intact; page intact |
+| after the freeze | intact; `grows: 0`; page intact | intact; page intact |
+| after 10 min at speed 3 (day 214 to 537, page heap 141 MB throughout) | intact; kernels still on wasm, `grows: 0`; page intact | (no soak) |
+| in the founded city (the region step's pre-spawned worker) | intact; `grows: 0` | intact |
+
+**The rest of the runs**, where they differ from the fix round's: boot 6.8 s (A) and 7.3 s (B); every tool op acked with
+nothing pending, the park counted and the held level brush flat after 27 applications, one release sound, no error sound,
+no toast (both); days 90 to 131 (A) and 90 to 130 (B) at speed 3, the worker's digest equal to the replica's twice; a
+hidden tab's save in 126 ms (A) and 157 ms (B); Continue on a new worker at the saved day, running; the freeze's first day
+1.19 s (A) and 1.64 s (B) after resume, with the first frame (SwiftShader, not gated); latency p50 / p95 / p99 0.7 / 3.3 /
+4.4 ms (A) and 0.6 / 1.9 / 2.5 ms (B), not gated; the watchdog's dialog after 10.1 s (A) and 11.5 s (B); recover restores
+tax 13.5 on a new worker; the fallback and the region fallback on the main thread with one toast; no console errors in
+normal play.
+
+**Screenshots**: every one of both runs is in `scratchpad/t034bwork/qa-a/` and `qa-b/` (16 and 15); I looked at each.
+Kept here: `local-W1.2/qa-t034b-a-05b-after-soak.jpg` (the soaked city, June 2001, at speed 3),
+`qa-t034b-a-09-fallback.jpg` (the fallback toast), `qa-t034b-b-01-boot.jpg` (the paused new city) and
+`qa-t034b-b-06-crash-dialog.jpg` (the crash dialog fully drawn, Recover offered). Several screenshots (both runs'
+`07-restarted`, `07d-recovered`, `08-main-thread`, `12-region-fallback`) catch the loading screen still fading over the
+city on the slow SwiftShader frames; the checks read the DOM and the host, not the picture. Run B's `09-fallback` was taken
+after its toast had gone; run A's shows it.
+
+#### Decisions (T034b, for the lead)
+
+- **T1. The bench's `invalidateProtector()` keeps its no-view detach.** `3d4f2f1` had made it detach a two-view buffer,
+  which changes what `'-inv'` arms measure on Chromium 153; the lane asked only for the comment. `0d85c13` restores the
+  old detach and the comments say what it does on each V8: it invalidates where any detach does (node 22's V8), and on
+  Chromium 153 an `'-inv'` arm keeps the protector, as the page does through lodBuilder's single-view transfers. If
+  `'-inv'` should mean "invalidated" on every V8, a second view on that buffer does it. `tools/bench/servicesTierEngine.core.ts`
+  has its own copy with the old comment ("invalidates the protector for this isolate"), outside the lane, left as is.
+- **T2. "A detach key"** is the review's reading of V8's source; script cannot make one, and a wasm `memory.grow` is not
+  one in this V8 (with no view or one view it is free). The docs name it beside the views and the DataView without
+  claiming a test of it.
+- **T3. WorkerSimHost's speed inside a packet** is the packet's clock speed, the speed at the packet's end. A packet that
+  carries two speed changes (rare: a page `setSpeed` applied and then a worker pause in the same frame) makes a handler
+  that re-reads `host.speed` in the first event see the second's speed; the event's own value is exact, as T048's
+  workaround uses. Moving the mirror before the log replay in PacketSimHost (T061) has the same property.
+- **T4. Two qa-worker runs, not four**, as the lane says (the shared lock): A with the soak and the kernels, B without either.
+  Run B has no soak, so its "after 10 min" probe is run A's alone.
+- **T5. The page's own probe stays reported, not gated**: it read intact in both runs (after boot, the freeze and the soak),
+  which fits experiment 9 (lodBuilder transfers one view per buffer). Gating it is J0's (T059's) call.
+- **T6. Dev moved during the lane** (`50a6b29` to `63c8f58`: T052, render and asset files, and docs: NOTE-053 to 058, T061's
+  items 5-7). `git merge-tree` merges it cleanly with this branch and none of it touches src/worker, src/sim, src/game or
+  the qa harness, so it is left to the merge step, which gates the merged tree, as decision 8 did.
+
+#### Left open (T034b)
+
+- What J0 buys on a current Chrome, where single-view transfers are free (decision 11): a real-GPU timing question.
+- Real-GPU numbers (the freeze test's 1 s, boot time, FPS with the worker), the G6 window, T039's journal and
+  FallbackWorldView's resync, as before.
+- T061: LoopbackSimHost's speedChanged order (item 1), the clock cap (item 2), reinforcement provenance (item 3); its item 4
+  (the WorldView resync) is done here.
 
 ## The rebuild on T032's code (the local worker)
 

@@ -12,9 +12,14 @@
  *
  * Steps, each logged PASS or FAIL (exit code 1 on any FAIL):
  *   control   the probe's positive and negative controls in this browser, in a bare module worker under a Chrome trace of
- *             V8.InvalidateProtector: the probe must deoptimize on a detach for its "intact" to mean anything. Where it
- *             does not (Chromium 153: its V8 has no ArrayBufferDetaching protector; a protector it does have, ArraySpecies,
- *             shows the technique works), each protector step checks that the worker made its probe and logs a NOTE
+ *             V8.InvalidateProtector: the probe must deoptimize on a detach that invalidates the ArrayBufferDetaching
+ *             protector for its "intact" to mean anything. Chromium 153's V8 has the protector but tracks array buffer
+ *             views: a detach of a buffer with no view or exactly one TypedArray view leaves it intact (the view is
+ *             updated in place), and a detach of a buffer with two or more views, a DataView or a detach key invalidates
+ *             it. So the positive control detaches a buffer with two TypedArray views, and a detach with no view is a
+ *             second negative control (reported: on a V8 that invalidates on any detach, such as node 22's, it deoptimizes
+ *             too). Where the positive control does not deoptimize the probe (ArraySpecies shows whether the technique
+ *             itself works), each protector step checks only that the worker made its probe and logs a NOTE
  *   boot      ?quickstart=1&simworker=1 reaches __ready on a worker host (the worker is its own script); the worker's
  *             protector probe is intact (§5.4); with --simwasm, blur runs on wasm in the worker and its memory never grew
  *   tools     through the real tools (pointer events on the canvas), each acked in the replica with nothing pending: a
@@ -38,7 +43,8 @@
  *             the new city on that worker (no second one), paused and saved, and its days advance (§4.1 step 1)
  *   console   no console errors outside the steps that crash on purpose
  * Measured, not gated: boot time, action latency (post to ack applied, p50 / p95 / p99), and the page's own protector
- * probe (lodBuilder's transfer list invalidates it until S0's J0 lands). Not covered: W1.3's journal check. WebGL runs on
+ * probe (lodBuilder's transfer list, one Float32Array view per buffer, invalidates it on a V8 that invalidates on any
+ * detach; Chromium 153's keeps it). Not covered: W1.3's journal check. WebGL runs on
  * SwiftShader: function, not GPU timings.
  */
 import { createRequire } from 'node:module';
@@ -118,9 +124,11 @@ async function settleDialog(page) {
 }
 /**
  * The probe's controls (risk 7), in a bare module worker: the probe made as src/worker/protectorProbe.ts makes it, read
- * twice (negative control), then a buffer detached (positive control); beside it, a TurboFan function that depends on the
- * ArraySpecies protector, which is then invalidated (the technique itself). Chrome's trace records V8.InvalidateProtector
- * on the thread that invalidated one, so it shows which protectors this V8 has.
+ * twice (negative control 1), then a buffer with no view detached (negative control 2: free on a V8 that tracks views,
+ * such as Chromium 153's, which updates a lone view in place), then a buffer with two TypedArray views detached (the
+ * positive control: that invalidates the ArrayBufferDetaching protector on every V8 that has one); beside it, a TurboFan
+ * function that depends on the ArraySpecies protector, which is then invalidated (the technique itself). Chrome's trace
+ * records V8.InvalidateProtector on the thread that invalidated one, so it shows which protectors went.
  */
 const CONTROL_WORKER = `
   const tf = new Function('f', 'return %ActiveTierIsTurbofan(f);');
@@ -132,7 +140,10 @@ const CONTROL_WORKER = `
   const made = warm(probe, ta);
   for (let i = 0; i < 1000; i++) probe(ta);
   const before = tf(probe);
-  const b = new ArrayBuffer(8); structuredClone(b, { transfer: [b] });
+  const n = new ArrayBuffer(8); structuredClone(n, { transfer: [n] });
+  probe(ta);
+  const afterNoView = tf(probe);
+  const b = new ArrayBuffer(8); new Uint8Array(b); new Float32Array(b); structuredClone(b, { transfer: [b] });
   probe(ta);
   const afterDetach = tf(probe);
   const arr = [1, 2, 3, 4];
@@ -140,7 +151,8 @@ const CONTROL_WORKER = `
   const mapperMade = warm(mapper, arr);
   Object.defineProperty(Array.prototype, 'constructor', { value: function NotArray() {}, configurable: true, writable: true });
   mapper(arr);
-  postMessage({ made, before, detached: b.byteLength === 0, afterDetach, mapperMade, mapperAfterSpecies: tf(mapper) });`;
+  postMessage({ made, before, noViewDetached: n.byteLength === 0, afterNoView, detached: b.byteLength === 0, afterDetach, mapperMade,
+    mapperAfterSpecies: tf(mapper) });`;
 let control = { observable: false };
 async function protectorControl() {
   const page = await browser.newPage();
@@ -161,7 +173,10 @@ async function protectorControl() {
     for (const e of events) if (e.ph === 'M' && e.name === 'thread_name') threads.set(`${e.pid}:${e.tid}`, e.args?.name);
     const invalidated = events.filter((e) => e.name === 'V8.InvalidateProtector').map((e) => `${e.args?.['protector-name']} (${threads.get(`${e.pid}:${e.tid}`) ?? 'thread?'})`);
     return { ...w, invalidated, technique: w.mapperMade === true && w.mapperAfterSpecies === false,
-      observable: w.made === true && w.before === true && w.detached === true && w.afterDetach === false };
+      // the no-view detach keeps the probe on a V8 that tracks views; one that invalidates on any detach deoptimizes it
+      // there already, and the two-view detach then has nothing left to show, so either one counts
+      observable: w.made === true && w.before === true && w.detached === true && (w.afterNoView === false || w.afterDetach === false),
+      noViewFree: w.made === true && w.noViewDetached === true && w.afterNoView === true };
   } finally { await page.close(); }
 }
 /** the worker isolate's protector probe and kernels (debug.verify), and the page's own probe (reported only) */
@@ -172,10 +187,11 @@ async function protector(page, when) {
   }).catch((e) => ({ error: String(e) }));
   if (control.observable) check(`protector: the worker's probe intact ${when}`, r.protector === true, JSON.stringify(r));
   else {
-    // the control: a detach deoptimizes nothing in this V8, so the probe reads intact whatever ran. What is checked is
-    // that the worker isolate made its probe (natives syntax reached it, the dev flag did, and it took TurboFan code)
+    // the positive control (a buffer with two views detached) did not deoptimize the probe, so it reads intact whatever
+    // ran. What is checked is that the worker isolate made its probe (natives syntax reached it, the dev flag did, and it
+    // took TurboFan code)
     check(`protector: the worker made its probe ${when}`, r.protector === true || r.protector === false, JSON.stringify(r));
-    log('NOTE', `protector ${when}: not observable in this browser (the control: a detach does not deoptimize the probe), so ${JSON.stringify(r.protector)} is not evidence`);
+    log('NOTE', `protector ${when}: not observable in this browser (the positive control did not deoptimize the probe), so ${JSON.stringify(r.protector)} is not evidence`);
   }
   return r;
 }
@@ -418,7 +434,8 @@ async function main() {
   log('browser', browser.version());
   control = await protectorControl().catch((e) => ({ observable: false, error: String(e).slice(0, 200) }));
   check('control: the probe technique works in this browser (TurboFan code that depends on a protector deoptimizes when it goes)', control.technique === true && control.made === true && control.before === true, JSON.stringify(control));
-  log(control.observable ? 'PASS' : 'NOTE', `control: a detach deoptimizes the probe (the worker's probe is evidence): ${control.observable}`, JSON.stringify({ invalidated: control.invalidated }));
+  log(control.observable ? 'PASS' : 'NOTE', `control: a detach of a buffer with two views deoptimizes the probe (the worker's probe is evidence): ${control.observable}`, JSON.stringify({ invalidated: control.invalidated }));
+  log(control.noViewFree ? 'PASS' : 'NOTE', `control: a detach of a buffer with no view leaves the probe intact (this V8 tracks views): ${control.noViewFree}`);
 
   /** the simulation worker's script throws on load (other workers, such as the LOD builder's, are left alone) */
   const failingWorker = () => {
@@ -441,7 +458,8 @@ async function main() {
   };
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await ctx.addInitScript(lowQuality, QUALITY);
-  // the page's own protector probe, first thing in the page (reported, not gated: lodBuilder's transfer list, J0)
+  // the page's own protector probe, first thing in the page (reported, not gated: lodBuilder's transfer list invalidates
+  // it on a V8 that invalidates on any detach; J0)
   await ctx.addInitScript(() => {
     try {
       const ta = new Float32Array(64);
