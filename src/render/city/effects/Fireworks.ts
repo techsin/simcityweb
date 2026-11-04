@@ -2512,7 +2512,8 @@ export class LaunchSiteIndex {
     for (const b of src.buildings) this.update(b, src);
   }
 
-  /** Added / changed, after the building renderer has applied the event. Existing ids keep their Map order. */
+  /** Added / changed: queued adds have no visual; pending changes keep their old visual until the swap.
+   *  Both catch up through onVisual -> visualChanged. Existing ids keep their Map order. */
   update(b: SiteBuilding, src: SiteSource): void {
     const old = this.entries.get(b.id);
     const e: IndexedSite = {
