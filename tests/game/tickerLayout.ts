@@ -1,7 +1,10 @@
 /**
  * A layout stand-in for the news ticker on the fake DOM (tests/game/fakeDom.ts), FEEL-01: the view's width and the
  * width of the track's one item, from its date label, its Gazette tag and its text. The numbers are the 1280x720 HUD's,
- * measured in Chromium by tools/qa-ticker.mjs (its "calibration" line).
+ * on the slow side: Chromium measured (tools/qa-ticker.mjs, its "layout" and "calibration" lines) a 381 css px view,
+ * 5.84 css px per text character, 25.6 css px for "Jan 1" and 62.9 css px for the tag. With the numbers below, an item
+ * runs at least as far past the view as in the browser once its clause has 19 characters (10 without the tag); every
+ * flavour headline has 42 or more. So the timings here are, if anything, later than the browser's.
  */
 import type { NewsTicker } from '../../src/ui/Notifications';
 import { FEl, textOf } from './fakeDom';

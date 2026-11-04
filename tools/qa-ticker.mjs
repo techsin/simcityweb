@@ -4,7 +4,8 @@
  * clause. On the UI dev page (demo-ui.html, a 64-tile town, the sim paused so only the injected news arrives) at
  * 1280x720:
  *   A. within 1 s of a notify, the first 20 characters of the item are inside .tk-view (from the idle rotation, from a
- *      long rotation item mid-scroll, and right after a new item's hold);
+ *      long rotation item mid-scroll, and right after a new item's hold); a notify during another new item's turn
+ *      waits for that turn (the plan's "bursts queue": A2, at most its 5 s);
  *   B. a 200-character item shows at most 91 characters, and its tooltip (title) has the full text;
  *   C. each of 10 consecutive flavour headlines (the 10 longest real texts from advisors.ts), arriving every 8 s (the
  *      sim's shortest headline gap at 2x: 40 days x 0.2 s), is fully visible within 15 s of arriving; the same at
@@ -176,27 +177,30 @@ try {
   await sleep(5600); // its hold ends: the rotation
   const long = 'Commuters praise the new crosstown avenue as average trips fall to eighteen minutes across the whole of Riverton';
   const a2pre = await timeTo20(long, 'good');
-  // wait for the rotation to bring the long item back and scroll it; then a new one arrives mid-scroll
-  await page.waitForFunction((t) => window.__tk.current?.text === t && /translateX\(-/.test(window.__geom()?.transform ?? ''), long, { timeout: 60000, polling: 'raf' });
-  const rot = await page.evaluate(() => window.__tk.current?.text);
+  // wait for the rotation to bring the long item back (not its own turn as a new item) and scroll it; then a new one
+  // arrives mid-scroll
+  await page.waitForFunction((t) => window.__tk.current?.text === t && window.__tk.cur?.fresh === false && /translateX\(-/.test(window.__geom()?.transform ?? ''), long, { timeout: 60000, polling: 'raf' });
+  const rot = await page.evaluate(() => ({ text: window.__tk.current?.text, fresh: window.__tk.cur?.fresh }));
   const mid = await page.evaluate(() => window.__geom().transform);
   const a2 = await timeTo20('Power plant output steady after the evening peak.', 'info');
-  const a3pre = await timeTo20('Library extends its opening hours on weekends.', 'good');
-  await sleep(5300); // hold over (5 s): the rotation shows, then a new one
+  // (a notify during another new item's 5 s turn waits for it: the plan's "bursts queue", reported below)
+  const queued = await timeTo20('Library extends its opening hours on weekends.', 'good');
+  await sleep(5300); // its turn over (3 s, a queued one): the rotation shows, then a new one
   const a3 = await timeTo20('Recycling center reaches a record month.', 'good');
-  check('A within 1 s of a notify the first 20 characters are inside .tk-view', [a1, a2pre, a2, a3pre, a3].every((r) => r.s <= 1),
-    { idle: a1.s, longNew: a2pre.s, midScrollOf: rot?.slice(0, 30), midTransform: mid, midScroll: a2.s, next: a3pre.s, afterHold: a3.s });
+  check('A within 1 s of a notify the first 20 characters are inside .tk-view', [a1, a2pre, a2, a3].every((r) => r.s <= 1),
+    { idle: a1.s, longNew: a2pre.s, midScrollOf: rot.text?.slice(0, 30), midScrollFresh: rot.fresh, midTransform: mid, midScroll: a2.s, afterHold: a3.s });
+  check('A2 a notify during another new item\'s turn waits for it, no longer than its 5 s (bursts queue)', queued.s > 1 && queued.s <= 5.5, { waited: queued.s });
 
   // B. a 200-character item: at most 91 characters, the tooltip has the full text
   await sleep(5500);
   const t200 = ('The regional transit authority has approved a sweeping plan that would connect every neighbourhood of Riverton '
-    + 'with frequent buses and new light rail lines over the coming years, pending a vote').slice(0, 200);
+    + 'with frequent buses and new light rail lines over the coming years, pending a final vote of the council').slice(0, 200);
   const b = await timeTo20(t200, 'info');
   await sleep(400);
   const bg = await page.evaluate(() => window.__geom());
   await page.screenshot({ path: join(SHOTS, 'f01-02-200-chars.png') });
   check('B a 200-character item shows at most 91 characters, with the full text in its tooltip',
-    t200.length === 200 && bg.text.length <= 91 && bg.title === t200 && b.s <= 1, { shown: bg.text, chars: bg.text.length, titleFull: bg.title === t200 });
+    t200.length === 200 && bg.text.length <= 91 && bg.title === t200 && b.s <= 1, { length: t200.length, shown: bg.text, chars: bg.text.length, titleFull: bg.title === t200, first20S: b.s });
   // let it scroll: mid-scroll and end shots
   await sleep(2600);
   await page.screenshot({ path: join(SHOTS, 'f01-03-200-scrolling.png') });
@@ -210,25 +214,31 @@ try {
   const cdp = await context.newCDPSession(page);
   await cdp.send('Performance.enable');
   const metric = async () => Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map((m) => [m.name, m.value]));
-  const frames = () => page.evaluate(() => new Promise((res) => { let n = 0; const t0 = performance.now(); const f = () => (++n, performance.now() - t0 < 3000 ? requestAnimationFrame(f) : res(n)); requestAnimationFrame(f); }));
-  const window3s = async () => {
+  const frames = (ms) => page.evaluate((ms) => new Promise((res) => { let n = 0; const t0 = performance.now(); const f = () => (++n, performance.now() - t0 < ms ? requestAnimationFrame(f) : res(n)); requestAnimationFrame(f); }), ms);
+  // the ticker's layout reads and the page's layout and style counts over `ms` (2 s: well inside one item's scroll)
+  const windowOf = async (ms) => {
     await page.evaluate(() => { window.__tkReads = 0; window.__tkCount = true; });
     const m0 = await metric();
-    const n = await frames();
+    const n = await frames(ms);
     const m1 = await metric();
     const reads = await page.evaluate(() => { window.__tkCount = false; return window.__tkReads; });
     return { frames: n, layouts: m1.LayoutCount - m0.LayoutCount, styles: m1.RecalcStyleCount - m0.RecalcStyleCount, tickerReads: reads };
   };
+  const now = () => page.evaluate(() => ({ text: window.__tk.current?.text, transform: window.__geom().transform }));
   await timeTo20('Short news item at rest.', 'good');
   await sleep(600);
-  const rest = await window3s();
+  const rest = await windowOf(2000);
+  // the long item arrives while the rotation shows (not queued behind the short one: its full turn, 1 s rests)
+  await page.waitForFunction(() => window.__tk.cur?.fresh === false, null, { timeout: 20000, polling: 'raf' });
   await timeTo20(t200.replace('regional', 'county'), 'info');
-  await sleep(1500); // past its entry and lead: it scrolls
-  const tr0 = await page.evaluate(() => window.__geom().transform);
-  const scroll = await window3s();
-  const tr1 = await page.evaluate(() => window.__geom().transform);
-  check('D widths are cached: no layout read from the ticker while it scrolls, no more layouts than at rest',
-    scroll.tickerReads === 0 && rest.tickerReads === 0 && tr0 !== tr1 && scroll.layouts <= rest.layouts + 2, { rest, scroll, transforms: [tr0, tr1] });
+  await sleep(1700); // past its entry (0.5 s) and its lead (1 s): it scrolls (for about 3.3 s)
+  const s0 = await now();
+  const scroll = await windowOf(2000);
+  const s1 = await now();
+  const scrolled = s0.text === s1.text && /translateX\(-/.test(s0.transform) && /translateX\(-/.test(s1.transform) && s0.transform !== s1.transform;
+  check('D widths are cached: no layout read from the ticker while it scrolls, no more layouts a frame than at rest',
+    scrolled && scroll.tickerReads === 0 && rest.tickerReads === 0 && scroll.layouts / scroll.frames <= rest.layouts / rest.frames + 0.05,
+    { rest, scroll, sameItem: s0.text === s1.text, transforms: [s0.transform, s1.transform] });
 
   // E. hover pauses: the transform holds and a new item waits; leaving resumes
   await sleep(6500);
