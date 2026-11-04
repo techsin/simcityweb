@@ -1,5 +1,7 @@
 # T062 — shared SIM A/A envelope
 
+Current final-gate workflow: [NOTE-053 / Round 4](sim-aa-envelope.md#note-053-sim-ensembles-round-4). Earlier rounds below retain historical measurements; their old margin recommendations are superseded by ensemble medians and bands.
+
 Implemented on `local/T062-sim-aa-envelope`, HEAD `0df76bce1a663ee44957cf47cfecdb8b18eed187`,
 whose parent/base is dev `9fcc2ec`. The task file's `683d02b` base is stale; this measures the worktree supplied
 by the lead. The deliverable is [sim-aa-envelope.md](sim-aa-envelope.md).
@@ -42,7 +44,7 @@ Verification:
   **1,427,340 / 1,427,340** (256×60 s11). The deliverable contains every exact command and annual table.
 - Every population, air, approval and I-HT share envelope is **0**, absolute and relative. Funds are exactly
   §1 higher at all 135 annual checkpoints of the nudged runs; the four measured metrics never diverge.
-  The measured base band is therefore `max(the item's tolerance, ±1%)`; no larger perturbation was substituted.
+  This historical no-fork result remains unchanged; current NOTE-053 gates use ensemble medians and bands.
 - The independent raw-data check confirms all twelve zero maxima and [1, 1] annual funds-delta ranges.
   `--report-only` reproduced the generated report content exactly without rerunning any simulation.
 
@@ -55,20 +57,19 @@ Environment and plan differences:
   files and launches bots with inherited output, with no synchronous child launches.
 - The newcomer profile starts on day 90; for that optional combination the nudge applies on its first day
   from founding (day 91). The six specified default-profile runs apply it on absolute day 1.
-- NOTE-048 replaces the older item tolerances with the maximum of the item's tolerance, 1%, and the measured
-  envelope. All three rows shifting in the same direction by more than half the tolerance still require
-  investigation. T041 must be measured separately; it has not been merged or simulated here.
+- NOTE-053 now replaces the earlier NOTE-048/052 margin rules with ensemble medians and bands. The original
+  measurements above predate T041; Round 4 below supplies its separate ensemble measurement.
 
 Left for the lead:
 
-- The post-T041 six-run remeasurement on the signed NEW-05 option-B dev tree.
+- The post-T041 measurement was outstanding at Round 1; Round 4 completes it with NOTE-053 ensembles on the supplied signed NEW-05 option-B tree.
 - The full suite and standard real-GPU/browser smoke, as instructed. Hard-specific hash runs and old-save
   continuation were not run; no simulation formulas or save format changed in this task.
 - No browser checks appear in T062's acceptance/gates. Browser checklist: **N/A**.
 - Review/commit/push as desired. No commit, push, merge or `.done` file was made, per the session rules.
 
 
-## Round 2 — Fork-noise envelopes
+## Round 2 — Fork-noise envelopes (historical)
 
 Report-only follow-up on committed `3833c8d`. [The new section](sim-aa-envelope.md#fork-noise-envelopes) records every first command/log fork, year-10-onward metric delta, cross-size range, exact command and source hash. Only this note and the report changed in the repository; diagnostic runners and output remain in the lane scratch. The original report bytes and all baseline fixtures are preserved. No production code, infra, cloud-held or outside-scope hunks; no cloud requests.
 
@@ -78,7 +79,7 @@ Report-only follow-up on committed `3833c8d`. [The new section](sim-aa-envelope.
 - Day 1,800 reproduces the 128×15 day-1 commands/logs/metrics; day 4,320 reproduces the unnudged commands/logs/metrics and retains exactly §10 more funds from year 12. No 256×60 timing probe was run.
 - Gates: `npx tsc --noEmit` passed; `tests/sim/botAaFundsNudge.test.ts` **11 passed** (quiet gate, native loader, threads). Independent scratch validator passed **705 annual observations, 135 unchanged control hashes/rows, 56 envelopes, first-action indices and timing comparisons**. Original flags-off 128×15 s7 stays **192,899**, residents `[61124,93804,37971]`.
 - Plan/code difference: the specified +§1 probe never forks; +§10 does, but its shared negative endpoint pattern means this calibration cannot be presented as proven unbiased noise. No balance calibration or baseline re-recording was made.
-- Left for the lead: the systematic-direction investigation and post-T041 remeasurement; full-suite/GPU/browser checks as usual. Browser Acceptance checklist: **N/A**. Hard/save-specific checks, negative nudges and exact sub-§10 thresholds were not measured.
+- Outstanding at Round 2: the systematic-direction investigation and post-T041 measurement. Rounds 3–4 add the signed/timed probes and T041 ensembles. Full-suite/GPU/browser checks remain separate. Browser Acceptance checklist: **N/A**. Hard/save-specific checks and exact sub-§10 thresholds were not measured.
 - Changes remain uncommitted; no push, merge or `.done` file.
 
 
@@ -98,6 +99,27 @@ No metric has a common nudge-sign, reverse-sign, both-up or both-down pattern ac
 
 Gates: tsc passed; funds-nudge tests 11 passed; protocol tests 7 passed, sequential quiet-gated single files. Fifteen selected complete runs / 675 annual records; independent validation of 12 log forks, 12 pooled envelopes, 135 unchanged control hashes/rows and 24 pre-year-5 hashes/rows. Five extra §10 probes completed; the redundant active +§10 long timing attempt was stopped once that size failed and its partial data is excluded. All exact bot/runner/test commands, first decisions, annual tables and percentages are in the report. Original controls remain 192,899 / 1,513,835 / 1,427,340.
 
-NOTE-052 supersedes the old base-band rule: base rows remain ±1%; envelopes widen variant-target margins only. Day1441 means the first simulated bot-loop day of year5; calendar rollover occurs at1440. Rerun the protocol on dev with T041 using the three `--all-sizes` commands in the main report; choose the smallest common qualifying size, retaining non-monotonic response evidence.
+NOTE-053 supersedes NOTE-052's base and variant margin rules. Use ensemble medians and dev bands for base gates, and variant/base medians at the same lane commit for targets; Round 4 contains the current workflow. Day1441 means the first simulated bot-loop day of year5; calendar rollover occurs at1440. The earlier size-response evidence remains historical.
 
-Unverified/left for lead: T041 remeasurement and interpretation of the direction diagnostics; full-suite/GPU checks. Hard/save-specific continuations and sub-grid thresholds were not run. Browser Acceptance checklist: N/A; T062 names no browser checks.
+The T041 remeasurement outstanding at Round 3 is completed in Round 4. Interpretation of the direction diagnostics and full-suite/GPU checks remain separate. Hard/save-specific continuations and sub-grid thresholds were not run. Browser Acceptance checklist: N/A; T062 names no browser checks.
+
+
+## Round 4 — NOTE-053 ensembles
+
+The [NOTE-053 section](sim-aa-envelope.md#note-053-sim-ensembles-round-4) contains dev and T041’s six five-member ensembles, all four annual median/min-max tables, 135 yearly population median deltas, excursion years, exact commands and the lane gate workflow. The old active ±1% and single-envelope margin guidance is replaced throughout both reports.
+
+| Row | Dev final population median | T041 final population median | Median change | Outside ±3% years, all / from year 10 | Reopen NOTE-050 at endpoint? |
+|---|---:|---:|---:|---:|---|
+| 128×15 s7 | 191588 | 193098 | 0.78815% | 5 / 0 | no |
+| 256×60 s7 | 1461087 | 1477908 | 1.15127% | 36 / 31 | no |
+| 256×60 s11 | 1483518 | 1468252 | -1.02904% | 50 / 44 | no |
+
+T041’s signed endpoint allowance remains closed. No common quarter-band systematic shift occurs in any metric. The ordinary NOTE-053 comparison is a separate diagnostic and names all three rows for nine-member stage two; it is not reported as a passing final base gate. Future lane gates must perform the named stage, using matching nine-member references and lane ensembles.
+
+Files: new `tools/simEnsemble.mts` collects/reuses five or nine members with bounded quiet-gated concurrency and JSON/Markdown bands; new `tools/simEnsembleStats.ts` implements statistics and verdicts; new `tools/simEnsembleCompare.mts` implements base/variant/sign-off CLI checks; `tools/simAaForkEnvelope.mts` has a small optional-variant/noInfra observer hunk and current rule strings; new stats/runner test files; this note and the main report. No infra/cloud-held/outside-scope hunks or cloud requests. T041aa remains untouched/clean.
+
+Checks: tsc passed; `botEnsembleStats` 15, `botSimEnsembleRunner` 7, `botAaForkEnvelope` 7 and `botAaFundsNudge` 11 tests passed, sequential quiet-gated single files. Fifteen dev members reused, fifteen T041 members measured with jobs=3, and one requested isolated control replay. Independent validation covered 1,350 annual records, 1,080 bands, 432 base verdicts, 135 sign-off verdicts and 48 pre-year-5 state matches. Parallel/alone control identity: 15/15 state hashes and rows, 1,689 actions and 1,123 full-log entries. Cache repeat: all thirty raw files unchanged in content and mtime, no member reruns.
+
+Protocol details: year-5 pulse day1441; systematic endpoints15/60/60; literal inclusive half-band proximity also flags passes; the provided quiet gate waits at launch and does not preempt active members. The same-commit variant guard and no-compensation/default-strategy rule stand. The main report explains cherry-picking 3833c8d and retaining both bot hunks on conflicts.
+
+Left for final lane gates: named nine-member stages and actual variants; full-suite/GPU and old-save checks. NOTE-050’s large-effect sweep checks were not rerun. Browser Acceptance checklist: N/A. All changes uncommitted; no commit, push, merge or `.done` file.

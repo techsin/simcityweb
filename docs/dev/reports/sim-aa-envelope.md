@@ -1,6 +1,6 @@
 # Shared SIM A/A envelope (NOTE-048)
 
-> Current rule: [NOTE-052 / Round 3](#note-052-symmetric-fork-noise-protocol-round-3) supersedes the historical margin guidance below. Base rows use ±1%; the selected envelope widens variant-target margins only.
+> Current rule: [NOTE-053 / Round 4](#note-053-sim-ensembles-round-4) replaces the earlier base and variant margin rules. Gates use ensemble medians and min-max bands; the single-run measurements below remain historical evidence.
 
 Measured commit: `0df76bce1a663ee44957cf47cfecdb8b18eed187` (branch `local/T062-sim-aa-envelope`). Host: `none`; independent node processes.
 
@@ -14,7 +14,7 @@ The working tree includes the funds-nudge instrumentation; the commit identifies
 
 Completed runs: **6/6**. All pairs are complete.
 
-The specified +§1 perturbation produces no divergence in the measured metrics on this base: **all twelve row/metric envelopes are exactly zero**, both absolutely and relatively. Annual funds are exactly §1 higher in every nudged run (all years, including years 1–9); the perturbation was applied. This result does not estimate a larger perturbation's fork noise. NOTE-048 therefore leaves these base bands at `max(the item's tolerance, ±1%)` for this measurement.
+The specified +§1 perturbation produces no divergence in the measured metrics on this base: **all twelve row/metric envelopes are exactly zero**, both absolutely and relatively. Annual funds are exactly §1 higher in every nudged run (all years, including years 1–9); the perturbation was applied. This result does not estimate a larger perturbation's fork noise. It is a historical no-fork measurement; current NOTE-053 gates use ensemble medians and bands.
 
 | Row | Base final population | +§1 final population | Base final funds | +§1 final funds |
 |---|---:|---:|---:|---:|
@@ -249,21 +249,21 @@ Node v22.12.0; 2026-11-03T21:55:35.019Z → 2026-11-03T21:58:16.243Z; 161.223437
 | 2059 | 1416617 | 1416617 | 0.147304497255 | 0.147304497255 | 80.1027854209 | 80.1027854209 | 0.0910363244426 | 0.0910363244426 |
 | 2060 | 1427340 | 1427340 | 0.147485057472 | 0.147485057472 | 81.3566945637 | 81.3566945637 | 0.103251506482 | 0.103251506482 |
 
-## How SIM lanes use this (NOTE-048)
+## How SIM lanes use this (NOTE-048, superseded by NOTE-053)
 
-A base row passes within `max(the item’s tolerance, ±1%, this row/metric’s absolute A/A envelope)` in every year from year 10; convert a percentage tolerance using that year’s base value. The systematic-shift check still applies.
-A variant target missed by less than the metric’s A/A envelope counts as met when the direction also holds on the other seed; report the margin. A miss larger than the envelope remains a miss.
+NOTE-053 now requires a lane's ensemble median to be inside dev's ensemble min-max band and its absolute median difference to be at most `max(item tolerance, half of dev's band)` in every year from year 10. The current systematic-shift check uses endpoint median differences greater than a quarter of dev's band in the same direction across all three rows.
+Variant targets compare the variant and base ensemble medians at the same lane commit. The old absolute-envelope allowance does not apply; checks near their thresholds require the nine-run second stage described in Round 4.
 This does not authorize compensating residential growth, weakening costs, free approval, re-recording a baseline to hide a miss, or changing the default bot strategy.
 
-## Re-measure after T041 (NEW-05 option B)
+## Re-measure after T041 (historical +§1 protocol)
 
-Use the same script with the dev tree containing T041 and this flag. Choose a fresh output directory and a separate report so the two bases remain distinguishable:
+This command reproduces the original +§1 diagnostic. Current final gates use the NOTE-053 ensemble commands in Round 4; this earlier command is retained for provenance. A separate output/report keeps measurements distinguishable:
 
 ```powershell
 node --experimental-strip-types 'C:\Users\techsin\Desktop\projects\simcityweb-T062\tools\simAaEnvelope.mts' --tree PATH_TO_DEV_WITH_T041 --out-dir FRESH_T041_SCRATCH --report T041_ENVELOPE_REPORT.md --quiet-gate 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs'
 ```
 
-SIM lanes measure their final gates against that second envelope. To rebuild either table from its completed JSON, repeat its runner command with `--report-only`.
+To rebuild either historical table from its completed JSON, repeat its runner command with `--report-only` and a separate report destination. SIM lanes now use the ensemble workflow in Round 4 for final gates.
 
 ## Flags-off identity and gates
 
@@ -315,7 +315,7 @@ node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5
 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/node_modules/vitest/vitest.mjs run tests/sim/botLongGame.test.ts --maxWorkers=1 --configLoader native --pool threads
 ```
 
-No full suite, browser, GPU timing, separate Hard hashes or old-save continuation was run. T062 has no browser acceptance checks. The post-T041 remeasurement remains for the worker, using the command above with that dev tree and a fresh output directory. For reproducible comparisons, keep the same runner and dependencies; use a fresh output directory after changing measurement code.
+No full suite, browser, GPU timing, separate Hard hashes or old-save continuation was run. T062 has no browser acceptance checks. The post-T041 remeasurement was outstanding at this first round and is completed as NOTE-053 ensembles in Round 4. For reproducible comparisons, keep the same runner and dependencies; use a fresh output directory after changing measurement code.
 
 The session's no-commit/no-push/no-`.done` rule overrides the queued task's final push instruction. There are no infra hunks, cloud-held edits or cloud requests. See [the lane handoff](local-T062-sim-aa-envelope.md).
 
@@ -328,7 +328,7 @@ Round 2 measurement; generated from **17 completed runs**. All twelve day-1 grid
 
 Original-control verification: **135 annual state hashes and 135 non-timing yearly rows** checked against the original raw controls (128x15_s7: 15/15; 256x60_s7: 60/60; 256x60_s11: 60/60). Counts require the recorded `baseMatchesCommittedRows: true` result; no unrecorded comparison is inferred.
 
-Use +§10 on day 1 as the common probe: it is the smallest tested nudge that changes the successful action trace on all three rows. This is a measured grid minimum, not the exact threshold. Prefer it to a larger endowment; carry the row/metric envelopes measured for that nudge and revalidate the fork on each new base.
+The historical Round 2 recommendation was +§10 on day 1, the smallest tested positive-only nudge that changed the successful action trace on all three rows. Round 3's symmetric protocol rejected that size and selected §100; NOTE-053 uses that §100 size for ensemble members.
 
 Against the recommended probe sizes, +§10,000 has larger maximum drift in 8/12 row/metric comparisons, smaller drift in 4, and equal drift in 0. The tables retain the complete size response rather than assuming the envelope scales with the endowment.
 
@@ -368,7 +368,7 @@ The cheap timing experiment is limited to **128×15 s7**. +§10 on day 1,800 has
 
 ### Calibration direction diagnostic
 
-NOTE-048’s systematic-shift rule applies to item gates. Applying a related calculation to this calibration is a **diagnostic, not an extra acceptance gate**. No item-specific tolerance is supplied here: the endpoint band is `max(1% × base final population, population envelope from year 10)`; the threshold below is half that band. Signed endpoint percentages use the unnudged final population. A common direction across these three deterministic rows is a reason to investigate, not an estimate of statistical bias.
+The following is a historical Round 2 diagnostic, **not a current acceptance gate**. It used the then-current NOTE-048 calculation: the endpoint diagnostic band is `max(1% × base final population, population envelope from year 10)`; the threshold below is half that diagnostic band. NOTE-053 replaces that gate rule. Signed endpoint percentages use the unnudged final population. A common direction across these three deterministic rows is a reason to investigate, not an estimate of statistical bias.
 
 | Row | Recommended nudge / day | Base final pop | Probe final pop | Signed endpoint Δ | Signed endpoint Δ% | Population envelope | Diagnostic band (1% floor) | Half band | Absolute endpoint Δ > half band? |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
@@ -1476,11 +1476,11 @@ Positive-grid range uses the completed subset of +§10, +§100, +§1,000 and +§
 
 ### Recommendation and use by lanes
 
-Use +§10 on day 1 as the common probe: it is the smallest tested nudge that changes the successful action trace on all three rows. This is a measured grid minimum, not the exact threshold. Prefer it to a larger endowment; carry the row/metric envelopes measured for that nudge and revalidate the fork on each new base.
+The historical Round 2 recommendation was +§10 on day 1, the smallest tested positive-only nudge that changed the successful action trace on all three rows. Round 3's symmetric protocol rejected that size and selected §100; NOTE-053 uses that §100 size for ensemble members.
 
 Against the recommended probe sizes, +§10,000 has larger maximum drift in 8/12 row/metric comparisons, smaller drift in 4, and equal drift in 0. The tables retain the complete size response rather than assuming the envelope scales with the endowment.
 
-Use the chosen perturbation’s row-specific, metric-specific absolute envelopes with NOTE-048’s `max(item tolerance, ±1%, envelope)` rule; preserve its systematic-shift and cross-seed direction checks. Do not substitute the full +§10,000 spread as extra tolerance simply because it is larger. The cross-size ranges diagnose stability and sensitivity, and the later-day experiment diagnoses timing sensitivity. No balance baseline was re-recorded. The existing +§1 section remains a valid no-fork control. Remeasure on the dev containing T041 before final lane gates.
+This Round 2 recommendation is superseded: use NOTE-053's ensemble medians and bands for final gates, rather than any single-nudge envelope allowance. The cross-size ranges diagnose stability and sensitivity, and the later-day experiment diagnoses timing sensitivity. No balance baseline was re-recorded. The existing +§1 section remains a valid no-fork control; Round 4 measures the ensembles on dev and on the supplied T041 tree.
 
 ### Reproduction and verification of this follow-up
 
@@ -1511,14 +1511,14 @@ node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5
 
 Do not point the original `--report-only` generator at this combined report when rebuilding its +§1 tables: it overwrites the destination. Generate its output into scratch, and build this section separately with `forkNoiseReport.mjs`. The old section was preserved byte for byte when this follow-up was appended.
 
-No infra hunks, cloud-held edits, outside-scope repository hunks, cloud requests, baseline re-recording, commits, pushes or `.done` files. No browser checks occur in this task’s acceptance (checklist: N/A). Full-suite/GPU/browser checks, 256×60 later-day probes, sub-§10 threshold searches, negative nudges, and the post-T041 measurement were not run. The calibration’s common negative endpoint direction remains an explicit issue for the lead before accepting it as unbiased noise.
+No infra hunks, cloud-held edits, outside-scope repository hunks, cloud requests, baseline re-recording, commits, pushes or `.done` files were made in Round 2. No browser checks occur in this task's acceptance (checklist: N/A). Full-suite/GPU/browser checks, 256×60 later-day probes, sub-§10 threshold searches, negative nudges, and the post-T041 measurement had not been run at that round; Rounds 3–4 add the signed/timed probes and T041 ensembles. The one-sided calibration's common negative endpoint direction motivated those follow-ups.
 
 
 ## NOTE-052 symmetric fork-noise protocol (Round 3)
 
 **Chosen X: §100.** All twelve probes (±§100 on day 1 and at the start of year 5, across all three rows) change the complete action log against the unnudged control. This is the smallest qualifying common size in the mandated §10/§100/§1,000/§10,000 grid; it is not an exact sub-grid threshold. In this chosen-size matrix, the three unnudged controls and three +§100 day-1 probes are reused from Round 2 because the simulation source is unchanged; nine missing probes complete that matrix. Failed smaller-size probes are additional selection evidence, not part of the chosen-size envelope.
 
-This section supersedes Round 2’s one-sided probe recommendation and margin guidance. NOTE-052 keeps base-row gates at **±1%**; the selected envelope can widen **variant-target margins only**. No balance fixture or baseline has been re-recorded. The Round 2 sweep above remains supporting evidence, including its non-monotonic size response.
+This section superseded Round 2's one-sided probe recommendation. NOTE-053 subsequently replaced NOTE-052's base and variant margin guidance with ensemble medians and bands, measured in Round 4. No balance fixture or baseline has been re-recorded. The Round 2 sweep above remains supporting evidence, including its non-monotonic size response.
 
 The year-5 injection is before the first bot `daily()` of year 5: loop day **1441**, after advancing the city clock, before that day’s monthly decisions. The city calendar day is zero-based at a year boundary, so day 1440 is the preceding annual checkpoint; injecting there would affect the end-of-year-4 callback and is not the timing used here. Day-1 probes use the committed funds-nudge flag. The later probes change only funds once in the scratch wrapper.
 
@@ -2341,7 +2341,7 @@ The tree-parameterised NOTE-052 runner and its one-command-per-row reproduction 
 The symmetric diagnostic exposes whether the one-sided Round 2 downward population endpoints persist under both signs/timings. A mixed classification rules out the stated all-row direction pattern in this finite sample; it does not prove a pure-noise mechanism or turn the envelope into a confidence interval. No RNG draw, simulation balance, strategy, save schema, or baseline was changed.
 
 
-### Reproduce NOTE-052 on this base and after T041
+### Reproduce NOTE-052 (historical size-selection protocol)
 
 The measurement HEAD is `e990432a4e376606880020f1e51806ace1f6e5ee` (the Round 2 results and NOTE-052 are committed). The simulation identities match Round 2: simbot blob `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52`, src tree `1431263237c4fd0acd55c436aa4f232ff0300fba`. New §100 records carry this HEAD; reused records retain their original commit. No simulation or bot-strategy source differs between them. The new runner and tests are uncommitted diagnostics; no production source is edited.
 
@@ -2355,7 +2355,7 @@ node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T06
 node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simAaForkEnvelope.mts --tree C:/Users/techsin/Desktop/projects/simcityweb-T062 --size 256 --years 60 --seed 11 --out-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052 --reuse-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --nudge 100
 ```
 
-After T041, use a fresh output directory and the dev tree containing T041. To collect the full selection protocol with **one command per row**, use `--all-sizes`; run these commands one at a time. This measures all four signs/timings for every grid size, rather than assuming fork qualification or metric response is monotonic. It is more work than the adaptive stop used here, but needs no further bot invocation to select the common size:
+The following commands reproduce the historical Round 3 size-selection protocol, measuring all four signs/timings for every grid size without assuming monotonic fork qualification. NOTE-053 now uses X=§100 ensembles; use Round 4's commands for current T041 and lane gates. These older `--all-sizes` commands remain diagnostic provenance:
 
 ```powershell
 node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simAaForkEnvelope.mts --tree PATH_TO_DEV_WITH_T041 --size 128 --years 15 --seed 7 --out-dir FRESH_T041_SCRATCH --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --all-sizes
@@ -2363,7 +2363,7 @@ node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T06
 node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simAaForkEnvelope.mts --tree PATH_TO_DEV_WITH_T041 --size 256 --years 60 --seed 11 --out-dir FRESH_T041_SCRATCH --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --all-sizes
 ```
 
-Each `*_note052.summary.json` records `rowQualifyingXs`, every candidate’s four first-log differences and envelope, and signed endpoint deltas. Choose the smallest X present in all three qualifying sets; use that candidate’s envelope in each row’s `candidates` array. Do not choose the maximum of independent local minima: qualification can be non-monotonic. If a row exhausts all four sizes with no qualifying candidate, its reported envelope is 0 and ±1% applies. A failed forced candidate alone remains unresolved and does not invoke that fallback. Do not reuse this base’s output on the T041 tree: changed source identities are rejected. Repeat the signed endpoint and year-10-onward direction checks on the new raw records; the current numbers do not transfer to T041.
+Each `*_note052.summary.json` records `rowQualifyingXs`, every candidate's four first-log differences and envelope, and signed endpoint deltas. These commands reproduce the historical size-selection diagnostic; they are not the current final-gate workflow. NOTE-053 fixes the default X at §100 and uses the control plus its four signed/timed members, with ±2X added for stage two. The old zero-envelope fallback is superseded by ensemble gates. See Round 4 for T041 and lane commands; source identities still prevent reusing results from a different simulation.
 
 ### Round 3 verification and limits
 
@@ -2377,5 +2377,834 @@ node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5
 ```
 
 - Flags-off 128×15 s7 remains **192,899**, residents `[61124,93804,37971]`; controls end at **1,513,835 / 1,427,340** on the long rows. No baseline fixture, default strategy, balance constant, RNG draw, host wiring, save format, infra or cloud-held file changed. No cloud requests or outside-scope hunks.
-- NOTE-052 supersedes the earlier NOTE-048 base-band wording: **base rows stay at ±1%; this chosen envelope widens only variant-target margins**. The older sweep remains measured supporting evidence. The year-5 timing uses the first bot-loop day after four completed years (1441), explicitly documented above because the city calendar changes at day 1440.
-- These finite symmetric probes test the specified direction patterns; mixed outcomes do not prove an absence of a money effect or define a statistical confidence interval. Sub-grid thresholds, negative sizes beyond the selected protocol, Hard/save-specific continuations, full-suite and GPU/browser checks are not measured here. The post-T041 protocol remains required. Browser Acceptance checklist: **N/A — T062 has no browser gates**.
+- NOTE-053 supersedes both earlier margin rules: **base gates use ensemble medians and dev bands; variant gates use variant/base medians at the same lane commit**. The older sweep remains measured supporting evidence. The year-5 timing uses the first bot-loop day after four completed years (1441), explicitly documented above because the city calendar changes at day 1440.
+- These finite symmetric probes test the specified direction patterns; mixed outcomes do not prove an absence of a money effect or define a statistical confidence interval. Sub-grid thresholds, negative sizes beyond the selected protocol, Hard/save-specific continuations, full-suite and GPU/browser checks were not measured in Round 3. The post-T041 ensembles are completed under NOTE-053 in Round 4. Browser Acceptance checklist: **N/A — T062 has no browser gates**.
+
+
+## NOTE-053 SIM ensembles (Round 4)
+
+[NOTE-053](../queue/NOTE-053-sim-ensembles.md) replaces NOTE-048 SIM balance items 1–3 and NOTE-052’s interim ±1% base-row rule. Every base and variant gate now uses an ensemble. The selected perturbation remains **X = §100**, with five members: control, ±§100 on day 1, and ±§100 on day 1441. Nine-member stage two adds ±§200 at both timings. No fixture or balance baseline is re-recorded.
+
+This measurement compares pre-T041 dev simulation sources with the read-only T041 measurement tree. Dev’s fifteen members are reused from the committed Round 2/3 evidence after checking source identities; T041’s fifteen members are measured on `f9c94d5`, which combines T041 `8ac9668` with the nudge flag from `3833c8d` and retains both sides of the bot conflict. Documentation-only commit changes are explicit imported aliases, with the original commit and file checksum retained.
+
+Each annual cell below is **median [minimum, maximum]**, in simulation units. Approval is in points; I-HT is the fraction of industrial jobs. Tables include years 1 through the endpoint; normal NOTE-053 base gates inspect every year from year 10. Full precision stays in the linked JSON. Display rounding does not decide verdicts.
+
+### Measured sources and independent verification
+
+| Tree / row | Selected commit | Bot blob | Source tree | Ensemble JSON / SHA-256 |
+|---|---|---|---|---|
+| Dev 128x15_s7 | `805d7d466972eaf89cfba4e1fc8c5f2df16ae0ef` | `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52` | `1431263237c4fd0acd55c436aa4f232ff0300fba` | [summary](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/128x15_s7_ensemble.summary.json>); `017f06319addf63be6b838830988d4764898250188ef72b104dfb6a737504a3d` |
+| Dev 256x60_s7 | `805d7d466972eaf89cfba4e1fc8c5f2df16ae0ef` | `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52` | `1431263237c4fd0acd55c436aa4f232ff0300fba` | [summary](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s7_ensemble.summary.json>); `acceeed05e28ea0e656be56ddeac48acc422e78287f682db96a078aa2c3e385d` |
+| Dev 256x60_s11 | `805d7d466972eaf89cfba4e1fc8c5f2df16ae0ef` | `7c057dfe3aabe6a8c8169e7fe433948c6ccd3a52` | `1431263237c4fd0acd55c436aa4f232ff0300fba` | [summary](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s11_ensemble.summary.json>); `7b96d52da4e114f20469879adcabfa7619aa8b1e8b7e812a655cbfeed05e9084` |
+| T041 128x15_s7 | `f9c94d561455f229e6984707e4429a32350b6127` | `d3a85c7bbb593f0d9d3a10c67088c426387cc02f` | `c974ded700905f1526082c39c3fcb92b5dd0c227` | [summary](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/128x15_s7_ensemble.summary.json>); `22c91ef0b1e79cb286afc1e10399d42b1aa2f0803303e80c48874a9e89e22853` |
+| T041 256x60_s7 | `f9c94d561455f229e6984707e4429a32350b6127` | `d3a85c7bbb593f0d9d3a10c67088c426387cc02f` | `c974ded700905f1526082c39c3fcb92b5dd0c227` | [summary](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s7_ensemble.summary.json>); `574b5230fdecf2d9b8184cafa57d1d82c11b16de710de58b2eb4afd985a105eb` |
+| T041 256x60_s11 | `f9c94d561455f229e6984707e4429a32350b6127` | `d3a85c7bbb593f0d9d3a10c67088c426387cc02f` | `c974ded700905f1526082c39c3fcb92b5dd0c227` | [summary](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s11_ensemble.summary.json>); `62cb0c3ef055e73cf4eb46ede72f0cb2bd11ab306c3235b6b2176dc80f1fd409` |
+
+Independent scratch verifier: `C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\round4Report.mjs`. It imports no runner statistics or comparison logic. It independently sorts five raw observations per metric/year, checks the middle element and endpoints, and asserts exact equality with all six ensemble summaries. It also checks source/row/nudge/timing/cache identities, annual indexing, residents/population, approval, I-HT job arithmetic, imported hashes and unchanged imported payloads. Counts: **30 members, 1350 raw annual observations, 270 annual ensemble rows and 1080 metric bands**; **15 imported members**, all imported payloads checked.
+
+Shared dependency identity: `563d006dba91bbf3212dd9c02d7508488e5c901c8063576886fa9dd9c471f89e`; observer identity: `d521f1e3fbd7a0b4c03d37c356d798a87ad78e06461ba8fcd9bc217e1bf82270`. These are recorded in every member’s cache key alongside its exact selected commit, simulation sources, row, signed amount, day and bot arguments.
+
+### NOTE-050 sign-off rechecked on ensemble medians
+
+NOTE-050’s signed D2 base-row allowance is **±3% population at each row’s endpoint**. NOTE-053 reopens that sign-off only when an endpoint median leaves ±3%. The year-by-year departures below are reported as by-design history and do not independently reopen the sign-off. The normal NOTE-053 in-band and half-band gate is a separate diagnostic here; it does not replace T041’s explicit signed exception. The original large-effect fixed-tax sweep and delayed-tax target are not rerun in this measurement; NOTE-053 preserves those checks.
+
+| Row / endpoint | Dev population median [min, max] | T041 population median [min, max] | Median Δ | Median Δ% | Within ±3% / reopen? |
+|---|---:|---:|---:|---:|---|
+| 128x15_s7 / 2015 (year 15) | 191588 [190132, 193108] | 193098 [191999, 193831] | +1510 | +0.788149570954% | Inside; do not reopen |
+| 256x60_s7 / 2060 (year 60) | 1461087 [1379922, 1513835] | 1477908 [1378044, 1511394] | +16821 | +1.15126614637% | Inside; do not reopen |
+| 256x60_s11 / 2060 (year 60) | 1483518 [1427340, 1503201] | 1468252 [1449829, 1483998] | -15266 | -1.02904042957% | Inside; do not reopen |
+
+0 of 3 endpoint medians leave ±3%. T041’s NOTE-050 sign-off remains closed under its endpoint criterion.
+
+| Row | All years outside ±3% (calendar years; count) | Years ≥10 outside ±3% (calendar years; count) | First excursion | First return within ±3% after that excursion |
+|---|---|---|---|---|
+| 128x15_s7 | 2002–2006; 5/15 | none; 0/6 | 2002 (year 2) | 2007 (year 7) |
+| 256x60_s7 | 2002, 2006–2038, 2041, 2052; 36/60 | 2010–2038, 2041, 2052; 31/51 | 2002 (year 2) | 2003 (year 3) |
+| 256x60_s11 | 2002–2003, 2006–2049, 2051–2054; 50/60 | 2010–2049, 2051–2054; 44/51 | 2002 (year 2) | 2004 (year 4) |
+
+A first return is the first later checkpoint inside ±3%; later excursions remain listed. Relative deltas use that year’s dev ensemble population median, rather than the unnudged member or the endpoint value.
+
+### Annual T041 population median deltas
+
+#### 128x15_s7 — population sign-off history
+
+| Year index | Calendar year | Dev median | T041 median | Signed Δ | Signed Δ% | Outside ±3%? |
+|---:|---:|---:|---:|---:|---:|---|
+| 1 | 2001 | 3587 | 3599 | +12 | +0.334541399498% | no |
+| 2 | 2002 | 9297 | 10022 | +725 | +7.79821447779% | yes |
+| 3 | 2003 | 17010 | 18210 | +1200 | +7.05467372134% | yes |
+| 4 | 2004 | 25619 | 27641 | +2022 | +7.89257972598% | yes |
+| 5 | 2005 | 34686 | 36771 | +2085 | +6.01107074901% | yes |
+| 6 | 2006 | 44579 | 47029 | +2450 | +5.49586127997% | yes |
+| 7 | 2007 | 56990 | 58357 | +1367 | +2.39866643271% | no |
+| 8 | 2008 | 70194 | 70599 | +405 | +0.576972390803% | no |
+| 9 | 2009 | 84462 | 84478 | +16 | +0.0189434301816% | no |
+| 10 | 2010 | 100141 | 100310 | +169 | +0.168762045516% | no |
+| 11 | 2011 | 116914 | 117271 | +357 | +0.305352652377% | no |
+| 12 | 2012 | 135052 | 135534 | +482 | +0.356899564612% | no |
+| 13 | 2013 | 154050 | 154311 | +261 | +0.169425511198% | no |
+| 14 | 2014 | 172301 | 173340 | +1039 | +0.603014492081% | no |
+| 15 | 2015 | 191588 | 193098 | +1510 | +0.788149570954% | no |
+
+#### 256x60_s7 — population sign-off history
+
+| Year index | Calendar year | Dev median | T041 median | Signed Δ | Signed Δ% | Outside ±3%? |
+|---:|---:|---:|---:|---:|---:|---|
+| 1 | 2001 | 3589 | 3656 | +67 | +1.86681526888% | no |
+| 2 | 2002 | 9859 | 10247 | +388 | +3.93549041485% | yes |
+| 3 | 2003 | 17676 | 18113 | +437 | +2.47227879611% | no |
+| 4 | 2004 | 26909 | 26862 | -47 | -0.174662752239% | no |
+| 5 | 2005 | 36040 | 35575 | -465 | -1.29023307436% | no |
+| 6 | 2006 | 46912 | 44292 | -2620 | -5.58492496589% | yes |
+| 7 | 2007 | 59034 | 53027 | -6007 | -10.1754920893% | yes |
+| 8 | 2008 | 72763 | 64328 | -8435 | -11.5924302187% | yes |
+| 9 | 2009 | 85695 | 77185 | -8510 | -9.93056771107% | yes |
+| 10 | 2010 | 99145 | 89892 | -9253 | -9.33279540068% | yes |
+| 11 | 2011 | 112884 | 103331 | -9553 | -8.46266964317% | yes |
+| 12 | 2012 | 129198 | 116857 | -12341 | -9.552005449% | yes |
+| 13 | 2013 | 145600 | 132822 | -12778 | -8.7760989011% | yes |
+| 14 | 2014 | 162928 | 149603 | -13325 | -8.1784591967% | yes |
+| 15 | 2015 | 181762 | 167640 | -14122 | -7.76950077574% | yes |
+| 16 | 2016 | 201275 | 186097 | -15178 | -7.54092659297% | yes |
+| 17 | 2017 | 220777 | 205169 | -15608 | -7.06957699398% | yes |
+| 18 | 2018 | 241134 | 223887 | -17247 | -7.15245465177% | yes |
+| 19 | 2019 | 262375 | 244050 | -18325 | -6.98427822773% | yes |
+| 20 | 2020 | 284938 | 265947 | -18991 | -6.66495869277% | yes |
+| 21 | 2021 | 309055 | 288598 | -20457 | -6.61921017295% | yes |
+| 22 | 2022 | 332599 | 311540 | -21059 | -6.33164862191% | yes |
+| 23 | 2023 | 356659 | 334344 | -22315 | -6.25667654538% | yes |
+| 24 | 2024 | 380900 | 359650 | -21250 | -5.57889209766% | yes |
+| 25 | 2025 | 406912 | 384590 | -22322 | -5.48570698333% | yes |
+| 26 | 2026 | 433030 | 411685 | -21345 | -4.92921968455% | yes |
+| 27 | 2027 | 461632 | 439616 | -22016 | -4.7691667822% | yes |
+| 28 | 2028 | 491442 | 468498 | -22944 | -4.6687096341% | yes |
+| 29 | 2029 | 522372 | 497990 | -24382 | -4.66755492255% | yes |
+| 30 | 2030 | 553169 | 529330 | -23839 | -4.30953289139% | yes |
+| 31 | 2031 | 584845 | 561093 | -23752 | -4.06124699707% | yes |
+| 32 | 2032 | 616271 | 592757 | -23514 | -3.81552920712% | yes |
+| 33 | 2033 | 649520 | 624609 | -24911 | -3.83529375539% | yes |
+| 34 | 2034 | 681383 | 656920 | -24463 | -3.59019817049% | yes |
+| 35 | 2035 | 715266 | 688697 | -26569 | -3.71456213493% | yes |
+| 36 | 2036 | 747267 | 722927 | -24340 | -3.25720257953% | yes |
+| 37 | 2037 | 781483 | 756906 | -24577 | -3.14491805964% | yes |
+| 38 | 2038 | 816400 | 790558 | -25842 | -3.16536011759% | yes |
+| 39 | 2039 | 849116 | 823848 | -25268 | -2.9758007151% | no |
+| 40 | 2040 | 885781 | 859443 | -26338 | -2.97342119553% | no |
+| 41 | 2041 | 922651 | 894479 | -28172 | -3.05337554503% | yes |
+| 42 | 2042 | 954296 | 927255 | -27041 | -2.83360718268% | no |
+| 43 | 2043 | 990452 | 964182 | -26270 | -2.65232439331% | no |
+| 44 | 2044 | 1029252 | 1001797 | -27455 | -2.66747113438% | no |
+| 45 | 2045 | 1066213 | 1037419 | -28794 | -2.70058609302% | no |
+| 46 | 2046 | 1106293 | 1076520 | -29773 | -2.69124002412% | no |
+| 47 | 2047 | 1143633 | 1115397 | -28236 | -2.46897387536% | no |
+| 48 | 2048 | 1186078 | 1152504 | -33574 | -2.83067386799% | no |
+| 49 | 2049 | 1225463 | 1195156 | -30307 | -2.47310608317% | no |
+| 50 | 2050 | 1265741 | 1231431 | -34310 | -2.71066513607% | no |
+| 51 | 2051 | 1306287 | 1267957 | -38330 | -2.93427095271% | no |
+| 52 | 2052 | 1342501 | 1300168 | -42333 | -3.15329374056% | yes |
+| 53 | 2053 | 1354614 | 1339536 | -15078 | -1.11308461303% | no |
+| 54 | 2054 | 1374323 | 1372454 | -1869 | -0.135994231342% | no |
+| 55 | 2055 | 1398399 | 1394146 | -4253 | -0.304133512681% | no |
+| 56 | 2056 | 1419186 | 1416272 | -2914 | -0.205328970269% | no |
+| 57 | 2057 | 1418230 | 1437575 | +19345 | +1.36402417097% | no |
+| 58 | 2058 | 1442416 | 1454940 | +12524 | +0.868265465719% | no |
+| 59 | 2059 | 1447648 | 1461510 | +13862 | +0.957553217357% | no |
+| 60 | 2060 | 1461087 | 1477908 | +16821 | +1.15126614637% | no |
+
+#### 256x60_s11 — population sign-off history
+
+| Year index | Calendar year | Dev median | T041 median | Signed Δ | Signed Δ% | Outside ±3%? |
+|---:|---:|---:|---:|---:|---:|---|
+| 1 | 2001 | 3634 | 3661 | +27 | +0.74298293891% | no |
+| 2 | 2002 | 9461 | 10167 | +706 | +7.46221329669% | yes |
+| 3 | 2003 | 17370 | 17993 | +623 | +3.58664363846% | yes |
+| 4 | 2004 | 26074 | 26762 | +688 | +2.63864385978% | no |
+| 5 | 2005 | 34606 | 34423 | -183 | -0.528810032942% | no |
+| 6 | 2006 | 44972 | 43431 | -1541 | -3.42657653651% | yes |
+| 7 | 2007 | 57137 | 54047 | -3090 | -5.40805432557% | yes |
+| 8 | 2008 | 70387 | 65847 | -4540 | -6.4500546976% | yes |
+| 9 | 2009 | 83746 | 78785 | -4961 | -5.92386502042% | yes |
+| 10 | 2010 | 97010 | 91557 | -5453 | -5.62106999278% | yes |
+| 11 | 2011 | 111220 | 104818 | -6402 | -5.75615896422% | yes |
+| 12 | 2012 | 126617 | 118744 | -7873 | -6.21796441236% | yes |
+| 13 | 2013 | 143996 | 135047 | -8949 | -6.21475596544% | yes |
+| 14 | 2014 | 162893 | 151257 | -11636 | -7.1433394928% | yes |
+| 15 | 2015 | 181910 | 168939 | -12971 | -7.13044912319% | yes |
+| 16 | 2016 | 201032 | 186073 | -14959 | -7.44110390386% | yes |
+| 17 | 2017 | 220264 | 203761 | -16503 | -7.49237278902% | yes |
+| 18 | 2018 | 240111 | 221823 | -18288 | -7.61647737921% | yes |
+| 19 | 2019 | 261751 | 241711 | -20040 | -7.65613120867% | yes |
+| 20 | 2020 | 284274 | 264021 | -20253 | -7.12446442517% | yes |
+| 21 | 2021 | 307076 | 286313 | -20763 | -6.7615183212% | yes |
+| 22 | 2022 | 331951 | 308840 | -23111 | -6.96217212781% | yes |
+| 23 | 2023 | 355340 | 331939 | -23401 | -6.58552372376% | yes |
+| 24 | 2024 | 380475 | 355902 | -24573 | -6.4585058151% | yes |
+| 25 | 2025 | 405400 | 380454 | -24946 | -6.15342871238% | yes |
+| 26 | 2026 | 431885 | 405961 | -25924 | -6.00252382% | yes |
+| 27 | 2027 | 459324 | 433539 | -25785 | -5.61368445803% | yes |
+| 28 | 2028 | 488133 | 460980 | -27153 | -5.56262330144% | yes |
+| 29 | 2029 | 518809 | 490355 | -28454 | -5.4844846562% | yes |
+| 30 | 2030 | 549130 | 520386 | -28744 | -5.23446178501% | yes |
+| 31 | 2031 | 579744 | 551293 | -28451 | -4.90751090136% | yes |
+| 32 | 2032 | 610615 | 582872 | -27743 | -4.54345209338% | yes |
+| 33 | 2033 | 643353 | 614803 | -28550 | -4.4376881743% | yes |
+| 34 | 2034 | 675552 | 647676 | -27876 | -4.12640329686% | yes |
+| 35 | 2035 | 708864 | 680440 | -28424 | -4.00979595522% | yes |
+| 36 | 2036 | 741622 | 713526 | -28096 | -3.78845287761% | yes |
+| 37 | 2037 | 776288 | 746890 | -29398 | -3.78699657859% | yes |
+| 38 | 2038 | 811907 | 782783 | -29124 | -3.58711034638% | yes |
+| 39 | 2039 | 844940 | 816910 | -28030 | -3.31739531801% | yes |
+| 40 | 2040 | 880019 | 851718 | -28301 | -3.21595329192% | yes |
+| 41 | 2041 | 914584 | 886954 | -27630 | -3.02104563386% | yes |
+| 42 | 2042 | 952007 | 921687 | -30320 | -3.18485053156% | yes |
+| 43 | 2043 | 989261 | 957752 | -31509 | -3.18510484089% | yes |
+| 44 | 2044 | 1030678 | 995582 | -35096 | -3.40513720095% | yes |
+| 45 | 2045 | 1068216 | 1032581 | -35635 | -3.33593580325% | yes |
+| 46 | 2046 | 1109143 | 1071494 | -37649 | -3.39442254065% | yes |
+| 47 | 2047 | 1144048 | 1108588 | -35460 | -3.09952029985% | yes |
+| 48 | 2048 | 1186527 | 1144642 | -41885 | -3.53005030648% | yes |
+| 49 | 2049 | 1225495 | 1187911 | -37584 | -3.06684237798% | yes |
+| 50 | 2050 | 1262250 | 1226709 | -35541 | -2.81568627451% | no |
+| 51 | 2051 | 1307156 | 1259890 | -47266 | -3.61594178507% | yes |
+| 52 | 2052 | 1352531 | 1295524 | -57007 | -4.21483869871% | yes |
+| 53 | 2053 | 1387290 | 1324550 | -62740 | -4.52248628621% | yes |
+| 54 | 2054 | 1401401 | 1358531 | -42870 | -3.05908159049% | yes |
+| 55 | 2055 | 1426671 | 1390949 | -35722 | -2.50387089946% | no |
+| 56 | 2056 | 1444001 | 1410391 | -33610 | -2.32756071499% | no |
+| 57 | 2057 | 1456317 | 1429503 | -26814 | -1.84122000911% | no |
+| 58 | 2058 | 1462768 | 1442854 | -19914 | -1.36139155355% | no |
+| 59 | 2059 | 1482680 | 1457276 | -25404 | -1.71338387245% | no |
+| 60 | 2060 | 1483518 | 1468252 | -15266 | -1.02904042957% | no |
+
+### Dev and T041 annual ensemble tables
+
+#### Dev 128x15_s7 — five members
+
+| Year index | Calendar year | Population median [min, max] | Approval median [min, max] | Air at homes median [min, max] | I-HT fraction median [min, max] |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 2001 | 3587 [3587, 3587] | 51.1884035286 [51.1884035286, 51.1884035286] | 0.0147653123001 [0.0147653123001, 0.0147653123001] | 0 [0, 0] |
+| 2 | 2002 | 9297 [9297, 9297] | 50.6166293818 [50.6166293818, 50.6166293818] | 0.0269580231162 [0.0269580231162, 0.0269580231162] | 0 [0, 0] |
+| 3 | 2003 | 17010 [17010, 17010] | 51.9714851262 [51.9714851262, 51.9714851262] | 0.0375462229686 [0.0375462229686, 0.0375462229686] | 0 [0, 0] |
+| 4 | 2004 | 25619 [25491, 25619] | 49.5648352861 [49.4477675913, 49.5648352861] | 0.0486614517515 [0.0467647058721, 0.0486614517515] | 0 [0, 0] |
+| 5 | 2005 | 34686 [34443, 34852] | 47.486406189 [47.486406189, 47.6903027912] | 0.0469691969262 [0.0455844140269, 0.0469691969262] | 0 [0, 0] |
+| 6 | 2006 | 44579 [44172, 45649] | 51.9172890525 [51.7539309148, 53.0823352327] | 0.0450986090006 [0.0448973945652, 0.0466892967788] | 0 [0, 0] |
+| 7 | 2007 | 56990 [55962, 57714] | 56.2007453202 [56.1685842318, 57.7083707164] | 0.0454504677487 [0.0447395143377, 0.0460911328083] | 0 [0, 0] |
+| 8 | 2008 | 70194 [69406, 70869] | 61.5219998507 [60.8080252149, 62.2691080503] | 0.0446455289547 [0.0446178787957, 0.0459631518627] | 0 [0, 0] |
+| 9 | 2009 | 84462 [83282, 84835] | 66.5008963601 [66.2285513381, 67.359854187] | 0.0728525522913 [0.0678903063921, 0.0734849823832] | 0 [0, 0] |
+| 10 | 2010 | 100141 [98826, 101026] | 70.8518853117 [69.9000558341, 72.4202017087] | 0.0737038752696 [0.0691769460273, 0.0744164291217] | 0 [0, 0] |
+| 11 | 2011 | 116914 [115670, 118282] | 73.3377191709 [73.0679494545, 75.2252772179] | 0.0745574719959 [0.0734733641701, 0.0764198389775] | 0 [0, 0] |
+| 12 | 2012 | 135052 [133816, 136272] | 75.0662775328 [75.0147602906, 76.9954753925] | 0.0726766850373 [0.0708048271401, 0.0737493244753] | 0 [0, 0] |
+| 13 | 2013 | 154050 [151950, 154203] | 76.7186051919 [76.3292420144, 78.1388951287] | 0.0785338317705 [0.0777135397159, 0.0787714041308] | 0 [0, 0] |
+| 14 | 2014 | 172301 [170539, 173724] | 78.6313229539 [78.3821382274, 79.4049512588] | 0.0864130956845 [0.0833283045672, 0.0872473908458] | 0 [0, 0] |
+| 15 | 2015 | 191588 [190132, 193108] | 81.3650175025 [80.9060989013, 81.556299867] | 0.0928730666149 [0.0908835924374, 0.0964932018316] | 0 [0, 0] |
+
+#### Dev 256x60_s7 — five members
+
+| Year index | Calendar year | Population median [min, max] | Approval median [min, max] | Air at homes median [min, max] | I-HT fraction median [min, max] |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 2001 | 3589 [3589, 3589] | 51.902115855 [51.902115855, 51.902115855] | 0.014912420357 [0.014912420357, 0.014912420357] | 0 [0, 0] |
+| 2 | 2002 | 9859 [9859, 9859] | 56.0865856671 [56.0865856671, 56.0865856671] | 0.0341256320982 [0.0341256320982, 0.0341256320982] | 0 [0, 0] |
+| 3 | 2003 | 17676 [17542, 17676] | 47.3216618305 [47.2560078014, 47.3216618305] | 0.0466639209096 [0.0434080432614, 0.0466639209096] | 0 [0, 0] |
+| 4 | 2004 | 26909 [26610, 26909] | 46.6834035121 [46.3621129974, 46.6834035121] | 0.0485543255938 [0.0447409215181, 0.0485543255938] | 0 [0, 0] |
+| 5 | 2005 | 36040 [35927, 36243] | 46.2379636009 [46.0634684134, 47.2787777975] | 0.049111088069 [0.0463979878456, 0.0521129137068] | 0 [0, 0] |
+| 6 | 2006 | 46912 [46868, 47461] | 55.3244213147 [52.6611282722, 55.6778459348] | 0.0474273534688 [0.0457705839342, 0.0486261337664] | 0 [0, 0] |
+| 7 | 2007 | 59034 [58626, 59679] | 59.2980952219 [57.2513081975, 60.4688401536] | 0.0497870514584 [0.0489292652431, 0.0513105084426] | 0 [0, 0] |
+| 8 | 2008 | 72763 [72000, 72766] | 63.0542428448 [61.7518911238, 64.8843889893] | 0.0581751315694 [0.0515419581623, 0.063033363255] | 0 [0, 0] |
+| 9 | 2009 | 85695 [84826, 85796] | 65.5295207164 [64.0909777825, 65.8224769737] | 0.0814106014216 [0.0710629709144, 0.0844099514083] | 0 [0, 0] |
+| 10 | 2010 | 99145 [98274, 99253] | 63.8207616878 [62.1769382346, 63.8830864747] | 0.0739850444917 [0.0699563236806, 0.0802627946323] | 0 [0, 0] |
+| 11 | 2011 | 112884 [112139, 113394] | 62.1163974625 [61.6347522976, 63.2229332272] | 0.0694879238085 [0.0601583915644, 0.0700432335119] | 0 [0, 0] |
+| 12 | 2012 | 129198 [127207, 130031] | 61.6471759948 [61.0514145318, 67.0670374638] | 0.0590170184239 [0.0547563621067, 0.0590557211552] | 0 [0, 0] |
+| 13 | 2013 | 145600 [144178, 146526] | 64.3568218479 [62.2839695264, 67.7892603094] | 0.0590546329688 [0.054735849427, 0.0602716823544] | 0 [0, 0] |
+| 14 | 2014 | 162928 [160481, 163206] | 66.185627447 [64.5977660967, 67.8405307697] | 0.0585039394277 [0.0533041738602, 0.0601129027154] | 0 [0, 0] |
+| 15 | 2015 | 181762 [180069, 182155] | 69.0050762861 [68.7736616745, 69.3903791891] | 0.0563234720299 [0.0520474226221, 0.0565621396886] | 0 [0, 0] |
+| 16 | 2016 | 201275 [199101, 201610] | 69.9951035479 [69.923648637, 70.1598871862] | 0.0551385476053 [0.0526888852507, 0.0578913055256] | 0 [0, 0] |
+| 17 | 2017 | 220777 [218074, 221905] | 69.517886913 [69.4188273617, 70.685579499] | 0.0553132853763 [0.0534986620443, 0.0620043357323] | 0 [0, 0] |
+| 18 | 2018 | 241134 [239141, 242093] | 69.986378043 [69.9004616121, 70.3879066239] | 0.0577463087727 [0.0534298215879, 0.0632737035353] | 0 [0, 0] |
+| 19 | 2019 | 262375 [260393, 263043] | 71.1729072576 [70.2671187341, 71.4754971645] | 0.0551992230652 [0.0533046888207, 0.0683982320683] | 0 [0, 0] |
+| 20 | 2020 | 284938 [283841, 285431] | 72.1371693692 [71.2536573593, 72.5607755828] | 0.0548954530563 [0.0522226282819, 0.0595928518964] | 0 [0, 0] |
+| 21 | 2021 | 309055 [307460, 309551] | 72.7557117057 [72.4112819559, 73.9583321142] | 0.0536702474236 [0.051047701643, 0.061835959954] | 0 [0, 0] |
+| 22 | 2022 | 332599 [330779, 332670] | 75.4310635313 [75.3358113332, 76.3700096606] | 0.0532523899714 [0.0499785533711, 0.0608312173134] | 0 [0, 0] |
+| 23 | 2023 | 356659 [354200, 357442] | 76.342032398 [76.2288094072, 76.9512044095] | 0.0536960108499 [0.0507366522873, 0.062303437841] | 0 [0, 0] |
+| 24 | 2024 | 380900 [378985, 382163] | 76.6132485291 [75.4614011897, 77.0661490765] | 0.0570906756188 [0.0529724048716, 0.0694638608233] | 0 [0, 0] |
+| 25 | 2025 | 406912 [404262, 407731] | 76.8474486626 [76.4997075282, 77.1276849904] | 0.0578569471507 [0.0572523507335, 0.0681830300373] | 0 [0, 0] |
+| 26 | 2026 | 433030 [431806, 433598] | 76.5059936839 [76.0578162169, 77.201767656] | 0.0578413540984 [0.0576544237627, 0.0681487009787] | 0 [0, 0] |
+| 27 | 2027 | 461632 [460757, 461953] | 77.7635714659 [77.6260208603, 78.2094524809] | 0.0592879334372 [0.0579550492795, 0.0694904468741] | 0 [0, 0] |
+| 28 | 2028 | 491442 [489700, 491659] | 77.5878293884 [77.3822568207, 78.7304332546] | 0.0598405489781 [0.0580580143984, 0.0713018696509] | 0 [0, 0] |
+| 29 | 2029 | 522372 [519724, 522937] | 78.665187276 [78.535558838, 79.3833210906] | 0.0646516106759 [0.0625188177239, 0.0766479039481] | 0 [0, 0] |
+| 30 | 2030 | 553169 [550399, 553583] | 79.881255312 [79.4576306687, 80.3749907249] | 0.0662961153293 [0.0657542974046, 0.0801341995663] | 0 [0, 0] |
+| 31 | 2031 | 584845 [580940, 585610] | 81.3154538597 [81.129591828, 81.3426041265] | 0.0720512714269 [0.071387970564, 0.0844021845717] | 0 [0, 0] |
+| 32 | 2032 | 616271 [613290, 617395] | 81.8707557972 [81.3780773367, 82.2056823218] | 0.0777944140293 [0.0762349641241, 0.0921530972229] | 0 [0, 0] |
+| 33 | 2033 | 649520 [645810, 649727] | 82.1871823006 [81.9068757713, 82.4035368299] | 0.0802682566791 [0.080072674836, 0.095025260551] | 0 [0, 0] |
+| 34 | 2034 | 681383 [678863, 681622] | 81.8762409523 [81.8116427338, 82.7216193094] | 0.0862932629323 [0.0854119381418, 0.0984079420798] | 0 [0, 0] |
+| 35 | 2035 | 715266 [711503, 715283] | 82.5384176932 [82.1188384802, 82.6115277297] | 0.0900893304223 [0.0888725503557, 0.106854005488] | 0 [0, 0] |
+| 36 | 2036 | 747267 [745163, 747885] | 81.682528931 [80.7596983645, 82.0831285934] | 0.0985766757053 [0.096559708282, 0.112796976636] | 0 [0, 0] |
+| 37 | 2037 | 781483 [778371, 781532] | 81.9702029966 [81.3545245065, 82.1080479323] | 0.111184867164 [0.102755676251, 0.122396988761] | 0 [0, 0] |
+| 38 | 2038 | 816400 [814131, 818087] | 81.8263275001 [79.7789881066, 82.1077685112] | 0.113757455394 [0.111509206562, 0.132840868297] | 0 [0, 0] |
+| 39 | 2039 | 849116 [848274, 853454] | 81.6680640579 [80.6149224318, 82.0318126819] | 0.117889086092 [0.117469039436, 0.138909582156] | 0 [0, 0] |
+| 40 | 2040 | 885781 [885012, 890501] | 82.2978528738 [81.4937968568, 82.6186158782] | 0.123397884516 [0.118367254642, 0.13951387196] | 0 [0, 0] |
+| 41 | 2041 | 922651 [917818, 928329] | 82.6811451297 [81.3243931387, 82.6850781617] | 0.125318391669 [0.121413257917, 0.143379778413] | 0 [0, 0] |
+| 42 | 2042 | 954296 [951529, 957446] | 81.7318925805 [80.8415919546, 82.0639661132] | 0.131581969679 [0.128251480154, 0.147671955797] | 0 [0, 0] |
+| 43 | 2043 | 990452 [988082, 997916] | 81.4184619882 [79.8445693135, 82.5827416228] | 0.132227601661 [0.130338848098, 0.155297690857] | 0 [0, 0] |
+| 44 | 2044 | 1029252 [1023376, 1034676] | 81.4090083679 [80.0097050034, 81.5077523582] | 0.140588745833 [0.13882561089, 0.158979489623] | 0 [0, 0] |
+| 45 | 2045 | 1066213 [1064870, 1072615] | 80.9601454361 [79.7520941943, 81.1881858681] | 0.145699677246 [0.143134952917, 0.160586629451] | 0 [0, 0] |
+| 46 | 2046 | 1106293 [1098739, 1110071] | 80.8512483237 [79.5704829996, 81.0005068417] | 0.150067530572 [0.144261354987, 0.166444098207] | 0 [0, 0] |
+| 47 | 2047 | 1143633 [1138642, 1152095] | 80.1748088328 [79.2554570494, 81.0588852664] | 0.147691928499 [0.14765903251, 0.167729313218] | 0 [0, 0] |
+| 48 | 2048 | 1186078 [1177033, 1187726] | 80.4624820383 [79.8964904416, 80.8686423011] | 0.15336972846 [0.147753026628, 0.172723700048] | 0 [0, 0.00175555599145] |
+| 49 | 2049 | 1225463 [1219475, 1232104] | 80.7488537718 [78.807667578, 80.9511105372] | 0.150475101405 [0.147350051474, 0.169689774178] | 0 [0, 0.0135973647924] |
+| 50 | 2050 | 1265741 [1260949, 1271588] | 80.8282333843 [79.0001615783, 80.8447373631] | 0.155464893246 [0.154532950761, 0.177092364457] | 0.0136107814235 [0, 0.0266876566095] |
+| 51 | 2051 | 1306287 [1299862, 1310245] | 79.6780085888 [78.9820083742, 80.7534327958] | 0.164149715258 [0.152603594368, 0.178798806246] | 0.017711478238 [0.00592249012918, 0.0322995310774] |
+| 52 | 2052 | 1342501 [1317983, 1347980] | 80.4376637069 [78.7405308964, 80.6369747076] | 0.154956977403 [0.153368043387, 0.177893690569] | 0.0256530991081 [0.00814035221034, 0.0394797299685] |
+| 53 | 2053 | 1354614 [1331848, 1392709] | 80.0034644751 [78.7171376936, 80.7548470143] | 0.164037287854 [0.155333511713, 0.174625979708] | 0.0389398138279 [0.00956450956451, 0.0588376540404] |
+| 54 | 2054 | 1374323 [1341305, 1413703] | 80.5938057518 [78.74415033, 81.0113417551] | 0.164129877814 [0.152678693712, 0.182993966319] | 0.053544494721 [0.0236319752152, 0.0747528916054] |
+| 55 | 2055 | 1398399 [1338273, 1433758] | 79.8113875174 [79.0876602917, 81.1146004517] | 0.16540508106 [0.156632087612, 0.175748978394] | 0.0676564334843 [0.0366587441133, 0.0799960858184] |
+| 56 | 2056 | 1419186 [1351622, 1455861] | 80.0662775043 [79.0694871654, 81.0223110796] | 0.156350000107 [0.154205469717, 0.18611066335] | 0.0838448478516 [0.0559334779715, 0.0967523307406] |
+| 57 | 2057 | 1418230 [1360384, 1470002] | 80.4826074625 [79.2567015091, 80.5079109207] | 0.17084205647 [0.153725182706, 0.181635705648] | 0.11023559941 [0.069570251311, 0.113108534011] |
+| 58 | 2058 | 1442416 [1363572, 1488790] | 80.0913343012 [79.7689561178, 80.9268790245] | 0.168051154679 [0.153828657944, 0.187011146621] | 0.123119258943 [0.0838402495588, 0.129007519917] |
+| 59 | 2059 | 1447648 [1372983, 1504810] | 79.8836708941 [79.4466630409, 80.6622888259] | 0.169665793985 [0.156109528702, 0.18516328007] | 0.122839370876 [0.0939054034731, 0.128900168955] |
+| 60 | 2060 | 1461087 [1379922, 1513835] | 80.3574246959 [79.7398013242, 80.5414097299] | 0.167190377439 [0.158303165101, 0.183209193398] | 0.126146721117 [0.10239866758, 0.137623904611] |
+
+#### Dev 256x60_s11 — five members
+
+| Year index | Calendar year | Population median [min, max] | Approval median [min, max] | Air at homes median [min, max] | I-HT fraction median [min, max] |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 2001 | 3634 [3634, 3634] | 51.1669426473 [51.1669426473, 51.1669426473] | 0.0125338223262 [0.0125338223262, 0.0125338223262] | 0 [0, 0] |
+| 2 | 2002 | 9461 [9461, 9461] | 46.6624431035 [46.6624431035, 46.6624431035] | 0.0446199911465 [0.0446199911465, 0.0446199911465] | 0 [0, 0] |
+| 3 | 2003 | 17370 [17370, 17370] | 45.4926988303 [45.4926988303, 45.4926988303] | 0.0567262029023 [0.0567262029023, 0.0567262029023] | 0 [0, 0] |
+| 4 | 2004 | 26074 [25970, 26074] | 43.6985842281 [42.7042920231, 43.6985842281] | 0.056503820274 [0.0539136546406, 0.056503820274] | 0 [0, 0] |
+| 5 | 2005 | 34606 [34606, 34718] | 42.832613243 [41.0578732157, 42.832613243] | 0.0546112497912 [0.0518687455972, 0.0580098089962] | 0 [0, 0] |
+| 6 | 2006 | 44972 [44070, 45728] | 51.2204678328 [49.5803522644, 52.5132958993] | 0.0504781825116 [0.0478325802093, 0.0558921190968] | 0 [0, 0] |
+| 7 | 2007 | 57137 [55482, 57352] | 56.6998983842 [55.9263345743, 57.234473562] | 0.049418770036 [0.0433983764311, 0.0513686760002] | 0 [0, 0] |
+| 8 | 2008 | 70387 [68790, 70734] | 61.6119498453 [58.0622604459, 62.5453126489] | 0.0486642486108 [0.048573412617, 0.0547455184495] | 0 [0, 0] |
+| 9 | 2009 | 83746 [82561, 83910] | 64.9856442394 [63.786206324, 66.7839555817] | 0.0669017957766 [0.0612667295704, 0.0702475385897] | 0 [0, 0] |
+| 10 | 2010 | 97010 [96079, 97480] | 64.5131653156 [63.0769391389, 64.9457940974] | 0.065350349494 [0.0606476563068, 0.0741703598792] | 0 [0, 0] |
+| 11 | 2011 | 111220 [110096, 111424] | 63.4003528592 [61.8757810925, 64.0420290185] | 0.0593061927397 [0.055855359234, 0.0645595073575] | 0 [0, 0] |
+| 12 | 2012 | 126617 [125601, 127871] | 62.7494778673 [61.9924189426, 63.5637266137] | 0.0525824920964 [0.0497127203034, 0.0562949667144] | 0 [0, 0] |
+| 13 | 2013 | 143996 [142480, 145099] | 63.4843576984 [62.4083362375, 64.4907655201] | 0.0510184235683 [0.0482164861661, 0.0555974714951] | 0 [0, 0] |
+| 14 | 2014 | 162893 [159429, 163214] | 69.7922046748 [64.8070438681, 70.2355302508] | 0.0522545755233 [0.0462435253149, 0.055483865296] | 0 [0, 0] |
+| 15 | 2015 | 181910 [178036, 182428] | 70.2828251982 [67.0215711403, 71.1467203415] | 0.0514671112541 [0.045746366541, 0.0565486899266] | 0 [0, 0] |
+| 16 | 2016 | 201032 [198931, 202147] | 70.930926154 [70.4025500066, 72.3115621325] | 0.0522574326203 [0.0441526707332, 0.0565367466969] | 0 [0, 0] |
+| 17 | 2017 | 220264 [217743, 221560] | 71.7462059723 [70.1747235226, 72.3716101346] | 0.0573060732476 [0.050383138573, 0.062884943181] | 0 [0, 0] |
+| 18 | 2018 | 240111 [238125, 242039] | 72.6849184417 [70.8175666723, 73.1531831645] | 0.0563750850087 [0.0501280973105, 0.0608228784064] | 0 [0, 0] |
+| 19 | 2019 | 261751 [259674, 264481] | 73.6696893807 [72.0316989205, 74.3239597793] | 0.0539889333438 [0.0504015313443, 0.0560521993084] | 0 [0, 0] |
+| 20 | 2020 | 284274 [281689, 287234] | 76.1679586732 [73.2030611977, 76.4404919454] | 0.0523788745571 [0.0496295109793, 0.0557169253613] | 0 [0, 0] |
+| 21 | 2021 | 307076 [303929, 310168] | 76.9415584023 [75.1840649435, 77.7540836674] | 0.0523680172558 [0.0506567511298, 0.0572027484116] | 0 [0, 0] |
+| 22 | 2022 | 331951 [327213, 333566] | 77.3505446464 [76.0479120587, 77.4890035906] | 0.0552336852261 [0.0527593531738, 0.0584134414695] | 0 [0, 0] |
+| 23 | 2023 | 355340 [350807, 357155] | 77.6433592556 [76.2887567216, 77.9336070815] | 0.0600525360776 [0.0567692796297, 0.0611642692479] | 0 [0, 0] |
+| 24 | 2024 | 380475 [375374, 381880] | 77.7414366218 [76.4603769478, 78.1691956093] | 0.0613773650253 [0.0594275024251, 0.0656655722565] | 0 [0, 0] |
+| 25 | 2025 | 405400 [400281, 406789] | 77.182950673 [76.2640054381, 78.0048748875] | 0.0629580310288 [0.0617308977597, 0.0668897743491] | 0 [0, 0] |
+| 26 | 2026 | 431885 [426244, 432624] | 77.5347736949 [77.2549435325, 78.2446253242] | 0.0665075245825 [0.0612959316657, 0.0670506912252] | 0 [0, 0] |
+| 27 | 2027 | 459324 [454626, 460015] | 77.5910608598 [76.5165356378, 78.2067006264] | 0.0657421438106 [0.0615860872533, 0.06960806194] | 0 [0, 0] |
+| 28 | 2028 | 488133 [484568, 489945] | 78.1333126686 [77.7653943036, 80.1594304101] | 0.0630358514868 [0.0611067885077, 0.0716394825492] | 0 [0, 0] |
+| 29 | 2029 | 518809 [515169, 520829] | 79.5910751866 [79.1036508928, 81.6009226435] | 0.0679750941102 [0.0636400710001, 0.0750147502442] | 0 [0, 0] |
+| 30 | 2030 | 549130 [545987, 551396] | 81.4404011945 [80.1015030183, 81.6331017631] | 0.0697412838765 [0.0677812627025, 0.0769039723364] | 0 [0, 0] |
+| 31 | 2031 | 579744 [577395, 582733] | 81.8911466084 [80.9234804993, 82.2232143329] | 0.0744927478238 [0.0701001861004, 0.0834208008024] | 0 [0, 0] |
+| 32 | 2032 | 610615 [608730, 614845] | 81.981636368 [81.5399457676, 82.3868309707] | 0.0800183036137 [0.0724190332987, 0.0858982828134] | 0 [0, 0] |
+| 33 | 2033 | 643353 [641046, 647575] | 82.2376192429 [81.4447745966, 83.1720861408] | 0.0837325368929 [0.0757977680989, 0.0908314923925] | 0 [0, 0] |
+| 34 | 2034 | 675552 [671270, 679334] | 82.1385293596 [81.6148849526, 82.9694498342] | 0.0867467297895 [0.0827262118302, 0.101733974655] | 0 [0, 0] |
+| 35 | 2035 | 708864 [705812, 713490] | 82.722366309 [81.2325811, 82.8921472633] | 0.0974763542354 [0.0854047246629, 0.100116876454] | 0 [0, 0] |
+| 36 | 2036 | 741622 [738362, 747427] | 82.4672159037 [81.8511807927, 83.8068783412] | 0.100810481872 [0.0919302300019, 0.107488300411] | 0 [0, 0] |
+| 37 | 2037 | 776288 [773730, 781066] | 82.3181606984 [82.0410693877, 83.1437641225] | 0.103445688051 [0.0981501369686, 0.113785284161] | 0 [0, 0] |
+| 38 | 2038 | 811907 [807517, 816651] | 82.1592113194 [81.4223369041, 82.9540376397] | 0.108876402027 [0.102178297807, 0.119279615383] | 0 [0, 0] |
+| 39 | 2039 | 844940 [841049, 852303] | 82.8090936591 [81.7314164498, 83.1101948772] | 0.117281865418 [0.107450141015, 0.126056959369] | 0 [0, 0] |
+| 40 | 2040 | 880019 [878323, 889673] | 82.8624900983 [81.9454839227, 83.0747485967] | 0.12195091575 [0.113307293426, 0.129887023697] | 0 [0, 0] |
+| 41 | 2041 | 914584 [913767, 924866] | 82.1884032783 [81.1310210895, 82.7341033392] | 0.124133908368 [0.12381012157, 0.142696690675] | 0 [0, 0] |
+| 42 | 2042 | 952007 [947049, 958822] | 82.0540874713 [81.583606989, 82.3437330942] | 0.130450086912 [0.126086734444, 0.144575050726] | 0 [0, 0] |
+| 43 | 2043 | 989261 [981631, 994389] | 81.6238087259 [81.0054729891, 82.0453687947] | 0.135476425365 [0.129741976511, 0.146611437364] | 0 [0, 0] |
+| 44 | 2044 | 1030678 [1017766, 1031463] | 81.3885927267 [80.8561381665, 81.6738854807] | 0.142594588148 [0.127841465029, 0.153304499935] | 0 [0, 0] |
+| 45 | 2045 | 1068216 [1055287, 1072401] | 80.9465309421 [80.5826588627, 81.3672525062] | 0.143253165617 [0.134717231435, 0.158265272862] | 0 [0, 0] |
+| 46 | 2046 | 1109143 [1094324, 1109943] | 81.02390851 [80.3864119872, 81.3922144238] | 0.15197178937 [0.135719597588, 0.15990635414] | 0 [0, 0] |
+| 47 | 2047 | 1144048 [1132339, 1151307] | 80.5774730815 [79.5412460772, 81.8762702293] | 0.157108470572 [0.138409774208, 0.169138761911] | 0 [0, 0] |
+| 48 | 2048 | 1186527 [1169316, 1187525] | 80.4817288086 [79.7791260831, 81.4782541627] | 0.157149319071 [0.142596638453, 0.171808653885] | 0 [0, 0] |
+| 49 | 2049 | 1225495 [1209924, 1233587] | 80.2711868681 [79.8305016712, 81.248412134] | 0.154546439733 [0.145552599512, 0.173847097014] | 0 [0, 0] |
+| 50 | 2050 | 1262250 [1254073, 1272103] | 80.438332376 [79.8307428068, 80.9499364094] | 0.166178183192 [0.140626416381, 0.174208293745] | 0 [0, 0] |
+| 51 | 2051 | 1307156 [1295571, 1313026] | 80.3679574004 [79.6633762229, 80.6414577051] | 0.165858823431 [0.146472679267, 0.175126842925] | 0.00129182146827 [0, 0.0100193668234] |
+| 52 | 2052 | 1352531 [1335822, 1354608] | 80.4232597104 [79.5939078267, 80.7251923185] | 0.166770411334 [0.143862404618, 0.180875223886] | 0.00520282099724 [0, 0.0108910310306] |
+| 53 | 2053 | 1387290 [1372356, 1392815] | 80.6480393726 [79.3138476557, 81.1771549768] | 0.163510597338 [0.142825009073, 0.176661749973] | 0.0161053470136 [0, 0.0244613470833] |
+| 54 | 2054 | 1401401 [1388950, 1440737] | 80.2338463766 [79.7013495829, 80.4236104261] | 0.16437900878 [0.143359957365, 0.175300481566] | 0.0287983457869 [0, 0.0316264226817] |
+| 55 | 2055 | 1426671 [1386414, 1464302] | 80.4130059591 [79.9308201976, 80.9548984002] | 0.169314615785 [0.144885651148, 0.184043543051] | 0.0285893289846 [0, 0.0406296878671] |
+| 56 | 2056 | 1444001 [1400344, 1476049] | 80.3413496665 [80.2474455786, 80.4208527847] | 0.167833523342 [0.144751544239, 0.17942816008] | 0.0432669063547 [0, 0.0494030864797] |
+| 57 | 2057 | 1456317 [1403945, 1487877] | 80.1255566076 [79.0766552494, 81.1171802385] | 0.173270672509 [0.145909746932, 0.186550533685] | 0.0547291076944 [0, 0.0605594441453] |
+| 58 | 2058 | 1462768 [1414561, 1491046] | 80.053724096 [79.5188434281, 80.7983833485] | 0.170178057516 [0.142471353527, 0.182265726266] | 0.058744564988 [0, 0.0762453855407] |
+| 59 | 2059 | 1482680 [1416617, 1504106] | 80.0132186901 [79.6906575395, 80.7540176635] | 0.162669681915 [0.147304497255, 0.182973823183] | 0.0722637672603 [0, 0.0910363244426] |
+| 60 | 2060 | 1483518 [1427340, 1503201] | 80.4411987232 [79.1371672705, 81.3566945637] | 0.171516885347 [0.147485057472, 0.182561594583] | 0.0819100032892 [0, 0.103251506482] |
+
+#### T041 128x15_s7 — five members
+
+| Year index | Calendar year | Population median [min, max] | Approval median [min, max] | Air at homes median [min, max] | I-HT fraction median [min, max] |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 2001 | 3599 [3599, 3599] | 51.5509189563 [51.5509189563, 51.5509189563] | 0.0235506397975 [0.0235506397975, 0.0235506397975] | 0 [0, 0] |
+| 2 | 2002 | 10022 [10022, 10022] | 49.1172581473 [49.1172581473, 49.1172581473] | 0.0295538459448 [0.0295538459448, 0.0295538459448] | 0 [0, 0] |
+| 3 | 2003 | 18210 [18210, 18210] | 51.2616058412 [51.2616058412, 51.2616058412] | 0.043981805158 [0.043981805158, 0.043981805158] | 0 [0, 0] |
+| 4 | 2004 | 27641 [27641, 27641] | 50.8980726491 [50.8980726491, 50.8980726491] | 0.0462829751625 [0.0462829751625, 0.0462829751625] | 0 [0, 0] |
+| 5 | 2005 | 36771 [36771, 36814] | 49.0331151609 [49.0331151609, 49.2677691026] | 0.0429726434688 [0.0429726434688, 0.0442813730652] | 0 [0, 0] |
+| 6 | 2006 | 47029 [46943, 47029] | 51.9693347019 [50.4608378541, 51.9693347019] | 0.0431271324936 [0.0426214744691, 0.0431271324936] | 0 [0, 0] |
+| 7 | 2007 | 58357 [58179, 58400] | 57.4539371568 [54.9847136186, 57.4553629745] | 0.0415494922038 [0.0415002480935, 0.0415774830204] | 0 [0, 0] |
+| 8 | 2008 | 70599 [70032, 70720] | 61.8831444101 [59.9308866325, 62.2477799713] | 0.04208643221 [0.0419909573735, 0.0422237896072] | 0 [0, 0] |
+| 9 | 2009 | 84478 [83766, 84769] | 65.8395710754 [64.8321912208, 66.4514529172] | 0.0695410798762 [0.0689319939561, 0.0710331841272] | 0 [0, 0] |
+| 10 | 2010 | 100310 [98677, 100378] | 70.4226482668 [63.9517755419, 70.7004064579] | 0.068757647444 [0.0683189081973, 0.0722279209429] | 0 [0, 0] |
+| 11 | 2011 | 117271 [116167, 117608] | 73.5534592166 [71.9965901544, 73.613686501] | 0.0717390904408 [0.0691787943988, 0.0727968965905] | 0 [0, 0] |
+| 12 | 2012 | 135534 [134304, 136027] | 74.9283950879 [74.5266812075, 76.2205571197] | 0.0682217889314 [0.0657137964074, 0.0710972950949] | 0 [0, 0] |
+| 13 | 2013 | 154311 [152614, 154335] | 76.2801400626 [76.1082520572, 77.5819084083] | 0.0732074493077 [0.0684657462714, 0.075211294198] | 0 [0, 0] |
+| 14 | 2014 | 173340 [172525, 173970] | 77.8302282901 [76.5342686148, 78.7249887948] | 0.0773724046077 [0.0737751181922, 0.0806023863302] | 0 [0, 0] |
+| 15 | 2015 | 193098 [191999, 193831] | 80.1444906618 [79.0573550218, 81.6001870607] | 0.0858628720047 [0.0798279768872, 0.0876237437694] | 0 [0, 0] |
+
+#### T041 256x60_s7 — five members
+
+| Year index | Calendar year | Population median [min, max] | Approval median [min, max] | Air at homes median [min, max] | I-HT fraction median [min, max] |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 2001 | 3656 [3656, 3663] | 51.4322212899 [51.4322212899, 51.4595436081] | 0.0156056055256 [0.0156056055256, 0.0158155623254] | 0 [0, 0] |
+| 2 | 2002 | 10247 [10034, 10247] | 52.8200144747 [46.8324147514, 52.8200144747] | 0.0301207741822 [0.0301207741822, 0.0330350810882] | 0 [0, 0] |
+| 3 | 2003 | 18113 [18106, 18113] | 46.9761142845 [46.9761142845, 48.7513831012] | 0.0468406300412 [0.0460101522776, 0.0468406300412] | 0 [0, 0] |
+| 4 | 2004 | 26862 [26862, 27594] | 46.542558204 [46.542558204, 49.2691821085] | 0.0491536318482 [0.044815720777, 0.0491536318482] | 0 [0, 0] |
+| 5 | 2005 | 35575 [35550, 36062] | 43.3659899748 [43.3659899748, 46.8000017112] | 0.048518945227 [0.0470570445328, 0.0486735398054] | 0 [0, 0] |
+| 6 | 2006 | 44292 [44292, 45756] | 48.0214551096 [48.0214551096, 52.8342777247] | 0.0465592575493 [0.0465592575493, 0.046765421201] | 0 [0, 0] |
+| 7 | 2007 | 53027 [52889, 57149] | 54.7249124222 [54.7215464359, 57.894073733] | 0.0442495703083 [0.0441266530813, 0.0472856290737] | 0 [0, 0] |
+| 8 | 2008 | 64328 [64199, 69097] | 58.5110980202 [58.2613807657, 60.1035345631] | 0.0464368394857 [0.044224254125, 0.0492449758852] | 0 [0, 0] |
+| 9 | 2009 | 77185 [76788, 81822] | 64.9100954693 [62.1878212006, 65.637678563] | 0.0613875024146 [0.0529746438638, 0.0718236587493] | 0 [0, 0] |
+| 10 | 2010 | 89892 [89405, 94414] | 64.0388905704 [61.7943499607, 64.0762406285] | 0.064445511475 [0.0616062252374, 0.0656025189545] | 0 [0, 0] |
+| 11 | 2011 | 103331 [102981, 107993] | 61.9627452709 [60.9482515291, 62.4899033498] | 0.0583874831128 [0.0564794233803, 0.066537279014] | 0 [0, 0.0108720374835] |
+| 12 | 2012 | 116857 [116579, 122657] | 61.3778269026 [59.0057267332, 61.4551890162] | 0.0515671469622 [0.0514695023355, 0.0557850722268] | 0 [0, 0.00675098273799] |
+| 13 | 2013 | 132822 [132766, 137274] | 62.1423588567 [61.1713047084, 64.6346628291] | 0.0481720984135 [0.0468473865551, 0.0508099614778] | 0 [0, 0.00649272089366] |
+| 14 | 2014 | 149603 [149412, 154702] | 67.6530056251 [62.751087189, 67.7495665551] | 0.0460229342768 [0.0454042977464, 0.051426459096] | 0 [0, 0.00614274196645] |
+| 15 | 2015 | 167640 [166266, 172355] | 69.0193024525 [65.0591795653, 69.6994762251] | 0.0457097333079 [0.0445315920834, 0.0509776594941] | 0 [0, 0.00590327430059] |
+| 16 | 2016 | 186097 [184628, 191605] | 69.9256631082 [69.2761033182, 70.6175098295] | 0.0440926311214 [0.042681504478, 0.050266889096] | 0 [0, 0.00581605375334] |
+| 17 | 2017 | 205169 [202459, 210157] | 70.1904912862 [69.1088675685, 70.9386097065] | 0.0450787615786 [0.0439046194048, 0.0529497008384] | 0 [0, 0.00579741456915] |
+| 18 | 2018 | 223887 [220564, 229127] | 70.7295969072 [68.7869275691, 70.9349100035] | 0.0509879587712 [0.0477103205667, 0.0523903365883] | 0 [0, 0.00590331922477] |
+| 19 | 2019 | 244050 [241773, 248763] | 71.5799837571 [70.2879336388, 71.6143996345] | 0.0499309421966 [0.0463013462016, 0.0522880841328] | 0 [0, 0.00588387669763] |
+| 20 | 2020 | 265947 [262570, 270377] | 71.7324007729 [71.037663334, 72.973469364] | 0.0484231078413 [0.0470430962692, 0.0510388294821] | 0 [0, 0.00587431189271] |
+| 21 | 2021 | 288598 [285681, 292752] | 74.5770600725 [73.4165952792, 74.851724977] | 0.0490112951244 [0.0469578738121, 0.0520437759487] | 0 [0, 0.00589653254218] |
+| 22 | 2022 | 311540 [308498, 316057] | 75.5144123217 [75.1294876718, 75.6631722386] | 0.047668887457 [0.0465474990494, 0.0530261865816] | 0 [0, 0.0058893251352] |
+| 23 | 2023 | 334344 [330767, 339168] | 76.0073637279 [74.4321477093, 76.9394527351] | 0.0524906216339 [0.0484058962688, 0.0531331200826] | 0 [0, 0.00585163512463] |
+| 24 | 2024 | 359650 [354033, 362448] | 75.5921074148 [75.2832810287, 76.9202802292] | 0.0549177510809 [0.0503141859019, 0.0588819980935] | 0 [0, 0.00585185185185] |
+| 25 | 2025 | 384590 [378769, 386798] | 76.1070424892 [75.6626087621, 77.2818256227] | 0.0554803228581 [0.0514055070959, 0.0606176132062] | 0 [0, 0.00581309241706] |
+| 26 | 2026 | 411685 [405809, 413189] | 77.3430076306 [75.520215678, 77.9844627392] | 0.0574083816939 [0.0515359395095, 0.0597112445718] | 0 [0, 0.00564547825776] |
+| 27 | 2027 | 439616 [434077, 441310] | 77.6477691587 [77.0965275447, 78.0003988607] | 0.0596273448366 [0.0524283731093, 0.0617919253329] | 0 [0, 0.00522648083624] |
+| 28 | 2028 | 468498 [462493, 469127] | 78.1470715861 [76.8908362091, 78.3156153745] | 0.0611222137634 [0.0551931552149, 0.0638314779122] | 0 [0, 0.0050371409443] |
+| 29 | 2029 | 497990 [491775, 498768] | 78.6184138716 [78.1908884842, 78.9543552864] | 0.0627370185061 [0.0586458335677, 0.066094513882] | 0 [0, 0.00457123018169] |
+| 30 | 2030 | 529330 [521916, 529353] | 80.5901779294 [78.0786902254, 80.965238839] | 0.0681523573131 [0.0649148776903, 0.0689160825364] | 0 [0, 0.00452152014652] |
+| 31 | 2031 | 561093 [553788, 561099] | 82.1141056813 [80.624612143, 82.1551820015] | 0.0680256081602 [0.0654987306859, 0.0740149917196] | 0 [0, 0.00408109875736] |
+| 32 | 2032 | 592757 [585950, 593477] | 82.3195824234 [82.0531999508, 82.3955786103] | 0.0766772971702 [0.0700277797612, 0.0781600815307] | 0 [0, 0] |
+| 33 | 2033 | 624609 [617771, 625760] | 82.4852056695 [81.9823022486, 83.3712431504] | 0.0790717792962 [0.0714082510346, 0.0812255363915] | 0 [0, 0] |
+| 34 | 2034 | 656920 [648457, 659221] | 82.6396534736 [82.4553834356, 83.6448071945] | 0.0837152255874 [0.0765298430148, 0.0909491692675] | 0 [0, 0] |
+| 35 | 2035 | 688697 [681141, 692463] | 82.1708704815 [81.7671100717, 83.397660689] | 0.0892655004721 [0.0852548358568, 0.0948568308774] | 0 [0, 0] |
+| 36 | 2036 | 722927 [714214, 724856] | 82.9413907559 [82.1065818991, 83.7847781912] | 0.0921639024105 [0.0886392526474, 0.100581532355] | 0 [0, 0] |
+| 37 | 2037 | 756906 [748886, 758874] | 82.8868206227 [82.8455453805, 82.9986480811] | 0.099816999711 [0.0955451053074, 0.108203153024] | 0 [0, 0] |
+| 38 | 2038 | 790558 [783255, 792731] | 82.3438398597 [82.0923669208, 82.5895025153] | 0.108462059062 [0.104949743315, 0.11107766477] | 0 [0, 0] |
+| 39 | 2039 | 823848 [817635, 827825] | 81.8819628008 [81.4817419916, 82.1071228203] | 0.11508315414 [0.11043511539, 0.115322823876] | 0 [0, 0] |
+| 40 | 2040 | 859443 [851797, 864028] | 82.5199420732 [82.4945583921, 82.7115861614] | 0.114385926738 [0.111257787505, 0.123008925822] | 0 [0, 0] |
+| 41 | 2041 | 894479 [884622, 898626] | 82.4293729136 [82.1831874245, 82.8279587405] | 0.121920542683 [0.115480595577, 0.129980784638] | 0 [0, 0] |
+| 42 | 2042 | 927255 [920263, 935959] | 82.0205882133 [81.6047298481, 82.6312700033] | 0.129456865684 [0.119304746348, 0.137292216225] | 0 [0, 0] |
+| 43 | 2043 | 964182 [956598, 970181] | 81.731229475 [81.615133843, 81.8826153316] | 0.135687985595 [0.131117256754, 0.137570759161] | 0 [0, 0] |
+| 44 | 2044 | 1001797 [995068, 1002990] | 81.5189627416 [81.0913418892, 82.2686047957] | 0.136064733927 [0.133407433596, 0.14216006797] | 0 [0, 0] |
+| 45 | 2045 | 1037419 [1033145, 1041497] | 81.5053907828 [81.3979728526, 81.877876114] | 0.143573820607 [0.143157570273, 0.150185724238] | 0 [0, 0] |
+| 46 | 2046 | 1076520 [1071882, 1077359] | 80.8287737528 [80.6726236222, 81.3333836222] | 0.146224712444 [0.145243430084, 0.154011985464] | 0 [0, 0] |
+| 47 | 2047 | 1115397 [1108597, 1115550] | 80.4059430127 [80.405573491, 81.588600727] | 0.148955494223 [0.148348655824, 0.156992600353] | 0 [0, 0] |
+| 48 | 2048 | 1152504 [1149500, 1155633] | 80.6246764613 [80.3871545233, 82.0661413903] | 0.15301601859 [0.141925040134, 0.157721806561] | 0 [0, 0] |
+| 49 | 2049 | 1195156 [1182196, 1198595] | 81.1545622322 [80.1434760721, 81.1689231425] | 0.146208210427 [0.144162344259, 0.166117981542] | 0 [0, 0] |
+| 50 | 2050 | 1231431 [1221138, 1236441] | 80.8084563819 [80.3905993566, 81.0595084865] | 0.152046778186 [0.149414458612, 0.163446984857] | 0 [0, 0.0104061895551] |
+| 51 | 2051 | 1267957 [1256088, 1274301] | 80.8365790432 [80.0801054952, 80.9803084463] | 0.161327047281 [0.157040329626, 0.168832046659] | 0 [0, 0.0202254797792] |
+| 52 | 2052 | 1300168 [1295407, 1310187] | 80.2780152067 [80.1174047546, 80.7751549352] | 0.162016204395 [0.157100090683, 0.172798310488] | 0 [0, 0.0230265882548] |
+| 53 | 2053 | 1339536 [1326567, 1339615] | 79.8268538268 [79.561191576, 79.9949998015] | 0.164962498408 [0.152169163884, 0.171395389477] | 0 [0, 0.025076765609] |
+| 54 | 2054 | 1372454 [1338999, 1373403] | 79.5991342114 [79.392842052, 79.8784330062] | 0.171312237839 [0.150614792727, 0.171648243525] | 0 [0, 0.0385445898572] |
+| 55 | 2055 | 1394146 [1342625, 1408819] | 79.5601145966 [79.3494281789, 81.2102361554] | 0.166246589856 [0.154689673401, 0.176078292961] | 0 [0, 0.0502346380114] |
+| 56 | 2056 | 1416272 [1344171, 1441663] | 79.5308245085 [79.3571716323, 80.0601903695] | 0.170984217332 [0.157927765098, 0.17683008927] | 0 [0, 0.0627822117067] |
+| 57 | 2057 | 1437575 [1355184, 1473387] | 79.9503159522 [79.6123834038, 80.5396929647] | 0.170962835358 [0.157903240575, 0.175659596914] | 0 [0, 0.0808186593276] |
+| 58 | 2058 | 1454940 [1363167, 1487041] | 79.8112595147 [79.7516488543, 81.2660516274] | 0.170685282602 [0.157035109122, 0.17831548378] | 0 [0, 0.081351521842] |
+| 59 | 2059 | 1461510 [1364186, 1498509] | 80.1856396107 [78.9833133489, 80.4407663312] | 0.178941935019 [0.157679647205, 0.1799110599] | 0 [0, 0.0964508013203] |
+| 60 | 2060 | 1477908 [1378044, 1511394] | 80.2047309022 [79.2760368644, 80.7510081268] | 0.180354716095 [0.15455811756, 0.182215495351] | 0 [0, 0.107601467122] |
+
+#### T041 256x60_s11 — five members
+
+| Year index | Calendar year | Population median [min, max] | Approval median [min, max] | Air at homes median [min, max] | I-HT fraction median [min, max] |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 2001 | 3661 [3661, 3661] | 51.2601366225 [51.2601366225, 51.2601366225] | 0.0137441692749 [0.0137441692749, 0.0137441692749] | 0 [0, 0] |
+| 2 | 2002 | 10167 [10167, 10167] | 51.4609204871 [51.4609204871, 51.4609204871] | 0.0267196565116 [0.0267196565116, 0.0267196565116] | 0 [0, 0] |
+| 3 | 2003 | 17993 [17993, 17993] | 50.3348612399 [50.3348612399, 50.3348612399] | 0.0430012369466 [0.0430012369466, 0.0430012369466] | 0 [0, 0] |
+| 4 | 2004 | 26762 [26762, 26762] | 49.6134607946 [49.6134607946, 49.6134607946] | 0.0463797061939 [0.0463797061939, 0.0463797061939] | 0 [0, 0] |
+| 5 | 2005 | 34423 [34423, 34423] | 48.4880823033 [48.4880823033, 48.4880823033] | 0.0475154704282 [0.0475154704282, 0.0475154704282] | 0 [0, 0] |
+| 6 | 2006 | 43431 [43328, 43431] | 53.6732720555 [53.6732720555, 53.9675729971] | 0.0440840352445 [0.0440840352445, 0.0442530951447] | 0 [0, 0] |
+| 7 | 2007 | 54047 [54046, 54132] | 58.4859216105 [58.1752962356, 58.5997848242] | 0.0433898592342 [0.0424553619744, 0.0434127493076] | 0 [0, 0] |
+| 8 | 2008 | 65847 [65687, 65859] | 60.8245723534 [57.1957748732, 61.0189766193] | 0.043028331212 [0.0427306382635, 0.0444374263848] | 0 [0, 0] |
+| 9 | 2009 | 78785 [78240, 79070] | 64.8926837283 [58.733738186, 67.1425314161] | 0.0619401985945 [0.051416913702, 0.0686944089932] | 0 [0, 0] |
+| 10 | 2010 | 91557 [90936, 92275] | 64.7081707404 [60.162623984, 65.725177877] | 0.0614204937029 [0.0592993100253, 0.0679439766783] | 0 [0, 0] |
+| 11 | 2011 | 104818 [104539, 106085] | 63.1066358728 [62.4387975316, 64.6597657706] | 0.0575759579868 [0.0569242407582, 0.0588629500875] | 0 [0, 0] |
+| 12 | 2012 | 118744 [118307, 120427] | 62.7662686052 [61.1432164057, 65.2804401605] | 0.0532665365304 [0.0512268661201, 0.054831523938] | 0 [0, 0] |
+| 13 | 2013 | 135047 [133388, 137075] | 64.7849535399 [62.0990669407, 69.3150965307] | 0.0489488587548 [0.0488747295933, 0.0494100913925] | 0 [0, 0] |
+| 14 | 2014 | 151257 [150939, 153867] | 68.8455717391 [65.7997988841, 70.5650320971] | 0.0471871621918 [0.046671363108, 0.0477781549712] | 0 [0, 0] |
+| 15 | 2015 | 168939 [167808, 171568] | 70.3125023656 [70.1145560865, 71.0358161411] | 0.0459344965078 [0.0433950389938, 0.0462340749828] | 0 [0, 0] |
+| 16 | 2016 | 186073 [185570, 189372] | 70.6595823844 [70.5316182619, 70.9904826748] | 0.0448851128161 [0.0424534366456, 0.0451911780668] | 0 [0, 0] |
+| 17 | 2017 | 203761 [203438, 207129] | 71.3251021367 [70.3191340204, 71.3812514408] | 0.0458976916709 [0.042148503524, 0.0474141633612] | 0 [0, 0] |
+| 18 | 2018 | 221823 [221724, 225625] | 71.3039580623 [70.3441663966, 71.5362755468] | 0.050184405189 [0.0494477418146, 0.0506275617725] | 0 [0, 0] |
+| 19 | 2019 | 241711 [241471, 246189] | 72.3913838553 [70.4390821967, 72.4377910149] | 0.0494425491359 [0.0486185322777, 0.0503924714785] | 0 [0, 0] |
+| 20 | 2020 | 264021 [262509, 268434] | 73.2111821815 [72.1336410539, 75.0892524751] | 0.049789517707 [0.0481402639317, 0.0501231750977] | 0 [0, 0] |
+| 21 | 2021 | 286313 [285337, 290825] | 74.4647136035 [74.3271902731, 74.7135927508] | 0.0493106026075 [0.0483872133905, 0.0521013985653] | 0 [0, 0] |
+| 22 | 2022 | 308840 [308667, 313327] | 74.8627394261 [74.4950288887, 76.1786726774] | 0.050077594102 [0.0493755377055, 0.0533313171278] | 0 [0, 0] |
+| 23 | 2023 | 331939 [331708, 337160] | 76.6857035306 [74.2228529216, 77.325263318] | 0.0539014259958 [0.0528426663659, 0.054745005496] | 0 [0, 0] |
+| 24 | 2024 | 355902 [355700, 361388] | 76.6238765511 [75.3587528307, 77.098508326] | 0.0568240803371 [0.0539149867379, 0.0569722266101] | 0 [0, 0] |
+| 25 | 2025 | 380454 [379873, 385542] | 76.2473307851 [75.0896116203, 77.3651383116] | 0.0584385349993 [0.0568925457849, 0.0605950028992] | 0 [0, 0] |
+| 26 | 2026 | 405961 [405292, 412075] | 76.397200941 [75.1754363522, 76.7125102159] | 0.0575989046747 [0.0571254828006, 0.0595046130356] | 0 [0, 0] |
+| 27 | 2027 | 433539 [431578, 440141] | 77.1797007336 [75.1140898235, 77.4207999023] | 0.0586812516215 [0.0585589677539, 0.0598485721841] | 0 [0, 0] |
+| 28 | 2028 | 460980 [459656, 469071] | 77.8842565746 [77.1452841177, 78.1244926789] | 0.0632230836529 [0.0616352454415, 0.0638384607831] | 0 [0, 0] |
+| 29 | 2029 | 490355 [489172, 499419] | 78.1069810145 [78.0725807037, 78.6338068086] | 0.0639288745123 [0.0634802277466, 0.0645218719827] | 0 [0, 0] |
+| 30 | 2030 | 520386 [520014, 530527] | 78.9147676823 [78.7006287102, 79.9880891627] | 0.0685828817485 [0.0672683129751, 0.0696808123693] | 0 [0, 0] |
+| 31 | 2031 | 551293 [551086, 560998] | 80.4608136933 [79.8749377231, 81.8092193914] | 0.0707722851724 [0.0696612503569, 0.072232965522] | 0 [0, 0] |
+| 32 | 2032 | 582872 [582105, 592372] | 80.8912090595 [80.1047009889, 82.0245657557] | 0.078336111361 [0.0757138484809, 0.0816156357147] | 0 [0, 0] |
+| 33 | 2033 | 614803 [614799, 624553] | 82.0482172062 [80.4456660835, 82.4569058987] | 0.0807160890747 [0.0788074315477, 0.0834461132494] | 0 [0, 0] |
+| 34 | 2034 | 647676 [646748, 656833] | 81.6597494868 [79.6371479789, 82.925097904] | 0.0860446517681 [0.0817886366475, 0.0864457728064] | 0 [0, 0] |
+| 35 | 2035 | 680440 [679260, 689842] | 82.1196046137 [81.3536542264, 83.0866757922] | 0.0916550485911 [0.0892464211282, 0.0939512475134] | 0 [0, 0] |
+| 36 | 2036 | 713526 [711158, 722554] | 82.326995055 [81.1714450593, 83.3884584402] | 0.0971178917064 [0.0952644981914, 0.102049424151] | 0 [0, 0] |
+| 37 | 2037 | 746890 [744645, 755392] | 82.2010584763 [80.4491745759, 83.174122234] | 0.102576044705 [0.100262643219, 0.104616624696] | 0 [0, 0] |
+| 38 | 2038 | 782783 [778213, 789590] | 81.7717958738 [80.1751832982, 82.9579557473] | 0.110551338062 [0.100419178266, 0.113827214311] | 0 [0, 0] |
+| 39 | 2039 | 816910 [813809, 823820] | 81.7017446554 [80.2282364247, 82.7458001231] | 0.112063249493 [0.108978715097, 0.114294406222] | 0 [0, 0] |
+| 40 | 2040 | 851718 [848619, 858199] | 82.3775150424 [80.5485287185, 83.0565762807] | 0.118842927116 [0.111167374452, 0.119224477991] | 0 [0, 0] |
+| 41 | 2041 | 886954 [880850, 892626] | 82.1978783865 [80.2646399566, 82.7551976354] | 0.126366602375 [0.115969359718, 0.127786665203] | 0 [0, 0] |
+| 42 | 2042 | 921687 [917192, 926241] | 81.591331649 [79.5555319912, 83.4574854965] | 0.125467793213 [0.121413426626, 0.134412029861] | 0 [0, 0] |
+| 43 | 2043 | 957752 [952365, 965514] | 82.0876544482 [80.2694694067, 83.2138538047] | 0.129658157992 [0.128450113, 0.132027498523] | 0 [0, 0] |
+| 44 | 2044 | 995582 [993420, 1001262] | 82.2435773457 [79.7355525347, 83.017841181] | 0.13400244587 [0.127027234022, 0.135963117444] | 0 [0, 0] |
+| 45 | 2045 | 1032581 [1029866, 1042770] | 82.0270779201 [79.9295168247, 82.7397604223] | 0.139390282065 [0.136648408591, 0.141977811046] | 0 [0, 0] |
+| 46 | 2046 | 1071494 [1070745, 1079951] | 82.043767555 [80.0403680235, 82.0856260052] | 0.141087919932 [0.134259049097, 0.148383979385] | 0 [0, 0] |
+| 47 | 2047 | 1108588 [1106941, 1120230] | 81.1364225576 [79.1113958413, 81.7448289424] | 0.144025420523 [0.138666006633, 0.15082870358] | 0 [0, 0] |
+| 48 | 2048 | 1144642 [1142536, 1155239] | 81.7615394265 [79.7597126089, 82.2898236534] | 0.152525179927 [0.142725881966, 0.160589204936] | 0 [0, 0] |
+| 49 | 2049 | 1187911 [1177712, 1188854] | 81.2362325597 [78.9857252493, 82.5433450645] | 0.149657120447 [0.146139029675, 0.151412035199] | 0 [0, 0] |
+| 50 | 2050 | 1226709 [1215369, 1227450] | 81.1820687695 [78.6718726575, 82.3557110271] | 0.158352635402 [0.149114096175, 0.15979307485] | 0 [0, 0] |
+| 51 | 2051 | 1259890 [1252939, 1261980] | 80.8204470918 [78.2323831328, 82.0359112652] | 0.159867477313 [0.154484621235, 0.163638338602] | 0 [0, 0] |
+| 52 | 2052 | 1295524 [1286932, 1296661] | 80.5210896033 [78.1525811255, 81.4831494629] | 0.163854927428 [0.154477753838, 0.164559820547] | 0 [0, 0] |
+| 53 | 2053 | 1324550 [1323645, 1330122] | 79.9751298408 [78.3774226314, 81.3865882059] | 0.166531064859 [0.149750315932, 0.170360119737] | 0 [0, 0] |
+| 54 | 2054 | 1358531 [1354438, 1367457] | 79.9939877215 [78.4171879153, 81.89012524] | 0.166179474286 [0.157315040937, 0.168463111991] | 0 [0, 0] |
+| 55 | 2055 | 1390949 [1386607, 1398063] | 80.3373093613 [77.9910708975, 81.5864819983] | 0.170749607845 [0.153706001415, 0.171225234218] | 0 [0, 0.00961026254281] |
+| 56 | 2056 | 1410391 [1406405, 1433225] | 79.758293159 [77.7793026052, 81.9018248235] | 0.16845086526 [0.158779797355, 0.175279348229] | 0 [0, 0.020459204592] |
+| 57 | 2057 | 1429503 [1424835, 1439815] | 79.9811031534 [77.6360491367, 81.9349546454] | 0.174078267612 [0.158466236824, 0.177999436207] | 0 [0, 0.0380557202134] |
+| 58 | 2058 | 1442854 [1425026, 1449639] | 79.9337004269 [78.2997378996, 80.2964259054] | 0.175330073724 [0.16866330339, 0.177363535909] | 0 [0, 0.0536888309597] |
+| 59 | 2059 | 1457276 [1437790, 1465157] | 80.0957758428 [77.9749737442, 80.7902233054] | 0.174085541279 [0.171045105503, 0.18037700598] | 0 [0, 0.0599810695693] |
+| 60 | 2060 | 1468252 [1449829, 1483998] | 80.2315774679 [77.8228413634, 81.3126102294] | 0.176889172829 [0.167134737453, 0.180964205428] | 0 [0, 0.0680416911333] |
+
+### Annual-band widths and historical control-relative envelopes
+
+The active gate uses each year’s dev min-max band, shown above. A maximum width over all later years must not be substituted for an individual year’s band. For continuity with NOTE-052, this table also retains max |probe − control| over all four probes from year 10. The latter is a diagnostic, rather than permission to forgive a target miss.
+
+| Tree / row | Metric | Maximum annual band width, years ≥10 | Peak year | Width / median at peak | Max absolute probe − control, years ≥10 | Peak member / year |
+|---|---|---:|---:|---:|---:|---|
+| Dev 128x15_s7 | Population | 3185 | 2014 | 1.84850929478% | 2767 | p100-d1 / 2015 |
+| Dev 128x15_s7 | Approval (points) | 2.52014587462 | 2010 | 3.55692140517% | 1.92919785979 | p100-d1441 / 2012 |
+| Dev 128x15_s7 | Air at homes | 0.00560960939425 | 2015 | 6.04008201593% | 0.00560960939425 | p100-d1441 / 2015 |
+| Dev 128x15_s7 | I-HT share (fraction) | 0 | 2010 | 0% | 0 | p100-d1 / 2010 |
+| Dev 256x60_s7 | Population | 133913 | 2060 | 9.16529953384% | 133913 | p100-d1 / 2060 |
+| Dev 256x60_s7 | Approval (points) | 6.01562293198 | 2012 | 9.75814842271% | 5.50529078302 | m100-d1 / 2013 |
+| Dev 256x60_s7 | Air at homes | 0.0331824886772 | 2058 | 19.7454690154% | 0.0248380385345 | m100-d1 / 2056 |
+| Dev 256x60_s7 | I-HT share (fraction) | 0.0511209163901 | 2054 | 95.4737114554% | 0.0511209163901 | p100-d1 / 2054 |
+| Dev 256x60_s11 | Population | 87489 | 2059 | 5.90073380635% | 87489 | p100-d1441 / 2059 |
+| Dev 256x60_s11 | Approval (points) | 5.42848638277 | 2014 | 7.77806978311% | 5.42848638277 | m100-d1 / 2014 |
+| Dev 256x60_s11 | Air at homes | 0.0406407867526 | 2057 | 23.4550868673% | 0.0406407867526 | m100-d1 / 2057 |
+| Dev 256x60_s11 | I-HT share (fraction) | 0.103251506482 | 2060 | 126.054819113% | 0.103251506482 | m100-d1441 / 2060 |
+| T041 128x15_s7 | Population | 1832 | 2015 | 0.948741053765% | 1832 | p100-d1 / 2015 |
+| T041 128x15_s7 | Approval (points) | 6.74863091597 | 2010 | 9.58304051617% | 6.74863091597 | p100-d1 / 2010 |
+| T041 128x15_s7 | Air at homes | 0.00779576688221 | 2015 | 9.07932229635% | 0.00603489511748 | p100-d1 / 2015 |
+| T041 128x15_s7 | I-HT share (fraction) | 0 | 2010 | 0% | 0 | p100-d1 / 2010 |
+| T041 256x60_s7 | Population | 134323 | 2059 | 9.19070002942% | 134323 | p100-d1441 / 2059 |
+| T041 256x60_s7 | Approval (points) | 4.99847936607 | 2014 | 7.38840694495% | 3.39558019499 | p100-d1441 / 2015 |
+| T041 256x60_s7 | Air at homes | 0.0276573777907 | 2060 | 15.3349900627% | 0.0257965985348 | p100-d1441 / 2060 |
+| T041 256x60_s7 | I-HT share (fraction) | 0.107601467122 | 2060 | undefined (zero reference) | 0.0583378558985 | p100-d1441 / 2057 |
+| T041 256x60_s11 | Population | 34169 | 2060 | 2.32718906564% | 26820 | p100-d1 / 2056 |
+| T041 256x60_s11 | Approval (points) | 7.21602958999 | 2013 | 11.13843446% | 7.21602958999 | p100-d1 / 2013 |
+| T041 256x60_s11 | Air at homes | 0.020609803805 | 2053 | 12.3759514914% | 0.020609803805 | p100-d1 / 2053 |
+| T041 256x60_s11 | I-HT share (fraction) | 0.0680416911333 | 2060 | undefined (zero reference) | 0.0680416911333 | m100-d1 / 2060 |
+
+Round 2’s one-sided sweep remains supporting evidence: its response to §10/100/1,000/10,000 was non-monotonic, so a larger grant is not a justified way to enlarge a gate’s tolerance. The ensemble fixes the tested amount and timings and judges medians and annual bands.
+
+### Systematic-shift and second-stage diagnostics
+
+The systematic check below uses each row’s last checkpoint (128×15 ends at year 15; the other rows at year 60), as requested for this protocol. A metric triggers only if all three endpoint median deltas exceed one quarter of the corresponding dev band in the same signed direction. Equality does not trigger. This diagnostic is reported separately from T041’s signed ±3% exception.
+
+| Metric | 128×15 s7 endpoint Δ / quarter dev band | 256×60 s7 endpoint Δ / quarter dev band | 256×60 s11 endpoint Δ / quarter dev band | Common systematic shift? |
+|---|---:|---:|---:|---|
+| Population | +1510 / 744 | +16821 / 33478.25 | -15266 / 18965.25 | no |
+| Approval (points) | -1.22052684068 / 0.162550241409 | -0.15269379372 / 0.200402101428 | -0.209621255337 / 0.554881823306 | no |
+| Air at homes | -0.00701019461024 / 0.00140240234856 | +0.0131643386561 / 0.00622650707426 | +0.00537228748237 / 0.00876913427793 | no |
+| I-HT share (fraction) | 0 / 0 | -0.126146721117 / 0.00880630925789 | -0.0819100032892 / 0.0258128766205 | no |
+
+For transparency, the generic NOTE-053 base comparison below uses zero item tolerance and all four metrics from year 10. It is **not** T041’s sign-off criterion. It flags proximity to the active acceptance interval’s lower or upper boundary when distance is at most half that year’s dev band. This literal rule can flag a passing or even identical median, especially with narrow/zero bands. A row marked here needs matched nine-member ensembles before a normal lane final gate; the five-member measurement is not silently presented as a nine-member verdict.
+
+| Row | Generic base years failing any metric | Years near a base threshold | Second-stage row |
+|---|---|---|---|
+| 128x15_s7 | 2010–2015 | 2010–2015 | 128x15_s7: rerun both compared ensembles with --runs 9 |
+| 256x60_s7 | 2010–2060 | 2010–2060 | 256x60_s7: rerun both compared ensembles with --runs 9 |
+| 256x60_s11 | 2010–2060 | 2010–2060 | 256x60_s11: rerun both compared ensembles with --runs 9 |
+
+The separately generated comparison files are independently cross-checked against the raw recomputation: **432 base metric verdicts** and **135 population sign-off verdicts** agree, including every outside-year list, endpoint reopening decision, stage-two row and systematic-shift result. Generic base status: **needs-nine-runs**; NOTE-050 population sign-off status: **pass**. Files: [base comparison](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-compare/base.compare.json>), [sign-off comparison](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-compare/signoff.compare.json>).
+
+
+### Raw member provenance
+
+The cached JSON links below contain full-precision observations, annual state hashes, successful-action journals, the complete bot say-log and the exact executed quiet-gated member command. Imported members link to their original record and retain its SHA-256. Reusing these files does not re-record a balance fixture.
+
+| Tree / row | Member / nudge / day | Raw JSON / SHA-256 | Original imported evidence |
+|---|---|---|---|
+| Dev 128x15_s7 | control / 0 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/128x15_s7_base_74ab1200c7355b13.json>); `599e26806db327947e0296f3174a5d703eff1b9812daedc69d80ce7db5796ee1` | [3833c8d2379d3350663e624fe30be7867c559310](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/128x15_s7_base.json>); `23ec81e9b2e15b1a58438a2f39cda5991ea5a1d3e4a1f11563ac3bdfd2253b57` |
+| Dev 128x15_s7 | p100-d1 / 100 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/128x15_s7_n100_d1_4102a04d19df1efe.json>); `386e0eeb59d2be7cd493820374f975cb0f89fbcba561818fb3c2cfe7c530afe6` | [3833c8d2379d3350663e624fe30be7867c559310](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/128x15_s7_n100_d1.json>); `182e21e9ae4c5c0dcd7661129a243935fadea66f0da4b10fd57ea03329b94ade` |
+| Dev 128x15_s7 | m100-d1 / -100 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/128x15_s7_n-100_d1_3fdf0a6e60437bd4.json>); `4151e9f4774b89de4fb065f9fe48f22119642a284c0737b023fcda86bb42c649` | [e990432a4e376606880020f1e51806ace1f6e5ee](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/128x15_s7_n-100_d1.json>); `619519cd8046a21a8160a7438a4e35f8e0f25fd03caa789d966cd40b6546aef0` |
+| Dev 128x15_s7 | p100-d1441 / 100 / 1441 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/128x15_s7_n100_d1441_86b31e13c447ded6.json>); `bcfac6d82e0eabcddae34bdb93ad14a22eff33517ad9703c27da5cbae86ee9cd` | [e990432a4e376606880020f1e51806ace1f6e5ee](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/128x15_s7_n100_d1441.json>); `b6d0da07a5cbc291e649267996ce42d72cbe5152c7ad470d7bf02c29f0680087` |
+| Dev 128x15_s7 | m100-d1441 / -100 / 1441 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/128x15_s7_n-100_d1441_23dbb8662ba19e27.json>); `578d9091a6aebf41ff1e9d39c8ac154067fca26228b64ad1350b32812f77f61f` | [e990432a4e376606880020f1e51806ace1f6e5ee](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/128x15_s7_n-100_d1441.json>); `454fc5295d6aeaf91aaf43165488d2a1a605726375c44faf427f861698815bb0` |
+| Dev 256x60_s7 | control / 0 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s7_base_a02a89fe27fbd4ae.json>); `848c17e3321a0da276b9912582f408a85e22123ba50e2cad9fb73dd9ff50adeb` | [3833c8d2379d3350663e624fe30be7867c559310](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/256x60_s7_base.json>); `0dd760930b3bfc7c1b584c714fc547798f6b56ba31f339674c42ab2bc48a17d0` |
+| Dev 256x60_s7 | p100-d1 / 100 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s7_n100_d1_6eea087ebdc95f44.json>); `fea19f1062b557f68a24c27557d8fc8b8883ec7d7ccc6aa2e3ceab3853434a2f` | [3833c8d2379d3350663e624fe30be7867c559310](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/256x60_s7_n100_d1.json>); `ed57f24b01c3ab41c86ef3f892439cb05e63579d77658f66772e18df9ce0d14a` |
+| Dev 256x60_s7 | m100-d1 / -100 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s7_n-100_d1_3dd51894abf7c405.json>); `9368bcbff7b82a9bd1c33f7f3c58d9a898b90aff6c557b17bfd70b058f3fb10c` | [e990432a4e376606880020f1e51806ace1f6e5ee](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/256x60_s7_n-100_d1.json>); `5b7184f5f9ae37af9e06279d9c185a3dcd81e62480f6467afdf86e5275fc1514` |
+| Dev 256x60_s7 | p100-d1441 / 100 / 1441 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s7_n100_d1441_1134801bc1a0c318.json>); `df4b6dcfd323050a647de66cf2b64d481959936c3f267250674b12f43712bc51` | [e990432a4e376606880020f1e51806ace1f6e5ee](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/256x60_s7_n100_d1441.json>); `0177b794959624ae30e4e710a2a690d4ff7dbe389358c3bdc7246efb0a6251b5` |
+| Dev 256x60_s7 | m100-d1441 / -100 / 1441 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s7_n-100_d1441_db360dd474cf7451.json>); `1d355f40328a40e3ffa15e0343f4e5af377d20562a3ce6abed41340f8da750ca` | [e990432a4e376606880020f1e51806ace1f6e5ee](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/256x60_s7_n-100_d1441.json>); `6d037a8d51595d9cf49c8edb083a27bc5117d7b71f19d5d648d7a76a769c8651` |
+| Dev 256x60_s11 | control / 0 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s11_base_9142e261f9007dbb.json>); `7562f1e0fda1c72521481b8eaa4a3800fe86c84f7ddd01e4d9fc554366647eb5` | [3833c8d2379d3350663e624fe30be7867c559310](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/256x60_s11_base.json>); `724aace335ae1e18e4c417516a0639570332a7a3e703f3bdfef826e8a5d2fa0e` |
+| Dev 256x60_s11 | p100-d1 / 100 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s11_n100_d1_fa493988d1952d94.json>); `aff30b2e09af9f47b677db614eb8c99857012cd59c73479a94b6a8134724632c` | [3833c8d2379d3350663e624fe30be7867c559310](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks/256x60_s11_n100_d1.json>); `088b3b75666b06acc0e2443778cca21fe83eeb3902ec93e2ccca87eb378e4377` |
+| Dev 256x60_s11 | m100-d1 / -100 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s11_n-100_d1_765dcbdc7609b11b.json>); `c1a2d1bb5c821a4765d5d30693f8a5e751f78b3cba8eb3265b946cd5fb018e4a` | [e990432a4e376606880020f1e51806ace1f6e5ee](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/256x60_s11_n-100_d1.json>); `b3662136b92187681cdf0457b7d35740915fd2e01e70f50d3bc73569635a0464` |
+| Dev 256x60_s11 | p100-d1441 / 100 / 1441 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s11_n100_d1441_3ae81d8d99f29e19.json>); `5e486c92a8ce2dde9254cfa38249f911fbd1d28d5479d393fd32db3b4bae4b39` | [e990432a4e376606880020f1e51806ace1f6e5ee](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/256x60_s11_n100_d1441.json>); `e88b13ff191b535c55789a863475a254eaa264f787b7948c142e7199254425a3` |
+| Dev 256x60_s11 | m100-d1441 / -100 / 1441 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s11_n-100_d1441_6502098c843cd042.json>); `8f8707fe246324635c3b8d0b0a8876ce098ec717e95a4f7560dff4354245b7a0` | [e990432a4e376606880020f1e51806ace1f6e5ee](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052/256x60_s11_n-100_d1441.json>); `7f0855320b2d510930d18b0cc3897f8b50aec55522c3d217fcd60df33fa837e7` |
+| T041 128x15_s7 | control / 0 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/128x15_s7_base_5c0a5db521746aef.json>); `dd85ef90210d241236309969ce577f782e64a6da1b2ff7bdb480f22933c5050f` | new measurement |
+| T041 128x15_s7 | p100-d1 / 100 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/128x15_s7_n100_d1_7d2b1902e6c647f3.json>); `19543d26d75327ef690783ba7a8b44900108ba74e975cb2f116d75e527f19eb9` | new measurement |
+| T041 128x15_s7 | m100-d1 / -100 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/128x15_s7_n-100_d1_b10db23c5f1ba135.json>); `d757f87752cd96a7b042e65c0d014ae7e705f948a8050e9958464f61090f9c9b` | new measurement |
+| T041 128x15_s7 | p100-d1441 / 100 / 1441 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/128x15_s7_n100_d1441_5616f8ee0c9f4b3d.json>); `9266aa0ee39e85c55597747c3144d6930fcb8babe078925129c4bcba27ef0023` | new measurement |
+| T041 128x15_s7 | m100-d1441 / -100 / 1441 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/128x15_s7_n-100_d1441_7f8ed2552bb2c745.json>); `8f0b019b8e9d39a25f1bb31eecc86ae4f44f2c9c7811d12fc22fa8b778a5f301` | new measurement |
+| T041 256x60_s7 | control / 0 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s7_base_f1c0988dd61fe72b.json>); `f356e7abc930cb328a1761b85f5343a7dba972eeee6f8a1192102c69e06b480b` | new measurement |
+| T041 256x60_s7 | p100-d1 / 100 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s7_n100_d1_dbea6f6aa548d098.json>); `fab3438ea26342e0052940438b9163f18e866e476d6f9261e08df00602f57940` | new measurement |
+| T041 256x60_s7 | m100-d1 / -100 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s7_n-100_d1_582f30f3f0e7f849.json>); `80ff8cc74affa90ad21d2f00260e6b2f94a4073266a2585f3c833fbc66f00ba3` | new measurement |
+| T041 256x60_s7 | p100-d1441 / 100 / 1441 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s7_n100_d1441_68bfa89217438145.json>); `4d7ebe703cf03361d285efbfe20b04ec29cce66d64c8bd60cc765631d063a9cb` | new measurement |
+| T041 256x60_s7 | m100-d1441 / -100 / 1441 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s7_n-100_d1441_fdb5bd41135990ed.json>); `7a0e7756dd3171b0b91b4f528fcb57b04a7ee5de68f40b99ba9be2b0838555e1` | new measurement |
+| T041 256x60_s11 | control / 0 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s11_base_fa8eb618377c64c9.json>); `e1e15158c5fb97e3974383194a130585f1f52bda5093b1be55f8080ee1383033` | new measurement |
+| T041 256x60_s11 | p100-d1 / 100 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s11_n100_d1_c3b7051a9303008f.json>); `4ec5cdec0b02b3b640610d2b3735a8b70a31caefb6c493b584bbac71e30f5acb` | new measurement |
+| T041 256x60_s11 | m100-d1 / -100 / 1 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s11_n-100_d1_2004399ee73211f9.json>); `e67aad599f2a5489e7bae0c5b06d4f0fd2c5894dcf92d9caf2ae798708dd2595` | new measurement |
+| T041 256x60_s11 | p100-d1441 / 100 / 1441 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s11_n100_d1441_b599505f8582b5da.json>); `facd5cc491eaf1bc8ade09491e7e83122a62928089556677a36fd4b5d5a34a37` | new measurement |
+| T041 256x60_s11 | m100-d1441 / -100 / 1441 | [raw](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s11_n-100_d1441_1308815e4c7b00c7.json>); `b6dc1599240aa79d5ba2e0ebb98e071ac5e800670087ffca5467b016bbb6c64e` | new measurement |
+
+Member invocations are rendered below in PowerShell syntax for audit. Native argument-array launches whose displayed executable path starts with a quote receive the PowerShell call operator `&`; this is a display-only correction and the raw recorded command strings and output files remain unchanged. Imported records show the original invocation, rather than inventing a new execution on the documentation-only alias commit.
+
+#### Dev 128x15_s7 — executed member commands
+
+```powershell
+# control
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\128x15_s7_base.spec.json
+# p100-d1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\128x15_s7_n100_d1.spec.json
+# m100-d1
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\128x15_s7_n-100_d1.spec.json'
+# p100-d1441
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\128x15_s7_n100_d1441.spec.json'
+# m100-d1441
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\128x15_s7_n-100_d1441.spec.json'
+```
+
+#### Dev 256x60_s7 — executed member commands
+
+```powershell
+# control
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\256x60_s7_base.spec.json
+# p100-d1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\256x60_s7_n100_d1.spec.json
+# m100-d1
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\256x60_s7_n-100_d1.spec.json'
+# p100-d1441
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\256x60_s7_n100_d1441.spec.json'
+# m100-d1441
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\256x60_s7_n-100_d1441.spec.json'
+```
+
+#### Dev 256x60_s11 — executed member commands
+
+```powershell
+# control
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\256x60_s11_base.spec.json
+# p100-d1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\fork-bundle\forkChild.mjs C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\forks\256x60_s11_n100_d1.spec.json
+# m100-d1
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\256x60_s11_n-100_d1.spec.json'
+# p100-d1441
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\256x60_s11_n100_d1441.spec.json'
+# m100-d1441
+node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' node 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note052\256x60_s11_n-100_d1441.spec.json'
+```
+
+#### T041 128x15_s7 — executed member commands
+
+```powershell
+# control
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\128x15_s7_base_5c0a5db521746aef.spec.json'
+# p100-d1
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\128x15_s7_n100_d1_7d2b1902e6c647f3.spec.json'
+# m100-d1
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\128x15_s7_n-100_d1_b10db23c5f1ba135.spec.json'
+# p100-d1441
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\128x15_s7_n100_d1441_5616f8ee0c9f4b3d.spec.json'
+# m100-d1441
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\128x15_s7_n-100_d1441_7f8ed2552bb2c745.spec.json'
+```
+
+#### T041 256x60_s7 — executed member commands
+
+```powershell
+# control
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\256x60_s7_base_f1c0988dd61fe72b.spec.json'
+# p100-d1
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\256x60_s7_n100_d1_dbea6f6aa548d098.spec.json'
+# m100-d1
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\256x60_s7_n-100_d1_582f30f3f0e7f849.spec.json'
+# p100-d1441
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\256x60_s7_n100_d1441_68bfa89217438145.spec.json'
+# m100-d1441
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\256x60_s7_n-100_d1441_fdb5bd41135990ed.spec.json'
+```
+
+#### T041 256x60_s11 — executed member commands
+
+```powershell
+# control
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\256x60_s11_base_fa8eb618377c64c9.spec.json'
+# p100-d1
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\256x60_s11_n100_d1_c3b7051a9303008f.spec.json'
+# m100-d1
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\256x60_s11_n-100_d1_2004399ee73211f9.spec.json'
+# p100-d1441
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\256x60_s11_n100_d1441_b599505f8582b5da.spec.json'
+# m100-d1441
+& 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\quietrun.mjs' 'C:\Program Files\nodejs\node.exe' 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\fork-child.mjs' --fork-child 'C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\lanes\T062\scratch\note053-t041\256x60_s11_n-100_d1441_1308815e4c7b00c7.spec.json'
+```
+
+
+### Exact collection and verification commands
+
+The reference is the supplied dev-equivalent simulation at T062 HEAD `805d7d466972eaf89cfba4e1fc8c5f2df16ae0ef` (NOTE-053 documentation merged). Its simulation source matches the prior measurements. The fifteen explicit legacy imports retain their original commits, commands and content hashes; promotion to this documentation-only commit is recorded rather than pretending the bots ran again. Normal new cache reuse requires the exact measured tree commit and configuration. T041 was measured at `f9c94d561455f229e6984707e4429a32350b6127`; that tree was read only and remained clean.
+
+These are the commands used for the six ensembles. Dev imported all fifteen completed members; T041 ran fifteen members with up to three active members, one row at a time:
+
+```powershell
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simEnsemble.mts --tree C:/Users/techsin/Desktop/projects/simcityweb-T062 --size 128 --years 15 --seed 7 --out-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --import-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks --import-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052 --report-only
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simEnsemble.mts --tree C:/Users/techsin/Desktop/projects/simcityweb-T062 --size 256 --years 60 --seed 7 --out-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --import-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks --import-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052 --report-only
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simEnsemble.mts --tree C:/Users/techsin/Desktop/projects/simcityweb-T062 --size 256 --years 60 --seed 11 --out-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --import-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/forks --import-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note052 --report-only
+
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simEnsemble.mts --tree C:/Users/techsin/Desktop/projects/simcityweb-T041aa --size 128 --years 15 --seed 7 --out-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041 --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --jobs 3
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simEnsemble.mts --tree C:/Users/techsin/Desktop/projects/simcityweb-T041aa --size 256 --years 60 --seed 7 --out-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041 --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --jobs 3
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simEnsemble.mts --tree C:/Users/techsin/Desktop/projects/simcityweb-T041aa --size 256 --years 60 --seed 11 --out-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041 --quiet-gate C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs --jobs 3
+```
+
+Actual comparison commands (native exits **2** and **0**, respectively):
+
+```powershell
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simEnsemble.mts compare base --dev C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/128x15_s7_ensemble.summary.json --lane C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/128x15_s7_ensemble.summary.json --dev C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s7_ensemble.summary.json --lane C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s7_ensemble.summary.json --dev C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s11_ensemble.summary.json --lane C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s11_ensemble.summary.json --out-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-compare
+node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simEnsemble.mts compare signoff --dev C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/128x15_s7_ensemble.summary.json --lane C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/128x15_s7_ensemble.summary.json --dev C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s7_ensemble.summary.json --lane C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s7_ensemble.summary.json --dev C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-dev/256x60_s11_ensemble.summary.json --lane C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/256x60_s11_ensemble.summary.json --metric population --signoff-percent 3 --from-year 1 --out-dir C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-compare
+```
+
+The generic comparison is provisional and requests nine-member stage two for all three rows; it is not presented as a passing final base gate. T041 has NOTE-050’s explicit population endpoint exception: its five-member median sign-off stays closed. The current task measures these six five-member ensembles; nine-member final lane gates use the staged commands below. Nine-member city measurements and additional variant ensembles are not included in these tables.
+
+### Serial-versus-parallel identity proof
+
+The T041 128×15 s7 control ran in the three-worker collection alongside +§100 and −§100 day-1 members. Their parent execution intervals and recorded bot durations establish more than 11 seconds of overlapping simulation work. After all ensemble jobs finished, the same control was replayed alone through the quiet gate in an isolated proof directory. This is the one explicitly requested verification replay, excluded from ensemble statistics and normal member-cache reuse.
+
+All **15/15 canonical city hashes and 15/15 full annual non-timing records** are identical, as are all **1689 successful commands** and **1123 complete decision-log entries**. [Proof metadata](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/round4-parallel-proof.json>) links the [parallel member](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/128x15_s7_base_5c0a5db521746aef.json>) and [serial replay](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-parallel-proof/alone.json>) and records the overlap and timestamps.
+
+| Year | Shared canonical city SHA-256 (parallel = alone) |
+|---:|---|
+| 2001 | `49bd29ecdfc398d30ec966789e223894f03630683160a922818a4639a52206a7` |
+| 2002 | `af3482b472c83983da2c1f7cc23477542e8804ed79f145c9b555f045e212b84f` |
+| 2003 | `9c1885e56159d35b8d5f1e76f808cc44e385f0723dc6c093b6c533734c6bc188` |
+| 2004 | `30620b7d9d6be4ad08c47de57efa9fdf3e29f47c1cb804160c60e368ec3d91d5` |
+| 2005 | `c414531d5411ed347d5e8738770a645adf00fa8b520000e922dc4c0176d4165e` |
+| 2006 | `adae67ccdc310dab98235e7d43d85ce5c90841c8593b9387fc01312a25e8d35b` |
+| 2007 | `5bd6f2f35da4a246035aedfbddc66cb23eb77572ae3d2bd02ee22207213e7040` |
+| 2008 | `fe98b43c7c38b83e49e7e79b0b06616aad988258b010efa19e5e2af505243dd1` |
+| 2009 | `2d8d9128db50b5b3a6001371339c12b1e61a26ec0f944c727ce9b120249353c7` |
+| 2010 | `8701f77a27515f91dd269bfd1a50742bbcd75528946306e380f783ccccb136c0` |
+| 2011 | `7acab0095b71c15ac3651617b036a1abe806ce9e9de7b7765be79be56cfcf4cd` |
+| 2012 | `483e24f59311de4b7a57d3685b03118393d98a8de5148ea21840eb1718f03390` |
+| 2013 | `bdd1aed03a89200696e2c2e56272a98d6879eaa5bf6b5c0529622cc88b039376` |
+| 2014 | `b65f5ac94d188bfdb2e71da18d2202c69ab142d6855da8df9a7c52e4b5e8a4e4` |
+| 2015 | `f2696df0dba4e54bfe926313fd355871b1e9266387525d9ce900cb988101c6db` |
+
+Exact replay command:
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-t041/fork-child.mjs --fork-child C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-parallel-proof/alone.spec.json
+```
+
+Repeating all six collection commands with `--report-only` restored missing imported journals and reused all thirty members. Their raw JSON content hashes **and modification times** were unchanged, and every annual/action/text sidecar exists. [Cache proof](<C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/round4-cache-proof.json>). No completed ensemble member was rerun by collection.
+
+### Round 4 checks and limits
+
+- `npx tsc --noEmit`: passed. Four sequential quiet-gated single-file Vitest commands passed: `botEnsembleStats.test.ts` **15**, `botSimEnsembleRunner.test.ts` **7**, `botAaForkEnvelope.test.ts` **7**, and `botAaFundsNudge.test.ts` **11** — **40 tests total**. The tests cover medians/bands, inclusive thresholds, zero bands, year ranges and missing years, systematic shifts, same-commit targets, stage two, membership/cache keys, argument guards and the unchanged funds-only flag.
+
+```powershell
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/node_modules/vitest/vitest.mjs run tests/sim/botEnsembleStats.test.ts --maxWorkers=1 --configLoader native --pool threads
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/node_modules/vitest/vitest.mjs run tests/sim/botSimEnsembleRunner.test.ts --maxWorkers=1 --configLoader native --pool threads
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/node_modules/vitest/vitest.mjs run tests/sim/botAaForkEnvelope.test.ts --maxWorkers=1 --configLoader native --pool threads
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T062/node_modules/vitest/vitest.mjs run tests/sim/botAaFundsNudge.test.ts --maxWorkers=1 --configLoader native --pool threads
+```
+
+- Independent verification recomputed all **1,080 metric bands from 1,350 raw annual records**, checked all fifteen imported payloads and their source hashes, and checked **432 generic base metric verdicts plus 135 population sign-off verdicts** against the actual compare output. It also checked **48 pre-year-5 state matches** across both trees. The serial/parallel proof and thirty-member no-rerun cache check passed.
+- The dev control remains **192,899** with residents `[61124,93804,37971]`; the dev long controls remain **1,513,835 / 1,427,340**. These are unchanged exact single-run references, distinct from the new median gates. No simulation formula, default strategy, RNG call, save format, baseline fixture, UI, worker or infra file changed. The fork observer only gains optional variant argument forwarding and matching `noInfra` system selection; its default path remains identical.
+- Current guidance throughout both reports is updated to NOTE-053. The original measured tables and the explicitly labelled old direction diagnostic remain historical evidence. User-authorised `--jobs` replaces the older one-process SIM-lane rule for this measurement. The endpoint check uses years 15/60/60, matching the user’s clarification of NOTE-053’s shorthand. The matching-nine-reference and inclusive-threshold choices are explicit in the lane workflow.
+- No cloud-held or outside-scope hunks or cloud requests. The supplied T041 measurement tree was not edited. Changes remain uncommitted; no push, merge or `.done` file.
+- Left for lane final gates: collect the rows named by stage two with matching nine-member ensembles, and measure each actual lane variant at its base commit. The large-effect Hard/tax sweeps, full suite, old-save continuations and real-GPU checks were not rerun here. Browser Acceptance checklist: **N/A — no browser criteria are specified for T062**.
+
+### How a SIM lane runs its ensemble gate
+
+Use [tools/simEnsemble.mts](../../../tools/simEnsemble.mts) from this tree, or the merged copy in dev, against the selected `--tree`. The runner reads that tree and writes only the specified output directory. It bundles the selected tree's bot with its local Rolldown; `tsx` is unnecessary. Run the row commands sequentially so there are at most `--jobs` members across this lane. The default is three concurrent members; each goes through the supplied quiet gate. The gate waits before launching a member while a timing hold exists; the existing gate does not suspend an already running member.
+
+Until T062 is in dev, the measured lane tree needs the funds flag from `3833c8d`:
+
+```powershell
+git -C LANE_TREE cherry-pick 3833c8d
+```
+
+If `tools/simbot.ts` conflicts, merge its small flag hunks into the lane's bot. Keep the `aaFundsNudge` option, finite signed parsing, usage and optional saved provenance; keep the once-only addition after `advanceDay(); this.days++`, before `daily()`. Preserve the lane's own rules and arguments. In T041, retain `taxStartYear`/`applyFixedTax`, including its before-advance call, alongside the after-advance nudge. Do not replace the whole bot with the older file. The supplied T041 measurement tree `f9c94d5` already has both sides merged correctly. The collection tool itself can stay in T062; its absolute path and `--tree` select the bot to measure.
+
+For each final gate, use clean committed simulation sources. Choose separate output directories for the reference, the lane base, and each variant. The member cache includes the tree commit, simulation and bot identities, dependency files, observer, row, signed amount, timing and bot arguments. Changing only `--jobs` or upgrading from five to nine members reuses existing members. Completed members are never replaced by a normal collection command. Interrupted members have no complete JSON and restart. `--report-only` rebuilds tables from complete members without bots.
+
+The following PowerShell variables are placeholders for the intended measurement trees and scratch directories. For T042–T045, `DEV_BASE_TREE` must be dev containing T041; the tables above describe the supplied T041 base. When that dev has a different simulation identity, measure it afresh.
+
+```powershell
+$ensembleTool = 'C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simEnsemble.mts'
+$ensembleQuietGate = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs'
+$ensembleDevTree = 'DEV_BASE_TREE'
+$ensembleLaneTree = 'LANE_TREE'
+$ensembleDevOut = 'REFERENCE_SCRATCH'
+$ensembleLaneOut = 'LANE_BASE_SCRATCH'
+$ensembleVariantOut = 'LANE_VARIANT_SCRATCH'
+$ensembleCompareOut = 'COMPARISON_SCRATCH'
+
+node --experimental-strip-types $ensembleTool --tree $ensembleDevTree --size 128 --years 15 --seed 7 --out-dir $ensembleDevOut --quiet-gate $ensembleQuietGate --jobs 3
+node --experimental-strip-types $ensembleTool --tree $ensembleDevTree --size 256 --years 60 --seed 7 --out-dir $ensembleDevOut --quiet-gate $ensembleQuietGate --jobs 3
+node --experimental-strip-types $ensembleTool --tree $ensembleDevTree --size 256 --years 60 --seed 11 --out-dir $ensembleDevOut --quiet-gate $ensembleQuietGate --jobs 3
+
+node --experimental-strip-types $ensembleTool --tree $ensembleLaneTree --size 128 --years 15 --seed 7 --out-dir $ensembleLaneOut --quiet-gate $ensembleQuietGate --jobs 3
+node --experimental-strip-types $ensembleTool --tree $ensembleLaneTree --size 256 --years 60 --seed 7 --out-dir $ensembleLaneOut --quiet-gate $ensembleQuietGate --jobs 3
+node --experimental-strip-types $ensembleTool --tree $ensembleLaneTree --size 256 --years 60 --seed 11 --out-dir $ensembleLaneOut --quiet-gate $ensembleQuietGate --jobs 3
+
+node --experimental-strip-types $ensembleTool compare base --dev "$ensembleDevOut/128x15_s7_ensemble.summary.json" --lane "$ensembleLaneOut/128x15_s7_ensemble.summary.json" --dev "$ensembleDevOut/256x60_s7_ensemble.summary.json" --lane "$ensembleLaneOut/256x60_s7_ensemble.summary.json" --dev "$ensembleDevOut/256x60_s11_ensemble.summary.json" --lane "$ensembleLaneOut/256x60_s11_ensemble.summary.json" --out-dir $ensembleCompareOut
+```
+
+The base comparison defaults to all four metrics and zero item tolerance. It requires the lane median inside dev's min-max band **and** `abs(lane median − dev median) <= max(item tolerance, (dev max − dev min)/2)` for every year from year 10. There is no implicit percentage floor. Use `--metric population` to gate only that metric, `--tolerance N` for absolute metric units, or `--tolerance-percent N` for a percentage of each year's dev median. Multiple `--metric` flags or a comma-separated list select the item's gated metrics. Approval uses points; air uses the balance-test mean at homes; I-HT shares are fractions.
+
+The systematic-shift table requires all three row pairs. It flags a common endpoint direction with each delta strictly greater than a quarter of that row's dev band. The short row contributes year 15 and the long rows year 60, as requested; this resolves NOTE-053's shorthand “year 60 in all three rows.” A partial row comparison cannot report a final passing base gate with that check missing.
+
+For a variant, collect both its ensemble and its base at the **same lane commit**, keeping the simulation source unchanged between them. For example, `--neglect` at least 2% below base on 256×60 s7:
+
+```powershell
+node --experimental-strip-types $ensembleTool --tree $ensembleLaneTree --size 256 --years 60 --seed 7 --out-dir $ensembleVariantOut --quiet-gate $ensembleQuietGate --jobs 3 -- --neglect
+node --experimental-strip-types $ensembleTool compare variant --dev "$ensembleDevOut/256x60_s7_ensemble.summary.json" --base "$ensembleLaneOut/256x60_s7_ensemble.summary.json" --variant "$ensembleVariantOut/256x60_s7_ensemble.summary.json" --metric population --target-below-percent 2 --out-dir $ensembleCompareOut
+```
+
+Repeat for each required variant row. `--target-above-percent`, `--target-below` and `--target-above` support the other direction and absolute units. The target is evaluated against the lane base median, not dev's median and not an individual control run. `--from-year` defaults to 10; `--to-year` can restrict a target to its specified checkpoint/range. Supported bot arguments are validated against the selected parser; an unsupported argument fails rather than silently running the default strategy.
+
+For every base check or target, the JSON records threshold distances and the reference half-band. A distance **at most** half of dev's band requests stage two, for passes as well as failures. This literal inclusive rule often requests nine members even for an unchanged base; a zero-width band requests stage two exactly at its threshold. It is not restricted to misses. The base thresholds are the active endpoints of the intersection of its two acceptance intervals. The compare output names the affected rows.
+
+Rerun each named reference and lane row with `--runs 9`, keeping its output directory, nudge and bot arguments. For a variant, expand dev, the lane base and the variant for that row. This tool uses matching nine-member designs on both sides; NOTE-053 does not explicitly name the reference's second-stage count, so the matching-reference choice is stated here. Each command reuses the original five and adds only ±§200 on days 1/1441:
+
+```powershell
+node --experimental-strip-types $ensembleTool --tree $ensembleDevTree --size 256 --years 60 --seed 7 --out-dir $ensembleDevOut --quiet-gate $ensembleQuietGate --jobs 3 --runs 9
+node --experimental-strip-types $ensembleTool --tree $ensembleLaneTree --size 256 --years 60 --seed 7 --out-dir $ensembleLaneOut --quiet-gate $ensembleQuietGate --jobs 3 --runs 9
+node --experimental-strip-types $ensembleTool --tree $ensembleLaneTree --size 256 --years 60 --seed 7 --out-dir $ensembleVariantOut --quiet-gate $ensembleQuietGate --jobs 3 --runs 9 -- --neglect
+```
+
+Repeat the comparison command with the updated summaries. Nine-member results retain proximity evidence without requesting another stage. The summary/Markdown filenames are the same at five and nine; retain a copy of the five-member summary if both stages need to appear together in a report. All raw members remain cached, and `--runs 5 --report-only` can rebuild the first-stage table without simulation.
+
+Compare exit statuses are: **0** final pass, **1** fail, **2** named rows need nine runs, **3** investigate a systematic shift, **4** a base comparison lacks the three-row systematic check. JSON distinguishes current median pass/fail from a provisional staged verdict. Paste the generated `ROW_ensemble.md` median/band tables and the comparison table into the lane report; the cloud checks those tables instead of rerunning ensembles.
+
+NOTE-050's existing T041 D2 sign-off has its own command. It reports intermediate population excursions but reopens only at each actual row endpoint, even if a display range is selected:
+
+```powershell
+node --experimental-strip-types $ensembleTool compare signoff --dev "$ensembleDevOut/128x15_s7_ensemble.summary.json" --lane "$ensembleLaneOut/128x15_s7_ensemble.summary.json" --dev "$ensembleDevOut/256x60_s7_ensemble.summary.json" --lane "$ensembleLaneOut/256x60_s7_ensemble.summary.json" --dev "$ensembleDevOut/256x60_s11_ensemble.summary.json" --lane "$ensembleLaneOut/256x60_s11_ensemble.summary.json" --metric population --signoff-percent 3 --from-year 1 --out-dir $ensembleCompareOut
+```
+
+The collection tool keeps the original exact checks available: every raw annual record includes the full non-timing bot row and canonical serialized-state hash. Medium bit-identity, two-process hashes and non-SIM “bot identical” checks remain exact. NOTE-053 also leaves the specified large-effect Hard/NEW-05 sweep checks intact; medians do not authorize compensating mechanics or changing the default bot strategy.

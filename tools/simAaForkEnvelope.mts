@@ -21,6 +21,7 @@ interface Spec extends Row, Source {
   id: string; nudge: number; day: number; command: string; equivalentCommand: string;
   jsonPath: string; annualPath: string; actionPath: string; logPath: string;
   configuration?: typeof CONFIGURATION;
+  botArgs?: string[];
 }
 export interface AnnualMetrics {
   yearIndex: number; year: number; population: number; air: number; approval: number; ihtShare: number;
@@ -133,10 +134,10 @@ export async function runChild(
   serializeCity: typeof import('../src/save/serialize').serializeCity, specPath: string,
 ): Promise<void> {
   const spec = JSON.parse(readFileSync(specPath, 'utf8')) as Spec;
-  const opts = botModule.parseArgs(cliArgs(spec, spec.nudge, spec.day));
+  const opts = botModule.parseArgs([...cliArgs(spec, spec.nudge, spec.day), ...(spec.botArgs ?? [])]);
   if (spec.day === 1 && spec.nudge && opts.aaFundsNudge !== spec.nudge) throw new Error('selected tree lacks --aa-funds-nudge support');
-  if (opts.difficulty !== CONFIGURATION.difficulty || opts.terrain !== CONFIGURATION.terrain || opts.water !== CONFIGURATION.water || opts.noInfra || opts.profile && opts.profile !== 'default') throw new Error('selected tree changed the default bot configuration');
-  const bot: any = new botModule.SimBot(opts, await botModule.botSystems(false));
+  if (!spec.botArgs?.length && (opts.difficulty !== CONFIGURATION.difficulty || opts.terrain !== CONFIGURATION.terrain || opts.water !== CONFIGURATION.water || opts.noInfra || opts.profile && opts.profile !== 'default')) throw new Error('selected tree changed the default bot configuration');
+  const bot: any = new botModule.SimBot(opts, await botModule.botSystems(opts.noInfra));
   const rows: Annual[] = [], actions: Action[] = [], log: Log[] = [];
   const start = performance.now();
   let actionFlush = 0, logFlush = 0, injected = spec.day === 1;
@@ -280,7 +281,7 @@ function writeReport(opts: Options, info: Source, base: Evidence, candidates: { 
     rowQualifyingXs: results.filter((candidate) => candidate.allFork).map((candidate) => candidate.x),
     chosenX: selected?.x ?? null, selectionStatus: selected ? 'local-candidate' : zeroEnvelope ? 'no-qualifying-grid-candidate' : 'unresolved',
     zeroEnvelope, control: base.path, candidates: results, envelope: measuredEnvelope,
-    rule: 'Base rows use +/-1%; chosen envelope widens only variant-target margins. Use one common X across rows and remeasure after T041.' };
+    rule: 'Historical NOTE-052 fork diagnostics. NOTE-053 gates use ensemble medians and min-max bands; use simEnsemble.mts for final gates.' };
   const name = `${rowId(opts)}_note052`;
   json(join(opts.outDir, `${name}.summary.json`), summary);
   const lines = [`# NOTE-052 ${rowId(opts)} fork envelope`, '',
@@ -309,7 +310,7 @@ function writeReport(opts: Options, info: Source, base: Evidence, candidates: { 
     'Repeat with `--report-only` to rebuild from completed evidence. To remeasure after T041, change `--tree` to that dev tree and `--out-dir` to a fresh directory. Do not pass a reuse directory from a different source tree.', '',
     `Control raw: \`${base.path}\`.`, '');
   for (const { runs } of candidates) for (const { path, run } of runs) lines.push(`- \`${path}\``, '', '```powershell', run.spec.command, run.spec.equivalentCommand, '```', '');
-  lines.push('Base rows remain judged at ±1%. The envelope only widens variant-target margins once the common X is chosen. No baseline is re-recorded.', '');
+  lines.push('These are historical fork diagnostics. NOTE-053 replaces the earlier base and variant margin rules with ensemble medians and min-max bands; use simEnsemble.mts for final gates. No baseline is re-recorded.', '');
   writeFileSync(join(opts.outDir, `${name}.md`), lines.join('\n'), 'utf8');
 }
 async function main(): Promise<void> {
