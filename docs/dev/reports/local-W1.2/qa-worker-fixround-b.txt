@@ -1,0 +1,117 @@
+build 1864 ms; worker chunk simWorker-BQoHBboU.js 799619 bytes
+PASS build: the worker is its own chunk simWorker-BQoHBboU.js
+server http://127.0.0.1:5547 (production build)
+browser 153.0.8010.12
+PASS control: the probe technique works in this browser (TurboFan code that depends on a protector deoptimizes when it goes) {"made":true,"before":true,"detached":true,"afterDetach":true,"mapperMade":true,"mapperAfterSpecies":false,"invalidated":["ArraySpeciesLookupChain (DedicatedWorker thread)"],"technique":true,"observable":false}
+NOTE control: a detach deoptimizes the probe (the worker's probe is evidence): false {"invalidated":["ArraySpeciesLookupChain (DedicatedWorker thread)"]}
+worker simWorker-BQoHBboU.js
+worker lodWorker-BwOpVbXr.js
+worker lodWorker-BwOpVbXr.js
+quickstart ready after 6972 ms
+PASS boot: a worker host {"info":{"kind":"worker","disposed":false,"day":90,"speed":0,"roads":0,"zoned":0,"funds":100000,"applied":3,"pending":0,"crashed":false},"workers":3,"bootMs":6972}
+PASS boot: a new city starts paused (the scene's rule, applied to the booted host) speed 0
+PASS protector: the worker made its probe after boot {"digest":1302966042,"protector":true,"day":90,"wasm":{"state":"ready","blur":true,"capacity":67108864,"grows":0,"error":null},"page":true}
+NOTE protector after boot: not observable in this browser (the control: a detach does not deoptimize the probe), so true is not evidence
+PASS boot: the kernels on wasm in the worker, its memory never grown (WASM_PLAN §7.8) {"state":"ready","blur":true,"capacity":67108864,"grows":0,"error":null}
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/01-boot.png
+drag plan {"a":[480,320],"b":[800,320],"z0":[520,370],"z1":[740,430],"cells":[{"x":113,"z":123},{"x":134,"z":142}],"size":256}
+PASS tools: a road drag {"roads":[0,41],"pending":0,"acks":[{"op":"setCamera","args":"[{\"x\":1928,\"z\":2184,\"distance\":1400,\"yaw\":45,\"tilt\":50}]","ok":true},{"op":"buildNetwork","args":"[[{\"x\":113,\"z\":123},{\"x\":114,\"z\":123},{\"x\":115,\"z\":123},{\"x\":116,\"z\":123},{\"x\":1","ok":true,"cost":902}]}
+PASS tools: a zone drag {"zoned":[0,180],"pending":0,"acks":[{"op":"setCamera","args":"[{\"x\":1928,\"z\":2184,\"distance\":1400,\"yaw\":45,\"tilt\":50}]","ok":true},{"op":"zone","args":"[{\"x0\":112,\"z0\":130,\"x1\":122,\"z1\":148},1]","ok":true,"cost":900}]}
+PASS tools: a power line drag {"power":[0,33],"pending":0,"acks":[{"op":"buildPowerLine","args":"[[{\"x\":124,\"z\":116},{\"x\":125,\"z\":116},{\"x\":126,\"z\":116},{\"x\":127,\"z\":116},{\"x\":1","ok":true,"cost":221}]}
+plop spot [-220,40]
+PASS tools: a park plopped where its preview is ok {"parks":[0,1],"pending":0,"acks":[{"op":"plop","args":"[\"park_small\",104,127,0]","ok":true,"reason":"Warning: no road access","cost":152}]}
+PASS tools: part of the zone dezoned {"zoned":[180,162],"pending":0,"acks":[{"op":"setCamera","args":"[{\"x\":1928,\"z\":2184,\"distance\":1400,\"yaw\":45,\"tilt\":50}]","ok":true},{"op":"dezone","args":"[{\"x0\":112,\"z0\":130,\"x1\":115,\"z1\":136}]","ok":true}]}
+PASS tools: part of the road bulldozed {"roads":[41,38],"pending":0,"acks":[{"op":"setCamera","args":"[{\"x\":1928,\"z\":2184,\"distance\":1400,\"yaw\":45,\"tilt\":50}]","ok":true},{"op":"bulldoze","args":"[{\"x0\":131,\"z0\":140,\"x1\":135,\"z1\":143}]","ok":true,"cost":-42}]}
+PASS tools: trees brushed {"trees":[127773,127855],"pending":0,"acks":[{"op":"plantTrees","args":"[{\"x0\":122,\"z0\":155,\"x1\":127,\"z1\":160}]","ok":true,"cost":75}]}
+PASS tools: a held level brush reaches flat: one release sound, no error, no toast {"spot":{"cell":{"x":146,"z":133},"px":804,"py":200,"east":[816,200],"tilt":{"dev":2.1026840209960938,"firstCost":1}},"tip":"Level terrain§1Radius 1 · hold to apply","heldMs":171158,"spent":8,"applications":{"n":27,"last":[{"op":"terraform","args":"[\"level\",146,133,1,0.5]","ok":true},{"op":"terraform","args":"[\"level\",146,133,1,0.5]","ok":true}]},"stroke":{"spent":8,"failed":true},"holdSounds":8,"release":["terraform"],"toasts":[],"pending":0,"funds":97784}
+long tasks so far {"n":31,"over1s":7,"max":20506}
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/02-tools.png
+PASS play: days advance at speed 3 {"from":90,"to":131,"speed":3}
+latency (post to ack applied, ms, SwiftShader, not gated) {"n":40,"p50":0.6000000014901161,"p95":4.199999995529652,"p99":4.399999998509884,"max":4.399999998509884}
+PASS verify: worker digest equals the replica's (paused) {"v1":{"worker":1902907771,"replica":1902907771},"v2":{"worker":1902907771,"replica":1902907771}}
+PASS save: Ctrl+S through the worker, stored by main {"lastSave":1793736471356,"dirty":false,"pill":"City saved"}
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/03-saved.png
+PASS hidden: a save replies with the tab hidden {"ok":true,"ms":142.79999999701977,"cmd":92}
+worker simWorker-BQoHBboU.js
+worker lodWorker-BwOpVbXr.js
+worker lodWorker-BwOpVbXr.js
+continue: city after 63714 ms
+PASS load: the saved city on a new worker {"saved":{"day":131,"roads":38,"zoned":162},"loaded":{"kind":"worker","disposed":false,"day":132,"speed":1,"roads":38,"zoned":162,"funds":97762,"applied":4,"pending":0,"crashed":false}}
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/04-loaded.png
+PASS load: a saved city starts running speed 1
+PASS load: it continues {"from":132,"to":152}
+long tasks so far {"n":12,"over1s":3,"max":46489}
+PASS freeze: frozen 15 s, then no crash path and the days resume {"frozenAt":152,"d0":156,"d1":158,"ms":167,"framesBefore":1,"firstFrameMs":161,"disposed":false,"crashDialog":false}
+PASS freeze: the first day within 1 s of resume (wall time, SwiftShader; not gated here) {"frozenAt":152,"d0":156,"d1":158,"ms":167,"framesBefore":1,"firstFrameMs":161,"disposed":false,"crashDialog":false}
+PASS protector: the worker made its probe after the freeze {"digest":3646589878,"protector":true,"day":158,"wasm":{"state":"ready","blur":true,"capacity":67108864,"grows":0,"error":null},"page":true}
+NOTE protector after the freeze: not observable in this browser (the control: a detach does not deoptimize the probe), so true is not evidence
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/05-after-freeze.png
+soak {"t":30,"day":212,"disposed":false,"heapMB":141}
+soak {"t":60,"day":231,"disposed":false,"heapMB":141}
+soak {"t":90,"day":248,"disposed":false,"heapMB":141}
+soak {"t":120,"day":265,"disposed":false,"heapMB":141}
+soak {"t":150,"day":282,"disposed":false,"heapMB":141}
+soak {"t":180,"day":300,"disposed":false,"heapMB":141}
+soak {"t":210,"day":319,"disposed":false,"heapMB":141}
+soak {"t":240,"day":333,"disposed":false,"heapMB":141}
+soak {"t":270,"day":350,"disposed":false,"heapMB":141}
+soak {"t":304,"day":364,"disposed":false,"heapMB":141}
+soak {"t":334,"day":382,"disposed":false,"heapMB":141}
+soak {"t":364,"day":401,"disposed":false,"heapMB":141}
+soak {"t":394,"day":421,"disposed":false,"heapMB":141}
+soak {"t":424,"day":438,"disposed":false,"heapMB":141}
+soak {"t":454,"day":456,"disposed":false,"heapMB":141}
+soak {"t":484,"day":478,"disposed":false,"heapMB":141}
+soak {"t":514,"day":493,"disposed":false,"heapMB":141}
+soak {"t":544,"day":516,"disposed":false,"heapMB":141}
+soak {"t":574,"day":535,"disposed":false,"heapMB":141}
+soak {"t":600,"day":557,"disposed":false,"heapMB":141}
+PASS soak: 10 min at speed 3, alive and advancing {"first":{"t":30,"day":212,"disposed":false,"heapMB":141},"last":{"t":600,"day":557,"disposed":false,"heapMB":141}}
+PASS protector: the worker made its probe after 10 min {"digest":534331656,"protector":true,"day":557,"wasm":{"state":"ready","blur":true,"capacity":67108864,"grows":0,"error":null},"page":true}
+NOTE protector after 10 min: not observable in this browser (the control: a detach does not deoptimize the probe), so true is not evidence
+PASS soak: after 10 min the kernels still run on wasm in the worker, its memory never grown {"state":"ready","blur":true,"capacity":67108864,"grows":0,"error":null}
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/05b-after-soak.png
+PASS console: no errors in normal play 
+console error (expected) [main] the simulation worker crashed HostCrashed: Invalid tick
+    at S.crash (http://127.0.0.1:5547/assets/WorkerSimHost-BCZyHL9y.js:2:7989)
+    at S.receive (http://127.0.0.1:5547/assets/WorkerSimHost-BCZyHL9y.js:2:6111)
+    at Object.receive (http://127.0.0.1:5547/assets/WorkerSimHost-BCZyHL9y.js
+PASS crash: a fatal opens the crash dialog, and no second error card under it (§4.4) {"cards":[]}
+the crash dialog was still animating after 30 s
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/06-crash-dialog.png
+worker simWorker-BQoHBboU.js
+PASS crash: Restart from autosave boots a new worker on the save {"kind":"worker","disposed":false,"day":571,"speed":1,"roads":38,"zoned":162,"funds":97432,"applied":4,"pending":0,"crashed":false}
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/07-restarted.png
+snapshot before the second crash {"ok":true,"idb":true,"base":1793737369998,"cmd":5}
+console error (expected) [main] the simulation worker crashed HostCrashed: Invalid tick
+    at S.crash (http://127.0.0.1:5547/assets/WorkerSimHost-BCZyHL9y.js:2:7989)
+    at S.receive (http://127.0.0.1:5547/assets/WorkerSimHost-BCZyHL9y.js:2:6111)
+    at Object.receive (http://127.0.0.1:5547/assets/WorkerSimHost-BCZyHL9y.js
+PASS recover: the crash dialog offers the snapshot ["Continue on the main thread","Recover unsaved progress","Restart from autosave"]
+the crash dialog was still animating after 30 s
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/07c-crash-dialog-recoverable.png
+worker simWorker-BQoHBboU.js
+PASS recover: the snapshot restored on a new worker, with the edit {"tax":13.5,"info":{"kind":"worker","disposed":false,"day":574,"speed":1,"roads":38,"zoned":162,"funds":97432,"applied":4,"pending":0,"crashed":false}}
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/07d-recovered.png
+console error (expected) [main] the simulation worker crashed HostCrashed: The simulation worker stopped responding
+    at S.crash (http://127.0.0.1:5547/assets/WorkerSimHost-BCZyHL9y.js:2:7989)
+    at Object.fail (http://127.0.0.1:5547/assets/WorkerSimHost-BCZyHL9y.js:2:5680)
+    at y.poll (http://127.0.0.1:5547/assets/Wor
+PASS watchdog: 10 visible seconds without a packet open the crash dialog 12814 ms
+the crash dialog was still animating after 30 s
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/07b-watchdog-dialog.png
+PASS watchdog: Continue on the main thread runs the save on a local host {"kind":"local","disposed":false,"day":574,"speed":1,"roads":38,"zoned":162,"funds":97432,"applied":null,"pending":0,"crashed":false}
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/08-main-thread.png
+fallback ready after 5494 ms
+PASS fallback: a failed worker script boots the city on the main thread, with one toast {"kind":"local","toasts":["The simulation worker could not start: the city runs on the main thread."]}
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/09-fallback.png
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/10-region-prespawned.png
+PASS region: the worker chunk prefetched and one worker pre-spawned on the region screen {"workers":1,"prefetch":"http://127.0.0.1:5547/assets/simWorker-BQoHBboU.js"}
+PASS region: Found City boots on the pre-spawned worker, paused and saved, the scene on the replica (O6) {"kind":"worker","speed":0,"day":90,"dirty":false,"indicator":"Saved","sceneOnReplica":true,"workers":1}
+PASS protector: the worker made its probe in the founded city {"digest":581310068,"protector":true,"day":90,"wasm":{"state":"ready","blur":true,"capacity":67108864,"grows":0,"error":null},"page":null}
+NOTE protector in the founded city: not observable in this browser (the control: a detach does not deoptimize the probe), so true is not evidence
+PASS region: the founded city runs {"from":90,"to":100,"errors":[]}
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/11-region-founded.png
+PASS region fallback: a pre-spawned worker that failed to load: the founded city runs on the main thread, one toast {"kind":"local","toasts":["The simulation worker could not start: the city runs on the main thread."],"pageErrors":[]}
+shot /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/t034work/qa-r3b/12-region-fallback.png
+39 of 39 passed

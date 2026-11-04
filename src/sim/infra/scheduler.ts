@@ -92,6 +92,8 @@ export class InfraScheduler {
   private carry = 0;
   private lastFrameMs = -1e9;
   private frameOwner: object | null = null;
+  /** O7: undefined retains the legacy inference for the bot and direct Simulation users. */
+  live: boolean | undefined;
   /** estimated cost units used per day (headless) and measured ms per task (both modes), for profiling */
   readonly spentMs = new Map<string, number>();
   /** measured maximum ms of a single step per task (both modes; perf tests assert the per-step budget) */
@@ -113,7 +115,7 @@ export class InfraScheduler {
   }
 
   get framesActive(): boolean {
-    return nowMs() - this.lastFrameMs < 750;
+    return this.live ?? nowMs() - this.lastFrameMs < 750;
   }
 
   /** call from every infra system's daily(); does the work once per sim day (headless mode only) */
@@ -136,8 +138,24 @@ export class InfraScheduler {
     if (this.frameOwner === null) this.frameOwner = caller;
     if (caller !== this.frameOwner) return;
     this.lastFrameMs = nowMs();
+    if (this.hostDriven) return;
     this.run(sim, INFRA_FRAME_BUDGET_MS, true);
   }
+
+  // W1.2: the same scheduler selection, with one step per host task.
+  hostDriven = false;
+  private frameSteps: Generator<void, number> | null = null;
+  beginFrame(sim: Simulation): void {
+    this.endFrame();
+    this.frameSteps = this.steps(sim, INFRA_FRAME_BUDGET_MS, true, true);
+  }
+  stepOnce(): boolean {
+    if (!this.frameSteps) return false;
+    if (!this.frameSteps.next().done) return true;
+    this.frameSteps = null;
+    return false;
+  }
+  endFrame(): void { this.frameSteps?.return(0); this.frameSteps = null; }
 
   /** run every pending step now (tests / load); returns false when maxSteps ran out before every task was idle */
   flush(sim: Simulation, maxSteps = 10000): boolean {
@@ -159,11 +177,16 @@ export class InfraScheduler {
 
   /** run steps within `budget`; returns the estimated cost used */
   private run(sim: Simulation, budget: number, realTime: boolean): number {
+    const steps = this.steps(sim, budget, realTime);
+    for (;;) { const next = steps.next(); if (next.done) return next.value; }
+  }
+
+  private *steps(sim: Simulation, budget: number, realTime: boolean, yielding = false): Generator<void, number> {
     const tasks = this.tasks;
     const n = tasks.length;
     if (n === 0) return 0;
     const credit = this.credit;
-    const t0 = nowMs();
+    let t0 = nowMs();
     let spent = 0;
     let ran = 0;
     // urgent first (player edits: finish their passes now): each step re-scans for the first urgent and due task, under
@@ -183,6 +206,9 @@ export class InfraScheduler {
       credit[k] += c;
       spent += c;
       ran++;
+      const pause = yielding ? nowMs() : 0;
+      yield;
+      if (yielding) t0 += nowMs() - pause;
     }
     // least-served due task next, until the budget is used
     for (let guard = 0; guard < STEP_GUARD; guard++) {
@@ -197,6 +223,9 @@ export class InfraScheduler {
       credit[i] += c;
       spent += c;
       ran++;
+      const pause = yielding ? nowMs() : 0;
+      yield;
+      if (yielding) t0 += nowMs() - pause;
     }
     // renormalise: the least-served due task is at 0, idle tasks bank at most CREDIT_FLOOR
     let m = Infinity;
