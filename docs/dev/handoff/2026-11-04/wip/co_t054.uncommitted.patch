@@ -1,0 +1,41 @@
+diff --git a/docs/dev/reports/local-T054-lg21-year-review.md b/docs/dev/reports/local-T054-lg21-year-review.md
+index 503b98f..dfb137d 100644
+--- a/docs/dev/reports/local-T054-lg21-year-review.md
++++ b/docs/dev/reports/local-T054-lg21-year-review.md
+@@ -241,7 +241,7 @@ names LG-21.
+      `approval_<term>` snapshots), with their types.
+    - `src/sim/economy/history.ts` (+95/−1): the history system records those series monthly, and writes two
+      economy records of its own, `systemData.economy.yearReviewGoals` (goal completion months) and
+-     `yearReviewBaseline` (the founding snapshot); its new `init` seeds them and a January checkpoint's terms.
++     `yearReviewBaseline` (the founding snapshot); its new `init` seeds them and a January checkpoint's terms (since the fix round, the goals only on a city without the record).
+    - `src/worker/replicaSafe.ts` (+1/−1): the `listMilestones` entry only, the same line as T053's (NOTE-053).
+    - No sim system reads any of them (grep of every new name): only `src/ui/YearReview.ts` does, and the worker's
+      recorder and replica and the save iterate `HISTORY_KEYS` generically, so they mirror and save the new series. The
+@@ -321,12 +321,27 @@ names LG-21.
+    approval terms, the recurring net and expense, the review funds, which must keep a negative balance below one
+    unit). Worst case about 165 KB gzip at the 600-sample cap, about 45 KB if rounded to 3 decimals. Rounding would
+    change the saved format and the desktop's gated digests, so it is a backlog candidate for the lead, not done here.
++8. **The card waits for `NewYearCelebration.active`, not `busy`** (added in the fix round; the lead confirms or
++   reverts). The task's `after` line and LG-21's Change say the card waits for `busy` to clear; the wiring passes
++   `busy: () => this.newYear.active` (`src/game/CityScene.ts:310`), so the card can open while the last fireworks
++   sparks still fade (`busy` stays true while `Fireworks.isRunning`). This is the desktop's round-2 change A: on the
++   real GPU, after a 1× full show, the card appeared 2.3-5.4 s after the show phase ended (the clock-return phase),
++   within one frame of `active` clearing, instead of waiting for the sparks as well.
++   `tests/game/yearReviewRestore.test.ts` asserts the card appears with `active === false`, `busy === true` and
++   `isRunning === true`. Kept as the desktop shipped it; reverting is the one-line change back to
++   `this.newYear.busy` plus that test's predicate.
+ 
+ ### Remaining
+ 
+ - **The built-out producer** (NOTE-048, NOTE-056): once T037b is in dev, merge dev and publish `full` from the LG-05
+   block in src/sim/economy/advisors.ts as a typed, optional `AdvisorData.full`, as T054's own small commit; then
+   show the bot at 192,899 and the exact and determinism digests unchanged, and add an end-to-end land-full test.
++  Then **rerun the 256×60 s7 grade gate**: once `full` is published, the run's late, probably land-full years switch
++  the growth stat to unemployment scoring (`yearGradeInput` reads `history.builtOut`, `yearGrade` then uses
++  `unemploymentScore`), so the desktop's 51 of 51 no longer covers the shipped grade. The probe is now in the repo:
++  `npx tsx tools/yeargrades.ts --size 256 --years 60 --seed 7 --quiet --json <out.json>` under the timing lock
++  (a 256×60 bot run); it prints each year's score, letter, the six stat scores and whether the year was graded on
++  unemployment, and exits 1 when a year from 2010 is ungraded or below 55.
+ - **The merge step:** the full vitest and the bot (expected identical: residents [ 61124, 93804, 37971 ]).
+ - **Optional:** a SwiftShader functional and visual recheck with the kept harness; nothing in this lane needs the
+   real GPU again (the label is text).

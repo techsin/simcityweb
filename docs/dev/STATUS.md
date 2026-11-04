@@ -1,3 +1,5 @@
+> **Handoff 2026-11-04 03:45 UTC:** read docs/dev/handoff/2026-11-04/README.md first (running chains, unmerged cloud work as git bundles, where to continue).
+
 # Lead status notes
 
 Durable notes for the development process. The session container can be reset at any time (it was on Oct 26 and
