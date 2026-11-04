@@ -68,5 +68,6 @@ describe('LOD proxy builder: J0, no transfer from the main thread', () => {
     expect(transfers.map(({ file, rule, code }) => ({ file, rule, code }))).toEqual([
       { file: 'src/render/city/buildings/lodWorker.ts', rule: 'transfer list', code: 'ctx.postMessage(msg, [msg.position.buffer, msg.normal.buffer, msg.color.buffer, msg.surf.buffer])' },
     ]);
-  });
+    // (parsing ~290 files takes about 4 s alone and past 5 s inside the full parallel suite: vitest's default timeout)
+  }, 60_000);
 });
