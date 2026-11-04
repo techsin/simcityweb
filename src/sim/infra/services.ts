@@ -75,11 +75,11 @@ import {
   UNWATERED_HEALTH_EFF,
 } from './params';
 import { schedulerOf, sizeFactors } from './scheduler';
-import { collectStops, computeTransitCoverage, stopServes, transitCoverageActive, type StopList } from './transit';
+import { collectStops, stopServes, transitCoverageActive, type StopList } from './transit';
 import { getDef } from '../catalog';
 import {
-  NEED_ORDER, TIER_NEED, TIME_Q, reachRaw, reachResult, roadDistMulti, roadTimeMulti, tierLayer, tierProvider,
-  type FacilityLoad,
+  NEED_ORDER, TIER_NEED, TIME_Q, computeTransitCoverageCached, reachRaw, reachResult, roadDistMulti, roadTimeMulti,
+  tierLayer, tierProvider, type FacilityLoad,
 } from './catchments';
 import { nimbyCost, rebuildNimby } from './nimby';
 import { cohortShares } from '../economy/demographics';
@@ -92,7 +92,7 @@ export const SERVICES_PERIOD = 15;
 export const SERVICES_DIRTY_DAYS = 2;
 /** work units processed per tier step (bounds step cost: ~2.1 ms measured on the 256² stress city) */
 const WORK_PER_STEP = 120000;
-/** work units: per cell reached by a fresh search, per cached reach entry copied, per entry allocated / splatted */
+/** work units: per fresh search cell, per cached entry (legacy copy cost), per entry allocated / splatted */
 const U_SEARCH = 3.6, U_COPY = 0.1, U_ENTRY = 0.25;
 const KIND_SERVICE: Record<string, ServiceKind> = {
   police: 'police', fire: 'fire', health: 'health', education: 'education', park: 'parks', transit: 'transit', garbage: 'utilities',
@@ -123,9 +123,35 @@ const RAMP_Q = Math.round(RAMP_PENALTY / TIME_Q);
 
 export interface UnservedCluster { x: number; z: number; people: number }
 
-/** a cached reach of one facility: pool range + bounding box of the reached cells */
-interface CacheEnt { key: number; start: number; end: number; x0: number; z0: number; x1: number; z1: number; road: boolean; valid: boolean }
-interface SlotCache { idx: Int32Array<ArrayBuffer>; w: Float32Array<ArrayBuffer>; ent: Map<number, CacheEnt> }
+/** dense cache records, indexed by facility slot; keys and pool offsets retain the full JS number precision */
+class ReachRecords {
+  readonly slot = new Map<number, number>();
+  key = new Float64Array(0);
+  start = new Float64Array(0);
+  end = new Float64Array(0);
+  box = new Int32Array(0);
+  road = new Uint8Array(0);
+  valid = new Uint8Array(0);
+
+  add(id: number): number {
+    const found = this.slot.get(id);
+    if (found !== undefined) return found;
+    const q = this.slot.size;
+    if (q === this.key.length) {
+      const n = Math.max(q + 1, q * 2, 64);
+      const key = new Float64Array(n); key.set(this.key); this.key = key;
+      const start = new Float64Array(n); start.set(this.start); this.start = start;
+      const end = new Float64Array(n); end.set(this.end); this.end = end;
+      const box = new Int32Array(4 * n); box.set(this.box); this.box = box;
+      const road = new Uint8Array(n); road.set(this.road); this.road = road;
+      const valid = new Uint8Array(n); valid.set(this.valid); this.valid = valid;
+    }
+    this.slot.set(id, q);
+    return q;
+  }
+}
+/** persistent reach pool; used counts entries retained by the last completed pass */
+interface SlotCache { idx: Int32Array<ArrayBuffer>; w: Float32Array<ArrayBuffer>; top: number; used: number; rec: ReachRecords }
 
 const defNums = new Map<string, number>();
 function defNum(id: string): number {
@@ -208,11 +234,13 @@ export class ServicesSystem implements SimSystem {
   private colX0 = new Int32Array(0);
   private colX1 = new Int32Array(0);
   private colT = new Float32Array(0);
-  // reach pool of the current slot (becomes the slot's cache at the end of the slot) + per-slot caches
-  private pIdx: Int32Array<ArrayBuffer> = new Int32Array(0);
-  private pW: Float32Array<ArrayBuffer> = new Float32Array(0);
+  // Pending records share the slot's pool, but replace its committed records only at P_FINAL. A restarted pass
+  // must see the previous completed cache (including its validity and reach sizes) for the same work estimates.
+  /** entries retained by the current pass (the legacy count, independent of physical pool offsets) */
   private poolN = 0;
-  private curEnt = new Map<number, CacheEnt>();
+  private curRec = new ReachRecords();
+  private curCache: SlotCache | null = null;
+  private cacheOrder = new Int32Array(0);
   private cache: (SlotCache | null)[] = new Array(NT + 1).fill(null);
   private netHash = 0;
   private waterHash = 0;
@@ -402,12 +430,16 @@ export class ServicesSystem implements SimSystem {
   /** a road change inside (or next to) a cached reach invalidates it (no rect = every road reach) */
   private invalidateReach(r: CellRect | undefined): void {
     this.netEvents = true;
-    const hit = (e: CacheEnt) => !r || (r.x0 - 2 <= e.x1 && r.x1 + 2 >= e.x0 && r.z0 - 2 <= e.z1 && r.z1 + 2 >= e.z0);
-    for (const c of this.cache) {
-      if (!c) continue;
-      for (const e of c.ent.values()) if (e.road && e.valid && hit(e)) e.valid = false;
+    for (const c of this.cache) if (c) this.invalidateRecords(c.rec, r);
+    this.invalidateRecords(this.curRec, r);
+  }
+
+  private invalidateRecords(rec: ReachRecords, r: CellRect | undefined): void {
+    const box = rec.box, road = rec.road, valid = rec.valid;
+    for (let q = 0; q < rec.slot.size; q++) {
+      if (road[q] && valid[q] && (!r || (r.x0 - 2 <= box[4 * q + 2] && r.x1 + 2 >= box[4 * q]
+        && r.z0 - 2 <= box[4 * q + 3] && r.z1 + 2 >= box[4 * q + 1]))) valid[q] = 0;
     }
-    for (const e of this.curEnt.values()) if (e.road && e.valid && hit(e)) e.valid = false;
   }
 
   /**
@@ -547,11 +579,11 @@ export class ServicesSystem implements SimSystem {
     for (let k = 0; k <= NT; k++) {
       if (this.fac[k].length === 0) { if (this.hadFac[k] || k === SLOT_TRANSIT) w += C * 0.05; continue; }
       w += C * (this.shared[k] ? 0.45 : 0.3) + (k === SLOT_TRANSIT ? 0 : FOOT_WORK * this.multiCells);
-      const cache = this.cache[k];
+      const rec = this.cache[k]?.rec;
       const perEntry = U_ENTRY * (this.shared[k] ? 3 : 2);
       for (const b of this.fac[k]) {
-        const e = cache?.ent.get(b.id);
-        if (e && e.key === keyOf(b)) w += (e.end - e.start) * ((e.valid ? U_COPY : U_SEARCH) + perEntry) + 16; // last reach size
+        const q = rec?.slot.get(b.id);
+        if (rec && q !== undefined && rec.key[q] === keyOf(b)) w += (rec.end[q] - rec.start[q]) * ((rec.valid[q] ? U_COPY : U_SEARCH) + perEntry) + 16; // last reach size
         else w += this.workOf(st, b, k);
       }
     }
@@ -644,7 +676,10 @@ export class ServicesSystem implements SimSystem {
           this.cov.fill(0);
           if (shared) this.seat.fill(1);
           this.poolN = 0;
-          this.curEnt = new Map();
+          this.curRec.slot.clear();
+          const cache = this.cache[k] ?? { idx: new Int32Array(0), w: new Float32Array(0), top: 0, used: 0, rec: new ReachRecords() };
+          this.curCache = cache;
+          this.compactCache(cache);
           this.facStart.length = 0; this.facEnd.length = 0;
           this.facSig.length = 0; this.facSeat.length = 0;
           this.cursor = 0;
@@ -684,12 +719,14 @@ export class ServicesSystem implements SimSystem {
         }
         default: {
           this.finalizeTier(st, k, needL);
-          // this slot's pool becomes its cache; the old cache buffers are the next slot's pool
-          const old = this.cache[k];
-          this.cache[k] = { idx: this.pIdx, w: this.pW, ent: this.curEnt };
-          if (old) { this.pIdx = old.idx; this.pW = old.w; } else { this.pIdx = new Int32Array(0); this.pW = new Float32Array(0); }
+          // Only metadata changes ownership; cached reaches stay in the same buffers.
+          const cache = this.curCache!, old = cache.rec;
+          cache.rec = this.curRec; cache.used = this.poolN;
+          this.cache[k] = cache;
+          this.curRec = old;
+          this.curRec.slot.clear();
+          this.curCache = null;
           this.poolN = 0;
-          this.curEnt = new Map();
           const w = C * (shared ? 0.3 : 0.2) + (k === SLOT_TRANSIT ? 0 : FOOT_WORK * this.multiCells);
           work += w; this.workLeft -= w;
           this.tierSlot++;
@@ -697,6 +734,24 @@ export class ServicesSystem implements SimSystem {
         }
       }
     }
+  }
+
+  /** reclaim dead segments above 50 %, before a slot starts; sorting ranges keeps each downward copy disjoint from unread data */
+  private compactCache(cache: SlotCache): void {
+    if ((cache.top - cache.used) * 2 <= cache.top) return;
+    const rec = cache.rec, n = rec.slot.size, start = rec.start, end = rec.end;
+    if (this.cacheOrder.length < n) this.cacheOrder = new Int32Array(Math.max(n, this.cacheOrder.length * 2, 64));
+    const order = this.cacheOrder.subarray(0, n);
+    for (let q = 0; q < n; q++) order[q] = q;
+    order.sort((a, b) => start[a] - start[b]);
+    let top = 0;
+    for (const q of order) {
+      const s = start[q], e = end[q], len = e - s;
+      if (s !== top) { cache.idx.copyWithin(top, s, e); cache.w.copyWithin(top, s, e); }
+      start[q] = top; end[q] = top + len;
+      top += len;
+    }
+    cache.top = top;
   }
 
   /** seat order of shared slot k: operating factor descending (better-run facilities fill first), then building id */
@@ -709,20 +764,18 @@ export class ServicesSystem implements SimSystem {
     ord.sort((a, b) => ops[b] - ops[a] || list[a].id - list[b].id);
   }
 
-  /** reach of facility c of slot k into the pool (cached copy or fresh search); returns work units */
+  /** reach of facility c of slot k: read a cached range in place or append a fresh search; legacy work units */
   private reachOf(st: CityState, b: Building, k: number, c: number): number {
     const key = keyOf(b);
-    const cache = this.cache[k];
-    const e = cache?.ent.get(b.id);
-    const off = this.poolN;
-    if (cache && e && e.valid && e.key === key) {
-      const n = e.end - e.start;
-      this.ensurePool(off + n);
-      this.pIdx.set(cache.idx.subarray(e.start, e.end), off);
-      this.pW.set(cache.w.subarray(e.start, e.end), off);
-      this.poolN = off + n;
-      this.facStart[c] = off; this.facEnd[c] = off + n;
-      this.curEnt.set(b.id, { key, start: off, end: off + n, x0: e.x0, z0: e.z0, x1: e.x1, z1: e.z1, road: e.road, valid: true });
+    const cache = this.curCache!, rec = cache.rec, next = this.curRec;
+    const q = rec.slot.get(b.id), r = next.add(b.id);
+    next.key[r] = key; next.valid[r] = 1;
+    if (q !== undefined && rec.valid[q] && rec.key[q] === key) {
+      const start = rec.start[q], end = rec.end[q], n = end - start;
+      this.poolN += n;
+      this.facStart[c] = start; this.facEnd[c] = end;
+      next.start[r] = start; next.end[r] = end; next.road[r] = rec.road[q];
+      for (let j = 0; j < 4; j++) next.box[4 * r + j] = rec.box[4 * q + j];
       return n * U_COPY + 8;
     }
     const inf = infoOf(st, b);
@@ -730,8 +783,9 @@ export class ServicesSystem implements SimSystem {
     const metric = transit ? 2 : inf.metric;
     const n = reachRaw(st, b.x, b.z, b.w, b.d, transit ? inf.covRadius : inf.tierRadius, metric);
     const { touched, best } = reachResult();
-    this.ensurePool(off + n);
-    const pIdx = this.pIdx, pW = this.pW;
+    const off = cache.top;
+    this.ensurePool(cache, off + n);
+    const pIdx = cache.idx, pW = cache.w;
     const N = st.size;
     let m = off, x0 = N, z0 = N, x1 = -1, z1 = -1;
     for (let t = 0; t < n; t++) {
@@ -745,17 +799,19 @@ export class ServicesSystem implements SimSystem {
       if (z < z0) z0 = z;
       if (z > z1) z1 = z;
     }
-    this.poolN = m;
+    cache.top = m;
+    this.poolN += m - off;
     this.facStart[c] = off; this.facEnd[c] = m;
-    this.curEnt.set(b.id, { key, start: off, end: m, x0, z0, x1, z1, road: metric !== 2, valid: true });
+    next.start[r] = off; next.end[r] = m; next.road[r] = metric !== 2 ? 1 : 0;
+    next.box[4 * r] = x0; next.box[4 * r + 1] = z0; next.box[4 * r + 2] = x1; next.box[4 * r + 3] = z1;
     return n * (metric === 2 ? U_SEARCH / 2 : U_SEARCH) + 16;
   }
 
-  private ensurePool(n: number): void {
-    if (this.pIdx.length >= n) return;
-    const cap = Math.max(n, this.pIdx.length * 2, 65536);
-    const a = new Int32Array(cap); a.set(this.pIdx.subarray(0, this.poolN)); this.pIdx = a;
-    const f = new Float32Array(cap); f.set(this.pW.subarray(0, this.poolN)); this.pW = f;
+  private ensurePool(cache: SlotCache, n: number): void {
+    if (cache.idx.length >= n) return;
+    const cap = Math.max(n, cache.idx.length * 2, 65536);
+    const a = new Int32Array(cap); a.set(cache.idx.subarray(0, cache.top)); cache.idx = a;
+    const f = new Float32Array(cap); f.set(cache.w.subarray(0, cache.top)); cache.w = f;
   }
 
   /** union tier (police / fire / transit): legacy combination from the pool range; returns work units */
@@ -765,7 +821,7 @@ export class ServicesSystem implements SimSystem {
     const s = transit ? inf.covStrength : inf.tierStrength;
     const op = this.facOp[k][c], S = this.facCap[k][c];
     const s0 = this.facStart[c], s1 = this.facEnd[c];
-    const pIdx = this.pIdx, pW = this.pW;
+    const pIdx = this.curCache!.idx, pW = this.curCache!.w;
     const A = this.A, cov = this.cov;
     let D = 0;
     for (let q = s0; q < s1; q++) { const i = pIdx[q]; const w = pW[q]; D += needL[i] * w; A[i] += w; }
@@ -795,7 +851,7 @@ export class ServicesSystem implements SimSystem {
     if (s1 <= s0) return 4;
     const inf = infoOf(st, b);
     const s = inf.tierStrength;
-    const pIdx = this.pIdx, pW = this.pW, u = this.seat, A = this.A, cov = this.cov;
+    const pIdx = this.curCache!.idx, pW = this.curCache!.w, u = this.seat, A = this.A, cov = this.cov;
     let D = 0;
     for (let q = s0; q < s1; q++) {
       const i = pIdx[q];
@@ -835,7 +891,7 @@ export class ServicesSystem implements SimSystem {
     const s0 = this.facStart[c], s1 = this.facEnd[c];
     if (s1 <= s0 || !(this.facSig[c] < 1)) return 2;
     const s = infoOf(st, b).tierStrength;
-    const pIdx = this.pIdx, pW = this.pW, u = this.seat, A = this.A;
+    const pIdx = this.curCache!.idx, pW = this.curCache!.w, u = this.seat, A = this.A;
     let left = 0;
     for (let q = s0; q < s1; q++) {
       const i = pIdx[q];
@@ -877,10 +933,18 @@ export class ServicesSystem implements SimSystem {
     const shared = this.shared[k];
     const layer = k === SLOT_TRANSIT ? st.transitCov : tierLayer(st, NEED_ORDER[k]);
     const A = this.A, cov = this.cov;
-    for (let i = 0; i < C; i++) { const v = cov[i]; layer[i] = v < 1 ? v : 1; }
-    if (k === SLOT_TRANSIT) return;
+    if (k === SLOT_TRANSIT) {
+      for (let i = 0; i < C; i++) { const v = cov[i]; layer[i] = v < 1 ? v : 1; }
+      return;
+    }
+    // Keep the two passes for aliased views; normal city layers have separate buffers.
+    const separate = layer.buffer === cov.buffer || layer.buffer === needL.buffer || layer.buffer === A.buffer;
+    if (separate) {
+      for (let i = 0; i < C; i++) { const v = cov[i]; layer[i] = v < 1 ? v : 1; }
+    }
     let need = 0, served = 0, unreached = 0;
     for (let i = 0; i < C; i++) {
+      if (!separate) { const v = cov[i]; layer[i] = v < 1 ? v : 1; }
       const n = needL[i];
       if (n <= 0) continue;
       need += n;
@@ -915,7 +979,7 @@ export class ServicesSystem implements SimSystem {
     const tmp = this.tmp;
     const stops = this.stops;
     // WP7b: unattached stops (traffic.stopAttached) give no walking coverage; road-flag stops sit on a road
-    computeTransitCoverage(st, stops, tmp, Math.min(1.25, fundingFactor(st, 'transit')), true, (s) => stops.bid[s] < 0 || stopServes(sim, stops.bid[s]));
+    computeTransitCoverageCached(st, stops, tmp, Math.min(1.25, fundingFactor(st, 'transit')), true, (s) => stops.bid[s] < 0 || stopServes(sim, stops.bid[s]));
     const T = st.transitCov;
     for (let i = 0; i < C; i++) { const t = tmp[i]; if (t > 0) T[i] = 1 - (1 - T[i]) * (1 - Math.min(1, t)); }
   }

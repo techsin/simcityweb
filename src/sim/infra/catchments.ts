@@ -28,9 +28,10 @@ import type { Building, CityState, NeedTier } from '../CityState';
 import type { Simulation } from '../Simulation';
 import type { ReachMetric, ServiceTier } from '../catalogTypes';
 import { Network } from '../../core/types';
-import { CATCH_NEAR_FIELD, DRIVE_COST, RAMP_COST, ROAD_RADIUS_FACTOR, WALK_COST } from './params';
-import { REACH_METRICS, SERVICE_TIERS } from './common';
+import { CATCH_NEAR_FIELD, DRIVE_COST, FERRY_COV_RADIUS, RAMP_COST, ROAD_RADIUS_FACTOR, TRANSIT_COV_RADIUS, WALK_COST } from './params';
+import { REACH_METRICS, SERVICE_TIERS, Transit, infoOf } from './common';
 import type { ServicesSystem } from './services';
+import type { StopList } from './transit';
 
 export { REACH_METRICS, SERVICE_TIERS };
 
@@ -113,6 +114,58 @@ export function registerTierProvider(tier: NeedTier, p: TierProvider | null): vo
 }
 export function tierProvider(tier: NeedTier): TierProvider | undefined {
   return providers.get(tier);
+}
+
+const transitDisks = new Map<number, Float64Array>();
+/** The disk factor stays f64: funding is multiplied before the original f32 coverage store. */
+function transitDisk(R: number): Float64Array {
+  let disk = transitDisks.get(R);
+  if (!disk) {
+    disk = new Float64Array(Math.floor((R + 0.5) * (R + 0.5)) + 1);
+    for (let d2 = 0; d2 < disk.length; d2++) {
+      const d = Math.sqrt(d2) / (R + 0.5);
+      disk[d2] = 1 - d * d * 0.7;
+    }
+    transitDisks.set(R, disk);
+  }
+  return disk;
+}
+
+/** INTERNAL (services): transit.ts walking coverage with the same stop / cell order and cached disk factors. */
+export function computeTransitCoverageCached(state: CityState, stops: StopList, out: Float32Array, funding: number, skipWithCoverage = true,
+  active?: (s: number) => boolean): void {
+  out.fill(0);
+  const N = state.size;
+  for (let s = 0; s < stops.n; s++) {
+    if (skipWithCoverage && stops.bid[s] >= 0) {
+      const b = state.buildings.get(stops.bid[s]);
+      if (b && infoOf(state, b).cov >= 0) continue;
+    }
+    if (active && !active(s)) continue;
+    const mode = stops.mode[s];
+    const R = mode === Transit.Bus ? TRANSIT_COV_RADIUS.bus : mode === Transit.Subway ? TRANSIT_COV_RADIUS.subway
+      : mode === Transit.Ferry ? FERRY_COV_RADIUS : TRANSIT_COV_RADIUS.train;
+    const c = stops.cell[s];
+    const cx = c % N, cz = (c - cx) / N;
+    const R2 = (R + 0.5) * (R + 0.5);
+    const strength = (mode === Transit.Bus ? 0.75 : 1) * funding;
+    const disk = Number.isInteger(N) && Number.isInteger(R) && R >= 0 && R <= 64 ? transitDisk(R) : null;
+    for (let z = Math.max(0, cz - R); z <= Math.min(N - 1, cz + R); z++) {
+      const dz = z - cz;
+      for (let x = Math.max(0, cx - R); x <= Math.min(N - 1, cx + R); x++) {
+        const dx = x - cx;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > R2) continue;
+        let factor: number;
+        if (disk) factor = disk[d2];
+        else { const d = Math.sqrt(d2) / (R + 0.5); factor = 1 - d * d * 0.7; }
+        const v = strength * factor;
+        const i = z * N + x;
+        const cur = out[i];
+        out[i] = cur + v * (1 - cur);
+      }
+    }
+  }
 }
 
 // ================================================================================================ reach kernels
