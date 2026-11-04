@@ -10,6 +10,121 @@ New Year hook); QA fixes `681a89c` (B1: only a never-savable alert teaches E1b),
 numbers, its 12 s toast, a stale E2 waits, the copy), `5252302` (B5: the loopback `policy.teaching` getter, NOTE-055's
 one-off exception); dev `63c8f58` merged in.
 
+## Cloud carry-over (Nov 3)
+
+The desktop stopped after it reported this lane DONE at `bdb92a9`. The cloud verified it on branch `cloud/t036s5`:
+`local/T036s5-fh08` (`bdb92a9`) with dev `086152a` merged in (`f79765e`). That dev holds T034 with T034b (W1.2, the
+sim in a real Web Worker behind `?simworker=1`). The merge was clean. dev touches only two of this lane's files,
+`CityScene.ts` and `LoopbackSimHost.ts`, and both merged without conflict. None of the lanes that NOTE-057 expects
+to conflict here is in dev yet: T047 and T048 (`EmergencyBanner.ts`), T053 and T058 (`Notifications.ts`). So no
+EmergencyBanner.ts or Notifications.ts conflict came up. `local/T036s5-fh08-snap` (`98dfa3d`) has the same code
+as `bdb92a9`; only the report and the `.done` line differ.
+
+### Gap list (required against done, at the start)
+
+Read: the task file (`T036s5-fh08.md`); T036's step 5; POLISH_PLAN FH-08 in full, with its Acceptance and the
+PB-ACCIDENT, PB-AMBER, PB-COOLDOWN and PB-GRACE rows; NOTE-044; NOTE-047 item 5; NOTE-048 (FH-08's request and the
+standing src/worker rule); NOTE-055; NOTE-057; T061's item 6; this report; and the diff against dev.
+
+| Required | State on the desktop branch |
+|---|---|
+| E1a: the first alerted savable major incident pauses once and shows the card (Send nearest · Emergency view · Got it) | done, tested; passed on the real GPU (default host and loopback) |
+| E1b: the first too-far incident shows its card (Fire tab · Emergency view) with no speed change | done, tested; passed on the real GPU |
+| E2: the LIVE toast, exactly once | done, tested (`emergencyTeaching.test.ts` "E2 explains an actual LIVE slowdown once…") |
+| E3: the first failure explains why, with the real numbers | done, tested; passed on the real GPU (line 4) |
+| A second uncovered fire behaves as today (T029: in range never slows, the 30 s cooldown) | done, tested; passed on the real GPU (line 5) |
+| `emergencyPolicy.test` covers the one-shot pause and both variants | done (the "FH-08 first-emergency teaching" block) |
+| A separate episode state in the speed policy; the flag reaches it through setSettings; seen flags in `loadPref` | done (`EmergencyTeachingPolicy`, `LiveState.teachingPause`, SimSettings `teachFirst`/`teachTooFar`/`teachingAck`) |
+| Text and numbers from `host.policy` and EmergencyView, never sim reads (the hygiene test) | done; hygiene test **to re-run on the merged tree** |
+| Protocol additions (NOTE-048) and the loopback getter (NOTE-055) as their own commits, each tested on a packet host | done: `7c38de5`, `5252302` |
+| Nothing taught during the New Year show; deferred lessons once afterwards | done, tested; passed on the real GPU (line 6) |
+| **FH-08 on the real worker host** (`?simworker=1`, new in dev with T034) | **gap found by the merge:** see below |
+| T061 item 6: does WorkerSimHost need the `teaching` getter? | **open**; it can be answered only on the merged tree |
+| The TopBar LIVE-title hunk | not in this lane: it waits for the cloud's TopBar split, which is not in dev (`src/ui/topbar/` holds only `approvalGuide.ts`) |
+| Gates on the merged tree: tsc, the lane's tests and the banner/policy/Notifications tests | **to re-run** (dev moved 43 commits) |
+| The full vitest and the bot | the merge step runs them (this chain step must not take the shared lock) |
+| Browser checks | none in this step (the chain's rule); the real-GPU QA is the desktop's (rounds 1-2 above) |
+| The WIP commits (`d6d5421`, `e5a234d`, Codex lanes) | later rounds committed over them; **to verify line by line** on the final diff |
+
+### What the cloud did
+
+- **The real-worker gap (fixed, `5d515bd`).** `simWorker.ts` builds its own ChangeRecorder policy projection, separate from
+  `loopbackCore.ts`'s. Round 2 added `teaching` to the loopback projection before T034 reached dev. The worker's
+  projection came in with the merge and still dropped the field. Under `?simworker=1`, a fresh profile's first
+  savable fire made the worker latch E1a and pause the city. The page never received the lesson, so the city stayed
+  paused with no card and nothing to acknowledge. Pressing Play released the pause, but the lesson stayed unseen.
+  The worker's projection now copies `teaching` the same way, and the field stays absent when no lesson is open.
+  - The test is `tests/worker/emergencyTeachingWorker.test.ts`. It boots the real worker on node worker_threads, as
+    `workerSpeed.test.ts` does. An uncovered savable fire publishes `{ id: 1, variant: 'E1a' }` to `host.policy.teaching`
+    and to the subscription, with the city paused (speed 0). The setSettings acknowledgement clears the lesson on
+    the page and resumes into LIVE (speed 1, `policy.live`).
+  - **Revert check:** with the fix reverted, the test fails ("timed out waiting for the worker's FH-08 lesson on the
+    page").
+- **T061 item 6, answered.** WorkerSimHost extends PacketSimHost and does not override `policy`, so it inherits the
+  `get teaching()` from `5252302`. The new test reads `host.policy.teaching` on a WorkerSimHost. WorkerSimHost.ts
+  needs no change for FH-08.
+- **The final diff, line by line** (the production hunks: `emergencyPolicy.ts`, `SimCore.ts`, `loopbackCore.ts`,
+  `protocol.ts`, `SimHost.ts`, `LoopbackSimHost.ts`, `EmergencyBanner.ts`, `Notifications.ts`, `emergency.css`,
+  `context.ts`, `CityScene.ts`). No defect found apart from the gap above.
+  - The policy latches each variant at most once per host. Its `shown` set survives a `reset()`, and the profile's
+    seen flags carry the one-shot across cities. Clearing a lesson does not make it pick another incident: an
+    acknowledgement, a dispatch, a busy retirement and the alert's end all only clear it. The E1a pause remembers
+    only the speed underneath it. A manual Play releases it.
+  - Notifications' `deferWhile`, `isRelevant`, `onDrop`, `onShow` and `teaching` options are optional. With none of
+    them, the queue behaves exactly as before: the same budget and `QUEUE_MAX_MS` path. `toastBudget.test.ts` is
+    unchanged, and it passes.
+  - The banner now subscribes through `ctx.host.events`, not `ctx.sim.events`. CityScene toggles `newyear-busy` once per
+    frame, after `newYear.frame`. A same-value `classList.toggle` does not mutate the DOM.
+- **Revert spot checks of the desktop's own tests.** Each of two fixes was reverted, its test was run, and the file
+  was restored.
+  - Without the loopback getter (`5252302`), "keeps the public teaching getter equal to subscribed episodes" fails.
+  - Without B1's `!alert.wasPossible` condition (`681a89c`), "a savable alert that lapses does not teach or consume
+    E1b" fails.
+
+### Gates (cloud, on the merged tree `5d515bd`)
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` (sem) | clean, after the merge and after the fix |
+| `git diff --check` against dev | clean |
+| Lane, banner, policy and Notifications tests (sem, `--maxWorkers=2`): `emergencyBanner`, `emergencyPolicy`, `emergencyTeaching`, `emergencyTeachingToasts`, `toastBudget`, `cityTeardown`, `graphicsFirstRun`, `pacingProbe`, `panelsMisc`, `panelsNews`, `uiStacking`, `views` (tests/game) and `emergencyTeachingHost`, `policy` (tests/worker) | **13 files passed, 1 skipped** (`pacingProbe`, which needs `PACING_SAVE`); **218 tests passed, 4 skipped**; 9.4 s |
+| Worker tests for the simWorker change (sem, `--maxWorkers=2`): `hygiene`, `emergencyTeachingWorker` (new), `emergencyTeachingHost`, `policy`, `workerSpeed`, `workerTransport`, `hosts`, `protocol`, `replica`, `loopbackHost`, `emergencyReads` | **11 files passed; 123 tests passed, 1 skipped**; 36.8 s |
+| Full vitest (lock) | **left to the merge step** (this chain step's rule). The desktop's run at `00d35b2`: 227 files / 2,304 tests, 0 failing |
+| Bot 128×15 s7 (lock) | **left to the merge step**. Expected identical to dev: residents [ 61124, 93804, 37971 ] = 192,899. The desktop's run was identical. `tools/simbot.ts` imports none of this lane's files, nor `simWorker.ts`: it runs `Simulation` directly, never SimCore, LivePolicy or the banner |
+| Browser | none in this step (the chain's rule). Evidence is the desktop's real-GPU QA above (scratchpad `qa/FH08/qa.md` on the desktop; RTX 5070 Ti; default host and `?simworker=loopback`; 0 console errors) |
+
+### Decisions
+
+1. **The one-line fix in `simWorker.ts`, made here and not sent as a request.** NOTE-048's standing rule says to ask
+   first before editing `simWorker.ts`, because T034 was editing it. T034 is now in dev. The change is the additive twin
+   of the `loopbackCore.ts` line that NOTE-048 approved for this lane ("show it on a packet host"). Without it FH-08
+   breaks on the real worker: the city pauses and no card appears. T061 owns WorkerSimHost.ts, not `simWorker.ts`, and
+   T061's base has no `teaching`, so it cannot catch the gap. The change is its own commit with a real-worker test, so
+   the lead can drop it or move it.
+2. **The full vitest, the bot and a browser are left to the merge step**, as this step's chain rule says, to save the
+   shared lock. No sim, save or balance file changed in this step.
+3. **The done marker's second line is updated in place** (`cloud/t036s5`, dev merged, this step's gates), as T029's
+   carry-over did. No second FH-08 line is appended.
+4. **Merge order (NOTE-057).** NOTE-057 merges T048 before T036s5, and T053 and T058 before it as well. None of the
+   three is in dev now. If any of them lands before this lane, merge dev into `cloud/t036s5` again. Then resolve
+   `EmergencyBanner.ts` and `Notifications.ts` keeping both sides' behaviour:
+   - FEEL-10's outcome flash and stings, together with FH-08's teaching cards;
+   - T058's question container and T053's card timing, together with FH-08's `deferWhile`/`onShow` queue.
+   FH-08's hunks are in their own teaching functions and options to keep that merge small.
+
+### Remaining (not in this lane, or the desktop's)
+
+- **Desktop QA (real GPU):** re-run FH-08 lines 1, 2 and 5 on `?simworker=1`, the real worker. This step fixed that
+  path in code and tested it under node worker_threads, but no browser saw it. Lines 1-7 already passed on the
+  default host and on loopback.
+- **The TopBar LIVE-title hunk:** after the cloud's TopBar split reaches dev (NOTE-048), against `src/ui/topbar/**`.
+  The text: "Within station range never slows. Outside it, LIVE slows your dispatch; your speed returns when help
+  arrives. Settings → Gameplay."
+- **T037a (NOTE-047 item 2 drops `GameSettings.tips`):** when T037a merges after this lane, it must move FH-08's four
+  seen flags (`loadPref('emergencyTeaching')`) into GuideProfile. It must also point FH-08's `ctx.settings.tips` reads
+  at the profile's Tips on/off. The reads are in `EmergencyBanner.ts`: `sendSettings`, `renderTeaching`,
+  `queueTeachingToast`, `teachFailure` and `rememberTeachingResponse`.
+
 ## Gates
 
 | Gate | Result |
