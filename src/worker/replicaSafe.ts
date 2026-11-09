@@ -6,7 +6,7 @@
  * on a replica (a W1.1b follow-up).
  */
 export const REPLICA_SAFE = [
-  'listRewards', 'listOrdinances', 'loanOffer', 'maxLoanAmount', 'regionTerms',
+  'listRewards', 'listMilestones', 'listOrdinances', 'loanOffer', 'maxLoanAmount', 'regionTerms',
   'serviceEffectiveness', 'onStrike', 'demandInfo', 'emptyZoneStatus', 'utilityReaches', 'infraFlags',
   'windVector', 'overlayLayer', 'overlayReadout', 'cityFingerprint',
   'zone', 'dezone', 'bulldoze', 'buildNetwork', 'buildPowerLine', 'buildSubway', 'plop', 'terraform', 'plantTrees',
