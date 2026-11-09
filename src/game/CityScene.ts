@@ -38,6 +38,8 @@ import { ToolController } from './tools/ToolController';
 import { CursorTip } from '../ui/CursorTip';
 import { h, isTyping } from '../ui/dom';
 import { MiniMap } from '../ui/MiniMap';
+import { MilestoneCard } from '../ui/MilestoneCard';
+import { RankFireworks } from '../ui/rankFireworks';
 import { ErrorOverlay, HelpPanel, PauseMenu, SavePill, confirmOpen } from '../ui/Modals';
 import { CameraMemory, applyCamera, readCamera, validCamera } from './cameraStart';
 import { NewsTicker, Toasts } from '../ui/Notifications';
@@ -323,6 +325,9 @@ export class CityScene {
       // NOTE-041: a command, so a worker's clock holds too (the host is already gone when the scene disposes)
       holdCalendar: (on) => { if (!this.disposed) this.host.act('holdCalendar', [on], { tag: this.newYear }); },
     });
+    // CONTENT: rank moments share the renderer, with New Year and LIVE taking priority.
+    const rankFireworks = new RankFireworks(ctx, () => this.newYear.busy);
+    new MilestoneCard(ctx, this.uiRoot, (rank, intensity) => rankFireworks.start(rank, intensity), () => this.newYear.busy);
     // event-driven sounds (news, disasters, rewards, budget ticks, construction) + generic control feedback
     this.gameSounds = new GameSounds({ sim: this.sim, sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox() });
     this.offUiSounds = installUiSounds(() => this.mods.audio as unknown as UiSoundAudio | undefined);
