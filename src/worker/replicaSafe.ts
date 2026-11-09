@@ -7,7 +7,7 @@
  * guideFacts is delivered by its aggregate query/watch; its input layers need no replica subscription.
  */
 export const REPLICA_SAFE = [
-  'listRewards', 'listOrdinances', 'loanOffer', 'maxLoanAmount', 'regionTerms',
+  'listRewards', 'listMilestones', 'listOrdinances', 'loanOffer', 'maxLoanAmount', 'regionTerms',
   'serviceEffectiveness', 'onStrike', 'demandInfo', 'emptyZoneStatus', 'utilityReaches', 'infraFlags',
   'windVector', 'overlayLayer', 'overlayReadout', 'cityFingerprint',
   'guideFacts',

@@ -1,0 +1,107 @@
+T034b correction, Nov 3: Chromium 153's V8 (15.3) HAS the ArrayBufferDetaching protector, and tracks array buffer views.
+The fix round concluded from experiments 7 and 8 below that it had none. Both detached `new ArrayBuffer(8)`, a buffer with no
+view, which this V8 does not count: a detach of a buffer with no view, or with exactly one TypedArray view, updates that view
+in place and leaves the protector intact (a single-view transfer is free). It is invalidated, for good and per isolate, by a
+detach of a buffer with two or more views (of one kind or two), a DataView, or a detach key. Experiment 9 shows the views
+and the DataView (a detach key is the review's reading of V8's source: script cannot make one, and a wasm memory.grow is not
+one here). tools/qa-worker.mjs's 'control' step now detaches a buffer with two TypedArray views (positive) and one with no view
+(negative). Keeping the protector means never detaching a buffer with two or more views, a DataView or a detach key; a wasm
+memory.grow counts by the old buffer's views like any other detach (the kernels make several views of their heap, so a grow
+of it would invalidate the protector).
+
+== experiment 9 (T034b): one fresh module worker per variant: the TurboFan probe loop made first, then one detach of the
+   variant's kind, then the probe read again; Chrome trace of V8.InvalidateProtector (scratchpad/t034bwork/probe-views.mjs)
+version 153.0.8010.12
+no view (structuredClone transfer)                     detached true   probe before true  after true   deoptimized false  traced: -
+one Float32Array view (structuredClone transfer)       detached true   probe before true  after true   deoptimized false  traced: -
+one view, postMessage transfer list (lodWorker-style)  detached true   probe before true  after true   deoptimized false  traced: -
+one view, ArrayBuffer.prototype.transfer               detached true   probe before true  after true   deoptimized false  traced: -
+two TypedArray views (Uint8Array + Float32Array)       detached true   probe before true  after false  deoptimized true   traced: ArrayBufferDetaching (DedicatedWorker thread)
+two views of one kind (2x Float32Array)                detached true   probe before true  after false  deoptimized true   traced: ArrayBufferDetaching (DedicatedWorker thread)
+one DataView                                           detached true   probe before true  after false  deoptimized true   traced: ArrayBufferDetaching (DedicatedWorker thread)
+wasm memory.grow, no view                              detached true   probe before true  after true   deoptimized false  traced: -
+wasm memory.grow, one view                             detached true   probe before true  after true   deoptimized false  traced: -
+wasm memory.grow, two views                            detached true   probe before true  after false  deoptimized true   traced: ArrayBufferDetaching (DedicatedWorker thread)
+
+== the fix round's experiments (each detach of a buffer with NO view, so neither could see the protector):
+
+T034 fix round, Nov 3: V8's ArrayBufferDetaching protector in Playwright's Chromium 153.0.8010.12 (risk 7).
+Scripts: scratchpad/t034work/probe-exp7.mjs and probe-exp8.mjs; tools/qa-worker.mjs's 'control' step repeats experiment 8 in every run.
+Chromium was launched with --js-flags='--allow-natives-syntax --trace-protector-invalidation' and traced (Chrome tracing, category v8),
+which records V8.InvalidateProtector on the thread that invalidated a protector.
+
+== experiment 7: fresh classic and module workers (routed origin) make the TurboFan probe loop, then a control message, then a detach
+version 153.0.8010.12
+workers {"classic":[{"step":"made","calls":1024,"turbofan":true,"at":3.1999999955296516},{"step":"control","turbofan":true,"at":2994.2999999970198},{"step":"detach","turbofan":true,"at":4498.89999999851}],"module":[{"step":"made","calls":1024,"turbofan":true,"at":2.4000000059604645},{"step":"control","turbofan":true,"at":3000.8000000044703},{"step":"detach","turbofan":true,"at":4512.60000000149}]}
+invalidations []
+worker threads ["DedicatedWorker thread","DedicatedWorker thread"]
+
+== experiment 8: in a classic worker, a module worker and the page: the probe loop and a TurboFan function that depends on the
+   ArraySpecies protector (Array.prototype.map inlined); a buffer detached, then ArraySpecies invalidated
+{
+ "version": "153.0.8010.12",
+ "res": {
+  "classic": {
+   "probeCalls": 1024,
+   "probeBefore": true,
+   "mapperCalls": 18432,
+   "mapperBefore": true,
+   "speciesBefore": true,
+   "detached": true,
+   "probeAfterDetach": true,
+   "speciesAfter": false,
+   "mapperAfterSpecies": false
+  },
+  "module": {
+   "probeCalls": 1024,
+   "probeBefore": true,
+   "mapperCalls": 18432,
+   "mapperBefore": true,
+   "speciesBefore": true,
+   "detached": true,
+   "probeAfterDetach": true,
+   "speciesAfter": false,
+   "mapperAfterSpecies": false
+  },
+  "page": {
+   "probeCalls": 1024,
+   "probeBefore": true,
+   "mapperCalls": 18432,
+   "mapperBefore": true,
+   "speciesBefore": true,
+   "detached": true,
+   "probeAfterDetach": true,
+   "speciesAfter": false,
+   "mapperAfterSpecies": false
+  }
+ },
+ "traceEvents": 38,
+ "invalidations": [
+  {
+   "name": "V8.InvalidateProtector",
+   "args": {
+    "protector-name": "ArraySpeciesLookupChain"
+   },
+   "thread": "DedicatedWorker thread"
+  },
+  {
+   "name": "V8.InvalidateProtector",
+   "args": {
+    "protector-name": "ArraySpeciesLookupChain"
+   },
+   "thread": "DedicatedWorker thread"
+  },
+  {
+   "name": "V8.InvalidateProtector",
+   "args": {
+    "protector-name": "ArraySpeciesLookupChain"
+   },
+   "thread": "CrRendererMain"
+  }
+ ],
+ "stdout": []
+}
+
+== node 22.22.0 (V8 12.4), the same body (node --allow-natives-syntax):
+{"probeCalls":470,"probeBefore":true,"mapperCalls":3011,"mapperBefore":true,"speciesBefore":true,"detached":true,"probeAfterDetach":false,"speciesAfter":false,"mapperAfterSpecies":false}
+node --trace-protector-invalidation, one detach: 'Invalidating protector cell ArrayBufferDetaching'

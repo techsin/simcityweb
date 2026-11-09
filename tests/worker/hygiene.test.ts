@@ -10,6 +10,7 @@ import { ROOT, importGraph, scan, scanFiles, sourceFiles, staticImportGraph } fr
 describe('S1 isolate hygiene', () => {
   it('sim, city persistence and node harnesses contain no detaching APIs', () => {
     const files = [...sourceFiles('src/sim'), ...sourceFiles('src/save').filter((p) => !['src/save/index.ts', 'src/save/bundle.ts'].includes(p)),
+      ...sourceFiles('src/worker'), ...sourceFiles('tools/bench/worker').filter((p) => !p.includes('/.tmp/')),
       ...sourceFiles('tests/perf'), ...sourceFiles('tests/worker')];
     const violations = scanFiles(files);
     // Exactly these two operations are intentional. Do not exclude the control file or a whole directory:
@@ -162,7 +163,12 @@ describe('worker migration hygiene gates', () => {
       'src/save/db.ts', 'src/save/recoveryIdb.ts', 'src/save/cities.ts', 'src/save/bundle.ts', 'src/save/index.ts',
       'src/save/recoveryLs.ts'].includes(p))).toEqual([]);
   });
-  it.skip('W1.2: simWorker import graph excludes bundle.ts, save/index.ts and recoveryLs.ts', async () => {
+  it('W1.2: simWorker import graph excludes bundle.ts, save/index.ts and recoveryLs.ts', async () => {
     await expectCleanGraph('src/worker/simWorker.ts');
+    // nor any of the page's side: R14's persistence 'main' hands records and snapshots to the host that stores them
+    const graph = await importGraph('src/worker/simWorker.ts');
+    expect(graph).toContain('src/worker/protocolInbox.ts');
+    expect(graph.filter((p) => ['src/worker/replica.ts', 'src/worker/loopbackCore.ts', 'src/worker/LoopbackSimHost.ts',
+      'src/worker/WorkerSimHost.ts', 'src/worker/SimHost.ts'].includes(p))).toEqual([]);
   });
 });

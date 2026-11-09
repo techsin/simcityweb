@@ -8,6 +8,7 @@ import type { Simulation } from '../../src/sim/Simulation';
 import { approvalBreakdown } from '../../src/sim/economy/approval';
 import { demandInfo, econData, infraFlags, listOrdinances, listRewards, loanOffer, maxLoanAmount, onStrike, serviceEffectiveness } from '../../src/sim/economy';
 import { ORDINANCES } from '../../src/sim/economy/ordinances';
+import { listMilestones } from '../../src/sim/economy/rewards';
 import { windVector } from '../../src/sim/infra/wind';
 import { overlayLayer, overlayReadout, overlayVariantCount } from '../../src/sim/infra/overlays';
 import { emptyZoneStatus, utilityReaches } from '../../src/ui/zoneStatus';
@@ -79,7 +80,7 @@ describe('REPLICA_SAFE', () => {
         const guide = loop.core.runQuery('guideFacts', {});
         loop.post({ t: 'query', id: 1, name: 'guideFacts', args: {} }); await loop.drain();
         expect(guideReply).toMatchObject({ t: 'qres', id: 1, ok: true, value: guide }); seen.add('guideFacts');
-        compare('listRewards', listRewards); compare('listOrdinances', listOrdinances);
+        compare('listRewards', listRewards); compare('listMilestones', listMilestones); compare('listOrdinances', listOrdinances);
         compare('maxLoanAmount', maxLoanAmount);
         // approvalBreakdown is not replica-safe: its detail lines read approval.ts's survey WeakMap, which only the
         // authoritative residentSurvey fills (see replicaSafe.ts); its terms and values are compared here

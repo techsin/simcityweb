@@ -1,0 +1,58 @@
+build 2001 ms; worker chunk simWorker-Bc4zRJ9b.js 794276 bytes
+PASS build: the worker is its own chunk simWorker-Bc4zRJ9b.js
+server http://127.0.0.1:5534 (production build)
+worker simWorker-Bc4zRJ9b.js
+worker lodWorker-BwOpVbXr.js
+worker lodWorker-BwOpVbXr.js
+quickstart ready after 8974 ms
+PASS boot: a worker host {"info":{"kind":"worker","disposed":false,"day":0,"speed":0,"roads":0,"zoned":0,"funds":100000,"applied":3,"pending":0,"crashed":false},"workers":3,"bootMs":8975}
+PASS boot: a new city starts paused (the scene's rule, applied to the booted host) speed 0
+shot <out>/01-boot.png
+drag plan {"a":[480,320],"b":[800,320],"z0":[520,370],"z1":[740,430],"cells":[{"x":27,"z":25},{"x":36,"z":32}],"size":64}
+long tasks so far {"n":8,"over1s":4,"max":12911}
+PASS tools: road and zone drags acked {"before":{"roads":0,"zoned":0},"after":{"roads":17,"zoned":28,"pending":0}}
+shot <out>/02-tools.png
+PASS play: days advance at speed 3 {"from":0,"to":41,"speed":3}
+latency (post to ack applied, ms, SwiftShader, not gated) {"n":40,"p50":0.6999999992549419,"p95":3.5,"p99":3.800000000745058,"max":3.800000000745058}
+PASS verify: worker digest equals the replica's (paused) {"v1":{"worker":4248845991,"replica":4248845991},"v2":{"worker":4248845991,"replica":4248845991}}
+PASS save: Ctrl+S through the worker, stored by main {"lastSave":1793709303004,"dirty":false,"pill":"City saved"}
+shot <out>/03-saved.png
+PASS hidden: a save replies with the tab hidden {"ok":true,"ms":12.5,"cmd":56}
+worker simWorker-Bc4zRJ9b.js
+worker lodWorker-BwOpVbXr.js
+worker lodWorker-BwOpVbXr.js
+continue: city after 40095 ms
+PASS load: the saved city on a new worker {"saved":{"day":41,"roads":17,"zoned":28},"loaded":{"kind":"worker","disposed":false,"day":41,"speed":1,"roads":17,"zoned":28,"funds":99479,"applied":4,"pending":0,"crashed":false}}
+shot <out>/04-loaded.png
+PASS load: a saved city starts running speed 1
+PASS load: it continues {"from":41,"to":62}
+long tasks so far {"n":7,"over1s":3,"max":30346}
+PASS freeze: frozen 15 s, then no crash path and the days resume {"frozenAt":62,"d0":72,"d1":74,"ms":1536,"framesBefore":1,"firstFrameMs":1508,"disposed":false,"crashDialog":false}
+NOTE freeze: the first day within 1 s of resume (wall time, SwiftShader; not gated here) {"frozenAt":62,"d0":72,"d1":74,"ms":1536,"framesBefore":1,"firstFrameMs":1508,"disposed":false,"crashDialog":false}
+shot <out>/05-after-freeze.png
+PASS console: no errors in normal play 
+console error (expected) [game] host HostCrashed: Invalid tick
+console error (expected) [main] the simulation worker crashed HostCrashed: Invalid tick
+PASS crash: a fatal opens the crash dialog 
+shot <out>/06-crash-dialog.png
+worker simWorker-Bc4zRJ9b.js
+PASS crash: Restart from autosave boots a new worker on the save {"kind":"worker","disposed":false,"day":41,"speed":1,"roads":17,"zoned":28,"funds":99479,"applied":4,"pending":0,"crashed":false}
+shot <out>/07-restarted.png
+snapshot before the second crash {"ok":true,"idb":true,"base":1793709347492,"cmd":5}
+console error (expected) [game] host HostCrashed: Invalid tick
+console error (expected) [main] the simulation worker crashed HostCrashed: Invalid tick
+PASS recover: the crash dialog offers the snapshot ["Continue on the main thread","Recover unsaved progress","Restart from autosave"]
+shot <out>/07c-crash-dialog-recoverable.png
+worker simWorker-Bc4zRJ9b.js
+PASS recover: the snapshot restored on a new worker, with the edit {"tax":13.5,"info":{"kind":"worker","disposed":false,"day":43,"speed":1,"roads":17,"zoned":28,"funds":99479,"applied":4,"pending":0,"crashed":false}}
+shot <out>/07d-recovered.png
+console error (expected) [game] host HostCrashed: The simulation worker stopped responding
+console error (expected) [main] the simulation worker crashed HostCrashed: The simulation worker stopped responding
+PASS watchdog: 10 visible seconds without a packet open the crash dialog 10030 ms
+shot <out>/07b-watchdog-dialog.png
+PASS watchdog: Continue on the main thread runs the save on a local host {"kind":"local","disposed":false,"day":43,"speed":1,"roads":17,"zoned":28,"funds":99479,"applied":null,"pending":0,"crashed":false}
+shot <out>/08-main-thread.png
+fallback ready after 5116 ms
+PASS fallback: a failed worker script boots the city on the main thread, with one toast {"kind":"local","toasts":["The simulation worker could not start: the city runs on the main thread."]}
+shot <out>/09-fallback.png
+20 of 20 passed
