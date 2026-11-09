@@ -62,7 +62,6 @@ export const models: ModelBuilders = {
   lm_firefighters_memorial: building,
   rw_honour_plaque: massing([2, 0.6]),
   civ_emergency_operations_center: building,
-  // FEEL-17 bags / bins and FEEL-18 abandonment sign.
-  garbage_pile: massing([1.4, 1.2]),
+  // FEEL-18 abandonment sign.
   for_lease_sign: massing([2.4, 0.3]),
 };
