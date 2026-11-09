@@ -1,14 +1,22 @@
 # T046 — LG-03 framework and Express Metro
 
-**Uncommitted; infra hunks hold for B2.** Implemented the round-2 construction framework, Express Metro effects,
-the round-3 Expo draw hook, and the opt-in bot strategy. No CONTENT definitions, toolbar/model work, GUIDE UI,
-Worker files, BudgetPanel changes, commits, pushes or `.done` files are included.
+**Round-2 scope per NOTE-056/NOTE-058; this report update is uncommitted. Infra hunks hold for B2.** The original
+implementation covers the construction framework, Express Metro effects, the round-3 Expo draw hook and the opt-in
+bot strategy. This follow-up changes this report only; the implementation and its earlier validation are recorded below.
+
+The lead's notes were read from `origin/claude/beautiful-johnson-u2jqoz` using `git show`:
+`docs/dev/queue/NOTE-056-t054-lg03-round2.md`, `NOTE-058-lg03-b9.md` and `NOTE-053-sim-ensembles.md`.
+**Round 2 is judged on verifier §8.2 check 5** (installments, pause, cancel, save/load mid-construction and the Express
+Metro effect), plus Express Metro completing in `--megaprojects` on 256×60 seed 7 and lowest daily balance ≥0.
+NOTE-058 accepts the logged T055-tree screen against that scope. The three-project and 2045 funds targets remain
+unchanged and wait for round 3; the other balance numbers receive NOTE-053 ensemble medians and bands later.
 
 bot reference: residents [ 62577, 92903, 38351 ] = **193,831**, on the signed T041 option-B base at `60ca91d`.
 The first 128×15 seed-7 run reproduces **all 15 non-timing fixture rows exactly**, including §178,743 final funds.
-The second process reproduces all **15 annual state hashes** and all non-timing fixture rows exactly.
+The second process reproduces all **15 annual state hashes** and all non-timing fixture rows exactly. These are
+historical exact checks and a single-run screen, not the later NOTE-053 ensemble validation.
 
-## Changes per file
+## Original implementation changes per file
 
 | File | Change |
 |---|---|
@@ -26,7 +34,7 @@ The second process reproduces all **15 annual state hashes** and all non-timing 
 | `tests/sim/projectHooks.test.ts` (new) | Actual Metro assignment time/wait/crowding/P&R, city isolation and removal, Expo draw and optional old-save data. |
 | `tests/sim/botMegaprojects.test.ts` (new) | Opt-in parsing, saving/taxes/reserves, no-site retry, station prerequisite, missing definitions and exact gate boundaries. |
 | `tests/sim/botLongGame.test.ts` — outside explicit owns | Removed only the obsolete row asserting that `--megaprojects` must be rejected. |
-| This report | Definition and Worker handoff, evidence and remaining acceptance work. |
+| This report | This docs-only follow-up records the lead's round-2 scope, logged T055-tree screen, deferred round-3 targets and pending ensemble reporting. The original definition/Worker handoff and validation evidence remain below. |
 
 ## Settled definition contract for T055
 
@@ -59,8 +67,10 @@ once-per-city prohibition after a completed building is demolished; cancellation
 | `spaceCenter` | 6,000,000 | 36 | `population: 1150000, education: 125` |
 
 CONTENT should use `unique: true` for the named unique structures. Fusion's regular output/jobs/upkeep fields are
-4,000 MW / 600 jobs / §40k monthly; framework gating is already tested. Round-3 Fusion/Expo/Space mechanics and
-CONTENT's production definitions are still separate work. No stand-in definitions are injected by the production bot.
+4,000 MW / 600 jobs / §40k monthly; framework gating is already tested. T055's logged tree now has live Express Metro,
+Fusion and Expo definitions. Per NOTE-056, Fusion may use its regular power output only after `built` reaches 1;
+Expo has the draw hook only, with its tourism multiplier SIM deferred to round 3. Space Center stays in pendingCatalog
+until round 3. No stand-in definitions are injected by the production bot.
 
 `systemData.projects?: { v: 1; items: ProjectProgress[] }` is absent until the first project starts. Each record has
 `buildingId`, `def`, optional `kind`, `totalCost`, `totalDays`, `progressDays`, `paid`, `paidDays`, `lastPaymentMonth`,
@@ -79,7 +89,12 @@ inspector progress/opening date and bank-month display still belong to GUIDE; Bu
 
 ## Verification
 
-All Vitest commands were run one file at a time through the shared quiet gate. Standard Vite config loading failed
+The following results are retained from the implementation round; no tests, compiler or bots were rerun for this
+docs-only update. Verifier check 5 is supported by `projects.test.ts` (installments, pause, cancellation and exact
+mid-construction continuation) and `projectHooks.test.ts` (the actual Express Metro assignment effects).
+For this follow-up, `git diff --check` passes and only this report is modified; the change remains uncommitted.
+
+All earlier Vitest commands were run one file at a time through the shared quiet gate. Standard Vite config loading failed
 with **spawn EPERM** in `optimizeSafeRealPathSync`; a scratch-only native config with `resolve.preserveSymlinks: true`
 and the threads pool ran successfully. No repository configuration was changed.
 
@@ -98,7 +113,7 @@ and the threads pool ran successfully. No repository configuration was changed.
 | `tests/save/continuity.test.ts` | 2 passed |
 | **Total** | **162 passed, 1 existing skip** |
 
-`npx tsc --noEmit` and `git diff --check` pass. Full-suite and browser checks were intentionally not run, per the
+`npx tsc --noEmit` and `git diff --check` passed in that implementation round. Full-suite and browser checks were intentionally not run, per the
 worktree's explicit shared-machine restrictions. Mid-construction save/load tests use the actual file bundle codec
 and compare exact progress, payments, funds and `built` through 120 subsequent days, both paused and running.
 
@@ -133,35 +148,62 @@ node $T046Quiet npx vitest run tests/sim/projects.test.ts --maxWorkers=1 --confi
 npx tsc --noEmit
 ```
 
-The absolute variant gates are **not all passed**. The requested 256×60 seed-7 `--megaprojects` variant was run using
-the real-source bundled driver. All four production definitions are absent from this base's catalog, so it completed
-zero projects. It reproduced all 60 signed base non-timing rows exactly, with no injected definitions or balance edits.
-This is a dependency mismatch between round-2 ownership and final acceptance. Repeat after T055 and round-3 effects:
+### Current round-2 screen: T055's tree with live definitions
+
+The worker's logged `--megaprojects` 256×60 seed-7 run on T055's tree completed these projects. This is the supplied
+single-run screen, not a fresh run in this docs-only follow-up and not an ensemble median.
+
+| Project | Started | Completed |
+|---|---|---|
+| Express Metro | 1 Aug 2023 | 1 Feb 2025 |
+| Fusion Power Plant | 1 Mar 2037 | 1 Sep 2039 |
+| World Expo | 1 Sep 2039 | 1 Sep 2041 |
+
+| Round-2 gate | Evidence/status |
+|---|---|
+| Verifier §8.2 check 5: installments, pause, cancel, save/load mid-construction, Express Metro effect | Framework/hook tests above supply implementation evidence; NOTE-058 accepts the screen under this scope. No new verifier/browser execution is claimed here. |
+| Express Metro completes in 256×60 seed 7 with `--megaprojects` | **PASS:** completed 1 Feb 2025. |
+| Lowest daily balance ≥0 | **PASS: §4,481.** |
+
+The canonical command for that row is:
 
 ```powershell
 node $T046Quiet npx tsx tools/simbot.ts --size 256 --years 60 --seed 7 --megaprojects --quiet
-# If tsx remains unavailable, the real-source bundled driver accepts identical options:
+# Original T046 fallback when tsx was unavailable; rebuild against the tree being measured:
 node $T046Quiet node "$T046Scratch/final-driver/check-base.js" "$T046Scratch/projects256-s7.json" --size 256 --years 60 --seed 7 --megaprojects --quiet
 ```
 
-| Acceptance line | Current observed result | Field for the final acceptance rerun |
+### Deferred round-3 targets and ensemble reporting
+
+| Unchanged round-3 target | Logged T055-tree single-run screen | Disposition |
 |---|---|---|
-| ≥3 completions in 2030–2060 | **FAIL: 0**, all four definitions missing | `completed2030To2060 >= 3`, using exact day endpoints. |
-| 2045 funds ≤12 expense months | **FAIL: 16.845602**; §7,961,080 / §472,591 monthly expenses | 2045 `bankMonths <= 12`. `operatingBankMonths` also excludes installments; currently identical. |
-| Tax ≥8% while saving | **Not exercised**: saving never activates without candidate definitions | `lowestSavingTax >= 8`. The unit test covers the managed floor; an explicit fixed `--tax` intentionally overrides it. |
-| Lowest daily funds ≥0 | **PASS: §4,481** | `lowestDailyBalance >= 0`. |
-| Year-60 population ≥950k | **PASS: 1,511,394** | Final `pop >= 950000`. |
-| Approval ≥50 from year 30 | **PASS: 78.078690** minimum | `lowestApprovalFromYear30 >= 50`. |
-| EQ gate | **PASS: 120.071398** by year 30 | `bestEqByYear30 >= 100`, sampled only through day 10800. |
+| ≥3 project completions in 2030–2060 | **2:** Fusion and Expo. Express Metro completed in 2025, before the interval. | Deferred to round 3 by NOTE-056/NOTE-058; not a round-2 failure. |
+| 2045 funds ≤12 expense-months | **13.45 expense-months.** | Deferred to round 3 by NOTE-058; not a round-2 failure. |
 
-Final residents are `[409265, 736035, 366094]`, funds §14,534,867, approval 80.204731 and EQ 131.262756.
-`projects256-s7.json` contains all annual rows/hashes and `projects256-gates.json` the complete gate summary plus zero
-differences against the 60 base fixture rows. No cheaper bot-only projects or hidden acceptance exemptions were used.
+NOTE-058 identifies the banking cause: with nothing left to build, the bot stops saving and banks. Space Center must
+not be activated early and neither target is relaxed. Round 3 must check that the bot keeps saving after every project
+is built and fix remaining banking behavior if it still breaks the 2045 target. The round-3 LG-03 follow-up is already
+in `POLISH_BACKLOG.md`; this docs-only update does not change the backlog.
 
-A separate flags-off 256×60 run, seed 11, and a developed Hard two-process comparison were not rerun. The empty-catalog
-project variant exactly matches the seed-7 base fixture; the base 128 exact check and Medium/Hard idle-save comparisons
-also pass. No broad balance retune or fixture change was made. The provisional ±1% SIM base tolerance is not used to
-soften the absolute project thresholds. Dense active-project G-STEP / frame checks await production definitions.
+Per NOTE-053, the later balance report will use **five-run ensemble medians and min–max bands on the same T055-enabled
+tree**, once T062's runner reaches it: control plus the four NOTE-052 nudges (±X on day 1 and at the start of year 5,
+using T062's chosen X). Funds in 2045, tax while saving, lowest daily balance, year-60 population, approval from year 30
+and the EQ gate are to be reported that way. The logged single-run figures above are screen numbers only; no ensemble
+median or band is available here. NOTE-053's nine-run escalation applies when its threshold-proximity rule calls for it.
+Only the round-2 lowest-daily-balance requirement is gated among those balance numbers now; it remains ≥0.
+
+### Historical T046-only screen
+
+The earlier real-source bundled run used this lane's catalog before T055's live definitions: zero completions and
+16.845602 expense-months in 2045. It reproduced all 60 signed base non-timing rows exactly. Its files
+`projects256-s7.json` and `projects256-gates.json` in the scratch directory are **historical empty-catalog evidence**,
+not the logged T055-tree screen and not its ensemble results. The former population/approval/EQ figures from that run
+are not reused as the current balance verdict.
+
+A separate flags-off 256×60 run, seed 11, and a developed Hard two-process comparison were not rerun in the original
+implementation round. The base 128 exact check, Medium/Hard idle-save comparisons and two-process hashes remain
+exact evidence. Balance judging now follows NOTE-053, superseding the report's former provisional ±1% rule; ensemble
+validation and dense active-project G-STEP/frame checks remain pending. No balance tuning or fixture changes are made here.
 
 ## Exact cloud-held Worker requests
 
@@ -197,13 +239,24 @@ broader standing permission. Please route these additive rows to T034/T039:
 
 ## Browser checklist for the lead
 
-- [ ] After T055, check the Mega-projects category, all population/quality locks and the six-station Express lock.
+These checks were not rerun for this docs-only update. Round-2 verifier check 5 and its integration follow-up:
+
+- [ ] On T055's tree, check the Mega-projects category, live population/quality locks and the six-station Express lock.
 - [ ] Place with exactly the first installment available; inspect crane/site and zero operating costs/output/jobs.
 - [ ] Check the installment label, remaining balance and inspector's progress/opening date after GUIDE wiring.
 - [ ] Force a missed installment; verify pause wording, fixed progress, no project overdraft and monthly resumption.
 - [ ] Cancel and bulldoze sites at placement and mid-build; confirm exactly half paid, no repeat/full-price refund.
 - [ ] Save/load and recovery-load a paused and a running site on the Worker host; progress/payment totals stay exact.
 - [ ] Complete Express; verify faster subway, 2.5-minute base wait and 1.5× station capacity only in that city.
-- [ ] With round-3 definitions/effects, check Fusion output starts at `built === 1`, Expo's twelve-month draw and tower,
-  and Space Center's specified effects; check no immediate completed-building opening toast at placement.
-- [ ] Run the absolute 256×60 gates above, full Vitest suite, and shared-machine real-GPU/frame/step checks.
+- [ ] With live Fusion's regular output, confirm it feeds the grid only at `built === 1`; check no completed-building
+  opening toast at placement.
+- [ ] Confirm Express completion and lowest daily funds ≥0 in the logged 256×60 seed-7 row; obtain the later NOTE-053
+  ensemble medians/bands when T062's runner reaches this tree. Full Vitest and real-GPU/frame/step checks remain with the lead.
+
+Deferred round-3 checks:
+
+- [ ] Check Expo's tourism multiplier/twelve-month effect and tower, and Space Center's specified effects once its SIM
+  goes live; keep Space Center in pendingCatalog during round 2.
+- [ ] Judge ≥3 completions in 2030–2060 and 2045 funds ≤12 expense-months in round 3, without relaxing the targets.
+- [ ] Check saving after the final available project; address any remaining banking behavior that breaks the 2045 funds
+  target, as already tracked in the LG-03 backlog note.
