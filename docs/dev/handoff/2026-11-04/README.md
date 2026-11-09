@@ -24,7 +24,7 @@ in its messages, summarised under 4 below.
   - T036 step 3 (0e7c2b0);
   - T052 (9446c70);
   - T034 with T034b, W1.2 the sim in a real Web Worker behind `?simworker=1` (5c40d77).
-- **Mid-merge at handoff:** T040 (desk7, merge commit 3b98d02, not yet pushed) and T058 (desk5). Their merge agents
+- **Mid-merge at handoff:** T040 (desk7) landed after this note as fe21e41; T053 (desk8) and T058 (desk5) were still merging. Their merge agents
   push only after the full vitest and the bot pass. If the session died before they pushed, the main checkout
   holds an unpushed merge commit. Re-run that merge from the bundle (section 3), or let the resumed chain redo it.
 - **Lead decisions** are in docs/dev/queue/NOTE-048 … NOTE-059. The ones that change gates:
