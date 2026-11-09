@@ -294,6 +294,17 @@ export class Toasts {
     return id;
   }
 
+  /** keep shown questions in place: new and promoted toasts go below them */
+  private insertToast(t: HTMLElement): void {
+    if (!this.el.firstElementChild?.classList.contains('question')) {
+      this.el.prepend(t);
+      return;
+    }
+    if (t.classList.contains('question') && t.parentElement === this.el) return;
+    const next = Array.from(this.el.children).find((c) => !c.classList.contains('question')) ?? null;
+    if (next !== t) this.el.insertBefore(t, next);
+  }
+
   /**
    * show a toast; plays the kind's sound (TOAST_SOUND) unless opts.silent or it merges into an identical live toast.
    * opts.action: a click runs it (instead of jumping to `cell`), with a small hint line under the text.
@@ -315,7 +326,7 @@ export class Toasts {
       live.badge.animate([{ transform: 'scale(1.35)' }, { transform: 'scale(1)' }], { duration: 220, easing: 'ease-out' });
       if (cell) live.cell = cell;
       live.restart(ttl);
-      if (this.el.firstElementChild !== live.el) this.el.prepend(live.el);
+      if (this.el.firstElementChild !== live.el) this.insertToast(live.el);
       return;
     }
     // FEEL-02a: over budget, news with an action waits (the queue goes first), other news stays in the ticker only
@@ -400,7 +411,7 @@ export class Toasts {
     if (!sticky) timer = arm(kill, ttl);
     this.live.set(key, entry);
     if (answers) t.classList.add('question');
-    this.el.prepend(t);
+    this.insertToast(t);
     // at most 4 visible (3 on short screens, e.g. 1280×720: CityScene sets .short on the UI root); the oldest goes first,
     // but a question waits for its answer (or its own expiry): news must not push it out before it can be read
     const max = this.ctx.root.classList.contains('short') ? Math.min(3, Toasts.MAX) : Toasts.MAX;
