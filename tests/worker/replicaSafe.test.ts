@@ -8,6 +8,7 @@ import type { Simulation } from '../../src/sim/Simulation';
 import { approvalBreakdown } from '../../src/sim/economy/approval';
 import { demandInfo, econData, infraFlags, listOrdinances, listRewards, loanOffer, maxLoanAmount, onStrike, serviceEffectiveness } from '../../src/sim/economy';
 import { ORDINANCES } from '../../src/sim/economy/ordinances';
+import { listMilestones } from '../../src/sim/economy/rewards';
 import { windVector } from '../../src/sim/infra/wind';
 import { overlayLayer, overlayReadout, overlayVariantCount } from '../../src/sim/infra/overlays';
 import { emptyZoneStatus, utilityReaches } from '../../src/ui/zoneStatus';
@@ -73,7 +74,7 @@ describe('REPLICA_SAFE', () => {
         }
         for (const [overlay, variant] of views) { loop.setView({ overlay, variant, panels: [], focus: [] }); loop.flush(true); }
         const before = exactDigest(loop.state), liveBefore = exactDigest(loop.primary), simRng = loop.core.sim.rng.state;
-        compare('listRewards', listRewards); compare('listOrdinances', listOrdinances);
+        compare('listRewards', listRewards); compare('listMilestones', listMilestones); compare('listOrdinances', listOrdinances);
         compare('maxLoanAmount', maxLoanAmount);
         // approvalBreakdown is not replica-safe: its detail lines read approval.ts's survey WeakMap, which only the
         // authoritative residentSurvey fills (see replicaSafe.ts); its terms and values are compared here
