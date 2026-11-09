@@ -1,0 +1,17 @@
+server http://127.0.0.1:5534 (dev)
+worker simWorker.ts?worker_file&type=module
+worker lodWorker.ts?worker_file&type=module
+worker lodWorker.ts?worker_file&type=module
+quickstart ready after 9659 ms
+PASS boot: a worker host {"info":{"kind":"worker","disposed":false,"day":0,"speed":0,"roads":0,"zoned":0,"funds":100000,"applied":3,"pending":0,"crashed":false},"workers":3,"bootMs":9659}
+PASS boot: a new city starts paused (the scene's rule, applied to the booted host) speed 0
+shot <out>/01-boot.png
+drag plan {"a":[480,320],"b":[800,320],"z0":[520,370],"z1":[740,430],"cells":[{"x":27,"z":25},{"x":36,"z":32}],"size":64}
+console error [game] host HostCrashed: The simulation worker stopped responding
+console error [main] the simulation worker crashed HostCrashed: The simulation worker stopped responding
+FAIL tools: road and zone drags acked {"before":{"roads":0,"zoned":0},"after":{"roads":0,"zoned":0,"pending":0}}
+shot <out>/02-tools.png
+pageerror Error: Simulation host is disposed
+FAIL play: days advance at speed 3 {"from":0,"to":0,"speed":0}
+QA FAILED page.evaluate: Error: Simulation host is disposed
+2 of 5 passed; failed: tools: road and zone drags acked, play: days advance at speed 3, harness
