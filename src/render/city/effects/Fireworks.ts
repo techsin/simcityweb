@@ -54,6 +54,8 @@ export interface FireworksStartOptions {
   intensity?: number;
   /** show length in seconds from the opening salvo to the last finale burst */
   duration?: number;
+  /** short rank moment: duration includes the fading tail (6..10 s); leaves New Year's show slot free */
+  rankBurst?: boolean;
   /** seconds until the opening salvo bursts ("midnight"); rockets for it launch ~2.6 s earlier. Default 2.8 */
   delay?: number;
   seed?: number;
@@ -606,6 +608,9 @@ export class Fireworks {
   /** clock at start(): a new show can take over while the last one's sparks still fade out */
   private t0 = 0;
   private running = false;
+  private rankBurst = false;
+  private rankEndAt = Infinity;
+  private rankEndNow = Infinity;
   private endAt = -1;
   private seed = 1;
   private k = 0.5;
@@ -806,9 +811,12 @@ export class Fireworks {
   get active(): boolean {
     return this.running || this.clock < this.endAt;
   }
-  /** true while the show is still launching shells */
+  /** true while the main show is still launching; short rank bursts leave New Year's show slot free */
   get isRunning(): boolean {
-    return this.running;
+    return this.running && !this.rankBurst;
+  }
+  get isRankBurst(): boolean {
+    return this.rankBurst && this.active;
   }
   /** the show has stopped launching and its last shells bloomed a while ago (the grand finale's curtain is fading) */
   get settled(): boolean {
@@ -874,8 +882,13 @@ export class Fireworks {
     const pop = Math.max(0, opts.population ?? 2000);
     this.k = opts.intensity !== undefined ? clamp01(opts.intensity) : fireworksShowSize(pop);
     const k = this.k;
-    this.duration = Math.max(6, opts.duration ?? 20 + 70 * Math.pow(k, 1.4));
-    this.delay = Math.max(0, opts.delay ?? 2.8);
+    this.rankBurst = opts.rankBurst === true;
+    if (this.rankBurst) this.timeScale = 1;
+    const rankLength = Math.max(6, Math.min(10, opts.duration ?? 8));
+    this.rankEndAt = this.rankBurst ? this.t0 + rankLength : Infinity;
+    this.rankEndNow = this.rankBurst ? performance.now() + rankLength * 1000 : Infinity;
+    this.duration = this.rankBurst ? rankLength - 4 : Math.max(6, opts.duration ?? 20 + 70 * Math.pow(k, 1.4));
+    this.delay = Math.max(0, opts.delay ?? (this.rankBurst ? 0 : 2.8));
     this.seed = ((opts.seed ?? Math.floor(Math.random() * 2 ** 31)) | 0) || 1;
     this.running = true;
     this.opened = false;
@@ -887,7 +900,7 @@ export class Fireworks {
     this.nextSalvo = lerp(11, 6.5, k) + this.rnd() * 3;
     this.finaleAt = this.duration - lerp(3.5, 15, k);
     // (upper bound while running; the real end is known once the show stops launching)
-    this.endAt = this.t0 + this.delay + this.duration + 14;
+    this.endAt = Math.min(this.rankEndAt, this.t0 + this.delay + this.duration + 14);
     this.theme = TH_MIXED;
     this.themeUntil = lerp(5, 8, k) + this.rnd() * 3;
     this.themeSeq = 0;
@@ -909,6 +922,9 @@ export class Fireworks {
     this.pendingInit = false;
     this.qN = this.qHead = 0;
     if (immediate) {
+      this.rankBurst = false;
+      this.rankEndAt = Infinity;
+      this.rankEndNow = Infinity;
       this.endAt = -1;
       this.clearAll();
       this.hide();
@@ -934,6 +950,11 @@ export class Fireworks {
 
   update(dt: number): void {
     const t0 = performance.now();
+    if (this.rankBurst && t0 >= this.rankEndNow) {
+      this.stop(true);
+      this.lastUpdateMs = 0;
+      return;
+    }
     if (!this.active) {
       if (this.warm > 0) this.warmUp();
       else if (this.mesh.visible || this.reflection.visible || this.smoke.visible || this.pools.visible) this.hide();
@@ -1229,6 +1250,10 @@ export class Fireworks {
 
   // ------------------------------------------------------------------------------------------------ director
   private direct(): void {
+    if (this.rankBurst && this.clock >= this.rankEndAt) {
+      this.stop(true);
+      return;
+    }
     if (!this.running) return;
     if (this.pendingInit) this.initShow();
     this.directShow();
@@ -2512,7 +2537,8 @@ export class LaunchSiteIndex {
     for (const b of src.buildings) this.update(b, src);
   }
 
-  /** Added / changed, after the building renderer has applied the event. Existing ids keep their Map order. */
+  /** Added / changed: queued adds have no visual; pending changes keep their old visual until the swap.
+   *  Both catch up through onVisual -> visualChanged. Existing ids keep their Map order. */
   update(b: SiteBuilding, src: SiteSource): void {
     const old = this.entries.get(b.id);
     const e: IndexedSite = {
