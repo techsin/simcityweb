@@ -11,7 +11,8 @@ The task's base is "dev after T033 and T034 merge". T033 is in dev (`d101122`); 
 W1.3 builds on T034's `simWorker.ts`, `WorkerSimHost.ts` and `workerProtocol.ts`, so `cloud/w13` starts at dev
 `c364906` and merges `cloud/t034` at `042efa5` (no conflicts). When T034 merges into dev, this branch merges dev again.
 **Update (resumed run, Nov 4):** T034 merged into dev (`5c40d77`, with T034b), and this branch merged dev `f1c9713` at
-`70e110f`, without conflicts.
+`70e110f`, without conflicts. **Update (Nov 9):** it merged dev `87c7c9c` (T053, NOTE-059) at `d04432b`, without
+conflicts (CityScene.ts auto-merged). `cloud/w13` is dev `87c7c9c` plus W1.3 alone.
 
 ### Gap list (required, against what was done when this lane started)
 
@@ -98,6 +99,26 @@ the test that covers it under the semaphore and restores the file): 23 reversion
 all fail their test. M11b (the host dropping the change count of the worker's first Ready) passed at first; `98750f4`
 added the check, after which it fails too. Logs: w13work/mutate-final.log, w13work/mutate-m11b.log.
 
+### Resumed run (Nov 9, after the Nov 4 usage-limit stop)
+
+The Nov 4 run was stopped at the shared usage limit with its gates queued (the full vitest on `984ec54` had passed; the
+bot, the second browser run and the save-cost measurement had not started) and this report uncommitted. This run:
+- read the lead's handoff (docs/dev/handoff/2026-11-04/README.md): `bundles/cloud_w13.bundle` holds `984ec54`, an
+  ancestor of this branch, and `wip/co_w13.uncommitted.patch` is a strict subset of the report changes still in the
+  worktree, so nothing was lost; they are committed as `d5fec16`;
+- re-read the task file, NOTE-044 and every NOTE naming T039 or W1.3: NOTE-044 to NOTE-049, NOTE-051, and two new
+  ones, **NOTE-057** (the merge order: W1.3 interleaves with the desktop lanes; merge dev into a later lane the day a
+  conflicting one lands) and **NOTE-059** (browser checks move to the desktop; item 3: "Cloud lanes already in flight
+  (B2, W1.3, …) keep the browser checks they have planned", and the report lists real-GPU-only items for a post-merge
+  Desktop QA run). Hence the kill-the-tab check runs here again, and the *Desktop QA* list below is new;
+- merged dev `87c7c9c` (`d04432b`: T053, NOTE-059; no conflict, CityScene.ts auto-merged; T053 touches no W1.3 file);
+- reviewed the lane's diff against dev on the merged tree (src/worker, src/save, main.ts, dialogs.ts, CityScene.ts),
+  with attention to T034b's WorkerSimHost speed override and T053's replicaSafe entry beside W1.3's code: no defect
+  found, no code change;
+- re-ran the 23 fix reversions on the merged tree, in a throwaway export so the queued gates never saw a reverted file
+  (w13work/mutate2.py; log w13work/mutate-merged.log): **23 of 23 fail their test** (M1-M19, M3b, M6b, M11b, M12b);
+- ran every gate on `d04432b` (below). Only this report and the done marker change after it.
+
 ### NOTE-051 (T037a's two save-path entries)
 
 T037a is not in dev or in any fetched branch yet. W1.3 leaves the whitelist where T033 put it (recoveryCodec.ts
@@ -116,10 +137,25 @@ GATES_TABLE
 
 BROWSER_EVIDENCE
 
+### Desktop QA (NOTE-059: after the merge, on dev at the merge commit, on the real GPU)
+
+The production build (`npm run build`, `vite preview`), Chromium. Report pass or fail per item, with screenshot paths.
+
+| # | Page and flags | Steps | Expected |
+|---|---|---|---|
+| D1 | `node tools/qa-journal.mjs --port <free port> --out <dir>` (it builds and serves `?quickstart=1&size=small&seed=7&simworker=1&simdev=1` itself) | the scenario as written | every CHECK line PASS: the journal alone offered and replayed by the worker, which saves before its Ready; the worker's snapshot offered, restored, its journal replayed; the first save leaves no recovery record; no page or console errors |
+| D2 | `node tools/qa-worker.mjs` in worker mode (`--host worker`, NOTE-047's T028 rerun), at size 256 | the whole harness; W1.3 changes the persistence under its save, load, crash, recover and watchdog steps (the worker now writes its own IndexedDB) | as T028/T034b gated it: every check PASS. In particular *recover: the snapshot restored on a new worker, with the edit* (the worker, not main, stored that snapshot now) |
+| D3 | `/?quickstart=1&size=small&seed=7&simworker=1&simdev=1` | save (Ctrl+S); raise the residential tax and zone a block; at once crash the worker from the console: `__metropolis.city.host.link.post({t: 'tick', seq: 0, dt: -1, ack: 0})`; in the crash dialog choose **Recover unsaved progress** | a new worker boots with the tax and the zone back (no worker snapshot was taken, so it is the journal alone); the save pill reads saved (the worker saved before its Ready); no second recovery offer |
+| D4 | the same | as D3, but choose **Restart from autosave** | the city is the save, without the edit; back at the title and opening the city again offers the journal ("A record of your edits since the last save…"); Discard deletes it |
+| D5 | the same | as D3, but choose **Continue on the main thread** | a local host (`__metropolis.city.host.kind === 'local'`) runs the save without the edit |
+| D6 | worker session, then the default host: `/?quickstart=1&size=small&seed=7&simworker=1&simdev=1`, then `/?simdev=1` (no `simworker`) | in the worker session: save, change the tax, close the tab; reopen without `simworker`, Continue: the title offers the journal; Recover | LocalSimHost replays it (the tax is back) and the city reads as unsaved until the next save, which removes the journal (decision 5) |
+| D7 | a 1M city (dense1m fixture imported), `?simworker=1` | Save, with a performance recording | the worker's longest task in the save ≤ 60 ms (save:copy and save:put are separate tasks, §4.2); the page's handling of the packet that carries the `saved` reply ≤ 2 ms (row W1.3's acceptance; decision 14; the node numbers are in *Gates*) |
+
 ### Decisions (conservative readings, for the lead)
 
-1. **The base.** T034 is not in dev, and W1.3 is built on its worker. `cloud/w13` merges `cloud/t034` at `042efa5`; the
-   merge step brings T034 with it, or merges T034 first (this branch then merges dev cleanly: T034's commits are the same).
+1. **The base** (settled). T034 was not in dev when this lane started, and W1.3 is built on its worker, so `cloud/w13`
+   merged `cloud/t034` at `042efa5`. T034 has since merged into dev (`5c40d77`, with T034b), and this branch merged dev
+   after it (`70e110f`, `d04432b`): the merge step brings W1.3 alone.
 2. **G17 (b), the `speedChanged` order, is T061's** (NOTE-049 queued it after this lane started, "beside W1.3"; it owns
    that fix in LoopbackSimHost.ts). This lane's WorkerSimHost.ts changes are the persistence paths only, so T061's
    items there merge around them.
@@ -169,10 +205,21 @@ BROWSER_EVIDENCE
     promise that never settles), so the worker's own IndexedDB snapshot, taken on `hidden`, cannot stand in for the
     journal; what is checked is the unload path alone, the worst case of §4.3. Step 2 then lets the worker store a
     snapshot first and checks the journal bound to it.
+16. **"Journal replay in `SimCore.boot`" is `SimCore.replayBootJournal`, called by every host right after `boot()` and
+    before the first tick** (Nov 9 note). `boot()` is synchronous and the journal is read from IndexedDB, which is
+    asynchronous, so each host reads it first (the worker in its boot phase `'journal'`, LocalSimHost alongside its
+    module loads, the loopback in `start()`) and replays it before anything ticks. That is the row's ordering, and one
+    replay path for every host.
+17. **The crash dialog's Recover with a journal is checked by host tests, not in a browser here** (Nov 9). NOTE-059
+    moves browser checks to the desktop; W1.3 keeps the one it planned, the task's kill-the-tab check. The main.ts wiring
+    (`playCity(…, choice === 'recover')`) and the worker-idb paths under qa-worker.mjs's crash, recover and watchdog steps
+    are in the *Desktop QA* list, to run on the real GPU after the merge.
 
 ### Left for others
 
-- T061 (NOTE-049): the `speedChanged` order in PacketSimHost (G17 b), the dispatch provenance, the clock cap.
+- T061 (NOTE-049): the `speedChanged` order in PacketSimHost (G17 b), the dispatch provenance, the clock cap. A trial
+  merge of `cloud/t061` (`825d1df`, Nov 9) with `cloud/w13` (`d04432b`) is clean (`git merge-tree`, no worktree
+  touched); either can land first.
 - T028 / qa-worker.mjs: fold tools/qa-journal.mjs in as its W1.3 step, if wanted.
 - Real-GPU and Chromium numbers for the save costs (decision 14).
-- When T034 merges into dev, this branch merges dev again (decision 1).
+- The desktop: the *Desktop QA* list below, after the merge (NOTE-059 item 3).
