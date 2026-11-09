@@ -9,7 +9,7 @@ const PROJECTS = ['tr_express_metro', 'util_fusion_plant', 'lm_world_expo', 'lm_
 const ARCOLOGIES = ['com_business_arcology', 'res_arcology', 'res_arcology_mixed'];
 const EXPANSIONS = ['facility_level_2', 'facility_level_3', 'park_small_level_2', 'park_small_level_3'];
 const HONOURS = ['park_eco_plaza', 'lm_firefighters_memorial', 'rw_honour_plaque'];
-const STUBS = [...PROJECTS, ...ARCOLOGIES, ...EXPANSIONS, ...HONOURS, 'civ_emergency_operations_center', 'garbage_pile', 'for_lease_sign'];
+const STUBS = [...PROJECTS, ...ARCOLOGIES, ...EXPANSIONS, ...HONOURS, 'civ_emergency_operations_center', 'for_lease_sign'];
 
 registerAllModels();
 
