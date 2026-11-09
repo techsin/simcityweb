@@ -3208,3 +3208,7 @@ node --experimental-strip-types $ensembleTool compare signoff --dev "$ensembleDe
 ```
 
 The collection tool keeps the original exact checks available: every raw annual record includes the full non-timing bot row and canonical serialized-state hash. Medium bit-identity, two-process hashes and non-SIM “bot identical” checks remain exact. NOTE-053 also leaves the specified large-effect Hard/NEW-05 sweep checks intact; medians do not authorize compensating mechanics or changing the default bot strategy.
+
+### Round 5: interim lane judgements (NOTE-055)
+
+The T043/T044/T045 campaign completed all five-member ensembles and required nine-member stages against the original dev simulation at `805d7d4`. Paste-ready `T043.md`, `T044.md`, `T045.md` and `SUMMARY.md` are in `C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-lanes/`, beside exact commands, verdict JSON, independent audits and `validation.json`. Shared nine-member dev references are under `data/dev/base`. Fifteen existing dev members were reused; 170 new members ran with `--jobs 4` through the quiet gate, one ensemble command at a time. No baseline or simulation code changed. These are interim judgements; final gates after T041 lands remain separate.
