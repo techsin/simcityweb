@@ -304,3 +304,21 @@ init-only `save/serialize.ts` 351-353 and `terrainGen.ts`). Since `af62daf` no f
 or src/core changed, and dev's src/game hunks (NewYear's toast budget) write no layer. The audit stands as written,
 including the open T034 item (the loopback resync's state handoff, `WorldView.ts:388`), which NOTE-048 routes to
 T034.
+
+### Resumed Nov 9: the gap list at the resume (written before the remaining work)
+
+The lead's session and every cloud workflow stopped at the shared usage limit on Nov 4 (the handoff,
+`docs/dev/handoff/2026-11-04/README.md`, chain desk1 at its finish step). The worktree was intact: `cloud/r1` @
+`23d845b`, the same head as the handoff's `bundles/cloud_r1.bundle`, with nothing uncommitted. `local/R1-terrain-rects`
+has not moved since `255239b`. Dev had moved 93 commits to `87c7c9c` (T052, T034 with T034b, T040, T053, NOTE-053 …
+059), merged at `7139bec` with no conflicts: dev changed none of R1's files.
+
+| # | required | state at the resume | action |
+|---|---|---|---|
+| 11 | Gates on the tree that merges: tsc, the full vitest, the bot identical to dev's | green at `90f153f` (dev `50a6b29`); not run on dev `87c7c9c` | rerun all three on `7139bec`, the bot against a clean export of `87c7c9c` |
+| 12 | The writer audit holds on the merged tree | re-swept at `90f153f` | re-sweep dev's new src/sim, src/worker and src/game hunks (T034's real Web Worker host, T053, the disasters `live` mode) |
+| 13 | NOTE-048: the cloud checks the resync rebuild (`WorldView.ts:388` kept the old state) when T034 lands, and fixes it in a follow-up if it is still open | open in the audit table | check dev's T034 merge |
+| 14 | Browser checks | the Nov 3-4 SwiftShader attempts were cut short (below); NOTE-059 then cancelled R1's SwiftShader re-check: desktop lanes verified on the real GPU get no cloud browser check | none here; review the desktop's evidence images and numbers instead (task: "look at the evidence images") |
+| 15 | Each new test fails with its fix reverted | done at `90f153f` (mutation table, item 3) | check that nothing the mutants touch changed in the merge |
+| 16 | The real-GPU gate items left open: every frame ≤ 0.15 ms after `888ba62`; a Chrome trace for the uploads (the desktop wrapped `texSubImage2D`); the trees row has 7 reps, not ≥ 8 | open | real GPU only: remaining items, not blockers |
+| 17 | The report's final section and the `.done` line | WIP | finish them |
