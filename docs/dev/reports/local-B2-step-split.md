@@ -105,9 +105,11 @@ In `scratchpad/b2work/G4-utilities-emergency-recalibration/`: `cpumapG4.ts`, `ed
 
 ## Integration with dev (B3 and later)
 
-`cloud/b2m` merges dev (`origin/claude/beautiful-johnson-u2jqoz`) into `b2-step-split` (`1abb357`) twice: merge
+`cloud/b2m` merges dev (`origin/claude/beautiful-johnson-u2jqoz`) into `b2-step-split` (`1abb357`) three times: merge
 `d388fa6` (dev `63c8f58`), then `604fc75` (simwasmFlag) and `4608258` (the flag events, the hygiene rename), then merge
-`539b692` (dev `086152a`: T034 with T034b, which landed during the gates). Dev had gained, since B2's base `41ae570`: B3 (`530d570`), T038, T036 steps 2–3, T052, W0–W1.1b (the worker seam, the replica, the recorder, the
+`539b692` (dev `086152a`: T034 with T034b, which landed during the gates), then, on the resume after the usage-limit stop,
+merge `3d9b29d` (dev `87c7c9c`: T040, T053, NOTE-059 and the Nov 4 handoff; no conflict, and no `src/sim/infra` change:
+dev's only `src/sim` change is T053's `advisors.ts` / `rewards.ts`) and `633b917` (item 5 below). Dev had gained, since B2's base `41ae570`: B3 (`530d570`), T038, T036 steps 2–3, T052, W0–W1.1b (the worker seam, the replica, the recorder, the
 loopback host), B1's final live cap and others. After the merge, the diff against dev is B2's own files only:
 18 files in `src/sim/infra`, B2's tests and these documents (no `src/ui`, `src/game`, `src/render`, `src/save` or
 `src/worker` change; NOTE-048's NewYear.ts / TopBar.ts lines were the premerge stack's, not B2's).
@@ -164,6 +166,13 @@ shared cap (`INFRA_URGENT_BUDGET` estimated ms headless, `INFRA_URGENT_FRAME_MS`
    drop-in (JS without a flag, never the JS original with the wasm blur selected). The counting mock wraps plain
    functions only (B2's piece classes stay constructible). It fails with `boxAverage` imported from `blur.ts`
    directly (both wasm cases) and without the tree edits (both JS cases).
+5. **B2's utilities piece tests after item 1** (`633b917`; the full vitest at `539b692` failed these two). Item 1 moved
+   utilities' events into the flags' publish piece (`apply`), so (a) the branch-coverage test's flip marker, which looked
+   for a non-empty `changed` list at the old `.events` piece, now looks at the state's last piece (`.end`), where the
+   list stays filled; (b) the production-size estimate check (every piece ≤ 0.75 × `INFRA_PIECE_COLD_MS` = 0.0975 ms)
+   caps the publish piece like the snapshot take (1 ms): with its events it estimated 0.142 ms on the 128² utilities
+   city. R7 already exempts the flags' publish from the piece budget (one piece by rule, chunked only past 3 ms cold);
+   the bursts measured in item 1 (≤ 467 events at about 1 µs) stay far below that. No code change.
 
 ## Cloud carry-over (Nov 3)
 
@@ -202,7 +211,8 @@ lane (the gate 4 amendment below); the diff of `b2-step-split` against dev.
 3. **The fixture-gated suites**, which the default vitest skips (no `SIM_FIXTURES` in a worktree) but which are dev's
    real-scale checks of what B2 changes: the replica, live replica, lag and query-side-effect cases on the grown bot256
    fixture, `replicaSafe`, and the wasm traffic / transit-search / services-engine fixture sections.
-4. **The gates** (item 7) on the final merge `539b692` against dev `086152a` (below), the gate 4 amendment as a plan
-   amendment (item 4), the S5 follow-up in `docs/dev/POLISH_BACKLOG.md` (item 5), the `grownCity` tolerance recorded as
-   accepted (item 6).
+4. **The gates** (item 7) were started on `539b692` against dev `086152a`; the session stopped at the shared usage
+   limit after the full vitest (two failures, item 5 of the integration notes) and before the bot, the balance and the
+   timing hold. The resume below finishes them on the final tree, with the gate 4 amendment (item 4), the S5 follow-up
+   (item 5) and the `grownCity` tolerance (item 6).
 5. No new optimisation work: the only code change beyond the merge is `4608258` (events with their flags, a rename).
