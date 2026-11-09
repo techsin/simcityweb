@@ -73,6 +73,13 @@ NOTE-058). Every merge was clean except this report, where the desktop's S0 sect
 "Still to run". Both are kept whole. Against dev, the lane is still `src/render/city/buildings/lodBuilder.ts` (+4 −1)
 and `tests/render/lodNoTransfer.test.ts` (new).
 
+**Resumed on Nov 9.** The cloud session stopped at the shared usage limit on Nov 4, with chain desk3 at `finish:t059`
+(docs/dev/handoff/2026-11-04/README.md). Before the stop, the desktop's `4fb8bf2` (the test's tsc fix) and dev
+`f1c9713` (T034 with T034b, T040, the handoff) were merged in (`0871d4f`, `c72293b`). The rerun of the full vitest
+and a page-side probe control were still queued. On Nov 9, dev `87c7c9c` (T053, NOTE-059) merged in cleanly as
+`fdd4702`. This branch includes `local/T059-s0-lod-transfer` up to its head, `4fb8bf2`, which is what the handoff
+asks the merge to carry. Every gate below was run again on `fdd4702`.
+
 The machine is a shared 4-core container with WebGL on SwiftShader. Its browser runs check function, not timings.
 
 ### Gap list (required against done)
@@ -81,7 +88,9 @@ Sources: the task file; NOTE-048's T059 section ("the fix and its negative-contr
 gates in your quiet slot; the merge needs no bot run"); NOTE-044; NOTE-057 (T059 is in wave 1's cloud review);
 WORKER_DESIGN §1.4, §1.5 and §6 row S0 (Acceptance: `tests/render/lod.test.ts` green; the protector probe intact on
 the Chromium main thread after 10 min of `demo-ui.html` play, the M6 procedure; LOD proxies per second within ±5 %);
-WASM_PLAN M6 and J0; and this report.
+WASM_PLAN M6 and J0; and this report. On Nov 9, two more: NOTE-059 (browser checks move to the desktop: for a
+desktop lane verified on the real GPU, the cloud reviews the evidence and runs the full vitest and the bot once) and
+the Nov 4 handoff (section 4: "after T059 merges, also merge `local/T059` @ 4fb8bf2 or later").
 
 | # | Required | At `2aaf32d` (the cloud's start) | Now |
 |---|---|---|---|
@@ -94,6 +103,8 @@ WASM_PLAN M6 and J0; and this report.
 | 7 | Protector intact after 10 min of `demo-ui.html` play (M6) | not run (the desktop had run T028's qa-worker A/B, a different procedure) | **done on the real GPU by the desktop** (`de062e3`, A/B/B/A: intact in both T059 runs, invalidated in both dev runs). The cloud ran the same procedure on SwiftShader (below) |
 | 8 | LOD proxies/s within ±5 % of dev | not run | **done on the real GPU by the desktop** (`de062e3`): −1.36 %. Not measurable here |
 | 9 | `docs/dev/queue/T059-s0-lod-transfer.done` | missing | the desktop's line (`de062e3`), plus one cloud line |
+| 10 | The desktop's later commits on `local/T059` (the handoff) | `de062e3` and `4fb8bf2` not yet in | both merged (`92a807f`, `0871d4f`); `4fb8bf2` is the branch's head |
+| 11 | NOTE-059: review the desktop's real-GPU evidence | — | its numbers checked (below). The images are on the desktop's scratchpad, which the cloud cannot read |
 
 ### What the cloud did
 
@@ -134,6 +145,26 @@ receiver (WORKER_DESIGN O14). `onReply` wraps the received arrays without a copy
   - `src/wasm`'s heap reserves and `src/wasm/simWasm.ts`'s `fetch` bodies.
   These are S1/J1 matters (R10, never grow), outside T059's scope. The browser instrumentation below saw no
   `memory.grow` and no other detach in 10 minutes of play.
+- **Again on Nov 9 (`fdd4702`)**, now with T034's sim worker in dev:
+  - `grep postMessage` under `src/` finds the main thread's posts in `WorkerSimHost.ts` (`worker.postMessage(m)`, and
+    `WorkerLink.post`, which calls `assertOwnedBuffers(m)` and then `port.postMessage(m)`) and lodBuilder's three.
+    None has a transfer list.
+  - `src/worker/simWorker.ts`'s posts are worker-side, with no transfer list. lodWorker's reply is still the only
+    transfer under `src/`. `src/render` and `src/game` have no other one; `src/game` has no `postMessage` at all.
+  - There is no BYOB stream read, `MessagePort` transfer or `BroadcastChannel`. The only `memory.grow` is
+    `src/wasm/heap.ts`'s, as above.
+  - The scan case pins this and passes on `fdd4702`.
+
+**The desktop's S0 numbers, checked (NOTE-059).** The arithmetic in the real-GPU table above holds:
+- Proxies/s medians: dev (0.297 + 0.293) / 2 = 0.295, T059 (0.282 + 0.300) / 2 = 0.291, so −1.36 %.
+- A/A spreads: dev 0.297 / 0.293 = 1.4 %, T059 0.300 / 0.282 = 6.4 %.
+- Burst medians: T059 (3,018 + 2,864) / 2 = 2,941, dev (4,761 + 3,402) / 2 = 4,081, so 0.72×, 28 % lower. Dev's two
+  runs differ by 1.40×.
+- The catalog prefetch: 678 variants at those rates take 0.231 s against 0.166 s, so about 65 ms more.
+- Every T059 row reads intact at boot, at start, at every minute, at the end and at the terminal check. Both dev rows
+  flip on the first LOD `Worker.postMessage`, 0.79 s and 0.75 s into the page.
+- So both S0 lines pass as the desktop reported them: on Chromium 141 the probe sees lodBuilder's transfer and J0
+  removes it. The run logs and images are in the desktop's scratchpad (`qa/T059s0/`).
 
 **S0's browser procedure on SwiftShader** (function only). The harness is a scratchpad script,
 `t059-tmp/m6.mjs`. For each tree it starts that tree's own Vite on a free port, with its own cache, removed
@@ -151,24 +182,42 @@ every 30 s. Last comes M6's `packFile` / `unpackFile` round trip.
 | dev (`50a6b29`), run 1 | boot only: `__ready` came after 183 s on a cold Vite cache, then a Playwright screenshot timed out ("waiting for fonts") and ended the run. Screenshots now fall back to CDP | 72 | **72**, the first 5.2 s into the page | 0 · 0 · 0 · 0 · 0 | "intact" (TurboFan) | 70 / 2 | 0 |
 | dev (`50a6b29`), run 2 | **120 s**, sim day 33 → 157, pop 33 → 1,769, then the pack round trip and a positive control | 124 | **124**, the first 2.9 s into the page | 0 · 0 · 1 (the positive control) · 0 · 0 | "intact" (TurboFan), even after the positive control | 124 / 0 | 0 |
 
-**The probe cannot see a detach in this Chromium, so the protector column above carries no information.**
-- The only Chromium on the cloud is Chrome for Testing **153.0.8010.12**: `/opt/pw-browsers`' `-1194` directories
-  are symlinks to the `-1243` build. The desktop and M6 ran Chromium 141.
-- The probe controls (`t059-tmp/probe/chromeprobe.mjs`): each one runs in a fresh context, with T028's probe installed
-  first. The probe stays on TurboFan, at the same status (41), after every detach on the main thread: a
-  `structuredClone(buffer, { transfer })`, an `ArrayBuffer.prototype.transfer()`, and a `Worker.postMessage` with a
-  transfer list. Each control confirms that its buffer was detached, and each is checked again after 64 more probe
-  calls and 500 ms.
-- In dev's run 2, the same probe stays intact after 124 transfers and after a deliberate transfer at the end.
-- The same probe in node 22.22 (V8 12.4) flips on a transfer and on a `MessagePort` transfer, as T028's self-test
-  does (`t059-tmp/probe/nodeprobe.mjs`: status 81 → 129).
-- So with the V8 that Chromium 153 ships, this TurboFan typed-array loop no longer deoptimizes on the first
-  detach. Either the loop no longer depends on the `ArrayBufferDetaching` protector, or the protector is gone.
-- The cloud's evidence for J0 is therefore the instrumentation:
-  - T059 makes **no** main-thread detach of any kind in 10 minutes of play: 0 of 170 LOD jobs with a transfer list,
-    and no other detach path. Dev transfers on every job: 72 of 72, and 124 of 124.
-  - Every proxy is still built (pending 0), and the city renders.
-  - The protector reading itself stands on the desktop's Chromium 141 runs (`de062e3`).
+**On this Chromium the protector column cannot tell the arms apart, by V8's design, not because the probe is blind.**
+- The only Chromium on the cloud is Chrome for Testing **153.0.8010.12** (V8 15.3): `/opt/pw-browsers`' `-1194`
+  directories are symlinks to the `-1243` build. The desktop and M6 ran Chromium 141.
+- T034b established, in `docs/dev/reports/local-W1.2-worker.md` decision 11 (experiment 9, in workers), that this V8
+  has the ArrayBufferDetaching protector but tracks array buffer views:
+  - a detach of a buffer with no view, or with exactly one TypedArray view, is free;
+  - two or more views, a DataView or a detach key invalidate it.
+  lodBuilder's old post transfers three lone `Float32Array` copies, one view per buffer, so on Chromium 153 it was free.
+  That is why dev's page read "intact" here after 72 and 124 transfers.
+- This lane's first probe controls (`t059-tmp/probe/chromeprobe.mjs`) agree. Each ran in a fresh context with T028's
+  probe installed first, and stayed on TurboFan (status 41) after every detach tried: a no-view
+  `structuredClone(buffer, { transfer })`, a no-view `ArrayBuffer.prototype.transfer()`, a single-view
+  `Worker.postMessage` transfer, and a single-view positive control at the end of dev's run 2. Each control confirmed
+  that its buffer was detached. Every one of them falls in the free class, so they say nothing against the probe.
+- The same probe in node 22.22 (V8 12.4, which invalidates on any detach) flips on a no-view transfer and on a
+  `MessagePort` transfer (`t059-tmp/probe/nodeprobe.mjs`: status 81 → 129), as T028's self-test does.
+- No page-side positive control ran here: that would be a two-view or DataView detach, which this V8 does count.
+  - The Nov 4 run queued one (`t059-tmp/probe/chromeprobe2.mjs`), and the session stopped before it got the lock.
+  - On Nov 9 a controls-only copy (`chromeprobe3.mjs`, a `data:` page with no game) was queued. Its lock waiter was
+    terminated from outside while it waited (exit 143, before the lock), with 23 jobs queued for the lock.
+  - It was not queued again: see the decisions.
+  - The evidence that the probe would flip on such a detach is T034b's experiment 9. It used the same Chromium 153
+    and the same TurboFan probe loop: two views or a DataView invalidate the protector, and V8 traces
+    `ArrayBufferDetaching`. It ran in module workers, not on the page; the protector is per isolate either way.
+- **What this means for J0:**
+  - On Chromium 141 (the desktop, M6) and on any V8 that invalidates on every detach, lodBuilder's transfer list kills
+    the page's protector. J0 keeps it. That is the desktop's real-GPU A/B in the section above.
+  - On Chromium 153, single-view transfers are free, so J0 buys nothing for the protector there. It costs the
+    structured-clone copy (the desktop's burst finding). T034b left "what J0 buys on a current Chrome" open as a
+    real-GPU timing question.
+  - J0 is still right on every engine: WORKER_DESIGN §1.4 forbids transfer lists in both directions, and a main thread
+    with no detaches keeps the protector on any V8.
+- **The cloud's own evidence is the instrumentation.** In 10 minutes of play, T059 makes no main-thread detach of any
+  instrumented kind (the Worker, MessagePort and window posts, `structuredClone`, `transfer()`, `memory.grow`): 0 of
+  170 LOD jobs carried a transfer list. Dev transfers on every job: 72 of 72, and 124 of 124. Every proxy is still
+  built (pending 0), and the city renders.
 
 Screenshots (looked at):
 - `t059-tmp/shots/t059-ready.png`: the town at boot, with roads, zones under construction and the onboarding card.
@@ -191,7 +240,7 @@ The scratchpad is
 | Full vitest with the fixtures (`SIM_FIXTURES` / `SIM_SNAP` from the main checkout's `tools/bench/.fixtures`) | first run at `dcf2ad1`: 1 failed (this lane's scan case, a 5 s timeout), 2,236 passed, 8 skipped; 224 files passed, 2 skipped (851 s). The rerun at `1ddc5e9` is pending |
 | The bot, `--size 128 --years 15 --seed 7`, lane `b09d9f4` against a clean export of dev `50a6b29` | **identical**: both `residents [ 61124, 93804, 37971 ]` = 192,899, the same jobs and caps lines |
 | S0 on the real GPU (protector intact after 10 min of demo-ui play; LOD proxies/s within ±5 %) | **PASS, by the desktop** (`de062e3`, the section above); not re-measurable here |
-| S0's procedure on SwiftShader (function) | T059: 0 main-thread detaches in 600 s of play, 170 LOD jobs, probe intact. Dev: 72 of 72 and 124 of 124 jobs transferred. The probe is blind on Chromium 153 (controls above), so the protector itself is the desktop's evidence |
+| S0's procedure on SwiftShader (function) | T059: 0 main-thread detaches in 600 s of play (170 LOD jobs), probe intact. Dev: 72 of 72 and 124 of 124 jobs transferred, probe also intact, because single-view detaches are free on Chromium 153's V8. The discriminating protector A/B is the desktop's Chromium 141 run |
 
 The bot did not run again after `dcf2ad1`. Dev's later commits there are T052 (`src/render`, `src/assets`) and docs.
 The lane touches only `src/render` and a test, so the bot cannot differ (NOTE-048: "the merge needs no bot run").
@@ -202,20 +251,35 @@ The lane touches only `src/render` and a test, so the bot cannot differ (NOTE-04
   (`de062e3`), and they pass: the protector is intact in both T059 runs and invalidated in both dev runs, and LOD
   proxies/s is −1.36 %. Their evidence is the desktop's (harness `qa/T059s0/` on its scratchpad). The cloud cannot
   re-measure them on SwiftShader, so it relies on that evidence and on its own function checks.
+  - On Nov 9 this was checked against NOTE-059 and the handoff. NOTE-059 makes a desktop lane's real-GPU
+    verification the evidence; the cloud reviews it and runs the full vitest and the bot once, at merge. The handoff
+    lists T059 under the desktop's "Done, with a .done".
+  - The Nov 9 brief again said "partial" for the two real-GPU items. That brief was written from the desktop's
+    earlier `2aaf32d` state: both items are in `de062e3`, which is merged here, and their numbers check out (above).
+    So nothing listed is left and the status stays ready.
+- **No more cloud browser runs for this lane (NOTE-059).** The Nov 9 resume ran no SwiftShader game session. The one
+  browser job queued was a short `data:`-page control of the probe, not a check of the game. Its lock waiter was
+  terminated from outside while queued; the conservative reading is not to queue it again. The lock had 23 waiters,
+  NOTE-059 moves browser work for desktop lanes off the cloud, and the result could not change T059 (J0 is right on
+  every V8, and the S0 gate stands on the desktop's Chromium 141 A/B). The claim it would have backed (this V8 counts
+  two-view and DataView detaches) rests on T034b's experiment 9, with that experiment's scope stated above.
 - **The saturated-burst finding stays recorded, not gated**, as the desktop left it: the catalog burst is 28 % slower
   with structured clone, about 65 ms on a full prefetch. S0's gate is the play-time proxy rate, which passes. Avoiding
   the transfer is the point of J0, and the alternatives (SharedArrayBuffer, batching posts) are design changes for
   the lead. No code change.
 - **The cloud harness stays in the scratchpad.** T059 owns only `lodBuilder.ts` and its test. T028's `qa-worker`
   harness is the repo's protector tool.
-- **A finding for the lead and for T028 (next in this chain): T028's probe gives a false "intact" on Chromium 153.**
-  T028's harness fails closed only when TurboFan is never reached. Its detach control runs in node only
-  (`protector-selftest.mjs`), so on a newer Chromium a "main intact" would pass without proof. The conservative
-  reading: the browser protector gate needs a positive control in the same isolate. The cloud's harness does that: a
-  deliberate detach at the end, which must flip the probe. The gate must also pin a Chromium that the control passes
-  on. The protector's value on newer V8 (WASM_PLAN's 1.04–1.06× in Chromium 141) may also need re-measuring. Neither
-  changes T059: dropping the main-thread transfer is right on every engine, and it keeps the protector wherever one
-  exists.
+- **T034b's open call T5 ("the page's own probe stays reported, not gated; gating it is J0's call"): keep it reported,
+  not gated, in T059.** The conservative reading:
+  - On Chromium 153 the page's probe cannot fail on lodBuilder's old transfers, so gating it would not test J0 there.
+  - qa-worker belongs to T028/T034, not to this lane.
+  - For the lead and T028 (next in this chain): if the page's probe is ever gated, it needs the same page-side positive
+    control that qa-worker's worker gate has (a two-view detach that must flip it, as T034b's `CONTROL_WORKER` does in
+    the worker). Then it would catch a new multi-view or DataView detach on the main thread on any V8. This lane's
+    `t059-tmp/probe/chromeprobe3.mjs` holds such controls for a page (two views, a DataView, and lodBuilder's old
+    three-buffer post) if T028 wants them.
+  - The protector's measured value (WASM_PLAN's 1.04–1.06× in Chromium 141) may need re-measuring on a current Chrome.
+    T034b leaves that open too.
 - **The full vitest's one failure was T059's own test, fixed in `1ddc5e9`.** The source-scan case parses about 290
   files: about 4 s alone and 5.4 s inside the parallel suite, past vitest's 5 s default. It now has a 60 s timeout,
   and its negative control still fails, both cases, on a scratch export of `1ddc5e9` with dev's `lodBuilder.ts`.
@@ -223,3 +287,7 @@ The lane touches only `src/render` and a test, so the bot cannot differ (NOTE-04
 ### Remaining
 
 - None for T059. (Optional, for the lead: whether the burst cost above matters.)
+- For T028 or the desktop, not T059's gate:
+  - a page-side positive control, if the page's own probe is ever gated (above);
+  - what J0 buys on a current Chrome, where single-view transfers are free (T034b's open item; a real-GPU timing
+    question).
