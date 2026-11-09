@@ -250,7 +250,9 @@ describe('B2 G4 utilities: a pass in one go = in pieces = the frozen pre-B2 pass
             if (n.startsWith('waterBrownout.')) seen.add('waterBrownout');
             if (n === 'power.cells') seen.add('powerResults');
             if (n === 'water.cells') seen.add('waterResults');
-            if (n.endsWith('.events') && u.changed.length > 0) seen.add('flagFlips');
+            // (the flags' publish emits their events in the same piece (the B2 merge, R7 amended), so the flips show as a
+            // non-empty changed list once the pass reaches its last piece, '.end')
+            if (n.endsWith('.end') && u.changed.length > 0) seen.add('flagFlips');
             if (midWater && !edited && before !== 4 && u.stepIdx === 4) {
               edited = true;
               const st = cc.st, N = st.size, z = 10;
@@ -423,9 +425,12 @@ describe('B2 G4 utilities: a pass in one go = in pieces = the frozen pre-B2 pass
       });
     }
     // (the estimate is taken before each piece: utilPass's hook runs after it, so record the next one's; half
-    // INFRA_PIECE_COLD_MS for every piece, the snapshot take (one buildingList + copy) excepted)
+    // INFRA_PIECE_COLD_MS for every piece, the snapshot take (one buildingList + copy) excepted, and the flags' publish
+    // with their buildingChanged events: one piece by R7 as amended at the B2 merge (a flag is never visible between
+    // pieces without its event, for the worker's replica), sized by the candidates, not by the budget, and chunked only
+    // past 3 ms cold)
     for (const [name, e] of max) {
-      const cap = /snap$/.test(name) ? 1 : INFRA_PIECE_COLD_MS * 0.75;
+      const cap = /snap$|\.apply$/.test(name) ? 1 : INFRA_PIECE_COLD_MS * 0.75;
       expect(e, `${name} estimate`).toBeLessThanOrEqual(cap);
     }
     expect(max.size).toBeGreaterThan(15);
