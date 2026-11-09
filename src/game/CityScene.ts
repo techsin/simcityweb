@@ -590,6 +590,7 @@ export class CityScene {
     if (!lost || lost.restoring || this.disposed) return;
     lost.restoring = true;
     const cam = readCamera(this.world.controls) ?? validCamera(this.sim.state.systemData.camera, this.sim.state);
+    const timeOfDay = this.world.timeOfDay;
     // stop watching the old canvas first: disposing its views forces a (second) context loss on it
     this.ctxWatch?.abort();
     for (const v of [this.objects, this.world]) {
@@ -606,6 +607,8 @@ export class CityScene {
     this.createViews();
     this.resize();
     this.applySettings({});
+    this.world.timeOfDay = timeOfDay;
+    this.ctx?.setOverlay(this.ctx.overlay, this.ctx.overlayVariant);
     const c = this.world.controls;
     if (c && cam) applyCamera(c, cam);
     else this.placeInitialCamera();
@@ -712,6 +715,8 @@ export class CityScene {
       this.errors.report('Rendering error', e, { key: 'render' });
     }
     if (this.readyPending) {
+      // View building and the first draw are loading time, outside the slow-frame window.
+      this.fps.frames = this.fps.t = this.fps.last = 0;
       this.readyPending = false;
       this.firstFrame = true;
       this.resolveReady();

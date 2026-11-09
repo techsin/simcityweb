@@ -552,7 +552,6 @@ class App {
   /** `replay` (W1.3, §4.4): false loads the save without the recovery journal bound to it (the crash dialog's "Restart
    *  from autosave" and "Continue on the main thread"); by default the host replays it */
   async playCity(tile: RegionTile, existing?: LoadingScreen, replay = true): Promise<void> {
-    const t0 = performance.now();
     if (this.busy || !this.region) {
       existing?.remove();
       return;
@@ -563,6 +562,7 @@ class App {
       this.busy = false;
       return;
     }
+    const t0 = performance.now();
     const ld = existing ?? new LoadingScreen(this.root);
     try {
       ld.set(`Loading ${tile.city?.name ?? 'city'}…`, 0.25);
