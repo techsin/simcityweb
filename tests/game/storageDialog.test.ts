@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegionData } from '../../src/region/types';
 import type { PendingRecovery, RecoveryCity } from '../../src/save';
-import { deleteStorageRegion, exportStorageRegion, handleRecoveryStorageError, recoveryStorageGate, regionTakenOver, RegionStorageSession, reopenStoredRegion, showStorageError, storageConditionVersion, storageDialogOpen, storageRecoveryChoice, STORAGE_FULL_MESSAGE, withRecoveryStorage } from '../../src/ui/StorageDialog';
+import { deleteStorageRegion, exportStorageRegion, handleRecoveryStorageError, isStorageError, RECOVERY_UNDECIDED_MESSAGE, recoveryStorageGate, regionTakenOver, RegionStorageSession, reopenStoredRegion, showStorageError, storageConditionVersion, storageDialogOpen, storageRecoveryChoice, STORAGE_FULL_MESSAGE, withRecoveryStorage } from '../../src/ui/StorageDialog';
 import { FEl, FNode, installFakeDom, textOf } from './fakeDom';
 import { smallCity } from '../save/fixtures';
 import { serializeCity } from '../../src/save/serialize';
@@ -16,13 +16,14 @@ const store = vi.hoisted(() => ({
   acquireLock: vi.fn(), disposeLock: vi.fn(), restrictRegionSaveAccess: vi.fn(), unrestrict: vi.fn(),
   loadRegion: vi.fn(), clearRecoveryBase: vi.fn(), regionSaveAccess: vi.fn(), findRecoverySnapshot: vi.fn(),
   buildRegionFile: vi.fn(), getCityRecord: vi.fn(), getRecoveryBase: vi.fn(), packFile: vi.fn(),
-  rebuildRecoveredCity: vi.fn(), deserializeCity: vi.fn(),
+  rebuildRecoveredCity: vi.fn(), deserializeCity: vi.fn(), hasRecoverySnapshot: vi.fn(), markRegionSummaryStale: vi.fn(),
+  toast: vi.fn(),
 }));
 const lockState = vi.hoisted(() => ({
   instances: [] as { regionId: string; writable: boolean; active: boolean }[],
   restrictions: new Set<(regionId?: string) => boolean>(),
 }));
-vi.mock('../../src/region/ui/modal', () => ({ uiRoot: () => page.root, confirmDialog: vi.fn() }));
+vi.mock('../../src/region/ui/modal', () => ({ uiRoot: () => page.root, confirmDialog: vi.fn(), toast: store.toast }));
 vi.mock('../../src/save', () => ({
   exportRegion: store.exportRegion, downloadBlob: store.downloadBlob, listRegions: store.listRegions,
   deleteRegion: store.deleteRegion, saveCity: store.saveCity, saveRegion: store.saveRegion,
@@ -30,13 +31,14 @@ vi.mock('../../src/save', () => ({
   loadRegion: store.loadRegion, clearRecoveryBase: store.clearRecoveryBase, findRecoverySnapshot: store.findRecoverySnapshot,
   buildRegionFile: store.buildRegionFile, getCityRecord: store.getCityRecord, getRecoveryBase: store.getRecoveryBase, packFile: store.packFile,
   rebuildRecoveredCity: store.rebuildRecoveredCity, deserializeCity: store.deserializeCity,
+  hasRecoverySnapshot: store.hasRecoverySnapshot,
   safeFileName: (name: string) => `${name}.metropolis`,
 }));
 vi.mock('../../src/save/db', async (importOriginal) => ({
   MemoryKV: (await importOriginal<typeof import('../../src/save/db')>()).MemoryKV,
   markRegionExported: store.markRegionExported, openKV: store.openKV, storageEstimate: store.storageEstimate,
   checkStorageSpace: store.checkStorageSpace, requireRegionSaveAccess: store.requireRegionSaveAccess,
-  regionSaveAccess: store.regionSaveAccess,
+  regionSaveAccess: store.regionSaveAccess, markRegionSummaryStale: store.markRegionSummaryStale,
   restrictRegionSaveAccess: store.restrictRegionSaveAccess,
   RegionSaveLock: class {
     writable = false;
@@ -78,6 +80,7 @@ beforeEach(() => {
   store.keys.mockResolvedValue([]);
   store.peekRecoveryMarker.mockReturnValue(null);
   store.findRecoverySnapshot.mockResolvedValue(null);
+  store.hasRecoverySnapshot.mockResolvedValue(false);
   store.regionSaveAccess.mockImplementation((id?: string) => [...lockState.restrictions].every((allow) => allow(id)));
   store.acquireLock.mockReturnValue(false);
   store.restrictRegionSaveAccess.mockImplementation((allow: (regionId?: string) => boolean) => {
@@ -126,6 +129,31 @@ describe('storage error dialog', () => {
     } finally { session.dispose(); }
   });
 
+  it('keeps the read-only notice hidden until the first acquire settles, then shows it only without the lock', async () => {
+    const session = new RegionStorageSession(region, root as unknown as HTMLElement, async () => {});
+    try {
+      const notice = root.querySelector('.storage-lock-notice') as FEl & { hidden: boolean };
+      expect(notice.hidden).toBe(true);
+      expect(await session.acquire()).toBe(false);
+      expect(notice.hidden).toBe(false);
+      expect(textOf(notice)).toContain('This region is open in another tab');
+    } finally { session.dispose(); }
+    const writable = new RegionStorageSession(region, root as unknown as HTMLElement, async () => {});
+    try {
+      const notice = root.querySelectorAll('.storage-lock-notice').at(-1) as FEl & { hidden: boolean };
+      store.acquireLock.mockReturnValue(true);
+      expect(await writable.acquire()).toBe(true);
+      expect(notice.hidden).toBe(true);
+    } finally { writable.dispose(); }
+  });
+
+  it('classifies only a full store or a refused write as a storage error', () => {
+    expect(isStorageError(new DOMException('Full', 'QuotaExceededError'))).toBe(true);
+    expect(isStorageError(new DOMException('Read only', 'NotAllowedError'))).toBe(true);
+    expect(isStorageError(new Error('The city save could not be found'))).toBe(false);
+    expect(isStorageError(undefined)).toBe(false);
+  });
+
   it('records that a region came from another tab only when takeover reloads it', async () => {
     const takenRegion = { ...region, id: 'taken-copy' };
     vi.spyOn(Date, 'now').mockReturnValue(1000);
@@ -136,6 +164,7 @@ describe('storage error dialog', () => {
       store.acquireLock.mockReturnValue(true);
       button('Use it here instead').click(); await flush();
       expect(reload).toHaveBeenCalledOnce();
+      expect(store.markRegionSummaryStale).toHaveBeenCalledExactlyOnceWith(takenRegion.id);
       expect(regionTakenOver(takenRegion.id, 999)).toBe(true);
       expect(regionTakenOver(takenRegion.id, 1000)).toBe(true);
       expect(regionTakenOver(takenRegion.id, 1001)).toBe(false);
@@ -273,6 +302,25 @@ describe('cleared storage conditions', () => {
     expect(store.disposeLock).toHaveBeenCalledExactlyOnceWith('old-region');
   });
 
+  it('waits for this tab\'s recovery scan to release its temporary lock instead of blaming another tab', async () => {
+    const held = new Set<string>();
+    store.acquireLock.mockImplementation((id: string) => !held.has(id) && !!held.add(id));
+    store.disposeLock.mockImplementation((id: string) => { held.delete(id); });
+    try {
+      store.keys.mockResolvedValue(['old-region:0_0']);
+      let finish!: () => void;
+      const scan = withRecoveryStorage(() => new Promise<string>((resolve) => { finish = () => resolve('none'); }), 'unavailable');
+      await vi.waitFor(() => expect(held.has('old-region')).toBe(true));
+      const deleting = deleteStorageRegion('old-region');
+      await flush();
+      expect(store.deleteRegion).not.toHaveBeenCalled();
+      finish();
+      expect(await scan).toBe('none');
+      expect(await deleting).toBe(true);
+      expect(store.deleteRegion).toHaveBeenCalledExactlyOnceWith('old-region');
+    } finally { store.disposeLock.mockReset(); }
+  });
+
   it('keeps the condition version when deletion is refused or fails', async () => {
     const version = storageConditionVersion();
     expect(await deleteStorageRegion('busy-region')).toBe(false);
@@ -368,39 +416,74 @@ describe('recovery storage ownership', () => {
 });
 
 describe('recovery storage decisions', () => {
-  it('keeps discovery and the pending recovery prompt under the same lock until the player chooses later', async () => {
-    store.keys.mockResolvedValue([`${region.id}:0_0`]);
-    store.acquireLock.mockReturnValue(true);
+  it('asks about the city\'s own snapshot while another tab owns the region in the localStorage slot', async () => {
+    store.peekRecoveryMarker.mockReturnValue({ regionId: 'busy' });
+    store.keys.mockResolvedValue(['busy:3_3', `${region.id}:0_0`]);
+    store.acquireLock.mockImplementation((id: string) => id !== 'busy');
     const pending = pendingRecovery(1);
     store.findRecoverySnapshot.mockImplementationOnce(async () => {
-      expect(store.regionSaveAccess(region.id)).toBe(true);
+      const [allow] = lockState.restrictions;
       expect(lockState.restrictions.size).toBe(1);
+      expect(allow(region.id)).toBe(true);
+      expect(allow('busy')).toBe(false);
+      expect(allow('created-after-the-scan')).toBe(false);
+      expect(allow(undefined)).toBe(false);
       return pending;
     });
     let choose!: (choice: string) => void;
     const ask = vi.fn(() => new Promise<string>((resolve) => { choose = resolve; }));
     const gate = recoveryStorageGate(recoveryCity, ask);
-    await flush();
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledExactlyOnceWith(pending));
     expect(store.findRecoverySnapshot).toHaveBeenCalledExactlyOnceWith(recoveryCity);
-    expect(ask).toHaveBeenCalledExactlyOnceWith(pending);
-    expect(lockState.restrictions.size).toBe(1);
-    expect(store.disposeLock).not.toHaveBeenCalled();
+    // only the slot's region was tried, and its temporary lock and the write restriction end before the player decides
+    expect(store.acquireLock.mock.calls).toEqual([['busy', false]]);
+    expect(store.disposeLock.mock.calls).toEqual([['busy']]);
+    expect(lockState.restrictions.size).toBe(0);
     choose('later');
     expect(await gate).toBe(false);
+    expect(store.toast).not.toHaveBeenCalled();
+  });
+
+  it('adopts a free region\'s localStorage slot under its temporary lock, and takes none for its own region', async () => {
+    store.peekRecoveryMarker.mockReturnValue({ regionId: 'free' });
+    store.acquireLock.mockReturnValue(true);
+    store.findRecoverySnapshot.mockImplementationOnce(async () => {
+      const [allow] = lockState.restrictions;
+      expect(allow('free')).toBe(true);
+      expect(allow(region.id)).toBe(true);
+      expect(allow('third')).toBe(false);
+      return null;
+    });
+    const ask = vi.fn();
+    expect(await recoveryStorageGate(recoveryCity, ask)).toBe(true);
+    expect(store.hasRecoverySnapshot).toHaveBeenCalledExactlyOnceWith(recoveryCity);
+    expect(store.disposeLock.mock.calls).toEqual([['free']]);
+    store.peekRecoveryMarker.mockReturnValue({ regionId: region.id });
+    expect(await recoveryStorageGate(recoveryCity, ask)).toBe(true);
+    expect(store.acquireLock.mock.calls).toEqual([['free', false]]);
+    expect(ask).not.toHaveBeenCalled();
     expect(lockState.restrictions.size).toBe(0);
-    expect(store.disposeLock).toHaveBeenCalledExactlyOnceWith(region.id);
+  });
+
+  it('never enters the city while its own snapshot is undecided', async () => {
+    const ask = vi.fn();
+    store.hasRecoverySnapshot.mockResolvedValue(true); // nothing offered, yet a copy of the city's snapshot remains
+    expect(await recoveryStorageGate(recoveryCity, ask)).toBe(false);
+    store.hasRecoverySnapshot.mockResolvedValue(false);
+    store.findRecoverySnapshot.mockRejectedValueOnce(new Error('read failed'));
+    expect(await recoveryStorageGate(recoveryCity, ask)).toBe(false);
+    expect(ask).not.toHaveBeenCalled();
+    expect(store.toast.mock.calls).toEqual([[RECOVERY_UNDECIDED_MESSAGE, 'bad', 6000], [RECOVERY_UNDECIDED_MESSAGE, 'bad', 6000]]);
+    expect(lockState.restrictions.size).toBe(0);
   });
 
   it('does not discover or prompt for recovery when this tab cannot own its region', async () => {
     const ask = vi.fn(async () => 'recovered');
     store.regionSaveAccess.mockReturnValueOnce(false);
     expect(await recoveryStorageGate(recoveryCity, ask)).toBe(true);
-    expect(store.openKV).not.toHaveBeenCalled();
-    store.keys.mockResolvedValue([`${region.id}:0_0`]);
-    expect(await recoveryStorageGate(recoveryCity, ask)).toBe(true);
     expect(store.findRecoverySnapshot).not.toHaveBeenCalled();
+    expect(store.peekRecoveryMarker).not.toHaveBeenCalled();
     expect(ask).not.toHaveBeenCalled();
-    expect(store.disposeLock).toHaveBeenCalledExactlyOnceWith(region.id);
   });
 
   it('returns a recovery choice only while this tab still owns the region after the prompt', async () => {
@@ -423,29 +506,28 @@ describe('recovery storage decisions', () => {
     expect(ask).toHaveBeenCalledOnce();
   });
 
-  it('keeps a quota failure recoverable and refinds the latest pending snapshot inside the Retry lock', async () => {
-    store.keys.mockResolvedValue([`${region.id}:0_0`]);
-    store.acquireLock.mockReturnValue(true);
+  it('keeps a quota failure recoverable and refinds the city\'s latest pending snapshot on Retry, writing nowhere else', async () => {
+    store.keys.mockResolvedValue(['other:0_0', `${region.id}:0_0`]);
     const previous = pendingRecovery(1), latest = pendingRecovery(2);
     let available = previous;
-    store.findRecoverySnapshot.mockImplementation(async () => available);
-    const ask = vi.fn(async (pending: PendingRecovery) => {
-      expect(pending).toBe(latest);
-      expect(lockState.restrictions.size).toBe(1);
-      expect(store.regionSaveAccess(region.id)).toBe(true);
-      expect(store.disposeLock).not.toHaveBeenCalled();
+    store.findRecoverySnapshot.mockImplementation(async () => {
+      const [allow] = lockState.restrictions;
+      expect(allow(region.id)).toBe(true);
+      expect(allow('other')).toBe(false);
+      return available;
     });
+    const ask = vi.fn(async (pending: PendingRecovery) => { expect(pending).toBe(latest); });
     expect(handleRecoveryStorageError(new DOMException('RAW QUOTA', 'QuotaExceededError'), recoveryCity, ask)).toBe(true);
     expect(textOf(root)).toContain(STORAGE_FULL_MESSAGE);
     expect(textOf(root)).not.toContain('RAW QUOTA');
     expect(store.findRecoverySnapshot).not.toHaveBeenCalled();
     expect(store.remove).not.toHaveBeenCalled();
     available = latest;
-    button('Retry').click(); await flush();
+    button('Retry').click();
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledExactlyOnceWith(latest));
     expect(store.findRecoverySnapshot).toHaveBeenCalledExactlyOnceWith(recoveryCity);
-    expect(ask).toHaveBeenCalledExactlyOnceWith(latest);
     expect(root.querySelector('.storage-dialog')).toBeNull();
-    expect(store.disposeLock).toHaveBeenCalledExactlyOnceWith(region.id);
+    expect(store.acquireLock).not.toHaveBeenCalled();
     expect(store.remove).not.toHaveBeenCalled();
     expect(store.put).not.toHaveBeenCalled();
   });

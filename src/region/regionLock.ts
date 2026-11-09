@@ -1,17 +1,21 @@
 /** Region storage ownership follows the player between the region and its cities. */
 import type { CityConfigData } from '../sim/config';
 import { cityKey, deleteRegion, deserializeCity, loadRegion, type CityRecord } from '../save';
-import { openKV, regionSaveAccess, requestPersistentStorage } from '../save/db';
+import { clearRegionSummaryStale, openKV, regionSaveAccess, regionSummaryStale, requestPersistentStorage } from '../save/db';
 import { RegionStorageSession, reopenStoredRegion, type StorageCity } from '../ui/StorageDialog';
 import { openNewCityDialog } from './NewCityDialog';
 import type { RegionModel } from './RegionModel';
 import { summarizeCity } from './citySummary';
 import type { RegionData, RegionTile } from './types';
 
-/** A city write can finish after takeover without its old tab updating the region summary. */
+/** A city write can finish after takeover without its old tab updating the region summary. Only a region marked stale
+ *  (a lost lock, a takeover, a write that outlived its lock) reads its city records: each can be many MB (O6). */
 export async function loadCurrentRegion(id: string): Promise<RegionData | null> {
+  const stale = regionSummaryStale(id);
+  // the holder clears the mark before reading, so a write landing after this read marks the region again
+  if (stale && regionSaveAccess(id)) clearRegionSummaryStale(id);
   const region = await loadRegion(id);
-  if (!region) return null;
+  if (!region || !stale) return region;
   const kv = await openKV();
   for (const tile of region.tiles) {
     const record = await kv.get<CityRecord>('cities', cityKey(id, tile.key));

@@ -72,7 +72,7 @@ import { NeighborLabels } from './region/NeighborLabels';
 import type { Camera } from 'three';
 import { regionSaveAccess, requireRegionSaveAccess, withRegionSaveAccess } from './save/db';
 import { RegionStorage } from './region/regionLock';
-import { handleRecoveryStorageError, recoveryStorageGate, showStorageError, storageRecoveryChoice, withRecoveryStorage } from './ui/StorageDialog';
+import { handleRecoveryStorageError, isStorageError, recoveryStorageGate, showStorageError, storageRecoveryChoice, withRecoveryStorage } from './ui/StorageDialog';
 
 // ---------------------------------------------------------------------------------------------------------------
 // CityScene contract (owned by ui-game; loaded lazily so the app works before it exists)
@@ -305,6 +305,12 @@ class App {
     if (data) await this.continueInCity(data, p.marker.tileKey);
   }
 
+  /** NEW-04: the start-up offer holds temporary locks on the regions it scans; let it settle (and decide) before this
+   *  tab takes a region's lock, or the session would be read-only against itself */
+  private async startupOffer(): Promise<RecoverChoice | null> {
+    return this.offerPending ? await this.offerPending.catch(() => null) : null;
+  }
+
   /** before entering a city: if a snapshot of it is pending, ask first. false = don't enter (dismissed / superseded) */
   private async recoveryGate(regionId: string, tileKey: string): Promise<boolean> {
     // the player clicked before the start-up offer opened: let it decide first (on Recover it enters that city itself)
@@ -405,6 +411,8 @@ class App {
   }
 
   async openRegion(data: RegionData, select?: string): Promise<void> {
+    // on Recover the start-up offer enters the recovered city itself
+    if ((await this.startupOffer()) === 'recovered') return;
     const ld = new LoadingScreen(this.root);
     ld.set('Generating terrain…', 0.2);
     await paint();
@@ -502,6 +510,7 @@ class App {
     if (!(await this.storage.hold(model.data))) return;
     this.busy = true;
     const ld = new LoadingScreen(this.root);
+    let storing = false; // NEW-04: only a failed write gets the storage dialog
     try {
       ld.set('Generating terrain…', 0.1);
       await paint();
@@ -519,9 +528,11 @@ class App {
       await paint();
       tile.city = summarizeCity(st);
       tile.city.thumbnail = cityThumbnail(st, 256);
+      storing = true;
       // `st!`: still set here (it is dropped just before enterCity); no second binding keeps it alive past that
       await withRegionSaveAccess(model.data.id, () => saveCity(model.data.id, tile.key, st!));
       await this.persistRegion();
+      storing = false;
       // W1.2: the worker then loads it from IndexedDB (§4.5). Main keeps no recovery base and no state of its own (O6):
       // the scene runs on the worker's replica, as when a saved city is played
       const worker = this.useWorker() ? await this.bootWorker(model, tile, ld) : null;
@@ -531,7 +542,8 @@ class App {
       await this.enterCity(model, tile, state, ld, t0, worker ?? undefined);
     } catch (e) {
       console.error('[main] failed to found city', e);
-      void showStorageError(e, { retry: () => this.startNewCity(model, tile, cfg) });
+      if (storing || isStorageError(e)) void showStorageError(e, { retry: () => this.startNewCity(model, tile, cfg) });
+      else toast(`Could not found the city: ${(e as Error).message}`, 'bad', 6000);
       ld.remove();
     } finally {
       this.busy = false;
@@ -540,6 +552,8 @@ class App {
 
   /** Continue straight into the city the player was in when the page was closed */
   async continueInCity(data: RegionData, tileKey: string): Promise<void> {
+    const offered = await this.startupOffer();
+    if (offered === 'recovered' || offered === 'later') return;
     data = await this.storage.open(data);
     if (!(await this.recoveryGate(data.id, tileKey))) return;
     const ld = new LoadingScreen(this.root);

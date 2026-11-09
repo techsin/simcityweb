@@ -21,7 +21,7 @@ const sessions = vi.hoisted(() => {
   return { Session, instances };
 });
 vi.mock('../src/save', () => ({ loadRegion: mocks.load, deleteRegion: mocks.remove, cityKey: vi.fn(), deserializeCity: vi.fn() }));
-vi.mock('../src/save/db', () => ({ openKV: vi.fn(async () => ({})), regionSaveAccess: mocks.access, requestPersistentStorage: mocks.persist }));
+vi.mock('../src/save/db', () => ({ openKV: vi.fn(async () => ({})), regionSaveAccess: mocks.access, requestPersistentStorage: mocks.persist, regionSummaryStale: () => false, clearRegionSummaryStale: vi.fn() }));
 vi.mock('../src/region/NewCityDialog', () => ({ openNewCityDialog: mocks.dialog }));
 vi.mock('../src/ui/StorageDialog', () => ({ RegionStorageSession: sessions.Session, reopenStoredRegion: mocks.reopen }));
 

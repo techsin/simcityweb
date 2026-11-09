@@ -1,17 +1,24 @@
 /** Save failures, region backups and the one-writer storage session shared by the region and city screens. */
 import './storage.css';
 import type { RegionData } from '../region/types';
-import { uiRoot } from '../region/ui/modal';
-import { buildRegionFile, clearRecoveryBase, deleteRegion, deserializeCity, downloadBlob, exportRegion, findRecoverySnapshot, getCityRecord, getRecoveryBase, listRegions, loadRegion, packFile, peekRecoveryMarker, rebuildRecoveredCity, safeFileName, type PendingRecovery, type RecoveryCity, type RegionFile } from '../save';
-import { markRegionExported, openKV, regionSaveAccess, RegionSaveLock, restrictRegionSaveAccess, storageEstimate } from '../save/db';
+import { toast, uiRoot } from '../region/ui/modal';
+import { buildRegionFile, clearRecoveryBase, deleteRegion, deserializeCity, downloadBlob, exportRegion, findRecoverySnapshot, getCityRecord, getRecoveryBase, hasRecoverySnapshot, listRegions, loadRegion, packFile, peekRecoveryMarker, rebuildRecoveredCity, safeFileName, type PendingRecovery, type RecoveryCity, type RegionFile } from '../save';
+import { markRegionExported, markRegionSummaryStale, openKV, regionSaveAccess, RegionSaveLock, restrictRegionSaveAccess, storageEstimate } from '../save/db';
 import type { SimHost } from '../worker/SimHost';
 import { summarizeCity } from '../region/citySummary';
 import { h } from './dom';
 
 export const STORAGE_FULL_MESSAGE = "Your browser's storage for Metropolis is full. Export this region, or delete old regions or save history to free space.";
 
+export const RECOVERY_UNDECIDED_MESSAGE = "This city's unsaved progress could not be checked, so the city was not opened. Free some browser storage, then try again.";
+
 export function isQuotaError(error: unknown): boolean {
   return !!error && typeof error === 'object' && 'name' in error && error.name === 'QuotaExceededError';
+}
+
+/** A full store, or a write refused because another tab now owns the region. */
+export function isStorageError(error: unknown): boolean {
+  return isQuotaError(error) || (!!error && typeof error === 'object' && 'name' in error && error.name === 'NotAllowedError');
 }
 
 interface StorageActions {
@@ -26,6 +33,8 @@ let errorDialog: HTMLElement | null = null;
 const dialogs: HTMLElement[] = [];
 const takenOver = new Map<string, number>();
 let conditionVersion = 0;
+/** The start-up recovery scan holds temporary locks on the regions it scans (see withRecoveryStorage). */
+let recoveryScan: Promise<unknown> = Promise.resolve();
 
 export function storageDialogOpen(): boolean { return dialogs.length > 0; }
 export function storageConditionVersion(): number { return conditionVersion; }
@@ -124,6 +133,9 @@ export async function snapshotRegionFile(regionId: string, host: Pick<SimHost, '
 /** A closed region can still be open in another tab. Never delete it without its own lock. */
 export async function deleteStorageRegion(regionId: string): Promise<boolean> {
   if (session?.region.id === regionId) return false;
+  // this tab's own recovery scan may hold that region's lock: wait for it rather than blame another tab
+  await recoveryScan;
+  if (session?.region.id === regionId) return false;
   const lock = new RegionSaveLock(regionId, false);
   try {
     if (!(await lock.acquire())) return false;
@@ -134,7 +146,13 @@ export async function deleteStorageRegion(regionId: string): Promise<boolean> {
 }
 
 /** Recovery discovery adopts the global unload slot and cleans stale records, so it needs their locks too. */
-export async function withRecoveryStorage<T>(run: () => Promise<T>, unavailable: T): Promise<T> {
+export function withRecoveryStorage<T>(run: () => Promise<T>, unavailable: T): Promise<T> {
+  const scan = scanRecoveryStorage(run, unavailable);
+  recoveryScan = scan.catch(() => undefined);
+  return scan;
+}
+
+async function scanRecoveryStorage<T>(run: () => Promise<T>, unavailable: T): Promise<T> {
   const kv = await openKV();
   const ids = new Set((await kv.keys('recovery')).map((key) => key.split(':')[0]));
   const local = peekRecoveryMarker();
@@ -154,13 +172,35 @@ export async function withRecoveryStorage<T>(run: () => Promise<T>, unavailable:
   } finally { for (const lock of temporary) lock.dispose(); }
 }
 
-/** Keep snapshot discovery and the player's decision inside the same region-lock scope. */
+/**
+ * One city's pending snapshot, while this tab holds that city's region. Another tab can hold any other region, so this
+ * scan writes to no other region: the global localStorage slot is adopted into IndexedDB only when it is this region's
+ * or its own region's lock is free, and other regions' records are left alone. `undefined`: undecided, because a copy
+ * of the city's snapshot is still stored but none could be offered (an adoption or a cleanup failed).
+ */
+async function findCityRecovery(city: RecoveryCity): Promise<PendingRecovery | null | undefined> {
+  const slot = peekRecoveryMarker()?.regionId;
+  const slotLock = slot && slot !== city.regionId ? new RegionSaveLock(slot, false) : null;
+  try {
+    const adopt = !!slotLock && await slotLock.acquire();
+    const unrestrict = restrictRegionSaveAccess((id) => id === city.regionId || (adopt && id === slot && !!slotLock?.canSave()));
+    let pending: PendingRecovery | null | undefined;
+    try { pending = await findRecoverySnapshot(city).catch(() => undefined); }
+    finally { unrestrict(); }
+    return pending === null && await hasRecoverySnapshot(city) ? undefined : pending;
+  } finally { slotLock?.dispose(); }
+}
+
+/** A city never opens while its own pending snapshot is undecided; other regions (and other tabs) never decide it. */
 export async function recoveryStorageGate(city: RecoveryCity, ask: (pending: PendingRecovery) => Promise<string>): Promise<boolean> {
+  // without its region's lock this tab cannot overwrite the snapshot: the holder, or this tab after a takeover, is asked
   if (!regionSaveAccess(city.regionId)) return true;
-  return withRecoveryStorage(async () => {
-    const pending = await findRecoverySnapshot(city).catch(() => null);
-    return !pending || (await ask(pending)) !== 'later';
-  }, true);
+  const pending = await findCityRecovery(city);
+  if (pending === undefined) {
+    toast(RECOVERY_UNDECIDED_MESSAGE, 'bad', 6000);
+    return false;
+  }
+  return !pending || (await ask(pending)) !== 'later';
 }
 
 export async function storageRecoveryChoice<T>(regionId: string, ask: () => Promise<T>): Promise<T | null> {
@@ -174,10 +214,10 @@ export function handleRecoveryStorageError(error: unknown, city: RecoveryCity, a
   if (!regionSaveAccess(city.regionId)) return true;
   if (!isQuotaError(error)) return false;
   void showStorageError(error, { export: () => exportStorageRegion(city.regionId), retry: async () => {
-    await withRecoveryStorage(async () => {
-      const pending = await findRecoverySnapshot(city);
-      if (pending) await ask(pending);
-    }, undefined);
+    if (!regionSaveAccess(city.regionId)) return;
+    const pending = await findCityRecovery(city);
+    if (pending === undefined) toast(RECOVERY_UNDECIDED_MESSAGE, 'bad', 6000);
+    else if (pending) await ask(pending);
   } });
   return true;
 }
@@ -279,6 +319,8 @@ export class RegionStorageSession {
   readonly lock: RegionSaveLock;
   private renderAbort = new AbortController();
   private banner: HTMLElement;
+  /** The notice stays hidden until the first acquire settles: an open must not flash "open in another tab". */
+  private settled = false;
   constructor(public region: RegionData, root: HTMLElement, private reload: () => Promise<void>, readonly city: () => StorageCity | null = () => null) {
     this.lock = new RegionSaveLock(region.id);
     this.banner = h('div', { class: 'storage-lock-notice glass', role: 'status' });
@@ -287,15 +329,26 @@ export class RegionStorageSession {
     this.lock.subscribe(() => this.render());
     this.render();
   }
-  async acquire(): Promise<boolean> { return this.lock.acquire(); }
+  async acquire(): Promise<boolean> {
+    try { return await this.lock.acquire(); }
+    finally {
+      this.settled = true;
+      this.render();
+    }
+  }
   private render(): void {
     this.renderAbort.abort();
     this.renderAbort = new AbortController();
     const signal = this.renderAbort.signal;
-    this.banner.hidden = this.lock.writable;
+    this.banner.hidden = !this.settled || this.lock.writable;
     this.banner.replaceChildren(h('span', null, this.lock.lost ? 'This region is now open in another tab' : 'This region is open in another tab'),
       h('button', { class: 'btn', signal, onclick: async () => {
-        const reload = async () => { takenOver.set(this.region.id, Date.now()); await this.reload(); };
+        const reload = async () => {
+          takenOver.set(this.region.id, Date.now());
+          // the old holder's last city write can outlive its region summary: the reload rebuilds the tiles
+          markRegionSummaryStale(this.region.id);
+          await this.reload();
+        };
         try { await this.lock.acquire(true, reload); }
         catch (e) { void showStorageError(e, { retry: () => this.lock.acquire(true, reload).then(() => undefined) }); }
       } }, 'Use it here instead'));

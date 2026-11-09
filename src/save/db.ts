@@ -216,8 +216,32 @@ export async function withRegionSaveAccess<T>(regionId: string, write: () => Pro
   await checkStorageSpace();
   requireRegionSaveAccess(regionId);
   const saved = await write();
+  // the write landed after a takeover: its region summary never will, so the next open rebuilds it
+  if (!regionSaveAccess(regionId)) markRegionSummaryStale(regionId);
   requireRegionSaveAccess(regionId);
   return saved;
+}
+
+// A city record can outlive its tile summary in the region record when the region's lock moves to another tab. Only a
+// region marked here has its city records read on open (regionLock.ts loadCurrentRegion): each can be many MB.
+const SUMMARY_STALE_KEY = 'metropolis.regionSummaryStale.';
+const summaryMarks = new Map<string, string>();
+
+export function markRegionSummaryStale(regionId: string): void {
+  const key = SUMMARY_STALE_KEY + regionId, value = String(Date.now());
+  try { localStorage.setItem(key, value); } catch { summaryMarks.set(key, value); }
+}
+
+export function regionSummaryStale(regionId: string): boolean {
+  const key = SUMMARY_STALE_KEY + regionId;
+  try { return localStorage.getItem(key) !== null || summaryMarks.has(key); }
+  catch { return summaryMarks.has(key); }
+}
+
+export function clearRegionSummaryStale(regionId: string): void {
+  const key = SUMMARY_STALE_KEY + regionId;
+  summaryMarks.delete(key);
+  try { localStorage.removeItem(key); } catch { /* storage unavailable */ }
 }
 
 export async function storageNeedsBackup(regionId: string): Promise<boolean> {
@@ -433,6 +457,8 @@ export class RegionSaveLock {
     this.notify();
   }
   private lose(): void {
+    // writes that landed before this tab learned of the loss may have no region summary yet
+    if (this.owned && !this.disposed) markRegionSummaryStale(this.regionId);
     this.lost ||= this.owned;
     this.owned = false;
     this.setWritable(false);

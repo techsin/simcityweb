@@ -204,6 +204,26 @@ describe('one writer per region', () => {
     expect(access).toEqual([false, true, false]);
   });
 
+  it('marks the region summary stale when a lock is lost or a write outlives it, never on a release', async () => {
+    const first = holder('region', true), second = holder();
+    await first.acquire();
+    first.dispose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(db.regionSummaryStale('region')).toBe(false);
+    const owner = holder('region', true);
+    expect(await owner.acquire()).toBe(true);
+    let land!: () => void;
+    const writing = db.withRegionSaveAccess('region', () => new Promise<void>((resolve) => { land = resolve; }));
+    await vi.advanceTimersByTimeAsync(0);
+    await second.acquire(true);
+    expect(owner.lost).toBe(true);
+    expect(db.regionSummaryStale('region')).toBe(true);
+    db.clearRegionSummaryStale('region'); // the new holder's reload reads the records, then the late write lands
+    land();
+    await expect(writing).rejects.toMatchObject({ name: 'NotAllowedError' });
+    expect(db.regionSummaryStale('region')).toBe(true);
+  });
+
   it('does not change active access when Manage storage takes a temporary lock', async () => {
     const active = holder('region', true);
     await active.acquire();

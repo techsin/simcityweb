@@ -5,7 +5,7 @@ import { loadCurrentRegion, RegionStorage } from '../../src/region/regionLock';
 import { summarizeCity } from '../../src/region/citySummary';
 import type { RegionData } from '../../src/region/types';
 import { createCityRecord } from '../../src/save/cities';
-import { MemoryKV, restrictRegionSaveAccess, setKV } from '../../src/save/db';
+import { clearRegionSummaryStale, markRegionSummaryStale, MemoryKV, regionSummaryStale, restrictRegionSaveAccess, setKV } from '../../src/save/db';
 import { CityState } from '../../src/sim/CityState';
 import { defaultCityConfig } from '../../src/sim/config';
 
@@ -31,6 +31,7 @@ beforeEach(() => {
 afterEach(() => {
   release?.();
   release = undefined;
+  clearRegionSummaryStale('region');
   vi.restoreAllMocks();
   setKV(new MemoryKV());
 });
@@ -62,6 +63,7 @@ describe('region summary reload after takeover', () => {
     const record = { ...createCityRecord(region.id, '0_0', state), savedAt: 200 };
     await kv.put('cities', record, record.key);
     const put = vi.spyOn(kv, 'put'), remove = vi.spyOn(kv, 'delete');
+    markRegionSummaryStale(region.id);
 
     const current = await loadCurrentRegion(region.id);
     expect(current?.tiles[0].city).toMatchObject({
@@ -87,6 +89,7 @@ describe('region summary reload after takeover', () => {
     state.stats.residents = [75, 0, 0];
     const newRecord = { ...createCityRecord(region.id, '1_0', state), savedAt: 200 };
     await kv.put('cities', newRecord, newRecord.key);
+    markRegionSummaryStale(region.id);
 
     const current = await loadCurrentRegion(region.id);
     expect(current?.tiles[0].city).toEqual(region.tiles[0].city);
@@ -107,6 +110,7 @@ describe('region summary reload after takeover', () => {
     state.stats.residents = [225, 0, 0];
     const neighbour = { ...createCityRecord(region.id, '1_0', state), savedAt: 200 };
     await kv.put('cities', neighbour, neighbour.key);
+    markRegionSummaryStale(region.id);
 
     const current = await loadCurrentRegion(region.id);
     expect(current?.tiles[0].city).toEqual(region.tiles[0].city);
@@ -122,6 +126,7 @@ describe('region summary reload after takeover', () => {
     await kv.put('cities', record, record.key);
     let writable = false, acquired!: (value: boolean) => void;
     release = restrictRegionSaveAccess(() => writable);
+    markRegionSummaryStale(region.id);
     session.acquire.mockReturnValue(new Promise<boolean>((resolve) => { acquired = resolve; }));
     const get = vi.spyOn(kv, 'get'), put = vi.spyOn(kv, 'put'), remove = vi.spyOn(kv, 'delete');
     const context = { root: {} as HTMLElement, region: null, city: null, saved: Promise.resolve(), clearCity: vi.fn(), open: vi.fn() };
@@ -135,6 +140,32 @@ describe('region summary reload after takeover', () => {
     expect(get).toHaveBeenCalledWith('cities', record.key);
     expect(put).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
+    expect(regionSummaryStale(region.id)).toBe(false);
     storage.dispose();
+  });
+
+  it('reads no city record when opening a region that is not marked stale (O6)', async () => {
+    const { state, region } = fixture();
+    await kv.put('regions', region);
+    const record = { ...createCityRecord(region.id, '0_0', state), savedAt: 200 };
+    await kv.put('cities', record, record.key);
+    const get = vi.spyOn(kv, 'get');
+    expect(await loadCurrentRegion(region.id)).toEqual(region);
+    expect(get.mock.calls).toEqual([['regions', region.id]]);
+  });
+
+  it('keeps the mark for the holder when a read-only tab repairs only its own view', async () => {
+    const { state, region } = fixture();
+    await kv.put('regions', region);
+    const record = { ...createCityRecord(region.id, '0_0', state), savedAt: 200 };
+    await kv.put('cities', record, record.key);
+    markRegionSummaryStale(region.id);
+    release = restrictRegionSaveAccess(() => false);
+    expect((await loadCurrentRegion(region.id))?.tiles[0].city?.lastPlayed).toBe(200);
+    expect(regionSummaryStale(region.id)).toBe(true);
+    release();
+    release = undefined;
+    expect((await loadCurrentRegion(region.id))?.tiles[0].city?.lastPlayed).toBe(200);
+    expect(regionSummaryStale(region.id)).toBe(false);
   });
 });
