@@ -612,6 +612,35 @@ describe('LG-05: a built-out city hears options that exist', () => {
     expect(lots(false, true)?.[0]).toBe('Shops and offices want to move in, but your 14 empty commercial lots are too steep to build on. Level them with the terrain tool, or zone flatter commercial land.');
   });
 
+  it('on a full map a family that is not built out hears its sub-type hint as rezoning its own empty lots, not "zone some"', () => {
+    // (homes built out; the shops keep 300 empty low-density lots and industry 20 medium-density ones, while CO$$$ and
+    // I-HT want in and their zones have no room)
+    const { c, sim, adv } = town({ demand: { 0: 0.8, 7: 0.8, 11: 0.8 }, unemployment: 0 });
+    c.rt.emptyFront[Zone.ComLow] = 300;
+    c.rt.emptyFront[Zone.IndMed] = 20;
+    monthTick(sim, adv, 30);
+    expect(planning(c.st, 'builtOut')?.text).toMatch(/^Residential demand is strong, but the city is built out/);
+    expect(planning(c.st, 'zoneDev11')?.text).toBe('High-tech industry wants to move in, but there is no empty high-density industrial lot, and almost no free land is left. Rezone some empty industrial lots to high density — clean, educated areas are best.');
+    expect(planning(c.st, 'zoneDev7')?.text).toBe('Corporate offices (CO$$$) want high land value downtown, and almost no free land is left — rezone some empty commercial lots there to medium or high density.');
+    const texts = Object.values(advisorIssues(c.st)).flat().map((a) => a.text);
+    expect(texts.filter((t) => /\bzone\b/i.test(t)), 'no "zone" as an ask: only "rezone"').toEqual([]);
+    // (the same town with free land left: the hints as before)
+    const f = town({ freeStrip: true, demand: { 0: 0.8, 7: 0.8, 11: 0.8 }, unemployment: 0 });
+    f.c.rt.emptyFront[Zone.ComLow] = 300;
+    f.c.rt.emptyFront[Zone.IndMed] = 20;
+    monthTick(f.sim, f.adv, 30);
+    expect(planning(f.c.st, 'zoneDev11')?.text).toBe('High-tech industry wants to move in, but there is no high-density industrial zone. Zone some — clean, educated areas are best.');
+    expect(planning(f.c.st, 'zoneDev7')?.text).toBe('Corporate offices (CO$$$) want high land value downtown — zone medium or high density commercial.');
+    // R$$$ on a full map with no empty homes and the homes not built out (roadless homes): its zone rule names the fix
+    const r = town({ zones: { 3: Zone.ResLow, 5: Zone.ResLow }, demand: { 0: 0.8, 2: 0.8 }, unemployment: 0 });
+    for (const d of MONTH_SCAN_DAYS) { r.c.st.day = d; r.adv.daily!(r.sim); }
+    advisorData(r.c.st).scan!.zone!.noAccessFam = [40, 0, 0];
+    monthTick(r.sim, r.adv, 30);
+    expect(planning(r.c.st, 'builtOut')).toBeUndefined();
+    expect(planning(r.c.st, 'zoneR')?.text).toMatch(/^Residential demand is strong, but 40 residential tiles have no road access/);
+    expect(planning(r.c.st, 'zoneDev2')).toBeUndefined();
+  });
+
   it('the post offers what the card offers first: the neighbour when no block qualifies, and no button without an option', () => {
     // (only homes wanted, every block already high-density homes: no rezoning candidate)
     const all = { 0: Zone.ResHigh, 1: Zone.ResHigh, 2: Zone.ResHigh, 3: Zone.ResHigh, 4: Zone.ResHigh, 5: Zone.ResHigh, 6: Zone.ResHigh, 7: Zone.ResHigh };

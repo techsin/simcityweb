@@ -2268,15 +2268,22 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       'Industry wants to move in — zone industrial land, ideally near highways or rail.');
     // sub-type specific: strong demand for a DevType whose zones have no room at all (a picky type whose zones exist
     // but do not suit it hears what it needs instead; the family rule above may already have said it). LG-05: not for a
-    // family the built-out card speaks for (its "zone some" is the card's "rezone … to denser …")
-    const SUBTYPE_HINT: [number, number[], string][] = [
-      [DevType.IHT, [Zone.IndHigh], 'High-tech industry wants to move in, but there is no high-density industrial zone. Zone some — clean, educated areas are best.'],
-      [DevType.IA, [Zone.IndAg], 'Farmers are looking for land. Zone agricultural land on flat ground away from pollution.'],
-      [DevType.CO3, [Zone.ComMed, Zone.ComHigh], 'Corporate offices (CO$$$) want high land value downtown — zone medium or high density commercial.'],
-      [DevType.R3, [Zone.ResLow, Zone.ResMed, Zone.ResHigh], 'Wealthy residents are looking for homes. Zone residential land near parks and water.'],
+    // family the built-out card speaks for (its "zone some" is the card's "rezone … to denser …"); on a full map the
+    // others hear the full-map text (the last column), as there is no new land to zone: a family that is not built out
+    // has empty lots of its own to rezone (null: R$$$, whose zones are its whole family — with none empty and the family
+    // not built out, its zone rule names the roadless zones or the rubble that are its room)
+    const SUBTYPE_HINT: [number, number[], string, string | null][] = [
+      [DevType.IHT, [Zone.IndHigh], 'High-tech industry wants to move in, but there is no high-density industrial zone. Zone some — clean, educated areas are best.',
+        'High-tech industry wants to move in, but there is no empty high-density industrial lot, and almost no free land is left. Rezone some empty industrial lots to high density — clean, educated areas are best.'],
+      [DevType.IA, [Zone.IndAg], 'Farmers are looking for land. Zone agricultural land on flat ground away from pollution.',
+        'Farmers are looking for land, and almost no free land is left. Rezone some empty industrial lots on flat ground away from pollution to agriculture.'],
+      [DevType.CO3, [Zone.ComMed, Zone.ComHigh], 'Corporate offices (CO$$$) want high land value downtown — zone medium or high density commercial.',
+        'Corporate offices (CO$$$) want high land value downtown, and almost no free land is left — rezone some empty commercial lots there to medium or high density.'],
+      [DevType.R3, [Zone.ResLow, Zone.ResMed, Zone.ResHigh], 'Wealthy residents are looking for homes. Zone residential land near parks and water.', null],
     ];
-    for (const [dev, zs, text] of SUBTYPE_HINT) {
+    for (const [dev, zs, freeText, fullText] of SUBTYPE_HINT) {
       if (!(s.demand[dev] > 0.6) || room(zs) !== 0 || strong[famOfDev(dev)]) continue;
+      const text = full ? fullText : freeText;
       // (SF-2) its zones hold rubble: room once cleared — the rubble advice or the family rule may have named it
       const rub = rubbleRoom(zs);
       if (rub > 0) {
@@ -2288,8 +2295,9 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
       const pick = PICKY_TEXT[dev];
       const unfit = !!pick && !!scan.host && scan.host[dev] > 0 && !fitAny(dev);
       const said = out.some((o) => o.text === pick?.unfit || o.text === pick?.room);
-      if (said) continue;
-      out.push({ id: 'zoneDev' + dev, cooldown: 150, priority: 6, kind: 'info', advisor: 'planning', ...(pick ? best(dev) : {}), text: unfit ? pick.unfit : text });
+      const t = unfit ? pick.unfit : text;
+      if (said || t === null) continue;
+      out.push({ id: 'zoneDev' + dev, cooldown: 150, priority: 6, kind: 'info', advisor: 'planning', ...(pick ? best(dev) : {}), text: t });
     }
     // empty ready lots wait, but nothing that wants in can grow there (final fixes N4: "Ready to grow" lots that never
     // grow) — say why instead of asking for more zones: no building fits them (odd tiles between buildings, or too
