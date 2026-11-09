@@ -222,10 +222,28 @@ describe('CityObjectsView fireworks wiring', () => {
     try {
       same();
       const a = building(st, { x: 8, z: 8, w: 2, d: 2 }, 'park_plaza'); placeBuilding(sim, a); same();
+      expect(view.buildings.getVisual(a.id)).toBeNull();
+      expect(view.buildings.pendingBuilds).toBe(1);
       a.def = 'res_tower.r2.7'; sim.events.emit('buildingChanged', a); same();
+      expect(view.buildings.getVisual(a.id)).toBeNull();
+      expect(view.buildings.pendingBuilds).toBe(1);
+      // The queued add uses its latest state; onVisual then brings the index up to the rendered height.
+      view.buildings.update(0);
+      expect(view.buildings.pendingBuilds).toBe(0); same();
+      const oldVisual = view.buildings.getVisual(a.id)!;
+      expect(oldVisual).not.toBeNull();
+      a.variant++; a.baseY += 100; sim.events.emit('buildingChanged', a); same();
+      expect(view.buildings.getVisual(a.id)).toBe(oldVisual);
+      expect(view.buildings.pendingBuilds).toBe(1);
+      // A pending change keeps its previous visual until the budgeted swap fires the same callback.
+      view.buildings.update(0);
+      expect(view.buildings.pendingBuilds).toBe(0); same();
       const visual = view.buildings.getVisual(a.id)!;
+      expect(visual).not.toBe(oldVisual);
+      expect(visual.top).toBeGreaterThan(oldVisual.top);
       visual.top += 200; view.buildings.onVisual?.(visual, a.id); same();
       removeBuilding(sim, a); same();
+      expect(view.buildings.getVisual(a.id)).toBeNull();
       const fresh = newState(32), next = building(fresh, { x: 16, z: 16, w: 2, d: 2 }, 'park_small');
       fresh.buildings.set(next.id, next); grid(fresh, next, true);
       sim.replaceState(fresh); same();
