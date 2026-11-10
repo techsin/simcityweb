@@ -94,11 +94,11 @@ describe('Budget tax effects (FH-09)', () => {
   });
 
   it('uses the signed NEW-05 sweep threshold for the red warning', () => {
-    expect(TAX_GROWTH_WARNING_RATE).toBe(14);
+    expect(TAX_GROWTH_WARNING_RATE).toBe(17);
   });
 
   it.each([
-    [9.5, false, false], [10, true, false], [13, true, false], [13.5, true, false], [14, false, true],
+    [9.5, false, false], [10, true, false], [14, true, false], [16.5, true, false], [17, false, true],
   ] as const)('at %s%%, individual and All sliders have warn=%s and bad=%s', (rate, warn, bad) => {
     const f = fixture();
     for (const master of f.masters) input(master, rate);
