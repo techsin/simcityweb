@@ -254,3 +254,16 @@ the scratch logs of the Nov 4 run):
    in `scratchpad/co/b2m-devbase`), `master2.sh` / `master3.sh` (the heavy gates, one lock hold each), `pd.sh`, `lc.sh` +
    `tools/loadcmp2.ts` / `tools/anlc2.py` (the save / load comparison), `hold.sh` + `tools/anB2m.py` (gate 4),
    `bal.sh` (the balance). The dev export is `51ec328` for every gate on `99d19e9`.
+
+**Plan amendment (the lead's decision on gate 4; for WASM_PLAN B2 / WORKER_DESIGN §6 S3, "maxStepMs p99 ≤ 3 ms (max ≤ 5)
+at dense1m", and for the merge body).**
+- **max ≤ 5 ms** is met when, from a load on dense1m, the per-run median of the all-task max step is ≤ 5 ms in each
+  window (days 0–20, 20–80, 80–220), with the steps that overlap a GC pause (≥ 1 ms) excluded, **and** the first cold
+  execution of each piece kind after the load stays ≤ 8 ms.
+- **p99 ≤ 3 ms** (per run and window, from a load) and **the warm max ≤ 5 ms** stay strict.
+- **The cost-model gate** is the design's warm gate: every task's median error within ±30 % warm, on both fixtures
+  (dense1m and bot256). The from-load error is reported, not gated.
+- The residual cold first-run cost (the fix round's example: traffic `transit.search` at 5.8 ms on its first run after a
+  load) goes to WORKER_DESIGN S5 (the frame budget) as a follow-up line in `docs/dev/POLISH_BACKLOG.md`.
+- The fix round's `grownCity` continuation tolerance, 1 % → 1.5 % (dev's own base sits at 0.97 % on its seed), is
+  accepted.
