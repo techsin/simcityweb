@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../src/core/constants';
 import { Network } from '../../src/core/types';
-import { Pedestrians } from '../../src/render/city/Pedestrians';
+import { Pedestrians, pedestrianActivityAt } from '../../src/render/city/Pedestrians';
 import { NetInfo } from '../../src/render/city/common/netinfo';
 import { RoadSurface } from '../../src/render/city/common/surface';
 import { newState, roadLine } from '../infra/cityGen';
@@ -101,6 +101,69 @@ describe('pedestrian identity thinning (QA B1)', () => {
         expect(f.day.mesh.count).toBe(count);
         expect(f.thinned.mesh.count).toBe(count < 6 ? 0 : 1);
       }
+    } finally { f.dispose(); }
+  });
+
+  // QA round 3: a search's finds are drawn while it runs, so a frame can hold two rosters, in no rank order.
+  it.each([7, 21, 3])('keeps each walker\'s own decision and the night cap through a fast pan, a search always running (%i:00)', (hour) => {
+    const f = fixture(), share = Math.min(1, pedestrianActivityAt(hour) * 1.33);
+    const at = (x: number) => { f.camera.position.x = x; f.camera.lookAt(x, 5, f.camera.position.z); f.camera.updateMatrixWorld(); };
+    try {
+      at(14 * CELL_SIZE);
+      for (let k = 0; k < 30; k++) { f.day.update(0, f.camera, 12); f.thinned.update(0, f.camera, hour); }
+      const presence = new Map<number, boolean>();
+      let searching = 0, comparisons = 0, slack = 0;
+      for (let frame = 1; frame <= 120; frame++) { // the keyboard pan at 120 m, 132 m/s, at 30 fps: 33 cells in 4 s
+        at(14 * CELL_SIZE + frame * 132 / 30);
+        f.day.update(1 / 30, f.camera, 12); f.thinned.update(1 / 30, f.camera, hour);
+        if ((f.thinned as unknown as { scanning: boolean }).scanning) searching++;
+        const eligible = cells(f.day), shown = cells(f.thinned), quota = Math.floor(f.day.mesh.count * share);
+        expect(f.thinned.mesh.count).toBeLessThanOrEqual(quota);
+        for (const id of shown) expect(eligible.has(id), `cell ${id}, frame ${frame}`).toBe(true);
+        if (f.thinned.mesh.count === quota) continue; // the quota cut somebody here: the lowest ranks stay instead
+        slack++;
+        for (const id of eligible) {
+          if (presence.has(id)) { expect(shown.has(id), `cell ${id}, frame ${frame}`).toBe(presence.get(id)); comparisons++; }
+          else presence.set(id, shown.has(id));
+        }
+      }
+      expect(searching).toBeGreaterThan(80);
+      if (hour !== 3) { expect(slack).toBeGreaterThan(100); expect(comparisons).toBeGreaterThan(1000); }
+    } finally { f.dispose(); }
+  });
+
+  // The rule itself, from the walkers' own hashes (the fixture has one walker a cell, so a cell is a seed): shown are
+  // the walkers ranked under the hour's activity, and only the lowest-ranked when they pass the quota (20% at 3 am).
+  it.each([3, 5.5, 7, 21, 23])('shows exactly the walkers ranked under the activity of %f h, the lowest ranks when the quota cuts, in any roster order', (hour) => {
+    const f = fixture(), activity = pedestrianActivityAt(hour);
+    const hash = (n: number) => { n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); return (n ^ (n >>> 16)) >>> 0; };
+    const rank = (cell: number) => hash(hash(cell * 16) ^ 0x5bd1e995);
+    let cut = 0, shared = 0;
+    const check = (what: string) => {
+      const eligible = [...cells(f.day)], quota = Math.floor(eligible.length * Math.min(1, activity * 1.33));
+      const under = eligible.filter((id) => rank(id) / 4294967296 < activity).sort((p, q) => rank(p) - rank(q));
+      if (under.length > quota) cut++;
+      expect([...cells(f.thinned)].sort((p, q) => p - q), what).toEqual(under.slice(0, quota).sort((p, q) => p - q));
+    };
+    try {
+      for (let step = 0; step < 24; step++) {
+        // narrow and wide views, a cell and a half on each time: few or many eligible walkers, another search order
+        f.camera.fov = 30 + (step % 4) * 16; f.camera.updateProjectionMatrix();
+        f.camera.position.x = (14 + step * 1.5) * CELL_SIZE;
+        f.camera.lookAt(f.camera.position.x, 5, f.camera.position.z); f.camera.updateMatrixWorld();
+        f.day.invalidate(); f.thinned.invalidate();
+        for (let k = 0; k < 30; k++) { f.day.update(0, f.camera, 12); f.thinned.update(0, f.camera, hour); }
+        check(`step ${step}`);
+        // and while the next search hands the street over: two rosters in a frame, in the search's order
+        f.day.invalidate(); f.thinned.invalidate();
+        for (let k = 0; k < 26; k++) {
+          f.day.update(0, f.camera, 12); f.thinned.update(0, f.camera, hour);
+          if ((f.thinned as unknown as { scanning: boolean }).scanning) shared++;
+          check(`step ${step}, frame ${k} of the next search`);
+        }
+      }
+      expect(shared).toBeGreaterThan(500);
+      if (hour < 5) expect(cut).toBeGreaterThan(26); // the quota did cut, at more than one of the views
     } finally { f.dispose(); }
   });
 

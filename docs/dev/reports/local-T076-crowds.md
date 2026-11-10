@@ -213,3 +213,165 @@ Headless probe evidence (`round2-probe.mjs`, `round2-probe-results.json` in the 
 - [ ] Re-run `pan30` at 132 m/s, LOW, continuous keyboard motion: searches finish and streets keep repopulating.
 - [ ] Recheck 120 / 300 / 600 / 600 caps, 350 / 600 m cuts, exactly one extra main-pass draw, no shadow draws and
   <=0.8 ms frame cost, including roster completion / sorting frames. Umbrella integration stays with T074.
+
+## QA round 3 — B3 at 30 fps, N1, the hand-over
+
+Round 2 is committed at `d182317`. The real-GPU recheck passed B1 and B2; **B3 failed at 30 fps**: the 132 m/s
+keyboard pan at 120 m drew 5.2 walkers on average against 20.1 at 60 fps and 82 at rest, none at all in 44 of 119
+frames, 55 popping in mid-screen at the roster swaps. A search tested the cells in view in its first frames but only
+swapped its roster in after all 26 frames (0.87 s at 30 fps), by when the view had moved 114 m. **N1:** after a camera
+jump during a search the walkers took up to 45 frames at 60 fps and 49 (1.63 s) at 30 fps to return. The changes below
+are **uncommitted**, on top of `d182317`.
+
+### Changes per file
+
+- `src/render/city/Pedestrians.ts`:
+  - **B3, a search budget per second:** `discover()` takes the frame's `dt` and searches
+    `Math.min(320, Math.max(80, Math.round(80 * 60 * dt)))` cells (`CELLS_PER_FRAME`, `MAX_CELLS_PER_FRAME`): 80 a
+    frame at 60 fps and faster, 160 at 30, 240 at 20, 320 at 15 and below. A 2,025-cell search takes 26 / 13 / 9 / 7
+    frames, 0.43-0.47 s at 60-15 fps (0.7 s at 10 fps, where the slice stays at 320). The game's `dt` is the real frame
+    time clamped to 0.1 s (`CityScene.loop`), also while the sim is paused.
+  - **N1, abandon a search the camera has left:** `REACH = ceil(350 / 16) = 22` cells is the half-side of the square
+    the spiral covers (`SEARCH_CELLS = 45² = 2,025`). A running search continues while the camera cell stays within 22
+    cells of its centre (each axis); once the camera is outside that square the search is dropped and a new one starts
+    in the same frame, centred on the camera. With no search running, the start rules are round 2's (invalidation, a
+    move of more than 3 cells, the 1 s refresh).
+  - **The progressive hand-over (the optional item):** while a search runs, `update()` draws its finds at once, then
+    the previous roster's walkers on the cells it has not reached yet, in the order the spiral reaches them
+    (`spiralIndex()`; the previous roster's slots are keyed and sorted once when the search starts, `passed` counts the
+    ones it has passed). A previous-roster cell is drawn only while the search would still take it (`taken()`: inside
+    the 338 m spawn test and in view), so what is drawn is what the finished search will hold, and the cap (counted on
+    in-view walkers, 120 / 300 / 600) cuts the far end of that order. Nothing pops in at a roster swap any more: the
+    new roster's walkers were drawn as the search found them.
+  - **Screen-edge grace:** a cell the previous roster holds stays while a 12 m sphere around its middle is in view
+    (walkers pace up to 9.8 m from it; the rest allows for a sloping deck), so a walker no longer vanishes a few metres
+    inside the screen edge when the middle of its cell leaves the view. Only while the roster has places to spare: a
+    full roster spends them on cells in view. New cells still enter when their middle is in view.
+  - **The night quota with two rosters in a frame:** the per-roster rank order (`order`, its comparator sort) is gone.
+    When the quota binds, `thin()` keeps the lowest ranks among the walkers written that frame (one sort of at most 600
+    ranks, only in such frames). Each walker's own seed threshold (B1) and the `activity * 1.33` quota are unchanged.
+  - Unchanged: B2's 7.72 m avenue line, the caps, the 350 / 600 m cuts, the one InstancedMesh draw, no shadow, the
+    density inputs (mirrored state and the optional feed only), no RNG beyond the cell / slot hashes.
+- `tests/render/pedestrians.test.ts`: the read-bound test (`bounds nearby discovery work at 1M, …`) now checks the
+  four-building-reads-a-cell bound at 80 / 80 / 160 / 320 / 320 cells for dt 0, 1/60, 1/30, 0.1 and 1 s. New:
+  `searches by the second: at %i fps a frame takes %i cells, and a search the same time` (144 / 60 / 30 / 20 / 15 /
+  10 fps); `draws the same walkers while a new search takes the street over (%s, %i:00, %i a cell from the feed)` (a
+  twin that only walks must draw the same walkers in every frame: 12 / 21 / 03 h, and LOW, MEDIUM and HIGH rosters
+  at their caps); `hands every cell over exactly once wherever a frame's slice ends: the spiral's order on all four
+  sides of a ring` (every slice from 80 to 320 cells in steps of 7).
+- `tests/render/pedestriansQa.test.ts`: round 2's 30 fps pan test is replaced by `draws as many walkers through a
+  132 m/s LOW pan at 30 fps as at 60 fps, and no frame of it is empty`; new `keeps the pan populated at %i fps, %i
+  cells a frame` (20 / 15 / 10 fps), `keeps a faster, wider pan populated too: 330 m/s from 300 m on HIGH`, `abandons a
+  running search at %i fps when the camera jumps %i cells, and starts again at once` (30 cells at 60 and 30 fps, 23 at
+  60), `lets a running search finish when the camera moves %i cells (QA B3: a pan must not restart it)` (4 / 10 / 22),
+  `never drops a walker that is still in view while the camera pans at %i m/s` (20 / 132), `spends a full roster on
+  the view: a slow LOW pan in a busy city stays near the cap`, `lets go at once of walkers the running search will not
+  take: a zoom-out past the spawn distance`, `keeps a full HIGH roster steady while the camera orbits and pans: next to
+  no walker missing for a frame`, `hands the street over to a new search without a blink or a walker over the cap (%s,
+  %i a cell, %i m)` (LOW / MEDIUM / HIGH full, HIGH sparse). The avenue lamp tests are unchanged.
+- `tests/render/pedestrianThinning.test.ts`: new `keeps each walker's own decision and the night cap through a fast
+  pan, a search always running (%i:00)` (07 / 21 / 03 h) and `shows exactly the walkers ranked under the activity of
+  %f h, the lowest ranks when the quota cuts, in any roster order` (03 / 05:30 / 07 / 21 / 23 h, against the walkers'
+  own hashes).
+- `docs/dev/reports/local-T076-crowds.md`: this section.
+
+No other file, no infra hunk, no cloud-held file. No save, sim, balance or RNG change.
+
+### Numbers (node, no WebGL)
+
+The tests' grid city (streets every 4 cells, 3 walkers a cell from the feed), the default 120 m oblique view, 13:00,
+the QA's pan: 4 s at rest, then the target moves 4 s; drawn walkers a frame, averaged over the pan's last 3 s:
+
+| pan | slice (cells a frame) | round 2: drawn avg, empty frames | round 3: drawn avg, fewest, empty frames |
+|---|---|---|---|
+| 132 m/s LOW, 60 fps | 80 | 25.9, 0 of 180 | **53.8**, 36, 0 |
+| 132 m/s LOW, 30 fps | 160 | 5.4, **40 of 90** | **54.3**, 37, 0 |
+| 132 m/s LOW, 20 fps | 240 | 0.5, 49 of 60 | 55.6, 38, 0 |
+| 132 m/s LOW, 15 fps | 320 | 10.0, 16 of 45 | 56.9, 36, 0 |
+| 132 m/s LOW, 10 fps | 320 | 11.3, 11 of 30 | 49.4, 22, 0 |
+| 330 m/s from 300 m, HIGH, 60 fps | 80 | 77.3, 0 of 180 | 151.6, 109, 0 |
+| 330 m/s from 300 m, HIGH, 30 fps | 160 | 11.1, 52 of 90 | 153.4, 111, 0 |
+
+68 walkers at rest (201 at 300 m); a search from scratch at each pose of the pan would find 70 on average (195). Seven
+searches finish in the 4 s pan at both 30 and 60 fps (round 2: four at 30 fps), none abandoned. (The QA's page-side
+emulation of the per-second budget in the 56k city: 26.3 drawn on average at 30 fps, against 20.1 at 60.)
+
+- **Pop-ins** (the QA's `pops` v2: a walker appearing inside the inner 90 % of both frames): at 132 m/s 56-58 a
+  second at 30 and 60 fps, none vanishing (round 2: 14 / 49, fewer at 30 fps because hardly any were drawn). They now
+  appear at the leading edge, a median 0.24-0.26 and at most 0.49-0.50 of the way from the edge to the centre (round 2:
+  median 0.52, up to 0.93-0.96), at most 22 / 17 in one frame (round 2: 20 / 30). These are cells entering the view
+  between two searches (one every 0.43 s; the view moves 57 m meanwhile); only a search that leads the camera removes
+  them (see the choices below). At 330 m/s from 300 m they reach the centre in both rounds.
+- **N1:** the camera jumps 30 cells sideways 5 frames into a search: 80 % of the walkers are back after 3 frames at
+  60 fps and 2 at 30 fps, the new search is done after 26 / 13 frames (0.43 s); 23 cells: 3 frames. Round 2 drew
+  nothing for the 21 / 13 frames the old search still ran, then searched again. Over 24 jumps at different moments
+  (30 and 23 cells): 3-4 frames at 60 fps, 2 at 30 fps, whether a search was running or not (round 2: 26 / 13). A jump
+  inside the reach (8-15 cells) while a search runs: 5-26 frames at 60 fps, 4-13 at 30 fps (round 2: 25-46 / 14-24).
+- **Small moves** of 4, 10 and 22 cells during a search leave it running from its own centre to its 26th frame; the
+  next one then starts at the camera.
+- **Hand-over:** with a still camera the drawn set is the previous roster's in every frame of a new search (twin
+  test, all slice sizes). The screen-edge grace keeps every in-view walker through 20 and 132 m/s pans (over 10,000
+  checks); orbiting a full HIGH roster at 300 m, a walker in view comes back after missing frames 11 times in 6 s (114
+  times without the early drop of previous-roster cells the search would not take). A slow LOW pan in a busy city
+  keeps 113 of the 120 on average (a fresh search at its end: 113).
+
+**Per-frame cost** of `Pedestrians.update` (node / V8 on this machine, no WebGL), in the busiest case found: a 150°
+view straight down from 100 m over a street every other row with buildings on both sides (the density proxy), the
+roster at the 600 cap, the camera panning at 132 m/s, so a search always runs and two rosters are drawn:
+
+| slice | p50 | p95 | p99 | first frame of a search (keys sorted), median |
+|---|---|---|---|---|
+| 320 cells (15 fps and below) | 0.060 ms | 0.075 ms | 0.078 ms | 0.072 ms |
+| 240 cells (20 fps) | 0.056 ms | 0.067 ms | 0.070 ms | 0.066 ms |
+| 160 cells (30 fps) | 0.052 ms | 0.066 ms | 0.069 ms | 0.064 ms |
+| 80 cells (60 fps) | 0.047 ms | 0.062 ms | 0.064 ms | 0.062 ms |
+| no search running | 0.040 ms | | | |
+
+The worst frame's 320 cells cost about 0.01 ms more than 80; the whole update stays under 0.1 ms here, a tenth of the
+0.8 ms line. LOW (cap 120) stays under 0.031 ms at p99, the game's 120 m view under 0.014 ms. An earlier run of the
+same probe on a loaded machine gave p99 up to 1.1 ms for round 2's code and round 3's alike (worst-slice medians
+0.10-0.13 ms). Real-GPU numbers remain for the clean timing run (below).
+
+### Round-3 validation
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit` | **PASS** |
+| `git diff --check` | **PASS** |
+| `pedestrians.test.ts`, `pedestriansQa.test.ts`, `pedestrianThinning.test.ts`, `pedestriansView.test.ts`, one vitest process through quietrun, `--maxWorkers=1` | **PASS, 70 of 70** (32 / 22 / 14 / 2) |
+| The other tests that build a `CityObjectsView` (`garbageView`, `fireworks`, `exitRetention`, `newyear`, `newYearPacing`, `pacingProbe`), the same way | **PASS**, 48 passed, 6 skipped (`pacingProbe` needs `PACING_SAVE`) |
+| 128x15 seed-7 bot through quietrun (`npx tsx tools/simbot.ts --size 128 --years 15 --seed 7`) | **identical**: 2015 residents **[61124, 93804, 37971] = 192,899** (the bot imports no render code) |
+| Mutations of `Pedestrians.ts` against the four files (each written into the file, tsc and the four files run, the file restored byte for byte) | **19 of 19 caught**: round 2's fixed 80 cells a frame (14 tests fail), no 320 ceiling (2), no 80 floor (46), never abandon (3), round 1's restart after 3 cells (6), abandon at half the reach (1) or a cell late (1), the previous roster never giving way (19), `spiralIndex()` off by one on one side (1) or with two sides swapped (13), the previous roster cut from its near end (3) or kept in its stored order (8), no early drop of cells the search would not take (2), no cap on the two rosters (3), the quota by truncation (5), `thin()` keeping the highest ranks (6), no screen-edge grace (2), the grace in a full roster too (1), round 2's finds waiting for the whole search (8) |
+| Full suite, browser, real-GPU timing | left for the lead, as before |
+
+**Timing script.** `run_ab.sh` (the QA's one-command A/B, ~29 min now) has a fourth window, `pan30`: the 160 m circle
+of the `pan` window at the keyboard's 132 m/s, with the page's animation frames throttled to 30 a second
+(`pan30.mjs`), so the search's 160-cell slices are measured; `ab-tables.mjs` counts it in the verdict. The scripts
+before the change are kept as `ab.pre-r3.mjs`, `ab-tables.pre-r3.mjs` and `run_ab.pre-r3.sh`. Checked without a
+browser only: `node --check`, and a node simulation of the throttle (60 / 120 / 144 Hz displays: 28.9-30.1 frames a
+second, never two within 30 ms, the pan at 132 m/s, the display rate restored afterwards). Vite serves the tree's
+files, so the run measures this uncommitted round as well as a commit of it.
+
+### Choices for the lead
+
+1. **Leading-edge pop-ins remain** (above): a new cell's walkers appear up to half-way in from the leading edge at
+   132 m/s. Removing them needs discovery to lead the camera (test cells against a frustum moved ahead by the
+   camera's velocity times the search time, or scan the view's footprint first). Not done; say if wanted.
+2. **The reach is the search's whole square (22 cells).** A jump inside it while a search runs waits for that search
+   (up to 26 frames = 0.43 s at 60 fps, 13 at 30), as round 1 always did. A smaller reach would recover sooner from
+   medium jumps but restart searches on fast zoomed-out pans (the keyboard pan at 300 m, 330 m/s, moves the camera 9
+   cells a search).
+3. **Zooming out past the spawn distance** drops the walkers beyond 338 m at the first frame of the next search rather
+   than at its end, 0.43 s later. The end state is round 2's.
+
+### Round-3 browser recheck list
+
+- [ ] `pan30rt.mjs`, real frames at 30 fps, real keyboard, LOW, 56k city: the drawn average close to the 60 fps run
+  (round 2: 5.2 against 20.1), no empty frame, pop-ins only near the leading edge, no burst at a roster swap.
+- [ ] `pan2.mjs` jumps, 30 cells sideways at 12 moments, 60 and 30 fps: most walkers back within a few frames whether
+  or not a search was running (N1: 27-45 frames, up to 49 at 30 fps).
+- [ ] `pops.mjs`: still 0 a second at 07 / 21 / 03 h with the camera still; 03:00 at most 20 % (B1 unchanged).
+- [ ] Caps 120 / 300 / 600 / 600 at the fullest 1.1M pose, the 350 / 600 m cuts, exactly one main-pass draw and none
+  in the shadow pass; avenue poles (B2 unchanged).
+- [ ] `run_ab.sh` in a clean slot: `Pedestrians.update` max and frames over 0.8 ms in every window, the new `pan30`
+  included; frame CPU / GPU deltas at most 0.8 ms.
