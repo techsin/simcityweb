@@ -1,4 +1,7 @@
-.storage-back { position: absolute; inset: 0; z-index: 130; pointer-events: auto; display: flex; align-items: center; justify-content: center; padding: 20px; background: #0008; }
+/* T089 O1: `.modal-back.storage-back`, not `.storage-back`: `.modal-back` (meta.css, z 40) and `:where(.mp-ui) .modal-back`
+   (hud.css, z 60) have the same specificity and load after this sheet, so they won and the toolbar drew over and took
+   clicks through "Storage full" in the city. */
+.modal-back.storage-back { position: absolute; inset: 0; z-index: 130; pointer-events: auto; display: flex; align-items: center; justify-content: center; padding: 20px; background: #0008; }
 .storage-dialog { width: min(620px, 100%); max-height: 85vh; overflow: auto; padding: 24px; border-radius: 16px; background: var(--panel, #172332); color: var(--text, #eef3fa); box-shadow: 0 18px 70px #0008; }
 .storage-dialog h2 { margin: 0 0 14px; font-size: 22px; }
 .storage-dialog p { line-height: 1.55; }
@@ -8,6 +11,17 @@
 .storage-action-status { font-size: 13px; color: var(--text-dim); }
 .storage-lock-notice, .storage-backup { position: absolute; z-index: 95; pointer-events: auto; display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 12px; color: var(--text, #eef3fa); background: #172332f2; border: 1px solid #dfb56a80; }
 .storage-lock-notice { top: 82px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 32px); }
+/* T086 B2: in a city the top centre is the emergency banners' (emergency.css .emg-banners): the notice covered Jump, Send
+   nearest and Dismiss. It docks at the bottom centre instead, 142 HUD px up: 12 above the toolbar block with its tool
+   chip (hud.css .hud-bottom). The notice is outside .mp-ui, so the length follows computeUiZoom (src/ui/zoom.ts) at the
+   default UI scale. And it stacks under every HUD layer (the lowest is the minimap's 20): where a long banner stack, an
+   open flyout, a panel or a card reaches it, that one draws on top and keeps its clicks. */
+.meta-root:has(> .city-host) > .storage-lock-notice {
+  top: auto; z-index: 3;
+  bottom: min(clamp(142px * 0.8, min(100vw * 142 / 1760, 100vh * 142 / 990), 142px * 2.2), max(142px * 0.6, 100vw * 142 / 1280));
+}
+/* T086 B1: no takeover while a city or a region is on its way in (a loading screen), nor from the title screen */
+.meta-root:has(> .loading) > .storage-lock-notice, .meta-root:has(> .title-screen) > .storage-lock-notice { visibility: hidden; }
 .storage-lock-notice[hidden], .storage-backup[hidden] { display: none; }
 .storage-backup { z-index: 4; top: 150px; left: 50%; transform: translateX(-50%); width: 300px; flex-wrap: wrap; }
 .storage-backup > div { flex-basis: 100%; }

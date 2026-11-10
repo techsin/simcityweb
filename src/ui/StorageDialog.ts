@@ -1,7 +1,7 @@
 /** Save failures, region backups and the one-writer storage session shared by the region and city screens. */
 import './storage.css';
 import type { RegionData } from '../region/types';
-import { toast, uiRoot } from '../region/ui/modal';
+import { modalOpen, toast, uiRoot } from '../region/ui/modal';
 import { buildRegionFile, clearRecoveryBase, deleteRegion, deserializeCity, downloadBlob, exportRegion, findRecoverySnapshot, getCityRecord, getRecoveryBase, hasRecoverySnapshot, listRegions, loadRegion, packFile, peekRecoveryMarker, rebuildRecoveredCity, safeFileName, type PendingRecovery, type RecoveryCity, type RegionFile } from '../save';
 import { markRegionExported, markRegionSummaryStale, openKV, regionSaveAccess, RegionSaveLock, restrictRegionSaveAccess, storageEstimate } from '../save/db';
 import type { SimHost } from '../worker/SimHost';
@@ -89,6 +89,9 @@ export async function showStorageError(error: unknown, actions: StorageActions):
   actions.signal?.addEventListener('abort', close, { once: true, signal });
   window.addEventListener('keydown', (e) => {
     if (dialogs.at(-1) !== back) return;
+    // T089 B2: a Modal opened over this dialog (the worker crash dialog) owns the keys; swallowing them here left its
+    // focused button pressed after Space
+    if (modalOpen()) return;
     if (e.key === 'Escape') { e.preventDefault(); close(); }
     e.stopImmediatePropagation();
   }, { capture: true, signal });
@@ -314,6 +317,9 @@ export async function openManageStorage(): Promise<void> {
   catch { status.textContent = 'Stored regions could not be listed. Close this dialog and try again.'; }
 }
 
+/** T086 B5: how often a read-only tab asks whether its region is still held (real ms) */
+const FREE_POLL_MS = 2000;
+
 /** Kept alive across region → city → region; only the App's region lifecycle releases its lock. */
 export class RegionStorageSession {
   readonly lock: RegionSaveLock;
@@ -321,6 +327,9 @@ export class RegionStorageSession {
   private banner: HTMLElement;
   /** The notice stays hidden until the first acquire settles: an open must not flash "open in another tab". */
   private settled = false;
+  /** T086 B5: no tab holds the region any more (watchFree); the notice then offers it instead of a takeover. */
+  private free = false;
+  private freePoll: ReturnType<typeof setInterval> | null = null;
   constructor(public region: RegionData, root: HTMLElement, private reload: () => Promise<void>, readonly city: () => StorageCity | null = () => null) {
     this.lock = new RegionSaveLock(region.id);
     this.banner = h('div', { class: 'storage-lock-notice glass', role: 'status' });
@@ -340,8 +349,11 @@ export class RegionStorageSession {
     this.renderAbort.abort();
     this.renderAbort = new AbortController();
     const signal = this.renderAbort.signal;
-    this.banner.hidden = !this.settled || this.lock.writable;
-    this.banner.replaceChildren(h('span', null, this.lock.lost ? 'This region is now open in another tab' : 'This region is open in another tab'),
+    const readOnly = this.settled && !this.lock.writable;
+    this.banner.hidden = !readOnly;
+    this.watchFree(readOnly);
+    const free = this.free;
+    this.banner.replaceChildren(h('span', null, free ? 'This region is free now' : this.lock.lost ? 'This region is now open in another tab' : 'This region is open in another tab'),
       h('button', { class: 'btn', signal, onclick: async () => {
         const reload = async () => {
           takenOver.set(this.region.id, Date.now());
@@ -349,12 +361,33 @@ export class RegionStorageSession {
           markRegionSummaryStale(this.region.id);
           await this.reload();
         };
-        try { await this.lock.acquire(true, reload); }
-        catch (e) { void showStorageError(e, { retry: () => this.lock.acquire(true, reload).then(() => undefined) }); }
-      } }, 'Use it here instead'));
+        // a free region is asked for, never stolen: another tab may have opened it since the last poll
+        const take = () => this.lock.acquire(!free, reload);
+        try {
+          if (!(await take()) && free && this.free) {
+            this.free = false;
+            this.render();
+          }
+        } catch (e) { void showStorageError(e, { retry: () => take().then(() => undefined) }); }
+      } }, free ? 'Use it here' : 'Use it here instead'));
+  }
+  /** T086 B5: while this tab is read-only, learn when the holder has gone (or come back) and say so in the notice. */
+  private watchFree(on: boolean): void {
+    if (on === (this.freePoll !== null)) return;
+    if (this.freePoll !== null) clearInterval(this.freePoll);
+    this.freePoll = null;
+    this.free = false;
+    if (!on) return;
+    const poll = setInterval(() => void this.lock.heldElsewhere().then((held) => {
+      if (this.freePoll !== poll || held === null || this.free === !held) return;
+      this.free = !held;
+      this.render();
+    }), FREE_POLL_MS);
+    this.freePoll = poll;
   }
   dispose(): void {
     this.renderAbort.abort();
+    this.watchFree(false);
     this.lock.dispose();
     this.banner.remove();
     if (session === this) session = null;
