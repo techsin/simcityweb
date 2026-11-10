@@ -12,9 +12,11 @@ import { RegionView } from './RegionView';
 import { TILE_SIZE_LABEL, type RegionData, type RegionTile } from './types';
 import { button, formatMoney, formatPop, h, icon, timeAgo, withSounds } from './ui/dom';
 import { confirmDialog, promptDialog, toast } from './ui/modal';
-import { downloadBlob, exportRegion, importRegion, safeFileName } from '../save';
+import { importRegion } from '../save';
 import { MusicPlayer } from '../ui/MusicPlayer';
 import { guideCopy } from '../ui/guide/copy';
+import { dismissRegionBackup, regionSaveAccess, storageNeedsBackup, watchRegionSaveAccess } from '../save/db';
+import { exportStorageRegion, openManageStorage, showStorageError } from '../ui/StorageDialog';
 
 export interface RegionScreenCallbacks {
   onPlay(tile: RegionTile): void;
@@ -52,6 +54,8 @@ export class RegionScreen {
   private player!: MusicPlayer;
   private hoverKey = '';
   private fileInput: HTMLInputElement;
+  private abort = new AbortController();
+  private backup = h('div', { class: 'storage-backup glass', role: 'status', hidden: true });
   private onKey = (e: KeyboardEvent) => {
     // (!repeat: a held Esc that just closed a dialog must not also deselect the tile once the dialog is gone)
     if (e.key === 'Escape' && !e.repeat && this.view.selectedTile && !document.querySelector('.modal-back')) {
@@ -75,6 +79,10 @@ export class RegionScreen {
     root.append(this.labelLayer, this.el, this.tip);
     this.recommend();
     this.buildHud();
+    this.el.appendChild(this.backup);
+    watchRegionSaveAccess(model.data.id, () => this.refreshSaveAccess(), this.abort.signal);
+    window.addEventListener('metropolis:region-exported', () => void this.refreshBackup(), { signal: this.abort.signal });
+    void this.refreshBackup();
 
     this.view.onHover = (tile, x, y) => {
       // soft tick when the pointer moves onto another tile (throttled by audio.hover)
@@ -90,7 +98,7 @@ export class RegionScreen {
       else if (this.view.selectedTile) audio.play('close');
       this.selectTile(tile);
     };
-    this.view.onDoubleClick = (tile) => (tile.city ? cb.onPlay(tile) : cb.onFound(tile));
+    this.view.onDoubleClick = (tile) => (tile.city ? cb.onPlay(tile) : regionSaveAccess(model.data.id) && cb.onFound(tile));
     this.view.onFrame = () => this.updateLabels();
     this.resizeLabels();
     if (typeof ResizeObserver !== 'undefined') {
@@ -124,6 +132,7 @@ export class RegionScreen {
       this.player.el,
       tbtn('download', 'Export region (.metropolis)', () => this.exportFile()),
       tbtn('upload', 'Import region file', () => this.fileInput.click()),
+      tbtn('folder', 'Manage storage', () => void openManageStorage()),
       tbtn('settings', 'Settings', () => this.cb.onSettings()),
       tbtn('home', 'Main menu', () => this.cb.onMenu()),
     );
@@ -230,11 +239,11 @@ export class RegionScreen {
     if (c) {
       actions.append(
         button('Play', { icon: 'play', cls: 'lg warm', sound: 'confirm', onClick: () => this.cb.onPlay(tile) }),
-        button('Delete city', { icon: 'trash', cls: 'lg danger', onClick: () => this.deleteCity(tile) }),
+        button('Delete city', { icon: 'trash', cls: 'lg danger storage-write', onClick: () => this.deleteCity(tile) }),
       );
     } else {
       // (auto: the New City dialog's own open sound is the feedback — no confirm chime stacked on top)
-      actions.append(button('Found New City', { icon: 'plus', cls: 'lg warm', onClick: () => this.cb.onFound(tile) }));
+      actions.append(button('Found New City', { icon: 'plus', cls: 'lg warm storage-write', onClick: () => { if (regionSaveAccess(this.model.data.id)) this.cb.onFound(tile); } }));
     }
     const stats = c
       ? [
@@ -257,6 +266,7 @@ export class RegionScreen {
       ),
     );
     this.el.appendChild(this.tileCard);
+    this.refreshSaveAccess();
   }
 
   private tilePreview(tile: RegionTile): HTMLElement {
@@ -360,16 +370,33 @@ export class RegionScreen {
   }
 
   // ------------------------------------------------------------------ actions
+  private refreshSaveAccess(): void {
+    for (const button of this.el.querySelectorAll<HTMLButtonElement>('.storage-write, .rename')) button.disabled = !regionSaveAccess(this.model.data.id);
+  }
+
+  private async refreshBackup(): Promise<void> {
+    const show = this.model.data.tiles.some((t) => t.city) && await storageNeedsBackup(this.model.data.id);
+    if (this.abort.signal.aborted) return;
+    this.backup.hidden = !show;
+    if (!show) return;
+    this.backup.replaceChildren(h('div', {}, h('b', {}, 'Back up your region'), h('p', {}, 'Your browser may clear these saves. Keep an exported copy.')),
+      button('Export region', { icon: 'download', onClick: () => void this.exportFile() }),
+      button('Dismiss', { onClick: () => { dismissRegionBackup(this.model.data.id); this.backup.hidden = true; } }));
+  }
+
   private async rename(): Promise<void> {
+    if (this.abort.signal.aborted || !regionSaveAccess(this.model.data.id)) return;
     const name = await promptDialog({ title: 'Rename region', label: 'Region name', value: this.model.data.name, maxLength: 40 });
-    if (!name) return;
+    if (!name || this.abort.signal.aborted || !regionSaveAccess(this.model.data.id)) return;
     this.model.data.name = name;
     this.renderCard();
-    await this.cb.onChanged();
+    try { await this.cb.onChanged(); }
+    catch (e) { void showStorageError(e, { retry: async () => { await this.cb.onChanged(); }, signal: this.abort.signal }); return; }
     toast('Region renamed', 'good');
   }
 
   private async deleteCity(tile: RegionTile): Promise<void> {
+    if (this.abort.signal.aborted || !regionSaveAccess(this.model.data.id)) return;
     const c = tile.city;
     if (!c) return;
     const ok = await confirmDialog({
@@ -378,7 +405,7 @@ export class RegionScreen {
       confirm: 'Delete city',
       danger: true,
     });
-    if (!ok) return;
+    if (!ok || this.abort.signal.aborted || !regionSaveAccess(this.model.data.id)) return;
     await this.cb.onDeleteCity(tile);
     audio.play('bulldoze');
     await this.refresh();
@@ -388,8 +415,8 @@ export class RegionScreen {
 
   private async exportFile(): Promise<void> {
     try {
-      await this.cb.onChanged();
-      downloadBlob(await exportRegion(this.model.data.id), safeFileName(this.model.data.name));
+      await exportStorageRegion(this.model.data);
+      await this.refreshBackup();
       toast('Region exported', 'good');
     } catch (e) {
       toast(`Export failed: ${(e as Error).message}`, 'bad');
@@ -421,6 +448,7 @@ export class RegionScreen {
   }
 
   dispose(): void {
+    this.abort.abort();
     this.labelsDisposed = true;
     this.labelResize?.disconnect();
     window.removeEventListener('keydown', this.onKey);

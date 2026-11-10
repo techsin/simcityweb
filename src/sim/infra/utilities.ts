@@ -26,10 +26,23 @@
  *    (30-day cooldown). Final fixes N1: a pass that cuts OCCUPIED buildings off because their grid / pipe network lost
  *    its producer (a bulldozed road, line, plant or pump — not the brownout's deliberate farthest-first cut) posts
  *    "Power cut" / "Water cut" news at once with the counts and the biggest building's place (UTIL_CUT_NEWS_DAYS).
- * SCHEDULING (InfraScheduler; every step <= ~2.3 measured ms on the 256² stress city, estimates in stepCost):
+ * SCHEDULING (InfraScheduler; estimates in stepCost):
  *    uses (+ local label patch) -> [labels: full passes / a new building bridging two grids] -> power sums + loads
  *    (+ results when no grid is short) -> [brownout: critical-first + distance-ordered BFS, only when a grid is
  *    short] -> water sums (+ results, flags) -> [water brownout BFS + results, flags: only when a network is short].
+ *    B2 (docs/dev/B2_DESIGN.md §7): each of these steps runs as a sequence of small pieces (one scheduler step each, about
+ *    half INFRA_PIECE_COLD_MS estimated warm ms): the building loops over chunks of one building snapshot per pass, the
+ *    cell loops by cell ranges, the labels and brownout searches by BFS pieces, into private buffers — every external
+ *    output (labels, sums, plant loads, producers, st.powered / st.watered, the flags, stats) changes in one piece, the
+ *    flags from a candidate list applied in one piece. A pass whose pieces run with nothing in between computes exactly
+ *    what the pre-B2 steps computed.
+ *  R7 audit (the public queries, what they read, the piece that publishes it): gridInfo — pComp / nPComp (the power
+ *    label's last piece; patchPower in the uses' last piece), cSupply / cDemand (the power sums' last chunk); waterInfo
+ *    and waterQualityAt — wComp / nWComp (the water label's last piece), bWComp, wSupply / wDemand, wQual and
+ *    stats.tapWater (the water sums' last chunk); plantLoad — loadById (the power sums' last chunk); producerInfo —
+ *    producers (the uses' last chunk, a swap) and their load (the power sums' last chunk, as pre-B2 two steps); st.powered
+ *    / st.watered (the results' last piece); BF.Powered / BF.Watered (the flags' publish piece). Pre-B2's window from a
+ *    label to the next sums, in which gridInfo pairs new labels with old sums, is unchanged.
  *  - full pass (relabel components): network / power-line / plopped-building changes (urgent, next scheduler slot)
  *    and every UTIL_FULL_DAYS days;
  *  - soft pass (labels patched locally for growables added / removed, sums + brownout + flags): within
@@ -44,7 +57,7 @@ import { WATER_REQUIRED_STAGE } from '../economy/tuning';
 import {
   Fam, type DefInfo, activeJobs, detectJobsUnknown, ensureIdArray, ensureIdFloat, fundingFactor, infoOf,
   readEffects, setFlagQuiet, nowMs,
-  buildingList,
+  buildingList, BuildingSnapshot,
 } from './common';
 import {
   DESAL_INLAND_OUT, POWER_MIN_PLOPPED, POWER_PER_CIVIC_JOB, POWER_PER_JOB_C, POWER_PER_JOB_I, POWER_PER_RES,
@@ -52,10 +65,11 @@ import {
   SOLAR_SUMMER, SOLAR_WINTER, TAP_TREATMENT_CLEAN, THERMAL_UNWATERED, UTIL_BASE_SHARE, UTIL_CUT_NEWS_DAYS, UTIL_FULL_DAYS, UTIL_REFRESH_DAYS,
   UTIL_SOFT_DAYS, WATER_PER_CIVIC_JOB, WATER_PER_JOB_C, WATER_PER_JOB_I, WATER_PER_RES, WIND_TURBINE_BASE,
   WIND_TURBINE_GAIN, WIND_TURBINE_H0, WIND_TURBINE_H1, WIND_TURBINE_RADIUS,
+  INFRA_BLD_SIZING_US, INFRA_CELL_SIZING_US, INFRA_PIECE_COLD_MS,
 } from './params';
-import { schedulerOf, sizeFactors } from './scheduler';
+import { pieceBudgetUs, pieceUnits, schedulerOf } from './scheduler';
 import { ordinanceEffect } from '../economy/ordinances';
-import { seaMask, waterNear } from './terrainMasks';
+import { SeaMaskRun, waterNear } from './terrainMasks';
 import { smoothstep } from '../../core/rng';
 import type { PollutionSystem } from './pollution';
 
@@ -163,6 +177,108 @@ export interface GridInfo {
   shortage: boolean;
 }
 
+// ---- B2 pieces (docs/dev/B2_DESIGN.md §7). `sub` numbers the pieces of the whole pass; the state ids (U_*) and their
+// transitions are the pre-B2 ones (stepIdx moves on when a state's last piece is done).
+// U_USES: the pass start (its inputs consumed, R5), the snapshot, its chunk plan, the sea mask, the treatment prefix scan,
+// the uses chunks (the last one publishes the producers, the nuclear news and the label patch)
+const S_START = 0, S_SNAP = 1, S_PLAN = 2, S_SEA = 3, S_SCAN = 4, S_USES = 5;
+// the labels (U_LABEL; the water label also as U_WATER's mid-pass relabel): BFS pieces into private buffers, published by
+// a swap in the last piece
+const S_PLABEL = 6, S_WLABEL = 7;
+// U_POWER: the sums chunks (the last one publishes); the results (also U_BROWN's): cells, building chunks, zoned cells
+// (the last one publishes st.powered)
+const S_PSUM = 8, S_PCELLS = 9, S_PBLD = 10, S_PZONED = 11;
+// U_BROWN: cells, seeds, the BFS pieces (then S_PBLD / S_PZONED)
+const S_BCELLS = 12, S_BSEED = 13, S_BBFS = 14;
+// U_WATER: the sums chunks (the first may start the mid-pass relabel; the last one publishes); the results (also
+// U_WATER_BROWN's: the last one publishes st.watered)
+const S_WSUM = 15, S_WCELLS = 16, S_WBLD = 17, S_WZONED = 18;
+// U_WATER_BROWN: cells, seeds, the BFS pieces (then S_WBLD / S_WZONED)
+const S_WBCELLS = 19, S_WBSEED = 20, S_WBBFS = 21;
+// the finish (in U_WATER / U_WATER_BROWN): building chunks (flag candidates, cooling water, the cut tally), the flags'
+// publish with their events, the end (the last piece: the news, layerUpdated, the pass end)
+const S_FBLD = 22, S_FAPPLY = 23, S_FEV = 24;
+const SUB_NAMES = ['start', 'snap', 'plan', 'sea', 'scan', 'bld', 'plabel', 'wlabel', 'sum', 'cells', 'bld', 'zoned', 'cells', 'seed', 'bfs',
+  'sum', 'cells', 'bld', 'zoned', 'cells', 'seed', 'bfs', 'flags', 'apply', 'end'];
+const STATE_NAMES = ['uses', 'label', 'power', 'brownout', 'water', 'waterBrownout'];
+const CHUNKED = new Set([S_USES, S_PSUM, S_PBLD, S_WSUM, S_WBLD, S_FBLD]);
+/**
+ * B2 piece budget (design R2): every utilities loop runs once per pass. The passes are frequent (every few days at
+ * dense1m, urgent after edits), so half INFRA_PIECE_COLD_MS as pollution's building loops, with G2's cold cell and
+ * Building floors (params INFRA_CELL_SIZING_US / INFRA_BLD_SIZING_US): about 16,000 cells or 270 buildings per piece.
+ */
+const COLD = INFRA_PIECE_COLD_MS / 2;
+/**
+ * the absolute scale of the estimates: stepCost = UT_EST x (UT.piece + the piece's units x UT) / 1000. UT sets the relative
+ * costs (and, with the budget, the cell and BFS chunk sizes); UT_EST makes the estimate honest warm wall ms without moving
+ * a chunk (traffic's TR_EST pattern).
+ */
+const UT_EST = 1;
+/**
+ * B2 cost model (design §9): estimated warm wall µs per work unit of each kind of piece. Start values: the utilities
+ * mapping's in-schedule fits (uses 0.08 ms + 16 ns per prefix-scanned building + 24 ns·B + 17 ns·F; label 13.7 ns per
+ * cell; power sums 15·B + 3·F, results 5.1·C + 5.9·B + 7.9·F; brownout 5.5·C + 27·Q + 12·F; water sums 12·B + 9·F,
+ * results 4.2·C + 4.4·B + 8.5·F, finish 14.5·B + 400·E; water brownout 6.3·C + 70-99·Q). G4 refit (dense1m and bot256,
+ * --warm 300 --days 120, 3 runs each: each label's coefficients divided by the geometric mean of its median est / ms on
+ * the two fixtures): uses chunks / 1.27, power sums / 1.95, power results / 1.21, water sums / 1.43, water results / 1.31,
+ * finish / 1.49, plan / 1.38, label x 1.22, zoned x 1.37, snapshot x 1.18, the pass start 15 -> 25, the water brownout's
+ * seeds 0.3 -> 1 µs per seed (+ 8), the flags' publish 2 -> 6, the pass end 40 -> 26. None of them sizes a piece (US,
+ * UT_PLAN_* do), so the refit moved no boundary. B2 fix round (the verify review: utilities' warm per-task median on
+ * dense1m at +0.30 to +0.49, outside the design's ±30 %, bot256 near 0): the building chunks are sized for cold code, so
+ * warm they take 1.5-9 µs, where the per-piece constant dominates the per-step median (est / ms 1.3-1.7 on dense1m's
+ * chunks while their time-weighted sum est / sum ms is ~1.0). The per-piece constant 1.5 -> 1 µs and the six building
+ * chunk kinds (uses, power sums and results, water sums and results, the finish) / 1.15 centre the two fixtures' medians.
+ */
+const UT = {
+  /** per piece (dispatch, cursors, ensureIds) */
+  piece: 1,
+  /** the pass start (ensure, effects, the input swaps); the snapshot per building (the day's first buildingList rebuild
+   *  + the copy + the jobs check), its plan per building */
+  start: 25, snapTake: 0.0165, plan: 0.0087,
+  /** the sea mask: the masks' checksum per cell, their rebuild (after a water edit; cold: it runs once per edit) per
+   *  SeaMaskRun work unit and its water copy per cell (dense1m's meteor: 0.03-0.09 µs per unit, the copy 0.001-0.003 µs
+   *  per cell); the treatment prefix scan per building */
+  sea: 0.0015, seaBuild: 0.03, seaCopy: 0.003, scan: 0.016,
+  /** the uses chunks per building / footprint cell; their publish (fixed) + per patched (added / removed) building */
+  usesB: 0.0165, usesF: 0.0117, usesPub: 4, patch: 0.08,
+  /** the labels per unit (a cell scanned or a cell taken off the BFS queue); a label's publish (fixed) */
+  label: 0.0085, labelPub: 2,
+  /** power sums per building / footprint cell; their publish (fixed) + per component / plant / critical load */
+  sumB: 0.0067, sumF: 0.0013, sumPub: 4, sumComp: 0.004, sumPlant: 0.2, sumCrit: 0.05,
+  /** results: the cell loop per cell, per building / footprint cell, the zoned loop per cell, the layer copy per cell */
+  cells: 0.0025, resB: 0.0043, resF: 0.0057, zoned: 0.0036, copy: 0.0002,
+  /** brownout: the seeds per plant footprint cell, the BFS per queue cell */
+  seed: 0.01, bfs: 0.027,
+  /** water sums per building / footprint cell; their publish (fixed) + per component (tap quality) */
+  wsumB: 0.0073, wsumF: 0.0055, wsumPub: 4, wsumComp: 0.01,
+  /** water results per building / footprint cell; the water brownout's seeds per seed, its BFS per queue cell */
+  wresB: 0.003, wresF: 0.0057, wseed: 1, wbfs: 0.085,
+  /** the finish per building / footprint cell, the flags' publish per candidate, per event, the pass end (news,
+   *  layerUpdated and its listeners) */
+  finB: 0.0084, finF: 0.0006, apply: 0.05, event: 0.4, end: 26,
+} as const;
+/**
+ * the chunk sizes, in estimated µs per unit (pieceUnits / cellUnits; kept apart from the estimates' UT coefficients, so a
+ * refit of the estimates never moves a piece boundary — traffic's TR_EST lesson): the plan per building, a label unit
+ * (a cell scanned or dequeued; cold code, about 1,860 units per piece: a full relabel comes every few weeks and its first
+ * pieces ran at 0.15-0.25 µs per unit, 1.3-2.4 ms at 9,300 units, before the JIT caught up), the cell loops (the cold
+ * cell floor), a brownout queue cell, an event, a work unit of the sea mask's rebuild (cold code: about 1,300 units per
+ * piece; the checksum takes the cell floor)
+ */
+const US = { plan: 0.012, label: 0.035, cells: INFRA_CELL_SIZING_US, zoned: INFRA_CELL_SIZING_US, bfs: 0.027, wbfs: 0.085, event: 0.4, seaBuild: 0.05 } as const;
+/** the chunk plan of the pass snapshot (every building stage walks it): the cold Building floor per building + 40 ns per
+ *  footprint cell (the results' footprint writes; sizing only — the estimates use each stage's own coefficients). B2 fix
+ *  round: at the floor's former 0.2 µs and 20 ns the Building-shape deopt wave after a load (days ~21-23) and the first
+ *  passes ran uses.bld / power.bld at 4-6.6 ms (the gates' runs from a load), so the building chunks are half as long. */
+const UT_PLAN_B = INFRA_BLD_SIZING_US, UT_PLAN_F = 0.04;
+/** the treatment prefix scan's sizing per building (a DefInfo lookup and two fields: half the Building floor, about 325
+ *  buildings per piece; at a quarter its first pieces after a load ran at ~3 µs per building, 4.1 ms) */
+const UT_SCAN_SIZING = INFRA_BLD_SIZING_US / 2;
+/** cells of one piece of a once-per-pass cell loop costing `us` per cell (the cold cell floor) */
+function cellUnits(us: number): number {
+  return pieceUnits(us > INFRA_CELL_SIZING_US ? us : INFRA_CELL_SIZING_US, 1, COLD);
+}
+
 export class UtilitiesSystem implements SimSystem {
   readonly name = 'utilities';
   /** power topology changed (network / power lines / plopped buildings) -> relabel + urgent */
@@ -249,6 +365,68 @@ export class UtilitiesSystem implements SimSystem {
   /** duration (ms) of the last step / last full synchronous compute */
   lastMs = 0;
 
+  // ---- B2 piece state (design §7). Every field below is reset at each pass start and end and in init (resetPieces);
+  // none is saved (R9).
+  /** the piece inside the pass (S_*) and its cursor (chunk / cell / row index) */
+  private sub = 0;
+  private cur = 0;
+  /** the pass snapshot (R4): every building stage of the pass walks it */
+  private snap = new BuildingSnapshot();
+  /** the pass inputs (R3: computed once per pass at its first piece, as pre-B2 once per uses step) */
+  private pMul = 1;
+  private wMul = 1;
+  private jobsUnknown = false;
+  private eff = 1;
+  private nuclearMul = 1;
+  private nuclearLost = 0;
+  private season = 0;
+  private climate = 1;
+  private seaM: Uint8Array | null = null;
+  /** B2: the sea mask in pieces (the masks' checksum; their rebuild after a water edit: 11-13 ms in one go at 1M cells) */
+  private seaRun = new SeaMaskRun();
+  private pollRef: PollutionSystem | null = null;
+  /** the treatment prefix scan: its length and result */
+  private nInfo = 0;
+  private hasTreatment = false;
+  /** the growables added / removed before this pass (swapped out of `added` / `removed` at its start, R5) */
+  private passAdded: Building[] = [];
+  private passRemoved: Building[] = [];
+  /** the producers of the pass being built (published by a swap at the uses step's end: producerInfo) */
+  private producersNext = new Map<number, ProducerInfo>();
+  /** a label in pieces: into the private buffer, next start cell, components so far, BFS queue head / tail, in a BFS */
+  private pCompNext = new Int32Array(0);
+  private wCompNext = new Int32Array(0);
+  private lBegun = false;
+  private lS = 0;
+  private lNc = 0;
+  private lBusy = false;
+  /** the water label's next piece (S_PSUM: U_LABEL's; S_WSUM: U_WATER's mid-pass relabel); U_WATER's relabel check done */
+  private wlNext = S_PSUM;
+  private wChecked = false;
+  /** the sums (pre-B2's double locals), into private per-component buffers published by .set() (gridInfo / waterInfo /
+   *  waterQualityAt never see half sums), the per-id network of the water sums likewise */
+  private supplyTot = 0;
+  private demandTot = 0;
+  private cSupplyN = new Float64Array(256);
+  private cDemandN = new Float64Array(256);
+  private wSupplyN = new Float64Array(256);
+  private wDemandN = new Float64Array(256);
+  private wPollN = new Float64Array(256);
+  private bWCompN = new Int32Array(0);
+  private nSeeds = 0;
+  /** the results into private layers, published by one .set() (R7 / R9: st.powered / st.watered are saved) */
+  private poweredNext = new Uint8Array(0);
+  private wateredNext = new Uint8Array(0);
+  /** the results follow a brownout (their cells are written already) */
+  private brown = false;
+  /** a brownout BFS: queue head / tail */
+  private qh = 0;
+  private qt = 0;
+  /** the finish: flag candidates (4 x snapshot index + the wanted Powered (1) / Watered (2) bits, for each building whose
+   *  bits flip: applied in one piece, R7 / R9 — rememberCoolingWater reads the saved flags on load) and the changed list */
+  private cand: number[] = [];
+  private changed: Building[] = [];
+
   init(sim: Simulation): void {
     for (const u of this.unsub) u();
     this.unsub = [];
@@ -276,6 +454,7 @@ export class UtilitiesSystem implements SimSystem {
     this.added = [];
     this.removed = [];
     this.stepIdx = -1;
+    this.resetPieces();
     this.lastSupply = 0;
     this.lastShortNotify = this.lastWaterNotify = this.lastBlackoutNotify = this.lastCutNews = -1e9;
     this.wasShort = this.wasWaterShort = false;
@@ -315,83 +494,157 @@ export class UtilitiesSystem implements SimSystem {
     return this.dirtyFull || (this.soft && d - this.lastServe >= UTIL_SOFT_DAYS) || d - this.lastServe >= UTIL_REFRESH_DAYS || d - this.lastFull >= UTIL_FULL_DAYS;
   }
 
+  // ------------------------------------------------------------------------------------------------ B2 cost model
   /**
-   * estimated ms of the next step (~1.3-1.5x the minimum measured on the 256² stress city with 20k buildings under
-   * load; every step <= 3.0). The brownout steps only run when a grid / network is short, so their cost is known.
+   * estimated warm wall ms of the next step (B2 §9: the next piece's own work counts x the UT coefficients, with the
+   * piece's own chunk sizes). Pure and O(1): reads the cursors and sizes, never runs a loop, never sets anything up.
    */
-  private stepCost(sim: Simulation): number {
-    const { cells, bld } = sizeFactors(sim);
-    const waterLabel = this.dirtyWater || this.wComp.length !== sim.state.cells ? 0.5 * cells : 0;
-    switch (this.stepIdx < 0 ? U_USES : this.stepIdx) {
-      case U_USES: return 2.0 * bld + 0.1 * cells;
-      case U_LABEL: return (this.relabelPower ? 1.1 * cells : 0) + waterLabel + 0.05;
-      case U_POWER: return 0.5 * cells + 0.7 * bld;
-      case U_BROWN: return 1.9 * cells + 0.8 * bld;
-      case U_WATER: return waterLabel + 0.5 * cells + 0.8 * bld;
-      default: return 1.9 * cells + 0.8 * bld;
+  stepCost(sim: Simulation): number {
+    return (UT_EST * (UT.piece + this.pieceUs(sim))) / 1000;
+  }
+
+  /** µs of the next piece (stepCost) */
+  private pieceUs(sim: Simulation): number {
+    const st = sim.state, C = st.cells;
+    const snap = this.snap, k = this.cur, last = k + 1 >= snap.chunks;
+    const cells = (size: number, us: number) => Math.max(0, Math.min(cellUnits(size), C - k)) * us;
+    if (this.stepIdx < 0) return UT.start;
+    switch (this.sub) {
+      case S_START: return UT.start;
+      case S_SNAP: return st.buildings.size * UT.snapTake;
+      case S_PLAN: return Math.max(0, Math.min(pieceUnits(US.plan, 1, COLD), snap.n - snap.planned)) * UT.plan;
+      case S_SEA: return this.seaRun.nextUs(C, cellUnits(US.cells), pieceUnits(US.seaBuild, 1, COLD), UT.sea, UT.seaCopy, UT.seaBuild);
+      case S_SCAN: return Math.max(0, Math.min(pieceUnits(UT_SCAN_SIZING, 1, COLD), snap.n - k)) * UT.scan;
+      case S_USES:
+        return snap.countOf(k) * UT.usesB + snap.cellsOf(k) * UT.usesF
+          + (last ? UT.usesPub + (this.passFull ? 0 : (this.passAdded.length + this.passRemoved.length) * UT.patch) : 0);
+      case S_PLABEL: case S_WLABEL:
+        return Math.max(0, Math.min(pieceUnits(US.label, 1, COLD), 2 * (C - this.lS) + 1)) * UT.label + UT.labelPub;
+      case S_PSUM:
+        return snap.countOf(k) * UT.sumB + snap.cellsOf(k) * UT.sumF
+          + (last ? UT.sumPub + this.nPComp * UT.sumComp + this.nPlants * UT.sumPlant + this.nCrit * UT.sumCrit : 0);
+      case S_PCELLS: case S_BCELLS: case S_WCELLS: case S_WBCELLS: return cells(US.cells, UT.cells);
+      case S_PBLD: return snap.countOf(k) * UT.resB + snap.cellsOf(k) * UT.resF;
+      case S_WBLD: return snap.countOf(k) * UT.wresB + snap.cellsOf(k) * UT.wresF;
+      case S_PZONED: case S_WZONED: return cells(US.zoned, UT.zoned) + (C - k <= cellUnits(US.zoned) ? C * UT.copy : 0);
+      case S_BSEED: return 2 + this.nPlants * 9 * UT.seed;
+      // (the queue grows while a BFS piece runs: its estimate is the piece's full size)
+      case S_BBFS: return pieceUnits(US.bfs, 1, COLD) * UT.bfs;
+      case S_WSUM:
+        return snap.countOf(k) * UT.wsumB + snap.cellsOf(k) * UT.wsumF + (last ? UT.wsumPub + this.nWComp * UT.wsumComp : 0);
+      case S_WBSEED: return 8 + this.nWSeeds * UT.wseed;
+      case S_WBBFS: return pieceUnits(US.wbfs, 1, COLD) * UT.wbfs;
+      case S_FBLD: return snap.countOf(k) * UT.finB + snap.cellsOf(k) * UT.finF;
+      // (the flags' publish also emits their events: see applyFlags)
+      case S_FAPPLY: return 6 + this.cand.length * (UT.apply + UT.event);
+      default: return UT.end;
     }
   }
 
-  /** run one step of a (full or soft) refresh pass */
+  /** B2: the name of the next piece ('power.sum#3'), for the step tools (b2work cpumap / profile labels) */
+  get stepName(): string {
+    if (this.stepIdx < 0) return 'uses.start';
+    const s = this.sub;
+    if (s === S_SEA && this.seaRun.phaseName !== 'sum') return 'uses.sea.' + this.seaRun.phaseName;
+    return STATE_NAMES[this.stepIdx] + '.' + SUB_NAMES[s] + (CHUNKED.has(s) ? '#' + this.cur : '');
+  }
+
+  /**
+   * one step (B2: one piece) of a (full or soft) refresh pass. The state ids and transitions are the pre-B2 ones; a state
+   * stays current until its last piece is done. A pass whose pieces run with nothing in between computes exactly what the
+   * pre-B2 steps computed.
+   */
   step(sim: Simulation): void {
     const t0 = nowMs();
     const st = sim.state;
     if (this.stepIdx < 0) {
+      // (B2 review 1 O8: an explicit pass start, every cursor reset; a direct stepIdx = -1 or compute() starts clean)
+      this.resetPieces();
       this.stepIdx = U_USES;
       this.passFull = this.dirtyFull || st.day - this.lastFull >= UTIL_FULL_DAYS || this.pComp.length !== st.cells;
     }
-    switch (this.stepIdx) {
-      case U_USES: {
-        this.ensure(st);
-        const fx = readEffects(st);
-        this.prepareUses(st, fx.powerDemand, fx.waterDemand, detectJobsUnknown(st));
-        let relabel = this.passFull;
-        if (this.passFull) this.dirtyFull = false;
-        else if (!this.patchPower(st)) relabel = true; // a new building bridges two grids: relabel in the next step
-        this.relabelPower = relabel;
-        this.added.length = 0;
-        this.removed.length = 0;
-        this.soft = false;
-        this.stepIdx = relabel || this.dirtyWater || this.wComp.length !== st.cells ? U_LABEL : U_POWER;
+    // (R4: buildings may appear between the pieces of a pass; the per-id arrays cover every id, as pre-B2's steps)
+    if (this.sub !== S_START) this.ensureIds(st);
+    switch (this.sub) {
+      case S_START: this.usesStart(st); this.sub = S_SNAP; break;
+      case S_SNAP:
+        this.snap.take(st);
+        // (pre-B2 read it in the uses step's prologue: a pure function of the buildings; here after the snapshot, so the
+        // day's first buildingList rebuild falls in this piece, whose estimate counts it)
+        this.jobsUnknown = detectJobsUnknown(st);
+        // (one chunk plan for every building stage of the pass; each stage's estimate uses its own coefficients)
+        this.snap.planBegin(UT_PLAN_B, UT_PLAN_F, pieceBudgetUs(COLD));
+        this.sub = S_PLAN;
+        break;
+      case S_PLAN:
+        if (this.snap.planRun(pieceUnits(US.plan, 1, COLD))) this.sub = S_SEA;
+        break;
+      case S_SEA: {
+        // (pre-B2 took the sea mask at the first working water producer of the uses loop: a pure function of the water grid,
+        // cached and checksummed by terrainMasks, so taking it before the loop changes nothing. B2: the checksum by cell
+        // ranges and, after a water edit, the rebuild in pieces over a copy of the water layer: terrainMasks.SeaMaskRun,
+        // build()'s loops in its order, so with nothing in between it returns seaMask(st))
+        const m = this.seaRun.run(st, cellUnits(US.cells), pieceUnits(US.seaBuild, 1, COLD));
+        if (m) {
+          this.seaM = m;
+          this.sub = S_SCAN;
+          this.cur = 0;
+        }
         break;
       }
-      case U_LABEL:
-        if (this.relabelPower) {
-          this.labelPower(st);
-          if (this.passFull) this.lastFull = st.day;
-        }
-        if (this.dirtyWater || this.wComp.length !== st.cells) { this.labelWater(st); this.dirtyWater = false; }
-        this.stepIdx = U_POWER;
-        break;
-      case U_POWER:
-        this.ensureIds(st);
-        this.stepIdx = this.powerSums(st) ? U_BROWN : U_WATER;
-        break;
-      case U_BROWN:
-        this.ensureIds(st);
-        this.powerBrownout(st);
-        this.stepIdx = U_WATER;
-        break;
-      case U_WATER:
-        this.ensureIds(st);
-        // a road edit landed mid-pass: relabel the water networks before using them
-        if (this.dirtyWater || this.wComp.length !== st.cells) { this.labelWater(st); this.dirtyWater = false; }
-        if (this.waterSums(st)) this.stepIdx = U_WATER_BROWN;
-        else this.endPass(sim);
-        break;
-      default:
-        this.ensureIds(st);
-        this.waterBrownout(st);
-        this.endPass(sim);
-        break;
+      case S_SCAN: this.scanPiece(st); break;
+      case S_USES: this.usesPiece(st); break;
+      case S_PLABEL: this.powerLabelPiece(st); break;
+      case S_WLABEL: this.waterLabelPiece(st); break;
+      case S_PSUM: this.powerSumPiece(st); break;
+      case S_PCELLS: this.cellsPiece(st, this.poweredNext, this.pComp, this.okComp, S_PBLD); break;
+      case S_PBLD: this.powerResultsPiece(st); break;
+      case S_PZONED: this.powerZonedPiece(st); break;
+      case S_BCELLS: this.cellsPiece(st, this.poweredNext, this.pComp, this.okComp, S_BSEED); break;
+      case S_BSEED: this.brownSeeds(st); break;
+      case S_BBFS: this.brownBfsPiece(st); break;
+      case S_WSUM: this.waterSumPiece(st); break;
+      case S_WCELLS: this.cellsPiece(st, this.wateredNext, this.wComp, this.okW, S_WBLD); break;
+      case S_WBLD: this.waterResultsPiece(st); break;
+      case S_WZONED: this.waterZonedPiece(st); break;
+      case S_WBCELLS: this.cellsPiece(st, this.wateredNext, this.wComp, this.okW, S_WBSEED); break;
+      case S_WBSEED: this.waterBrownSeeds(st); break;
+      case S_WBBFS: this.waterBrownBfsPiece(st); break;
+      case S_FBLD: this.finishPiece(st); break;
+      case S_FAPPLY: this.applyFlags(sim); break;
+      default: this.eventsPiece(sim); break;
     }
     this.lastMs = nowMs() - t0;
   }
 
-  private endPass(sim: Simulation): void {
-    this.finish(sim);
-    this.stepIdx = -1;
-    this.lastServe = sim.state.day;
+  /** B2: every piece cursor back to its reset value; the pass's snapshot and lists are released (R9) */
+  private resetPieces(): void {
+    this.sub = S_START;
+    this.cur = 0;
+    this.snap.release();
+    this.seaM = null;
+    this.seaRun.reset();
+    this.pollRef = null;
+    this.nuclearLost = 0;
+    this.nInfo = 0;
+    this.hasTreatment = false;
+    this.passAdded.length = 0;
+    this.passRemoved.length = 0;
+    this.producersNext.clear();
+    this.lBegun = false;
+    this.lS = 0;
+    this.lNc = 0;
+    this.lBusy = false;
+    this.wlNext = S_PSUM;
+    this.wChecked = false;
+    this.supplyTot = 0;
+    this.demandTot = 0;
+    this.nSeeds = 0;
+    this.brown = false;
+    this.qh = 0;
+    this.qt = 0;
+    this.cand.length = 0;
+    this.changed.length = 0;
   }
 
   /** full synchronous recompute (init / tests / UI) */
@@ -510,29 +763,926 @@ export class UtilitiesSystem implements SimSystem {
     return this.wQual[c];
   }
 
-  /** apply flags, news, events */
-  private finish(sim: Simulation): void {
-    const st = sim.state;
-    const changed: Building[] = [];
+  // ------------------------------------------------------------------------------------------ uses (U_USES)
+  /**
+   * The pass start: pre-B2's uses-step prologue (ensure, the ordinance effects, the jobs check, the plant efficiency and
+   * prepareUses' per-pass values, computed once per pass) and the inputs consumed here (R5: the dirty flags and the
+   * added / removed lists; events arriving later mark the next pass, as pre-B2 for an event between two steps).
+   */
+  private usesStart(st: CityState): void {
+    this.ensure(st);
+    const fx = readEffects(st);
+    this.pMul = fx.powerDemand;
+    this.wMul = fx.waterDemand;
+    this.eff = plantEfficiency(st);
+    this.nInfo = 0;
+    this.hasTreatment = false;
+    this.producersNext.clear();
+    this.nuclearMul = Math.max(0, ordinanceEffect(st, 'power.nuclear'));
+    this.nuclearLost = 0;
+    this.pollRef = this.simRef?.getSystem<PollutionSystem>('pollution') ?? null;
+    this.season = 0.5 * (SOLAR_WINTER + SOLAR_SUMMER) - 0.5 * (SOLAR_SUMMER - SOLAR_WINTER) * Math.cos((2 * Math.PI * ((st.day % 360) + 15)) / 360);
+    this.climate = SOLAR_CLIMATE[st.config.climate] ?? 1;
+    this.nPlants = 0;
+    this.nCrit = 0;
+    if (this.passFull) this.dirtyFull = false;
+    // (the growables added / removed so far are this pass's label patch; later ones go to the next pass)
+    const a = this.added;
+    this.added = this.passAdded;
+    this.passAdded = a;
+    const r = this.removed;
+    this.removed = this.passRemoved;
+    this.passRemoved = r;
+    this.soft = false;
+  }
+
+  /** one piece of the treatment prefix scan (pre-B2's first prepareUses loop, by building ranges of the snapshot: it
+   *  reads a DefInfo and two fields per building, so its pieces hold UT_SCAN_SIZING-sized ranges; it stops at the first
+   *  working treatment plant, `useInfo` keeps the prefix's DefInfo) */
+  private scanPiece(st: CityState): void {
+    const snap = this.snap, list = snap.list, infos = this.useInfo;
+    const i1 = Math.min(snap.n, this.cur + pieceUnits(UT_SCAN_SIZING, 1, COLD));
+    let done = false;
+    let n = this.nInfo;
+    for (let bI = this.cur; bI < i1; bI++) {
+      const b = list[bI];
+      const inf = infoOf(st, b);
+      infos[n++] = inf;
+      if (inf.isTreatment && b.built >= 1 && (b.flags & BF.Burnt) === 0) { this.hasTreatment = true; done = true; break; }
+    }
+    this.nInfo = n;
+    this.cur = i1;
+    if (i1 >= snap.n) done = true;
+    if (!done) return;
+    infos.length = this.nInfo;
+    this.sub = S_USES;
+    this.cur = 0;
+  }
+
+  /** one chunk of the uses loop (pre-B2 prepareUses' main loop: power use / plant output (bUse) and water use / producer
+   *  output (bWUse)); the last chunk publishes (usesPublish) */
+  private usesPiece(st: CityState): void {
+    const snap = this.snap;
+    if (this.cur < snap.chunks) this.usesChunk(st, this.cur++);
+    if (this.cur >= snap.chunks) this.usesPublish(st);
+  }
+
+  private usesChunk(st: CityState, k: number): void {
+    const eff = this.eff;
+    const bUse = this.bUse, bWUse = this.bWUse;
+    const list = this.snap.list;
+    const infos = this.useInfo, nInfo = this.nInfo, hasTreatment = this.hasTreatment;
+    const producers = this.producersNext;
+    const nuclearMul = this.nuclearMul;
+    let nuclearLost = this.nuclearLost;
+    const pollution = this.pollRef;
+    const sea = this.seaM!;
+    const season = this.season, climate = this.climate;
+    const pMul = this.pMul, wMul = this.wMul, jobsUnknown = this.jobsUnknown;
+    let nPlants = this.nPlants, nCrit = this.nCrit;
+    for (let bI = this.snap.bounds[k], b1 = this.snap.bounds[k + 1]; bI < b1; bI++) {
+      const b = list[bI];
+      const inf = bI < nInfo ? infos[bI] : infoOf(st, b);
+      const ok = b.built >= 1 && (b.flags & (BF.Burnt | BF.Abandoned)) === 0;
+      if (inf.powerOut <= 0 && isCritical(inf)) this.critIds = pushId(this.critIds, nCrit++, b.id);
+      if (inf.powerOut > 0) {
+        this.plantIds = pushId(this.plantIds, nPlants++, b.id);
+        let out = 0;
+        const factors: OutputFactor[] = [];
+        if (ok) {
+          out = inf.powerOut * eff;
+          if (eff < 1) factors.push({ label: 'Utilities funding', mul: eff });
+          // thermal plants (coal / oil / gas / nuclear: category power with a water use) need cooling water; last pass's
+          // result (unknown for a brand-new plant -> assume watered)
+          if (inf.category === 'power' && inf.waterUse > 0 && this.watSeen[b.id] === 2) {
+            out *= THERMAL_UNWATERED;
+            factors.push({ label: 'No cooling water', mul: THERMAL_UNWATERED });
+          }
+          switch (powerKind(inf)) {
+            case PK_NUCLEAR:
+              if (nuclearMul < 1) { nuclearLost += out * (1 - nuclearMul); out *= nuclearMul; factors.push({ label: 'Nuclear-free zone', mul: nuclearMul }); }
+              break;
+            case PK_WIND: {
+              const m = WIND_TURBINE_BASE + WIND_TURBINE_GAIN * smoothstep(WIND_TURBINE_H0, WIND_TURBINE_H1, relativeHeight(st, b));
+              out *= m;
+              factors.push({ label: m < 1 ? 'Sheltered site' : 'Windy hilltop', mul: m });
+              break;
+            }
+            case PK_SOLAR:
+              out *= season * climate;
+              factors.push({ label: 'Season', mul: season });
+              if (climate !== 1) factors.push({ label: 'Climate', mul: climate });
+              break;
+            case PK_INCIN: {
+              const share = pollution?.incineratorShare(b.id) ?? -1;
+              if (share >= 0) { out *= share; factors.push({ label: 'Garbage burned', mul: share }); }
+              break;
+            }
+          }
+        }
+        bUse[b.id] = -out;
+        producers.set(b.id, { kind: 'power', nominal: inf.powerOut, output: out, factors, load: this.loadById[b.id] ?? -1 });
+      } else bUse[b.id] = buildingPowerUse(inf, b, jobsUnknown) * pMul;
+      if (inf.waterOut > 0) {
+        let out = 0, intake = 0;
+        const factors: OutputFactor[] = [];
+        if (ok) {
+          out = inf.waterOut * eff;
+          if (eff < 1) factors.push({ label: 'Utilities funding', mul: eff });
+          const near = waterNear(st, b.x, b.z, b.w, b.d, PUMP_WATER_DIST, sea);
+          if (isDesal(inf)) {
+            if (!near.sea) { out *= DESAL_INLAND_OUT; factors.push({ label: 'No sea water', mul: DESAL_INLAND_OUT }); }
+          } else {
+            if (inf.isPump) {
+              if (near.fresh) { out *= 1 + PUMP_WATER_BONUS; factors.push({ label: 'Fresh water nearby', mul: 1 + PUMP_WATER_BONUS }); }
+              else if (near.sea) { out *= SEA_PUMP_OUT; factors.push({ label: 'Brackish sea water', mul: SEA_PUMP_OUT }); }
+            }
+            // intake pollution: ground water under the intake or the adjacent water body, whichever is worse
+            intake = Math.min(1, intakePollution(st, b, PUMP_WATER_DIST));
+            if (intake > 0.001) {
+              const m = 1 - PUMP_POLL_LOSS * intake * (hasTreatment ? PUMP_TREATED_LOSS : 1);
+              out *= m;
+              factors.push({ label: 'Polluted intake', mul: m });
+            }
+          }
+        }
+        // treatment plants and desalination deliver clean water; pumps / towers deliver what they draw
+        this.intakeById[b.id] = inf.isTreatment || isDesal(inf) ? 0 : intake;
+        bWUse[b.id] = -out - 1e-9;
+        this.bNeedPow[b.id] = inf.powerUse > 0 ? 1 : 0;
+        producers.set(b.id, { kind: 'water', nominal: inf.waterOut, output: out, factors, load: intake });
+      } else {
+        bWUse[b.id] = buildingWaterUse(inf, b, jobsUnknown) * wMul;
+        this.bNeedPow[b.id] = 0;
+      }
+    }
+    this.nPlants = nPlants;
+    this.nCrit = nCrit;
+    this.nuclearLost = nuclearLost;
+  }
+
+  /** the uses step's end: the producers (producerInfo, read by pollution and the inspector) by a swap, the nuclear news,
+   *  the label patch of a soft pass, the next state (pre-B2's order) */
+  private usesPublish(st: CityState): void {
+    const p = this.producers;
+    this.producers = this.producersNext;
+    this.producersNext = p;
+    if (this.nuclearLost > 0 && !this.nuclearOffAnnounced && this.simRef) {
+      this.simRef.notify(`Nuclear plant shut down by ordinance (−${Math.round(this.nuclearLost).toLocaleString('en-US')} MW)`, 'warning', undefined, undefined, 'utilities');
+    }
+    this.nuclearOffAnnounced = this.nuclearMul < 0.5;
+    let relabel = this.passFull;
+    if (!this.passFull && !this.patchPower(st)) relabel = true; // a new building bridges two grids: relabel in the next step
+    this.relabelPower = relabel;
+    this.passAdded.length = 0;
+    this.passRemoved.length = 0;
+    this.cur = 0;
+    if (relabel) { this.stepIdx = U_LABEL; this.sub = S_PLABEL; }
+    else if (this.dirtyWater || this.wComp.length !== st.cells) { this.stepIdx = U_LABEL; this.sub = S_WLABEL; this.wlNext = S_PSUM; }
+    else { this.stepIdx = U_POWER; this.sub = S_PSUM; }
+  }
+
+  // ------------------------------------------------------------------------------------------ power
+  /**
+   * one piece of the power label (pre-B2 labelPower: conductor components — network cells, power lines, building cells —
+   * by BFS in cell order, in pieces of at most pieceUnits(US.label) cells scanned or dequeued) into pCompNext; the last
+   * piece publishes (a swap: gridInfo never sees half labels), then the water label or the power sums follow
+   */
+  private powerLabelPiece(st: CityState): void {
+    const N = st.size, C = st.cells;
+    const net = st.network, lines = st.powerLines, bld = st.building;
+    if (!this.lBegun) {
+      if (this.pCompNext.length !== C) this.pCompNext = new Int32Array(C);
+      this.pCompNext.fill(-1);
+      this.lS = 0; this.lNc = 0; this.lBusy = false; this.qh = 0; this.qt = 0;
+      this.lBegun = true;
+    }
+    const comp = this.pCompNext, queue = this.queue;
+    let budget = pieceUnits(US.label, 1, COLD);
+    let s = this.lS, nc = this.lNc, qh = this.qh, qt = this.qt, busy = this.lBusy;
+    while (budget > 0) {
+      if (busy) {
+        while (qh < qt && budget > 0) {
+          budget--;
+          const i = queue[qh++];
+          const x = i % N;
+          let j = i - 1;
+          if (x > 0 && comp[j] < 0 && (net[j] !== 0 || lines[j] !== 0 || bld[j] >= 0)) { comp[j] = nc; queue[qt++] = j; }
+          j = i + 1;
+          if (x < N - 1 && comp[j] < 0 && (net[j] !== 0 || lines[j] !== 0 || bld[j] >= 0)) { comp[j] = nc; queue[qt++] = j; }
+          j = i - N;
+          if (j >= 0 && comp[j] < 0 && (net[j] !== 0 || lines[j] !== 0 || bld[j] >= 0)) { comp[j] = nc; queue[qt++] = j; }
+          j = i + N;
+          if (j < C && comp[j] < 0 && (net[j] !== 0 || lines[j] !== 0 || bld[j] >= 0)) { comp[j] = nc; queue[qt++] = j; }
+        }
+        if (qh < qt) break;
+        busy = false;
+        nc++;
+        s++;
+        continue;
+      }
+      if (s >= C) break;
+      budget--;
+      if (comp[s] >= 0 || (net[s] === 0 && lines[s] === 0 && bld[s] < 0)) { s++; continue; }
+      qh = 0; qt = 0;
+      queue[qt++] = s;
+      comp[s] = nc;
+      busy = true;
+    }
+    this.lS = s; this.lNc = nc; this.qh = qh; this.qt = qt; this.lBusy = busy;
+    if (busy || s < C) return;
+    // the publish: labels, component count, the per-component arrays' growth, the full pass's day
+    this.pCompNext = this.pComp;
+    this.pComp = comp;
+    this.nPComp = nc;
+    if (nc > this.cSupply.length) this.growPower(nc);
+    if (this.passFull) this.lastFull = st.day;
+    this.lBegun = false;
+    this.qh = this.qt = 0;
+    if (this.dirtyWater || this.wComp.length !== st.cells) { this.sub = S_WLABEL; this.wlNext = S_PSUM; }
+    else { this.stepIdx = U_POWER; this.sub = S_PSUM; this.cur = 0; }
+  }
+
+  /**
+   * Incremental label update for growables added / removed since the last pass (no full BFS): a new building joins
+   * the component of its neighbours; removed buildings' cells stop conducting (a possible split is picked up by the
+   * next full pass, at most UTIL_FULL_DAYS later). Returns false when a new building bridges two components (the
+   * caller relabels everything in the next step).
+   */
+  private patchPower(st: CityState): boolean {
+    const N = st.size;
+    const net = st.network, lines = st.powerLines, bld = st.building;
+    const comp = this.pComp;
+    for (const b of this.passRemoved) {
+      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
+        if (x < 0 || z < 0 || x >= N || z >= N) continue;
+        const i = z * N + x;
+        if (bld[i] < 0 && net[i] === 0 && lines[i] === 0) comp[i] = -1;
+      }
+    }
+    for (const b of this.passAdded) {
+      if (!st.buildings.has(b.id)) continue;
+      let c0 = -1, multi = false;
+      for (let z = b.z - 1; z <= b.z + b.d && !multi; z++) for (let x = b.x - 1; x <= b.x + b.w; x++) {
+        if (x < 0 || z < 0 || x >= N || z >= N) continue;
+        const inside = x >= b.x && x < b.x + b.w && z >= b.z && z < b.z + b.d;
+        const corner = (x < b.x || x >= b.x + b.w) && (z < b.z || z >= b.z + b.d);
+        if (inside || corner) continue;
+        const c = comp[z * N + x];
+        if (c < 0) continue;
+        if (c0 < 0) c0 = c;
+        else if (c !== c0) { multi = true; break; }
+      }
+      if (multi) return false;
+      if (c0 < 0) {
+        c0 = this.nPComp++;
+        if (this.nPComp > this.cSupply.length) this.growPower(this.nPComp);
+      }
+      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
+        if (x < 0 || z < 0 || x >= N || z >= N) continue;
+        const i = z * N + x;
+        if (bld[i] === b.id) comp[i] = c0;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * one chunk of the power sums (pre-B2 powerSums' building loop: per-component supply / demand, as doubles in list order,
+   * into private buffers); the last chunk publishes (powerSumsPublish)
+   */
+  private powerSumPiece(st: CityState): void {
+    const snap = this.snap;
+    if (this.cur === 0) {
+      const nc = this.nPComp;
+      if (this.cSupplyN.length < this.cSupply.length) { this.cSupplyN = new Float64Array(this.cSupply.length); this.cDemandN = new Float64Array(this.cSupply.length); }
+      this.cSupplyN.fill(0, 0, nc);
+      this.cDemandN.fill(0, 0, nc);
+      this.supplyTot = 0;
+      this.demandTot = 0;
+    }
+    if (this.cur < snap.chunks) this.powerSumChunk(st, this.cur++);
+    if (this.cur >= snap.chunks) this.powerSumsPublish(st);
+  }
+
+  private powerSumChunk(st: CityState, k: number): void {
+    const N = st.size;
+    const comp = this.pComp;
+    const bUse = this.bUse;
+    const cSupply = this.cSupplyN, cDemand = this.cDemandN;
+    const list = this.snap.list;
+    let supplyTot = this.supplyTot, demandTot = this.demandTot;
+    for (let bI = this.snap.bounds[k], b1 = this.snap.bounds[k + 1]; bI < b1; bI++) {
+      const b = list[bI];
+      const c = comp[b.z * N + b.x];
+      if (c < 0) continue;
+      const u = bUse[b.id];
+      if (u < 0) { cSupply[c] -= u; supplyTot -= u; }
+      else { cDemand[c] += u; demandTot += u; }
+    }
+    this.supplyTot = supplyTot;
+    this.demandTot = demandTot;
+  }
+
+  /**
+   * The power sums' publish (pre-B2 powerSums after its building loop): the sums (gridInfo), plant loads (pollution
+   * activity, WP2 plant stigma, inspector), stats. No short grid: the results follow (no brownout). A short grid:
+   * critical loads (health, police, fire, water producers) reserve their share first and the distance-ordered BFS runs in
+   * the brownout step.
+   */
+  private powerSumsPublish(st: CityState): void {
+    const N = st.size;
+    const comp = this.pComp;
+    const nc = this.nPComp;
+    const bUse = this.bUse;
+    this.cSupply.set(this.cSupplyN.subarray(0, nc));
+    this.cDemand.set(this.cDemandN.subarray(0, nc));
+    const cSupply = this.cSupply, cDemand = this.cDemand, cLeft = this.cLeft;
+    const okComp = this.okComp.length >= nc ? this.okComp : (this.okComp = new Uint8Array(nc * 2 + 16));
+    let anyShort = false;
+    for (let c = 0; c < nc; c++) {
+      cLeft[c] = cSupply[c];
+      const sup = cSupply[c] > 0;
+      okComp[c] = sup && cDemand[c] <= cSupply[c] ? 1 : 0;
+      if (sup && cDemand[c] > cSupply[c]) anyShort = true;
+    }
+    // plant load (share of the component's supply in use): pollution activity, WP2 plant stigma, inspector; a plant
+    // delivering nothing (shut down by ordinance, burnt) has load 0
+    const loadById = this.loadById, plants = this.plantIds, producers = this.producers;
+    for (let q = 0; q < this.nPlants; q++) {
+      const id = plants[q];
+      const b = st.buildings.get(id);
+      if (!b) continue;
+      const c = comp[b.z * N + b.x];
+      const sup = c >= 0 ? cSupply[c] : 0;
+      const load = bUse[id] < 0 && sup > 0 ? Math.min(1, cDemand[c] / sup) : 0;
+      loadById[id] = load;
+      const pi = producers.get(id);
+      if (pi) pi.load = load;
+    }
+    st.stats.powerSupply = this.supplyTot;
+    st.stats.powerDemand = this.demandTot;
+    const stampNo = (this.powerStamp = ++this.stamp);
+    this.cur = 0;
+    if (this.poweredNext.length !== st.cells) this.poweredNext = new Uint8Array(st.cells);
+    if (!anyShort) {
+      this.brown = false;
+      this.sub = S_PCELLS;
+      return;
+    }
+    // brownout: critical loads are served first (in their short component, while its supply lasts)
+    const served = this.bOk, crit = this.critIds;
+    for (let q = 0; q < this.nCrit; q++) {
+      const id = crit[q];
+      const u = bUse[id];
+      if (!(u > 0)) continue;
+      const b = st.buildings.get(id);
+      if (!b) continue;
+      const c = comp[b.z * N + b.x];
+      if (c < 0 || !(cDemand[c] > cSupply[c])) continue;
+      if (cLeft[c] >= u) { cLeft[c] -= u; served[id] = stampNo; }
+    }
+    this.stepIdx = U_BROWN;
+    this.sub = S_BCELLS;
+  }
+
+  /** a cell range of `out[i] = c >= 0 ? ok[c] : 0` (the results' first loop, the brownouts' first loop; out: private) */
+  private cellsPiece(st: CityState, out: Uint8Array, comp: Int32Array, ok: Uint8Array, next: number): void {
+    const C = st.cells;
+    const i1 = Math.min(C, this.cur + cellUnits(US.cells));
+    for (let i = this.cur; i < i1; i++) {
+      const c = comp[i];
+      out[i] = c >= 0 ? ok[c] : 0;
+    }
+    this.cur = i1;
+    if (i1 < C) return;
+    this.cur = 0;
+    this.sub = next;
+  }
+
+  /** the power brownout's seeds (pre-B2 powerBrownout after its cell loop): the plants of short components, the
+   *  exhausted flags */
+  private brownSeeds(st: CityState): void {
+    const N = st.size;
+    const comp = this.pComp, queue = this.queue, visit = this.visit;
+    const bUse = this.bUse, stampNo = this.powerStamp;
+    const cSupply = this.cSupply, cDemand = this.cDemand;
+    const nc = this.nPComp;
+    let qt = 0;
+    const plants = this.plantIds;
+    for (let q = 0; q < this.nPlants; q++) {
+      const id = plants[q];
+      if (!(bUse[id] < 0)) continue; // delivers nothing: not a source
+      const b = st.buildings.get(id);
+      if (!b) continue;
+      const c = comp[b.z * N + b.x];
+      if (c < 0 || !(cDemand[c] > cSupply[c])) continue;
+      for (let z: number = b.z; z < b.z + b.d; z++) for (let x: number = b.x; x < b.x + b.w; x++) {
+        const i = z * N + x;
+        if (visit[i] === stampNo || comp[i] !== c) continue;
+        visit[i] = stampNo;
+        queue[qt++] = i;
+      }
+    }
+    if (this.exhaustedP.length < nc) this.exhaustedP = new Uint8Array(nc * 2 + 16);
+    this.exhaustedP.fill(0, 0, nc);
+    this.qh = 0;
+    this.qt = qt;
+    this.sub = S_BBFS;
+  }
+
+  /**
+   * one piece of the power brownout BFS (pre-B2 powerBrownout's loop: from the plants of short components, consumers in
+   * distance order; once the supply is exhausted every farther consumer loses power), at most pieceUnits(US.bfs) queue
+   * cells; then the building results
+   */
+  private brownBfsPiece(st: CityState): void {
+    const N = st.size, C = st.cells;
+    const bld = st.building;
+    const comp = this.pComp, queue = this.queue, visit = this.visit;
+    const bUse = this.bUse, served = this.bOk, stampNo = this.powerStamp;
+    const cLeft = this.cLeft;
+    const powered = this.poweredNext;
+    const exhausted = this.exhaustedP;
+    let qh = this.qh, qt = this.qt;
+    const q1 = qh + pieceUnits(US.bfs, 1, COLD);
+    while (qh < qt && qh < q1) {
+      const i = queue[qh++];
+      const c = comp[i];
+      const bid = bld[i];
+      if (bid >= 0) {
+        const sv = served[bid];
+        if (sv !== stampNo && sv !== -stampNo) {
+          const u = bUse[bid];
+          if (u < 0) served[bid] = stampNo; // plant
+          else if (exhausted[c] === 0 && cLeft[c] >= u) { cLeft[c] -= u; served[bid] = stampNo; }
+          else { exhausted[c] = 1; served[bid] = -stampNo; }
+        }
+      }
+      powered[i] = exhausted[c] ? 0 : 1;
+      // neighbours in DX / DZ order (+x, +z, -x, -z), same component
+      const x = i % N;
+      let j = i + 1;
+      if (x < N - 1 && visit[j] !== stampNo && comp[j] === c) { visit[j] = stampNo; queue[qt++] = j; }
+      j = i + N;
+      if (j < C && visit[j] !== stampNo && comp[j] === c) { visit[j] = stampNo; queue[qt++] = j; }
+      j = i - 1;
+      if (x > 0 && visit[j] !== stampNo && comp[j] === c) { visit[j] = stampNo; queue[qt++] = j; }
+      j = i - N;
+      if (j >= 0 && visit[j] !== stampNo && comp[j] === c) { visit[j] = stampNo; queue[qt++] = j; }
+    }
+    this.qh = qh;
+    this.qt = qt;
+    if (qh < qt) return;
+    this.qh = this.qt = 0;
+    this.brown = true;
+    this.sub = S_PBLD;
+    this.cur = 0;
+  }
+
+  /** one chunk of the power building results (pre-B2 powerResults' building loop: bPow + footprint cells, into the
+   *  private layer) */
+  private powerResultsPiece(st: CityState): void {
+    const snap = this.snap;
+    if (this.cur < snap.chunks) this.powerResultsChunk(st, this.cur++);
+    if (this.cur >= snap.chunks) { this.sub = S_PZONED; this.cur = 0; }
+  }
+
+  private powerResultsChunk(st: CityState, k: number): void {
+    const N = st.size;
+    const bld = st.building;
+    const comp = this.pComp, powered = this.poweredNext;
+    const cSupply = this.cSupply, cDemand = this.cDemand;
+    const served = this.bOk, stampNo = this.powerStamp;
+    const result = this.bPow;
+    const list = this.snap.list;
+    for (let bI = this.snap.bounds[k], b1 = this.snap.bounds[k + 1]; bI < b1; bI++) {
+      const b = list[bI];
+      const c = comp[b.z * N + b.x];
+      let on = false;
+      if (c >= 0 && cSupply[c] > 0) on = cDemand[c] <= cSupply[c] ? true : served[b.id] === stampNo;
+      const v = on ? 1 : 0;
+      result[b.id] = v;
+      if (b.w * b.d === 1) { powered[b.z * N + b.x] = v; continue; }
+      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
+        const i = z * N + x;
+        if (bld[i] === b.id) powered[i] = v;
+      }
+    }
+  }
+
+  /** a cell range of the powered empty zoned cells (adjacent to a powered conductor; pre-B2 powerResults' last loop);
+   *  the last piece publishes st.powered (one .set(): a saved layer) and the water step follows */
+  private powerZonedPiece(st: CityState): void {
+    const N = st.size, C = st.cells;
+    const zone = st.zone;
+    const comp = this.pComp, powered = this.poweredNext;
+    const i1 = Math.min(C, this.cur + cellUnits(US.zoned));
+    for (let i = this.cur; i < i1; i++) {
+      if (zone[i] === 0 || comp[i] >= 0) continue;
+      const x = i % N;
+      powered[i] = (x > 0 && powered[i - 1] === 1 && comp[i - 1] >= 0) || (x < N - 1 && powered[i + 1] === 1 && comp[i + 1] >= 0) ||
+        (i >= N && powered[i - N] === 1 && comp[i - N] >= 0) || (i + N < C && powered[i + N] === 1 && comp[i + N] >= 0) ? 1 : 0;
+    }
+    this.cur = i1;
+    if (i1 < C) return;
+    st.powered.set(powered.subarray(0, C));
+    this.brown = false;
+    this.stepIdx = U_WATER;
+    this.sub = S_WSUM;
+    this.cur = 0;
+    this.wChecked = false;
+  }
+
+  private growPower(n: number): void {
+    const size = Math.max(n + 64, this.cSupply.length * 2);
+    const g = (a: Float64Array) => { const b = new Float64Array(size); b.set(a); return b; };
+    this.cSupply = g(this.cSupply);
+    this.cDemand = g(this.cDemand);
+    this.cLeft = g(this.cLeft);
+  }
+  private growWater(n: number): void {
+    const size = Math.max(n + 64, this.wSupply.length * 2);
+    const g = (a: Float64Array) => { const b = new Float64Array(size); b.set(a); return b; };
+    this.wSupply = g(this.wSupply);
+    this.wDemand = g(this.wDemand);
+    this.wLeft = g(this.wLeft);
+  }
+
+  // ------------------------------------------------------------------------------------------ water
+  /**
+   * one piece of the water label (pre-B2 labelWater: road-connected components — pipes run under every road — by BFS in
+   * cell order) into wCompNext; its first piece consumes dirtyWater (R5), the last one publishes (a swap) and goes on to
+   * `wlNext` (U_LABEL's power sums, or U_WATER's sums after a mid-pass relabel)
+   */
+  private waterLabelPiece(st: CityState): void {
+    const N = st.size, C = st.cells;
+    const net = st.network;
+    if (!this.lBegun) {
+      this.dirtyWater = false;
+      if (this.wCompNext.length !== C) this.wCompNext = new Int32Array(C);
+      this.wCompNext.fill(-1);
+      this.lS = 0; this.lNc = 0; this.lBusy = false; this.qh = 0; this.qt = 0;
+      this.lBegun = true;
+    }
+    const comp = this.wCompNext, queue = this.queue;
+    let budget = pieceUnits(US.label, 1, COLD);
+    let s = this.lS, nc = this.lNc, qh = this.qh, qt = this.qt, busy = this.lBusy;
+    while (budget > 0) {
+      if (busy) {
+        while (qh < qt && budget > 0) {
+          budget--;
+          const i = queue[qh++];
+          const x = i % N;
+          let j = i - 1;
+          if (x > 0 && comp[j] < 0 && net[j] >= 1 && net[j] <= 5) { comp[j] = nc; queue[qt++] = j; }
+          j = i + 1;
+          if (x < N - 1 && comp[j] < 0 && net[j] >= 1 && net[j] <= 5) { comp[j] = nc; queue[qt++] = j; }
+          j = i - N;
+          if (j >= 0 && comp[j] < 0 && net[j] >= 1 && net[j] <= 5) { comp[j] = nc; queue[qt++] = j; }
+          j = i + N;
+          if (j < C && comp[j] < 0 && net[j] >= 1 && net[j] <= 5) { comp[j] = nc; queue[qt++] = j; }
+        }
+        if (qh < qt) break;
+        busy = false;
+        nc++;
+        s++;
+        continue;
+      }
+      if (s >= C) break;
+      budget--;
+      if (comp[s] >= 0 || net[s] < 1 || net[s] > 5) { s++; continue; }
+      qh = 0; qt = 0;
+      queue[qt++] = s;
+      comp[s] = nc;
+      busy = true;
+    }
+    this.lS = s; this.lNc = nc; this.qh = qh; this.qt = qt; this.lBusy = busy;
+    if (busy || s < C) return;
+    this.wCompNext = this.wComp;
+    this.wComp = comp;
+    this.nWComp = nc;
+    if (nc > this.wSupply.length) this.growWater(nc);
+    this.lBegun = false;
+    this.qh = this.qt = 0;
+    this.cur = 0;
+    if (this.wlNext === S_WSUM) this.sub = S_WSUM;
+    else { this.stepIdx = U_POWER; this.sub = S_PSUM; }
+  }
+
+  /**
+   * one chunk of the water sums (pre-B2 waterSums' building loop: per-network supply — pumps / treatment plants need
+   * power — demand, intake pollution, the seeds, into private buffers); the first piece of U_WATER relabels the networks
+   * first when a road edit landed mid-pass (pre-B2's check at the U_WATER step); the last chunk publishes
+   */
+  private waterSumPiece(st: CityState): void {
+    if (!this.wChecked) {
+      this.wChecked = true;
+      // a road edit landed mid-pass: relabel the water networks before using them
+      if (this.dirtyWater || this.wComp.length !== st.cells) {
+        this.sub = S_WLABEL;
+        this.wlNext = S_WSUM;
+        this.waterLabelPiece(st);
+        return;
+      }
+    }
+    const snap = this.snap;
+    if (this.cur === 0) {
+      const nc = this.nWComp, L = this.wSupply.length;
+      if (this.wSupplyN.length < L) { this.wSupplyN = new Float64Array(L); this.wDemandN = new Float64Array(L); }
+      if (this.wPollN.length < nc) this.wPollN = new Float64Array(nc * 2 + 16);
+      this.wSupplyN.fill(0, 0, nc);
+      this.wDemandN.fill(0, 0, nc);
+      this.wPollN.fill(0, 0, nc);
+      if (this.bWCompN.length !== this.bWComp.length) this.bWCompN = new Int32Array(this.bWComp.length);
+      this.bWCompN.set(this.bWComp);
+      this.supplyTot = 0;
+      this.demandTot = 0;
+      this.nSeeds = 0;
+    }
+    if (this.cur < snap.chunks) this.waterSumChunk(st, this.cur++);
+    if (this.cur >= snap.chunks) this.waterSumsPublish(st);
+  }
+
+  private waterSumChunk(st: CityState, k: number): void {
+    const N = st.size;
+    const comp = this.wComp;
+    const wSupply = this.wSupplyN, wDemand = this.wDemandN, wPoll = this.wPollN;
+    const bComp = this.bWCompN; // per-building component (+1), 0 = none
+    const bUse = this.bWUse, bNeedPow = this.bNeedPow, bPow = this.bPow, intake = this.intakeById;
+    const list = this.snap.list;
+    let supplyTot = this.supplyTot, demandTot = this.demandTot, nSeeds = this.nSeeds;
+    for (let bI = this.snap.bounds[k], b1 = this.snap.bounds[k + 1]; bI < b1; bI++) {
+      const b = list[bI];
+      const c = adjacentComp(comp, N, b);
+      bComp[b.id] = c + 1;
+      if (c < 0) continue;
+      const u = bUse[b.id];
+      if (u < 0) {
+        // pumps / treatment plants need power to run
+        const out = bNeedPow[b.id] && !bPow[b.id] ? 0 : -u - 1e-9;
+        wSupply[c] += out;
+        wPoll[c] += out * intake[b.id];
+        supplyTot += out;
+        if (out > 0) this.wSeedIds = pushId(this.wSeedIds, nSeeds++, b.id);
+      } else {
+        wDemand[c] += u;
+        demandTot += u;
+      }
+    }
+    this.supplyTot = supplyTot;
+    this.demandTot = demandTot;
+    this.nSeeds = nSeeds;
+  }
+
+  /**
+   * The water sums' publish (pre-B2 waterSums after its building loop): sums, networks per building, intake pollution
+   * (one .set() each: waterInfo / waterQualityAt never see half sums), stats, tap quality. No short network: the results
+   * follow; a short network: the brownout step serves buildings in road distance order from the producers.
+   */
+  private waterSumsPublish(st: CityState): void {
+    const nc = this.nWComp;
+    if (this.wPoll.length < nc) { this.wPoll = new Float64Array(nc * 2 + 16); this.wQual = new Float32Array(nc * 2 + 16); }
+    this.wPoll.set(this.wPollN.subarray(0, nc));
+    this.wSupply.set(this.wSupplyN.subarray(0, nc));
+    this.wDemand.set(this.wDemandN.subarray(0, nc));
+    const L = Math.min(this.bWCompN.length, this.bWComp.length);
+    this.bWComp.set(L === this.bWCompN.length ? this.bWCompN : this.bWCompN.subarray(0, L));
+    this.nWSeeds = this.nSeeds;
+    const wSupply = this.wSupply, wDemand = this.wDemand, wLeft = this.wLeft;
+    const okW = this.okW.length >= nc ? this.okW : (this.okW = new Uint8Array(nc * 2 + 16));
+    let anyShort = false;
+    for (let c = 0; c < nc; c++) {
+      wLeft[c] = wSupply[c];
+      const sup = wSupply[c] > 0;
+      okW[c] = sup && wDemand[c] <= wSupply[c] ? 1 : 0;
+      if (sup && wDemand[c] > wSupply[c]) anyShort = true;
+    }
+    st.stats.waterSupply = this.supplyTot;
+    st.stats.waterDemand = this.demandTot;
+    this.waterStamp = ++this.stamp;
+    this.tapQuality(st);
+    this.cur = 0;
+    if (this.wateredNext.length !== st.cells) this.wateredNext = new Uint8Array(st.cells);
+    if (!anyShort) { this.brown = false; this.sub = S_WCELLS; }
+    else { this.stepIdx = U_WATER_BROWN; this.sub = S_WBCELLS; }
+  }
+
+  /** the water brownout's seeds (pre-B2 waterBrownout after its cell loop): the exhausted flags, the road cells around
+   *  the delivering producers of short networks (seed order) */
+  private waterBrownSeeds(st: CityState): void {
+    const comp = this.wComp, queue = this.queue, visit = this.visit;
+    const nc = this.nWComp;
+    const bComp = this.bWComp, stamp = this.waterStamp;
+    const wSupply = this.wSupply, wDemand = this.wDemand;
+    if (this.exhaustedW.length < nc) this.exhaustedW = new Uint8Array(nc * 2 + 16);
+    this.exhaustedW.fill(0, 0, nc);
+    let qt = 0;
+    const seeds = this.wSeedIds;
+    for (let q = 0; q < this.nWSeeds; q++) {
+      const id = seeds[q];
+      const b = st.buildings.get(id);
+      if (!b) continue;
+      const c = bComp[id] - 1;
+      if (c < 0 || !(wDemand[c] > wSupply[c])) continue;
+      for (const i of perimeterRoadCells(st, comp, b)) if (visit[i] !== stamp) { visit[i] = stamp; queue[qt++] = i; }
+    }
+    this.qh = 0;
+    this.qt = qt;
+    this.sub = S_WBBFS;
+  }
+
+  /** one piece of the water brownout BFS (pre-B2 waterBrownout's loop: over the pipes from the producers, nearest
+   *  buildings first), at most pieceUnits(US.wbfs) queue cells; then the building results */
+  private waterBrownBfsPiece(st: CityState): void {
+    const N = st.size, C = st.cells;
+    const bld = st.building;
+    const comp = this.wComp, queue = this.queue, visit = this.visit;
+    const watered = this.wateredNext;
+    const bComp = this.bWComp, bUse = this.bWUse, served = this.bOk, stamp = this.waterStamp;
+    const wLeft = this.wLeft;
+    const exhausted = this.exhaustedW;
+    let qh = this.qh, qt = this.qt;
+    const q1 = qh + pieceUnits(US.wbfs, 1, COLD);
+    while (qh < qt && qh < q1) {
+      const i = queue[qh++];
+      const c = comp[i];
+      watered[i] = exhausted[c] ? 0 : 1;
+      const x = i % N;
+      // neighbours in DX / DZ order (+x, +z, -x, -z): serve adjacent buildings of this network, continue along pipes
+      for (let k = 0; k < 4; k++) {
+        let j: number;
+        if (k === 0) { if (x >= N - 1) continue; j = i + 1; }
+        else if (k === 1) { j = i + N; if (j >= C) continue; }
+        else if (k === 2) { if (x === 0) continue; j = i - 1; }
+        else { j = i - N; if (j < 0) continue; }
+        const bid = bld[j];
+        if (bid >= 0) {
+          const sv = served[bid];
+          if (sv !== stamp && sv !== -stamp && bComp[bid] - 1 === c) {
+            const u = bUse[bid];
+            if (u < 0) served[bid] = stamp;
+            else if (exhausted[c] === 0 && wLeft[c] >= u) { wLeft[c] -= u; served[bid] = stamp; }
+            else { exhausted[c] = 1; served[bid] = -stamp; }
+          }
+        }
+        if (visit[j] === stamp || comp[j] !== c) continue;
+        visit[j] = stamp;
+        queue[qt++] = j;
+      }
+    }
+    this.qh = qh;
+    this.qt = qt;
+    if (qh < qt) return;
+    this.qh = this.qt = 0;
+    this.brown = true;
+    this.sub = S_WBLD;
+    this.cur = 0;
+  }
+
+  /** one chunk of the water building results (pre-B2 waterResults' building loop: bWat + footprint cells, into the
+   *  private layer) */
+  private waterResultsPiece(st: CityState): void {
+    const snap = this.snap;
+    if (this.cur < snap.chunks) this.waterResultsChunk(st, this.cur++);
+    if (this.cur >= snap.chunks) { this.sub = S_WZONED; this.cur = 0; }
+  }
+
+  private waterResultsChunk(st: CityState, k: number): void {
+    const N = st.size;
+    const bld = st.building;
+    const watered = this.wateredNext;
+    const bComp = this.bWComp, served = this.bOk, stamp = this.waterStamp;
+    const wSupply = this.wSupply, wDemand = this.wDemand;
+    const result = this.bWat;
+    const list = this.snap.list;
+    for (let bI = this.snap.bounds[k], b1 = this.snap.bounds[k + 1]; bI < b1; bI++) {
+      const b = list[bI];
+      const c = bComp[b.id] - 1;
+      let on = false;
+      if (c >= 0 && wSupply[c] > 0) on = wDemand[c] <= wSupply[c] ? true : served[b.id] === stamp;
+      const v = on ? 1 : 0;
+      result[b.id] = v;
+      if (b.w * b.d === 1) { watered[b.z * N + b.x] = v; continue; }
+      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
+        const i = z * N + x;
+        if (bld[i] === b.id) watered[i] = v;
+      }
+    }
+  }
+
+  /** a cell range of the watered empty zoned cells (within 1 cell of a watered road; pre-B2 waterResults' last loop); the
+   *  last piece publishes st.watered (one .set(): a saved layer) and the finish follows */
+  private waterZonedPiece(st: CityState): void {
+    const N = st.size, C = st.cells;
+    const zone = st.zone, bld = st.building;
+    const comp = this.wComp, watered = this.wateredNext;
+    const i1 = Math.min(C, this.cur + cellUnits(US.zoned));
+    for (let i = this.cur; i < i1; i++) {
+      if (zone[i] === 0 || bld[i] >= 0 || comp[i] >= 0) continue;
+      const x = i % N;
+      watered[i] = (x > 0 && comp[i - 1] >= 0 && watered[i - 1] === 1) || (x < N - 1 && comp[i + 1] >= 0 && watered[i + 1] === 1) ||
+        (i >= N && comp[i - N] >= 0 && watered[i - N] === 1) || (i + N < C && comp[i + N] >= 0 && watered[i + N] === 1) ? 1 : 0;
+    }
+    this.cur = i1;
+    if (i1 < C) return;
+    st.watered.set(watered.subarray(0, C));
+    this.brown = false;
+    this.sub = S_FBLD;
+    this.cur = 0;
+  }
+
+  /** tap water quality per network: supply-weighted intake pollution, cleaned by sewage treatment (pollution pass) */
+  private tapQuality(st: CityState): void {
+    const nc = this.nWComp;
+    const treated = Math.max(0, Math.min(1, st.stats.sewageTreated || 0));
+    const clean = 1 - TAP_TREATMENT_CLEAN * treated;
+    const wQual = this.wQual, wPoll = this.wPoll, wSupply = this.wSupply, wDemand = this.wDemand;
+    let qSum = 0, qW = 0;
+    for (let c = 0; c < nc; c++) {
+      const sup = wSupply[c];
+      const q = sup > 0 ? Math.max(0, Math.min(1, 1 - (wPoll[c] / sup) * clean)) : 1;
+      wQual[c] = q;
+      const used = Math.min(sup, wDemand[c]);
+      if (used > 0) { qSum += used * q; qW += used; }
+    }
+    st.stats.tapWater = qW > 0 ? qSum / qW : 1;
+  }
+
+  // ------------------------------------------------------------------------------------------ finish (flags, news)
+  /**
+   * one chunk of the finish (pre-B2 finish's building loop, without writing the flags): the buildings whose Powered /
+   * Watered bits flip (candidates, applied in one piece: R7 / R9), the cooling-water result, the cut tally (list order:
+   * `cut.at` = the first largest building)
+   */
+  private finishPiece(st: CityState): void {
+    const snap = this.snap;
+    if (this.cur === 0) {
+      const cut = this.cut;
+      cut.pN = cut.pRes = cut.pJobs = cut.wN = cut.wRes = cut.wJobs = 0;
+      cut.at = null;
+      cut.atPeople = 0;
+      cut.pPlant = false;
+      this.cand.length = 0;
+    }
+    if (this.cur < snap.chunks) this.finishChunk(st, this.cur++);
+    if (this.cur >= snap.chunks) { this.sub = S_FAPPLY; this.cur = 0; }
+  }
+
+  private finishChunk(st: CityState, k: number): void {
     const bPow = this.bPow, bWat = this.bWat;
     const watSeen = this.watSeen;
-    const cut = this.cut;
-    cut.pN = cut.pRes = cut.pJobs = cut.wN = cut.wRes = cut.wJobs = 0;
-    cut.at = null;
-    cut.atPeople = 0;
-    cut.pPlant = false;
-    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
-      const b = bL[bI];
+    const list = this.snap.list, cand = this.cand;
+    for (let bI = this.snap.bounds[k], b1 = this.snap.bounds[k + 1]; bI < b1; bI++) {
+      const b = list[bI];
       const wasP = (b.flags & BF.Powered) !== 0, wasW = (b.flags & BF.Watered) !== 0;
-      const f1 = setFlagQuiet(b, BF.Powered, bPow[b.id] === 1);
-      const f2 = setFlagQuiet(b, BF.Watered, bWat[b.id] === 1);
-      watSeen[b.id] = bWat[b.id] === 1 ? 1 : 2;
+      const onP = bPow[b.id] === 1, onW = bWat[b.id] === 1;
+      // (pre-B2: f1 / f2 = setFlagQuiet(...) flipped the bit)
+      const f1 = wasP !== onP, f2 = wasW !== onW;
+      watSeen[b.id] = onW ? 1 : 2;
       if (f1 || f2) {
-        changed.push(b);
+        cand.push(bI * 4 + (onP ? 1 : 0) + (onW ? 2 : 0));
         if ((wasP && f1) || (wasW && f2)) this.tallyCut(st, b, wasP && f1, wasW && f2);
       }
     }
-    for (const b of changed) sim.events.emit('buildingChanged', b);
+  }
+
+  /**
+   * the flags' publish: every candidate's Powered / Watered bits in snapshot order (pre-B2's changed list), in one piece,
+   * then their buildingChanged events in the same piece (after the flags they announce): a flag must never be visible
+   * between pieces without its event, or the worker's replica (W1.1, EXACT_FIELDS) would miss it at a packet boundary
+   */
+  private applyFlags(sim: Simulation): void {
+    const st = sim.state, list = this.snap.list, cand = this.cand, changed = this.changed;
+    changed.length = 0;
+    for (let k = 0; k < cand.length; k++) {
+      const q = cand[k];
+      const b = list[q >> 2];
+      const f1 = setFlagQuiet(b, BF.Powered, (q & 1) !== 0);
+      const f2 = setFlagQuiet(b, BF.Watered, (q & 2) !== 0);
+      if (f1 || f2) changed.push(b);
+    }
+    for (let k = 0; k < changed.length; k++) {
+      const b = changed[k];
+      // (R4: a snapshot building removed since gets no event; in an uninterrupted pass every one is live)
+      if (st.buildings.get(b.id) === b) sim.events.emit('buildingChanged', b);
+    }
+    this.sub = S_FEV;
+    this.cur = changed.length;
+  }
+
+  /** the last piece (the events ran in applyFlags): news, layerUpdated, the pass end */
+  private eventsPiece(sim: Simulation): void {
+    const st = sim.state;
+    this.finishNews(sim);
+    this.stepIdx = -1;
+    this.lastServe = st.day;
+    this.resetPieces();
+  }
+
+  /** pre-B2 finish after the flags and events: the cut, shortage and blackout news, layerUpdated */
+  private finishNews(sim: Simulation): void {
+    const st = sim.state;
     this.cutNews(sim);
     const short = st.stats.powerDemand > st.stats.powerSupply * 1.0001 && st.stats.powerSupply > 0;
     if (short && !this.wasShort && st.day - this.lastShortNotify > SHORTAGE_NEWS_DAYS) {
@@ -619,573 +1769,6 @@ export class UtilitiesSystem implements SimSystem {
       text = `Water cut: ${who(c.wN, c.wRes, c.wJobs)} lost water — connect ${c.wN === 1 ? 'its road' : 'their roads'} to a road with a working water pump; pipes run under roads (Water data view).`;
     }
     sim.notify(text, 'warning', x, z, 'utilities');
-  }
-
-  /** one pass over buildings: power use / plant output (bUse) and water use / producer output (bWUse) */
-  private prepareUses(st: CityState, pMul: number, wMul: number, jobsUnknown: boolean): void {
-    const eff = plantEfficiency(st);
-    const bUse = this.bUse, bWUse = this.bWUse;
-    const list = buildingList(st);
-    const infos = this.useInfo;
-    let nInfo = 0;
-    let hasTreatment = false;
-    for (let bI = 0; bI < list.length; bI++) {
-      const b = list[bI];
-      const inf = infoOf(st, b);
-      infos[nInfo++] = inf;
-      if (inf.isTreatment && b.built >= 1 && (b.flags & BF.Burnt) === 0) { hasTreatment = true; break; }
-    }
-    infos.length = nInfo;
-    const producers = this.producers;
-    producers.clear();
-    const nuclearMul = Math.max(0, ordinanceEffect(st, 'power.nuclear'));
-    let nuclearLost = 0;
-    const pollution = this.simRef?.getSystem<PollutionSystem>('pollution');
-    let sea: Uint8Array | null = null;
-    const season = 0.5 * (SOLAR_WINTER + SOLAR_SUMMER) - 0.5 * (SOLAR_SUMMER - SOLAR_WINTER) * Math.cos((2 * Math.PI * ((st.day % 360) + 15)) / 360);
-    const climate = SOLAR_CLIMATE[st.config.climate] ?? 1;
-    let nPlants = 0, nCrit = 0;
-    for (let bI = 0; bI < list.length; bI++) {
-      const b = list[bI];
-      const inf = bI < nInfo ? infos[bI] : infoOf(st, b);
-      const ok = b.built >= 1 && (b.flags & (BF.Burnt | BF.Abandoned)) === 0;
-      if (inf.powerOut <= 0 && isCritical(inf)) this.critIds = pushId(this.critIds, nCrit++, b.id);
-      if (inf.powerOut > 0) {
-        this.plantIds = pushId(this.plantIds, nPlants++, b.id);
-        let out = 0;
-        const factors: OutputFactor[] = [];
-        if (ok) {
-          out = inf.powerOut * eff;
-          if (eff < 1) factors.push({ label: 'Utilities funding', mul: eff });
-          // thermal plants (coal / oil / gas / nuclear: category power with a water use) need cooling water; last pass's
-          // result (unknown for a brand-new plant -> assume watered)
-          if (inf.category === 'power' && inf.waterUse > 0 && this.watSeen[b.id] === 2) {
-            out *= THERMAL_UNWATERED;
-            factors.push({ label: 'No cooling water', mul: THERMAL_UNWATERED });
-          }
-          switch (powerKind(inf)) {
-            case PK_NUCLEAR:
-              if (nuclearMul < 1) { nuclearLost += out * (1 - nuclearMul); out *= nuclearMul; factors.push({ label: 'Nuclear-free zone', mul: nuclearMul }); }
-              break;
-            case PK_WIND: {
-              const m = WIND_TURBINE_BASE + WIND_TURBINE_GAIN * smoothstep(WIND_TURBINE_H0, WIND_TURBINE_H1, relativeHeight(st, b));
-              out *= m;
-              factors.push({ label: m < 1 ? 'Sheltered site' : 'Windy hilltop', mul: m });
-              break;
-            }
-            case PK_SOLAR:
-              out *= season * climate;
-              factors.push({ label: 'Season', mul: season });
-              if (climate !== 1) factors.push({ label: 'Climate', mul: climate });
-              break;
-            case PK_INCIN: {
-              const share = pollution?.incineratorShare(b.id) ?? -1;
-              if (share >= 0) { out *= share; factors.push({ label: 'Garbage burned', mul: share }); }
-              break;
-            }
-          }
-        }
-        bUse[b.id] = -out;
-        producers.set(b.id, { kind: 'power', nominal: inf.powerOut, output: out, factors, load: this.loadById[b.id] ?? -1 });
-      } else bUse[b.id] = buildingPowerUse(inf, b, jobsUnknown) * pMul;
-      if (inf.waterOut > 0) {
-        let out = 0, intake = 0;
-        const factors: OutputFactor[] = [];
-        if (ok) {
-          out = inf.waterOut * eff;
-          if (eff < 1) factors.push({ label: 'Utilities funding', mul: eff });
-          if (sea === null) sea = seaMask(st);
-          const near = waterNear(st, b.x, b.z, b.w, b.d, PUMP_WATER_DIST, sea);
-          if (isDesal(inf)) {
-            if (!near.sea) { out *= DESAL_INLAND_OUT; factors.push({ label: 'No sea water', mul: DESAL_INLAND_OUT }); }
-          } else {
-            if (inf.isPump) {
-              if (near.fresh) { out *= 1 + PUMP_WATER_BONUS; factors.push({ label: 'Fresh water nearby', mul: 1 + PUMP_WATER_BONUS }); }
-              else if (near.sea) { out *= SEA_PUMP_OUT; factors.push({ label: 'Brackish sea water', mul: SEA_PUMP_OUT }); }
-            }
-            // intake pollution: ground water under the intake or the adjacent water body, whichever is worse
-            intake = Math.min(1, intakePollution(st, b, PUMP_WATER_DIST));
-            if (intake > 0.001) {
-              const m = 1 - PUMP_POLL_LOSS * intake * (hasTreatment ? PUMP_TREATED_LOSS : 1);
-              out *= m;
-              factors.push({ label: 'Polluted intake', mul: m });
-            }
-          }
-        }
-        // treatment plants and desalination deliver clean water; pumps / towers deliver what they draw
-        this.intakeById[b.id] = inf.isTreatment || isDesal(inf) ? 0 : intake;
-        bWUse[b.id] = -out - 1e-9;
-        this.bNeedPow[b.id] = inf.powerUse > 0 ? 1 : 0;
-        producers.set(b.id, { kind: 'water', nominal: inf.waterOut, output: out, factors, load: intake });
-      } else {
-        bWUse[b.id] = buildingWaterUse(inf, b, jobsUnknown) * wMul;
-        this.bNeedPow[b.id] = 0;
-      }
-    }
-    this.nPlants = nPlants;
-    this.nCrit = nCrit;
-    if (nuclearLost > 0 && !this.nuclearOffAnnounced && this.simRef) {
-      this.simRef.notify(`Nuclear plant shut down by ordinance (−${Math.round(nuclearLost).toLocaleString('en-US')} MW)`, 'warning', undefined, undefined, 'utilities');
-    }
-    this.nuclearOffAnnounced = nuclearMul < 0.5;
-  }
-
-  // ------------------------------------------------------------------------------------------ power
-  /** label conductor components (network cells, power lines, building cells) */
-  private labelPower(st: CityState): void {
-    const N = st.size, C = st.cells;
-    const net = st.network, lines = st.powerLines, bld = st.building;
-    const comp = this.pComp, queue = this.queue;
-    comp.fill(-1);
-    let nc = 0;
-    for (let s = 0; s < C; s++) {
-      if (comp[s] >= 0) continue;
-      if (net[s] === 0 && lines[s] === 0 && bld[s] < 0) continue;
-      let qh = 0, qt = 0;
-      queue[qt++] = s;
-      comp[s] = nc;
-      while (qh < qt) {
-        const i = queue[qh++];
-        const x = i % N;
-        let j = i - 1;
-        if (x > 0 && comp[j] < 0 && (net[j] !== 0 || lines[j] !== 0 || bld[j] >= 0)) { comp[j] = nc; queue[qt++] = j; }
-        j = i + 1;
-        if (x < N - 1 && comp[j] < 0 && (net[j] !== 0 || lines[j] !== 0 || bld[j] >= 0)) { comp[j] = nc; queue[qt++] = j; }
-        j = i - N;
-        if (j >= 0 && comp[j] < 0 && (net[j] !== 0 || lines[j] !== 0 || bld[j] >= 0)) { comp[j] = nc; queue[qt++] = j; }
-        j = i + N;
-        if (j < C && comp[j] < 0 && (net[j] !== 0 || lines[j] !== 0 || bld[j] >= 0)) { comp[j] = nc; queue[qt++] = j; }
-      }
-      nc++;
-    }
-    this.nPComp = nc;
-    if (nc > this.cSupply.length) this.growPower(nc);
-  }
-
-  /**
-   * Incremental label update for growables added / removed since the last pass (no full BFS): a new building joins
-   * the component of its neighbours; removed buildings' cells stop conducting (a possible split is picked up by the
-   * next full pass, at most UTIL_FULL_DAYS later). Returns false when a new building bridges two components (the
-   * caller relabels everything in the next step).
-   */
-  private patchPower(st: CityState): boolean {
-    const N = st.size;
-    const net = st.network, lines = st.powerLines, bld = st.building;
-    const comp = this.pComp;
-    for (const b of this.removed) {
-      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
-        if (x < 0 || z < 0 || x >= N || z >= N) continue;
-        const i = z * N + x;
-        if (bld[i] < 0 && net[i] === 0 && lines[i] === 0) comp[i] = -1;
-      }
-    }
-    for (const b of this.added) {
-      if (!st.buildings.has(b.id)) continue;
-      let c0 = -1, multi = false;
-      for (let z = b.z - 1; z <= b.z + b.d && !multi; z++) for (let x = b.x - 1; x <= b.x + b.w; x++) {
-        if (x < 0 || z < 0 || x >= N || z >= N) continue;
-        const inside = x >= b.x && x < b.x + b.w && z >= b.z && z < b.z + b.d;
-        const corner = (x < b.x || x >= b.x + b.w) && (z < b.z || z >= b.z + b.d);
-        if (inside || corner) continue;
-        const c = comp[z * N + x];
-        if (c < 0) continue;
-        if (c0 < 0) c0 = c;
-        else if (c !== c0) { multi = true; break; }
-      }
-      if (multi) return false;
-      if (c0 < 0) {
-        c0 = this.nPComp++;
-        if (this.nPComp > this.cSupply.length) this.growPower(this.nPComp);
-      }
-      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
-        if (x < 0 || z < 0 || x >= N || z >= N) continue;
-        const i = z * N + x;
-        if (bld[i] === b.id) comp[i] = c0;
-      }
-    }
-    return true;
-  }
-
-  /**
-   * Power step 1: per-component supply / demand, plant loads, stats. No short grid: powered cells and building results
-   * right away (returns false). A short grid: critical loads (health, police, fire, water producers) reserve their
-   * share first and the distance-ordered BFS runs in the brownout step (returns true).
-   */
-  private powerSums(st: CityState): boolean {
-    const N = st.size;
-    const comp = this.pComp;
-    const nc = this.nPComp;
-    const bUse = this.bUse;
-    const cSupply = this.cSupply, cDemand = this.cDemand, cLeft = this.cLeft;
-    const list = buildingList(st);
-    cSupply.fill(0, 0, nc);
-    cDemand.fill(0, 0, nc);
-    let supplyTot = 0, demandTot = 0;
-    for (let bI = 0; bI < list.length; bI++) {
-      const b = list[bI];
-      const c = comp[b.z * N + b.x];
-      if (c < 0) continue;
-      const u = bUse[b.id];
-      if (u < 0) { cSupply[c] -= u; supplyTot -= u; }
-      else { cDemand[c] += u; demandTot += u; }
-    }
-    const okComp = this.okComp.length >= nc ? this.okComp : (this.okComp = new Uint8Array(nc * 2 + 16));
-    let anyShort = false;
-    for (let c = 0; c < nc; c++) {
-      cLeft[c] = cSupply[c];
-      const sup = cSupply[c] > 0;
-      okComp[c] = sup && cDemand[c] <= cSupply[c] ? 1 : 0;
-      if (sup && cDemand[c] > cSupply[c]) anyShort = true;
-    }
-    // plant load (share of the component's supply in use): pollution activity, WP2 plant stigma, inspector; a plant
-    // delivering nothing (shut down by ordinance, burnt) has load 0
-    const loadById = this.loadById, plants = this.plantIds, producers = this.producers;
-    for (let q = 0; q < this.nPlants; q++) {
-      const id = plants[q];
-      const b = st.buildings.get(id);
-      if (!b) continue;
-      const c = comp[b.z * N + b.x];
-      const sup = c >= 0 ? cSupply[c] : 0;
-      const load = bUse[id] < 0 && sup > 0 ? Math.min(1, cDemand[c] / sup) : 0;
-      loadById[id] = load;
-      const pi = producers.get(id);
-      if (pi) pi.load = load;
-    }
-    st.stats.powerSupply = supplyTot;
-    st.stats.powerDemand = demandTot;
-    const stampNo = (this.powerStamp = ++this.stamp);
-    if (!anyShort) {
-      this.powerResults(st, false);
-      return false;
-    }
-    // brownout: critical loads are served first (in their short component, while its supply lasts)
-    const served = this.bOk, crit = this.critIds;
-    for (let q = 0; q < this.nCrit; q++) {
-      const id = crit[q];
-      const u = bUse[id];
-      if (!(u > 0)) continue;
-      const b = st.buildings.get(id);
-      if (!b) continue;
-      const c = comp[b.z * N + b.x];
-      if (c < 0 || !(cDemand[c] > cSupply[c])) continue;
-      if (cLeft[c] >= u) { cLeft[c] -= u; served[id] = stampNo; }
-    }
-    return true;
-  }
-
-  /**
-   * Power step 2 (only when a component is short): multi-source BFS from the plants of short components serves
-   * consumers in distance order; once the supply is exhausted every farther consumer loses power.
-   */
-  private powerBrownout(st: CityState): void {
-    const N = st.size, C = st.cells;
-    const bld = st.building;
-    const comp = this.pComp, queue = this.queue, visit = this.visit;
-    const bUse = this.bUse, served = this.bOk, stampNo = this.powerStamp;
-    const cSupply = this.cSupply, cDemand = this.cDemand, cLeft = this.cLeft;
-    const nc = this.nPComp;
-    const powered = st.powered, okComp = this.okComp;
-    for (let i = 0; i < C; i++) {
-      const c = comp[i];
-      powered[i] = c >= 0 ? okComp[c] : 0;
-    }
-    let qh = 0, qt = 0;
-    const plants = this.plantIds;
-    for (let q = 0; q < this.nPlants; q++) {
-      const id = plants[q];
-      if (!(bUse[id] < 0)) continue; // delivers nothing: not a source
-      const b = st.buildings.get(id);
-      if (!b) continue;
-      const c = comp[b.z * N + b.x];
-      if (c < 0 || !(cDemand[c] > cSupply[c])) continue;
-      for (let z: number = b.z; z < b.z + b.d; z++) for (let x: number = b.x; x < b.x + b.w; x++) {
-        const i = z * N + x;
-        if (visit[i] === stampNo || comp[i] !== c) continue;
-        visit[i] = stampNo;
-        queue[qt++] = i;
-      }
-    }
-    if (this.exhaustedP.length < nc) this.exhaustedP = new Uint8Array(nc * 2 + 16);
-    const exhausted = this.exhaustedP;
-    exhausted.fill(0, 0, nc);
-    while (qh < qt) {
-      const i = queue[qh++];
-      const c = comp[i];
-      const bid = bld[i];
-      if (bid >= 0) {
-        const sv = served[bid];
-        if (sv !== stampNo && sv !== -stampNo) {
-          const u = bUse[bid];
-          if (u < 0) served[bid] = stampNo; // plant
-          else if (exhausted[c] === 0 && cLeft[c] >= u) { cLeft[c] -= u; served[bid] = stampNo; }
-          else { exhausted[c] = 1; served[bid] = -stampNo; }
-        }
-      }
-      powered[i] = exhausted[c] ? 0 : 1;
-      // neighbours in DX / DZ order (+x, +z, -x, -z), same component
-      const x = i % N;
-      let j = i + 1;
-      if (x < N - 1 && visit[j] !== stampNo && comp[j] === c) { visit[j] = stampNo; queue[qt++] = j; }
-      j = i + N;
-      if (j < C && visit[j] !== stampNo && comp[j] === c) { visit[j] = stampNo; queue[qt++] = j; }
-      j = i - 1;
-      if (x > 0 && visit[j] !== stampNo && comp[j] === c) { visit[j] = stampNo; queue[qt++] = j; }
-      j = i - N;
-      if (j >= 0 && visit[j] !== stampNo && comp[j] === c) { visit[j] = stampNo; queue[qt++] = j; }
-    }
-    this.powerResults(st, true);
-  }
-
-  /** building results (bPow + footprint cells) and powered empty zoned cells; `brownout`: cells already written */
-  private powerResults(st: CityState, brownout: boolean): void {
-    const N = st.size, C = st.cells;
-    const bld = st.building, zone = st.zone;
-    const comp = this.pComp, powered = st.powered;
-    const cSupply = this.cSupply, cDemand = this.cDemand;
-    const served = this.bOk, stampNo = this.powerStamp;
-    if (!brownout) {
-      const okComp = this.okComp;
-      for (let i = 0; i < C; i++) {
-        const c = comp[i];
-        powered[i] = c >= 0 ? okComp[c] : 0;
-      }
-    }
-    const result = this.bPow;
-    const list = buildingList(st);
-    for (let bI = 0; bI < list.length; bI++) {
-      const b = list[bI];
-      const c = comp[b.z * N + b.x];
-      let on = false;
-      if (c >= 0 && cSupply[c] > 0) on = cDemand[c] <= cSupply[c] ? true : served[b.id] === stampNo;
-      const v = on ? 1 : 0;
-      result[b.id] = v;
-      if (b.w * b.d === 1) { powered[b.z * N + b.x] = v; continue; }
-      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
-        const i = z * N + x;
-        if (bld[i] === b.id) powered[i] = v;
-      }
-    }
-    // empty zoned cells adjacent to a powered conductor
-    for (let i = 0; i < C; i++) {
-      if (zone[i] === 0 || comp[i] >= 0) continue;
-      const x = i % N;
-      powered[i] = (x > 0 && powered[i - 1] === 1 && comp[i - 1] >= 0) || (x < N - 1 && powered[i + 1] === 1 && comp[i + 1] >= 0) ||
-        (i >= N && powered[i - N] === 1 && comp[i - N] >= 0) || (i + N < C && powered[i + N] === 1 && comp[i + N] >= 0) ? 1 : 0;
-    }
-  }
-
-  private growPower(n: number): void {
-    const size = Math.max(n + 64, this.cSupply.length * 2);
-    const g = (a: Float64Array) => { const b = new Float64Array(size); b.set(a); return b; };
-    this.cSupply = g(this.cSupply);
-    this.cDemand = g(this.cDemand);
-    this.cLeft = g(this.cLeft);
-  }
-  private growWater(n: number): void {
-    const size = Math.max(n + 64, this.wSupply.length * 2);
-    const g = (a: Float64Array) => { const b = new Float64Array(size); b.set(a); return b; };
-    this.wSupply = g(this.wSupply);
-    this.wDemand = g(this.wDemand);
-    this.wLeft = g(this.wLeft);
-  }
-
-  // ------------------------------------------------------------------------------------------ water
-  /** road-connected components (pipes run under every road) */
-  private labelWater(st: CityState): void {
-    const N = st.size, C = st.cells;
-    const net = st.network;
-    const comp = this.wComp, queue = this.queue;
-    comp.fill(-1);
-    let nc = 0;
-    for (let s = 0; s < C; s++) {
-      if (comp[s] >= 0 || net[s] < 1 || net[s] > 5) continue;
-      let qh = 0, qt = 0;
-      queue[qt++] = s;
-      comp[s] = nc;
-      while (qh < qt) {
-        const i = queue[qh++];
-        const x = i % N;
-        let j = i - 1;
-        if (x > 0 && comp[j] < 0 && net[j] >= 1 && net[j] <= 5) { comp[j] = nc; queue[qt++] = j; }
-        j = i + 1;
-        if (x < N - 1 && comp[j] < 0 && net[j] >= 1 && net[j] <= 5) { comp[j] = nc; queue[qt++] = j; }
-        j = i - N;
-        if (j >= 0 && comp[j] < 0 && net[j] >= 1 && net[j] <= 5) { comp[j] = nc; queue[qt++] = j; }
-        j = i + N;
-        if (j < C && comp[j] < 0 && net[j] >= 1 && net[j] <= 5) { comp[j] = nc; queue[qt++] = j; }
-      }
-      nc++;
-    }
-    this.nWComp = nc;
-    if (nc > this.wSupply.length) this.growWater(nc);
-  }
-
-  /**
-   * Water step 1: per-network supply (pumps / treatment plants need power) and demand, intake pollution, tap quality.
-   * No short network: results right away (returns false). A short network: the brownout step serves buildings in
-   * road distance order from the producers (returns true).
-   */
-  private waterSums(st: CityState): boolean {
-    const N = st.size;
-    const comp = this.wComp;
-    const nc = this.nWComp;
-    const wSupply = this.wSupply, wDemand = this.wDemand, wLeft = this.wLeft;
-    wSupply.fill(0, 0, nc);
-    wDemand.fill(0, 0, nc);
-    if (this.wPoll.length < nc) { this.wPoll = new Float64Array(nc * 2 + 16); this.wQual = new Float32Array(nc * 2 + 16); }
-    const wPoll = this.wPoll;
-    wPoll.fill(0, 0, nc);
-    const bComp = this.bWComp; // per-building component (+1), 0 = none
-    const bUse = this.bWUse, bNeedPow = this.bNeedPow, bPow = this.bPow, intake = this.intakeById;
-    const list = buildingList(st);
-    let supplyTot = 0, demandTot = 0, nSeeds = 0;
-    for (let bI = 0; bI < list.length; bI++) {
-      const b = list[bI];
-      const c = adjacentComp(comp, N, b);
-      bComp[b.id] = c + 1;
-      if (c < 0) continue;
-      const u = bUse[b.id];
-      if (u < 0) {
-        // pumps / treatment plants need power to run
-        const out = bNeedPow[b.id] && !bPow[b.id] ? 0 : -u - 1e-9;
-        wSupply[c] += out;
-        wPoll[c] += out * intake[b.id];
-        supplyTot += out;
-        if (out > 0) this.wSeedIds = pushId(this.wSeedIds, nSeeds++, b.id);
-      } else {
-        wDemand[c] += u;
-        demandTot += u;
-      }
-    }
-    this.nWSeeds = nSeeds;
-    const okW = this.okW.length >= nc ? this.okW : (this.okW = new Uint8Array(nc * 2 + 16));
-    let anyShort = false;
-    for (let c = 0; c < nc; c++) {
-      wLeft[c] = wSupply[c];
-      const sup = wSupply[c] > 0;
-      okW[c] = sup && wDemand[c] <= wSupply[c] ? 1 : 0;
-      if (sup && wDemand[c] > wSupply[c]) anyShort = true;
-    }
-    st.stats.waterSupply = supplyTot;
-    st.stats.waterDemand = demandTot;
-    this.waterStamp = ++this.stamp;
-    this.tapQuality(st);
-    if (!anyShort) {
-      this.waterResults(st, false);
-      return false;
-    }
-    return true;
-  }
-
-  /** Water step 2 (only when a network is short): BFS over the pipes from the producers, nearest buildings first */
-  private waterBrownout(st: CityState): void {
-    const N = st.size, C = st.cells;
-    const bld = st.building;
-    const comp = this.wComp, queue = this.queue, visit = this.visit;
-    const watered = st.watered, okW = this.okW;
-    const nc = this.nWComp;
-    const bComp = this.bWComp, bUse = this.bWUse, served = this.bOk, stamp = this.waterStamp;
-    const wSupply = this.wSupply, wDemand = this.wDemand, wLeft = this.wLeft;
-    for (let i = 0; i < C; i++) {
-      const c = comp[i];
-      watered[i] = c >= 0 ? okW[c] : 0;
-    }
-    if (this.exhaustedW.length < nc) this.exhaustedW = new Uint8Array(nc * 2 + 16);
-    const exhausted = this.exhaustedW;
-    exhausted.fill(0, 0, nc);
-    let qh = 0, qt = 0;
-    const seeds = this.wSeedIds;
-    for (let q = 0; q < this.nWSeeds; q++) {
-      const id = seeds[q];
-      const b = st.buildings.get(id);
-      if (!b) continue;
-      const c = bComp[id] - 1;
-      if (c < 0 || !(wDemand[c] > wSupply[c])) continue;
-      for (const i of perimeterRoadCells(st, comp, b)) if (visit[i] !== stamp) { visit[i] = stamp; queue[qt++] = i; }
-    }
-    while (qh < qt) {
-      const i = queue[qh++];
-      const c = comp[i];
-      watered[i] = exhausted[c] ? 0 : 1;
-      const x = i % N;
-      // neighbours in DX / DZ order (+x, +z, -x, -z): serve adjacent buildings of this network, continue along pipes
-      for (let k = 0; k < 4; k++) {
-        let j: number;
-        if (k === 0) { if (x >= N - 1) continue; j = i + 1; }
-        else if (k === 1) { j = i + N; if (j >= C) continue; }
-        else if (k === 2) { if (x === 0) continue; j = i - 1; }
-        else { j = i - N; if (j < 0) continue; }
-        const bid = bld[j];
-        if (bid >= 0) {
-          const sv = served[bid];
-          if (sv !== stamp && sv !== -stamp && bComp[bid] - 1 === c) {
-            const u = bUse[bid];
-            if (u < 0) served[bid] = stamp;
-            else if (exhausted[c] === 0 && wLeft[c] >= u) { wLeft[c] -= u; served[bid] = stamp; }
-            else { exhausted[c] = 1; served[bid] = -stamp; }
-          }
-        }
-        if (visit[j] === stamp || comp[j] !== c) continue;
-        visit[j] = stamp;
-        queue[qt++] = j;
-      }
-    }
-    this.waterResults(st, true);
-  }
-
-  /** building results (bWat + footprint cells) and watered empty zoned cells; `brownout`: road cells already written */
-  private waterResults(st: CityState, brownout: boolean): void {
-    const N = st.size, C = st.cells;
-    const zone = st.zone, bld = st.building;
-    const comp = this.wComp, watered = st.watered;
-    const bComp = this.bWComp, served = this.bOk, stamp = this.waterStamp;
-    const wSupply = this.wSupply, wDemand = this.wDemand;
-    if (!brownout) {
-      const okW = this.okW;
-      for (let i = 0; i < C; i++) {
-        const c = comp[i];
-        watered[i] = c >= 0 ? okW[c] : 0;
-      }
-    }
-    const result = this.bWat;
-    const list = buildingList(st);
-    for (let bI = 0; bI < list.length; bI++) {
-      const b = list[bI];
-      const c = bComp[b.id] - 1;
-      let on = false;
-      if (c >= 0 && wSupply[c] > 0) on = wDemand[c] <= wSupply[c] ? true : served[b.id] === stamp;
-      const v = on ? 1 : 0;
-      result[b.id] = v;
-      if (b.w * b.d === 1) { watered[b.z * N + b.x] = v; continue; }
-      for (let z = b.z; z < b.z + b.d; z++) for (let x = b.x; x < b.x + b.w; x++) {
-        const i = z * N + x;
-        if (bld[i] === b.id) watered[i] = v;
-      }
-    }
-    // empty zoned cells within 1 cell of a watered road
-    for (let i = 0; i < C; i++) {
-      if (zone[i] === 0 || bld[i] >= 0 || comp[i] >= 0) continue;
-      const x = i % N;
-      watered[i] = (x > 0 && comp[i - 1] >= 0 && watered[i - 1] === 1) || (x < N - 1 && comp[i + 1] >= 0 && watered[i + 1] === 1) ||
-        (i >= N && comp[i - N] >= 0 && watered[i - N] === 1) || (i + N < C && comp[i + N] >= 0 && watered[i + N] === 1) ? 1 : 0;
-    }
-  }
-
-  /** tap water quality per network: supply-weighted intake pollution, cleaned by sewage treatment (pollution pass) */
-  private tapQuality(st: CityState): void {
-    const nc = this.nWComp;
-    const treated = Math.max(0, Math.min(1, st.stats.sewageTreated || 0));
-    const clean = 1 - TAP_TREATMENT_CLEAN * treated;
-    const wQual = this.wQual, wPoll = this.wPoll, wSupply = this.wSupply, wDemand = this.wDemand;
-    let qSum = 0, qW = 0;
-    for (let c = 0; c < nc; c++) {
-      const sup = wSupply[c];
-      const q = sup > 0 ? Math.max(0, Math.min(1, 1 - (wPoll[c] / sup) * clean)) : 1;
-      wQual[c] = q;
-      const used = Math.min(sup, wDemand[c]);
-      if (used > 0) { qSum += used * q; qW += used; }
-    }
-    st.stats.tapWater = qW > 0 ? qSum / qW : 1;
   }
 }
 

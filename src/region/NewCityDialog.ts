@@ -30,6 +30,8 @@ export interface NewCityDialogOptions {
   /** city size (cells) when there is no tile */
   size?: number;
   defaults?: Partial<CityConfigData>;
+  /** Runs inside the player's Found click (before the dialog promise resolves). */
+  onFound?: () => void;
 }
 
 const PRESETS: { id: Exclude<TerrainPreset, 'region'>; label: string; icon: string }[] = [
@@ -231,6 +233,8 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
       cls: 'lg warm',
       sound: 'none',
       onClick: () => {
+        if (result) return;
+        o.onFound?.();
         cfg.name = nameInput.value.trim() || randomCityName();
         cfg.mayor = mayorInput.value.trim() || randomMayorName();
         // city founded: short celebratory fanfare (plays over the loading screen)

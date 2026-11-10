@@ -281,3 +281,77 @@ Browser acceptance checklist:
   data view and None; late paused data delivery and an old-save load/reset show no stale tint.
 - [ ] During growth/disaster bursts, existing roadless models eventually tint while geometry keeps building; check
   actual frame/GPU cost alongside T040's pending real-GPU run.
+
+## After the dev merge (10 Nov)
+
+Dev `43679b3` is merged into `1b692cd` (`git merge --no-commit --no-ff`, left staged for the lead to commit). It
+brought B2, T057, W1.2 / W1.3, T061, T036s4 / s5, T048, R1, T040 / T051 / T059, T053, T054, T037b, T060 and the TopBar
+split. No lane code and no lane test needed a change. Dev moved on during the merge (`8450a9c` when this was written:
+T047, T054b, T098, T064's LIVE pill title); those commits touch none of the lane's files and are not in this merge.
+
+Two files conflicted, three hunks, each resolved by keeping both sides:
+
+- `BuildingRenderer.ts`, the `core/types` import: T051's `DevType` and the lane's `Overlay`, with the lane's two
+  imports.
+- `BuildingRenderer.ts`, `build()` after `bi.vis`: T051's three lines of activity bookkeeping, then the lane's
+  `refreshNoRoad(bi)`.
+- `TerrainRenderer.ts`, `dispose()`: the lane's `setBuildingOverlay(this.state, Overlay.None)`, then R1's listener
+  and texture clean-up.
+
+T040's hook is byte-identical to dev's. Two works are registered on it now, the mask sweep and T051's activity
+refresh, and they share the 2 ms build budget in turns.
+
+### What refreshes the mask on the merged tree
+
+R1 narrowed the terrain's zone, light, tree and exit refills to the event rects. The mask never rode on those: it
+follows the overlay raster's own refresh, which R1 left whole-map, and three hooks of its own.
+
+- **A road built or removed:** `networkChanged` reaches `CityObjectsView`'s handler (`CityObjectsView.ts:179-181`),
+  which bumps the Emergency view's revision; the next `BuildingRenderer.update` starts a new budgeted sweep
+  (`syncNoRoadOverlay`, then `nextNoRoad` / `refreshNoRoad` on T040's hook; after the sweep in progress, if there is
+  one). No terrain refresh is involved, paused or running.
+- **The response pass** (the travel times after a road or station change): `layerUpdated('emergency')` dirties the
+  raster, and `TerrainRenderer.update` (`TerrainRenderer.ts:782`) bumps the revision with the raster's refresh.
+- **A building added or changed:** `BuildingRenderer.build` refreshes that instance (`BuildingRenderer.ts:2199`).
+  **Removed:** `freeInstances` clears its footprint (`:1844`).
+- **A load or a resync** (`reset`): `TerrainRenderer.reset` drops the old state's view and registers the new one as
+  not ready; `BuildingRenderer.setState` makes a new mask and `rebuildAll` rebuilds; the next `TerrainRenderer.update`
+  marks the view ready, which bumps the revision. A load into a new scene starts at `TerrainRenderer.setOverlay`, when
+  the view is selected.
+
+`tests/render/buildingNoRoadHosts.test.ts` is new and pins these paths: on the local host and on the loopback host
+(the replica's event bus, which the worker host shares), with WorldView's own event wiring on a real TerrainRenderer
+and a real CityObjectsView, the mask equals the readout's noRoad set after each of these changes. Removing any one
+hook makes it fail at that step (six mutations run, each restored).
+
+Checked on the merged tree through the quiet gate, single files: `npx tsc --noEmit` clean; the lane's tests
+(`buildingNoRoad` 19, `buildingNoRoadSelection` 3, `buildingNoRoadHosts` 2); `buildingWork` 12, `buildingBudget` 22,
+`lod` 35, `lodNoTransfer` 2, `smokeActivity` 16, `smokeLocalHost` 3, `smokePlumes` 21, `smokeView` 7, `terrainRects`
+16, `terrainReplica` 1, `terrainGrowth` 1, `tests/worker/hygiene` 18; and, because of the lane's metadata hunk in
+`src/sim/infra/overlays.ts`, the six `tests/sim/exact` files (38, one small group) and `tests/save/loadContinuity` 4.
+All passed. The 128x15 seed-7 bot reads residents **[ 61828, 95515, 40772 ] = 198,115**, dev's reference. The full
+suite, the browser and the real GPU are the lead's.
+
+### Recheck list for the real GPU
+
+Base for the A/B is the new dev, not `1c2019c`. Each line names what the merge touched.
+
+- [ ] Paused road add and remove beside the roadless Obelisk on the local, loopback and worker hosts, Fire / Police /
+  Medical: the hover tip and the tint agree within a few frames with no sim day (W1.3 and T061 changed the worker
+  host; T051's work shares the sweep's budget).
+- [ ] Running, a road cut beside a served building: hover and model change together when the response pass ends,
+  about 3 game days later (B2 runs the pass in pieces; the sweep starts from `TerrainRenderer.update`, in the file R1
+  changed).
+- [ ] 30 s at ultra with the view open in a growing city, across month changes: the mask equals the noRoad set at
+  every sample, and the plumes still step with output (the two works on T040's hook).
+- [ ] LOD proxy and cross-fade of a roadless building, HIGH and LOW, also hovered (T059 changed how the proxy workers
+  get their geometry).
+- [ ] A/B against dev: buildings with road access unchanged at 300 m, 700 m and 1,400 m, day and night, with T051's
+  plumes masked as animated pixels; the blue-white highlight of connected buildings.
+- [ ] With the view open, the terrain's cell colours and its zone, light and tree textures around each edit (R1's
+  dirty rects), next to the tint; no amber ring.
+- [ ] A replaced state: a forced resync on the worker host; save, exit, continue on all three hosts (W1.3: the
+  worker's own IndexedDB and journal replay); a quality switch and a WebGL context restore with the view open (R1
+  added the terrain's context listener; T058's Restore keeps the data view). No stale cell, the tint back.
+- [ ] One spot check of hover and inspector on the roadless Obelisk (the recheck's residual on the glow's pulse;
+  `cityMaterial.ts` is unchanged by dev). 0 page errors; the frame cost of the shared budget if a timing run is wanted.
