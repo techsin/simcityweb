@@ -13,13 +13,13 @@
  * Power plants are scaled by (NIMBY_PLANT_IDLE + (1 - IDLE) x plantLoad) when the utilities system reports plantLoad.
  */
 import { DevType, Network, Zone } from '../../core/types';
-import type { CityState } from '../CityState';
+import type { Building, CityState } from '../CityState';
 import type { Simulation } from '../Simulation';
 import { getDef } from '../catalog';
 import { Fam, buildingList, infoOf, isFunctional } from './common';
 import { falloff } from './catchments';
 import {
-  NIMBY_HIGHWAY, NIMBY_HIGHWAY_BRIDGE, NIMBY_ID, NIMBY_IM, NIMBY_LANDFILL_IDLE, NIMBY_PLANT_IDLE, NIMBY_RAIL,
+  INFRA_CELL_SIZING_US, NIMBY_HIGHWAY, NIMBY_HIGHWAY_BRIDGE, NIMBY_ID, NIMBY_IM, NIMBY_LANDFILL_IDLE, NIMBY_PLANT_IDLE, NIMBY_RAIL,
   PRESTIGE_HIGH_C, PRESTIGE_HIGH_C_STAGE,
 } from './params';
 
@@ -69,8 +69,6 @@ function splatMax(out: Float32Array, N: number, x0: number, z0: number, amount: 
   return k.n;
 }
 
-interface Scratch { C: number; stig: Float32Array; line: Float32Array; pres: Float32Array; camp: Float32Array }
-let scratch: Scratch = { C: 0, stig: new Float32Array(0), line: new Float32Array(0), pres: new Float32Array(0), camp: new Float32Array(0) };
 /** estimated cost (ms) of the next rebuild per state (deterministic: from source counts of the last rebuild) */
 const costEst = new WeakMap<CityState, number>();
 
@@ -80,85 +78,256 @@ function plantLoadFn(sim: Simulation): PlantLoadFn | null {
   return u && typeof u.plantLoad === 'function' ? u.plantLoad.bind(u) : null;
 }
 
-/** rebuild st.stigma / st.prestige / st.campus (one services step, <= 3 ms) */
-export function rebuildNimby(sim: Simulation): void {
-  const st = sim.state;
-  const N = st.size, C = st.cells;
-  if (scratch.C !== C) scratch = { C, stig: new Float32Array(C), line: new Float32Array(C), pres: new Float32Array(C), camp: new Float32Array(C) };
-  const { stig, line, pres, camp } = scratch;
-  stig.fill(0); line.fill(0); pres.fill(0); camp.fill(0);
-  const plantLoad = plantLoadFn(sim);
-  let touches = 0;
-  const bL = buildingList(st);
-  for (let bI = 0; bI < bL.length; bI++) {
-    const b = bL[bI];
-    if (!isFunctional(b)) continue;
-    const inf = infoOf(st, b);
-    let sA = inf.stigmaAmt, sR = inf.stigmaR;
-    let pA = inf.prestigeAmt, pR = inf.prestigeR;
-    if (inf.fam === Fam.I) {
-      if (inf.dev === DevType.ID) { sA = NIMBY_ID.amount; sR = NIMBY_ID.radius; }
-      else if (inf.dev === DevType.IM) { sA = NIMBY_IM.amount; sR = NIMBY_IM.radius; }
-    } else if (inf.fam === Fam.C && pA === 0 && (inf.dev === DevType.CS3 || inf.dev === DevType.CO3)) {
-      const stage = getDef(b.def)?.stage ?? 0;
-      if (stage >= PRESTIGE_HIGH_C_STAGE) { pA = PRESTIGE_HIGH_C.amount; pR = PRESTIGE_HIGH_C.radius; }
-    }
-    if (sA > 0 && inf.powerOut > 0 && plantLoad) {
-      const load = plantLoad(b.id);
-      if (load >= 0) sA *= NIMBY_PLANT_IDLE + (1 - NIMBY_PLANT_IDLE) * Math.min(1, load);
-    }
-    if (sA > 0) touches += splatAdd(stig, N, b.x, b.z, b.w, b.d, sA, sR);
-    if (pA > 0) touches += splatAdd(pres, N, b.x, b.z, b.w, b.d, pA, pR);
-    if (inf.campusAmt > 0) touches += splatAdd(camp, N, b.x, b.z, b.w, b.d, inf.campusAmt, inf.campusR);
+/** B2: estimated warm µs per unit of the NIMBY pieces (per building, per kernel touch, per cell; G2 fit, dense1m) */
+const NIMBY_US = { piece: 3, fill: 0.0004, bld: 0.08, touch: 0.006, lfRow: 0.004, corridorCell: 0.0015, final: 0.012, publish: 0.0008 } as const;
+
+/**
+ * B2 (docs/dev/B2_DESIGN.md §4 S_NIMBY): the NIMBY rebuild in pieces. begin(sim, list) takes the pass's building list (the
+ * services pass snapshot) and the plantLoad function; step(budgetUs) runs one piece — the four scratch fills, building
+ * chunks (splatAdd sums in list order; a chunk ends once its building and kernel-touch estimate reaches the budget),
+ * landfill row pairs (z / lfNext cursors), corridor cells by index ranges that start and end on multiples of 4 (so the
+ * word skip runs exactly as in the whole rebuild), the 1 - exp(-x) pass by rows into private rasters, then the publish
+ * piece (stigma / prestige / campus .set() + the cost estimate). Run with nothing in between, it writes exactly what the
+ * pre-B2 rebuildNimby wrote. Each run owns its scratch (pre-B2: module scratch, shared by every city in the process).
+ */
+export class NimbyRun {
+  private C = -1;
+  private stig = new Float32Array(0);
+  private line = new Float32Array(0);
+  private pres = new Float32Array(0);
+  private camp = new Float32Array(0);
+  private sNext = new Float32Array(0);
+  private pNext = new Float32Array(0);
+  private kNext = new Float32Array(0);
+  /** -1 idle, 0 fills, 1 buildings, 2 landfill, 3 corridors, 4 final pass, 5 publish */
+  stage = -1;
+  private st: CityState | null = null;
+  private list: readonly Building[] = [];
+  private plantLoad: PlantLoadFn | null = null;
+  private touches = 0;
+  private cur = 0;
+  // landfill: the row pair cursor, the next landfill cell, the landfill def's stigma
+  private lfZ = 0;
+  private lfNext = -1;
+  private lfA = 0;
+  private lfR = 0;
+  // corridors: the word view of the network and its end
+  private words: Uint32Array | null = null;
+  private wordEnd = 0;
+
+  get active(): boolean {
+    return this.stage >= 0;
   }
-  // landfill zones: per 2x2 block, scaled by how full the block's own landfill cells are (WP3's landfillFill stock:
-  // an empty landfill is only mildly stigmatised, a mountain of garbage fully — incinerators / recycling elsewhere
-  // in the city do not count)
-  const lfDef = getDef('util_landfill_tile');
-  const lfA = lfDef?.stigma?.amount ?? 0.35, lfR = lfDef?.stigma?.radius ?? 6;
-  const zone = st.zone, net = st.network, flags = st.netFlags, lfFill = st.landfillFill;
-  let lfNext = zone.indexOf(Zone.Landfill);
-  for (let z = 0; z < N && lfNext >= 0; z += 2) {
-    const rowEnd = Math.min(z + 2, N) * N;
-    if (lfNext >= rowEnd) continue; // neither row contains landfill
-    for (let x = 0; x < N; x += 2) {
-      let cnt = 0, fill = 0;
-      for (let dz = 0; dz < 2 && z + dz < N; dz++) for (let dx = 0; dx < 2 && x + dx < N; dx++) {
-        const i = (z + dz) * N + x + dx;
-        if (zone[i] !== Zone.Landfill) continue;
-        cnt++;
-        const f = lfFill ? lfFill[i] : 0;
-        fill += f > 0 ? (f < 1 ? f : 1) : 0;
+
+  get label(): string {
+    return ['fills', 'buildings', 'landfill', 'corridors', 'final', 'publish'][this.stage] ?? 'idle';
+  }
+
+  begin(sim: Simulation, list: readonly Building[]): void {
+    const st = sim.state, C = st.cells;
+    if (this.C !== C) {
+      this.C = C;
+      this.stig = new Float32Array(C); this.line = new Float32Array(C); this.pres = new Float32Array(C); this.camp = new Float32Array(C);
+      this.sNext = new Float32Array(C); this.pNext = new Float32Array(C); this.kNext = new Float32Array(C);
+    }
+    this.st = st;
+    this.list = list;
+    this.plantLoad = plantLoadFn(sim);
+    this.touches = 0;
+    this.cur = 0;
+    this.stage = 0;
+  }
+
+  /** drop the references (pass end, aborted pass) */
+  release(): void {
+    this.stage = -1;
+    this.st = null;
+    this.list = [];
+    this.plantLoad = null;
+    this.words = null;
+  }
+
+  /** estimated warm µs of the next piece at `budgetUs` (pure) */
+  pieceUs(budgetUs: number): number {
+    const st = this.st;
+    if (!st) return 0;
+    const C = st.cells, N = st.size;
+    const c = (us: number, left: number) => Math.max(0, Math.min(Math.max(1, Math.floor(budgetUs / us)), left)) * us;
+    switch (this.stage) {
+      case 0: return NIMBY_US.piece + 4 * C * NIMBY_US.fill;
+      case 1: return NIMBY_US.piece + Math.min(budgetUs, (this.list.length - this.cur) * NIMBY_US.bld);
+      case 2: return NIMBY_US.piece + Math.min(budgetUs, Math.max(0, (N - this.lfZ) >> 1) * N * NIMBY_US.lfRow);
+      case 3: return NIMBY_US.piece + Math.min(Math.max(4, Math.floor(budgetUs / Math.max(NIMBY_US.corridorCell, INFRA_CELL_SIZING_US))), C - this.cur) * NIMBY_US.corridorCell;
+      case 4: return NIMBY_US.piece + c(NIMBY_US.final * N, N - this.cur);
+      case 5: return NIMBY_US.piece + 3 * C * NIMBY_US.publish;
+      default: return 0;
+    }
+  }
+
+  /**
+   * one piece of at most about `budgetUs` estimated µs; true when the rasters are published (the run is idle again). A thin
+   * switch: every stage's loop is a method of its own (design R10)
+   */
+  step(budgetUs: number): boolean {
+    const st = this.st;
+    if (!st) return true;
+    switch (this.stage) {
+      case 0: this.fills(); return false;
+      case 1: this.buildings(st, budgetUs); return false;
+      case 2: this.landfill(st, budgetUs); return false;
+      case 3: this.corridors(st, budgetUs); return false;
+      case 4: this.final(st, budgetUs); return false;
+      case 5: this.publish(st); return true;
+      default: return true;
+    }
+  }
+
+  private fills(): void {
+    this.stig.fill(0); this.line.fill(0); this.pres.fill(0); this.camp.fill(0);
+    this.stage = 1;
+    this.cur = 0;
+  }
+
+  /** a building chunk: until its estimate reaches the budget (at least one building; skipped ones count their test) */
+  private buildings(st: CityState, budgetUs: number): void {
+    const N = st.size;
+    const { stig, pres, camp } = this;
+    const plantLoad = this.plantLoad;
+    const bL = this.list;
+    let touches = this.touches, us = 0, bI = this.cur;
+    for (; bI < bL.length && (us === 0 || us < budgetUs); bI++) {
+      const b = bL[bI];
+      us += NIMBY_US.bld;
+      if (!isFunctional(b)) continue;
+      const inf = infoOf(st, b);
+      let sA = inf.stigmaAmt, sR = inf.stigmaR;
+      let pA = inf.prestigeAmt, pR = inf.prestigeR;
+      if (inf.fam === Fam.I) {
+        if (inf.dev === DevType.ID) { sA = NIMBY_ID.amount; sR = NIMBY_ID.radius; }
+        else if (inf.dev === DevType.IM) { sA = NIMBY_IM.amount; sR = NIMBY_IM.radius; }
+      } else if (inf.fam === Fam.C && pA === 0 && (inf.dev === DevType.CS3 || inf.dev === DevType.CO3)) {
+        const stage = getDef(b.def)?.stage ?? 0;
+        if (stage >= PRESTIGE_HIGH_C_STAGE) { pA = PRESTIGE_HIGH_C.amount; pR = PRESTIGE_HIGH_C.radius; }
       }
-      if (cnt > 0) touches += splatAdd(stig, N, x, z, 2, 2, lfA * (NIMBY_LANDFILL_IDLE + (1 - NIMBY_LANDFILL_IDLE) * (fill / cnt)) * cnt / 4, lfR);
+      if (sA > 0 && inf.powerOut > 0 && plantLoad) {
+        const load = plantLoad(b.id);
+        if (load >= 0) sA *= NIMBY_PLANT_IDLE + (1 - NIMBY_PLANT_IDLE) * Math.min(1, load);
+      }
+      const t0 = touches;
+      if (sA > 0) touches += splatAdd(stig, N, b.x, b.z, b.w, b.d, sA, sR);
+      if (pA > 0) touches += splatAdd(pres, N, b.x, b.z, b.w, b.d, pA, pR);
+      if (inf.campusAmt > 0) touches += splatAdd(camp, N, b.x, b.z, b.w, b.d, inf.campusAmt, inf.campusR);
+      us += (touches - t0) * NIMBY_US.touch;
     }
-    lfNext = zone.indexOf(Zone.Landfill, rowEnd);
+    this.touches = touches;
+    this.cur = bI;
+    if (bI < bL.length) return;
+    // landfill zones: per 2x2 block, scaled by how full the block's own landfill cells are (WP3's landfillFill stock:
+    // an empty landfill is only mildly stigmatised, a mountain of garbage fully — incinerators / recycling elsewhere
+    // in the city do not count)
+    const lfDef = getDef('util_landfill_tile');
+    this.lfA = lfDef?.stigma?.amount ?? 0.35;
+    this.lfR = lfDef?.stigma?.radius ?? 6;
+    this.lfNext = st.zone.indexOf(Zone.Landfill);
+    this.lfZ = 0;
+    this.stage = 2;
   }
-  // network corridors (max-combined)
-  const wordEnd = (net.byteOffset & 3) === 0 ? Math.floor(Math.min(C, net.length) / 4) * 4 : 0;
-  const words = wordEnd > 0 ? new Uint32Array(net.buffer, net.byteOffset, wordEnd / 4) : null;
-  const highway = Network.Highway * 0x01010101, rail = Network.Rail * 0x01010101;
-  for (let i = 0; i < C; i++) {
-    if (words && i < wordEnd && (i & 3) === 0) {
-      const word = words[i >>> 2], h = word ^ highway, r = word ^ rail;
-      // XOR each byte, then test for a zero byte: correct on little-endian targets (and byte-order independent).
-      // Only skip whole empty words; matching cells, tails and unaligned views keep the original index order.
-      if (((h - 0x01010101) & ~h & 0x80808080) === 0 && ((r - 0x01010101) & ~r & 0x80808080) === 0) {
-        i += 3;
-        continue;
+
+  /** landfill row pairs: until the estimate reaches the budget (at least one pair with landfill; pairs without are free) */
+  private landfill(st: CityState, budgetUs: number): void {
+    const N = st.size, C = st.cells;
+    const stig = this.stig, zone = st.zone, lfFill = st.landfillFill, lfA = this.lfA, lfR = this.lfR;
+    let touches = this.touches, lfNext = this.lfNext, z = this.lfZ, us = 0;
+    for (; z < N && lfNext >= 0 && (us === 0 || us < budgetUs); z += 2) {
+      const rowEnd = Math.min(z + 2, N) * N;
+      if (lfNext >= rowEnd) continue; // neither row contains landfill
+      us += N * NIMBY_US.lfRow;
+      for (let x = 0; x < N; x += 2) {
+        let cnt = 0, fill = 0;
+        for (let dz = 0; dz < 2 && z + dz < N; dz++) for (let dx = 0; dx < 2 && x + dx < N; dx++) {
+          const i = (z + dz) * N + x + dx;
+          if (zone[i] !== Zone.Landfill) continue;
+          cnt++;
+          const f = lfFill ? lfFill[i] : 0;
+          fill += f > 0 ? (f < 1 ? f : 1) : 0;
+        }
+        if (cnt > 0) touches += splatAdd(stig, N, x, z, 2, 2, lfA * (NIMBY_LANDFILL_IDLE + (1 - NIMBY_LANDFILL_IDLE) * (fill / cnt)) * cnt / 4, lfR);
+      }
+      lfNext = zone.indexOf(Zone.Landfill, rowEnd);
+    }
+    this.touches = touches;
+    this.lfNext = lfNext;
+    this.lfZ = z;
+    if (z < N && lfNext >= 0) return;
+    // network corridors (max-combined)
+    const net = st.network;
+    this.wordEnd = (net.byteOffset & 3) === 0 ? Math.floor(Math.min(C, net.length) / 4) * 4 : 0;
+    this.words = this.wordEnd > 0 ? new Uint32Array(net.buffer, net.byteOffset, this.wordEnd / 4) : null;
+    this.cur = 0;
+    this.stage = 3;
+  }
+
+  /** corridor cells by index ranges that start and end on multiples of 4 (or at C): a skipped word never straddles two */
+  private corridors(st: CityState, budgetUs: number): void {
+    const N = st.size, C = st.cells;
+    const line = this.line, net = st.network, flags = st.netFlags, words = this.words, wordEnd = this.wordEnd;
+    const highway = Network.Highway * 0x01010101, rail = Network.Rail * 0x01010101;
+    // (sized with the cold cell floor: a once-per-pass cell loop)
+    const chunk = Math.max(4, Math.floor(budgetUs / Math.max(NIMBY_US.corridorCell, INFRA_CELL_SIZING_US)));
+    const i1 = chunk >= C - this.cur ? C : Math.min(C, (this.cur + chunk) - ((this.cur + chunk) % 4));
+    let touches = this.touches;
+    for (let i = this.cur; i < i1; i++) {
+      if (words && i < wordEnd && (i & 3) === 0) {
+        const word = words[i >>> 2], h = word ^ highway, r = word ^ rail;
+        // XOR each byte, then test for a zero byte: correct on little-endian targets (and byte-order independent).
+        // Only skip whole empty words; matching cells, tails and unaligned views keep the original index order.
+        if (((h - 0x01010101) & ~h & 0x80808080) === 0 && ((r - 0x01010101) & ~r & 0x80808080) === 0) {
+          i += 3;
+          continue;
+        }
+      }
+      const t = net[i];
+      if (t === Network.Highway) {
+        const f = flags[i];
+        if (f & 2) continue; // tunnel
+        touches += splatMax(line, N, i % N, (i / N) | 0, f & 1 ? NIMBY_HIGHWAY_BRIDGE : NIMBY_HIGHWAY.amount, NIMBY_HIGHWAY.radius);
+      } else if (t === Network.Rail) {
+        touches += splatMax(line, N, i % N, (i / N) | 0, NIMBY_RAIL.amount, NIMBY_RAIL.radius);
       }
     }
-    const t = net[i];
-    if (t === Network.Highway) {
-      const f = flags[i];
-      if (f & 2) continue; // tunnel
-      touches += splatMax(line, N, i % N, (i / N) | 0, f & 1 ? NIMBY_HIGHWAY_BRIDGE : NIMBY_HIGHWAY.amount, NIMBY_HIGHWAY.radius);
-    } else if (t === Network.Rail) {
-      touches += splatMax(line, N, i % N, (i / N) | 0, NIMBY_RAIL.amount, NIMBY_RAIL.radius);
-    }
+    this.touches = touches;
+    this.cur = i1;
+    if (i1 < C) return;
+    this.words = null;
+    this.cur = 0;
+    this.stage = 4;
   }
-  const S = st.stigma, P = st.prestige, K = st.campus;
-  for (let i = 0; i < C; i++) {
+
+  /** the 1 - exp(-x) pass by rows into the private rasters */
+  private final(st: CityState, budgetUs: number): void {
+    const N = st.size;
+    const z1 = Math.min(N, this.cur + Math.max(1, Math.floor(budgetUs / (NIMBY_US.final * Math.max(1, N)))));
+    saturateRange(this.stig, this.line, this.pres, this.camp, this.sNext, this.pNext, this.kNext, this.cur * N, z1 * N);
+    this.cur = z1;
+    if (z1 >= N) this.stage = 5;
+  }
+
+  /** the publish piece: the three layers (.set) and the cost estimate of the next rebuild */
+  private publish(st: CityState): void {
+    const C = st.cells;
+    st.stigma.set(this.sNext.subarray(0, st.stigma.length));
+    st.prestige.set(this.pNext.subarray(0, st.prestige.length));
+    st.campus.set(this.kNext.subarray(0, st.campus.length));
+    // cost model (calibrated on the 256² stress city): per-cell passes + splat touches + building loop
+    costEst.set(st, 0.3 + 0.9 * (C / 65536) + 0.45 * (this.list.length / 20000) + this.touches * 6e-6);
+    this.release();
+  }
+}
+
+/** the NIMBY layers over [i0, i1): stigma (+ corridors), prestige, campus saturated with 1 - exp(-x) */
+function saturateRange(stig: Float32Array, line: Float32Array, pres: Float32Array, camp: Float32Array, S: Float32Array, P: Float32Array,
+  K: Float32Array, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) {
     const a = stig[i] + line[i];
     S[i] = a > 0 ? 1 - Math.exp(-a) : 0;
     const p = pres[i];
@@ -166,8 +335,17 @@ export function rebuildNimby(sim: Simulation): void {
     const c = camp[i];
     K[i] = c > 0 ? 1 - Math.exp(-c) : 0;
   }
-  // cost model (calibrated on the 256² stress city): per-cell passes + splat touches + building loop
-  costEst.set(st, 0.3 + 0.9 * (C / 65536) + 0.45 * (bL.length / 20000) + touches * 6e-6);
+}
+
+/** rebuildNimby's runs, per state (a services pass's own run is not touched) */
+const wholeRuns = new WeakMap<CityState, NimbyRun>();
+/** rebuild st.stigma / st.prestige / st.campus in one go (B2: the NimbyRun pieces with nothing in between) */
+export function rebuildNimby(sim: Simulation): void {
+  const st = sim.state;
+  let run = wholeRuns.get(st);
+  if (!run) wholeRuns.set(st, (run = new NimbyRun()));
+  run.begin(sim, buildingList(st));
+  while (!run.step(Infinity)) { /* pieces */ }
 }
 
 /** estimated cost (ms) of rebuildNimby for the scheduler (from the previous rebuild's source counts) */

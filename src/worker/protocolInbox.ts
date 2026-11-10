@@ -7,7 +7,7 @@ import { CHANGE_EVENTS, cityFingerprint } from '../save/fingerprint';
 import type { RecoverySnapshot } from '../save/recoveryCodec';
 import type { CitySaveCopy, SimCore } from './SimCore';
 import type { ChangeRecorder } from './recorder';
-import { copyOwned, errorText, type M2W, type Packet, type Reply } from './protocol';
+import { copyOwned, errorName, errorText, type M2W, type Packet, type Reply } from './protocol';
 import type { CityPersistence, Command } from './SimHost';
 import { queryKey, type QueryArgs, type QueryName } from './queries';
 
@@ -23,6 +23,7 @@ export interface InboxStore {
 }
 
 type WatchRequest = Extract<M2W, { t: 'watch' }>;
+const named = (e: unknown): { errorName?: string } => { const name = errorName(e); return name ? { errorName: name } : {}; };
 interface CoreWatch {
   request: WatchRequest; at: number;
   cache: Map<string, { signature: string; at: number }>;
@@ -140,7 +141,8 @@ export class ProtocolInbox {
    *  commands keep running while it lands, and the reply goes out when it settles. */
   private save(m: Extract<M2W, { t: 'save' }>): void {
     const cmd = this.cmd, p = this.opts.persistence, store = this.opts.store;
-    const failed = (e: unknown): Reply => ({ t: 'saved', id: m.id, cmd, ok: false, error: errorText(e) });
+    // T061 item 7: the error's name too (a QuotaExceededError opens the guided quota dialog on main)
+    const failed = (e: unknown): Reply => ({ t: 'saved', id: m.id, cmd, ok: false, error: errorText(e), ...named(e) });
     if (!p || !store) { this.recorder.reply(failed(new Error('City persistence is not configured'))); this.opts.flush(); return; }
     const copy = this.attempt(() => this.core.copySave(p.regionId, p.tileKey), failed);
     if (!copy) return;
@@ -159,7 +161,7 @@ export class ProtocolInbox {
   private snapshot(m: Extract<M2W, { t: 'snapshot' }>): void {
     const cmd = this.cmd, p = this.opts.persistence, store = this.opts.store;
     if (!p || !store) { this.recorder.reply({ t: 'snapped', id: m.id, cmd, ok: false }); this.opts.flush(); return; }
-    const failed = (e: unknown): Reply => ({ t: 'snapped', id: m.id, cmd, ok: false, error: errorText(e) });
+    const failed = (e: unknown): Reply => ({ t: 'snapped', id: m.id, cmd, ok: false, error: errorText(e), ...named(e) });
     const start = performance.now(), st = this.core.sim.state, changes = this.changes;
     // T033: encoded to the budget left after the journal's reserve, through the shared codec constant
     const built = this.attempt(() => ({

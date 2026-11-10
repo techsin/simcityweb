@@ -13,7 +13,11 @@
  *   busLoad              busesNeeded / max(1, buses) · parkRide = transitFleet.parkRide
  */
 import type { SimSystem } from '../Simulation';
-import { INCIDENT_KINDS, RESPONDERS, padHistory, type CityState, type HistorySeries, type NeedStat } from '../CityState';
+import { BF, INCIDENT_KINDS, RESPONDERS, YEAR_REVIEW_TERMS, padHistory, type CityState, type HistorySeries, type NeedStat, type YearReviewGoals, type YearReviewTerm } from '../CityState';
+import { DevType } from '../../core/types';
+import { getDef } from '../catalog';
+import { CITY_RANKS } from './rewards';
+import type { EconData } from './runtime';
 
 export const HISTORY_CAP = 600;
 
@@ -47,6 +51,7 @@ export function recordHistory(st: CityState): void {
   h.hq.push(Math.round(s.hq));
   h.approval.push(Math.round(s.approval));
   recordDepthSeries(st, h);
+  recordReviewSeries(st, h);
   // padHistory zero-fills series nobody wrote this month (old saves, new keys)
   padHistory(h);
   if (h.t.length > HISTORY_CAP) {
@@ -111,9 +116,104 @@ function recordDepthSeries(st: CityState, h: HistorySeries): void {
   h.parkRide.push(Math.round(fin(tf?.parkRide)));
 }
 
+export interface YearReviewBaseline {
+  month: number;
+  values: Record<'pop' | 'funds' | 'approval' | 'tourists' | 'eq' | 'hq', number>;
+  approvalTerms: Partial<Record<YearReviewTerm, number>>;
+}
+
+type ReviewEconomy = Partial<EconData> & { yearReviewGoals?: YearReviewGoals; yearReviewBaseline?: YearReviewBaseline };
+
+/** The founding snapshot is separate from monthly history, so Graphs keeps its existing sample window. */
+function seedReviewBaseline(st: CityState): void {
+  const data = st.systemData.economy as ReviewEconomy | undefined;
+  const founded = typeof st.systemData.foundedDay === 'number' ? st.systemData.foundedDay : 0;
+  if (!data?.approvalTerms || data.yearReviewBaseline || st.day !== founded || st.history.t.length) return;
+  const s = st.stats;
+  data.yearReviewBaseline = {
+    month: st.monthIndex,
+    values: { pop: s.population, funds: Math.round(st.funds), approval: Math.round(s.approval), tourists: Math.round(s.tourists), eq: Math.round(s.eq), hq: Math.round(s.hq) },
+    approvalTerms: Object.fromEntries(YEAR_REVIEW_TERMS.map((id) => [id, fin(data.approvalTerms?.[id])])),
+  };
+}
+
+/** A January checkpoint supplies its saved approval baseline, without inventing the preceding year's inputs. */
+function seedReviewTerms(st: CityState): void {
+  if (st.month !== 0 || st.dayOfMonth !== 0) return;
+  const i = st.history.t.indexOf(st.monthIndex);
+  const data = st.systemData.economy as ReviewEconomy | undefined;
+  if (i < 0 || !data?.approvalTerms || st.history.reviewTermsSample?.[i] === 1) return;
+  padHistory(st.history);
+  for (const id of YEAR_REVIEW_TERMS) st.history[`approval_${id}`][i] = fin(data.approvalTerms[id]);
+  st.history.reviewTermsSample[i] = 1;
+}
+
+/**
+ * Stamp new goals once. The first call on a city without the record (a new city, or a save from before LG-21) seeds
+ * every goal already reached as seen, so opening an old city does not claim its old goals for this year.
+ */
+function recordReviewGoals(st: CityState): void {
+  const data = st.systemData.economy as ReviewEconomy | undefined;
+  if (!data) return;
+  const seed = !data.yearReviewGoals;
+  const goals = data.yearReviewGoals ??= { seen: [], completed: {} };
+  const seen = new Set(goals.seen);
+  const add = (id: string) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    goals.seen.push(id);
+    if (!seed) goals.completed[id] ??= st.monthIndex;
+  };
+  for (const id of st.unlocked) add(id);
+  const ranks = st.systemData.cityRanks as Record<string, boolean> | undefined;
+  for (const rank of CITY_RANKS) if (st.stats.population >= rank.population || ranks?.[rank.id]) add(`rank:${rank.id}`);
+}
+
+/** Exact monthly inputs for UI-side review reconstruction; no simulation policy or score is stored here. */
+function recordReviewSeries(st: CityState, h: HistorySeries): void {
+  const data = st.systemData.economy as ReviewEconomy | undefined;
+  let income = 0, expense = 0;
+  for (const k in st.budget.lastIncome) if (!k.startsWith('oneoff:')) income += st.budget.lastIncome[k];
+  for (const k in st.budget.lastExpense) if (!k.startsWith('oneoff:')) expense += st.budget.lastExpense[k];
+  let homes = 0, noisy = 0;
+  for (const b of st.buildings.values()) {
+    if (b.pop <= 0) continue;
+    const dev = getDef(b.def)?.devType;
+    if (dev === undefined || dev > DevType.R3) continue;
+    homes++;
+    if (b.flags & BF.Noisy) noisy++;
+  }
+  const em = st.stats.emergency?.lastMonth;
+  // LG-05/T037b will publish land exhaustion, independent of its demand-gated advice; absent means growth scoring.
+  const advisors = st.systemData.advisors as { full?: boolean } | undefined;
+  h.reviewSample.push(data?.approvalTerms && Number.isFinite(data.resCrime)
+    && Number.isFinite(data.resServices) && Number.isFinite(data.resParks) ? 1 : 0);
+  h.reviewTermsSample.push(data?.approvalTerms ? 1 : 0);
+  h.reviewFunds.push(st.funds);
+  h.recurringNet.push(income - expense);
+  h.recurringExpense.push(expense);
+  h.resCrime.push(fin(data?.resCrime));
+  h.homeServices.push((4 * fin(data?.resServices) + fin(data?.resParks)) / 5);
+  h.noisyHomes.push(homes > 0 ? noisy / homes : 0);
+  h.emergencyAnswered.push(fin(em?.auto) + fin(em?.manual));
+  h.emergencyFailed.push(fin(em?.failed));
+  h.buildingsLost.push(fin(em?.buildingsLost));
+  h.builtOut.push(advisors?.full === true ? 1 : 0);
+  for (const id of YEAR_REVIEW_TERMS) h[`approval_${id}`].push(fin(data?.approvalTerms?.[id]));
+  recordReviewGoals(st);
+}
+
 export function historySystem(): SimSystem {
   return {
     name: 'economy.history',
+    init(sim) {
+      // Only seed a city without the record. With the record present, a goal reached since the last monthly tick
+      // (a rank crossed mid-month before a save, a reward rewards.init unlocks on load) is left for the next
+      // monthly tick to stamp, in the same month as a continuous run.
+      if (!(sim.state.systemData.economy as ReviewEconomy | undefined)?.yearReviewGoals) recordReviewGoals(sim.state);
+      seedReviewBaseline(sim.state);
+      seedReviewTerms(sim.state);
+    },
     monthly(sim) {
       recordHistory(sim.state);
     },
