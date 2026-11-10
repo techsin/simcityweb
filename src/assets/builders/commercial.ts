@@ -12,6 +12,7 @@ import type { ModelBuilders, ModelBuildFn } from '../registry';
 import { lowModels } from './com_low';
 import { midModels } from './com_mid';
 import { highModels } from './com_high';
+import { varietyModels } from './com_variety';
 import { setRoofTone } from './com_kit';
 
 /** Wrap a builder so each (id, variant) gets its own deterministic flat-roof tone (forked rng: layout unaffected). */
@@ -21,5 +22,5 @@ const withRoofTone = (fn: ModelBuildFn): ModelBuildFn => (b, v, rng, e) => {
 };
 
 export const models: ModelBuilders = Object.fromEntries(
-  Object.entries({ ...lowModels, ...midModels, ...highModels }).map(([id, fn]) => [id, withRoofTone(fn)]),
+  Object.entries({ ...lowModels, ...midModels, ...highModels, ...varietyModels }).map(([id, fn]) => [id, withRoofTone(fn)]),
 );

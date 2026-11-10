@@ -40,7 +40,7 @@
  */
 import { DevType, Zone } from '../core/types';
 import type { BuildingCategory, BuildingDef, ServiceKind } from './catalogTypes';
-import { MANIFEST_BY_ID } from '../assets/manifest';
+import { FACADE_MODELS, MANIFEST_BY_ID } from '../assets/manifest';
 
 // ----------------------------------------------------------------------------------------------------
 // helpers
@@ -490,7 +490,36 @@ const PLOPPABLES: BuildingDef[] = [
     description: 'Reward: rated for 3,000 trucks a day of freight from industry within reach by road. Massive industrial demand-cap boost, freight access and income that grow with use: 60 % while idle, full from 1,500 trucks a day. Front faces water.' }),
 ];
 
-export const CATALOG: BuildingDef[] = [...GROWABLES, ...PLOPPABLES];
+// NEW-01: facade-only defs share every simulation stat, and never enter the weighted growable pools.
+const facadeBase = new Map<string, string>();
+const facades = new Map<string, BuildingDef[]>();
+const FACADE_GROWABLES: BuildingDef[] = [];
+for (const base of GROWABLES) {
+  const models = FACADE_MODELS[base.model];
+  if (!models) continue;
+  const family = [base];
+  for (const model of models) {
+    const def: BuildingDef = { ...base, id: model + base.id.slice(base.model.length), model };
+    // The original walk-up resolves by model name, even at stage 3 (whose generic fallback is a house).
+    if (base.model === 'res_walkup') def.household = 'apartment';
+    facadeBase.set(def.id, base.id);
+    family.push(def);
+    FACADE_GROWABLES.push(def);
+  }
+  facades.set(base.id, family);
+}
+
+/** The original growth choice behind a facade (unchanged for all other defs). */
+export function growthDefId(id: string): string {
+  return facadeBase.get(id) ?? id;
+}
+
+/** Stat-identical facade choices, original first; empty for models without a facade family. */
+export function facadeDefs(id: string): readonly BuildingDef[] {
+  return facades.get(growthDefId(id)) ?? [];
+}
+
+export const CATALOG: BuildingDef[] = [...GROWABLES, ...PLOPPABLES, ...FACADE_GROWABLES];
 
 // ----------------------------------------------------------------------------------------------------
 // DEMAND CAP RELIEF (SC4 style): amount of residents (R) / jobs (C, I) of demand cap each building adds.
@@ -628,7 +657,7 @@ export function rebuildCatalogIndex(): void {
   growByDev = Array.from({ length: 12 }, () => [] as BuildingDef[]);
   growByZone = Array.from({ length: 11 }, () => [] as BuildingDef[]);
   for (const d of CATALOG) {
-    if (d.category !== 'growable' || d.devType === undefined) continue;
+    if (d.category !== 'growable' || d.devType === undefined || facadeBase.has(d.id)) continue;
     growByDev[d.devType].push(d);
     for (const z of d.zones ?? []) growByZone[z].push(d);
   }

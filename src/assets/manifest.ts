@@ -312,6 +312,18 @@ for (const e of MANIFEST) {
   }
 }
 
+/** NEW-01 facade families. Original model ids and variant indices remain stable for existing cities. */
+export const FACADE_MODELS: Readonly<Record<string, readonly string[]>> = {
+  res_walkup: ['res_walkup_hip', 'res_walkup_monitor', 'res_walkup_gables'],
+  com_corner_store: ['com_corner_store_hip', 'com_corner_store_gable', 'com_corner_store_steps'],
+  com_shops_apartments: ['com_shops_apartments_hip', 'com_shops_apartments_gables', 'com_shops_apartments_terrace'],
+  com_office_block: ['com_office_block_steps', 'com_office_block_sawtooth', 'com_office_block_vault'],
+};
+for (const [base, models] of Object.entries(FACADE_MODELS)) {
+  const entry = MANIFEST.find((e) => e.id === base)!;
+  for (const id of models) MANIFEST.push({ ...entry, id, desc: `${entry.desc} NEW-01: ${id.slice(base.length + 1)} roof.` });
+}
+
 export const MANIFEST_BY_ID: Record<string, ManifestEntry> = Object.fromEntries(MANIFEST.map((e) => [e.id, e]));
 
 export function manifestByGroup(group: AssetGroup): ManifestEntry[] {

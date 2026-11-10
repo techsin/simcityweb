@@ -22,7 +22,7 @@ import type { SimSystem, Simulation } from '../Simulation';
 import { BF, type Building, type CityState } from '../CityState';
 import { hash2, smoothstep } from '../../core/rng';
 import { DevType, Network, Zone, zoneDensity } from '../../core/types';
-import { CATALOG, DEV_WEALTH, ZONE_DEVTYPES, devFamily, getDef, growablesForZone, rotatedFootprint } from '../catalog';
+import { CATALOG, DEV_WEALTH, ZONE_DEVTYPES, devFamily, facadeDefs, getDef, growablesForZone, growthDefId, rotatedFootprint } from '../catalog';
 import type { BuildingDef } from '../catalogTypes';
 import { MANIFEST_BY_ID } from '../../assets/manifest';
 import {
@@ -152,6 +152,7 @@ function downtownCap(st: CityState, i: number, maxStage: number): number {
  */
 export function spreadVariant(st: CityState, defId: string, x0: number, z0: number, w: number, d: number, v0: number, variants: number): number {
   if (variants <= 1) return 0;
+  defId = growthDefId(defId);
   VIDS[0] = getDef(defId)?.model ?? defId;
   VDEFS[0] = defId;
   VMDEFS[0] = sameModelDefs(VIDS[0]);
@@ -183,7 +184,7 @@ let vGen = 0;
  * one pass over the buildings within VARIANT_SPREAD of the lot: for each of the first n candidates (VIDS / VDEFS), the
  * nearest building per variant (manifests have < 32 variants) showing its model (VNEAR) and of its def (VNEAR_DEF)
  */
-function variantScan(st: CityState, n: number, x0: number, z0: number, w: number, d: number): void {
+function variantScan(st: CityState, n: number, x0: number, z0: number, w: number, d: number, canonical = true): void {
   const N = st.size, R = VARIANT_SPREAD;
   const xa = Math.max(0, x0 - R), xb = Math.min(N - 1, x0 + w - 1 + R);
   const za = Math.max(0, z0 - R), zb = Math.min(N - 1, z0 + d - 1 + R);
@@ -200,7 +201,8 @@ function variantScan(st: CityState, n: number, x0: number, z0: number, w: number
       vStamp[id] = gen;
       const o = st.buildings.get(id);
       if (!o || o.variant >= 32 || o.variant < 0) continue;
-      const od = o.def;
+      // Facades keep their original identity for the existing growth / alternate-def decisions.
+      const od = canonical ? growthDefId(o.def) : o.def;
       for (let k = 0; k < n; k++) {
         // (o shows candidate k's model when its def is one of the model's defs)
         const md = VMDEFS[k];
@@ -213,7 +215,7 @@ function variantScan(st: CityState, n: number, x0: number, z0: number, w: number
         const dist = dx > dz ? dx : dz;
         const q = k * 32 + o.variant;
         if (dist < VNEAR[q]) VNEAR[q] = dist;
-        if (od === VDEFS[k] && dist < VNEAR_DEF[q]) VNEAR_DEF[q] = dist;
+        if (od === (canonical ? growthDefId(VDEFS[k]) : VDEFS[k]) && dist < VNEAR_DEF[q]) VNEAR_DEF[q] = dist;
       }
     }
   }
@@ -238,6 +240,26 @@ function bestVariant(k: number, v0: number, variants: number): number {
   }
   VBEST_D = bMod;
   return best;
+}
+
+/** Choose a stat-identical facade after growth's def and raw variant are fixed (no rng draw). */
+export function spreadFacade(st: CityState, defId: string, x0: number, z0: number, w: number, d: number, variant: number, buildingId: number): BuildingDef {
+  const defs = facadeDefs(defId);
+  if (!defs.length) return getDef(defId)!;
+  const n = Math.min(4, defs.length);
+  for (let k = 0; k < n; k++) {
+    VIDS[k] = defs[k].model; VDEFS[k] = defs[k].id; VMDEFS[k] = sameModelDefs(defs[k].model);
+  }
+  variantScan(st, n, x0, z0, w, d, false);
+  const start = Math.floor(hash2(x0, z0, buildingId) * n);
+  let best = start, bDef = -1, bMod = -1;
+  for (let j = 0; j < n; j++) {
+    const k = (start + j) % n, q = k * 32 + variant;
+    const dMod = VNEAR[q], dDef = VNEAR_DEF[q];
+    if (dMod === Infinity) return defs[k];
+    if (dDef > bDef || (dDef === bDef && dMod > bMod)) { best = k; bDef = dDef; bMod = dMod; }
+  }
+  return defs[best];
 }
 
 /** deterministic start variant of a plopped building: ((x·73856093) ^ (z·19349663)) >>> 0 mod variants */
@@ -594,6 +616,7 @@ export function growthSystem(rt: EconRuntime): SimSystem {
         }
       }
     }
+    use = spreadFacade(st, use.id, x0, z0, W, D, variant, id);
     const b: Building = {
       id, def: use.id, x: x0, z: z0, w: W, d: D, rot: rot as 0 | 1 | 2 | 3, variant,
       pop: 0, jobs: 0, capacity: use.capacity ?? 0, wealth: DEV_WEALTH[use.devType ?? 0], built: 0, age: 0,
