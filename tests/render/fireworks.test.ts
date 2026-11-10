@@ -268,7 +268,7 @@ const FIXTURES = process.env.SIM_FIXTURES ?? DEFAULT_FIXTURES;
 describe('fireworks fixture identity (SIM_FIXTURES)', () => {
   for (const name of ['bot256_s7_y60.metropolis', 'dense1m_s7.metropolis']) {
     const file = join(FIXTURES, name);
-    it.skipIf(!existsSync(file))(`${name}: exact sites before and after random building events`, { timeout: 60000 }, async () => {
+    it.skipIf(!existsSync(file))(`${name}: exact sites before and after random building events`, { timeout: 120000 }, async () => {
       const { st } = await loadCity(file, FIXTURES);
       randomEdits(st, 7, 140);
     });

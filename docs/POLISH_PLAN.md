@@ -1365,6 +1365,13 @@ P2 · M · SIM (META adds the dialog lines) · round 2
 #### LG-06 · Neglect that costs growth: a safety record, rebuild costs and scars
 P2 · M · SIM (META adds the panel row and banner text) · round 2
 
+> **Deferred from this release (10 Nov, owner decision, option A).** T043 measured this item in 425 runs (report on
+> `local/T043-lg06-neglect` @ 49f88a1; decision memo in docs/dev/reports/lead-LG06-decision.md). As specified it charges
+> an attentive city for a call it was never shown, and a neglectful city can still end ahead; no allowed lever, and not
+> the "prompted or reachable only" variant, makes neglect cost growth without failing the base checks. The item stays in
+> the backlog with its acceptance and gates unchanged. A future version keys off calls the player saw and ignored, with
+> approval's small-town fade-in, and never charges a city for calls it was not shown or could not answer.
+
 **Problem**
 - **Neglect costs approval and nothing else.** The 256×60 s7 `--neglect` run ends at approval 76.7 vs 80.2, but population is +0.4% and funds are $21.9M vs $17.7M. That is with 195 vs 71 buildings burned and 1,569 vs 1,408 deaths (acceptance r3 WRONG CHOICES; LD14d routed this here).
 - **Nothing outside approval notices the burnt blocks.**
@@ -1498,7 +1505,7 @@ P2 · M · SIM (META adds the dialog and settings rows; CONTENT builds the model
 
 **Change**
 - **A frequency setting.** Off / Rare ×0.5 / Normal / Frequent ×2 / Chaotic ×4, in the New City dialog and Settings → Gameplay. It scales the thresholds of the same monthly draw.
-- **Rebuild costs.** The same damage charge as LG-06.
+- **Rebuild costs.** A damage charge for buildings a disaster destroys, sized as LG-06's Change describes. LG-06 is deferred (10 Nov), so LG-15 owns this charge itself, for disasters only.
 - **A recovery card** after a tornado, quake or meteor: "rebuild 80% of the 34 lost buildings and restore power within 12 months". Success earns "Resilient city" (+2 approval for a year); failure gives "Slow recovery" (−2 for a year).
 - **A preparedness building.** The Emergency Operations Center unlocks at 50k and costs §15k. It cuts disaster damage and aftermath incidents by 30% within 40 tiles.
 
@@ -1510,7 +1517,7 @@ P2 · M · SIM (META adds the dialog and settings rows; CONTENT builds the model
 - The EOC cuts aftermath incidents by at least 25% (scripted A/B).
 - Gate runs, which have disasters off (`simbot.ts:224`), are unchanged.
 
-**Depends on.** PB-SAVELOAD (routed 45: the disaster RNG and active disasters are saved); LG-06.
+**Depends on.** PB-SAVELOAD (routed 45: the disaster RNG and active disasters are saved). LG-06 is deferred; LG-15 carries its own disaster damage charge.
 
 **Risk.** No gate moves. Recovery state is a new `systemData` key.
 

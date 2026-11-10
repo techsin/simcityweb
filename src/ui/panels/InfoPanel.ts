@@ -38,26 +38,9 @@ import { watchFor, type WatchHandle } from '../../worker/SimHost';
 import type { InspectBuilding, InspectBuildingArgs, InspectCell, InspectCellArgs, InspectEnvironment } from '../../worker/inspect';
 import { NOISY_THRESHOLD, POLLUTED_THRESHOLD } from '../../sim/infra/params';
 import {
-  type Bar, type Chip, type ModelRow, type RubbleCrews, RUIN_CHIP_FLAGS, RUINS_TEXT, conditionView, crimeBars, dedupeChips, desirabilityView, facilityView,
+  type Bar, type Chip, type ModelRow, type RubbleCrews, RUINS_TEXT, buildingChips, conditionView, crimeBars, dedupeChips, desirabilityView, drawsPower, facilityView,
   buildingReportView, fireResponseHint, growthRows, headerIncome, headerMoney, mainProblem, landValueView, responseText, rubbleProblem, signedPts, splitFacilityRows,
 } from '../inspectorModel';
-
-const FLAG_CHIPS: [number, string, Chip['cls'], Chip['topic']?][] = [
-  [BF.Abandoned, 'Abandoned', 'bad'],
-  [BF.OnFire, 'On fire!', 'bad', 'fire'],
-  // (cause-neutral, final fixes r3: a tornado, a quake or a meteor leaves ruins too)
-  [BF.Burnt, RUINS_TEXT, 'bad', 'burnt'],
-  [BF.Incident, 'Emergency here', 'bad'],
-  [BF.NoRoad, 'No road access', 'bad', 'road'],
-  [BF.Understaffed, 'Understaffed', 'warn', 'staff'],
-  [BF.NoJobs, 'No jobs', 'warn'],
-  [BF.Congested, 'Congested', 'warn'],
-  [BF.Polluted, 'Polluted', 'warn'],
-  [BF.Noisy, 'Noisy', 'warn'],
-  [BF.Crime, 'High crime', 'warn'],
-  [BF.NoGarbage, 'Garbage piling up', 'warn'],
-  [BF.Historic, 'Historic', 'info'],
-];
 
 const DIRS = ['east', 'south', 'west', 'north'];
 
@@ -302,7 +285,7 @@ export class InfoPanel extends Panel {
 
   private chips(list: Chip[]): HTMLElement {
     const box = h('div', { class: 'flags' });
-    for (const c of list) box.appendChild(h('span', { class: 'chip ' + c.cls, title: c.title, html: c.text }));
+    for (const c of list) box.appendChild(h('span', { class: 'chip ' + c.cls, title: c.title, html: (c.icon ? icon(c.icon, 11) : '') + c.text }));
     return box;
   }
 
@@ -334,24 +317,11 @@ export class InfoPanel extends Panel {
     const ruin = !!(b.flags & BF.Burnt);
     const rubble = growable && ruin;
 
-    // ---- chips
-    const chips: Chip[] = [];
-    const powered = !!(b.flags & BF.Powered) || !!st.powered[i];
-    const watered = !!(b.flags & BF.Watered) || !!st.watered[i];
-    // every building draws power except power plants and parks without an explicit use (lawns and benches)
-    const isPlant = !!def && (def.powerOut ?? 0) > 0;
-    const usesPower = !ruin && (growable || (!!def && !isPlant && (def.category !== 'park' || (def.powerUse ?? 0) > 0)));
-    if (usesPower) chips.push({ text: icon('power', 11) + (powered ? 'Powered' : 'No power'), cls: powered ? 'good' : 'bad', topic: 'power' });
-    const needW = !ruin && !!report?.waterRequired;
-    // (a facility that uses no water — a wind turbine, a plaza — shows no Water chip on a piped cell: routed 15)
-    if (watered && !ruin && (growable || needW)) chips.push({ text: icon('water', 11) + 'Water', cls: 'good', topic: 'water' });
-    else if (needW) chips.push({ text: icon('water', 11) + 'No water', cls: 'warn', topic: 'water', title: 'This building needs piped water' });
-    if (!ruin && (b.built < 1 || b.flags & BF.Constructing)) chips.push({ text: `Under construction ${Math.round(b.built * 100)}%`, cls: 'info' });
-    for (const [bit, label, cls, topic] of FLAG_CHIPS) if (b.flags & bit && (!ruin || bit & RUIN_CHIP_FLAGS)) chips.push({ text: label, cls, topic });
-    if (b.flags & BF.NeedsUnmet && !ruin) {
-      const exp = report?.needsExpectation ?? 1;
-      chips.push({ text: 'Needs unmet', cls: exp > 0.01 ? 'warn' : 'info', title: exp > 0.01 ? 'Some residents lack a school, clinic, playground… (see Residents)' : 'Residents of a small town do not mind yet — they will as the city grows' });
-    }
+    // ---- chips: the shared table (inspectorModel buildingChips, FEEL-19), which the Query hover's status line reads too
+    const chips = buildingChips(b.flags, b.built, {
+      poweredCell: !!st.powered[i], wateredCell: !!st.watered[i], usesPower: drawsPower(def, growable), growable,
+      needsWater: !!report?.waterRequired, needsExpectation: report?.needsExpectation ?? 1,
+    });
     // (rubble: the main problem below leads with "In ruins" and its fix, the chip would only repeat it)
     this.body.appendChild(this.chips(dedupeChips(chips, rubble ? [...warnings, RUINS_TEXT] : warnings)));
 
