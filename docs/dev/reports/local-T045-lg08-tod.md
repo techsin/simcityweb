@@ -1,14 +1,15 @@
 # T045 — LG-08 transit-oriented development
 
 Branch `local/T045-lg08-tod`; FX5 starts from `1f231e7bffcf0effe42834a94594d077d4a7be61`, whose parent is
-`59f7ce9aff92ceecb3f1fc1ff815100b92dfe5f4`. This FX3/FX5 diagnostic and report update is uncommitted; no `.done` file is written.
+`59f7ce9aff92ceecb3f1fc1ff815100b92dfe5f4`. FX3/FX5 were committed as `dd09c59`; the FX4 report update below is uncommitted. No `.done` file is written.
 Older implementation, test, single-run and ensemble records are retained below with their original provenance.
 
 **Current lead disposition: HOLD under NOTE-062.** The nine-member s11 no-flag median ends at **1,394,211**
 against dev **1,483,518** (−6.019947%), **74,471.82 people below the 0.99× floor**. Early population increases and
 the 128×15 cleaner-air moves still fail the written rules; D2 has not signed them. Approval is now judged net of
-each member's smoothed commute contribution and remains **OPEN pending FX2**, not a raw-approval pass or fail.
-Monthly nine-member commute activation remains **OPEN pending FX1**. Nothing here authorizes a merge or a balance
+each member's smoothed commute contribution and remains **OPEN pending full-ensemble FX2 observations**, not a raw-approval pass or fail.
+T062's FX1/FX2 collector is now available; selected diagnostic replays are documented in FX4 below. Monthly
+nine-member commute activation remains **OPEN pending the monthly probe**. Nothing here authorizes a merge or a balance
 change: final gates run after B2, T041 and the preceding SIM lanes reach dev.
 
 ## FX5: NOTE-053 rules with NOTE-062 amendments
@@ -115,8 +116,8 @@ and **4.136494433 citywide**, diagnostic only. It is a realised-building census,
 Early population-up failures on all three rows and 128×15 cleaner-air failures stay **FAIL, pending FX4 and D2**.
 They may be signed as a by-design base move only if FX4 names the mechanism, the changes stay within **+3%**,
 and they repeat on final dev. Staying below +3% alone is not a pass and is not a retrospective tolerance change.
-The first differing approval-gated bot decision is not yet identified. FX4 is explicitly **WAIT**: the user will
-provide FX1 next. This update performs no speculative diagnosis run or balance change while that log is absent.
+FX4 below uses the now-available dated FX1 journal and the original full command/log traces. Its selected-member
+diagnosis is separate from a final ensemble verdict; D2 remains unsigned and no balance change is authorized.
 
 The s11 late regression is not covered by that early D2 option. If on final dev its no-flag median remains below
 dev's band in 2050–2060 **or** below 0.99×dev at year 60, **LG-08 does not merge**. Return start/coefficient trade-offs
@@ -157,7 +158,8 @@ Stalled: **s7 lane 1/9; dev 0/9**.
 | m200-d1441 | 1,394,211 | 129,572 | G | 1,465,363 | 201,961 | G |
 
 Stalled: **s11 lane 1/9; dev 0/9**. The formal flag finds only one stalled lane member; FX4 must not invent two
-under this definition. Any broader “low-growth” pair selection must be named separately when FX1 arrives.
+under this definition. FX4 below explicitly labels its second s11 low-growth member as a near-stall and its
+second formal stalled example as a cross-seed comparison.
 
 | Member | Subway 2060 / gain / flag | Skip transit 2060 / gain / flag | Dev subway 2060 / gain / flag |
 |---|---|---|---|
@@ -175,10 +177,10 @@ Stalled: **lane subway 1/9; skip transit 6/9; dev subway 1/9**.
 
 ### Work left and final-base reruns
 
-**FX1/FX2 OPEN; FX4 WAIT for the user's FX1.** FX1 must provide per-member term/resCommute and dated
-approval-gated actions; the monthly skip probe must establish the all-nine monthly median and weakest member.
-FX2 must supply correctly smoothed per-member `approvalNetCommute` and the annual term median/band. FX5's
-report-only endpoint/stall derivation above does not close those missing metrics.
+**Full-ensemble FX1/FX2 OPEN; FX4 diagnosis below.** T062's `78bf434` supplies the collector, and FX4 replays selected
+members with it. The monthly skip probe must still establish the all-nine monthly median and weakest member.
+Full-ensemble FX2 must supply correctly smoothed per-member `approvalNetCommute` and the annual term median/band.
+FX5's report-only endpoint/stall derivation and FX4's selected members do not close those missing metrics.
 
 After B2, T041 and all preceding SIM lanes merge, use that exact final dev for nine-member dev/lane no-flag
 128×15 s7, 256×60 s7/s11, and nine-member lane subway/skip-transit plus dev subway on 256×60 s7. Collect monthly
@@ -289,8 +291,8 @@ paths. Small raw/EMA deltas alone cannot rule out such a fork. No changed-fallba
 omitted-origin case, with explicit geometry/validity/lifetime rules; the carry shadow is its fixed-path signal.
 Exclusion is a second diagnostic convention, not a proposed free-approval fix. Either production change would be
 a calibration amendment and would need approval and the final-dev ensemble gates. For this round, **keep the
-25-minute fallback unchanged**. FX4 still waits for T062's dated approval-gated-action log; these message hashes
-and survey examples do not substitute for FX1 or identify the first differing purchase.
+25-minute fallback unchanged**. These message hashes and survey examples do not substitute for FX1 or identify
+the first differing purchase; the following FX4 section now uses T062's dated approval-action journal.
 
 ### Observation neutrality, tests and exact commands
 
@@ -373,6 +375,417 @@ Browser checklist, left to the lead (no browser opened this round):
       pending Worker invalidation fix, and realised stage-6+ station development is visible.
 - [ ] An old save adopts the approved 8-minute term without a new grace mechanism; approval's EMA moves normally.
 - [ ] Grand Central's eight-tile hook works once LG-02 supplies its definition; PB-COMMUTE owns the deferred stats line.
+
+## FX4: first decisions and stall diagnosis (observation only)
+
+**Diagnostic runs complete; no balance change or new acceptance verdict.** This section uses the declared controls
+and existing campaign members to investigate NOTE-062's early rise and late stalls. The lane source is measured
+`f8b3f145a379694adedb1e26bb825886d49282a2` from T045m, parent
+`59f7ce9aff92ceecb3f1fc1ff815100b92dfe5f4`; dev is the exact pre-B2/T041
+`805d7d466972eaf89cfba4e1fc8c5f2df16ae0ef` snapshot. The original member paths, funds nudges, source identities
+and old annual hashes are retained in T062's `note053-lanes/T045.manifest.json`, its referenced summaries and
+member JSON. No other worktree is edited. The collector changes no production simulation, tuning or default
+strategy and draws no RNG. All selected observed members reproduce their old core records, state hashes and
+command/log traces; existing lane/dev paths can still differ from each other.
+
+### Declared members and limits
+
+There is only **one formal s11 stall** in the old nine-member lane ensemble under NOTE-062's definition,
+2050→2060 growth below 100,000. The second member in the same-seed low-growth pair is explicitly a **near-stall**,
+not a second formal stall. The extra s7 stalled member supplies a second formal stalled example across seeds;
+that comparison is a cross-seed diagnostic and is not evidence for a matched-seed effect. These members were
+chosen before the new runs; no extra ensemble members or result-dependent search is added.
+
+| New 256×60 replay | Original 2060 population | Original 2050→2060 gain | Formal flag / diagnostic role | Observed reproduction |
+|---|---:|---:|---|---|
+| Lane s11 control | 1,261,054 | 78,639 | S; s11 low-growth pair | PASS 60/60; full commands/log equal |
+| Lane s11 m100-d1441 | 1,272,478 | 102,396 | G; s11 near-stall, not formal S | PASS 60/60; full commands/log equal |
+| Lane s11 p100-d1 | 1,409,102 | 165,838 | G; s11 growing pair | PASS 60/60; full commands/log equal |
+| Lane s11 p200-d1 | 1,544,601 | 272,530 | G; s11 growing pair | PASS 60/60; full commands/log equal |
+| Lane s7 control | 1,520,331 | 242,276 | G; lane/dev control and s7 comparison | PASS 60/60; full commands/log equal |
+| Lane s7 m200-d1441 | 1,256,440 | 73,578 | S; second formal stalled example, cross-seed only | PASS 60/60; full commands/log equal |
+| Dev s11 control | 1,427,340 | 155,237 | G; matched-strategy dev control | PASS 60/60; full commands/log equal |
+| Dev s7 control | 1,513,835 | 248,094 | G; matched-strategy dev control | PASS 60/60; full commands/log equal |
+
+This is **eight long replays**. The three-row control comparison also uses one fresh lane 128×15 s7 replay,
+ending at **193,844 [66507, 90953, 36384]**, and the already observed dev 128×15 s7 control. The latter is
+`T062/scratch/note062/smoke/128x15_s7_base_b8634767e34e290c.json`, with its spec and action files. It records
+source `818a0403b058e47e10d51195970d9c025f972c82` and observer
+`ec3ceb1b0267f14e4bb0341e4fc1a10936f365f5c2fef8086bfafeda05040f49`.
+T062's `smoke-proof.json` establishes equality to the old dev control at all 15 annual rows and hashes, all
+1,699 edit actions and 1,111 full-log entries, ending at 192,899 [61124, 93804, 37971]. Its simulation/core source
+is unchanged from 805d7d4; intervening asset changes and its distinct source identity remain recorded. It supplies
+FX1's dated purchases and FX2's per-member commute/net-approval fields. The other old cached raw members do not
+gain those fields merely because their summaries were regenerated with the new runner.
+
+Six short two-year lane/dev prefixes, one pair per base row, separately locate the first demand/growth divergence.
+All six **PASS** exact reproduction of their cached first two annual core rows and city hashes, successful-action
+prefixes and full-log prefixes through day 720. They are diagnostic prefixes, not additional ensemble members
+or final-dev gate runs. Their measured initial channel is detailed below.
+
+### First decisions confirmed by the observed replays
+
+At **day 360, January 2001**, each lane/dev control pair has identical population, residents by wealth, all twelve
+`jobsByDev` entries, mean air at homes and funds. Approval already differs. This is equality of the listed census
+and economic readings, not a claim that the whole serialized city is identical.
+
+| Control row | Common population / residents | Common air / funds | Approval dev → lane |
+|---|---|---|---|
+| 128×15 s7 | 3,587 / [2666,878,43] | 0.014765312300144655 / 39,655 | 51.18840352858549 → 51.16618656535791 |
+| 256×60 s7 | 3,589 / [2463,1096,30] | 0.014912420356957327 / 26,117 | 51.9021158549973 → 51.82732099594159 |
+| 256×60 s11 | 3,634 / [2548,1069,17] | 0.012533822326218146 / 36,186 | 51.16694264734196 → 51.07626988269391 |
+
+The first full-log and edit-command differences below are read-only comparisons of the original arrays, preserving
+record order and comparing object contents. The observed replays confirm them. Decision comparisons use
+`day/method/args`; full-record comparisons retain cost/affected separately. A full-log text difference or a changed
+approval value attached to the same action is not automatically a different decision.
+
+| Lane/dev control pair | First full-log difference | First edit-command difference |
+|---|---|---|
+| 128 s7 | Day 630, Oct 2001: elementary need 121 versus 122 at the same 89,84 site; 90 common log entries | Day 660, Nov 2001: dev builds the Avenue from 100,73 to 109,73; lane next places the Courthouse at 67,70; 253 common commands |
+| 256 s7 | Day 570, Aug 2001: dev builds a Medical Clinic, lane a Playground; 93 common log entries | Same day: clinic at 147,126 versus playground at 150,93; 219 common commands |
+| 256 s11 | Day 570, Aug 2001: dev develops C block 14,15 as zone 5; lane rezones 15,12 to zone 2; 76 common log entries | Same day: dev starts its street at 128,146; lane zones rectangle 138,111→146,119; 224 common commands |
+
+The 128 control's school-need difference therefore precedes its first recorded edit-command fork. Its Courthouse
+purchase still has the same identity and day in the two filtered reward traces: the first command difference there
+is sequence, not evidence that only one city bought that reward. The annual census jumps from day 360 to day 720;
+the reproduced daily prefixes below date the earlier simulation changes inside that interval.
+
+For the declared lane-member comparisons, the original traces first diverge as follows:
+
+| Pair | First differing edit command / full-log implication |
+|---|---|
+| s11 control vs near-stall m100-d1441 | Day 1890, Apr 2005: control places Police Station 93,120; near-stall starts the road for an Elementary School; 585 common commands / 265 common log entries |
+| s11 control vs either growing member | Same clinic at 123,147, cost 1,808, but control buys it on day 1140, Mar 2003, and both growing members on day 1110, Feb 2003; 401 common commands / 180 common log entries |
+| s11 near-stall vs either growing member | The same clinic timing difference; the near-stall's day-1441 nudge is later than this point |
+| s11 p100-d1 vs p200-d1 | Day 2340, Jul 2006: p100 rezones 12,12 to zone 3; p200 clears one small lot for a Bus Stop; 790 common commands / 401 common log entries |
+| s7 control vs stalled m200-d1441 | Control develops I block 19,12 at day 1500, Mar 2004; the stalled member's next differing expansion is R block 9,11 at day 1530, Apr 2004; 439 common commands / 205 common log entries |
+
+These dates identify the first recorded command forks. A clinic's earlier purchase or a different expansion does not,
+by itself, explain a stall fifty years later or establish which resource a stalled member lacks.
+
+### Initial purchase explanation ruled out; direct demand channel measured
+
+Before each lane/dev pair's first differing command, both cities have made exactly two common reward purchases:
+Mayor's House on day 150, and Clock Tower on day 540 in 128 s7 / 256 s11 or day 510 in 256 s7. No ordinance or
+Statue has been purchased at that point. Thus a *different earlier approval-gated purchase* cannot initiate those
+first command forks. The later purchases can still amplify a city-path difference.
+
+| Control row | First differing reward/policy identity or day | Statue purchase dev / lane |
+|---|---|---|
+| 128 s7 | Smoke Detectors: day 1440, Jan 2004 / day 1410, Dec 2003 | Both day 3450, Aug 2009 |
+| 256 s7 | Courthouse: day 630, Oct 2001 / day 660, Nov 2001 | Day 4410, Apr 2012 / day 4050, Apr 2011 |
+| 256 s11 | Pro Reading: day 2340, Jul 2006 / day 2280, May 2006 | Day 4830, Jun 2013 / day 5130, Apr 2014 |
+
+**Plan-versus-code detail:** NOTE-062 mentions ordinance approval thresholds of 55/60. In this source those tests
+are in optional `lateOrdinances()`, which returns unless `--late-ordinances` is enabled. All no-flag control specs
+have empty `botArgs`. Default `ordinances()` uses population thresholds 25k/50k/120k and a nonnegative monthly net;
+it does not test approval. The Statue's 65% condition remains real, but the purchase dates above are much later
+than the initial forks. The FX1 purchase log must not be interpreted as proving an approval gate for every reward
+or base ordinance it records.
+
+The reproduced prefixes identify a direct simulation path before any such purchase: `demand.ts` computes
+`apprF = 1 + APPROVAL_R × (approval − 50) / 50`, with `APPROVAL_R = 0.06`, and multiplies residential targets by
+that factor. Lower approval first changes unrounded residential demand and the growth bank while the buildings,
+population and successful bot actions still match. Later, a bank threshold changes an eligible building or
+redevelopment; the resulting layout and random-stream differences precede the first differing bot choice.
+This establishes the initial perturbation channel. It does **not** establish the common positive annual
+population/approval sign in 2010–2030. No compensating term, new commute model or tuning is introduced.
+
+### Reproduced prefixes: demand, growth and first bot choice
+
+`fx4/early-prefix/{lane,dev}/` contains six fresh two-year controls, their separate `.profile.json` observations
+and `.proof.json` checks. The official FX1/FX2 collector runs alongside the scratch observer. Each profile records
+the production state after advance and before/after the daily and monthly bot brains; it reads stored terms,
+demands, needs, budgets, buildings and RNG state without invoking a simulation query or drawing RNG. Building
+events and guard ledgers remain external. `first-forks.json` is the JSON-only lane/dev reduction.
+
+| Prefix | Annual core rows / hashes equal to cached prefix | Successful actions equal | Full-log entries equal |
+|---|---:|---:|---:|
+| Lane 128 s7 | 2 / 2 | 290 | 125 |
+| Dev 128 s7 | 2 / 2 | 291 | 125 |
+| Lane 256 s7 | 2 / 2 | 278 | 140 |
+| Dev 256 s7 | 2 / 2 | 289 | 137 |
+| Lane 256 s11 | 2 / 2 | 305 | 124 |
+| Dev 256 s11 | 2 / 2 | 300 | 123 |
+
+All comparisons below are lane against dev. Days are absolute simulation days. The unrounded `demandAbs` and
+carry differences begin the day after the first monthly term. Stored `rawTarget`/`target` are rounded readings,
+so their first differing integer appears later; those dates do not mark the first demand change.
+
+| Control | First negative raw term, versus dev 0 | First unrounded demandAbs / carry difference | First rounded rawTarget / target difference | First building economics / shape difference | First RNG-state difference |
+|---|---|---:|---|---:|---:|
+| 128 s7 | Day 300: −0.004321383016055648 | 301 / 301 | 333 / 346 | 573 / 573 | 574 |
+| 256 s7 | Day 270: −0.00021083965496834003 | 271 / 271 | 331 / 308 | 523 / 523 | 523 |
+| 256 s11 | Day 240: −0.0000023913040713965964 | 241 / 241 | 302 / 307 | 551 / 551 | 549 |
+
+| Control | First realised growth difference | First resident / job difference | First differing bot choice |
+|---|---|---|---|
+| 128 s7 | Day 573, R$ id 733: lane cottage stage 2, capacity 10 at 35,29; dev townhouse stage 3, capacity 30 at 34,29 | Day 575: 5,883 versus 5,900 residents; day 581: 2,923 versus 2,926 filled jobs | Day 660: dev develops industrial block 11,7; lane skips that expansion. The day-630 log difference only changes the reported school need. |
+| 256 s7 | Day 523: lane redevelops a 10-cap cottage into a stage-3 60-cap walkup; dev redevelops a 30-cap townhouse into a stage-4 90-cap walkup and replaces the adjacent cottage/suburban lots with R$$ rowhouses | Actual building population on day 523: 5,151 versus 5,114; stats first differ on day 524, 5,157 versus 5,120. Jobs first differ on day 535, 2,710 versus 2,711. | Day 570: dev places a Medical Clinic for 509 people near 141,116; lane omits it and next places the shared Playground. |
+| 256 s11 | Day 551: the same CS$ corner-store definition is placed at 138,132/rotation 3/variant 8 versus 124,138/rotation 2/variant 5; later that day lane selects a stage-1 6-cap R$ shack versus dev's stage-2 10-cap cottage at 126,116 | Actual building residents first differ on day 554, 5,369 versus 5,383; stats on day 555, 5,390 versus 5,404. Filled jobs first differ on day 554, 2,556 versus 2,514. | Day 570: dev develops commercial block 14,15; lane skips that expansion and next rezones 15,12. |
+
+The bank threshold can be reconstructed from the recorded end-of-day R$ carry plus that day's R$ capacity
+spend. This uses the existing fixed `GROWTH_BANK_MIN_FRAC = 0.3`: new capacity is limited by bank/0.3;
+redevelopment adds the old live capacity to that ceiling (`growth.ts`'s `capMaxFor`, `collectDefs` and
+`tryRedevelop`). No bank, demand, definition or fit rule was changed.
+
+| Observed fork | Reconstructed bank, lane / dev | Relevant capacity ceiling, lane / dev | Result |
+|---|---|---|---|
+| 128 s7, day 573, before its only R$ creation | 8.989493107 / 9.060037325 | 29.964977022 / 30.200124416 | The 30-cap townhouse is excluded only in the lane; cottage 10 versus townhouse 30 is observed. |
+| 256 s7, day 523, before R$ redevelopment spending | 17.776967684 / 18.016566447 | 89.256558946 / 90.055221491, including the old townhouse's 30 capacity | The 90-cap walkup is excluded only in the lane. Dev performs the larger rebuild; the lane takes the smaller cottage redevelopment. |
+| 256 s11, day 551, before the second R$ creation | 2.952618205 / 3.118501000 | 9.842060684 / 10.395003333 | The 10-cap cottage is excluded only in the lane; shack 6 versus cottage 10 is observed. |
+
+The s7 case supplies a concrete way for a penalty to raise population temporarily: the smaller redevelopment
+path immediately displaces fewer occupied homes. Its actual building-population difference is **+37 on day 523**,
+before a bot choice differs. It does not prove the later annual gain. For s11, the RNG stream first differs on
+day 549 while realised buildings still match. That day's reconstructed bank also straddles a 30-cap threshold
+(ceilings 29.626842181 versus 30.164808698), but the exact failed candidate/draw is **unobserved**; a specific
+failed-fit call must not be reported as measured.
+
+Cash-guard wrappers forward each original call once and record inputs and results. They find **no differing
+recorded Boolean outcome before the guard-call sequences diverge**. The first changed inputs are day 600 on
+128 s7 (`canInvest(2500)`, funds 40,864/40,875, both true), day 540 on 256 s7 (`canSpend(22000)`,
+47,285/47,309, both true), and day 570 on s11 (`canSpend(22000)`, 66,889/66,870, both true). Structural guard
+sequences split on days 660, 600 and 570 respectively. These are not evidence that all affordability choices
+match: `ensureNeeds`' priority-school/health affordability test is an **inline ternary**, outside those wrappers.
+The s7 clinic omission can therefore involve target eligibility or inline affordability; this probe does not
+separate them. Its health need, budget and differing purchase are recorded, without a new query or extra attempt.
+
+The first non-commute raw approval terms diverge after the building forks (days 600/540/570). Services, parks,
+crime, pollution and other terms can then change with the layout and resident mix; their sum initially moves in
+different directions across the three rows. At year 2 the lane populations are **9,288/9,750/9,369**, against
+dev's **9,297/9,859/9,461**, and approval net of commute is also lower in each row. Thus the shared initial
+demand/bank channel and the s7 displacement example are measured, but **the common positive annual population
+and approval sign in 2010–2030 is not causally closed**. D2 remains unsigned, and the final-dev repetition and
+s11 blocking rule remain required.
+
+### Reproduced s11 FX1 purchase chronology
+
+The four new s11 lane replays reproduce their original core annual rows, state hashes, edit actions and full logs.
+The new `approvalActions` arrays are compared by **action identity and day**, ignoring the approval value attached
+to the record. That value is context, not evidence that every recorded purchase has an approval condition. All four
+members have the same first four events: Mayor's House on day 150 at 50.481812% approval, Clock Tower on day 540 at
+46.847163%, Courthouse on day 660 at 46.653589%, and Obelisk on day 780 at 45.828415%.
+
+| s11 comparison | Common FX1 events | First different FX1 identity/day, with actual approval |
+|---|---:|---|
+| Control / near-stall | 6 | Pro Reading: control day 2280, May 2006, 50.990347%; near-stall day 2310, Jun 2006, 51.259055% |
+| Near-stall / either growing member | 6 | Pro Reading: near-stall day 2310 at 51.259055%; p100 and p200 day 2280 at 52.224421% |
+| Control / p100 | 12 | Arch: control day 4320, Jan 2012, 64.035101%; p100 day 4740, Mar 2013, 61.518628% |
+| Control / p200 | 12 | Arch: control day 4320 at 64.035101%; p200 day 4560, Sep 2012, 63.841610% |
+| p100 / p200 | 12 | The same Arch timing difference: days 4740 / 4560 |
+
+Pro Reading in this default strategy is a population/net-income decision; Arch has a population unlock and later
+placement/affordability checks. Neither row supplies an approval-threshold explanation. Every first differing FX1
+event above occurs **after** its pair's first full-bot decision fork: clinic timing on days 1110/1140, police/school
+on day 1890, or rezoning/bus-stop clearance on day 2340. A different earlier FX1 purchase therefore cannot initiate
+those forks. Later reward and policy timing can still amplify their city paths.
+
+The real 65% condition belongs to the Statue's **permanent unlock**, not a live purchase gate. `rewardsSystem`
+skips conditions for an ID already in `state.unlocked`; `rewards()` later chooses when it can place and afford it.
+The observed purchase records illustrate that distinction:
+
+| s11 member | Statue bought | Actual approval when bought |
+|---|---|---:|
+| Control | Day 5130, Apr 2014 | 65.633907682% |
+| Near-stall m100-d1441 | Day 5100, Mar 2014 | 64.121543061% |
+| Growing p100-d1 | Day 5340, Nov 2014 | 66.520359582% |
+| Growing p200-d1 | Day 5100, Mar 2014 | 64.007486381% |
+
+Buying below 65% after unlocking is valid. FX1 marks these records `approvalThreshold: 65` and
+`approvalGate: 'unlock'`; it does not record the unlock date. No such purchase precedes the early clinic fork, and
+the dates alone do not explain the late stall.
+
+### Cached late resource profiles
+
+The following are reductions of the declared original annual rows and successful edit/log traces. The four
+reproduced s11 lane controls retain those readings. These are single-member diagnostics, not ensemble medians or
+new acceptance results. Jobs are occupied job stocks, not catalog capacity or the number of available sites.
+Unemployment, worker access, traffic's mean commute, funds and last-month net are the **2060 annual checkpoint**;
+net is that row's recurring income minus expense.
+
+| Member | Population gain 2050→60 | Total jobs 2050→60 | CO$$ + CO$$$ jobs gained | Unemployment / worker access | Mean commute | Funds / monthly net |
+|---|---:|---:|---:|---|---:|---|
+| Lane s11 control | 78,639 | 498,365→539,998 | 5,147 | 8.943% / 91.057% | 11.453 min | 19,327,827 / +63,034 |
+| Lane s11 near-stall m100-d1441 | 102,396 | 494,457→539,647 | 14,269 | 10.109% / 89.891% | 11.152 min | 17,505,994 / +35,717 |
+| Lane s11 p100-d1 | 165,838 | 540,726→611,041 | 34,004 | 8.352% / 91.618% | 11.216 min | 19,697,508 / +37,510 |
+| Lane s11 p200-d1 | 272,530 | 591,922→678,693 | 63,479 | 7.995% / 92.011% | 10.602 min | 15,945,616 / +43,379 |
+| Dev s11 control | 155,237 | 565,383→616,729 | 22,196 | 9.003% / 90.992% | 11.043 min | 16,451,097 / +46,600 |
+| Lane s7 control | 242,276 | 563,733→670,055 | 75,711 | 7.405% / 92.604% | 11.521 min | 15,141,075 / +45,840 |
+| Lane s7 stalled m200-d1441 | 73,578 | 497,759→533,970 | 1,025 | 10.089% / 89.951% | 11.692 min | 19,584,756 / +65,950 |
+
+The two low-growth s11 cities are almost flat in office jobs after 2054: control's CO$$/CO$$$ total moves from
+309,418 to 310,193 by 2060, near-stall from 306,876 to 307,634. The cross-seed stalled s7 member gains only 1,025
+office jobs over the whole decade, against its control's 75,711. That identifies a realised jobs/wealth-mix path
+to investigate. It does not establish whether the missing occupied jobs originate in demand, local access,
+congestion, available land or building capacity. The near-stall's citywide mean commute is also slightly lower
+than growing p100's, so a citywide commute ranking alone does not explain these outcomes.
+
+Every 2050–2060 annual cash checkpoint in these seven traces has at least **11,060,633** in funds and positive
+last-month net (the smallest such net is **28,276**). The late snapshots do not support cash shortage as the
+binding constraint at those checks. They do not observe every month's reserve/affordability branch, and do not
+rule out an earlier cash-timing fork such as the clinic purchase. No simulation intervention tests which
+constraint, if removed, would restore growth.
+
+| Member | Bus stops / depots bought, all years | Freight stations bought, all years | R→industry conversions logged from 2050 onward |
+|---|---|---:|---:|
+| Lane s11 control | 911 / 12 | 4 | 18 |
+| Lane s11 near-stall m100-d1441 | 876 / 11 | 3 | 17 |
+| Lane s11 p100-d1 | 836 / 10 | 4 | 18 |
+| Lane s11 p200-d1 | 937 / 19 | 11 | 11 |
+| Dev s11 control | 884 / 17 | 10 | 17 |
+| Lane s7 control | 870 / 13 | 11 | 17 |
+| Lane s7 stalled m200-d1441 | 909 / 10 | 4 | 18 |
+
+All seven traces buy **zero train or subway passenger stations**. They do buy buses and freight infrastructure;
+the table counts successful `plop` actions for `tr_bus_stop`, `civ_bus_depot` and `tr_freight_station`, not the
+operating fleet or facilities surviving in 2060. Conversion counts use log years **2050–2060**, not all-time
+totals. These purchases rule out “no transit at all” as a description, but do not prove adequate fleet, local
+coverage, uncongested routes or spare capacity. The retained annual files have no route-cutoff, fleet-shortage
+or spatial-fit census with which to attribute the stall to those local conditions.
+
+The bot has a **conditional** full-map jobs rescue rather than a general job-growth guarantee. Its residential-to-
+industry conversion branch requires unemployment above 6%, industrial demand above 0.4, no undeveloped I or R
+block, more than 180 days since its last conversion, and `canInvest(5000)`. It then needs an eligible developed
+residential block bordering industry. With the monthly call interval, the strict cooldown permits at most one
+successful conversion every 210 days. The logged conversions prove the branch ran, not that enough suitable
+sites remained or that the new industrial land could realise the lost office jobs. No catalog, demand, growth
+budget, fit or default-bot rule is changed. Local congestion/capacity as the causal late limiter remains
+**UNKNOWN**; D2 is unsigned and the final-dev blocker remains in place.
+
+### New commute and net-approval readings
+
+These are individual **2060** observations, not ensemble medians. `resCommute` is approval's resident survey;
+the traffic-wide mean in the resource table is a different statistic. The raw and EMA terms are both observed;
+`approvalNetCommute` subtracts the member's own EMA term from recorded approval, retaining the clamp contribution.
+
+| Member | resCommute, min | Raw term | EMA term | Recorded approval | approvalNetCommute |
+|---|---:|---:|---:|---:|---:|
+| Lane s11 control | 11.890960 | −0.972740 | −0.981141 | 76.890696 | 77.871837 |
+| Lane s11 near-stall m100-d1441 | 11.791554 | −0.947888 | −0.948323 | 78.738997 | 79.687320 |
+| Lane s11 p100-d1 | 11.089701 | −0.772425 | −0.766448 | 80.581182 | 81.347630 |
+| Lane s11 p200-d1 | 10.838768 | −0.709692 | −0.735535 | 79.196354 | 79.931888 |
+| Dev s11 control | 11.209889 | 0 | 0 | 81.356695 | 81.356695 |
+| Lane s7 control | 11.510478 | −0.877620 | −0.908660 | 79.253536 | 80.162196 |
+| Lane s7 stalled m200-d1441 | 12.097976 | −1.024494 | −0.980698 | 78.085477 | 79.066175 |
+| Dev s7 control | 11.787459 | 0 | 0 | 80.357425 | 80.357425 |
+
+The s11 control's raw approval gap to dev is **−4.465998522** points; removing its **−0.981141348** smoothed
+commute contribution leaves **−3.484857173** points. Thus that control's approval shortfall is not merely the
+sanctioned commute line. Conversely, the growing p200 member still has lower net approval than p100, so endpoint
+approval alone does not rank the growth paths. All per-year raw/EMA terms, `resCommute` and net approval for these
+selected members are retained in `fx4/audit.json` and their new raw JSON, rather than reconstructed from old caches.
+
+The new control FX1 dates also carry the actual decision approval: 128 Smoke Detectors **49.379235% lane /
+49.564835% dev**; s7 Courthouse **55.132223% / 55.575288%**; s11 Pro Reading **50.990347% / 53.223766%**. These
+are the first identity/day differences in the filtered journal, not evidence of 55/60% approval gates in the
+default strategy. The full-command first differences precede them as listed above.
+
+### Reproduction ledger and exact commands
+
+`fx4/audit.json` records **10/10 PASS**, **510/510 annual core rows and city hashes**, **57,992/57,992 successful
+commands**, and **44,061/44,061 full-log entries**. Eight new long replays contribute 480 annual checkpoints,
+the fresh lane 128 replay 15, and the reused observed dev smoke 15. The six independent two-year probes add
+**12/12 exact annual core/hash prefix checks** and exact command/log prefixes through day 720. These repeated
+prefixes are not extra ensemble members. No measured member failed to reproduce.
+
+Only the ten new optional observation columns are removed for the core-row comparison; every ordinary field,
+residents/jobs, funds, population and state hash stays checked. All **272/272** new `approvalActions` match
+successful `plop`/`setOrdinance` calls on the same day/date (`fx4/fx1-journal-proof.json`); their approval readings
+are finite. Chronology comparisons use action identity/day; an old member's missing observations are not filled with zero.
+Spec paths, cache keys and timing metadata legitimately change. Hashes here use T062's canonical typed-array/base64
+encoding and `savedAt = 0`; they are not mixed with the earlier T045 probe's differently encoded hashes.
+
+Evidence is under this lane's scratch folder:
+
+- `fx4/audit.json`: member paths/SHA-256, source identities, all equality counts, annual FX1/FX2 readings and eight
+  chronology comparisons with context. `audit.mjs` is a JSON-only reduction/assertion, not a bot.
+- `fx4/lane` and `fx4/dev`: newly observed raw members, specs, annual/action journals and process logs. The first
+  four-member s11 collection is explicitly `.partial`, not a nine-member ensemble verdict.
+- `fx4/remaining-ledger.json`: exact five remaining child commands and their equivalent bot options, source and
+  bundle hashes, start/finish times, successful exits, **peak three** child chains, and equal source identities
+  before/after. `remaining.mjs` uses T062's exported `bundleChild`/`runChild` and `memberCacheKey` from one dispatcher.
+- `fx4/early-prefix/{lane,dev}`: frozen build/source/helper hashes, six profiles and six `.proof.json` files.
+  `fx4/early-prefix/first-forks.json` records the daily channel comparisons. The prefix builder records source-file
+  hashes; its behavioural proof is the exact cached two-year trajectory, not an independent late-stall source test.
+
+All bots used quietrun. The first s11 collection used at most three bots; the remaining dispatcher also used at
+most three. Once its queue had only the single s7 stalled bot left and no pending member, the six short probes ran
+in lane/dev pairs at most two at a time, so the total remained **at most three**. These runs are not timing evidence.
+All output is in this lane's scratch; selected T045m/dev trees and T062's tool tree were read only.
+
+Exact execution commands, with the same absolute paths expressed by variables:
+
+```powershell
+$fx4Lanes = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes'
+$fx4Scratch = "$fx4Lanes/T045/scratch"
+$fx4Quiet = "$fx4Lanes/quietrun.mjs"
+$fx4Tool = 'C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simEnsemble.mts'
+$fx4LaneTree = 'C:/Users/techsin/Desktop/projects/simcityweb-T045m'
+$fx4DevTree = "$fx4Lanes/T062/scratch/dev-805-snapshot"
+$env:GIT_OPTIONAL_LOCKS = '0'
+
+node $fx4Quiet node --experimental-strip-types $fx4Tool --tree $fx4LaneTree --base --size 256 --years 60 --seed 11 --runs 9 --members control,m100-d1441,p100-d1,p200-d1 --jobs 3 --out-dir "$fx4Scratch/fx4/lane" --quiet-gate $fx4Quiet
+node $fx4Quiet node --experimental-strip-types "$fx4Scratch/fx4/remaining.mjs"
+
+node $fx4Quiet node "$fx4Scratch/fx4/early-prefix.mjs" --build --label lane --tree $fx4LaneTree --source-commit f8b3f145a379694adedb1e26bb825886d49282a2
+node $fx4Quiet node "$fx4Scratch/fx4/early-prefix.mjs" --build --label dev --tree $fx4DevTree --source-commit 805d7d466972eaf89cfba4e1fc8c5f2df16ae0ef
+node $fx4Quiet node "$fx4Scratch/fx4/early-prefix/lane/early-prefix-child.mjs" --fork-child "$fx4Scratch/fx4/early-prefix/lane/128x2_s7.spec.json"
+node $fx4Quiet node "$fx4Scratch/fx4/early-prefix/dev/early-prefix-child.mjs" --fork-child "$fx4Scratch/fx4/early-prefix/dev/128x2_s7.spec.json"
+node $fx4Quiet node "$fx4Scratch/fx4/early-prefix/lane/early-prefix-child.mjs" --fork-child "$fx4Scratch/fx4/early-prefix/lane/256x2_s7.spec.json"
+node $fx4Quiet node "$fx4Scratch/fx4/early-prefix/dev/early-prefix-child.mjs" --fork-child "$fx4Scratch/fx4/early-prefix/dev/256x2_s7.spec.json"
+node $fx4Quiet node "$fx4Scratch/fx4/early-prefix/lane/early-prefix-child.mjs" --fork-child "$fx4Scratch/fx4/early-prefix/lane/256x2_s11.spec.json"
+node $fx4Quiet node "$fx4Scratch/fx4/early-prefix/dev/early-prefix-child.mjs" --fork-child "$fx4Scratch/fx4/early-prefix/dev/256x2_s11.spec.json"
+
+node "$fx4Scratch/fx4/audit.mjs"
+node "$fx4Scratch/fx4/early-prefix-compare.mjs"
+```
+
+The long/short member bot-option equivalents are `tools/simbot.ts --size 256 --years 60 --seed 11 --quiet`
+for the four lane s11 members and dev s11 control; `--size 256 --years 60 --seed 7 --quiet` for lane/dev s7
+controls and the stalled s7 member; and `--size 128 --years 15 --seed 7 --quiet` for the fresh lane short control.
+The p100/p200 day-1 members add `--aa-funds-nudge 100` / `200`. For m100/m200 day 1441 the official wrapper adds
+−100 / −200 once after that day's advance and before the daily brain; the day-1 CLI flag is not substituted for
+that later injection. Each two-year prefix uses the same size/seed/default options and `--years 2`. The quoted
+ledger/specs retain every full child command; no default bot option or strategy is changed.
+
+### FX4 disposition and current-round summary
+
+- **First decisions are identified and reproduced.** The initial common channel is approval → residential
+  demand/carry → discrete growth/fit/RNG changes → changed needs/planning, preceding the first recorded reward or
+  policy difference. Different earlier approval-gated purchases are ruled out as the initiating cause. The
+  exact internal call behind s11's day-549 RNG fork and the inline health-affordability branch are not fully observed.
+- **The positive annual sign is not closed.** Reduced redevelopment displacement demonstrably raises one early
+  s7 population snapshot, but the controls are initially lower in population and net approval in 2002. This
+  does not establish why all three ensemble medians later rise in 2010–2030 or why approval rises. The selected
+  controls are not those ensemble medians: s11 control's early approval is lower, and 128 control's 2015 approval
+  is lower. The written early-year failures remain; **D2 is unsigned**.
+- **Late resource diagnosis:** occupied office jobs plateau while employment access differs, with full-map rescue
+  conversions and ample cash at the late annual checks. The data do not distinguish commercial capacity/land
+  constraints from local access/congestion or bus-fleet shortage. No passenger rail is common to both low- and
+  high-growth members, so its absence alone does not identify the split. The first clinic/planning fork is not
+  proved to cause a stall fifty years later. No balance change or counterfactual intervention is made.
+- **Files:** only this report changes in the worktree; diagnostic scripts, bundles and outputs stay in scratch.
+  **Infra hunks: none. Outside-owned production hunks: none. Cloud-held files: untouched; no new cloud request.**
+  Existing B2 query/scheduler and Worker retained-inspector requests remain; the Transit stats line waits for
+  PB-COMMUTE and Grand Central's definition stays with LG-02.
+- **Checks:** replay/prefix assertions above pass. No Vitest or tsc rerun this report-only round; the named FX3
+  12/32/19 test results above remain attributed to that round. No browser, full suite, benchmark or GPU timing run.
+- **Still for the lead:** final-dev nine-member bases/variants, full-ensemble net approval and monthly skip median,
+  stage census, isolated timing and full Vitest/browser checks. These selected members do not change FX5's HOLD
+  or the s11 final-dev blocking rule. Repeat FX4 on final dev if s11 still fails.
+- **Decisions for the lead:** the initiating demand/bank mechanism is measured, but a D2 signature cannot be inferred
+  from it; the common annual positive sign remains open. Any later start/coefficient or fallback calibration is
+  a separate decision after the final-dev trade-off, not a change here. Keep the mixed-endpoint NOTE-053 question
+  separate from the diagnostic findings.
+
+Browser Acceptance checklist remains with the lead. No browser check is claimed by these node runs.
+
+- [ ] Station Why term and realised towers.
+- [ ] Retained host-driven inspector on connect/disconnect after the Worker fix.
+- [ ] Old-save 8-minute adoption and approval EMA.
+- [ ] Grand Central hook after LG-02; PB-COMMUTE owns the deferred “Riders save N minutes” stats line.
 
 ## Historical records below (superseded gate protocols)
 
