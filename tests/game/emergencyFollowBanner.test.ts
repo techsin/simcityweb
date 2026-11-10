@@ -276,6 +276,22 @@ describe('FEEL-09 emergency Follow banner', () => {
     expect(h.chip().textContent).not.toContain('0.0 min');
   });
 
+  it.each([['resolved', 'emg-saved'], ['failed', 'emg-lost']] as const)('a %s incident ends Follow and keeps FEEL-10\'s outcome flash and line (merge with dev)', (outcome, flash) => {
+    const h = harness(), unit = vehicle(1);
+    h.dispatch(1, [unit], new DispatchTool(h.ctx));
+    h.button().click();
+    expect(h.follow.active()).toBe(1);
+    unit.state = 'returning';
+    h.incidents.get(1)!.state = outcome;
+    h.dispatch(1, [], null, outcome);
+    const b = (h.banner as unknown as { banners: Map<number, { el: FEl; outcome?: string }> }).banners.get(1)!;
+    expect(h.follow.stop).toHaveBeenCalledTimes(1);
+    expect(h.chip().style.display).toBe('none');
+    expect(b.el.classList.contains(flash)).toBe(true);
+    expect(b.outcome).toMatch(outcome === 'resolved' ? /under control/ : /./);
+    expect(h.button().style.display).toBe('none');
+  });
+
   it.each(['resolved', 'failed'] as const)('ends Follow immediately when the incident is %s during the arrival grace', (outcome) => {
     const h = harness(), unit = vehicle(1);
     h.dispatch(1, [unit], new DispatchTool(h.ctx));
