@@ -216,3 +216,36 @@ lane (the gate 4 amendment below); the diff of `b2-step-split` against dev.
    timing hold. The resume below finishes them on the final tree, with the gate 4 amendment (item 4), the S5 follow-up
    (item 5) and the `grownCity` tolerance (item 6).
 5. No new optimisation work: the only code change beyond the merge is `4608258` (events with their flags, a rename).
+
+### Resume (Nov 9–10)
+
+The Nov 3–4 session stopped at the shared usage limit (the handoff `docs/dev/handoff/2026-11-04/README.md`, b2m's row:
+"finish"; the bundle `cloud_b2m.bundle` holds `539b692`, the WIP patch is this report's integration notes, committed as
+`f9adf2c`). The container restarted; the worktree `scratchpad/co/b2m` was intact at `f9adf2c` with a clean status, and no
+process of this lane was left.
+
+**Gap list at the resume** (required against done; read: the handoff README, NOTE-059, the NOTEs naming B2, this report,
+the scratch logs of the Nov 4 run):
+
+| # | required | state at the resume |
+|---|---|---|
+| R1 | Dev merged in to its current head | dev had moved from `086152a` to `87c7c9c` (T040, T053, NOTE-059, the handoff): **not merged** |
+| R2 | The full vitest green on the merged tree | the Nov 4 run at `539b692` (`scratchpad/b2m/vitest3.log`) **failed 2 tests**: `b2PiecesInfra` G4 utilities, the flip-coverage marker and the publish piece's estimate cap (both left behind by `4608258`) |
+| R3 | The bot, W against dev; the new reference | **not run** (the chain stopped at the vitest failure) |
+| R4 | Exactness (passdigest atomic) and determinism (cityDigest twice) | run at `539b692` against `086152a` (identical); **to re-run** on the final tree |
+| R5 | B2's save / load mid-pass checks against dev | only the vitest R9 tests (W against itself); **the comparison with dev not run** on the merged tree |
+| R6 | One timing-lock hold: gate 4 from a load, 3 runs per side, under the amended criterion | **not run** |
+| R7 | The balance 256 × 60 seed 7 (B2's criteria), the merged tree's rows in the baseline | **not run**; the rows not recorded |
+| R8 | The gate 4 amendment as a plan amendment, the S5 follow-up in POLISH_BACKLOG, the `grownCity` tolerance recorded as accepted, the done line, Desktop QA | **not done** |
+
+**What was done:**
+1. **R1:** merge `3d9b29d` (dev `87c7c9c`), no conflict, tsc clean.
+2. **R2:** `633b917` updates the two utilities piece tests to the flags' publish with its events (integration item 5).
+   With the test change, `b2PiecesInfra` passes 21 / 21; the old marker and cap fail it (the Nov 4 log). No code change.
+3. **R3–R7:** the gates below, on `633b917` (the commits after it are docs only).
+4. **R8:** the plan amendment and the decisions below; the S5 line in `docs/dev/POLISH_BACKLOG.md`; the done line in the
+   header.
+5. Tools (scratch, not in the repo): `scratchpad/b2m/build.sh` (the probes bundled against W and a clean export of dev
+   `87c7c9c` in `scratchpad/co/b2m-devbase`), `master2.sh` (the heavy gates, one lock hold each), `pd.sh`, `lc.sh` +
+   `tools/loadcmp2.ts` / `tools/anlc2.py` (the save / load comparison), `hold.sh` + `tools/anB2m.py` (gate 4),
+   `bal.sh` (the balance).
