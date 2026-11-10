@@ -23,10 +23,22 @@ export async function readRecoveryJournal(kv: KV, base: JournalBase): Promise<Re
   const journal = await kv.get<RecoveryJournal>('recovery', key);
   if (!journal) return null;
   if (journalMatches(journal, base)) return journal;
+  // T089 (W1.3 decision 20): it does not extend this base, but the snapshot it extends is still stored, and restoring
+  // that snapshot takes it (§4.3). A boot of the save underneath must not delete it: it stays as long as the snapshot
+  if (await extendsStoredSnapshot(kv, base, journal)) return null;
   // it can never apply. The cleanup is best-effort: a tab without its region's lock is refused the delete (NEW-04), and
   // that must not fail a boot's read (LocalSimHost and the loopback read here on every start); the holder deletes it
   await kv.delete('recovery', key).catch(() => undefined);
   return null;
+}
+
+/** T089: `recovery/<key>` holds the snapshot `journal` is bound to, so that snapshot's restore would still take it. A
+ *  snapshot record that cannot be read counts as held: the journal is then left for the next scan to decide. */
+async function extendsStoredSnapshot(kv: KV, city: RecoveryCity, journal: RecoveryJournal): Promise<boolean> {
+  if (journal.base?.kind !== 'snapshot') return false;
+  let stored: RecoveryMarker | null;
+  try { stored = await peekRecoveryMarker(kv, city); } catch { return true; }
+  return !!stored && journalMatches(journal, { regionId: city.regionId, tileKey: city.tileKey, savedAt: stored.baseSavedAt, snapshot: stored });
 }
 
 /** Adopt an unload copy only after its loaded record/snapshot has been identified. A newer IndexedDB copy stays, even

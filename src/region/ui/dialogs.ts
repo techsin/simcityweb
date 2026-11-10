@@ -513,36 +513,58 @@ export function openRecoverDialog(m: RecoveryMarker): Promise<'recover' | 'disca
 
 /** W1.2's crash path (WORKER_DESIGN §4.4): the simulation worker stopped during play. */
 export type SimCrashChoice = 'restart' | 'recover' | 'local';
+/**
+ * T089 (NOTE-092): the dialog opens by itself in the middle of play, so no key press may delete the recovery copy. With a
+ * copy, Recover is the default button: primary, focused, and Enter's, wherever the focus is (the Modal's convention).
+ * Space, the city's pause key, chooses nothing on any button and goes no further (as in the HUD's confirm dialog,
+ * src/ui/Modals.ts; the city's own hotkeys are off under any Modal, modal.ts modalOpen). Restart and Continue on the main
+ * thread take a click.
+ */
 export function openSimCrashDialog(o: { cityName: string; message: string; recoverable: boolean }): Promise<SimCrashChoice> {
   return new Promise((resolve) => {
-    let result: SimCrashChoice = 'restart';
+    let result: SimCrashChoice = o.recoverable ? 'recover' : 'restart';
     const pick = (c: SimCrashChoice) => () => { result = c; dlg.close(true); };
     const body = h(
       'div',
       { class: 'recover-body' },
+      // T089 (NOTE-080): Restart and Continue on the main thread discard the recovery copy (main.ts onWorkerCrash)
       h('p', {}, 'The simulation of ', h('b', {}, o.cityName), o.recoverable
-        ? ' stopped. Progress since the last save is not in it, but a recovery copy was kept on this device.'
-        : ' stopped. Progress since the last save is not in it.'),
+        ? ' stopped. Unsaved progress since the last save is lost unless you choose Recover: a recovery copy of it was kept on this device.'
+        : ' stopped. Unsaved progress since the last save is lost: no recovery copy of it was kept on this device.'),
       h('p', { class: 'rv-note' }, o.recoverable
-        ? 'Restart reloads the last save. Recover brings back the unsaved progress first. Continue on the main thread reloads the last save without the simulation worker, for the rest of this visit.'
+        ? 'Recover brings back the unsaved progress. Restart reloads the last save and deletes the recovery copy. Continue on the main thread does that too, and runs without the simulation worker for the rest of this visit.'
         : 'Restart reloads the last save. Continue on the main thread reloads it without the simulation worker, for the rest of this visit.'),
       h('details', {}, h('summary', {}, 'Details'), h('pre', { class: 'rv-note' }, o.message)),
     );
-    const restart = button('Restart from autosave', { icon: 'refresh', cls: 'lg primary', sound: 'confirm', onClick: pick('restart') });
-    const recover = o.recoverable ? button('Recover unsaved progress', { icon: 'download', cls: 'lg', onClick: pick('recover') }) : null;
+    // the default button (the Modal looks for `autofocus` while it is built, so the class is set here)
+    const dflt = { cls: 'lg primary autofocus', sound: 'confirm' } as const;
+    const recover = o.recoverable ? button('Recover unsaved progress', { icon: 'download', ...dflt, onClick: pick('recover') }) : null;
+    const restart = button('Restart from autosave', { icon: 'refresh', ...(recover ? { cls: 'lg' } : dflt), onClick: pick('restart') });
     const local = button('Continue on the main thread', { icon: 'play', cls: 'lg ghost', onClick: pick('local') });
+    const main = recover ?? restart;
+    const onSpace = (e: KeyboardEvent) => {
+      if (e.key !== ' ' && e.code !== 'Space') return;
+      // down and up: a browser clicks the focused button on either, and nothing behind the dialog sees the key
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
     const dlg: Modal = new Modal({
       title: 'The simulation stopped',
       subtitle: o.cityName,
       icon: 'info',
       body,
       closable: false,
-      footer: [h('div', { class: 'grow' }), local, ...(recover ? [recover] : []), restart],
-      onEnter: () => restart.click(),
-      onClose: () => resolve(result),
+      footer: [h('div', { class: 'grow' }), local, restart, ...(recover ? [recover] : [])],
+      onEnter: () => main.click(),
+      onClose: () => {
+        window.removeEventListener('keydown', onSpace, true);
+        window.removeEventListener('keyup', onSpace, true);
+        resolve(result);
+      },
     });
+    window.addEventListener('keydown', onSpace, true);
+    window.addEventListener('keyup', onSpace, true);
     // T061 F2: it opens over a running city; the region screen's backdrop (z 40) drew under the city HUD's layers
     dlg.back.classList.add('modal-top');
-    restart.classList.add('autofocus');
   });
 }

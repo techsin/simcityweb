@@ -70,6 +70,7 @@ import { attachOverlays } from '../sim/infra/overlays';
 import { windVector } from '../sim/infra/wind';
 import { regionSaveAccess } from '../save/db';
 import { showStorageError, storageConditionVersion, storageDialogOpen } from '../ui/StorageDialog';
+import { modalOpen } from '../region/ui/modal';
 
 export type { GameSettings } from './settings';
 
@@ -943,6 +944,9 @@ export class CityScene {
     if (isTyping(e) || this.disposed) return;
     // dialogs handle their keys themselves; no hotkeys underneath them
     if (confirmOpen() || storageDialogOpen()) return;
+    // T089: nor under the worker crash dialog (main.ts onWorkerCrash), a region-screen Modal that opens over this scene.
+    // This listener was added before the dialog's and runs first, so the dialog cannot keep Space, the pause key, from it
+    if (modalOpen()) return;
     if (this.pause.isOpen) {
       if (e.key === 'Escape') {
         e.preventDefault();

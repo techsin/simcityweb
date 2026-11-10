@@ -28,6 +28,11 @@ export interface ModalOptions {
  * on a confirm stacked over Load Region closed both (stopPropagation doesn't stop other listeners on window).
  */
 const openModals: Modal[] = [];
+/** T089: a Modal is open. One can open over a running city (the worker crash dialog): CityScene then leaves the keys to
+ *  it, as to its own confirm dialog (src/ui/Modals.ts confirmOpen). */
+export function modalOpen(): boolean {
+  return openModals.length > 0;
+}
 
 export class Modal {
   readonly back: HTMLElement;

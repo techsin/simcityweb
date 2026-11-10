@@ -884,6 +884,7 @@ type JournalOp = 'zone' | 'dezone' | 'bulldoze' | 'buildNetwork' | 'buildPowerLi
   - `ErrorOverlay` offers "Restart from autosave", "Recover unsaved progress" (the last snapshot plus the journal) and "Continue on the main thread".
   - A restart creates a new worker from IDB, after `restoreRecoverySnapshot` if the player chose recovery. The replica `adopt()`s it and emits `'reset'`.
   - "Continue on the main thread" boots `LocalSimHost` the same way: from IndexedDB, or from the restored snapshot plus the journal. **Never from the replica**, which lacks the lagged fields and most `systemData` (§4.5).
+  - **What each choice does to the recovery copy** (T089). "Restart from autosave" and "Continue on the main thread" discard the crashed session's recovery snapshot, with its journal and its localStorage slot, before they boot the save: no later crash or start can bring that session back, and the dialog says so. "Recover unsaved progress" replays the journal only after `restoreRecoverySnapshot` has succeeded; when the restore fails and the copy is still stored (a full store, a copy that cannot be read, a region now open in another tab), no city opens over it: the App returns to the region screen with the copy kept and says why, and once the cause is gone the city's Play asks about the copy again. A snapshot that cannot be restored at all is reported and deleted, and the save boots without a replay. While a copy exists, Recover is the dialog's default button, and neither Enter nor Space chooses another.
 
 ### 4.5 The replica is never saved
 
