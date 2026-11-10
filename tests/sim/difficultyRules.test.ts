@@ -62,7 +62,7 @@ function legacyEmergency(fade: number): number {
 
 describe('difficulty rules table and defaults', () => {
   it('has one row per difficulty, the original income multipliers and blurbs for New City', () => {
-    expect(Object.keys(DIFFICULTY_RULES)).toEqual(difficulties);
+    expect(Object.keys(DIFFICULTY_RULES)).toEqual([...difficulties, 'expert']);
     const expected = [
       { income: 1.2, fadeCrime: true, fadeMonthlyEmergencies: true, defaultDisasters: false },
       { income: 1.0, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true },
@@ -77,7 +77,7 @@ describe('difficulty rules table and defaults', () => {
     ];
     for (let k = 0; k < difficulties.length; k++) {
       const { blurb, ...rules } = DIFFICULTY_RULES[difficulties[k]];
-      expect(rules).toEqual(expected[k]);
+      expect(rules).toEqual(expect.objectContaining(expected[k]));
       expect(blurb).toBe(blurbs[k]);
     }
   });

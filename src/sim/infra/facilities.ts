@@ -56,7 +56,7 @@ import { ATTRACTIONS, venueIssue, venueOp, venueVisits, type VenueIssue } from '
 import { onStrike, venueIncomeFactor } from '../economy/budget';
 import { OPEX_UNIT, buildingUpkeep, expectedUpkeep, facilityOpex, landmarkOpex, opexRateOf } from '../economy/opex';
 import { getOrdinance, ordinanceEffect } from '../economy/ordinances';
-import { OPEX_TYPICAL_LOAD, RECYCLING_INCOME_PER_T } from '../economy/tuning';
+import { difficultyRules, OPEX_TYPICAL_LOAD, RECYCLING_INCOME_PER_T } from '../economy/tuning';
 
 export interface FacilityLine {
   /** stable id ('patrolLoad', 'beds', 'riders', ...) */
@@ -1643,14 +1643,16 @@ export function facilityReport(sim: Simulation, buildingId: number): FacilityRep
  * without a capacity (fire) — of the people a station of its reach covers in a built-up city (expectedUpkeep's typical
  * load / OPEX_TYPICAL_LOAD); the flat upkeep for any other def
  */
-export function fullUseUpkeep(def: BuildingDef): number {
-  const r = opexRateOf(def);
+export function fullUseUpkeep(def: BuildingDef, st: CityState | null = null): number {
+  const r = opexRateOf(def, st);
   if (!r) return def.upkeep ?? 0;
   const pol = def.coverage?.tier === 'police' ? policeCapacityOf(def.id) : Infinity;
   const cap = Number.isFinite(pol) ? pol : def.coverage?.capacity;
   const building = buildingUpkeep(null, def);
   if (cap !== undefined && cap > 0) return building + cap * r.rate;
-  return building + (expectedUpkeep(null, def) - building) / OPEX_TYPICAL_LOAD;
+  let running = (expectedUpkeep(null, def) - building) / OPEX_TYPICAL_LOAD;
+  if (st && (st.config.difficulty === 'hard' || st.config.difficulty === 'expert')) running *= difficultyRules(st.config.difficulty).opexMultiplier;
+  return building + running;
 }
 
 /**
@@ -1714,7 +1716,7 @@ export function facilityDefFacts(defId: string, st: CityState | null = null): Fa
   if ((def.income ?? 0) > 0) f('income', 'Income', `${money(def.income ?? 0)} / month`);
   if (def.landValue && def.landValue.amount > 0 && !def.prestige) f('landValue', 'Land value', `+${def.landValue.amount} within ${def.landValue.radius} tiles`);
   if ((def.jobs ?? 0) > 0) f('jobs', 'Jobs', fmt(def.jobs ?? 0));
-  const orate = opexRateOf(def);
+  const orate = opexRateOf(def, st);
   if (orate && (def.upkeep ?? 0) > 0) {
     // building + running costs per person served (economy/opex.ts). Final fixes P3: what one of it typically costs in
     // this city (expectedUpkeep with the city's unserved need) and the most it can cost (every seat / its whole patrol
@@ -1722,7 +1724,7 @@ export function facilityDefFacts(defId: string, st: CityState | null = null): Fa
     // figure is the city-wide typical load, which can be 2-11x what one more changes in the budget at a given spot (the
     // plop tool's "Upkeep here" answers that); the build menu and Rewards panel show these same words
     const each = `§${orate.rate < 0.1 ? orate.rate.toFixed(3) : orate.rate.toFixed(2)}`;
-    const full = `up to ${money(fullUseUpkeep(def))} at full use`;
+    const full = `up to ${money(fullUseUpkeep(def, st))} at full use`;
     // (final fixes r3, LD21c: "per resident patrolled served" — a unit that carries its own participle takes no "served")
     const per = /\s\w+ed$/.test(orate.unit) ? orate.unit : `${orate.unit} served`;
     f('upkeep', 'Upkeep', `${money(buildingUpkeep(st, def))} / month + ${each} per ${per}`, st ? `≈${money(expectedUpkeep(st, def))}/mo typical in this city · ${full}` : `${full} a month`);

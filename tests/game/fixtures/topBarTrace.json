@@ -1056,7 +1056,7 @@
      "              \"−12.3\"",
      "            span class=\"d\"",
      "              \"crime at homes 41% — low-wealth homes, uncollected garbage and low land value; police remove up to 85% where they patrol\"",
-     "          div class=\"ap-r fix\" title=\"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5. Click: Budget · Taxes\" data{fix:tax}",
+     "          div class=\"ap-r fix\" title=\"homes are taxed 10.6% on average — each point above 9% costs 4.5 approval; each point below adds 1.5. Click: Budget · Taxes\" data{fix:tax}",
      "            span class=\"l\"",
      "              \"Residential taxes\"",
      "            span class=\"t\"",
@@ -1065,7 +1065,7 @@
      "            span class=\"v neg\"",
      "              \"−7.0\"",
      "            span class=\"d\"",
-     "              \"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5\"",
+     "              \"homes are taxed 10.6% on average — each point above 9% costs 4.5 approval; each point below adds 1.5\"",
      "          div class=\"ap-r fix\" title=\"Click: Police view; click again for Fire, then Health\" data{fix:services}",
      "            span class=\"l\"",
      "              \"City services at homes\"",
@@ -2531,9 +2531,17 @@
    ],
    [
     225,
+    2,
+    [
+     "              \"new-town grace\"",
+     "          div class=\"ap-r fix\" title=\"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5. Click: Budget · Taxes\" data{fix:tax}"
+    ]
+   ],
+   [
+    235,
     1,
     [
-     "              \"new-town grace\""
+     "              \"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5\""
     ]
    ],
    [

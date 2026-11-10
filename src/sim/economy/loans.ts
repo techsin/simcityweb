@@ -3,9 +3,10 @@
  * max outstanding principal relative to population. Payments are charged monthly by the budget ('loan').
  */
 import type { CityState, Loan } from '../CityState';
+import { DAYS_PER_MONTH, MONTHS_PER_YEAR } from '../../core/constants';
 import {
   LOAN_MAX_BASE, LOAN_MAX_COUNT, LOAN_MAX_PER_CAPITA, LOAN_MIN, LOAN_RATE_MAX, LOAN_RATE_MIN, LOAN_RATE_NEG_FUNDS,
-  LOAN_RATE_PER_LOAN, LOAN_TERM_MONTHS,
+  LOAN_RATE_PER_LOAN, LOAN_TERM_MONTHS, difficultyRules,
 } from './tuning';
 import { formatMoney } from './format';
 
@@ -32,7 +33,15 @@ export function loanRate(st: CityState): number {
   return Math.min(LOAN_RATE_MAX, r);
 }
 
+function borrowingClosed(st: CityState): boolean {
+  const years = difficultyRules(st.config.difficulty).loanCutoffYears;
+  // Missing is a legacy day-zero founding; replicas must mirror the actual key rather than infer a later date.
+  const foundedDay = st.systemData.foundedDay as number | undefined;
+  return years !== null && st.day >= (foundedDay ?? 0) + years * MONTHS_PER_YEAR * DAYS_PER_MONTH;
+}
+
 export function maxLoanAmount(st: CityState): number {
+  if (borrowingClosed(st)) return 0;
   if (st.budget.loans.length >= LOAN_MAX_COUNT) return 0;
   const cap = LOAN_MAX_BASE + LOAN_MAX_PER_CAPITA * st.stats.population;
   return Math.max(0, Math.floor((cap - outstandingDebt(st)) / 1000) * 1000);
@@ -50,6 +59,7 @@ export function loanOffer(st: CityState, amount: number): LoanOffer {
   const maxAmount = maxLoanAmount(st);
   const monthlyPayment = amortizedPayment(Math.max(0, amount), rate, LOAN_TERM_MONTHS);
   const base = { rate, monthlyPayment, termMonths: LOAN_TERM_MONTHS, maxAmount };
+  if (borrowingClosed(st)) return { ok: false, reason: 'Expert cities cannot take new loans after year 5', ...base };
   if (st.budget.loans.length >= LOAN_MAX_COUNT) return { ok: false, reason: `At most ${LOAN_MAX_COUNT} loans at a time`, ...base };
   if (!(amount >= LOAN_MIN)) return { ok: false, reason: `Minimum loan is ${formatMoney(LOAN_MIN)}`, ...base };
   if (amount > maxAmount) return { ok: false, reason: `The bank will lend at most ${formatMoney(maxAmount)}`, ...base };
