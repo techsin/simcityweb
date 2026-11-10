@@ -349,9 +349,11 @@ names LG-21.
     Not changed, and left to the lead: T053's report notes that the milestone card (top 112 px, z-index 54) does not
     defer to the year-review card (bottom 86 px, up to `100% - 160px` tall, not a `.panel`). On a short viewport a
     full review and a rank-up just after New Year can overlap. If the desktop's check shows that, its smallest fix is
-    for `MilestoneCard.present()` to treat `.year-review` like an open panel. Since the merge, dev has gained T058
-    (0b9bd9d) and NOTE-060/061 (1c2019c). A trial `git merge-tree` of dev `1c2019c` with this branch is clean, so it
-    was not merged again.
+    for `MilestoneCard.present()` to treat `.year-review` like an open panel. Since the merge, dev has gained T058,
+    T057 (save/load continuity), T060's FEEL-01 and NOTE-060..064 (`51ec328`). This branch was not merged again; the
+    merge step does that. A trial merge in a throwaway worktree (since removed) was clean, and on it tsc is clean. Its
+    11 test files pass, 121 of 121 tests: T057's `loadContinuity` (which runs `economySystems()`, so T054's history
+    system), `serialize`, `monthSpread`, the lane's 7 files and hygiene.
 
 ### Fix round (Nov 3-9)
 
@@ -422,7 +424,7 @@ that state.
 |---|---|
 | tsc (sem) | clean, exit 0 |
 | The lane's 8 test files plus hygiene, milestoneCard (game and worker) and replicaSafe (sem, `--maxWorkers=2`) | **11 files passed; 127 tests passed, 1 skipped** |
-| The full vitest (lock), at `3ef6034` | queued under the lock at 23:31 UTC; the result follows in the next commit |
+| The full vitest (lock), with `SIM_FIXTURES`/`SIM_SNAP` set to the main checkout's fixtures, at `f946fa2` (src and tests as `3ef6034`) | **244 files passed, 2 skipped; 2,463 tests passed, 7 skipped** (437 s). A first run without the fixture variables skipped the fixture cases (2,439 passed, 27 skipped, 185 s), so it was rerun with them |
 | The bot, 128×15 s7 (lock), at `3ef6034` | **identical:** `residents [ 61124, 93804, 37971 ]` = 192,899, 193k in 2015; 24 s under the lock |
 | Before the dev merge, at `0a06c74` (Nov 4, lock) | full vitest 227 files passed, 2 skipped; 2,274 tests passed, 8 skipped. Bot `residents [ 61124, 93804, 37971 ]`, identical |
 
