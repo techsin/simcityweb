@@ -39,7 +39,8 @@ describe('W0.5 news sequence', () => {
         expect(host.newsSeq).toBe(n);
         expect(host.state.news).toHaveLength(Math.min(n, 200));
         now += 1100;
-        ticker.frame(1 / 60);
+        // FEEL-01: one item at a time; a 6 s step lets the item before it end its hold (5 s, 3 s in a burst)
+        ticker.frame(6);
         panel.update();
         expect(textOf(track.children[0])).toContain(`Headline ${n}`);
         expect(textOf(body.querySelector('.news-row')!)).toContain(`Headline ${n}`);

@@ -13,6 +13,7 @@ import { icon } from '../icons';
 import { CURRENCY, compact, moneyCompact, monthLabel, num, pct, signedPct } from '../format';
 import { axisLabels, axisTicks, niceAxis, niceStep, pctAxisLabels } from '../graphAxis';
 import { uiZoom } from '../zoom';
+import { EQ_GLOSSARY, HQ_GLOSSARY } from '../glossary';
 
 type Key = Exclude<keyof HistorySeries, 't'>;
 export interface GraphDef {
@@ -21,7 +22,8 @@ export interface GraphDef {
   icon: string;
   /** list group (section header in the graph list) */
   group: string;
-  series: { key: Key; label: string; color: string; fmt?: (v: number) => string }[];
+  /** `tip`: the legend label's hover text (FH-16: the EQ / HQ glossary entries) */
+  series: { key: Key; label: string; color: string; fmt?: (v: number) => string; tip?: string }[];
   fmt: (v: number) => string;
   /** fixed y range (else auto from 0) */
   range?: [number, number];
@@ -60,7 +62,7 @@ export const GRAPHS: GraphDef[] = [
     { key: 'adults', label: 'Adults', color: SAND }, { key: 'seniors', label: 'Seniors', color: ROSE }] },
   { id: 'jobs', group: 'People', label: 'Unemployment', icon: 'briefcase', series: [{ key: 'unemployment', label: 'Unemployment', color: ORANGE }], fmt: (v) => pct(v, 1), goodUp: false, axis: pctAxis },
   { id: 'commute', group: 'People', label: 'Commute', icon: 'clock', series: [{ key: 'commute', label: 'Avg. commute', color: BLUE }], fmt: mins, goodUp: false },
-  { id: 'eqhq', group: 'People', label: 'Education & health', icon: 'education', series: [{ key: 'eq', label: 'EQ', color: BLUE }, { key: 'hq', label: 'HQ', color: ORANGE }], fmt: (v) => num(v), range: [0, 150] },
+  { id: 'eqhq', group: 'People', label: 'Education & health', icon: 'education', series: [{ key: 'eq', label: 'EQ', color: BLUE, tip: EQ_GLOSSARY.tip }, { key: 'hq', label: 'HQ', color: ORANGE, tip: HQ_GLOSSARY.tip }], fmt: (v) => num(v), range: [0, 150] },
   { id: 'enrol', group: 'Services', label: 'Enrolment', icon: 'education', fmt: pct01, range: [0, 1], series: [
     { key: 'enrolElem', label: 'Elementary', color: PURPLE }, { key: 'enrolHigh', label: 'High school', color: BLUE }, { key: 'enrolCollege', label: 'University', color: AQUA },
     { key: 'healthServed', label: 'Health care', color: ROSE }] },
@@ -160,6 +162,10 @@ export class GraphsPanel extends Panel {
   draw(): void {
     const st = this.ctx.state;
     const H = st.history;
+    // 1Y spans twelve monthly intervals, including both endpoints.
+    const samples = this.range === 12 ? 13 : this.range;
+    const total = H.t.length;
+    const start = samples && total > samples ? total - samples : 0;
     this.lastLen = H.t.length;
     this.lastT = H.t[H.t.length - 1];
     for (const [id, b] of this.listBtns) toggleClass(b, 'on', id === this.cur.id);
@@ -167,8 +173,7 @@ export class GraphsPanel extends Panel {
     if (this.cur.series.length === 1 && H.t.length) {
       const arr = H[this.cur.series[0].key];
       const lastV = arr[arr.length - 1] ?? 0;
-      const s0 = this.range && H.t.length > this.range ? H.t.length - this.range : 0;
-      const firstV = arr[s0] ?? 0;
+      const firstV = arr[start] ?? 0;
       const d = lastV - firstV;
       const v = h('span', { class: 'gt-v' }, this.cur.fmt(lastV));
       this.titleH.appendChild(v);
@@ -180,7 +185,7 @@ export class GraphsPanel extends Panel {
       for (const s of this.cur.series) {
         const arr = H[s.key];
         const last = arr && arr.length ? arr[arr.length - 1] : undefined;
-        this.legend.appendChild(h('span', null, h('i', { style: { background: s.color } }), s.label, last !== undefined ? h('b', { class: 'gl-v' }, (s.fmt ?? this.cur.fmt)(last)) : null));
+        this.legend.appendChild(h('span', { title: s.tip }, h('i', { style: { background: s.color } }), s.label, last !== undefined ? h('b', { class: 'gl-v' }, (s.fmt ?? this.cur.fmt)(last)) : null));
       }
     }
 
@@ -193,8 +198,6 @@ export class GraphsPanel extends Panel {
     const g = this.canvas.getContext('2d')!;
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, cssW, cssH);
-    const total = H.t.length;
-    const start = this.range && total > this.range ? total - this.range : 0;
     const n = total - start;
     const pad = { l: 52, r: 12, t: 10, b: 26 };
     const x0 = pad.l, x1 = cssW - pad.r, y0 = pad.t, y1 = cssH - pad.b;
