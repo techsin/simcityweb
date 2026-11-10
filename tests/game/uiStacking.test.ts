@@ -107,6 +107,7 @@ describe('emergency count pill clear of centred panel bodies', () => {
       const state = {
         ctx: { root: { clientWidth: W, clientHeight: H, querySelectorAll: () => [panelEl] } },
         banners, moreShown: true, more: { offsetHeight: 34, style: { display: '', visibility: '' } },
+        followChip: { style: { display: 'none' } },
         el: { offsetWidth: BANNER_W }, ro: null, mo: null, pressAt: 0, hiddenPrompts: liveBanners ? 0 : 10,
         dockDirty: true, ordered: () => [...banners.values()], stackBottom: () => bottom,
         applyDock: (d: DockPlace | null, compact: boolean, rows: number) => { placed = { d, compact, rows }; },

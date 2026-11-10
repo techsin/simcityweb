@@ -224,6 +224,13 @@ export interface AdvisorData {
   /** FH-03: the zoned tiles per family (0 R, 1 C, 2 I) at the last month tick — more of a family zoned since then is
    *  the advice followed: its zone rule's cooldown and back-off start over */
   zoned?: [number, number, number];
+  /** LG-21: land exhaustion: free land under BUILT_OUT_FREE of the map in the zone scan the last month tick used (the
+   *  month's day-28 scan when one exists, else a fresh one, so land zoned or freed on days 28-29 shows one tick later),
+   *  whatever the demand (LG-05's
+   *  built-out card also needs a family with demand and no room left). Kept only while it holds: a city with land left
+   *  has no such field, like a save from before. The year review's grade reads it through the history's builtOut series
+   *  (history.ts, the next system of the tick); no rule and no other system does */
+  full?: boolean;
 }
 /** the month tick's map scans (AdvisorData.scan; each optional: a scan saved by an older version lacks the newer ones and
  *  the month tick then takes it fresh) — zone blocks (day 28), facilities + the worst jam + the residents beyond fire
@@ -2211,6 +2218,8 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     // (scans saved before LG-05: never built out). A family with empty lots left is not built out, whatever the map: its
     // lots are the room, and rezoning would demolish buildings to add more
     const full = scan.free !== undefined && scan.free < BUILT_OUT_FREE * st.cells;
+    // (LG-21: the month tick publishes it, AdvisorData.full; the panel's and the prediction's passes only read the city)
+    if (mode === 'month') { if (full) advisorData(st).full = true; else delete advisorData(st).full; }
     const noRoomLeft = (f: 0 | 1 | 2) => {
       const [a, b, minRoom, zs] = ROOM_RULE[f];
       return famDemand(a, b) >= 0.5 && room(zs) + rubbleRoom(zs) < minRoom && scan.noAccessFam[f] < NO_ACCESS_MIN_TILES;

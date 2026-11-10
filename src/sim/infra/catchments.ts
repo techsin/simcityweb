@@ -101,10 +101,26 @@ export function unservedClusters(sim: Simulation, tier: NeedTier, max = 5): { x:
 export interface TierProvider {
   /** fill `out` (cells) with the tier's need; `res` = residents per cell */
   needOf?(st: CityState, res: Float32Array, out: Float32Array): void;
+  /**
+   * B2 (docs/dev/B2_DESIGN.md §4 S_PREP): needOf as a resumable run, so services' prep can spread it over pieces. `list` is
+   * the services pass's building list (its snapshot) and `listNextId` the state's nextBuildingId when it was taken. Run to
+   * completion with nothing in between, it writes exactly what needOf(st, res, out) writes (`out` arrives zeroed).
+   * Optional: services runs needOf in one piece when a provider has no run.
+   */
+  needRun?(st: CityState, res: Float32Array, out: Float32Array, list: readonly Building[], listNextId: number): TierNeedRun;
   /** capacity of a facility in tier units (Infinity = capacity-free) */
   capacityOf?(st: CityState, b: Building): number;
   /** true: share capacity across the catchment like schools (conserving); false: legacy union of coverages */
   shared?: boolean;
+}
+/** B2: a provider's need raster in pieces (TierProvider.needRun) */
+export interface TierNeedRun {
+  /** run one piece of at most about `budgetUs` estimated warm µs; true when the raster is complete */
+  step(budgetUs: number): boolean;
+  /** estimated warm µs of the next piece at `budgetUs` (pure: reads the cursors only) */
+  pieceUs(budgetUs: number): number;
+  /** the next piece's label (step tools) */
+  readonly label: string;
 }
 const providers = new Map<NeedTier, TierProvider>();
 export function registerTierProvider(tier: NeedTier, p: TierProvider | null): void {
@@ -238,10 +254,10 @@ let nfQueue = new Int32Array(256);
  * barrier — a network cell the metric cannot enter (cost 0: highway / rail for walking, rail for driving) or a water
  * cell without a passable road (bridge). Writes best = 1 and the touched list (from 0); returns the count.
  */
-function nearField(st: CityState, bx: number, bz: number, bw: number, bd: number, near: number, cost: readonly number[], stamp: number): number {
+function nearField(en: ReachEngine, st: CityState, bx: number, bz: number, bw: number, bd: number, near: number, cost: readonly number[], stamp: number): number {
   const N = st.size;
   const net = st.network, water = st.water;
-  const visit = eng.visit, best = eng.best, touched = eng.touched;
+  const visit = en.visit, best = en.best, touched = en.touched;
   const x0 = Math.max(0, bx - near), x1 = Math.min(N - 1, bx + bw - 1 + near);
   const z0 = Math.max(0, bz - near), z1 = Math.min(N - 1, bz + bd - 1 + near);
   if (x1 < x0 || z1 < z0) return 0;
@@ -293,7 +309,7 @@ function reachRoad(st: CityState, bx: number, bz: number, bw: number, bd: number
   for (let q = 0; q <= maxQ + 8; q++) fall[q] = falloff(q / 4, roadR);
   // near field: always reached, but not across a barrier of the metric (walk: highways, rail, unbridged water; drive:
   // rail, unbridged water) — flood-filled from the footprint inside the near box
-  let n = nearField(st, bx, bz, bw, bd, Math.min(CATCH_NEAR_FIELD, Math.floor(radius)), cost, stamp);
+  let n = nearField(eng, st, bx, bz, bw, bd, Math.min(CATCH_NEAR_FIELD, Math.floor(radius)), cost, stamp);
   // seeds: passable road cells around the footprint (corners included)
   const head = eng.head;
   head.fill(-1);
@@ -368,6 +384,203 @@ function reachRoad(st: CityState, bx: number, bz: number, bw: number, bd: number
 }
 
 /**
+ * B2 (G2; docs/dev/B2_DESIGN.md §4 S_TIERS as built): reachRaw in pieces, for the services tier engine's fresh reaches.
+ * One fresh reach was an indivisible tier item: warm at most ~0.35 ms at dense1m (a hospital, 8,700 cells), but the search
+ * kernel stays cold between passes (cached reaches never call it), so after an edit invalidates the caches single reaches
+ * ran at 1.5-3 ms and up to 5.1 ms. Its own ReachEngine: other code calls reachRaw on the module engine between the
+ * pieces (a facility preview, the inspector, another city's pass). begin() is the whole call's prologue (the stamp, the
+ * falloff table, the near field, the seeds; a disk: its box), run(maxWork) the Dial drain with the budget checked before
+ * an entry is taken (1 per entry), a disk by rows (1 per cell, at least one row). The bucket being drained is detached
+ * before it drains (pushes go to the queue heads), so resuming at the saved entry pops exactly the whole call's sequence:
+ * `n`, the touched order and the weights are identical to reachRaw's for any cut.
+ */
+export class ReachRun {
+  private en = new ReachEngine();
+  private st: CityState | null = null;
+  private disk = false;
+  private stamp = 0;
+  // road search
+  private cost: readonly number[] = WALK_COST;
+  private drive = false;
+  private maxQ = 0;
+  private pending = 0;
+  private cur = 0;
+  private e = -1;
+  private open = false;
+  // disk
+  private cx = 0; private cz = 0; private half = 0; private R = 0;
+  private x0 = 0; private x1 = -1; private z = 0; private z1 = -1;
+  /** cells reached so far (reachRaw's return value once run() returned true) */
+  n = 0;
+  /** queue entries taken / disk cells visited so far (the work measure of run()) */
+  work = 0;
+  /** begun and not released */
+  active = false;
+
+  begin(st: CityState, bx: number, bz: number, bw: number, bd: number, radius: number, metric: number): void {
+    const en = this.en;
+    en.ensure(st.cells);
+    this.st = st; this.n = 0; this.work = 0; this.active = true;
+    this.pending = 0; this.cur = 0; this.e = -1; this.open = false;
+    this.disk = false; this.z = 0; this.z1 = -1;
+    if (!(radius > 0)) return;
+    const N = st.size;
+    const stamp = (this.stamp = en.nextStamp());
+    if (metric === 2) {
+      this.disk = true;
+      const cx = (this.cx = bx + bw / 2 - 0.5), cz = (this.cz = bz + bd / 2 - 0.5);
+      const half = (this.half = Math.max(bw, bd) / 2);
+      this.R = radius;
+      const Rt = radius + half;
+      this.x0 = Math.max(0, Math.floor(cx - Rt)); this.x1 = Math.min(N - 1, Math.ceil(cx + Rt));
+      this.z = Math.max(0, Math.floor(cz - Rt)); this.z1 = Math.min(N - 1, Math.ceil(cz + Rt));
+      return;
+    }
+    const net = st.network;
+    const cost = (this.cost = metric === 0 ? WALK_COST : DRIVE_COST);
+    this.drive = metric === 1;
+    const dist = en.dist, dstamp = en.dstamp;
+    const roadR = radius * ROAD_RADIUS_FACTOR;
+    const maxQ = (this.maxQ = Math.min(8000, Math.ceil(roadR * 4)));
+    if (en.fall.length < maxQ + 16) en.fall = new Float32Array(maxQ + 64);
+    const fall = en.fall;
+    for (let q = 0; q <= maxQ + 8; q++) fall[q] = falloff(q / 4, roadR);
+    this.n = nearField(en, st, bx, bz, bw, bd, Math.min(CATCH_NEAR_FIELD, Math.floor(radius)), cost, stamp);
+    const head = en.head;
+    head.fill(-1);
+    en.en = 0;
+    let pending = 0;
+    for (let z = bz - 1; z <= bz + bd; z++) {
+      if (z < 0 || z >= N) continue;
+      for (let x = bx - 1; x <= bx + bw; x++) {
+        if (x < 0 || x >= N) continue;
+        if (x >= bx && x < bx + bw && z >= bz && z < bz + bd) continue;
+        const i = z * N + x;
+        if (cost[net[i]] === 0 || dstamp[i] === stamp) continue;
+        dstamp[i] = stamp;
+        dist[i] = 0;
+        en.push(0, i);
+        pending++;
+      }
+    }
+    this.pending = pending;
+  }
+
+  /** at most maxWork more work (at least one entry / row); true when the reach is complete */
+  run(maxWork: number): boolean {
+    const st = this.st;
+    if (!st) return true;
+    return this.disk ? this.runDisk(st, maxWork) : this.runRoad(st, maxWork);
+  }
+
+  private runDisk(st: CityState, maxWork: number): boolean {
+    const N = st.size, en = this.en, stamp = this.stamp;
+    const visit = en.visit, best = en.best, touched = en.touched;
+    const cx = this.cx, cz = this.cz, half = this.half, R = this.R, x0 = this.x0, x1 = this.x1;
+    let n = this.n, w = 0;
+    for (; this.z <= this.z1; this.z++) {
+      if (w > 0 && w + (x1 - x0 + 1) > maxWork) break;
+      const z = this.z;
+      for (let x = x0; x <= x1; x++) {
+        const d = Math.max(0, Math.hypot(x - cx, z - cz) - half);
+        if (d > R) continue;
+        const v = falloff(d, R);
+        if (v <= 0) continue;
+        const i = z * N + x;
+        if (visit[i] !== stamp) { visit[i] = stamp; touched[n++] = i; }
+        best[i] = v;
+      }
+      w += x1 - x0 + 1;
+    }
+    this.n = n;
+    this.work += w;
+    return this.z > this.z1;
+  }
+
+  private runRoad(st: CityState, maxWork: number): boolean {
+    const N = st.size, net = st.network, en = this.en, stamp = this.stamp;
+    const visit = en.visit, best = en.best, touched = en.touched, dist = en.dist, dstamp = en.dstamp, head = en.head;
+    const fall = en.fall, cost = this.cost, drive = this.drive, maxQ = this.maxQ;
+    let n = this.n, pops = 0;
+    while (this.pending > 0) {
+      const cur = this.cur;
+      const slot = cur & 7;
+      let e: number;
+      if (this.open) e = this.e;
+      else { e = head[slot]; head[slot] = -1; this.open = true; }
+      while (e >= 0) {
+        if (pops > 0 && pops >= maxWork) { this.e = e; this.n = n; this.work += pops; return false; }
+        pops++;
+        const u = en.enode[e];
+        e = en.enext[e];
+        this.pending--;
+        if (dist[u] !== cur) continue; // stale entry (improved later)
+        const v = fall[cur];
+        const x = u % N, z = (u - x) / N;
+        if (v > 0) {
+          const v1 = fall[cur + 4];
+          const zz0 = z > 0 ? z - 1 : 0, zz1 = z < N - 1 ? z + 1 : N - 1;
+          const xx0 = x > 0 ? x - 1 : 0, xx1 = x < N - 1 ? x + 1 : N - 1;
+          for (let zz = zz0; zz <= zz1; zz++) {
+            const row = zz * N;
+            for (let xx = xx0; xx <= xx1; xx++) {
+              const j = row + xx;
+              const w = j === u ? v : v1;
+              if (visit[j] !== stamp) { visit[j] = stamp; best[j] = w; touched[n++] = j; }
+              else if (w > best[j]) best[j] = w;
+            }
+          }
+        }
+        const tu = net[u];
+        const hu = tu === HW;
+        for (let k = 0; k < 4; k++) {
+          let j: number;
+          if (k === 0) { if (x === 0) continue; j = u - 1; }
+          else if (k === 1) { if (x === N - 1) continue; j = u + 1; }
+          else if (k === 2) { if (z === 0) continue; j = u - N; }
+          else { if (z === N - 1) continue; j = u + N; }
+          const tj = net[j];
+          let c = cost[tj];
+          if (c === 0) continue;
+          if (drive && hu !== (tj === HW)) {
+            if (tu === STREET || tj === STREET) continue; // no ramps between streets and highways
+            c += RAMP_COST;
+          }
+          const nd = cur + c;
+          if (nd > maxQ) continue;
+          if (dstamp[j] !== stamp || nd < dist[j]) {
+            dstamp[j] = stamp;
+            dist[j] = nd;
+            en.push(nd & 7, j);
+            this.pending++;
+          }
+        }
+      }
+      this.open = false;
+      this.cur = cur + 1;
+    }
+    this.n = n;
+    this.work += pops;
+    return true;
+  }
+
+  /** the reached cells [0, n) (valid until the next begin) */
+  get touched(): Int32Array { return this.en.touched; }
+  /** the weight of each reached cell */
+  get best(): Float32Array { return this.en.best; }
+
+  /** drop the state reference (pass end, init); the engine's buffers stay for the next reach */
+  release(): void {
+    this.st = null;
+    this.active = false;
+    this.e = -1;
+    this.open = false;
+    this.pending = 0;
+    this.z = 0; this.z1 = -1;
+  }
+}
+
+/**
  * INTERNAL (services shopAccess): multi-source road distance in quarter cells by `metric` (0 walk / 1 drive) from
  * `seeds[0..nSeeds)` (road cells, label 0), up to maxQ. out (cells) = distance or -1 (unreached / not a road cell).
  * Returns the number of settled road cells.
@@ -430,8 +643,259 @@ export function roadDistMulti(st: CityState, metric: number, seeds: Int32Array, 
   return settled;
 }
 
+/**
+ * B2 (docs/dev/B2_DESIGN.md §4 S_SHOP_A): roadDistMulti in pieces, on a private 8-bucket circular queue (other code calls
+ * reachRaw / roadDistMulti / roadTimeMulti on the module engine between the pieces). start() is the whole call's
+ * prologue (out.fill(-1) + the seeds), run(maxPops) its drain with the budget checked before an entry is taken. The bucket
+ * being drained is detached before it drains (pushes go to the queue heads), so resuming at the saved entry pops exactly
+ * the whole call's sequence: `out` and `settled` are identical for any cut.
+ */
+export class RoadDistRun {
+  private head = new Int32Array(8);
+  private enode = new Int32Array(4096);
+  private enext = new Int32Array(4096);
+  private en = 0;
+  private pending = 0;
+  private cur = 0;
+  private e = -1;
+  private open = false;
+  private st: CityState | null = null;
+  private out: Int32Array = new Int32Array(0);
+  private metric = 0;
+  private maxQ = 0;
+  settled = 0;
+
+  start(st: CityState, metric: number, seeds: Int32Array, nSeeds: number, maxQ: number, out: Int32Array): void {
+    this.st = st; this.out = out; this.metric = metric; this.maxQ = maxQ;
+    const net = st.network;
+    const cost = metric === 0 ? WALK_COST : DRIVE_COST;
+    out.fill(-1);
+    const head = this.head;
+    head.fill(-1);
+    this.en = 0;
+    this.pending = 0;
+    this.cur = 0; this.e = -1; this.open = false; this.settled = 0;
+    for (let s = 0; s < nSeeds; s++) {
+      const i = seeds[s];
+      if (out[i] === 0 || cost[net[i]] === 0) continue;
+      out[i] = 0;
+      this.push(0, i);
+      this.pending++;
+    }
+  }
+
+  private push(slot: number, v: number): void {
+    const e = this.en++;
+    if (e >= this.enode.length) {
+      const c = this.enode.length * 2;
+      const a = new Int32Array(c); a.set(this.enode); this.enode = a;
+      const b = new Int32Array(c); b.set(this.enext); this.enext = b;
+    }
+    this.enode[e] = v;
+    this.enext[e] = this.head[slot];
+    this.head[slot] = e;
+  }
+
+  /** drain at most maxPops queue entries; true when the search is complete */
+  run(maxPops: number): boolean {
+    const st = this.st;
+    if (!st) return true;
+    const N = st.size, net = st.network, out = this.out, head = this.head, maxQ = this.maxQ;
+    const cost = this.metric === 0 ? WALK_COST : DRIVE_COST;
+    const drive = this.metric === 1;
+    let pops = 0;
+    while (this.pending > 0) {
+      const cur = this.cur;
+      const slot = cur & 7;
+      let e: number;
+      if (this.open) e = this.e;
+      else { e = head[slot]; head[slot] = -1; this.open = true; }
+      while (e >= 0) {
+        if (pops >= maxPops) { this.e = e; return false; }
+        pops++;
+        const u = this.enode[e];
+        e = this.enext[e];
+        this.pending--;
+        if (out[u] !== cur) continue;
+        this.settled++;
+        const x = u % N, z = (u - x) / N;
+        const tu = net[u];
+        const hu = tu === HW;
+        for (let k = 0; k < 4; k++) {
+          let j: number;
+          if (k === 0) { if (x === 0) continue; j = u - 1; }
+          else if (k === 1) { if (x === N - 1) continue; j = u + 1; }
+          else if (k === 2) { if (z === 0) continue; j = u - N; }
+          else { if (z === N - 1) continue; j = u + N; }
+          const tj = net[j];
+          let c = cost[tj];
+          if (c === 0) continue;
+          if (drive && hu !== (tj === HW)) {
+            if (tu === STREET || tj === STREET) continue;
+            c += RAMP_COST;
+          }
+          const nd = cur + c;
+          if (nd > maxQ) continue;
+          const oj = out[j];
+          if (oj < 0 || nd < oj) {
+            out[j] = nd;
+            this.push(nd & 7, j);
+            this.pending++;
+          }
+        }
+      }
+      this.open = false;
+      this.cur = cur + 1;
+    }
+    return true;
+  }
+
+  /** entries still queued (cost estimates) */
+  get queued(): number {
+    return this.pending;
+  }
+
+  /** drop the state / output references (pass end; the resume entry too, so a finished run's state is canonical) */
+  release(): void {
+    this.st = null;
+    this.out = new Int32Array(0);
+    this.e = -1;
+    this.open = false;
+  }
+}
+
 /** quantum (minutes) of roadTimeMulti labels */
 export const TIME_Q = 0.005;
+/**
+ * B2 (docs/dev/B2_DESIGN.md §4 S_ACC_SEARCH): roadTimeMulti in pieces, on a private linear bucket queue. begin() is the
+ * whole call's prologue up to the seed scan, seed(count) the seed scan by cell ranges (index order, as the whole call
+ * pushes them), run(maxPops) the drain with the budget checked before an entry is taken. Edge costs are integers >= 1
+ * and the bucket being drained is detached first, so its list is fixed while it drains: resuming at the saved entry
+ * pops exactly the whole call's sequence (the labels in `out` and `settled` are identical for any cut).
+ */
+export class RoadTimeRun {
+  private head = new Int32Array(0);
+  private enode = new Int32Array(4096);
+  private enext = new Int32Array(4096);
+  private en = 0;
+  private pending = 0;
+  private cur = 0;
+  private e = -1;
+  private open = false;
+  private nb = 0;
+  private st: CityState | null = null;
+  private out: Int32Array = new Int32Array(0);
+  private limitQ = 0;
+  private netTimeQ: readonly number[] = [];
+  private rampQ = 0;
+  /** next cell of the seed scan */
+  seedAt = 0;
+  settled = 0;
+
+  begin(st: CityState, out: Int32Array, limitQ: number, netTimeQ: readonly number[], rampQ: number): void {
+    this.st = st; this.out = out; this.limitQ = limitQ; this.netTimeQ = netTimeQ; this.rampQ = rampQ;
+    const nb = (this.nb = limitQ + 1);
+    if (this.head.length < nb) this.head = new Int32Array(nb + 1024);
+    this.head.fill(-1, 0, nb);
+    this.en = 0;
+    this.pending = 0;
+    this.cur = 0; this.e = -1; this.open = false; this.seedAt = 0; this.settled = 0;
+  }
+
+  /** doubles the edge lists (not named `grow`: tests/worker/hygiene.test.ts reads any `.grow()` call as a wasm
+   *  memory growth) */
+  private growEdges(): void {
+    const c = this.enode.length * 2;
+    const a = new Int32Array(c); a.set(this.enode); this.enode = a;
+    const b = new Int32Array(c); b.set(this.enext); this.enext = b;
+  }
+
+  /** the seed scan over cells [seedAt, seedAt + count); true when every cell is scanned */
+  seed(count: number): boolean {
+    const st = this.st;
+    if (!st) return true;
+    const C = st.cells, net = st.network, out = this.out, head = this.head, limitQ = this.limitQ, netTimeQ = this.netTimeQ;
+    const i1 = Math.min(C, this.seedAt + count);
+    for (let i = this.seedAt; i < i1; i++) {
+      const l = out[i];
+      if (l < 0) continue;
+      if (l > limitQ || netTimeQ[net[i]] === 0) { out[i] = -1; continue; }
+      const e = this.en++;
+      if (e >= this.enode.length) this.growEdges();
+      this.enode[e] = i; this.enext[e] = head[l]; head[l] = e;
+      this.pending++;
+    }
+    this.seedAt = i1;
+    return i1 >= C;
+  }
+
+  /** drain at most maxPops queue entries; true when the search is complete */
+  run(maxPops: number): boolean {
+    const st = this.st;
+    if (!st) return true;
+    const N = st.size, net = st.network, out = this.out, head = this.head, nb = this.nb, limitQ = this.limitQ;
+    const netTimeQ = this.netTimeQ, rampQ = this.rampQ;
+    let pops = 0;
+    while (this.cur < nb && this.pending > 0) {
+      const cur = this.cur;
+      let e: number;
+      if (this.open) e = this.e;
+      else { e = head[cur]; head[cur] = -1; this.open = true; }
+      while (e >= 0) {
+        if (pops >= maxPops) { this.e = e; return false; }
+        pops++;
+        const u = this.enode[e];
+        e = this.enext[e];
+        this.pending--;
+        if (out[u] !== cur) continue;
+        this.settled++;
+        const x = u % N, z = (u - x) / N;
+        const tu = net[u];
+        const hu = tu === HW;
+        for (let k = 0; k < 4; k++) {
+          let j: number;
+          if (k === 0) { if (x === 0) continue; j = u - 1; }
+          else if (k === 1) { if (x === N - 1) continue; j = u + 1; }
+          else if (k === 2) { if (z === 0) continue; j = u - N; }
+          else { if (z === N - 1) continue; j = u + N; }
+          const tj = net[j];
+          let c = netTimeQ[tj];
+          if (c === 0) continue;
+          if (hu !== (tj === HW)) {
+            if (tu === STREET || tj === STREET) continue;
+            c += rampQ;
+          }
+          const nd = cur + c;
+          if (nd > limitQ) continue;
+          const oj = out[j];
+          if (oj < 0 || nd < oj) {
+            out[j] = nd;
+            const en = this.en++;
+            if (en >= this.enode.length) this.growEdges();
+            this.enode[en] = j; this.enext[en] = head[nd]; head[nd] = en;
+            this.pending++;
+          }
+        }
+      }
+      this.open = false;
+      this.cur = cur + 1;
+    }
+    return true;
+  }
+
+  /** entries still queued (cost estimates) */
+  get queued(): number {
+    return this.pending;
+  }
+
+  /** drop the state / output references (pass end; the resume entry too, so a finished run's state is canonical) */
+  release(): void {
+    this.st = null;
+    this.out = new Int32Array(0);
+    this.e = -1;
+    this.open = false;
+  }
+}
 let lhead = new Int32Array(0);
 /**
  * INTERNAL (services accessCommute): multi-source free-flow travel time over road cells (Street .. Highway; NET_TIME

@@ -62,9 +62,14 @@ describe('infra perf (256x256 stress city)', () => {
     resetSchedulerStats(sch);
     // P0-8: record every task's largest estimated step cost (deterministic) over the measured days
     const maxEst = new Map<string, number>();
+    // (B2 fix round: and every task's passes — a step after which its system is idle ends a pass — for the cadence check)
+    const passes = new Map<string, number>();
+    const sysOf = (n: string) => sim.getSystem(n === 'emergency.response' ? 'emergency' : n) as unknown as { phase?: number; stepIdx?: number; respStep?: number };
     for (const t of sch.tasks) {
-      const cost = t.cost.bind(t);
+      const cost = t.cost.bind(t), step = t.step.bind(t), sys = sysOf(t.name);
       t.cost = (s2) => { const c = cost(s2); if (c > (maxEst.get(t.name) ?? 0)) maxEst.set(t.name, c); return c; };
+      passes.set(t.name, 0);
+      t.step = (s2) => { step(s2); if ((sys.phase ?? sys.stepIdx ?? sys.respStep ?? 0) < 0) passes.set(t.name, passes.get(t.name)! + 1); };
     }
     const dayMs: number[] = [];
     const D = 180;
@@ -84,9 +89,37 @@ describe('infra perf (256x256 stress city)', () => {
     // P0-8 step budget: estimated cost <= 3.0 per step, every task (WP3 split pollution / crime, WP7b traffic's transit
     // step; WP6b dropped the last per-task exception)
     for (const [name, c] of maxEst) expect(c, `estimated step cost of ${name}`).toBeLessThanOrEqual(3.0);
+    // B2 (docs/dev/B2_DESIGN.md §11.5): every traffic piece is estimated within about one INFRA_PIECE_MS (the other tasks
+    // follow in their groups)
+    expect(maxEst.get('traffic') ?? 0, 'estimated piece cost of traffic').toBeLessThanOrEqual(1.0);
+    // (G2: every services piece too — the tier steps at ~INFRA_PIECE_MS, every other loop at half INFRA_PIECE_COLD_MS;
+    // traffic's attachment refresh, when pending, runs in a services piece of its own)
+    expect(maxEst.get('services') ?? 0, 'estimated piece cost of services').toBeLessThanOrEqual(1.0);
+    // (G3: every crime and pollution piece too — half INFRA_PIECE_COLD_MS with the cold cell and Building floors; the
+    // snapshot take and traffic's pending attachment refresh, in pollution pieces of their own, are the largest)
+    expect(maxEst.get('crime') ?? 0, 'estimated piece cost of crime').toBeLessThanOrEqual(1.0);
+    expect(maxEst.get('pollution') ?? 0, 'estimated piece cost of pollution').toBeLessThanOrEqual(1.0);
+    // (G4: every utilities piece too — half INFRA_PIECE_COLD_MS with the cold floors; the snapshot take is the largest)
+    expect(maxEst.get('utilities') ?? 0, 'estimated piece cost of utilities').toBeLessThanOrEqual(1.0);
     // P0-15 utilisation of the headless budget (deterministic: estimated costs). Lead decision (ROUTED_ITEMS #30): <= 0.89
-    // until the million-population performance phase, which owns the scheduler budget and its 0.88 gate
-    expect(util, 'stress-city scheduler utilisation').toBeLessThanOrEqual(0.89);
+    // until the million-population performance phase, which owns the scheduler budget. B2 G1 re-baselines it (design §9.4
+    // item 5): traffic's pieces (~0.13-0.3 estimated ms) fill a day's budget to within one piece, and traffic is due every
+    // day on this city (a cycle spans several days), so the share of the budget used no longer measures headroom (base
+    // 41ae570: 0.869 with 2-3 ms steps; G1: 0.961). The per-task cadence (G4's table) is the headroom check instead.
+    // G3: with crime's and pollution's pieces too (~0.01-0.13 estimated ms) a day is filled to within a few hundredths of
+    // a ms: 0.985 (G2: 0.98). G4 (the step guard 256 -> 4096, which no longer ends a day of small utilities pieces
+    // before its budget is spent): 0.996 at the budget 5.3, 0.994 at the final 4.6 — every day is spent to within one
+    // piece, so the bound only
+    // guards against the budget being overrun (urgent work beyond it), not headroom (the cadence table, §18, is that).
+    expect(util, 'stress-city scheduler utilisation').toBeLessThanOrEqual(1.02);
+    // P0-15's headroom, B2 fix round (the verify reviews: the bound above no longer measures it): the cadence. Over these
+    // 180 days every task finishes at least as many passes as the base (41ae570, before B2) did on this same code path —
+    // b2work/fix1/cadence.ts in both trees: utilities 22, traffic 4, pollution 7, services 10, crime 9 (B2 at the fix
+    // round: 30, 4, 15, 11, 9). Deterministic: the headless schedule follows the estimates. (dense1m's traffic runs 10
+    // cycles per 360 days instead of B's 13, design §18.5; this city's traffic keeps B's cadence.)
+    console.log(`passes in ${D} days: ${[...passes].map(([k, v]) => `${k}=${v}`).join(' ')}`);
+    const BASE_PASSES: Record<string, number> = { utilities: 22, traffic: 4, pollution: 7, services: 10, crime: 9 };
+    for (const [name, n] of Object.entries(BASE_PASSES)) expect(passes.get(name) ?? 0, `passes of ${name} in ${D} days (base ${n})`).toBeGreaterThanOrEqual(n);
     // measured max per step <= 6 ms (CI slack); wall-clock on shared machines spikes (GC / load), so strict mode only
     if (process.env.PERF_STRICT) for (const [name, ms] of sch.maxStepMs) expect(ms, `measured step ms of ${name}`).toBeLessThanOrEqual(6);
     expect(city.buildings).toBeGreaterThan(15000);
