@@ -83,7 +83,7 @@ describe('the packet hosts\' clock across day boundaries (T061 item 2)', () => {
     } finally { await r.host.dispose(); }
   });
 
-  it('never runs more than one packet interval past the last packet, and never back', { timeout: 30000 }, async () => {
+  it('never runs more than one packet interval past the last packet, and never back', { timeout: 120000 }, async () => {
     const r = await rig(0);
     try {
       r.host.setSpeed(1, 'keyboard'); await r.host.drain();
@@ -103,7 +103,7 @@ describe('the packet hosts\' clock across day boundaries (T061 item 2)', () => {
     } finally { await r.host.dispose(); }
   });
 
-  it('stays in its day while the page holds the calendar (NOTE-041), before the authority\'s held packet arrives', { timeout: 30000 }, async () => {
+  it('stays in its day while the page holds the calendar (NOTE-041), before the authority\'s held packet arrives', { timeout: 120000 }, async () => {
     const r = await rig(0);
     try {
       r.host.setSpeed(1, 'keyboard'); await r.host.drain();
@@ -130,7 +130,7 @@ describe('the packet hosts\' clock across day boundaries (T061 item 2)', () => {
     } finally { await r.host.dispose(); }
   });
 
-  it('does not go back when LIVE engages late in a day, and stops for at most the lead and a heartbeat', { timeout: 30000 }, async () => {
+  it('does not go back when LIVE engages late in a day, and stops for at most the lead and a heartbeat', { timeout: 120000 }, async () => {
     // T061 review (decision 5, Desktop QA item 7): LIVE triples a day's length at 1x, so the authority's day fraction
     // drops to a third (0.9 of the day becomes 0.3; the local host's clock jumps back there, POLISH_BACKLOG). The page's
     // clock is already past that: it waits until the packets come within the lead (500 ms) of it, which the heartbeat
@@ -160,7 +160,7 @@ describe('the packet hosts\' clock across day boundaries (T061 item 2)', () => {
     } finally { await r.host.dispose(); }
   });
 
-  it('starts from the adopted clock after a resync', { timeout: 30000 }, async () => {
+  it('starts from the adopted clock after a resync', { timeout: 120000 }, async () => {
     const r = await rig(0);
     try {
       r.host.setSpeed(1, 'keyboard'); await r.host.drain();

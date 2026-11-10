@@ -134,13 +134,63 @@ export const TRAFFIC_CYCLE_DAYS = 2;
 export const TRAFFIC_MIN_CYCLE_MS = 1000;
 
 // ---------------------------------------------------------------------------------------------- scheduler
-/** headless: estimated ms of infra steps per sim day (at least one step always runs; step estimates ~ ms on a busy 4-core CI box) */
-export const INFRA_DAY_BUDGET = 2.6 + 0.15 /* WP3 share (P0-15) */ + 0.25 /* WP2 share (P0-15) */ + 0.15 /* WP8 share (P0-15) */
-  + 0 /* WP7a share (PART B, max 0.1) */ + 0.05 /* WP7b share (PART B, max 0.2): parking raster, P&R, sinks, fleet (traffic +0.035 est. ms / day vs pre-WP7b on the stress city, r1) */;
-/** headless: unused budget (next step did not fit) carried to the next day, at most this much */
-export const INFRA_DAY_CARRY = 0.6;
+/**
+ * headless: estimated ms of infra steps per sim day (at least one step always runs). Pre-B2 value 3.2 (2.6 + the WP3
+ * 0.15, WP2 0.25, WP8 0.15 and WP7b 0.05 shares of P0-15, in the old under-estimated units). B2 (docs/dev/B2_DESIGN.md
+ * §9.4): the step estimates become honest warm wall ms (per-piece medians); G1 scaled the budget, the carry and the credit
+ * floor by about 1.65 (5.3 / 1.0 / 6.5). G4 (§18.5): at 5.3 every task kept at least B's cadence for 1.3-1.9 x B's real
+ * infra ms per day, and the balance's totalMsPerDay ran +2.5 to +3.4 over B (gate: + 3); at 4.2 the bot's seed 7 fell
+ * to 0.84 x B1's population; at 3.2 (B's real ms per day) services ran 0-1 passes in 120 days. 4.6 (x 1.44, the carry
+ * and the floor likewise): per 360 days every task at B's cadence or above but dense1m's traffic, 10 cycles instead of
+ * 13 (the slower traffic §9.4 expected), and totalMsPerDay +1.4 over B under the timing lock.
+ */
+export const INFRA_DAY_BUDGET = 4.6;
+/** headless: unused budget (next step did not fit) carried to the next day, at most this much (pre-B2: 0.6; B2: x 1.44) */
+export const INFRA_DAY_CARRY = 0.87;
+/** max priority (estimated ms) an idle task can bank in the scheduler's fairness credit (pre-B2: 4 in scheduler.ts; B2: x 1.44) */
+export const CREDIT_FLOOR = 5.75;
 /** with a live renderer: real ms of infra steps per frame (at least one step when due) */
 export const INFRA_FRAME_BUDGET_MS = 3;
+/**
+ * B2: estimated warm wall ms of one scheduler step ("piece") of a split infra task — the budget every chunk size is
+ * derived from (scheduler.ts pieceUnits(): units per piece = this / ms per unit; deterministic constants, no clock).
+ * Used for loops whose cold cost (first executions after a load, deopt waves) was measured at <= 10 x their warm cost:
+ * road / transit searches and the inbound / shop / freight passes (design review 2, item 1).
+ */
+export const INFRA_PIECE_MS = 0.3;
+/**
+ * B2: the piece budget of the loops that run cold most of the time — every Building loop and every stage that runs once
+ * per pass or less often (traffic prep, prepTransit, transit options, park & ride, commute end, parking, final, final2,
+ * the matching's per-round loops, graph rebuilds). Design review 2 measured split Building-loop pieces at p99 ~20 x and
+ * up to 37 x their warm cost in the first 200 days after a load, so 0.13 warm ms keeps them under ~3-5 ms cold.
+ */
+export const INFRA_PIECE_COLD_MS = 0.13;
+/** B2: headless, estimated ms of urgent steps (player-edit feedback) per scheduler run (replaces the pre-B2 8 steps) */
+export const INFRA_URGENT_BUDGET = 24;
+/**
+ * B2: live (frames active), real ms of urgent steps per frame (pre-B2: no time check). G4 had 2 x INFRA_FRAME_BUDGET_MS;
+ * the B2 fix round (the verify review: never measured, twice the frame budget) caps it at the frame budget itself, so an
+ * edit's urgent passes never make a frame's infra work exceed INFRA_FRAME_BUDGET_MS + one step. Live only: the headless
+ * schedule (the bot) does not read it.
+ */
+export const INFRA_URGENT_FRAME_MS = INFRA_FRAME_BUDGET_MS;
+/**
+ * B2 (G2): the sizing floor, in estimated µs per cell, of the cell loops that run once per pass: on their first
+ * executions after a load they run interpreted at ~100 ns per cell (G2 dense1m runs: 25-70 x their warm cost), so a piece
+ * of such a loop holds at most pieceUnits(INFRA_CELL_SIZING_US, 1, budget) cells (~16k at half INFRA_PIECE_COLD_MS) however
+ * cheap the loop is warm. Chunk sizes only — the estimates keep the loops' own coefficients.
+ */
+export const INFRA_CELL_SIZING_US = 0.004;
+/**
+ * B2 (G2): the same floor for the once-per-pass Building loops, in estimated µs per building (services prep's chunks, the
+ * stop list, the access seeds and homes, shopB's block sums, the EQ / HQ fallback, the police scan and job sites): their
+ * first executions after a load and the Building-shape deopts ran them at 1-8 µs per building (G2 dense1m: 25-75 x
+ * warm), so a piece holds at most pieceUnits(INFRA_BLD_SIZING_US, 1, budget) buildings (~160 at half
+ * INFRA_PIECE_COLD_MS). Chunk sizes only. G2-G4 had 0.2; the B2 fix round doubled it: the gates' and the verify runs
+ * from a load (dense1m) still ran floor-sized Building chunks at 10-17 µs per building (crime sources.bld, pollution
+ * srcBld.bld / flags.bld, utilities uses.bld / power.bld, services stops.collectB / prep.bld: 3-6.6 ms per piece).
+ */
+export const INFRA_BLD_SIZING_US = 0.4;
 /** commute above this (min) counts as unreachable for employment purposes */
 export const MAX_COMMUTE = 110;
 
@@ -568,7 +618,9 @@ export const INDUSTRIAL_POLL = { air: 0.25, water: 0, radius: 3 } as const;
 /** medical survival = MED_SURVIVE - MED_DELAY_LOSS x smoothstep(5, 16, D days) (- 0.1 when the hospital is overcrowded) */
 export const MED_SURVIVE = 0.97;
 export const MED_DELAY_LOSS = 0.67;
-/** response-layer task (scheduler 'emergency.response'): station searches settle at most EMERG_SEARCH_CHUNK road
+/** PRE-B2 (41ae570) response-layer chunks and costs, kept for the frozen original (tests/sim/exact/emergencyOriginal.ts)
+ *  and the search bench (tools/bench/roadTransitSearch/secondary.ts); B2 (G4) sizes the response pieces in emergency.ts
+ *  (ES, EM). Pre-B2: response-layer task (scheduler 'emergency.response'): station searches settle at most EMERG_SEARCH_CHUNK road
  *  nodes per step and the building fill covers EMERG_FILL_CHUNK buildings per step, so every step stays bounded on
  *  any map. Estimated ms (measured on the 256² stress city): EMERG_SEARCH_COST per 36k settled nodes,
  *  EMERG_FILL_CELLS_COST per 65k cells (the land fill of all three layers), EMERG_FILL_BLD_COST per 20k buildings,
