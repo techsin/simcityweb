@@ -1,6 +1,7 @@
 /**
  * Rewards, unlocks, landmarks and business deals (SC4 style).
- * When a reward's conditions are met: state.unlocked.add(id), notify(kind 'reward'), emit 'unlocked' (once).
+ * When a reward's conditions are met: state.unlocked.add(id), notify(kind 'reward'), emit 'unlocked' (once). The silent
+ * check (a new city's or an old save's first init) unlocks without news and emits nothing (T093 P1).
  * Unlocks are permanent. BuildingDef.requires references these ids. Sandbox unlocks everything.
  */
 import type { SimSystem, Simulation } from '../Simulation';
@@ -131,16 +132,17 @@ export const REWARDS: RewardDef[] = [
   lm('lm_spire_tower', 250000), lm('lm_twin_spires', 500000),
 ];
 
-const hasWaterCache = new WeakMap<CityState, boolean>();
+/**
+ * The Seaport's coastline: more than 40 water cells. Counted each time it is asked, stopping at the 41st, so a coast dug
+ * by terraforming or changed by a disaster counts at once in the running game and on a replica (the Rewards panel). It
+ * was cached per city object for the state's life, so the running game kept its first answer while a loaded game
+ * counted again (T093 decision 2). Asked at a month tick only once the city has 6,000 industrial jobs (the first
+ * condition), and by the Rewards panel; the rank line skips full-state conditions.
+ */
 function hasWater(st: CityState): boolean {
-  let v = hasWaterCache.get(st);
-  if (v === undefined) {
-    let n = 0;
-    for (let i = 0; i < st.cells; i++) if (st.water[i]) n++;
-    v = n > 40;
-    hasWaterCache.set(st, v);
-  }
-  return v;
+  let n = 0;
+  for (let i = 0; i < st.cells; i++) if (st.water[i] && ++n > 40) return true;
+  return false;
 }
 
 export const REWARD_BY_ID = new Map(REWARDS.map((r) => [r.id, r]));
@@ -248,7 +250,10 @@ export function rewardsSystem(rt: EconRuntime): SimSystem {
           sim.notify(text, 'reward', undefined, undefined, r.kind === 'deal' ? 'finance' : 'planning', { reward: r.id });
         }
       }
-      sim.events.emit('unlocked', r.id);
+      // T093 P1: the silent check emits nothing. 'unlocked' lights the Rewards badge (CityScene) and plays the reward
+      // sound (GameSounds), so a new sandbox city lit the badge with nothing to announce; the save fingerprint counts
+      // unlocked.size itself, and a replica gets the sets as a plain patch
+      if (!silent) sim.events.emit('unlocked', r.id);
     }
   };
   return {
