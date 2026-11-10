@@ -1,4 +1,50 @@
-# T037ar — onboarding round 5
+# T037ar — onboarding round 6
+
+Base: **656ac4d**, with dev **d83f0d0** merged after the committed round-5 work. Read the complete assigned gate_failure_r5.txt before editing. This round is **one test-setup correction**, plus this report; changes remain uncommitted.
+
+## Cause and correction
+
+Reproduced the reported emergencyOutcomePolicy failure. A temporary diagnostic captured the first toast as E2's “LIVE: the game slowed down so you can follow the truck…” lesson, with policy.live **true**, host.speed **1** and liveSlowdown **3**. The diagnostic was removed from the test; its JSON remains in the assigned scratch folder.
+
+The fixture omitted Tips. On dev, EmergencyBanner required settings.tips === true, so that partial settings fixture implicitly disabled teaching. Actual dev settings already defaulted Tips on; POLISH_PLAN's Tips default is also on. The integrated profile correctly preserves that default (src/ui/guide/progress.ts:49). Its migration runs before the banner reads Tips, so this is neither a new player-facing default nor a skipped migration. E2 is correctly eligible while LIVE is active (src/ui/EmergencyBanner.ts:740). The fixture must explicitly opt out when checking only outcome feedback.
+
+| File | Change |
+|---|---|
+| tests/game/emergencyOutcomePolicy.test.ts | Isolate profile storage per test, call setGuideTips(false) before constructing the host/banner, and restore stubbed globals afterward. Every existing assertion and the entire test body remain unchanged. |
+| docs/dev/reports/local-R1-guide-a.md | Record the diagnosis, old-path audit and round-6 gate results. |
+
+Searched the whole tests tree for direct/bracket Tips access, settings fixtures and legacy emergencyTeaching preference/storage calls. **No other obsolete behavioral setup remains.** emergencyBanner, emergencyTeaching and emergencyTeachingHost already use the profile API. The old keys in guideTips.test.ts:35, :67–72 and :86 intentionally verify retired settings, one-time migration and no legacy writes; settingsSchema.test.ts:204 deliberately supplies a malformed retired key. Keep these compatibility assertions. emergencyLive and emergencyOutcomes use partial hosts without liveSlowdown; they do not qualify for E2, and their existing assertions pass unchanged.
+
+**No product source was edited.** No changes to worker, infrastructure, cloud-held files or other worktrees; no outside-scope source hunk, plan change or new cloud request. The earlier worker-journal handoff is retained below; it was not reverified in this fixture-only round.
+
+## Round-6 verification
+
+**PASS:** quiet-gated npx tsc --noEmit; git diff --check; UTF-8 without BOM for both changed files. Ran the **36 round-5 files listed in the historical table below**, plus these three, individually and sequentially through quietrun:
+
+| Additional file | Passed | Skipped |
+|---|---:|---:|
+| tests/game/emergencyLive.test.ts | 10 | 0 |
+| tests/game/emergencyOutcomePolicy.test.ts | 1 | 0 |
+| tests/game/emergencyOutcomes.test.ts | 24 | 0 |
+
+**39 files: 37 passed, 2 entirely skipped; 568 tests passed, 11 existing skips.** This includes every tests/game/emergency*.test.ts file (7 files / 157 tests), the real Worker teaching test, packet teaching/guide persistence, hygiene, notifications and replica checks. No assertions were relaxed and no skips were added.
+
+One timing caveat: guideContinuity.test.ts initially exceeded Vitest's default 5,000 ms limit (5,156 ms). It passed unchanged on a quiet-gated retry with --testTimeout 30000 (the entire retry run took 5.43 seconds). No source timeout or fixture behavior was changed. The other files used the ordinary command below; only this continuity retry appended that timeout option.
+
+~~~text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types node_modules/vitest/vitest.mjs run <single-file> --maxWorkers=1 --configLoader native --pool threads
+~~~
+
+Scratch evidence: round6-first-toast.json captures the original teaching toast; round6-test-results.json records all 39 exact commands/results, the initial timeout and the successful retry. The existing experimental-strip-types and AbortSignal listener-limit warnings remain.
+
+No full suite, bot, browser, bench or GPU timing run was started. Product code, balance, RNG and digests are untouched by this change; **192,899 is the previously measured bot reference, not a fresh round-6 measurement**. Full-suite integration and physical browser checks remain with the lead. No further product limitation was found.
+
+- [ ] Tips off: dispatch a LIVE incident; the restore toast follows arrival, and resolution plays one saved sting without a good chime.
+- [ ] Fresh profile / Tips on: E2 may appear during LIVE; once shown, its seen flag survives guide profile writes and reload. Retain the broader round-5 browser checklist below.
+
+---
+
+## Round-5 report (historical)
 
 Base: **02763b0**, the clean textual merge of dev **34e3f81** (T057 continuity, T060 ticker, T048 outcomes, T036s5 FH-08, T036s4 storage and R1). Read **all of the assigned qa_full.md before any code work**. The QA evidence is from d4fa71b; it is prior browser evidence, not a browser pass for this tree. NOTE-069 is absent from this checkout's docs; the worker's explicit Job A instructions supplied the required integration scope. No AGENTS.md or CLAUDE.md was found.
 

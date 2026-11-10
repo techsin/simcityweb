@@ -7,6 +7,7 @@ import { GameSounds } from '../../src/game/GameSounds';
 import { FOLLOW_GRACE } from '../../src/game/emergencyPolicy';
 import { getFire } from '../../src/sim/systems/infra';
 import { EmergencyBanner } from '../../src/ui/EmergencyBanner';
+import { setGuideTips } from '../../src/ui/guide/tips';
 import { LocalSimHost } from '../../src/worker/SimHost';
 import { newState, place, roadLine } from '../infra/cityGen';
 import { FEl, installFakeDom } from './fakeDom';
@@ -14,11 +15,17 @@ import { FEl, installFakeDom } from './fakeDom';
 installFakeDom();
 
 describe('emergency outcome through the LIVE policy', () => {
-  beforeEach(() => vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] }));
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] });
+    const stored = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) });
+    setGuideTips(false);
+  });
   afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('restores after arrival, then resolves with exactly one saved sting and no good chime', async () => {
