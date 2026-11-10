@@ -9,6 +9,8 @@ export const REPLICA_SAFE = [
   'listRewards', 'listMilestones', 'listOrdinances', 'loanOffer', 'maxLoanAmount', 'regionTerms',
   'serviceEffectiveness', 'onStrike', 'demandInfo', 'emptyZoneStatus', 'utilityReaches', 'infraFlags',
   'windVector', 'overlayLayer', 'overlayReadout', 'cityFingerprint',
+  // FEEL-19: the Query hover's chip inputs (a building's water need, the town size where unmet needs start to matter)
+  'waterRequired', 'needsExpectation',
   'zone', 'dezone', 'bulldoze', 'buildNetwork', 'buildPowerLine', 'buildSubway', 'plop', 'terraform', 'plantTrees',
   'setOrdinance', 'takeLoan', 'repayLoan',
 ] as const;

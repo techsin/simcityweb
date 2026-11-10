@@ -21,7 +21,7 @@ export type CommandOp = 'zone' | 'dezone' | 'bulldoze' | 'buildNetwork' | 'build
 export type QueryName = 'inspectBuilding' | 'inspectCell' | 'dispatchOptions' | 'routePreview' | 'emergencyReport'
   | 'demolishRisks' | 'sideDemolishRisks' | 'stopsNear' | 'ferryPartnersFor' | 'openAdvice' | 'advisorIssues'
   | 'capHints' | 'tourismSummary' | 'attractivenessBreakdown' | 'unservedClusters' | 'computeMonthlyBudget' | 'garageStates' | 'verify'
-  | 'upkeepContext';
+  | 'upkeepContext' | 'buildingCondition';
 // These wire policies are completed by the W0 query / persistence lanes; no handlers live here.
 export type WatchPolicy = 'daily' | 'monthly' | 'change';
 export type SaveReason = 'manual' | 'autosave' | 'hidden' | 'exit';
