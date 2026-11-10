@@ -1,3 +1,524 @@
+# NOTE-062 fix round: diagnosis and bounded screens complete; policy decision pending
+
+This section supersedes the earlier single-run verdicts below. Before any run in this fix round, the diagnostic seeds are fixed as **11, 7 and 23**. Seeds 7 and 23 are the two additional seeds; they will not be replaced after seeing results. Every diagnosis ensemble has exactly five members: control, +§100 and −§100 on day 1, and +§100 and −§100 on day 1441. All diagnosis runs are **256×15**, with monthly observations through year 10. No new 60-year run is planned in this lane.
+
+The preregistered matrix is attentive and `--neglect` on each of: this lane, the read-only dev tree `simcityweb-T062`, and the read-only T043+T041 tree `simcityweb-T043x41`. Attentive single-mechanic ensembles on both LG-06 trees additionally isolate **rebuild only**, **safety record only (migration and tourism together)**, and **scars only**, using the same seeds and five members. Dev is the common pre-T041 LG-06-off reference. Because T041 changes the funds path, T043x41 also gets matched attentive/neglect **LG-06-off** ensembles, with only LG-06's three mechanics disabled in scratch; this keeps its within-T041 comparison distinct from the cross-base dev comparison. This is 90 full-profile members, 90 attentive-ablation members and 30 matched T041-off members, before any justified identity probes. Raw outputs and logs go only to this lane's scratch folder; at most three bot members run concurrently, each through quietrun.
+
+The default bot and all simulation formulas remain unchanged during diagnosis. Observation hooks must reproduce the unobserved control's annual gameplay rows and serialized-state hashes. The ensemble runner can select a different tree, but its current row validator rejects 256×15 and seeds other than 7/11; a scratch-only collector will therefore follow its member/nudge/bundling procedure without editing the dev or throwaway tree.
+
+Work follows NOTE-062 section 2 in order. If diagnosis supports changing recurring rebuild booking, report the `oneoff:rebuild` option and **stop for the lead's answer before changing it or proceeding with later fix items**. That condition was not demonstrated. Later scar, constant and eligibility measurements were confined to scratch bundles; production mechanics and values remain unchanged.
+
+Current ensemble verdict amendments: the earlier s7 variant passes are **UNCONFIRMED** while its base row fails; the s7 late base rows are **UNRESOLVED**. The ensemble reversed the single-run s11 base shift: approximately **+4.7%** on the old single run versus **−3.4%** on the ensemble median. The final dev gates, including monthly ensemble tourism/failure observations, remain open.
+
+## Diagnosis results
+
+**425 simulations are complete**: 216 diagnosis/identity runs (210 campaign members plus six additional controls), six scar-isolation members, 161 bounded-screen members and all 42 illustrative option-(a) members: **216 + 6 + 161 + 42 = 425**. The bounded screen includes 150 candidate runs, ten matching 128 full/off baselines and one additional unobserved identity control; reused references are not counted again. All annual series complete 15 years. Detailed financial/incident observations cover days 30–3600; light monthly tourism/failure observations continue through day 5400. Scar microtrace covers days through 720. Steps 1–5 and their offline validations are complete; the eligibility-policy decision remains for the user/lead.
+
+No new 60-year simulation, production tuning or booking change was made. Step 4 changes only the six preregistered own-constant families inside scratch bundles; none is promoted. Earlier reports below remain historical evidence, not current acceptance.
+
+Identity preflight passed: observed and unobserved 256×15 s11 controls on all three trees match all 15 canonical state hashes, timing-free annual rows, successful-action journals and bot logs. The dev 128×15 s7 pair also matches exactly and ends at **192,899**, residents **[61,124, 93,804, 37,971]**. The lane's LG-06-off control matches dev's gameplay rows/actions/logs; its optional saved fields deliberately preclude requiring a cross-tree serialized-state hash match. Independent comparisons also reproduce the shared T062 256×60 s11 controls' first 15 years and published dev 128 reference exactly.
+
+The dev owner committed tooling during preparation: preregistered HEAD `818a040` became **`78bf4342fef465540c1f846e0bbd66538a0aaf5b`** before collection. The intervening diff is empty for SIM, core, bot and dependencies; preparation stopped on the changed HEAD, verified that equivalence, then froze the actual source/material fingerprints. Neither comparison tree was edited.
+
+**Completed s11 control trace, with ensemble scope below:** the first medical incident opens on day 215 and fails on day 231 with five deaths; the city has no clinic/hospital, and the producer never records a prompt, manual possibility or sendable response. At day 240 both cities still have 2,121 residents and §57,065, but safety is **0.384250346** on the lane versus **0.517997361** from crime alone. Tourism jobs differ by day 270; monthly population first differs at day 300. At day 360 both buy the same §1,800 clinic at different sites, with investment margins exceeding §30,000: the road/clinic command fork is a site choice, not evidence of a blocked clinic. The first scar is created by the day-1278 unanswered military-base fire; its first rebuild bill is paid on day 1290. The opening migration/tourism fork precedes both mechanics. Absence of a response option at that incident does not establish that earlier clinic/road/funding choices could not have prevented it.
+
+The following **five-member attentive s11 ablations** are part of the completed campaign. Safety alone reproduces the opening fork and a substantial year-10 loss; rebuild-only has the same year-10 population median as off, with overlapping member bands. These observations do not make the full profile's interactions additive or close final gates.
+
+| Attentive profile | Year-10 population median [min, max] | Year-10 funds median | Year-15 population median [min, max] | Year-15 funds median |
+| --- | ---: | ---: | ---: | ---: |
+| Dev / LG-06 off | 97,010 [96,079, 97,480] | §30,222 | 181,910 [178,036, 182,428] | §133,265 |
+| Rebuild only | 97,010 [95,494, 97,480] | §39,014 | 180,901 [178,117, 181,325] | §132,360 |
+| Safety only | 88,974 [88,520, 94,641] | §49,020 | 168,748 [168,000, 175,462] | §116,071 |
+| Scars only | 96,710 [96,026, 97,480] | §39,014 | 180,608 [178,977, 182,096] | §134,096 |
+| Full LG-06 | 79,689 [73,983, 90,844] | §32,700 | 157,017 [147,647, 170,157] | §107,233 |
+
+### Six full-profile on/off contexts
+
+Each cell is **on / matched off**, using five-member medians. Lane off is dev/full; x41 off is x41/off on the same T041 tree. These are the full-profile rows from the completed diagnosis tables; approval is in points, rounded here to three decimals. Detailed min/max bands and unrounded values remain in the linked analysis.
+
+| Tree | Seed | Strategy | Year | Population on / off | Funds on / off | Approval on / off |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| lane | 11 | attentive | 10 | 79,689 / 97,010 | §32,700 / §30,222 | 66.522 / 64.513 |
+| lane | 11 | attentive | 15 | 157,017 / 181,910 | §107,233 / §133,265 | 70.350 / 70.283 |
+| lane | 11 | neglect | 10 | 96,599 / 94,974 | §56,682 / §61,054 | 61.565 / 63.476 |
+| lane | 11 | neglect | 15 | 179,469 / 176,039 | §125,163 / §127,662 | 69.077 / 60.551 |
+| lane | 7 | attentive | 10 | 98,127 / 99,145 | §42,448 / §42,371 | 63.577 / 63.821 |
+| lane | 7 | attentive | 15 | 181,527 / 181,762 | §135,267 / §130,814 | 70.168 / 69.005 |
+| lane | 7 | neglect | 10 | 97,221 / 98,837 | §40,849 / §59,785 | 61.187 / 62.897 |
+| lane | 7 | neglect | 15 | 179,635 / 182,376 | §129,317 / §135,621 | 64.496 / 63.589 |
+| lane | 23 | attentive | 10 | 97,614 / 97,969 | §50,658 / §61,766 | 62.511 / 62.431 |
+| lane | 23 | attentive | 15 | 180,749 / 181,751 | §133,015 / §134,239 | 68.369 / 69.645 |
+| lane | 23 | neglect | 10 | 96,941 / 97,274 | §48,732 / §46,993 | 57.156 / 56.029 |
+| lane | 23 | neglect | 15 | 180,351 / 180,393 | §132,483 / §130,687 | 65.768 / 64.022 |
+| x41 | 11 | attentive | 10 | 91,498 / 91,557 | §26,413 / §37,936 | 65.394 / 64.708 |
+| x41 | 11 | attentive | 15 | 169,566 / 168,939 | §129,367 / §125,868 | 70.517 / 70.313 |
+| x41 | 11 | neglect | 10 | 90,193 / 91,819 | §33,477 / §55,392 | 63.277 / 62.985 |
+| x41 | 11 | neglect | 15 | 167,852 / 169,963 | §124,342 / §127,718 | 65.727 / 66.289 |
+| x41 | 7 | attentive | 10 | 91,346 / 89,892 | §56,277 / §26,803 | 63.867 / 64.039 |
+| x41 | 7 | attentive | 15 | 170,257 / 167,640 | §127,567 / §125,262 | 69.202 / 69.019 |
+| x41 | 7 | neglect | 10 | 95,537 / 90,840 | §60,818 / §32,661 | 59.925 / 59.744 |
+| x41 | 7 | neglect | 15 | 173,577 / 166,952 | §127,388 / §120,684 | 66.661 / 64.706 |
+| x41 | 23 | attentive | 10 | 91,323 / 87,136 | §23,240 / §34,711 | 62.339 / 63.614 |
+| x41 | 23 | attentive | 15 | 167,933 / 162,488 | §122,019 / §115,200 | 68.534 / 66.474 |
+| x41 | 23 | neglect | 10 | 90,985 / 95,886 | §48,862 / §37,782 | 55.881 / 59.951 |
+| x41 | 23 | neglect | 15 | 166,075 / 175,131 | §119,421 / §133,866 | 59.280 / 66.542 |
+
+These five-member early-window comparisons are diagnostic. In particular, lane s11 full attentive is below off by 17,321 residents at year 10 and 24,893 at year 15, while its neglect population is above neglect-off by 1,625 and 3,430. They do not establish the required year-60 effects. The T041 tree uses its own off rows and is not interchangeable with the pre-T041 dev reference.
+
+The rebuild-only control does demonstrate a **historical cash** gate: its first §120 bill is paid on day 2160, and successful purchases still match dev until day 2370. Then its fifth §2,000 bus-stop check has a cash margin of **−§44.50**, against dev's **+§75.50**. Both then have the same recurring expense (§25,873), net (§6,540), reserve (§42,809.50), and no current rebuild bill. This is not evidence that recurring classification caused that particular fork. Current-bill shadows deliberately preserve already-paid cash and cannot exclude delayed venue-saving or other historical channels.
+
+### Recurring-booking diagnosis: step 2 condition not established
+
+The read-only reconstruction covers **25,200 monthly finance decisions** (210 × 120), with **zero unverified finance months**, zero unverified venue-saving months and no reconstruction discrepancies. Against actual loan/tax journals it finds **zero months where omitting the current rebuild line from recurring arithmetic changes a verified finance command decision**. Loan count, available principal and actual earlier loan proceeds remain part of the guards. A different tax branch at the 11% ceiling does not issue a different tax command.
+
+Across the campaign there are **88 outer predicate flips and 30 selected skip-condition flips** at the same already-paid cash. These counts include repeated/nested or alternative evaluations and are not distinct purchases, guaranteed viable sites, or proof of an ensemble stall. The earliest selected skip flip is day 2010. All **210 observer metadata files** were independently checked: every `arithmeticMismatches` field is present and zero. The full attentive s11 group has **zero outer flips, zero selected skip flips and zero possible extra venue-saving months across all five members**; its five changed tax branches are masked at 11%.
+
+The shadow removes only the current `emergency:rebuild` line from expense/reserve/net arithmetic; it neither refunds earlier payments nor simulates `oneoff:rebuild`. `saveForVenue` adds 70% of positive net to an earmarked fund, so a later effect can exist without an immediate gate flip. **Seventeen member-months** elsewhere retain a positive upper bound on extra earmarking; the candidate cost cap is not fully logged, so those bounds are neither proven extra savings nor observed purchase delays. They do not establish booking as the cause of the s11 ensemble regression.
+
+**Step 2's stop condition is not demonstrated.** Rebuild-only s11 matches off's year-10 population median, safety-only already loses 8,036 residents, and the original command fork predates any rebuild bill. Local recurring-line sensitivity elsewhere and paid-cash effects are retained as evidence, rather than promoted to an ensemble causal verdict. Keep the existing recurring booking unchanged and proceed to **step 3**. No `oneoff:rebuild` amendment is requested on this evidence.
+
+**Why the s11 neglect control recovers differently:** it shares the initial medical/safety/clinic-site fork, then first differs in manual dispatch on day 1112. Attentive saves that fire's buildings; neglect loses four. At day 1200 attentive buys its prison first and blocks clinic purchases; neglect cannot buy that prison then, buys a clinic, and buys the prison a month later. Both had accepted a military base at (3,3) on day 960. Attentive subsequently loses that base to the unprompted, unreachable day-1278 fire; neglect does not lose its base then. On day 1290 the attentive-minus-neglect net gap is exactly **−§3,502**: military grant **−§1,500**, taxes **+§422**, tourism **+§7**, rebuilding expense **+§2,400**, other service expense **+§25**, and road/avenue expense **+§6**. The sign of an expense difference is subtracted from net.
+
+The grant difference persists in **all 78 monthly snapshots from day 1290 through day 3600**, totalling **§117,000**. Neglect also starts missile-range income 19 months earlier (**§47,500** before attentive catches up). At day 1800 attentive has §9,876 against a §23,863 reserve and makes no successful purchases; neglect has §31,785 against §26,237.50 and makes nine. The code supports the persistence: burning marks the plopped building `BF.Burnt` without removing it, budget omits burnt income, and the bot's deal loop uses the retained milestone count, so it does not replace the ruin. This existing bot strategy is unchanged. Lost military industrial cap relief is not credited as a cause: the observed I-cap binding is zero. This is a verified sustained-income channel in the representative control, **not a grant-restoration counterfactual or proof that it accounts for the whole ensemble loss**. More rebuild bills do not imply the same bill amounts, timing, retained income or purchase path.
+
+### The s11 grant channel across all five members
+
+Actual deal receipts through year 10 generalize the military-base difference beyond the representative control. A persistent loss here means receipt absence after an earlier positive receipt with no later receipt through day 3600. The strict site-linked fire attribution requires the earlier successful deal plop at the incident origin, the single removed site/fire building ID, lost +1 / saved +0, and no intervening intersecting successful bulldoze. The frozen logs do not contain a direct `burnDown` event carrying the definition ID.
+
+| Attentive s11 profiles | Persistent military loss, members | Military receipts median [min, max] | Loss timing |
+| --- | ---: | ---: | --- |
+| Lane full and safety, each | 5 / 5 | §15,000 [15,000, 16,500] | Four burn on 1278 / first missing receipt 1290; +§100 day-1 burns on 1304 / first missing 1320 |
+| Dev, lane rebuild-only and scars-only, each | 1 / 5 | §130,500 [51,000, 130,500] | The −§100 day-1441 member burns on 2029 / first missing 2040; four retain receipts |
+| x41 full and safety, each | 0 / 5 | §132,000 [130,500, 132,000] | No persistent military loss observed |
+| x41 off, rebuild-only and scars-only, each | 2 / 5 | §132,000 [87,000, 132,000] | Both −§100 members burn on 2705 / first missing 2730 |
+
+Lane full and safety lose the same military receipts in every matched member, but full receives **§35,000 less missile income at the median paired difference [−§50,000, −§5,000]**. Its first missile receipts occur on days 1950–2520, versus 1890–1920 for safety and 1860 for dev/rebuild/scars. These receipt differences preserve actual purchase/unlock timing; no historical grant is restored in analysis. Lane full attentive s7 and s23 have zero persistent military losses in five members each. x41 full attentive has zero on all three seeds, versus x41 off's 2/5, 4/5 and 4/5. Profile effects are path dependent and need not add.
+
+**T041 changes growth and tax calibration; it is not a cash-only ablation.** The completed representative traces (`note062/analysis/representative-traces.json` and the underlying control journals) show x41 already differs from the old lane before the safety record: day-30 population 80 versus 76, funds §77,169 versus §77,166, and the first command fork on day 60. Both x41 full/off controls still suffer the unprompted day-215–231 medical failure with five deaths. Their first three clinics match exactly: day 300 at (126,93), §1,802; day 330 at (147,93), §1,800; day 360 at (108,117), §1,800. Their first paired command fork is day 450, placing clinics at different need sites. Neither control records a military-base fire at (3,3) through year 10; each receives §132,000 in military grants and §147,500 in missile income. The `cd4d0d0`→`adc5067` source comparison changes growth/tax formulas without catalog/action price changes. The observed rescue therefore cannot be assigned solely to cash or a cheaper/earlier clinic; the matched x41 full-profile attentive gains on seeds 7 and 23 also remain in the table above.
+
+**Failure frequency is not money lost.** Through year 10, the lane s11 full attentive five members total 11 failed incidents against neglect's 39, yet attentive's paid-rebuild median is **§2,400 [2,400, 2,700]**, versus neglect's **§1,512 [1,128, 7,260]**. Through year 15 the corresponding medians are **§2,760 [2,400, 4,338]** and **§2,436 [2,286, 9,804]**. The incident counts sum five trajectories; the charges are per-city medians. A medical failure can cost lives without property damage, while one military-base fire carries a bill plus sustained income loss. More failures therefore do not imply larger property bills, the same payment dates, or the same retained grants. This is not a claim that lost grants explain the whole population gap.
+
+### Monthly tourism and failure observations
+
+All **42 groups have five members** and monthly coverage from day 30 to 5400. Tourism below is the range of the 12 ensemble monthly medians during **bot year 15, days 5070–5400**: each member's ratio is averaged over its preceding 12 months before taking the ensemble median. Failed share is the **maximum ensemble monthly median during bot years 10–15, days 3270–5400 (72 observations)**. These are monthly medians, not maxima across individual members.
+
+| Full profile / matched off | Seed | Attentive tourism range | Attentive max failed | Neglect tourism range | Neglect max failed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Lane full | 11 | 1.1688–1.1887 | 1.205% | 0.8433–0.9559 | 5.769% |
+| Lane full | 7 | 1.1078–1.1475 | 4.918% | 1.1484–1.1952 | 5.714% |
+| Lane full | 23 | 1.0017–1.0561 | 1.852% | 1.0792–1.1453 | 4.412% |
+| Dev full / lane off | 11 | 0.9758–1.0361 | 4.110% | 0.9983–1.0549 | 4.396% |
+| Dev full / lane off | 7 | 1.1176–1.1358 | 2.299% | 1.2666–1.2933 | 5.634% |
+| Dev full / lane off | 23 | 1.0170–1.0833 | 1.961% | 1.0686–1.1310 | 6.977% |
+| x41 full | 11 | 0.8642–0.9570 | 2.899% | 0.8549–0.9655 | 6.818% |
+| x41 full | 7 | 0.8737–0.9277 | 1.471% | 0.8850–0.9724 | 4.918% |
+| x41 full | 23 | 0.8871–0.9027 | 1.333% | 0.8327–0.8912 | 7.143% |
+| x41 off | 11 | 0.9941–1.0542 | 1.961% | 0.9662–1.0013 | 5.952% |
+| x41 off | 7 | 0.9055–1.0353 | 2.326% | 0.8850–0.9419 | 8.824% |
+| x41 off | 23 | 0.9424–0.9957 | 1.695% | 0.9305–0.9737 | 6.667% |
+
+The observed attentive monthly medians fit tourism 0.7–1.3 and failed share ≤5%; the highest full-attentive failed median is 4.918%. Across all profiles and strategies, year-15 tourism monthly medians span 0.8327–1.2933. There is only **one observation at or after 15 completed years**, day 5400, where the range across groups is 0.8912–1.2818; this cannot establish behavior in later years. If the failure window instead starts at **10 completed years (day 3600)**, lane full neglect s11's maximum is 4.651%, rather than 5.769%. Keep the window label explicit. These five-member observations do not close the final nine-member, longer-window gates.
+
+### Step 3: scar isolation and the physical growth path
+
+Six fresh-process **128×15 s7** runs isolate the reported scars-only gain on source `cd4d0d0c74c87cabcec48a2474cf8879ed320f2a`, with the default attentive Medium/plains/water-0.2 bot and no funds nudges. Rebuild, reputation and deaths weights are zero in every arm. Scar creation, footprint, radius, pruning and 18-month expiry remain unchanged. This isolates the old scars-only result; it is not a full-profile ensemble or a post-B2/T041 gate.
+
+- **A:** scar raster off; scar touches/cost estimate off.
+- **B:** current scar raster and current scar touches/cost estimate.
+- **C:** current scar raster; scar touches omitted from the cost estimate.
+- **D:** scar raster off; the same scar-kernel touches included in the cost estimate.
+
+A and B each have observed/unobserved identity controls; C and D are observed. The exact six-run result table is:
+
+| Arm | Observed | Population15 | Residents15 | Funds15 | First police day/site/cost | First stats≥2000 day |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | false | 192899 | 61124/93804/37971 | 146349 | 270: 65,71 / 1500 | unobserved |
+| B | false | 196593 | 61141/95867/39585 | 198260 | 240: 65,71 / 1500 | unobserved |
+| A | true | 192899 | 61124/93804/37971 | 146349 | 270: 65,71 / 1500 | 243 |
+| B | true | 196593 | 61141/95867/39585 | 198260 | 240: 65,71 / 1500 | 239 |
+| C | true | 196593 | 61141/95867/39585 | 198260 | 240: 65,71 / 1500 | 239 |
+| D | true | 192899 | 61124/93804/37971 | 146349 | 270: 65,71 / 1500 | 243 |
+
+A/B instrumentation identities pass all 15 annual serialized-state hashes and gameplay rows, every successful command and the full say log. Independently reading the raw journals also verifies **A = D and B = C exactly in all 15 annual rows, including state hashes**, and in all successful commands and say entries: A/D have 1,699 commands and 1,111 say entries each; B/C have 1,646 and 1,134. The raster arms finish **196,593**, versus **192,899** without the raster: **+3,694 (+1.9150%)**. Their final residents are **[61,141, 95,867, 39,585]** versus **[61,124, 93,804, 37,971]**; the extra residents are +17 / +2,063 / +1,614 across the three wealth tiers.
+
+**No demonstrated scheduler side channel:** A/D and B/C first differ in the newly written NIMBY estimate on day 121 by **48 kernel touches**, or **0.000288 estimated milliseconds** (0.539376 versus 0.539664). The scheduler first consumes that different estimate on day **151**, and its credits/carry arithmetic differs. Neither cost-only pair changes the selected task schedule, services phases, scar raster, land value, desirability, occupancy, growth choices or published population during the detailed trace through day **720**. Their identical 15-year annual/command/log paths tie the reproduced endpoint gain to the physical raster in this experiment, rather than to the isolated cost estimate. This does not prove that scheduling can never matter on another map or future scheduler.
+
+With estimated-cost effects removed, **A versus C** gives the following first physical differences:
+
+| Day | Observation |
+| ---: | --- |
+| 121 | First different stigma raster after the NIMBY pass; prestige/campus remain identical. |
+| 125 | Cell 5688 raw land value falls **0.2019817655 → 0.2005355279**, from stigma's **−0.0014462376** term; stored land value falls **0.2259239107 → 0.2255008817**. The local crime, commute and wealth terms are unchanged. |
+| 125 | At that cell, stored desirability falls for R1 **0.3856290579 → 0.3833116591**, R2 **0.1930413693 → 0.1884065270**, and R3 **−0.1642796248 → −0.1719761342**. Rent is **exactly zero in both arms** at these land values. |
+| 125 | A separate occupied R3 villa at cell 6076 has a lower condition target **0.3511410493 → 0.3307449806**, lower health **0.3635795388 → 0.3564409147**, and lower fill goal **4.4725908931 → 4.4554581954**. Its rounded population remains four on that pass. |
+| 145–150 | Tiny demand/allowance/weight differences appear on days 145–146, before any rounded population difference. The first day-145 keyed growth-choice mismatch still selects dev 10 with the **same RNG state 4046765464**; it is a changed weighted arithmetic value, not a different building choice. The day-150 monthly stock snapshot differs in health-weighted population, not yet in published resident counts or the coarse-wealth hash. |
+| 162 | First published population difference is **negative**: A 1,350 versus C 1,349, with R1 874 versus 873. This rounded change cannot be the cause of the earlier day-145/146 floating-point drift. |
+| 181 | First different new building stock and RNG-stream position: A creates a capacity-eight CS1 corner store at (67,47); C's commercial candidate fails the capacity-bank check and its next sampled candidate creates a capacity-30 R1 townhouse at (83,49). |
+| 239–270 | C first publishes population ≥2,000 on day **239**, versus A on **243**. The monthly bot therefore buys the same §1,500 police station at (65,71) on **240** rather than **270**. This is the first successful command fork; A buys a plaza at the corresponding command position. |
+
+**The decisive day-181 capacity check is a source-and-scalar proof, not a new simulation.** Both arms evaluate the same ComLow candidate 6083 and choose CS1 with the same RNG state **2403951097**. The allowance bank is **3.141413886773715** in A and **2.3047573700225463** in C. At `GROWTH_BANK_MIN_FRAC = 0.3`, those give bank-based capacity ceilings **10.47137962** and **7.68252457**. Every eligible CS1 definition has capacity at least eight, which requires bank ≥**2.4**. `capMaxFor` takes the minimum of that bank ceiling and `capLimit`, so C's actual limit can only be lower: `collectDefs` must return zero. A actually creates the capacity-eight store, proving its other caps/stage/fit checks permit it.
+
+C therefore returns before the existing road-side, definition, fit and creation RNG calls that A executes. The following existing `rng.int` samples a different next candidate, producing C's R1 townhouse. **No RNG call was added by the scar mechanic or probe.** Existing conditional consumption diverges after the capacity rejection. This is candidate-local zone/type selection, not a global choice to trade commercial growth for residential growth. Later A/C scheduler differences first appear on day 198, after the physical state and new stock have diverged; they cannot be back-attributed to the original scar-touch cost isolation.
+
+**Model trade-off for the lead:** the observed first effect has the specified adverse sign—stigma lowers land value, desirability and condition. It then changes health-weighted stock, allowances, capacity eligibility and the deterministic development path, eventually advancing the police purchase and ending with more residents. The model generally has a rent-pressure term on high-value land, but the first affected cell has land value around 0.225 and zero rent pressure in both arms; **a cheaper-rent benefit is not the demonstrated cause of this fork**. Nor does this trace decompose every one of the later 3,694 additional residents.
+
+This takes NOTE-062 step 3's **land-value model working as built** branch. The trade-off is reported; the positive growth result is not declared acceptable or PASS. There is no demonstrated side-channel bug to fix, and **no production fix or compensating term was made**. Accepting that growth gain or redesigning broader land-value/wealth behavior would require the lead's decision. The already-authorized bounded own-constant screens may continue after this report; they do not authorize a broader calibration or a relaxed gate.
+
+Limits: one source/seed/size and scars-only configuration; the probe attaches after constructor initialization, and detailed microtrace ends at day 720. Fifteen-year identity and outcome comparisons remain exact, but this is not a multi-seed causal decomposition or the final-dev gate.
+
+### Current checks and next work
+
+**`npx tsc --noEmit`: PASS through the quiet gate**. Scratch `.mjs` syntax checks and the completed campaign/finance/deal/reused-member/scar/lever analysis validations pass. The lever analyzer verifies all 161 new members, 40 exact reused references, both identity pairs, 200 observer metadata files with **zero arithmetic mismatches**, 36,000 light monthly records and 24,000 detailed monthly calls. Reused references are validated against their own dev/lane source fingerprints; their bot bytes need not be identical because of the observation-only A/A flag.
+
+The ordinary targeted command still fails while loading Vite configuration (`externalize-deps` / `windowsSafeRealPath`, **spawn EPERM**), with **zero cases executed by that attempt**:
+
+```powershell
+node 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs' npx vitest run tests/sim/neglectScars.test.ts --maxWorkers=1
+```
+
+The installed native config loader and thread pool subsequently succeed. Both files ran **separately and serially through quietrun**, with a single worker, unchanged inherited environment and no repository/config edit:
+
+| Test file | Current result |
+| --- | --- |
+| `tests/sim/neglectScars.test.ts` | **6 passed** |
+| `tests/sim/neglectSafety.test.ts` | **11 passed** |
+
+These are **17 formal Vitest cases passed**, not native-adapter substitutes. They cover the existing safety/rebuild/scar mechanics, including old-field fallbacks and scar save/load; they do not prove an illustrative eligibility policy or browser behavior. The successful workaround does not erase the ordinary startup failure. Historical packet/panel/impact results below are not counted as additional current reruns. The full suite remains for the lead under this lane's run restrictions.
+
+The exact successful form is below; substitute only the test-file argument for `neglectSafety.test.ts`:
+
+```powershell
+node 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs' node --experimental-strip-types C:/Users/techsin/Desktop/projects/simcityweb-T043/node_modules/vitest/vitest.mjs run tests/sim/neglectScars.test.ts --maxWorkers=1 --configLoader native --pool threads
+```
+
+[The command/result journal](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/validation/targeted-test-commands.json) records executable/arguments, cwd, start/finish times and both exit-0 results; [scars](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/validation/neglectScars.log) and [safety](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/validation/neglectSafety.log) retain raw logs. The scratch helper starts no other test files and stops on the first failure.
+
+Step 4's **161/161** members and offline validation are complete. Its identity gate matches all 15 hashes, annual rows, actions and logs: the off 128 control ends at **192,899**, full at **195,379**. The frozen plan fingerprint is `8a1ef127d7f28ba5b0f7bba96f99169e5ef6af00d727bbc84ffda183235741ef`. No candidate meets the combined early proxies and none is promoted. Step 5's **42/42** illustrative members and independent validation are also complete; its measured trade-off is reported below for the user's policy decision. No booking, broader land-value/wealth change, eligibility-policy implementation or acceptance of the base growth gain is approved here.
+
+### Step 4: completed bounded own-constant screens
+
+The following six single-lever candidates were fixed before any lever-screen member ran. Every candidate keeps **REBUILD_SHARE = 0.15**, deaths weight **0.002**, migration gain **0.25**, recurring booking and every unlisted value unchanged. There are no combinations or replacement candidates selected after results.
+
+| Candidate | Exact scratch-only change from full LG-06 |
+| --- | --- |
+| `rep8` | `EM_REP`: 4 → 8 |
+| `migration24` | `MIG_MIN`: 0.88 → 0.76; `MIG_MAX`: 1.12 → 1.24 |
+| `tourismSafety28` | `ATTRACT_CITY_WEIGHTS` safety: 0.14 → 0.28; each of the other seven city weights multiplied by 0.72 / 0.86 to preserve total weight 1. Per-wealth weights unchanged. |
+| `scarAmount225` | Scar stigma: 0.15 → 0.225; radius and duration unchanged |
+| `scarRadius45` | Scar radius: 3 → 4.5; stigma and duration unchanged |
+| `scarDuration24` | Scar duration: 18 → 24 months; stigma and radius unchanged |
+
+Each candidate gets five members on **128×15 s7 attentive**, plus **256×15 s7 and s11 attentive and neglect**: 25 members each, 150 total. The member set remains control and ±§100 on days 1 and 1441. Add ten matching-source 128×15 full/off baseline members and one unobserved full control: **161 new specs**, including identity controls. Reuse the 40 fingerprint-matched full/off 256×15 diagnosis references for s7/s11; do not substitute a single run for an ensemble. Full 128 observed/unobserved identity and off 128 versus the scar-isolation A control must pass all 15 annual hashes, gameplay rows, actions and logs before candidate dispatch.
+
+The tourism candidate changes the city vector from `[0.18, 0.14, 0.14, 0.14, 0.1, 0.1, 0.1, 0.1]` to `[0.18*0.72/0.86, 0.14*0.72/0.86, 0.28, 0.14*0.72/0.86, 0.1*0.72/0.86, 0.1*0.72/0.86, 0.1*0.72/0.86, 0.1*0.72/0.86]`; no tourism denominator or other appeal formula changes. The span candidate changes only the clamp limits, not the response slope or neutral point.
+
+All 161 members completed without stopping for balance results; protocol errors would have stopped new dispatch. Every bot used quietrun with at most three concurrent children. The exact preregistration, transforms, source/package/bundle fingerprints and child commands are retained in scratch `note062/lever-screen`. These 15-year screens cannot establish a year-60 target or exhaust all allowed parameter values. An actual fix would still need the requested five-member 128/256, three-seed checks on both this lane and T043x41; no new 60-year run belongs here.
+
+### Step-4 trade-off: none of the six candidates is promoted
+
+Each result below is a **five-member, year-15 diagnostic**, not a year-60 verdict. Base checks cover every year 10–15: each median must remain inside the off min–max band and within `max(1% of off median, half off band)` for population; approval/air/I-HT use half band with zero floor. Years with all five off I-HT shares exactly zero are exempt. Thus a population deviation below 1% can still fail the band clause.
+
+In the base columns, order is **128 s7 / 256 s7 / 256 s11**. Population cells list failing year indices; the next column counts failed metric-year checks out of 24 (six years × four metrics) on each base. Every candidate fails all three complete base proxies. All following margins are favorable when nonnegative: population margin is `0.98 × attentive − neglect` in residents; funds margin is `attentive − neglect` in §; approval margin is `off gap + 0.5 − on gap` in points, with each gap `neglect − attentive`. The last column reports neglect-on versus neglect-off population percentages; a negative value is the required direction for neglect to cost by itself.
+
+| Candidate | Base population failing years (128 / s7 / s11) | All-metric base misses /24 (same order) | s7 margins: population / funds / approval | s11 margins: population / funds / approval | Neglect on−off population % (s7 / s11) |
+| --- | --- | --- | --- | --- | --- |
+| `rep8` | 10–15 / 10–15 / 10–15 | 13/24; 15/24; 15/24 | +2243.82 / +4,312 / +0.86156 | −2055.6 / −1,001 / −8.21388 | −1.94982 / +3.3379 |
+| `migration24` | 10–15 / 10–12,14 / 10–15 | 9/24; 10/24; 14/24 | −2975.22 / −461 / −2.9563 | −26464.76 / −27,134 / −10.09256 | −1.04838 / +2.20519 |
+| `tourismSafety28` | 10–15 / — / 10–12 | 15/24; 5/24; 11/24 | −3122.22 / −2,295 / −3.89567 | −5280.32 / −3,778 / −6.49577 | −0.91405 / +4.49389 |
+| `scarAmount225` | 10–15 / 14–15 / 10–15 | 16/24; 6/24; 13/24 | −3434.58 / +2,595 / +1.61729 | −23204.66 / −27,444 / −9.00687 | −0.14201 / +0.26699 |
+| `scarRadius45` | 10–15 / 10,14–15 / 10–15 | 12/24; 8/24; 14/24 | −3658.22 / −6,764 / −4.28624 | −20824.34 / −26,025 / −7.72328 | +0.23961 / −0.76006 |
+| `scarDuration24` | 10–15 / 11,13–15 / 10–15 | 13/24; 12/24; 14/24 | −2144.82 / +10,866 / +0.09151 | −23746.34 / −22,236 / −2.29753 | −0.22481 / +0.8998 |
+
+`rep8` reaches the relative population proxy on s7 (**−3.21446%**) and meets its funds/approval proxies, but its base fails, so that relative result is **UNCONFIRMED**. On s11 it loses only **0.87997%**, has §1,001 more funds than its own attentive row, misses the approval margin by 8.21388 points, and leaves neglect **3.33790% above neglect-off**. Every other candidate misses the relative population proxy on both seeds; several also leave the s11 neglectful city substantially larger than its own weakened attentive city. These measured trade-offs do not support selecting a candidate.
+
+The new 128×15 s7 reference ensembles end at **191,588 [190,132, 193,108] off** and **195,379 [194,876, 196,251] original full**. These are medians/bands; the known off **control** remains 192,899 with residents [61,124, 93,804, 37,971]. Candidate 128 endpoints and descriptive mean yearly approval gaps are:
+
+| Candidate | 128 population15 median [min, max] | 128 funds15 median | 128 approval15 median | Mean gap10–15 on / off, s7 | Mean gap10–15 on / off, s11 |
+| --- | --- | --- | --- | --- | --- |
+| `rep8` | 196,195 [196,113, 196,351] | 179,792 | 81.16211 | −4.86793 / −3.16535 | −1.82418 / −4.1609 |
+| `migration24` | 195,460 [195,022, 197,205] | 159,160 | 79.37965 | −2.39089 / −3.16535 | −4.11361 / −4.1609 |
+| `tourismSafety28` | 195,446 [194,717, 196,569] | 172,437 | 81.08866 | −2.86072 / −3.16535 | −1.15499 / −4.1609 |
+| `scarAmount225` | 197,281 [196,023, 197,484] | 198,240 | 81.78134 | −6.30521 / −3.16535 | −2.13188 / −4.1609 |
+| `scarRadius45` | 197,011 [195,889, 197,193] | 164,958 | 81.556 | −0.52793 / −3.16535 | −3.84886 / −4.1609 |
+| `scarDuration24` | 195,830 [194,865, 196,859] | 173,851 | 79.44925 | −5.65617 / −3.16535 | −4.15427 / −4.1609 |
+
+Mean gaps above average the six yearly median gaps from years 10–15 and **do not gate**. All exact per-year medians/min/max, paired-member differences, year-10/15 on-against-off tables and rule arithmetic remain in the linked analysis. The failed metric-year counts include approval and air misses even when population fits: for example, `tourismSafety28` passes s7 population in all six years but still misses three approval and two air years.
+
+These shifts cannot be dismissed as noise: every candidate's 128 population band is wholly above off for at least three consecutive years. The s11 population band is wholly above off in years 1–12 for `rep8`, above in years 1–11 for `tourismSafety28`, and below in years 5–15 for the migration/scar candidates. The disjoint-band rule and all other qualifying runs are retained explicitly; the demonstrated feedback mechanisms from steps 1–3 do not decompose every candidate's endpoint.
+
+All 18 candidate attentive rows meet the **observed** monthly failure threshold in bot years 10–15 (days 3270–5400, 72 points), including the completed-year-10 window (days 3600–5400, 61 points). The highest ensemble monthly median is exactly **5%** (`rep8`, 256 s11). Their bot-year-15 trailing tourism medians (days 5070–5400) span **0.86403–1.22355**, within 0.7–1.3. Each value first averages the preceding 12 ratios within a member and then takes the five-member median. Only day 5400 is at completed year 15; these observations do not close the future tourism/failure gates.
+
+**Decision for the lead:** this preregistered six-setting screen has no combined early-window success. No constants changed in production; retain the full WIP values, with balance still unresolved. This is a bounded search, not proof that every allowed value or combination fails. No broader calibration, compensating growth term, relaxed tolerance, automatic promotion or year-60 PASS follows. The completed option-(a) measurement below is evidence for the user's separate policy decision.
+
+[Screen preregistration](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/lever-screen/preregistration.md), [frozen plan](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/lever-screen/campaign.json), [identity](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/lever-screen/identity.json), [161-member completion](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/lever-screen/completion.json), [exact quiet-gated commands](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/lever-screen/dispatch.ndjson), [trade-off summary](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/lever-screen/analysis/summary.md) and [all annual/monthly/member/provenance data](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/lever-screen/analysis/analysis.json).
+### Step 5: completed illustrative option (a); policy decision pending
+
+Step 1 identifies both unprompted medical losses and an unprompted, unreachable military-base fire. The following **measurement-only** interpretation of NOTE-062 was registered before its first member and executed only after step 4 completed. All **42/42** members and the offline validation pass. This completes the authorized measurement, not a production policy decision or a passing balance fix.
+
+An incident permanently qualifies when its **primary responder** first has an existing settled EM-1 prompt, an actual dispatch, or an existing dispatch search finding a station within its auto range (`res.picks` or `res.inRangeBusy`, including busy stations). Do not infer reach from `canSend`, the weak road component, a transient `manualPossible`, supporting vehicles, or station existence. No additional search, cache query or RNG draw is introduced. A later prompt reset does not erase this separate eligibility latch.
+
+Only **subsequent** damage/death increments qualify; earlier losses are not rebilled or given backdated scars. A failed outcome qualifies if the incident is eligible at finalization. Scars retain their unanswered condition and additionally require eligibility at the burn. Filtered damage is charged at the unchanged **15%**, rounded on the existing monthly clock and recurring `emergency:rebuild` line. Safety uses eligible failures/deaths with **all actual incidents + 30** as denominator. All other constants remain at the original full values. Actual physical losses, full failed/death/damage/ignored statistics and the approval formula retain their original treatment; resulting numeric approval can still change through city feedback.
+
+The scratch overlay keeps a separate optional `systemData.lg06Eligibility` ledger and optional incident eligibility markers. These are experimental outputs, not additions to the worktree or an approved save schema. Fresh-city measurement does not answer how old-save eligibility history should migrate. The original observer's full-record formula is labelled an **unfiltered hypothetical**, and incident rebuild cost divided by 0.15 means **eligible damage only** under this option. Raw damage and both safety formulas are retained separately.
+
+Completed five-member **256×15 s7 and s11 attentive and neglect** on this lane and on T043x41: 40 observed members plus one unobserved attentive s11 control per context. Both observed/unobserved pairs matched all 15 annual canonical hashes, timing-free gameplay rows, successful commands and full say logs before the other 38 members dispatched. The 80 exact own-context full/off references are reused from step 1: lane-off uses dev/full, while x41-off uses x41/off. The control/±§100 day-1/day-1441 set, maximum three quiet-gated children and unchanged default bot are retained. Reused references add no simulations to the total.
+
+The frozen option plan is `ed9db7a9f5a1af0502387d81bbde17163d95f302845116463e5edea763616df1`. The analyzer validates all 42 specs, 80 own-source reference trajectories, source/dependency/default-bot identities, selected overlays, frozen runtime/package/bundle files and output hashes. It checks **120 observer metadata files, 21,600 light monthly rows and 14,400 detailed monthly calls**, with **zero arithmetic mismatches**. Source loss events reconstruct all actual and eligible losses at **7,200 monthly rolls**; eligible counters remain subsets, charges equal monthly-rounded 15% eligible damage and never exceed the same-trajectory unfiltered charge. All 7,200 applied safety scores match the eligible formula with the actual-incident denominator: **zero applied-score mismatches**. The analyzer starts no simulation and does not infer all damage from filtered incident cost.
+
+Attentive on/off results below are five-member medians; funds/approval cells are **median(on) − median(off)**. These endpoint differences are descriptive, not replacements for every year-10–15 band check.
+
+| Context / seed | Year | Population on / off | Population Δ% | Funds Δ (§) | Approval Δ (points) |
+| --- | --- | --- | --- | --- | --- |
+| lane / 7 | 10 | 98,901 / 99,145 | −0.24610 | +17,813 | −0.49833 |
+| lane / 7 | 15 | 182,317 / 181,762 | +0.30534 | +4,788 | +0.02869 |
+| lane / 11 | 10 | 97,805 / 97,010 | +0.81950 | +28,644 | −1.46800 |
+| lane / 11 | 15 | 181,681 / 181,910 | −0.12589 | +470 | −0.45838 |
+| x41 / 7 | 10 | 91,556 / 89,892 | +1.85111 | +23,310 | −3.45893 |
+| x41 / 7 | 15 | 170,037 / 167,640 | +1.42985 | +4,431 | −0.13039 |
+| x41 / 11 | 10 | 92,569 / 91,557 | +1.10532 | −1,340 | +0.22989 |
+| x41 / 11 | 15 | 170,537 / 168,939 | +0.94590 | +5,556 | +0.36524 |
+
+Option (a) brings lane s11's attentive year-15 endpoint from full's **−13.68424%** versus off to **−0.12589%**. It still fails that row's population checks in years **10–11**, and all four attentive rows fail a complete base proxy. Lane s7 fails population in years 14–15, approval in 12/14 and air in 10/12/13; lane s11 also misses approval in year 10. x41 s7 passes population but misses approval in 10/12/13 and air in 11–15; x41 s11 misses population in 10–14 and air in 10/11/13/14/15. A small endpoint percentage alone therefore does not pass the band contract.
+
+The waiver also weakens the intended neglect consequence. Every year-15 population loss below is **less than 0.5%** against the option's own attentive city, missing the ≥2% diagnostic target. Both s11 neglect medians hold more funds than their own attentive median. All four approval slack margins are negative. Population/funds/gap columns use differences or ratios of group medians; a positive approval margin would meet `off gap + 0.5 − on gap`, with gap `neglect − attentive`. Mean gaps average the six yearly median gaps from years 10–15 and do not gate.
+
+| Context / seed, year 15 | Neglect population Δ% vs own attentive | Funds Δ (§), neglect−attentive | Approval gap on / off | Approval slack margin | Mean gap10–15 on / off | Neglect population Δ% vs neglect-off |
+| --- | --- | --- | --- | --- | --- | --- |
+| lane / 7 | −0.45361 | −4,560 | −1.12450 / −5.41638 | −3.79188 | −1.72596 / −3.16535 | −0.48581 |
+| lane / 11 | −0.00881 | +69 | −4.84200 / −9.73216 | −4.39016 | −3.25322 / −4.16090 | +3.19588 |
+| x41 / 7 | −0.19643 | −2,263 | −1.99830 / −4.31283 | −1.81453 | −1.99410 / −5.92248 | +1.64778 |
+| x41 / 11 | −0.04984 | +731 | +0.55459 / −4.02387 | −4.07846 | −2.74803 / −3.36470 | +0.28771 |
+
+Against original full, option-(a) neglect population rises on three rows, but **falls 2.23186% on x41 s7**; there is no claim that every neglectful city grows. Against neglect-off it falls only on lane s7. All relative variant results remain **UNCONFIRMED** while their own attentive base fails, and no year-60 verdict follows from year 15.
+
+The following costs sum all 180 settled months within each member, then take five-member medians/bands. **Waived = median of each member's [sum rounded(0.15 × actual damage) − sum paid eligible charge]**, not subtraction of group medians and not the original-full trajectory's bill. For example, lane s7 neglect's waived median is §2,970 even though its separate unfiltered/paid medians are §4,920/§1,656. Thus the exemption is measured on the policy's own actual losses, without undoing historical paid funds or claiming that the losses were unpreventable.
+
+| Context / seed / strategy | Paid median [min, max] (§) | Same-trajectory waived median [min, max] (§) |
+| --- | --- | --- |
+| lane / 7 / attentive | 0 [0, 660] | 2,112 [480, 2,712] |
+| lane / 7 / neglect | 1,656 [582, 2,748] | 2,970 [150, 3,468] |
+| lane / 11 / attentive | 0 [0, 0] | 1,140 [672, 1,968] |
+| lane / 11 / neglect | 2,226 [1,122, 3,282] | 456 [72, 3,714] |
+| x41 / 7 / attentive | 0 [0, 0] | 1,248 [264, 3,108] |
+| x41 / 7 / neglect | 1,548 [714, 2,346] | 978 [390, 3,984] |
+| x41 / 11 / attentive | 0 [0, 0] | 444 [72, 2,622] |
+| x41 / 11 / neglect | 1,212 [624, 1,434] | 666 [246, 2,928] |
+
+All attentive **group medians** pay zero; that does not mean every attentive member is bill-free (one lane s7 member pays §660). Every neglect member receives a strictly positive waiver. Both seed-11 attentive controls still open medical incident 1 on **day 215**, finalize it on **day 231**, and record **five actual deaths**. Their eligible death/failure increments are **0/0**: the LG-06 numerator exemption removes neither the physical deaths nor their original approval treatment. Full actual loss writers and approval formula are unchanged; later numeric outcomes may diverge through feedback.
+
+All four policy attentive rows stay below 5% failed-share medians in the observed years-10–15 monthly windows; their bot-year-15 trailing tourism medians remain within 0.7–1.3. The x41 s11 **neglect** row reaches **6.09756%**, above 5% on days 4530, 4560, 4710, 4740 and 4770. Only day 5400 is at completed year 15; there is no later tourism/failure coverage. Option-(a) 128 behavior, year-60 gates and final nine-member/final-dev gates remain unmeasured.
+
+**Decision for the user/lead:** choose whether unprompted/unreachable losses should count toward LG-06, and whether this exact primary-route, prospective-loss, all-incidents-denominator boundary is intended. The screen establishes the exemption's scope and early trade-off; it does not support promoting it as a passing balance fix. Any implementation also needs an explicit old-save policy for missing eligibility history, active incidents, prior rolling months and existing scars; these fresh-city experiments do not settle migration or justify retroactive refunds. Production retains the original full mechanics and values; none of the six lever candidates or this illustrative policy is promoted.
+
+[Option-(a) preregistration](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/option-a/preregistration.md), [frozen plan/specs/source fingerprints](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/option-a/campaign.json), [both identity pairs](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/option-a/identity.json), [42-member completion](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/option-a/completion.json), [exact quiet-gated invocations](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/option-a/dispatch.ndjson), [result tables](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/option-a/analysis/summary.md) and [all annual/monthly/member/trace/provenance data](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/option-a/analysis/analysis.json).
+
+### Reproduction, artifacts and remaining work
+
+The frozen collector and all diagnostic artifacts are under `C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062`. The completed sources are lane **cd4d0d0c74c87cabcec48a2474cf8879ed320f2a**, dev **78bf4342fef465540c1f846e0bbd66538a0aaf5b**, and lane+T041 **adc5067cab24a02a49ca8c7861827760edb5266f**. The campaign plan fingerprint is `964c98284a3d9324e3bf78ec77c58dbb12a4281c278c414e56caf98ce3547b58`. No comparison tree was edited.
+
+- [Preregistration](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/campaign-preregistration.md), [frozen campaign/spec/source fingerprints](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/campaign.json), [identity checks](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/identity.json), [completion](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/completion.json) and [exact quiet-gated child invocations](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/dispatch.ndjson).
+- [Diagnosis tables](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/analysis/diagnosis-tables.md), [annual/monthly ensemble analysis](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/analysis/analysis.json) and [representative traces](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/analysis/representative-traces.json).
+- [Finance summary](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/finance-analysis/summary.md), [finance/member validation](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/finance-analysis/summary.json), [selected skip-condition flips](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/finance-analysis/selected-skip-flips.ndjson) and [matched first-fork links](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/finance-analysis/comparison-links.json).
+- [Deal-income summary](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/deal-analysis/summary.md), [deal/member source evidence](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/deal-analysis/analysis.json) and [paired receipt differences](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/deal-analysis/pairs.csv).
+- [Scar-isolation preregistration](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/scar-isolation/preregistration.md), [frozen four-arm specs](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/scar-isolation/campaign.json), [isolation identity](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/scar-isolation/identity.json), [six-run completion](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/scar-isolation/completion.json), [focused result table](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/scar-isolation/analysis/summary.md) and [exact microtrace first differences/raw journal paths](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/scar-isolation/analysis/analysis.json).
+- [Reused nine-member summary](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/reused-nine/summary.md), [all 72 member rows](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/reused-nine/members.csv) and [reused source/annual hashes](C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062/reused-nine/analysis.json).
+
+The exact collector operations are below. `identity` runs three observed campaign controls plus six extra controls; `run` reuses the completed observed controls and dispatches the remaining preregistered members. Each child goes through quietrun with the frozen bundle and spec; the collector globally limits children to three. Default parsed bot arguments are `--size 256 --years 15 --seed <11|7|23> --quiet`, plus `--neglect` for that strategy. Funds nudges are wrapper injections, not changes to the bot's default CLI or decisions. `prepare`, `summarize` and the analyzers start no simulations.
+
+```powershell
+$note062Scratch = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T043/scratch/note062'
+node "$note062Scratch/collector.mjs" prepare
+node "$note062Scratch/collector.mjs" identity
+node "$note062Scratch/collector.mjs" run
+node "$note062Scratch/collector.mjs" summarize
+node "$note062Scratch/analyze.mjs"
+node "$note062Scratch/analyze-finance.mjs"
+node "$note062Scratch/analyze-deals.mjs"
+node "$note062Scratch/analyze-reused-nine.mjs"
+node "$note062Scratch/scar-isolation/controller.mjs" prepare
+node "$note062Scratch/scar-isolation/controller.mjs" identity
+node "$note062Scratch/scar-isolation/controller.mjs" run
+node "$note062Scratch/scar-isolation/controller.mjs" summarize
+node "$note062Scratch/scar-isolation/analyze.mjs"
+node "$note062Scratch/lever-screen/controller.mjs" prepare
+node "$note062Scratch/lever-screen/controller.mjs" identity
+node "$note062Scratch/lever-screen/controller.mjs" run
+node "$note062Scratch/lever-screen/controller.mjs" summarize
+node "$note062Scratch/lever-screen/analyze.mjs"
+$optionA = "$note062Scratch/option-a"
+node "$optionA/controller.mjs" prepare
+node "$optionA/controller.mjs" identity
+node "$optionA/controller.mjs" run
+node "$optionA/controller.mjs" summarize
+node "$optionA/analyze.mjs" --manifest "$optionA/campaign.json" --out-dir "$optionA/analysis"
+node "$note062Scratch/run-targeted-tests.mjs"
+```
+
+The scar controller's identity stage runs the A/B observed/unobserved controls; its run stage reuses them and dispatches C/D only after identity passes. That is six additional simulations, with the same quiet-gate/concurrency rules. Its analyzer only reads the frozen outputs.
+
+The option controller's `prepare` only builds frozen source bundles/specs; its `identity` refuses to run before the validated 161-member step-4 completion. It runs the four policy identity members first; `run` reuses them and completes the other 38. Its children use the same quiet gate and maximum-three limit. Parsed simbot options remain `--size 256 --years 15 --seed 7` or `--seed 11`, with `--quiet` and optional `--neglect`; each complete frozen invocation is in the linked dispatch journal. The separate analyzer only reads outputs.
+
+**Pending:** the user/lead eligibility-policy and old-save decisions; post-fix five-member screens if an actual fix is approved; and final nine-member gates after B2/T041 and the other SIM lanes merge. The completed steps 1–5 do not replace those gates. Recurring rebuild booking and production mechanics remain unchanged. All authorized measurements are complete; an eligibility-policy implementation is not approved. Full Vitest, browser/real-Worker rendering, B2 scar invalidation, GPU timing and benchmarks remain for the lead.
+
+### Existing nine-member on-against-off evidence (no new 60-year runs)
+
+Source: T062's completed `scratch/note053-lanes/T043.md` and its member summaries on dev `805d7d4`, measured lane `414e491`. Each difference below is **median(on) minus median(off)** for the same strategy, not a median of paired member differences.
+
+| Seed | Year index | Attentive population difference | Neglect population difference | Attentive funds difference | Neglect funds difference |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 7 | 10 | −1,018 | −1,723 | +§77 | −§15,987 |
+| 7 | 60 | +77,633 | −11,679 | +§370,822 | −§427,149 |
+| 11 | 10 | −17,036 | +1,188 | −§5,951 | −§1,752 |
+| 11 | 60 | −50,172 | +33,837 | −§1,403,626 | +§979,543 |
+
+The corresponding **nine-member** year-60 approval gaps (neglect minus attentive) are **−5.973151767 on versus −4.139498922 off** for s7, and **−6.345888498 on versus −6.092696823 off** for s11. Extra approval cost is therefore **1.833652845** and **0.253191676 points** respectively. Mean yearly gaps from years 10–60 are **−4.380042430 on / −3.272508747 off** for s7 and **−3.991945375 on / −5.003153040 off** for s11; these means do not gate. These replace the older single-run gap figures as ensemble evidence, with relative variant claims still UNCONFIRMED on failing bases.
+
+The origin reference `origin/local/T043-measured` points to `414e491e08b847e425323d67b79ed4aeedfa97a9`. `src/sim` is identical at that measured commit, `e01526a` and this lane's `cd4d0d0`; after `e01526a` the only source hunk is the additive Worker registry. The measured tree's bot additionally carries T062's observation-only funds-nudge flag. Thus the old ensemble's s11 regression supersedes the original single-run upward result. The s7 year-60 relative-to-base targets remain **UNCONFIRMED**, and its late population/I-HT base shifts remain **UNRESOLVED**, as NOTE-062 directs.
+
+### Reused nine-member late growth: all 72 members
+
+This is a read-only reuse of the completed NOTE-053 annual series, **not 72 new simulations**. Source commits are T043 **414e491e08b847e425323d67b79ed4aeedfa97a9** and shared dev **805d7d466972eaf89cfba4e1fc8c5f2df16ae0ef**. All eight groups are complete nine-member summaries; all 72 raw annual series have 60 ordered rows, and their four reported summary medians match at years 10 and 60. The linked reused analysis preserves source/annual SHA-256 hashes and each member's actual nudge identity/order.
+
+Here **stalled** means the individual member gained fewer than 100,000 residents between years 50 and 60. It is a descriptive threshold, not a replacement for NOTE-062 gates. The s7 attentive group has 0/9 such members; s11 attentive has 1/9. Do not characterize the entire ensemble as stalled.
+
+| Tree | Strategy | Seed | Stalled / 9 | Growth median [min, max] |
+| --- | --- | --- | --- | --- |
+| T043 | base | 7 | 0 / 9 | 264216 [128347, 323707] |
+| T043 | base | 11 | 1 / 9 | 228345 [79478, 298462] |
+| T043 | neglect | 7 | 0 / 9 | 187956 [101423, 322653] |
+| T043 | neglect | 11 | 0 / 9 | 239823 [196282, 277114] |
+| dev | base | 7 | 0 / 9 | 189499 [117959, 271208] |
+| dev | base | 11 | 0 / 9 | 216565 [155237, 244718] |
+| dev | neglect | 7 | 0 / 9 | 197329 [103652, 278972] |
+| dev | neglect | 11 | 0 / 9 | 198709 [126525, 247407] |
+
+All per-member values below come from the validated reused raw annual sources. The added year-60 columns are funds, approval in points, air and I-HT share as fractions (display rounded to eight decimal places); their source paths and SHA-256 hashes remain in the linked analysis. These are the same 72 historical members, not new simulations.
+
+| Tree | Strategy | Seed | Member | Nudge | Day | Population 50 | Population 60 | Growth | Stalled | Funds 60 | Approval 60 | Air 60 | I-HT 60 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| T043 | base | 7 | control | 0 | 1 | 1275132 | 1550356 | 275224 | no | 18419687 | 79.40225031 | 0.16945762 | 0 |
+| T043 | base | 7 | p100-d1 | 100 | 1 | 1274504 | 1538720 | 264216 | no | 16614962 | 79.22911343 | 0.17841025 | 0 |
+| T043 | base | 7 | m100-d1 | -100 | 1 | 1270444 | 1545939 | 275495 | no | 15926536 | 79.75632283 | 0.17702696 | 0.01079646 |
+| T043 | base | 7 | p100-d1441 | 100 | 1441 | 1274504 | 1538720 | 264216 | no | 16614962 | 79.22911343 | 0.17841025 | 0 |
+| T043 | base | 7 | m100-d1441 | -100 | 1441 | 1272249 | 1595956 | 323707 | no | 15001266 | 79.87547467 | 0.17774555 | 0.02980663 |
+| T043 | base | 7 | p200-d1 | 200 | 1 | 1259323 | 1387670 | 128347 | no | 20327575 | 79.65175883 | 0.16916188 | 0.12616898 |
+| T043 | base | 7 | m200-d1 | -200 | 1 | 1268948 | 1511887 | 242939 | no | 17068607 | 79.65349972 | 0.18107528 | 0 |
+| T043 | base | 7 | p200-d1441 | 200 | 1441 | 1233960 | 1393611 | 159651 | no | 19081886 | 79.94775208 | 0.16162326 | 0.13055098 |
+| T043 | base | 7 | m200-d1441 | -200 | 1441 | 1274690 | 1464980 | 190290 | no | 16719627 | 80.76077082 | 0.1562826 | 0.06495451 |
+| T043 | base | 11 | control | 0 | 1 | 1196168 | 1494630 | 298462 | no | 13987823 | 81.15688928 | 0.17324359 | 0.04787545 |
+| T043 | base | 11 | p100-d1 | 100 | 1 | 1197251 | 1276729 | 79478 | yes | 19008552 | 80.08316611 | 0.14075993 | 0.14924155 |
+| T043 | base | 11 | m100-d1 | -100 | 1 | 1221436 | 1463610 | 242174 | no | 16073412 | 79.87740029 | 0.16881348 | 0 |
+| T043 | base | 11 | p100-d1441 | 100 | 1441 | 1187658 | 1401646 | 213988 | no | 13848164 | 79.39118216 | 0.16623606 | 0.07996894 |
+| T043 | base | 11 | m100-d1441 | -100 | 1441 | 1206863 | 1433346 | 226483 | no | 14715421 | 80.74167455 | 0.17058837 | 0.07530865 |
+| T043 | base | 11 | p200-d1 | 200 | 1 | 1237372 | 1503722 | 266350 | no | 14413103 | 80.13398782 | 0.16972266 | 0.04943103 |
+| T043 | base | 11 | m200-d1 | -200 | 1 | 1211373 | 1419496 | 208123 | no | 14198038 | 79.77368083 | 0.16481208 | 0.08240956 |
+| T043 | base | 11 | p200-d1441 | 200 | 1441 | 1190665 | 1419010 | 228345 | no | 15714089 | 80.16360666 | 0.17357959 | 0.07395225 |
+| T043 | base | 11 | m200-d1441 | -200 | 1441 | 1215493 | 1482333 | 266840 | no | 15369910 | 79.26737799 | 0.17398775 | 0.07057581 |
+| T043 | neglect | 7 | control | 0 | 1 | 1231336 | 1332759 | 101423 | no | 17847550 | 72.8761114 | 0.16328386 | 0.15033162 |
+| T043 | neglect | 7 | p100-d1 | 100 | 1 | 1262894 | 1450850 | 187956 | no | 15678152 | 75.40789114 | 0.16574315 | 0.0965172 |
+| T043 | neglect | 7 | m100-d1 | -100 | 1 | 1266524 | 1453165 | 186641 | no | 15467377 | 74.26799485 | 0.16693063 | 0.09390051 |
+| T043 | neglect | 7 | p100-d1441 | 100 | 1441 | 1262894 | 1450850 | 187956 | no | 15678152 | 75.40789114 | 0.16574315 | 0.0965172 |
+| T043 | neglect | 7 | m100-d1441 | -100 | 1441 | 1264620 | 1439169 | 174549 | no | 17109854 | 72.18645989 | 0.16149728 | 0 |
+| T043 | neglect | 7 | p200-d1 | 200 | 1 | 1267447 | 1444910 | 177463 | no | 21838712 | 73.68034795 | 0.17379064 | 0.10622618 |
+| T043 | neglect | 7 | m200-d1 | -200 | 1 | 1247397 | 1570050 | 322653 | no | 15236635 | 73.49886495 | 0.18120272 | 0.0148808 |
+| T043 | neglect | 7 | p200-d1441 | 200 | 1441 | 1262248 | 1491232 | 228984 | no | 16477395 | 73.46425241 | 0.18412214 | 0.06419858 |
+| T043 | neglect | 7 | m200-d1441 | -200 | 1441 | 1260762 | 1510705 | 249943 | no | 14658609 | 76.99236984 | 0.17468777 | 0.07761024 |
+| T043 | neglect | 11 | control | 0 | 1 | 1268939 | 1536884 | 267945 | no | 17628691 | 73.98205063 | 0.18317993 | 0 |
+| T043 | neglect | 11 | p100-d1 | 100 | 1 | 1231498 | 1489349 | 257851 | no | 15488415 | 73.79267005 | 0.17542032 | 0.03200333 |
+| T043 | neglect | 11 | m100-d1 | -100 | 1 | 1246969 | 1467061 | 220092 | no | 16517336 | 73.53756006 | 0.1757152 | 0 |
+| T043 | neglect | 11 | p100-d1441 | 100 | 1441 | 1249045 | 1476160 | 227115 | no | 16946838 | 73.42174755 | 0.17318329 | 0.03811103 |
+| T043 | neglect | 11 | m100-d1441 | -100 | 1441 | 1246969 | 1467061 | 220092 | no | 16517336 | 73.53756006 | 0.1757152 | 0 |
+| T043 | neglect | 11 | p200-d1 | 200 | 1 | 1231755 | 1428037 | 196282 | no | 20390053 | 76.66566735 | 0.16664948 | 0.07988057 |
+| T043 | neglect | 11 | m200-d1 | -200 | 1 | 1247676 | 1499181 | 251505 | no | 14479958 | 74.68201783 | 0.18182014 | 0.06072128 |
+| T043 | neglect | 11 | p200-d1441 | 200 | 1441 | 1253144 | 1530258 | 277114 | no | 15902279 | 73.73727761 | 0.17524311 | 0.05436177 |
+| T043 | neglect | 11 | m200-d1441 | -200 | 1441 | 1263535 | 1503358 | 239823 | no | 17026240 | 72.00033187 | 0.16603398 | 0 |
+| dev | base | 7 | control | 0 | 1 | 1265741 | 1513835 | 248094 | no | 14233559 | 80.3574247 | 0.17862633 | 0.10239867 |
+| dev | base | 7 | p100-d1 | 100 | 1 | 1261963 | 1379922 | 117959 | no | 14078118 | 79.93950165 | 0.15830317 | 0.1376239 |
+| dev | base | 7 | m100-d1 | -100 | 1 | 1271588 | 1461087 | 189499 | no | 16348805 | 80.54140973 | 0.16719038 | 0.12614672 |
+| dev | base | 7 | p100-d1441 | 100 | 1441 | 1260949 | 1504801 | 243852 | no | 21369469 | 79.73980132 | 0.18320919 | 0.11482193 |
+| dev | base | 7 | m100-d1441 | -100 | 1441 | 1271588 | 1461087 | 189499 | no | 16348805 | 80.54140973 | 0.16719038 | 0.12614672 |
+| dev | base | 7 | p200-d1 | 200 | 1 | 1272989 | 1522489 | 249500 | no | 17146439 | 78.18364944 | 0.1695675 | 0.0486473 |
+| dev | base | 7 | m200-d1 | -200 | 1 | 1262861 | 1438474 | 175613 | no | 15261631 | 80.53192704 | 0.15547329 | 0.07835045 |
+| dev | base | 7 | p200-d1441 | 200 | 1441 | 1271382 | 1542590 | 271208 | no | 15319062 | 80.16455676 | 0.17858071 | 0.04737673 |
+| dev | base | 7 | m200-d1441 | -200 | 1441 | 1202458 | 1341715 | 139257 | no | 16855479 | 79.94201486 | 0.16889537 | 0.13505784 |
+| dev | base | 11 | control | 0 | 1 | 1272103 | 1427340 | 155237 | no | 16451097 | 81.35669456 | 0.14748506 | 0.10325151 |
+| dev | base | 11 | p100-d1 | 100 | 1 | 1266953 | 1483518 | 216565 | no | 17447223 | 81.27173991 | 0.16888214 | 0.08867382 |
+| dev | base | 11 | m100-d1 | -100 | 1 | 1254073 | 1498791 | 244718 | no | 16611160 | 79.13716727 | 0.18256159 | 0.08191 |
+| dev | base | 11 | p100-d1441 | 100 | 1441 | 1262250 | 1503201 | 240951 | no | 16119047 | 80.44119872 | 0.17151689 | 0.00458502 |
+| dev | base | 11 | m100-d1441 | -100 | 1441 | 1261639 | 1472527 | 210888 | no | 15672862 | 79.9558197 | 0.17772391 | 0 |
+| dev | base | 11 | p200-d1 | 200 | 1 | 1275687 | 1467836 | 192149 | no | 15278435 | 79.77649419 | 0.15961019 | 0.08470207 |
+| dev | base | 11 | m200-d1 | -200 | 1 | 1276465 | 1504163 | 227698 | no | 16310659 | 81.27695771 | 0.15719813 | 0.00467122 |
+| dev | base | 11 | p200-d1441 | 200 | 1441 | 1270271 | 1511108 | 240837 | no | 14770707 | 80.23106404 | 0.19051273 | 0.05988256 |
+| dev | base | 11 | m200-d1441 | -200 | 1441 | 1263402 | 1465363 | 201961 | no | 14891960 | 80.76298926 | 0.17074979 | 0.10579007 |
+| dev | neglect | 7 | control | 0 | 1 | 1270538 | 1390920 | 120382 | no | 14168774 | 76.02505783 | 0.16399966 | 0.0887079 |
+| dev | neglect | 7 | p100-d1 | 100 | 1 | 1271144 | 1520646 | 249502 | no | 14005628 | 77.89402421 | 0.18433015 | 0.07403951 |
+| dev | neglect | 7 | m100-d1 | -100 | 1 | 1278216 | 1482812 | 204596 | no | 22108807 | 76.17642533 | 0.1722752 | 0.07265094 |
+| dev | neglect | 7 | p100-d1441 | 100 | 1441 | 1265200 | 1462529 | 197329 | no | 16278991 | 74.00421822 | 0.15768063 | 0 |
+| dev | neglect | 7 | m100-d1441 | -100 | 1441 | 1278216 | 1482812 | 204596 | no | 22108807 | 76.17642533 | 0.1722752 | 0.07265094 |
+| dev | neglect | 7 | p200-d1 | 200 | 1 | 1260141 | 1417971 | 157830 | no | 14800870 | 74.29274242 | 0.16803268 | 0.14171846 |
+| dev | neglect | 7 | m200-d1 | -200 | 1 | 1277073 | 1556045 | 278972 | no | 16105301 | 73.75743331 | 0.18871805 | 0.07212327 |
+| dev | neglect | 7 | p200-d1441 | 200 | 1441 | 1198301 | 1301953 | 103652 | no | 18471921 | 77.88826278 | 0.16733244 | 0.18444869 |
+| dev | neglect | 7 | m200-d1441 | -200 | 1441 | 1263992 | 1414428 | 150436 | no | 15702806 | 73.96786118 | 0.16848316 | 0.09508586 |
+| dev | neglect | 11 | control | 0 | 1 | 1246446 | 1455512 | 209066 | no | 14334083 | 74.3485019 | 0.16878389 | 0.03599382 |
+| dev | neglect | 11 | p100-d1 | 100 | 1 | 1257819 | 1425243 | 167424 | no | 15099278 | 77.90030652 | 0.16147888 | 0.12918587 |
+| dev | neglect | 11 | m100-d1 | -100 | 1 | 1256037 | 1441408 | 185371 | no | 15537793 | 73.91414578 | 0.16647542 | 0.10087447 |
+| dev | neglect | 11 | p100-d1441 | 100 | 1441 | 1254350 | 1460685 | 206335 | no | 15979357 | 74.45288468 | 0.17341767 | 0.11468091 |
+| dev | neglect | 11 | m100-d1441 | -100 | 1441 | 1260450 | 1471217 | 210767 | no | 22645806 | 73.67504898 | 0.15608257 | 0.13338045 |
+| dev | neglect | 11 | p200-d1 | 200 | 1 | 1222314 | 1348839 | 126525 | no | 20548909 | 72.62980872 | 0.1576811 | 0.16610935 |
+| dev | neglect | 11 | m200-d1 | -200 | 1 | 1255374 | 1420376 | 165002 | no | 14595606 | 78.55316574 | 0.17063145 | 0.09260229 |
+| dev | neglect | 11 | p200-d1441 | 200 | 1441 | 1249205 | 1496612 | 247407 | no | 16332147 | 73.63966986 | 0.16895141 | 0.01389897 |
+| dev | neglect | 11 | m200-d1441 | -200 | 1441 | 1258938 | 1457647 | 198709 | no | 13890690 | 75.62285763 | 0.14909281 | 0.16229528 |
+
+The s7 relative-to-attentive variant results remain **UNCONFIRMED** while its base fails, and its late base population/I-HT shifts remain **UNRESOLVED**. The s11 ensemble's approximately −3.4% base movement continues to supersede the old approximately +4.7% single-run result. No staged-PASS interpretation or post-fix claim is reinstated.
+
+### Current file disposition, gates and ownership
+
+This fix round changes the report and scratch evidence only. **No production constant, default-bot decision, booking rule or mechanic is changed.** The retained implementation is still WIP with unresolved balance, not a recommended passing merge.
+
+| File(s) | Current disposition |
+| --- | --- |
+| `docs/dev/reports/local-T043-lg06-neglect.md` | Updated diagnosis, all six bounded trials and completed option-(a) evidence; the historical suffix below is preserved byte for byte. |
+| Scratch `note062/` collectors, observation adapters, isolation/lever/option packages and analyzers | Frozen experiment sources/specs, source/bundle/output identities and journals; no scratch switch or eligibility ledger is promoted to production. |
+| `src/sim/economy/tourism.ts` | Retain full emergency safety in tourism and the existing attractiveness/migration route, plus the pure current-target/multiplier reader. No candidate or policy overlay is written here. |
+| `src/sim/economy/tuning.ts` | Retain EM_REP **4**, deaths **0.002**, rebuild **0.15**, scars **0.15 / radius 3 / 18 months**, city safety **0.14** and the original migration limits/gain. |
+| `src/sim/economy/budget.ts` | Retain monthly recurring `emergency:rebuild`, existing forecast/settlement clock and exact rounded-cost reader; no `oneoff` conversion or refund. |
+| **Infra: `src/sim/infra/emergency.ts`** | Existing outcome-window/cost telemetry, two original damage writers and unanswered-burn scar hook remain **held for B2**. No new infra hunk in this fix round. |
+| **Infra: `src/sim/infra/nimby.ts`** | Existing optional persisted scar footprints/absolute expiries, pruning and timed raster splat remain **held for B2**. No new infra hunk or scheduler/land-value fix. |
+| **Outside original named files: `src/sim/CityState.ts`** | Retained optional emergency cost interfaces only; no new interface or default change this round. |
+| Previously approved `src/ui/panels/EmergenciesPanel.ts`, `src/worker/replicaSafe.ts`, `tests/worker/replicaSafe.test.ts` | Retain the small Statistics/read-registry/parity hunks documented in Round 3. No new UI/Worker wiring, replica mutation or protocol hunk. |
+| `tests/sim/neglectScars.test.ts`, `tests/sim/neglectSafety.test.ts` | Existing mechanic fixtures rerun: **6 + 11 passed**. No experimental-policy tests are presented as production coverage. Other panel/impact/packet/hygiene results below are historical, not new reruns. |
+
+Current checked gates: quiet-gated **`npx tsc --noEmit` PASS**; scratch syntax/provenance/identity/offline analyses PASS; **425 completed 15-year simulations**; and the two separately quiet-gated formal Vitest files above, **17 cases PASS** using the installed native config loader/thread pool. The ordinary Vite-config startup attempt still records **spawn EPERM / zero executed cases**. No full suite, browser, real-Worker rendering, GPU timing, benchmark or new 60-year simulation was run. The known 128 dev control remains 192,899 with residents [61,124, 93,804, 37,971]; option-(a) 128 is unmeasured. Monthly observations cover the reported windows only, and no screen closes the final nine-member/final-dev contract.
+
+Plan versus code/evidence: recurring booking was not shown to cause the opening fork, so the step-2 stop/approval condition was not triggered and booking stays unchanged. Scar isolation identifies a physical land-value/wealth feedback trade-off, not a demonstrated scheduler bug; no compensating growth or B2 cost change was made. All six allowed single-lever settings miss combined early proxies. Option (a) is a separately defined eligibility-policy measurement, not the original LG-06 rule that charges every month's damage; its fresh-city ledger is not an approved save schema. Existing Prestige rendering already reads scarred `st.stigma`; a new overlay implementation is not required for that splat.
+
+Outstanding owner requests remain minimal and unchanged:
+
+- **B2 — `src/sim/infra/services.ts`, `ServicesSystem.due()` / `prep()` and NIMBY dirty handling:** schedule a bounded NIMBY pass on scar creation and the next absolute expiry. The source/expiry persists exactly, but the current raster cadence can lag by about 30 game days. This is the existing invalidation request, not a request to change scheduler credits or land-value weights.
+- **GUIDE/cloud — `src/ui/panels/BudgetPanel.ts`, `ITEM_LABELS` / `itemLabel()` / `ledgerTable()`:** label `emergency:rebuild` **“Rebuilding after emergencies”**. Its charge is already in budget data; this held file remains untouched.
+- **META — `src/ui/EmergencyBanner.ts`, `EmergencyBanner.onEvent()` outcome construction:** append the formatted negative optional incident cost, such as **“−§8,400 rebuild”**, after the existing host incident read. No live-system query or second charge is needed. No banner hunk is made here.
+
+The approved panel/replica-reader requests are already fulfilled by the retained Round-3 hunks; no new Worker or UI request is implied by the scratch eligibility ledger. Optional scar source outlines remain outside the required Prestige splat.
+
+Browser checklist for the lead, against the retained production WIP:
+
+- [ ] Compare attentive/ignored-call safety, the following tourism pass and current migration target/multiplier text; confirm the Statistics cost/cut row refreshes from mirrored state, rounds the cut to a whole percent and hides it at zero.
+- [ ] Cause §56,000 damage and confirm §8,400 forecast/settlement exactly once, with the requested budget label after its owner integrates it.
+- [ ] Compare unanswered and answered burn-downs: both rebuild; only unanswered losses create the retained production scar and unanswered cost attribution. The experimental eligibility guard is not shipped.
+- [ ] Check Prestige's 0.15 core, radius-3 falloff and overlaps; check creation/expiry timing after B2's bounded invalidation integration.
+- [ ] Rebuild the lot, save midway and reload the exact scar footprint/absolute expiry; continue through 18-month expiry.
+- [ ] Load old saves without optional cost/scar/loss fields, continue normally and confirm no retroactive historical bill.
+- [ ] Repeat costs, Statistics refresh, outcomes and save/load on LocalSimHost and packet/Worker hosts; verify listeners end with the city's AbortSignal.
+
+Lead/user decision checklist:
+
+- [ ] Decide whether to retain full LG-06 or change which losses count. If considering option (a), approve or revise its exact primary prompt/dispatch/auto-range route latch, prospective damage/deaths, finalization failure timing and all-actual-incidents denominator; the measurements alone do not authorize implementation.
+- [ ] If eligibility changes, choose an old-save policy for missing history, active incidents, prior rolling months and existing scars. No retrospective refund or migration rule is inferred from this fresh-city screen.
+- [ ] Resolve the measured scar/wealth-model trade-off after the bounded six-setting search failed. No broader calibration, growth compensation or booking change is justified by these results; approve a concrete fix before the required post-fix five-member checks. No candidate is promoted.
+- [ ] After B2/T041/other SIM integration, run the final nine-member/final-dev gates, full suite and browser checks. Existing historical 60-year evidence remains unresolved as stated above; no new year-60 PASS is claimed.
+
+---
+
 # local-T043-lg06-neglect: Round 3
 
 Branch `local/T043-lg06-neglect`; merged dev base `683d02b` through `c12dc75`. **BALANCE GATES FAIL. All 13 Round-3 bot runs completed: five 128 screens and eight full-sized runs. No tested profile passes the amended contract.** The unchanged WIP constant remains **EM_REP=4**; trials 8, 12 and 24 are rejected, with no numerical tuning promoted. **The retained WIP is not recommended as a passing merge.** Infrastructure commit `7c0e586` still **holds for B2**. Round-3 changes are uncommitted; the approved panel and additive Worker audit hunks are kept small for the lead to commit separately. No commit, push or `.done` file was made in this round. The Review-1 report below is preserved as historical evidence; its final-status and open-decision statements describe that earlier round only.
@@ -611,6 +1132,8 @@ Measured on a throwaway tree (this lane plus T062's flag commit 3833c8d); final 
 
 Measurement only, against the pre-T041 dev simulation that this lane started from. T043 source commit: `414e491`. These results do not replace the required final gate against dev after T041 lands. No simulation/bot constant is tuned and no baseline is re-recorded.
 
+**NOTE-062 amendment:** this campaign's numeric evidence is retained. Its earlier staged-PASS interpretation is superseded: s7 variant targets are **UNCONFIRMED** while its base fails; the late s7 base rows are **UNRESOLVED**. A met s11 approval target is likewise unconfirmed on its failing base. Final base and long-variant gates use nine members directly, with NOTE-062's disjoint-band and zero-width-I-HT rules; the old stage-selection prose below is historical.
+
 The ensemble is the control plus ±§100 on day 1 and day 1441 (five members). Stage two adds ±§200 at both timings (nine members). Each collection command uses `--jobs 4`; every child passes through the quiet gate; commands across the campaign run one at a time.
 
 Tolerance: population **1% of each dev median**, from NOTE-048’s amended T043 item tolerance. Approval, air and I-HT share use **0 absolute item tolerance**. NOTE-053 requires both membership inside dev’s min–max band and absolute median delta ≤ max(item tolerance, half dev band), for every year from year 10. Funds are not a base-row balance metric; their raw annual values are reduced by the same median/min/max procedure for the variant target. Air is mean air at homes; I-HT share is a fraction; approval is in points; funds are unrounded observer values.
@@ -648,12 +1171,12 @@ Each row uses its highest completed matching attentive/neglect/dev-reference sta
 
 | Row | Check | Determining members | Observed | Threshold (≤) | Margin | Verdict |
 |---|---|---:|---:|---:|---:|---|
-| 256x60_s7 | Neglect population at least 2% below attentive | 9 | 1450850 | 1507945.6 | 57095.6 people | pass |
-| 256x60_s7 | Neglect funds no higher than attentive | 9 | 15678152 | 16719627 | 1041475 funds | pass |
-| 256x60_s7 | Approval cost unchanged or larger, with 0.5pp slack | 9 | -5.973151767 | -3.639498922 | 2.333652845 approval points | pass |
+| 256x60_s7 | Neglect population at least 2% below attentive | 9 | 1450850 | 1507945.6 | 57095.6 people | **UNCONFIRMED** |
+| 256x60_s7 | Neglect funds no higher than attentive | 9 | 15678152 | 16719627 | 1041475 funds | **UNCONFIRMED** |
+| 256x60_s7 | Approval cost unchanged or larger, with 0.5pp slack | 9 | -5.973151767 | -3.639498922 | 2.333652845 approval points | **UNCONFIRMED** |
 | 256x60_s11 | Neglect population at least 2% below attentive | 9 | 1489349 | 1404679.08 | -84669.92 people | fail |
 | 256x60_s11 | Neglect funds no higher than attentive | 9 | 16517336 | 14715421 | -1801915 funds | fail |
-| 256x60_s11 | Approval cost unchanged or larger, with 0.5pp slack | 9 | -6.345888498 | -5.592696823 | 0.7531916758 approval points | pass |
+| 256x60_s11 | Approval cost unchanged or larger, with 0.5pp slack | 9 | -6.345888498 | -5.592696823 | 0.7531916758 approval points | **UNCONFIRMED** |
 
 ## Stage-two disposition
 
