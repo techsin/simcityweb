@@ -4,7 +4,7 @@
  */
 import * as THREE from 'three';
 import { CELL_SIZE } from '../../core/constants';
-import { DevType, Surf } from '../../core/types';
+import { DevType, Network, Surf } from '../../core/types';
 import { BF, type CityState } from '../../sim/CityState';
 import { getDef } from '../../sim/catalog';
 import { ModelBuilder } from '../../assets/ModelBuilder';
@@ -23,6 +23,7 @@ const SPAWN_DISTANCE = 350;
 const HIDE_DISTANCE = 600;
 const CELLS_PER_FRAME = 80;
 const PATH = 12;
+const ACTIVITY_SALT = 0x5bd1e995;
 const COATS = [0x5a6470, 0x7a5b4a, 0x4f6152, 0xb16b42].map((c) => new THREE.Color(c));
 
 function hash(n: number): number {
@@ -61,7 +62,9 @@ function geometry(rain: boolean): THREE.BufferGeometry {
   return g;
 }
 
-function roster() { return { cells: new Int32Array(CAP), seeds: new Uint32Array(CAP), n: 0 }; }
+function roster() {
+  return { cells: new Int32Array(CAP), seeds: new Uint32Array(CAP), ranks: new Uint32Array(CAP), order: new Uint16Array(CAP), n: 0 };
+}
 
 export class Pedestrians {
   readonly mesh: THREE.InstancedMesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
@@ -187,9 +190,15 @@ export class Pedestrians {
         const slot = this.pending.n++;
         this.pending.cells[slot] = i;
         this.pending.seeds[slot] = hash(i * 16 + j);
+        this.pending.ranks[slot] = hash(this.pending.seeds[slot] ^ ACTIVITY_SALT);
+        this.pending.order[slot] = slot;
       }
     }
     if (this.cursor >= limit || this.pending.n === this.cap) {
+      // Sort once per roster, not per frame: the rare night quota keeps the same lowest-ranked seeds even when
+      // discovery visits their cells in a different order. Edge crossings never shift every later walker's rank.
+      const r = this.pending;
+      r.order.subarray(0, r.n).sort((a, b) => r.ranks[a] - r.ranks[b] || r.seeds[a] - r.seeds[b]);
       const old = this.active; this.active = this.pending; this.pending = old;
       this.scanning = false;
       this.timer = 1;
@@ -204,7 +213,7 @@ export class Pedestrians {
     this.frustum.setFromProjectionMatrix(this.projection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
     const cx = Math.floor(cp.x / CELL_SIZE), cz = Math.floor(cp.z / CELL_SIZE);
     const moved = Math.abs(cx - this.cx) > 3 || Math.abs(cz - this.cz) > 3;
-    if (this.dirty || moved || (!this.scanning && this.timer <= 0)) {
+    if (!this.scanning && (this.dirty || moved || this.timer <= 0)) {
       this.cx = cx; this.cz = cz;
       this.sx = this.sz = this.direction = this.step = this.cursor = this.pending.n = 0;
       this.leg = 1; this.scanning = true; this.dirty = false;
@@ -215,21 +224,22 @@ export class Pedestrians {
     const active = this.active, N = this.state.size, activity = pedestrianActivityAt(hour);
     let n = 0, eligible = 0;
     for (let j = 0; j < active.n; j++) {
-      const i = active.cells[j], seed = active.seeds[j];
+      const slot = active.order[j], i = active.cells[slot], seed = active.seeds[slot];
       if (!this.walkable(i)) continue;
       const horizontal = this.net.roadMask[i] === 5;
       const phase = (this.time * (0.85 + (seed & 255) / 512) + (seed >>> 8) / 0x1000000 * PATH * 2) % (PATH * 2);
       const along = phase < PATH ? phase - PATH / 2 : PATH * 1.5 - phase;
       const forward = phase < PATH ? 1 : -1;
-      const side = (HALF_W[this.net.roadType[i]] + HALF) / 2 * (seed & 1 ? 1 : -1);
+      const t = this.net.roadType[i];
+      const side = (t === Network.Avenue ? 7.72 : (HALF_W[t] + HALF) / 2) * (seed & 1 ? 1 : -1);
       const x = (i % N + 0.5) * CELL_SIZE + (horizontal ? along : side);
       const z = (Math.floor(i / N) + 0.5) * CELL_SIZE + (horizontal ? side : along);
       const y = this.surf.baseIn(i, x, z) + LIFT + CURB_H;
       if ((x - cp.x) ** 2 + (y - cp.y) ** 2 + (z - cp.z) ** 2 > (HIDE_DISTANCE - 3) ** 2) continue;
       this.point.set(x, y + 1, z);
       if (!this.frustum.containsPoint(this.point)) continue;
-      // Thin the compacted daytime set: floor(day count * activity), including tiny counts, never >20% at 3 am.
-      if (Math.floor(++eligible * activity) === n) continue;
+      eligible++;
+      if (active.ranks[slot] / 4294967296 >= activity) continue;
       const o = n * 16, c = n * 3, coat = COATS[seed & 3];
       const fx = horizontal ? forward : 0, fz = horizontal ? 0 : forward;
       data[o] = fz; data[o + 1] = 0; data[o + 2] = -fx; data[o + 3] = 0;
@@ -239,6 +249,9 @@ export class Pedestrians {
       colors[c] = coat.r; colors[c + 1] = coat.g; colors[c + 2] = coat.b;
       n++;
     }
+    // Keep the 03:00 share below 20%, even for small / unusually night-heavy views. Roster rank order makes the
+    // quota deterministic; normally it is slack, so each walker's own seed alone decides its presence.
+    n = Math.min(n, Math.floor(eligible * Math.min(1, activity * 1.33)));
     this.mesh.count = n;
     this.mesh.visible = n > 0;
     if (n) {

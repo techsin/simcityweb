@@ -70,7 +70,8 @@ describe('FEEL-25 street life', () => {
         const day = people.mesh.count;
         expect(day).toBeGreaterThanOrEqual(20);
         people.update(0, cam, 3);
-        expect(people.mesh.count).toBe(Math.floor(day * 0.15));
+        expect(people.mesh.count).toBeGreaterThan(0);
+        expect(people.mesh.count).toBeLessThanOrEqual(Math.floor(day * 0.15 * 1.33));
         expect(people.mesh.count).toBeLessThanOrEqual(day * 0.2);
         people.update(0, cam, 12);
         expect(people.mesh.count).toBe(day);

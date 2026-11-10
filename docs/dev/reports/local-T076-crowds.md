@@ -138,3 +138,78 @@ hash comparisons and old-save continuation are not newly measured. The full suit
   model, and pause / fixed-hour settings follow the world correctly.
 - [ ] Save / load, reset / worker resync, graphics restoration, quality changes and exit / re-enter: old rosters
   disappear, the new city repopulates, and no pedestrian resources / event listeners retain the previous city.
+
+## QA round 2 — B1 / B2 / B3
+
+Round 1 is committed at `754b007`; the lead reports its full gate green. Read the supplied `qa_round1.md`, including
+the measured blinking, avenue-pole collisions and 30 fps discovery starvation. The following changes are
+**uncommitted**, on top of that commit; earlier sections describe round 1.
+
+### Changes per file
+
+- `src/render/city/Pedestrians.ts`:
+  - **B1:** each seed gets an independent activity rank, `hash(seed ^ 0x5bd1e995) / 2^32`. A completed roster is
+    ordered by that rank once; frames count all spatially eligible walkers and filter against each walker's own
+    threshold. The retained prefix is capped at `floor(eligible * min(1, activity * 1.33))`. Thus changed discovery
+    order or an unrelated edge crossing cannot shift every later walker's keep decision. There is no per-frame
+    sort, extra pose pass, simulation RNG draw or unbounded storage.
+  - **B2:** avenue walkers use the 7.72 m line on both sides / axes, clearing the 7.35 m streetlight poles while
+    keeping the 0.45 m body on the sidewalk. Other road-type offsets are unchanged.
+  - **B3:** only start / recenter discovery while no scan is running. Movement and dirty requests wait for the
+    current bounded scan to finish; its live-camera tests and the last completed roster keep working meanwhile.
+- `tests/render/pedestrians.test.ts`: update the old exact-15%-count assertion to test the requested hash thinning
+  and strict night quota. Its four-preset day/night, cap, distance, placement, determinism and read-budget tests stay.
+- `tests/render/pedestrianThinning.test.ts` (new, 6 cases): fixed 07:00 / 21:00 identity stability through actual
+  screen-edge crossings and repeated rebuilds; changed discovery origin with shared identities; unchanged night
+  rebuild, changing night eligibility, binding one-to-six-walker quota, and nested hour thresholds.
+- `tests/render/pedestriansQa.test.ts` (new, 3 cases): both avenue axes over full pacing cycles, body / lamp and
+  sidewalk clearance; continuous 132 m/s LOW pan at 30 fps, completed scans, visible frames, instance and work caps.
+- `docs/dev/reports/local-T076-crowds.md`: this QA round-2 section.
+
+No round-2 edit outside these files, no infra hunk and no cloud-held file edit. CityObjectsView / CityScene wiring,
+the umbrella seam, geometry, material, 350 / 600 m cuts and 120 / 300 / 600 / 600 caps are unchanged. No new owner
+request; the pre-existing exact-density / weather requests above remain with their owners.
+
+**Strict quota boundary:** at 03:00, `0.15 * 1.33 = 0.1995`, so even an unusually night-heavy view remains below
+20%. If the eligible count falls enough to lower a binding quota, one kept walker must disappear to obey that
+limit; absolute identity stability in that case is mathematically incompatible with the strict cap. Lowest-rank
+selection makes this a deterministic boundary change, rather than the old mass reshuffling. With quota slack,
+each eligible walker's own threshold alone determines its presence.
+
+### Round-2 validation
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit`, including all new tests | **PASS** |
+| `git diff --check` | **PASS** |
+| `pedestrianThinning.test.ts`, `pedestriansQa.test.ts`, `pedestrians.test.ts`, `pedestriansView.test.ts` | Each attempted singly through quietrun, `--maxWorkers=1`; **all blocked before collection by Vite `spawn EPERM`**, as in the earlier sandbox attempt. No Vitest-pass claim for round 2. |
+| Own short headless regression probe, real source, Node asserts, through quietrun | **PASS**; detailed results below. This is not Vitest or GPU timing. |
+| Full suite / bot / real-GPU QA | Not rerun here; round-2 lead gates remain. Simulation / RNG / save behavior is untouched. Expected 128x15 seed-7 Medium residents remain **[61124, 93804, 37971] = 192899** in 2015; use the exact bot command above. |
+
+Headless probe evidence (`round2-probe.mjs`, `round2-probe-results.json` in the supplied lane scratch folder):
+
+- **B1:** both fixed 07:00 and 21:00 survived **12** actual eligibility crossings, repeated rebuilds and **42,583**
+  identity comparisons apiece with no unexpected keep/drop changes; shifting the discovery origin preserved all
+  **84** shared eligible identities in each case. Three-am quotas were checked across changing eligibility; the
+  adversarial one-to-six eligible-walker cases produced **0, 0, 0, 0, 0, 1** kept walkers.
+- **B2:** **108,000** horizontal and **90,000** vertical avenue poses, including walking past the lamp line: minimum
+  body-to-pole clearance **0.02497 m**, minimum body-to-sidewalk-edge clearance **0.05503 m**; zero intersections.
+- **B3:** the continuous four-second 132 m/s LOW pan at 30 fps completed **4** full 2,025-cell searches, first drew
+  walkers on frame **26**, and drew them on **95 / 120** frames. Maximum feed calls in one frame: **26**, below the
+  unchanged 80-cell discovery budget. The LOW instance cap held.
+- A second short count / lifecycle probe (`round2-counts.mjs`, `round2-counts-results.json`) kept the synthetic 50k
+  city at **38 day / 5 night** top-down, **61 / 5** default oblique, all presets; saturated caps remained
+  **120 / 300 / 600 / 600**. Spawn / far-hide checks, rain geometry, +1 draw accounting, replacement and disposal
+  passed. `integration-round2-counts-results.json` records the integration part.
+
+`round2-vitest.log` records the four startup failures. No browser, full suite, bot or benchmark was run by this lane.
+
+### Round-2 browser checklist
+
+- [ ] Re-run `func.mjs`'s still / slow-pan pop checks at 07:00 and 21:00 in the 56k and 1.1M cities; verify the
+  widespread mid-screen blinking is gone. Recheck 03:00 stays <=20% of the same daytime set.
+- [ ] Re-run avenue pole checks on both axes through full walking cycles: no body / pole intersection and bodies
+  remain on the sidewalks.
+- [ ] Re-run `pan30` at 132 m/s, LOW, continuous keyboard motion: searches finish and streets keep repopulating.
+- [ ] Recheck 120 / 300 / 600 / 600 caps, 350 / 600 m cuts, exactly one extra main-pass draw, no shadow draws and
+  <=0.8 ms frame cost, including roster completion / sorting frames. Umbrella integration stays with T074.
