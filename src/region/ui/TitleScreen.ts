@@ -1,14 +1,19 @@
 /** Title screen / main menu overlay on top of the animated MenuBackground. */
-import { audio } from '../../audio';
+import { audio, type SoundName } from '../../audio';
 import { MenuBackground } from '../render/MenuBackground';
 import type { QualityLevel } from '../../render/contracts';
 import { h, icon, withSounds } from './dom';
 import { MusicPlayer } from '../../ui/MusicPlayer';
 import { EMBLEM_SVG } from './emblem';
+import { guideCopy } from '../../ui/guide/copy';
+import { FIRST_ROAD_MINUTES } from '../firstCity';
 
 export interface TitleScreenOptions {
   continueInfo?: { title: string; sub: string } | null;
   onContinue?: () => void;
+  /** FH-12: no region is saved. The primary button founds a first city in one click ("Start your first city"), "New
+   *  Region" comes second, and the dead-end disabled Continue is not shown. */
+  onFirstCity?: () => void;
   onNewRegion: () => void;
   onLoadRegion: () => void;
   onSettings: () => void;
@@ -38,16 +43,17 @@ export class TitleScreen {
       resolveReady();
     }
 
-    const item = (label: string, ic: string, onClick: (() => void) | undefined, opts: { sub?: string; primary?: boolean; delay: number }) => {
+    const item = (label: string, ic: string, onClick: (() => void) | undefined, opts: { sub?: string; primary?: boolean; delay: number; sound?: SoundName }) => {
       const b = h(
         'button',
         { class: `menu-item ${opts.primary ? 'primary' : ''}`, type: 'button', disabled: !onClick, style: `animation-delay:${opts.delay}s` },
         icon(ic, opts.primary ? 24 : 20),
         h('span', { class: 'mi-text' }, h('span', {}, label), opts.sub ? h('span', { class: 'mi-sub' }, opts.sub) : null),
       ) as HTMLButtonElement;
-      // Continue jumps straight into a save: confirm chime. The others open a dialog (its own sound) or fall back to
-      // the delegated generic click feedback.
-      if (opts.primary && label === 'Continue') withSounds(b, 'confirm');
+      // Continue jumps straight into a save: confirm chime; the first city is founded at once: the founding fanfare (as
+      // the New City dialog's Found City). The others open a dialog (its own sound) or fall back to the delegated
+      // generic click feedback.
+      if (opts.sound) withSounds(b, opts.sound);
       b.addEventListener('click', () => {
         audio.init();
         onClick?.();
@@ -55,11 +61,20 @@ export class TitleScreen {
       return b;
     };
     const ci = o.continueInfo;
+    const a = guideCopy.phaseA;
+    const lead = o.onFirstCity
+      ? [
+          item(a.A1(), 'building', o.onFirstCity, { sub: a.A1Subtitle(FIRST_ROAD_MINUTES), primary: true, delay: 0.35, sound: 'found' }),
+          item(a.A1Region(), 'sparkles', o.onNewRegion, { delay: 0.43 }),
+        ]
+      : [
+          item('Continue', 'play', ci ? o.onContinue : undefined, { sub: ci ? `${ci.title} · ${ci.sub}` : 'No saved region yet', primary: !!ci, delay: 0.35, sound: ci ? 'confirm' : undefined }),
+          item('New Region', 'sparkles', o.onNewRegion, { primary: !ci, delay: 0.43 }),
+        ];
     const menu = h(
       'nav',
       { class: 'menu-list' },
-      item('Continue', 'play', ci ? o.onContinue : undefined, { sub: ci ? `${ci.title} · ${ci.sub}` : 'No saved region yet', primary: !!ci, delay: 0.35 }),
-      item('New Region', 'sparkles', o.onNewRegion, { primary: !ci, delay: 0.43 }),
+      ...lead,
       item('Load Region', 'folder', o.onLoadRegion, { delay: 0.51 }),
       h('div', { class: 'menu-sep', style: 'animation: fadein 1s .6s both' }),
       item('Settings', 'settings', o.onSettings, { delay: 0.59 }),
