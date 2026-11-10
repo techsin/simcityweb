@@ -19,7 +19,8 @@
  *             it. So the positive control detaches a buffer with two TypedArray views, and a detach with no view is a
  *             second negative control (reported: on a V8 that invalidates on any detach, such as node 22's, it deoptimizes
  *             too). Where the positive control does not deoptimize the probe (ArraySpecies shows whether the technique
- *             itself works), each protector step checks only that the worker made its probe and logs a NOTE
+ *             itself works), the control step FAILs (T061 F3), and each protector step checks only that the worker made
+ *             its probe and logs a NOTE
  *   boot      ?quickstart=1&simworker=1 reaches __ready on a worker host (the worker is its own script); the worker's
  *             protector probe is intact (§5.4); with --simwasm, blur runs on wasm in the worker and its memory never grew
  *   tools     through the real tools (pointer events on the canvas), each acked in the replica with nothing pending: a
@@ -52,6 +53,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { controlChecks } from './qa-worker-control.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(path.join(root, 'package.json'));
@@ -433,8 +435,10 @@ async function main() {
   browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--allow-natives-syntax --trace-protector-invalidation'] });
   log('browser', browser.version());
   control = await protectorControl().catch((e) => ({ observable: false, error: String(e).slice(0, 200) }));
-  check('control: the probe technique works in this browser (TurboFan code that depends on a protector deoptimizes when it goes)', control.technique === true && control.made === true && control.before === true, JSON.stringify(control));
-  log(control.observable ? 'PASS' : 'NOTE', `control: a detach of a buffer with two views deoptimizes the probe (the worker's probe is evidence): ${control.observable}`, JSON.stringify({ invalidated: control.invalidated }));
+  // T061 F3: a control that is not observable fails the run (the worker's protector steps would prove nothing)
+  const [technique, observable] = controlChecks(control);
+  check(technique.step, technique.ok, JSON.stringify(control));
+  check(observable.step, observable.ok, JSON.stringify({ observable: control.observable, invalidated: control.invalidated }));
   log(control.noViewFree ? 'PASS' : 'NOTE', `control: a detach of a buffer with no view leaves the probe intact (this V8 tracks views): ${control.noViewFree}`);
 
   /** the simulation worker's script throws on load (other workers, such as the LOD builder's, are left alone) */

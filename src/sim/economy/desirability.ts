@@ -37,6 +37,7 @@ import { advanceCommuteAvg, commuteMinutes, commuteRamp, garbageFade, rentLevel,
 import { profileShares } from './demographics';
 import { facilityUseFactor } from '../infra/facilities';
 import type { FactorTerm } from '../explain';
+import { setSaveHook } from '../persist';
 
 // ------------------------------------------------------------------------------------------------ terms
 export const T_LV = 0, T_AIR = 1, T_WATER = 2, T_GARB = 3, T_CRIME = 4, T_NOISE = 5, T_COMMUTE = 6, T_POLICE = 7, T_FIRE = 8,
@@ -486,6 +487,20 @@ function shiftOf(st: CityState, d: number): number {
     + ordinanceEffect(st, 'add.desir.' + DEV_ENUM[d]) + ordinanceEffect(st, 'add.desir.' + fam);
 }
 
+/**
+ * T057: what the band holds from earlier days, written into systemData.desRun by a save hook: the tax / ordinance shift
+ * of the sweep (prepShift runs at a sweep's start; a load would take today's taxes), the coarse freight access and
+ * traffic's per-cell freight access of industry (refreshed on a network change and mid-month; a load would recompute them
+ * from today's buildings and traffic) with the network flag. A save without it loads as before.
+ */
+interface DesRun { v: 1; shift: Float64Array; coarseFreight: Float32Array; networkDirty: boolean; frIdx: Int32Array; frVal: Float32Array; frBuilt: boolean }
+function desRunOf(st: CityState, cc: number): DesRun | undefined {
+  const r = st.systemData.desRun as DesRun | undefined;
+  if (!r || r.v !== 1 || !(r.shift instanceof Float64Array) || r.shift.length !== DEV_TYPE_COUNT) return undefined;
+  if (!(r.coarseFreight instanceof Float32Array) || r.coarseFreight.length !== cc) return undefined;
+  return r.frIdx instanceof Int32Array && r.frVal instanceof Float32Array && r.frIdx.length === r.frVal.length ? r : undefined;
+}
+
 // ------------------------------------------------------------------------------------------------ system
 export function desirabilitySystem(rt: EconRuntime): SimSystem {
   let row = 0;
@@ -558,12 +573,34 @@ export function desirabilitySystem(rt: EconRuntime): SimSystem {
         sub = sim;
       }
       const st = sim.state;
-      computeFreightAccess(st, rt);
-      rt.networkDirty = false;
+      const run = st.day > 0 ? desRunOf(st, rt.cw * rt.cw) : undefined;
       terrain.length = 0;
       desExtras.delete(rt);
-      prepCaches(st, true);
-      prepShift(st);
+      if (run) {
+        // (T057: the freight access and the sweep's shift as the save left them)
+        rt.coarseFreight.set(run.coarseFreight);
+        rt.networkDirty = run.networkDirty;
+        const e = desExtraOf(rt, st);
+        e.frCell.fill(-1);
+        for (let k = 0; k < run.frIdx.length; k++) { const i = run.frIdx[k]; if (i >= 0 && i < e.frCell.length) e.frCell[i] = run.frVal[k]; }
+        e.frBuilt = run.frBuilt;
+        shift.set(run.shift);
+      } else {
+        computeFreightAccess(st, rt);
+        rt.networkDirty = false;
+        prepCaches(st, true);
+        prepShift(st);
+      }
+      setSaveHook(st, 'economy.desirability', () => {
+        if (sim.state !== st) return;
+        const e = desExtraOf(rt, st), fr = e.frCell;
+        let n = 0;
+        for (let i = 0; i < fr.length; i++) if (!Object.is(fr[i], -1)) n++;
+        const frIdx = new Int32Array(n), frVal = new Float32Array(n);
+        for (let i = 0, k = 0; i < fr.length; i++) if (!Object.is(fr[i], -1)) { frIdx[k] = i; frVal[k++] = fr[i]; }
+        const r: DesRun = { v: 1, shift: shift.slice(), coarseFreight: rt.coarseFreight.slice(), networkDirty: rt.networkDirty, frIdx, frVal, frBuilt: e.frBuilt };
+        st.systemData.desRun = r;
+      });
       // a loaded city keeps its saved desirability (the layer is saved): population.init, which fills the EconRuntime's
       // coarse customers / wealth / skills, runs after this system, so a full band here would read them as 0 and every
       // shop and office would show "Updating" for a refresh cycle after each load. A new city gets its first full band.

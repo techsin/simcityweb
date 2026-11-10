@@ -1,0 +1,1 @@
+T081 done: local/T081-readme. README.md for the playable build (what it is, run and build, requirements, controls and keys, features, settings and URL parameters including ?simworker=1, known limits), every fact sourced from docs/ and the code; four TODO(release) markers for the lead. Docs only. Report: docs/dev/reports/local-T081-readme.md

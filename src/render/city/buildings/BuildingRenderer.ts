@@ -82,7 +82,7 @@ import { ModelBuilder } from '../../../assets/ModelBuilder';
 import { jitterHex, leafBlob, mark, mixHex, quadOut, shadeHex, tintSince, triOut, type V3 } from '../../../assets/builders/nat_geom';
 import { P, profileSolid, type PP } from '../../../assets/builders/veh_parts';
 import { RNG } from '../../../core/rng';
-import { Overlay, Surf } from '../../../core/types';
+import { DevType, Overlay, Surf } from '../../../core/types';
 import { overlayReadout, resolveVariant } from '../../../sim/infra/overlays';
 import { buildingOverlayOf } from '../../world/overlays';
 import { DynamicBatch, warmTarget, type TileCuller } from '../common/batch';
@@ -133,6 +133,9 @@ export interface BuildingVisual {
   burnt: boolean;
   constructing: boolean;
   abandoned: boolean;
+  /** operating output 0..1, from mirrored staffing / power and the plant's UtilitiesView load */
+  activity: number;
+  activityMonth: number;
   /** Y scale (construction progress / pop-in) */
   sy: number;
 }
@@ -1004,6 +1007,28 @@ export class BuildingRenderer {
   private buildScratch: BInst[] = [];
   private buildTarget = new THREE.Vector3();
   private buildAt = 0;
+  private activityBuildings = new Set<BInst>();
+  private activityChanged = new Set<BInst>();
+  private activityScan: Iterator<BInst> | null = null;
+  private activityMonth = -1;
+  private activityWork = this.addBudgetedWork({
+    pending: () => {
+      if (this.activityMonth !== this.state.monthIndex) {
+        this.activityMonth = this.state.monthIndex;
+        this.activityScan = this.activityBuildings.size ? this.activityBuildings.values() : null;
+      }
+      return this.activityChanged.size > 0 || this.activityScan !== null;
+    },
+    step: () => this.nextActivity(),
+    clear: () => {
+      this.activityBuildings.clear();
+      this.activityChanged.clear();
+      this.activityScan = null;
+      this.activityMonth = -1;
+    },
+  });
+  /** UtilitiesView seam: null / negative load means the plant has no data yet. */
+  plantLoad: ((id: number) => number | null) | null = null;
   private lastLodPixels = -1;
   private lastLodOn = -1;
   /** LOD schedule by distance bands: after an evaluation a building's levels stay right while its camera distance d
@@ -1874,6 +1899,8 @@ export class BuildingRenderer {
     const bi = this.inst.get(id);
     if (!bi) return;
     this.buildQueue.delete(bi);
+    this.activityBuildings.delete(bi);
+    this.activityChanged.delete(bi);
     this.inst.delete(id);
     bi.gone = true;
     this.animating.delete(id);
@@ -1905,6 +1932,7 @@ export class BuildingRenderer {
     const bi = this.inst.get(b.id);
     if (!bi) { this.add(b, true); return; }
     bi.b = b;
+    if (this.activityBuildings.has(bi)) this.activityChanged.add(bi);
     if (this.buildQueue.has(bi)) return;
     const key = this.stateKey(b);
     if (key !== bi.key) {
@@ -1923,6 +1951,42 @@ export class BuildingRenderer {
   private addBudgetedWork<T extends BudgetedWork>(work: T): T {
     this.budgetedWorks.push(work);
     return work;
+  }
+
+  private hasActivity(b: Building): boolean {
+    const def = getDef(b.def), dev = def?.devType;
+    return (def?.powerOut ?? 0) > 0 || (dev !== undefined && dev >= DevType.IA && dev <= DevType.IHT);
+  }
+
+  private activityOf(b: Building): number {
+    if (!this.hasActivity(b)) return 1;
+    if (!(b.flags & BF.Powered) || b.flags & (BF.Burnt | BF.Abandoned | BF.Constructing) || b.built < 1 || b.capacity <= 0 || !(b.jobs / b.capacity >= 0.1)) return 0;
+    if ((getDef(b.def)?.powerOut ?? 0) > 0) {
+      const load = this.plantLoad?.(b.id);
+      return load !== null && load !== undefined && Number.isFinite(load) && load >= 0 ? Math.max(0.25, Math.min(1, load)) : 0;
+    }
+    return Math.min(1, b.jobs / b.capacity);
+  }
+
+  /** Staffing-only replica patches emit no buildingChanged; visit just the output buildings once each month. */
+  private nextActivity(): boolean {
+    let bi: BInst | undefined;
+    if (this.activityChanged.size) {
+      bi = this.activityChanged.values().next().value;
+      this.activityChanged.delete(bi!);
+    } else if (this.activityScan) {
+      const next = this.activityScan.next();
+      if (next.done) { this.activityScan = null; return false; }
+      else bi = next.value;
+    }
+    if (!bi) return false;
+    if (bi.gone || bi.li < 0 || this.buildQueue.has(bi)) return true;
+    const activity = this.activityOf(bi.b), month = this.state.monthIndex, v = bi.vis;
+    if (activity === v.activity && month === v.activityMonth) return true;
+    v.activity = activity;
+    v.activityMonth = month;
+    this.onVisual?.(v, bi.id);
+    return true;
   }
 
   /** swap a drawn entry in its list slot, or allocate a new one; only removal announces a null visual */
@@ -2127,7 +2191,11 @@ export class BuildingRenderer {
     bi.vis = {
       id: b.id, model: burnt ? 'rubble' : model, variant: b.variant, cx, cz, baseY: b.baseY, yaw, sw: b.w * CELL_SIZE, sd: b.d * CELL_SIZE,
       top: b.baseY + modelTop + rise, bounds, burning, burnt, constructing, abandoned, sy: 1,
+      activity: this.activityOf(b), activityMonth: st.monthIndex,
     };
+    if (this.hasActivity(b)) this.activityBuildings.add(bi);
+    else this.activityBuildings.delete(bi);
+    this.activityChanged.delete(bi);
     this.refreshNoRoad(bi);
     this.culler.noteHeight(bi.tile, bi.vis.top);
     const sp = bounds.getBoundingSphere(_sphere);

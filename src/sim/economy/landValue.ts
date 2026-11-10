@@ -28,6 +28,7 @@ import { type EconRuntime, type InfraFlags, infraFlags } from './runtime';
 import { advanceCommuteAvg, commuteMinutes, commuteRamp, garbageFade, type CommuteRamp } from './factors';
 import { serviceEffectiveness } from './budget';
 import type { FactorTerm } from '../explain';
+import { setSaveHook } from '../persist';
 
 // ------------------------------------------------------------------------------------------------ WP6 per-runtime state
 /** land-value state that EconRuntime (read-only in part B) does not carry: the waterfront raster (split out of the
@@ -365,6 +366,65 @@ function lvRow(c: LvCtx, z: number, xa: number, xb: number, raw: Float64Array, L
   }
 }
 
+// ------------------------------------------------------------------------------------------------ save / load (T057)
+/**
+ * What the band carries from one day to the next, written into systemData.lvRun by a save hook so that a loaded game
+ * continues exactly like the uninterrupted one (T057):
+ *  - the band's accumulators, the landfill pass's day and the dirty flags;
+ *  - the plopped and the landfill splats as the game holds them (sparse: the cells that are not 0), the factor applied
+ *    per building and the parks factor (patched incrementally: a recompute at load sums in another order, and from
+ *    today's buildings / zones / funding while the game may still hold older ones);
+ *  - while the static terrain part is older than the terrain (a terrain change since the last pass, or a pass in
+ *    progress): that part and the pass in progress. Otherwise a load recomputes it, which gives the same values;
+ *  - the splats and flag flips queued since the last band (the player's edits between two days).
+ * A save without the record (from before) loads as before: everything is recomputed at load.
+ */
+interface LvRun {
+  v: 1;
+  acc: Float64Array;
+  lastLandfill: number;
+  terrainDirty: boolean;
+  landfillDirty: boolean;
+  /** cells with a non-zero plopped splat sum, and the sums */
+  effIdx: Int32Array; effVal: Float32Array;
+  applied: [number, number][];
+  parksEff: number;
+  /** likewise the landfill splats */
+  lfIdx: Int32Array; lfVal: Float32Array;
+  /** the static part (view, dense) and the waterfront bonus (sparse) */
+  stat?: { lvStatic: Float32Array; wfIdx: Int32Array; wfVal: Float32Array };
+  job?: StaticJob;
+  /** queued splats: [id, sign, def, x, z, w, d] per entry */
+  queue: (number | string)[];
+  /** plopped buildings whose flags changed since the last band (ids, in order) */
+  changed: number[];
+}
+function lvRunOf(st: CityState): LvRun | undefined {
+  const r = st.systemData.lvRun as LvRun | undefined;
+  const C = st.cells;
+  if (!r || r.v !== 1 || !(r.acc instanceof Float64Array) || r.acc.length !== 4) return undefined;
+  if (!(r.effIdx instanceof Int32Array) || !(r.effVal instanceof Float32Array) || r.effIdx.length !== r.effVal.length) return undefined;
+  if (!(r.lfIdx instanceof Int32Array) || !(r.lfVal instanceof Float32Array) || r.lfIdx.length !== r.lfVal.length) return undefined;
+  if (!Array.isArray(r.applied) || !Array.isArray(r.queue) || !Array.isArray(r.changed)) return undefined;
+  if (r.stat && (!(r.stat.lvStatic instanceof Float32Array) || r.stat.lvStatic.length !== C || !(r.stat.wfIdx instanceof Int32Array)
+    || !(r.stat.wfVal instanceof Float32Array) || r.stat.wfIdx.length !== r.stat.wfVal.length)) return undefined;
+  if (r.job && (!r.stat || !(r.job.p?.dist instanceof Uint8Array) || r.job.p.dist.length !== C)) return undefined;
+  return r;
+}
+/** the non-zero cells of a raster (bit-exact: -0 counts as non-zero) */
+function sparse(a: Float32Array): { idx: Int32Array; val: Float32Array } {
+  const u = new Uint32Array(a.buffer, a.byteOffset, a.length);
+  let n = 0;
+  for (let i = 0; i < u.length; i++) if (u[i] !== 0) n++;
+  const idx = new Int32Array(n), val = new Float32Array(n);
+  for (let i = 0, k = 0; i < u.length; i++) if (u[i] !== 0) { idx[k] = i; val[k++] = a[i]; }
+  return { idx, val };
+}
+function unsparse(out: Float32Array, idx: Int32Array, val: Float32Array): void {
+  out.fill(0);
+  for (let k = 0; k < idx.length; k++) { const i = idx[k]; if (i >= 0 && i < out.length) out[i] = val[k]; }
+}
+
 // ------------------------------------------------------------------------------------------------ system
 export function landValueSystem(rt: EconRuntime): SimSystem {
   let row = 0;
@@ -446,6 +506,54 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
     // historic mask: on a historic building's change, and once per sweep
     if (ex.histDirty || force || row === 0) rebuildHistoric(st, ex);
   };
+  /** the save hook's record of what the next days need (T057) */
+  const saveRun = (st: CityState) => {
+    const ex = extraOf(rt, st);
+    const eff = sparse(rt.lvEffects), lf = sparse(rt.lvLandfill);
+    const queue: (number | string)[] = [];
+    for (let k = 0; k + 1 < rt.lvQueue.length; k += 2) {
+      const b = rt.lvQueue[k] as Building;
+      queue.push(b.id, rt.lvQueue[k + 1] as number, b.def, b.x, b.z, b.w, b.d);
+    }
+    const r: LvRun = {
+      v: 1, acc: acc.slice(), lastLandfill, terrainDirty: rt.terrainDirty, landfillDirty: rt.lvLandfillDirty,
+      effIdx: eff.idx, effVal: eff.val, applied: [...ex.applied], parksEff: ex.parksEff, lfIdx: lf.idx, lfVal: lf.val,
+      queue, changed: changed.map((b) => b.id),
+    };
+    if (rt.terrainDirty || job) { const wf = sparse(ex.wf); r.stat = { lvStatic: rt.lvStatic.slice(), wfIdx: wf.idx, wfVal: wf.val }; }
+    if (job) r.job = structuredClone(job);
+    st.systemData.lvRun = r;
+  };
+  /** a loaded city: the land value system as the save left it (false: no usable record, recompute as before) */
+  const resume = (st: CityState): boolean => {
+    const r = st.day > 0 && hasStoredLandValue(st) ? lvRunOf(st) : undefined;
+    if (!r) return false;
+    const ex = extraOf(rt, st);
+    acc.set(r.acc);
+    lastLandfill = r.lastLandfill;
+    if (r.stat) { rt.lvStatic.set(r.stat.lvStatic); unsparse(ex.wf, r.stat.wfIdx, r.stat.wfVal); } else computeStaticLandValue(st, rt.lvStatic, ex.wf);
+    job = r.job ? structuredClone(r.job) : null;
+    rt.terrainDirty = r.terrainDirty;
+    unsparse(rt.lvEffects, r.effIdx, r.effVal);
+    ex.applied.clear();
+    for (const [id, f] of r.applied) ex.applied.set(id, f);
+    ex.parksEff = r.parksEff;
+    rt.lvEffectsDirty = false;
+    unsparse(rt.lvLandfill, r.lfIdx, r.lfVal);
+    rt.lvLandfillDirty = r.landfillDirty;
+    // the queue as the game held it: added buildings by id, removed ones as the footprint their splat needs
+    const q = rt.lvQueue;
+    q.length = 0;
+    for (let k = 0; k + 6 < r.queue.length; k += 7) {
+      const id = r.queue[k] as number, sign = r.queue[k + 1] as number;
+      const b = sign > 0 ? st.buildings.get(id) : undefined;
+      q.push(b ?? ({ id, def: r.queue[k + 2], x: r.queue[k + 3], z: r.queue[k + 4], w: r.queue[k + 5], d: r.queue[k + 6], flags: BF.Plopped } as unknown as Building), sign);
+    }
+    changed.length = 0;
+    for (const id of r.changed) { const b = st.buildings.get(id); if (b) changed.push(b); }
+    rebuildHistoric(st, ex);
+    return true;
+  };
   const band = (st: CityState, z0: number, z1: number, first: boolean) => {
     const N = st.size;
     const lvArr = st.landValue, water = st.water, zone = st.zone, bld = st.building;
@@ -515,15 +623,23 @@ export function landValueSystem(rt: EconRuntime): SimSystem {
         sub = sim;
       }
       const st = sim.state;
-      rt.terrainDirty = true;
+      setSaveHook(st, 'economy.landValue', () => { if (sim.state === st) saveRun(st); });
       row = 0;
-      refresh(st, true);
       acc.fill(0);
       const N = st.size, rows = Math.ceil(N / LV_REFRESH_DAYS), cycle = Math.ceil(N / rows);
+      if (resume(st)) {
+        // a loaded city with the record: the stored land value, the band's sums and the splats as the game left them
+        // (stats.avgLandValue is the saved one: the band publishes it at the end of its sweep)
+        row = (st.day % cycle) * rows;
+        return;
+      }
+      rt.terrainDirty = true;
+      refresh(st, true);
       if (st.day > 0 && hasStoredLandValue(st)) {
         // a loaded city keeps its saved (smoothed) land value — a first pass would drop the neighbourhood blend and the
         // lag, and the overlay would jump after every load. The band continues on the rows of its day: the schedule of
         // an uninterrupted game (day d refreshes rows from ((d − 1) mod cycle) × rows), so a save / load changes nothing
+        // (a save from before T057, without the record)
         accumulate(st, 0, N);
         publish(st);
         row = (st.day % cycle) * rows;
