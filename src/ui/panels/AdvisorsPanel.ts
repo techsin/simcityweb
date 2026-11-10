@@ -29,6 +29,7 @@ import { icon } from '../icons';
 import { dayLabel, money, pct } from '../format';
 import { lastNet } from '../TopBar';
 import { playerEditCounter, type EditCounter } from '../playerEdits';
+import { EQ_GLOSSARY, HQ_GLOSSARY } from '../glossary';
 
 /** an advisor's own assessment; `at` / `view`: where "Show me" goes and the data view it opens */
 export interface Assessment {
@@ -36,6 +37,8 @@ export interface Assessment {
   text: string;
   at?: { x: number; z: number } | null;
   view?: AdviceView | null;
+  /** FH-16: the message's hover text (the glossary entries of the codes it shows: EQ, HQ) */
+  tip?: string;
 }
 
 interface Advisor {
@@ -91,9 +94,9 @@ export const ADVISORS: Advisor[] = [
     id: 'health', name: 'Dr. Okafor', role: 'Health & education', icon: 'education', color: '#d95a8a', keys: /health|educat|school|hospital/i,
     assess: (ctx) => {
       const s = S(ctx);
-      if (s.population > 2000 && s.eq < 60) return { level: 'warn', text: `Education quotient is low (EQ ${Math.round(s.eq)}). Schools attract high-tech industry and offices.` };
-      if (s.population > 2000 && s.hq < 60) return { level: 'warn', text: `Health is poor (HQ ${Math.round(s.hq)}). Build clinics or a hospital.` };
-      return { level: 'good', text: `EQ ${Math.round(s.eq)} · HQ ${Math.round(s.hq)}. Our citizens are healthy and learning.` };
+      if (s.population > 2000 && s.eq < 60) return { level: 'warn', text: `Education quotient is low (EQ ${Math.round(s.eq)}). Schools attract high-tech industry and offices.`, tip: EQ_GLOSSARY.tip };
+      if (s.population > 2000 && s.hq < 60) return { level: 'warn', text: `Health is poor (HQ ${Math.round(s.hq)}). Build clinics or a hospital.`, tip: HQ_GLOSSARY.tip };
+      return { level: 'good', text: `EQ ${Math.round(s.eq)} · HQ ${Math.round(s.hq)}. Our citizens are healthy and learning.`, tip: `${EQ_GLOSSARY.tip}\n${HQ_GLOSSARY.tip}` };
     },
   },
   {
@@ -286,9 +289,11 @@ export class AdvisorsPanel extends Panel {
       const src = top ?? latest ?? null;
       const at = src ? (src.x !== undefined && src.z !== undefined ? { x: src.x, z: src.z } : null) : res.at ?? null;
       const view = top ? adviceView(top.id) : latest ? null : res.view ?? null;
+      // (FH-16: the glossary entry of the code the message shows — an open issue's by its id, the assessment's own)
+      const tip = top ? ISSUE_TIPS.get(top.id) : latest ? undefined : res.tip;
       // (the count belongs to the zoning advice; a variant whose fix is another rule's — roads, land value — has a ref)
       const fam = top && !top.ref ? ZONE_RULE_FAMILY[top.id] : undefined;
-      out.push({ a, level, text, at, view, buttons: top ? issueButtons(top) : [], room: fam === undefined ? null : this.roomLine(fam),
+      out.push({ a, level, text, tip, at, view, buttons: top ? issueButtons(top) : [], room: fam === undefined ? null : this.roomLine(fam),
         more: open.slice(1, 1 + MORE_MAX), extra: open.slice(1 + MORE_MAX) });
     }
     return out;
@@ -341,7 +346,7 @@ export class AdvisorsPanel extends Panel {
           h('div', { class: 'av', style: { background: `linear-gradient(145deg, ${a.color}, color-mix(in srgb, ${a.color} 55%, #000))`, '--st': stColor } as Record<string, string>, html: icon(a.icon, 19) }),
           h('div', { class: 'ab' },
             h('div', { style: 'display:flex;align-items:baseline;gap:8px' }, h('span', { class: 'an' }, a.name), h('span', { class: 'ar' }, a.role)),
-            h('div', { class: 'am' }, c.text),
+            h('div', { class: 'am', title: c.tip }, c.text),
             c.room ? h('div', { class: 'am-room', style: 'margin-top:4px;font-size:11.5px;font-weight:600;color:var(--warn)' }, c.room) : null,
             acts,
             c.more.length ? h('ul', { class: 'am-more' }, ...c.more.map((o) => this.moreRow(o))) : null,
@@ -377,7 +382,8 @@ export class AdvisorsPanel extends Panel {
     const at = o.x !== undefined && o.z !== undefined ? { x: o.x, z: o.z } : null;
     const view = adviceView(o.id);
     const go = !!(at || view);
-    return h('li', { class: o.kind + (go ? ' go' : ''), title: o.text, signal: this.ctx.signal, onclick: go ? () => this.showMe(at, view) : undefined },
+    const tip = ISSUE_TIPS.get(o.id);
+    return h('li', { class: o.kind + (go ? ' go' : ''), title: tip ? `${o.text}\n\n${tip}` : o.text, signal: this.ctx.signal, onclick: go ? () => this.showMe(at, view) : undefined },
       h('i', { class: 'md' }), h('span', { class: 'mt' }, o.text), go ? h('span', { class: 'mg', html: icon(at ? 'target' : 'layers', 12) }) : null);
   }
 
@@ -400,6 +406,8 @@ interface Card {
   a: Advisor;
   level: 'good' | 'warn' | 'bad';
   text: string;
+  /** FH-16: the message's hover text (undefined: none) */
+  tip: string | undefined;
   at: { x: number; z: number } | null;
   view: AdviceView | null;
   /** the top issue's buttons (adviceActions) */
@@ -409,6 +417,9 @@ interface Card {
   more: OpenAdvice[];
   extra: OpenAdvice[];
 }
+
+/** FH-16: the advice rules (advisors.ts) whose text shows EQ or HQ → the glossary entry their line shows on hover */
+const ISSUE_TIPS: ReadonlyMap<string, string> = new Map([['eqLow', EQ_GLOSSARY.tip], ['noCollege', EQ_GLOSSARY.tip], ['hqLow', HQ_GLOSSARY.tip]]);
 
 /** FH-03: the "no room to grow" rules (advisors.ts) → their family (0 R, 1 C, 2 I) */
 const ZONE_RULE_FAMILY: Readonly<Record<string, number>> = { zoneR: 0, zoneC: 1, zoneI: 2 };

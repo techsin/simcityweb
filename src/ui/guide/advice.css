@@ -1,0 +1,8 @@
+/* Chain guide2a's styles (docs/dev/queue/T064-guide-r2-cloud.md: advice and money panels; hud.css is guide2b's). */
+
+/* FH-16: a tax row's plain name on its own dim line under the code. It spans the whole row (grid-column 1 / -1), so the
+   44 px code column and the slider keep their widths; the gap above it is pulled in to read as the row's second line. */
+.tax-row .tr-name { grid-column: 1 / -1; margin-top: -5px; font-size: 11px; line-height: 1.3; }
+/* FH-16: a ledger tax line's plain name under its code; the amount stays on the code's line (baseline, not centred) */
+.ledger tr.item .lg-name { font-size: 11px; line-height: 1.3; margin-top: 1px; }
+.ledger tr.item:has(.lg-name) td { vertical-align: baseline; }

@@ -8,6 +8,7 @@ import { compact, num, pct } from '../format';
 import { INCIDENT_KINDS } from '../../sim/CityState';
 import { type GarageCounts, commuteModes, parkRideLine } from '../statsModel';
 import { watchFor, type WatchHandle } from '../../worker/SimHost';
+import { EQ_GLOSSARY, HQ_GLOSSARY } from '../glossary';
 
 function sum(a: number[] | undefined, i0: number, i1: number): number {
   let s = 0;
@@ -48,12 +49,13 @@ export class StatsPanel extends Panel {
       this.cards[id] = { v, s };
       return h('div', { class: 'stat-card' }, h('div', { class: 'sc-l', html: icon(ic, 13) + `<span>${label}</span>` }), v, s);
     };
-    const meter = (id: string, label: string, ic: string) => {
+    // (`tip`: the row's hover text — FH-16's glossary entry on the EQ / HQ meters)
+    const meter = (id: string, label: string, ic: string, tip?: string) => {
       const fill = h('div', { class: 'fill' });
       const bar = h('div', { class: 'bar' }, fill);
       const v = h('div', { class: 'mr-v' });
       this.meters[id] = { bar, fill, v };
-      return h('div', { class: 'meter-row' }, h('div', { class: 'mr-l', html: icon(ic, 15) + `<span>${label}</span>` }), bar, v);
+      return h('div', { class: 'meter-row', title: tip }, h('div', { class: 'mr-l', html: icon(ic, 15) + `<span>${label}</span>` }), bar, v);
     };
     this.modes = h('div', { class: 'bar', style: 'height:10px;display:flex;gap:2px;background:transparent' });
     this.modesLegend = h('div', { class: 'graph-legend', style: 'margin-top:8px' });
@@ -68,7 +70,7 @@ export class StatsPanel extends Panel {
       h('div', { class: 'sec-title' }, 'Utilities — demand vs supply'),
       meter('power', 'Power', 'power'), meter('water', 'Water', 'water'), meter('garbage', 'Garbage', 'garbage'),
       h('div', { class: 'sec-title' }, 'Quality of life'),
-      meter('eq', 'Education', 'education'), meter('hq', 'Health', 'health'), meter('lv', 'Land value', 'landValue'),
+      meter('eq', 'Education', 'education', EQ_GLOSSARY.tip), meter('hq', 'Health', 'health', HQ_GLOSSARY.tip), meter('lv', 'Land value', 'landValue'),
       meter('crime', 'Crime', 'crime'), meter('traffic', 'Congestion', 'car'),
       h('div', { class: 'sec-title' }, 'Environment at homes'),
       meter('air', 'Air pollution', 'smog'), meter('waterp', 'Water pollution', 'water'), meter('noise', 'Noise', 'noise'),
