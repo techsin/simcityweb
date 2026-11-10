@@ -643,11 +643,11 @@ export class EmergencyBanner {
     this.sendSettings();
     this.renderPolicy(this.policy);
     ctx.signal.addEventListener('abort', () => {
-      this.follow?.stop();
-      this.refreshFollow();
       off(); offReset(); offTick(); offSpeed(); offPolicy(); offSettings();
       this.clearFlashes();
       toggleClass(ctx.root, 'emg-live', false);
+      this.follow?.stop();
+      this.refreshFollow();
       this.ro?.disconnect();
       this.mo?.disconnect();
       win?.removeEventListener('resize', resized);
@@ -1039,7 +1039,8 @@ export class EmergencyBanner {
     const id = this.follow?.active();
     const em = this.ctx.host.emergency;
     const v = id == null ? undefined : em.vehicles().find((q) => q.id === id);
-    const now = this.ctx.host.simTime();
+    // (the clock is read only for a followed unit: the abort and reset paths run this with nothing followed)
+    const now = v ? this.ctx.host.simTime() : 0;
     if (v) this.activeFollow = { id: v.id, incidentId: v.incidentId, label: `Following ${cap1(RESPONDER_UNIT[v.responder][0])} from ${em.stationName(v.stationId)} · ${v.state === 'outbound' && now < v.arrive ? emgTime(v.arrive - now) : 'on scene'}` };
     else if (id == null || this.activeFollow?.id !== id) this.activeFollow = null;
     const display = this.activeFollow ? 'flex' : 'none';

@@ -54,7 +54,7 @@ function harness(initial = [incident()], fleet: EmergencyVehicle[] = []) {
   const ctx = {
     sim: { events }, root, signal: abort.signal, ui,
     host: {
-      get cause() { return cause; }, policy, act, simTime: () => now,
+      events, speed: 1, liveSlowdown: 1, get cause() { return cause; }, policy, act, simTime: () => now,
       emergency: {
         active: true, layersReady: true, incidents: () => [...incidents.values()], incident: (id: number) => incidents.get(id),
         vehicles: () => fleet, stationName: () => 'Fire Station #1', stationList: () => [], stationFleet: () => null,
