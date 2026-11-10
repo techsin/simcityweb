@@ -207,3 +207,95 @@ Repeat on the default host, `?simworker=loopback` and `?simworker=1`. In the def
 - [ ] **EM-4 and c2 still hold.** A press on Send nearest that closes the flyout still clicks, with no re-dock until the release. A press dragged off the button and released does nothing. A press released on its button after the banner moved away still sends.
 - [ ] **FH-08 and round 1.** The card's Send nearest, Emergency view and Got it, E1b's tab and the failure note's tab each work with one click. The folded-stack fallback card stays operable at a narrow layout with a centred panel. E1a stays unseen while the card shows "Loading dispatch options…" and nobody acted. The note names the station Send nearest sends.
 - [ ] Exit to region and enter a city again: the banners work, and no listener of the old city remains.
+
+## After the dev merge (T047's Follow, FEEL-09)
+
+Dev `080676d` is merged into `8171cd3`; the merge is left uncommitted. One file conflicted, `src/ui/EmergencyBanner.ts`, in two hunks, both against T047: the Follow button, its "Following …" chip, and the banner kept while its unit can be followed. The bot reference is now dev's after B2: residents [ 61828, 95515, 40772 ] = 198,115, where the sections above say 192,899.
+
+### The conflict
+
+- **The import from `sim/infra/emergency`.** Round 1 added `RESPONDER_LABEL`; T047 added `type EmergencyDispatchEvent`. Both are kept.
+- **`addBanner`: Dismiss and the banner's record.**
+  - Dismiss forgets the follow candidate (T047) and counts as the player's action for E1a (round 1's `acknowledgeTeaching(inc.id, true)`).
+  - The record carries T047's `follow` button and round 2's `movedAt: 0`. T047's `settleUntil: 0, settleGen: 0` went with the settle window.
+- Git merged the rest. Compared with each side, the merged file holds exactly the other side's changes, apart from that record line.
+
+### What the Follow button needed
+
+- **T047's code and the old settle state.** It set that state in one place, the record above, and read it nowhere. Nothing in it relies on a press being ignored for 350 ms after a move:
+  - the Follow click has its own guard: the button hides while the camera follows, and a second click restarts nothing;
+  - the chip re-docks the stack through `dockDirty`, and a re-dock marks the banners it moved, as for any other cause;
+  - a banner kept for Follow leaves the stack like any other.
+- **Already under the rule.** Follow is a `button` in its banner, so the stack's handlers treat it as they treat Jump and Send nearest. A press that began before its banner appeared or moved is ignored, with the flash and the denied sound. A press that begins after counts at once. A keyboard click (`detail` 0) skips the check.
+- **One hunk: the button appearing.** Follow appears in a banner that keeps its place, when the reply to the player's dispatch arrives. After Send nearest it lands where Send nearest or Choose station… was. `refreshFollowButton` now calls `markMoved([b], false)` each time the button goes from hidden to shown, as round 2 does for FH-08's card and failure note. So a press that began before the button appeared is ignored, and one that begins after it follows at once.
+  - Without the hunk, a finger that was down on Send nearest when the reply arrived started Follow when it lifted (test 2 below).
+  - On the default host the 'dispatched' event comes inside the Send nearest click, so the button is marked within that click. The next press begins later and counts.
+  - On the packet hosts the button comes with the reply.
+  - The button is marked again each time it comes back after the camera lets go.
+- The comment on `PRESS_LAG_MAX` names Follow next to FH-08's card.
+
+### Tests
+
+- `tests/game/emergencyBannerClick.test.ts`: 8 new cases in a second block, "NOTE-081 after the dev merge (T047, FEEL-09): the Follow button under the click rule". The harness's `mount` takes an optional `follow`: with 'local' the 'dispatched' event comes inside the command, with 'packet' the test delivers it by `reply`. The 13 cases of round 2 are unchanged.
+  1. Follow appearing in a banner already in place counts as its button appearing: a press from before follows nothing, one that begins after it follows with one click — again when the camera lets go and the button is back
+  2. touch, a double tap on Send nearest: the second tap's finger is down on it when the reply puts Follow in that button's place — its click follows nothing and sends nothing twice
+  3. a press that began before Follow appeared, its pointerdown handled after the task that showed it, is ignored; one begun 1 ms after it appeared follows at once
+  4. on the default host Follow is there before the Send nearest click is over: that click still sends, and the next press follows at once; so does a click with no press of its own
+  5. keyboard: Enter / Space on the focused Follow button follows at once — also while a pointer press from before is held, and after a press on it was ignored
+  6. the Dispatch tool's own press: its dispatch adds the banner, Follow on it, under the finger still down — that press's click follows nothing, the next press does
+  7. following: the chip takes its row and the stack goes compact — a press that began before that move is ignored, one that begins after it clicks at once; the same when the camera lets go
+  8. after a support-only dispatch the row keeps Send nearest and Choose station… beside Follow: Send nearest and Follow each take a press at once
+- **No dev test pinned the 350 ms window for Follow, so none was changed.** T047's `emergencyFollowBanner.test.ts` clicks through the stand-in DOM's `click()`, which runs the button's own listeners and not the stack's; `emergencyFollowScene.test.ts` tests the scene's wiring. Both pass with every assertion as dev has it.
+- Mutation checks on the merged `EmergencyBanner.ts`, restored byte for byte after each. Every new case fails under at least one:
+  - no mark when Follow appears: tests 1, 2, 3 and 5 fail;
+  - a mark for its first appearance only: test 1 fails;
+  - a 350 ms window after each mark, as before round 2: tests 1 to 4 and 6 to 8 fail, with 9 of round 2's;
+  - no click-time check: tests 1, 2 and 6 fail, with 8 of round 2's;
+  - the time a pointerdown is handled instead of its own: tests 3, 5 and 7 fail, with 5 of round 2's;
+  - no keyboard return: test 5 fails, with round 2's keyboard case.
+- A probe on the real local and loopback hosts (a temporary test, deleted after the run; its output is in the scratchpad folder `T085merge`):
+  - local: Follow is shown and marked inside the Send nearest click; loopback: after it, with the reply;
+  - on both, a press begun 3 ms before the button appeared is ignored with the flash and the denied sound, and one begun 1 ms after it follows;
+  - the chip reads "Following Fire truck from Fire #2", the station round 1's note names and Send nearest sent.
+
+### Validation
+
+All run here on the merged tree, through quietrun, one process at a time.
+
+- `npx tsc --noEmit`: passed.
+- The lane's files: `emergencyBanner.test.ts` 38, `emergencyBannerClick.test.ts` 21, `emergencyBannerStation.test.ts` 10, `emergencyTeachingSeen.test.ts` 14: passed.
+- T047's: `emergencyFollowBanner.test.ts` 23, `emergencyFollowScene.test.ts` 7, `tests/render/cameraFollow.test.ts` 24, `emergencyFollowPosition.test.ts` 7, `emergencyDrawnMotion.test.ts` 5, `emergencyTurnClearance.test.ts` 24, `tests/infra/emergencyFollowDispatch.test.ts` 9: passed.
+- The other `tests/game/emergency*` files: `emergencyLive` 10, `emergencyOutcomePolicy` 1, `emergencyOutcomes` 24, `emergencyPolicy` 35, `emergencyTeaching` 35, `emergencyTeachingToasts` 12, `emergenciesPanelBusy` 2, `emergenciesPanelWaiting` 1: passed. `uiStacking.test.ts` 13, `panelsMisc.test.ts` 10, `cityDisposeCanvas.test.ts` 2: passed.
+- `tests/worker/emergencyTeachingHost.test.ts` 11, `emergencyTeachingWorker.test.ts` 1, `emergencyReads.test.ts` 2, `dispatchCause.test.ts` 5: passed.
+- `tests/worker/hygiene.test.ts`: 18 passed when run alone (slowest scan 3.6 s). The run before it, started right after the worker files, timed out on two scans at the default 5 s (7.4 s and 5.1 s) with other lanes' processes on the machine. No assertion failed. This is the load round 2 reports above.
+- The bot, `SIMBOT_LOG=1 npx tsx tools/simbot.ts --size 128 --years 15 --seed 7`: **residents [ 61828, 95515, 40772 ] = 198,115**, dev's reference. The lane changes no sim code.
+- Not run: the full vitest suite and any browser.
+
+### Choices and requests for the lead
+
+1. **The mark is the banner's**, as for FH-08's card. So a press on that banner's other buttons that began before Follow appeared is ignored too.
+   - After Send nearest that is right for Choose station…, which moved into Send nearest's place.
+   - Jump and Dismiss did not move, and neither does Send nearest in the four-button row. A press on them is ignored only when it began before Follow appeared and is handled after it.
+   - A mark for the Follow button alone would spare them. `movedSince` is the place for it.
+2. **Not tracked, as in round 2's list (item 4): shifts inside a banner.** With Follow in the row, Send nearest hiding moves Choose station… and Follow to the left. A four-button row may wrap; the banners below it are marked once the taller banner is measured.
+3. **A double click on Send nearest in a compact banner** lands its second click on Follow, which appeared in that place, and the camera follows. The second press begins after the button appeared, so the rule lets it through. Dev did the same before this merge, because the banner does not move. Guarding it needs a time window on a new button, which NOTE-081 retired.
+4. **Request for a file T028b owns:** `tools/qa-worker/driver.mjs:190` reads `b.settleUntil`, which is gone. Its comparison with `undefined` is false, so `banner()` no longer waits and clicks as soon as the button is enabled, which the new rule allows. The line should read `if (!b) return null;`. I did not edit it.
+
+### Recheck list (browser, the three hosts)
+
+No wait is needed before any click below. A script that waited for `settleUntil`, or for 350 ms after a move, can drop the wait.
+
+- [ ] **Round 2's checklist above, all ten items.** What Follow changes in them:
+  - after the one real click on Send nearest, the banner also shows Follow, and it stays in the stack while the unit drives;
+  - in rapid triage a dispatched banner moves below the waiting ones at the next UI tick, with its Follow button.
+- [ ] **Follow, one real click.** Click Send nearest, then click Follow once as soon as it is visible, and also 30 ms after. The camera goes to the unit, the chip reads "Following <unit> from <station> · N min", the button hides, and there is no flash ring and no denied sound. Five dispatches, five of five. On the default host Follow is there when the Send nearest click returns; on the two packet hosts it comes with the reply.
+- [ ] The chip's station is the one the note named and Send nearest sent (round 1).
+- [ ] **A press from before the button.** On a packet host with touch emulation and a compact banner, tap Send nearest twice so that the second finger is still down when the reply arrives. Nothing follows and nothing is sent twice; the banner flashes and the denied sound plays. Then one tap on Follow follows.
+- [ ] **Keyboard.** Tab to Follow and press Enter or Space as it appears: the camera follows at once.
+- [ ] **The Dispatch tool.** Choose station…, then click a station. Follow appears on the banner, or the banner appears for an incident that had none. One click on Follow follows. With touch, the tap that sent the unit does not also start Follow when the new banner appears under the finger.
+- [ ] **The four-button row.** Industrial accident, ambulance sent by the player, fire truck missing: Jump, Send nearest, Choose station… and Follow. The row may wrap at 440 px. Each button takes one click, nothing overlaps, and the banners below take a press that begins after they moved down.
+- [ ] **The chip and the stack.** At 1280x720 with several banners, click Follow: at the next UI tick the stack may go compact for the chip's row. A press that begins after that move acts at once. Release Follow by a drag, the wheel, W/A/S/D, the banner's Jump and the minimap: the chip goes in the same frame, Follow is back, and one click follows again.
+- [ ] **Choice 3, for the record.** Double-click Send nearest in a compact banner and note where the second click lands. By the rule it starts Follow. In a full banner it lands on Choose station…, as before T047.
+- [ ] **FH-08 with Follow** (T047's Desktop QA 5b). Fresh profile, tips on: the card's Send nearest sends, Follow appears in the row above the card, E1a is seen as round 1 says, and one click on Follow follows.
+- [ ] **T047's Desktop QA list** in `local-T047-feel09-follow.md`, lines 1 to 8, with real clicks and no waits before them.
+- [ ] Exit to region while following, then enter a city again: no chip, the camera is free, the banners work, and no listener of the old city remains.

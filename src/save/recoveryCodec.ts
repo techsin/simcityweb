@@ -498,9 +498,28 @@ export function buildRecoverySnapshot(regionId: string, tileKey: string, state: 
 
 export interface PendingRecovery {
   marker: RecoveryMarker;
+  /** empty for a journal alone (`marker.kind === 'journal'`) */
   payload: Uint8Array;
   /** the full save the snapshot is a delta of */
   record: CityRecord | null;
+  /** W1.3 (§4.3 Restoring): a journal alone, bound to `record`; nothing is rebuilt, the next boot replays it */
+  journal?: RecoveryJournal;
+}
+
+/** W1.3: the title screen's offer of a journal alone, described from the journal's own `info` (the page's last view of
+ *  the city) or else from the save it extends */
+export function journalOnlyMarker(journal: RecoveryJournal, record: CityRecord, regionName?: string): RecoveryMarker {
+  const info = journal.info, city = record.city, startYear = Number(city.config?.startYear ?? 2000);
+  const baseDay = Number(city.scalars.day ?? 0), stats = (city.data as { stats?: { population?: unknown } }).stats;
+  const day = Number.isFinite(info?.day) ? info!.day : baseDay;
+  return {
+    v: DELTA_VERSION, regionId: journal.regionId, tileKey: journal.tileKey, at: journal.at, baseSavedAt: record.savedAt,
+    bytes: 0, ls: false, dropped: [], kind: 'journal',
+    cityName: info?.cityName || String(city.config?.name ?? ''), regionName: info?.regionName ?? regionName,
+    day, date: info?.date ?? gameDateLabel(day, startYear), baseDay, baseDate: gameDateLabel(baseDay, startYear),
+    population: Number(info?.population ?? stats?.population ?? 0), funds: Number(info?.funds ?? city.scalars.funds ?? 0),
+    ...(info?.why ? { why: info.why } : {}),
+  };
 }
 
 /** Rebuild and validate with a full deserialize; the stored base is never mutated. */

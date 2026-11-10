@@ -127,7 +127,20 @@ export interface BudgetState {
   curExpense: Record<string, number>;
 }
 
-export interface HistorySeries {
+/** Stable approval terms recorded for LG-21 (the tooltip supplies their display labels). */
+export const YEAR_REVIEW_TERMS = [
+  'base', 'tax', 'services', 'pollution', 'crime', 'commute', 'unemployment', 'parks', 'strikes', 'deficit', 'ordinances', 'civic',
+  'noise', 'tapWater', 'garbage', 'outages', 'needs', 'tourism', 'hq', 'emergencies', 'justice', 'toxicDump', 'disaster', 'clamp',
+] as const;
+export type YearReviewTerm = typeof YEAR_REVIEW_TERMS[number];
+
+/** Optional economy telemetry: completion months; a city without the record seeds its goals reached so far silently. */
+export interface YearReviewGoals {
+  seen: string[];
+  completed: Record<string, number>;
+}
+
+export interface HistorySeries extends Record<`approval_${YearReviewTerm}`, number[]> {
   /** month index since start (year*12+month) */
   t: number[];
   pop: number[];
@@ -170,6 +183,19 @@ export interface HistorySeries {
   jailOccupancy: number[];
   busLoad: number[];
   parkRide: number[];
+  // ---- LG-21 review telemetry; reviewSample distinguishes measured months from old-save padding
+  reviewSample: number[];
+  reviewTermsSample: number[];
+  reviewFunds: number[];
+  recurringNet: number[];
+  recurringExpense: number[];
+  resCrime: number[];
+  homeServices: number[];
+  noisyHomes: number[];
+  emergencyAnswered: number[];
+  emergencyFailed: number[];
+  buildingsLost: number[];
+  builtOut: number[];
 }
 
 /** every HistorySeries key (t first); keep in sync with the interface */
@@ -178,6 +204,9 @@ export const HISTORY_KEYS: readonly (keyof HistorySeries)[] = [
   'kids', 'teens', 'youngAdults', 'adults', 'seniors', 'unemployment', 'commute', 'noise', 'air', 'waterPoll', 'garbageLoad',
   'powerMargin', 'waterMargin', 'tourists', 'attractiveness', 'enrolElem', 'enrolHigh', 'enrolCollege', 'healthServed',
   'incidents', 'responseMin', 'emergencyDeaths', 'jailOccupancy', 'busLoad', 'parkRide',
+  'reviewSample', 'reviewTermsSample', 'reviewFunds', 'recurringNet', 'recurringExpense', 'resCrime', 'homeServices', 'noisyHomes',
+  'emergencyAnswered', 'emergencyFailed', 'buildingsLost', 'builtOut',
+  ...YEAR_REVIEW_TERMS.map((id) => `approval_${id}` as const),
 ];
 
 export function emptyHistory(): HistorySeries {

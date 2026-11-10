@@ -10,6 +10,9 @@
  *  - the keyboard (Enter / Space on the focused button: a click with no press) acts at once;
  *  - touch: the tap's click is its own task after the release, and may be moved onto the nearest button;
  *  - FH-08's first-lesson card and its folded-stack fallback, and round 1's E1a timing, keep working.
+ * After the dev merge (T047, FEEL-09): the Follow button is a banner control under the same rule — it appears in a banner
+ * that keeps its place (the reply to the player's dispatch shows it), and a press that began before it appeared, or
+ * before its banner appeared or moved, is ignored; one that begins after it follows at once; the keyboard too.
  * Events travel as in the browser: the window's capture listeners, the stack's, then the control's own (the stand-in
  * DOM of fakeDom.ts keeps no capture phase; El adds it, with closest / contains and a place on screen).
  */
@@ -17,11 +20,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Emitter } from '../../src/core/events';
 import type { GameContext, UIEvents } from '../../src/game/context';
 import { DEFAULT_SETTINGS } from '../../src/game/settings';
+import { DispatchTool } from '../../src/game/tools/DispatchTool';
 import type { CityEvents } from '../../src/sim/Simulation';
-import type { DispatchOption, DispatchResult, Incident } from '../../src/sim/infra/emergency';
+import { RESPONDER_MODEL, type DispatchOption, type DispatchResult, type EmergencyDispatchEvent, type EmergencyVehicle, type Incident } from '../../src/sim/infra/emergency';
 import { EMERG_DAYS_PER_MIN } from '../../src/sim/infra/params';
 import { EmergencyBanner, PRESS_LAG_MAX, SETTLE_FLASH_MS } from '../../src/ui/EmergencyBanner';
-import type { PolicySnapshot } from '../../src/worker/SimHost';
+import type { Cause, PolicySnapshot } from '../../src/worker/SimHost';
 import { FEl, textNode, type FNode } from './fakeDom';
 
 // ------------------------------------------------------------------------------------------------ DOM with a capture phase
@@ -149,8 +153,10 @@ function incident(id: number): Incident {
 function option(etaMin = 4.2): DispatchOption {
   return { stationId: 7, name: 'Harbor Fire Station #7', responder: 'fire', free: 1, etaMin, etaDays: etaMin * EMERG_DAYS_PER_MIN, total: 2, inRange: false };
 }
-/** a city without alerts yet (`options` null: the dispatch options have not arrived; `tips`: FH-08's lessons are on) */
-function mount(config: { tips?: boolean; options?: DispatchOption[] | null } = {}) {
+/** a city without alerts yet (`options` null: the dispatch options have not arrived; `tips`: FH-08's lessons are on;
+ *  `follow`: the camera's Follow is wired, as in the scene (FEEL-09) — 'local': a Send nearest's 'dispatched' event comes
+ *  within its command, as on the default host; 'packet': with a later packet, when the test calls `reply`) */
+function mount(config: { tips?: boolean; options?: DispatchOption[] | null; follow?: 'local' | 'packet' } = {}) {
   const root = new El('div'), ui = new Emitter<UIEvents>(), events = new Emitter<CityEvents>();
   const abort = new AbortController();
   const incidents = new Map<number, Incident>();
@@ -160,11 +166,35 @@ function mount(config: { tips?: boolean; options?: DispatchOption[] | null } = {
   /** the incidents Send nearest was sent for, in order */
   const sent: number[] = [];
   let options = config.options === null ? undefined : config.options ?? [option()], version = 1;
-  const act = vi.fn((op: string, args: unknown[]) => {
+  /** FEEL-09: the units out, the cause of the event being emitted, and the camera's Follow */
+  const fleet: EmergencyVehicle[] = [];
+  let cause: Cause | null = null, commands = 0, following: number | null = null;
+  const follow = { start: vi.fn((id: number) => { following = id; }), active: () => following, stop: vi.fn(() => { following = null; }) };
+  /** the host's 'dispatched' event for the player's dispatch to incident `id`, with the unit it sent (its id: 100 + the
+   *  incident's), under the cause of its command — `tag`: who sent it (default: this banner's Send nearest); `support`:
+   *  an ambulance alone went, and the incident keeps waiting for its fire truck */
+  const reply = (id: number, o: { tag?: object | null; support?: boolean } = {}): EmergencyVehicle => {
+    const inc = incidents.get(id)!;
+    const responder = o.support ? 'medical' : 'fire';
+    const unit: EmergencyVehicle = {
+      id: 100 + id, responder, model: RESPONDER_MODEL[responder], stationId: 7, incidentId: id, state: 'outbound', path: [0, 1],
+      times: [0, 1], legStart: 0, m0: 0, m1: 1, arrive: 4.2 * EMERG_DAYS_PER_MIN, workFrom: 0, hospital: -1, cover: false,
+    };
+    fleet.push(unit);
+    inc.units.push(unit.id);
+    if (!o.support) inc.state = 'dispatched';
+    cause = { seq: ++commands, tag: o.tag === undefined ? banner : o.tag };
+    const event: EmergencyDispatchEvent = { type: 'dispatched', id, kind: inc.kind, x: inc.x, z: inc.z, major: inc.major, manualPossible: inc.manualPossible, sent: [unit.id] };
+    events.emit('emergency', event);
+    cause = null;
+    return unit;
+  };
+  const act = vi.fn((op: string, args: unknown[], opts?: { tag?: object | null }) => {
     if (op === 'setSettings') settings.push(args[0] as Record<string, unknown>);
     if (op !== 'dispatchBest') return { seq: 1, exact: false, done: Promise.resolve(undefined) };
     const id = args[0] as number;
     sent.push(id);
+    if (config.follow === 'local') reply(id, { tag: opts?.tag ?? null });
     const result: DispatchResult = { ok: true, responder: 'fire', sent: 1, etaMin: 4.2 };
     return { seq: 1, exact: false, done: Promise.resolve(result).then((r) => {
       const inc = incidents.get(id);
@@ -178,7 +208,7 @@ function mount(config: { tips?: boolean; options?: DispatchOption[] | null } = {
     newYearBusy: () => false, setOverlay: vi.fn(), openFlyout, focusCell, showQuery: vi.fn(),
     panels: { open: vi.fn(), isOpen: () => false }, sound: (name: string) => { sounds.push(name); }, toast: vi.fn(),
     host: {
-      kind: 'worker', events, act, speed: 0, liveSlowdown: 1, simTime: () => 0,
+      kind: 'worker', events, act, speed: 0, liveSlowdown: 1, simTime: () => 0, get cause() { return cause; },
       beginGesture: () => ({ end: vi.fn(), settled: Promise.resolve() }),
       policy: Object.assign(policy, { subscribe: (fn: (p: PolicySnapshot) => void, signal: AbortSignal) => {
         listeners.add(fn);
@@ -188,18 +218,21 @@ function mount(config: { tips?: boolean; options?: DispatchOption[] | null } = {
       } }),
       emergency: {
         active: true, layersReady: true, incident: (id: number) => incidents.get(id),
-        incidents: () => [...incidents.values()], vehicles: () => [], stationList: () => [],
+        incidents: () => [...incidents.values()], vehicles: () => fleet, stationList: () => [],
         stationFleet: () => null, stationName: () => 'Harbor Fire Station #7',
       },
       watch: () => ({ get value() { return options; }, get version() { return version; }, error: undefined,
         setArgs: () => undefined, subscribe: () => () => undefined, dispose: () => undefined }),
     },
   } as unknown as GameContext;
-  const banner = new EmergencyBanner(ctx, root as unknown as HTMLElement);
+  const banner = new EmergencyBanner(ctx, root as unknown as HTMLElement, config.follow ? follow : undefined);
   cities.push({ abort, banner });
   const publish = () => { for (const fn of listeners) fn(policy); };
   return {
-    root, banner, abort, events, incidents, settings, sounds, sent, focusCell, openFlyout,
+    root, banner, abort, events, incidents, settings, sounds, sent, focusCell, openFlyout, ctx, follow, reply,
+    /** a banner's Follow button, and the "Following …" chip below the stack */
+    followButton: (id: number) => (banner as unknown as { banners: Map<number, { follow: El }> }).banners.get(id)!.follow,
+    chip: () => root.querySelector('.emg-follow-chip') as El,
     /** the map under the HUD: a press on it begins off the banner stack */
     map: root.appendChild(new El('canvas')),
     tick: () => ui.emit('uiTick', undefined),
@@ -632,5 +665,274 @@ describe('NOTE-081: the emergency banner click rule', () => {
     const b = (t.banner as unknown as { banners: Map<number, { send: El }> }).banners.get(1)!;
     expect(tap(b.send)).toBe(true);
     expect(t.sent).toEqual([]);
+  });
+});
+
+describe('NOTE-081 after the dev merge (T047, FEEL-09): the Follow button under the click rule', () => {
+  const finger = { pointerId: 2, pointerType: 'touch' };
+  /** the units the camera was told to follow, in order */
+  const starts = (t: City) => t.follow.start.mock.calls.map((c) => c[0]);
+  const denied = (t: City) => t.sounds.filter((s) => s === 'error').length;
+
+  it('Follow appearing in a banner already in place counts as its button appearing: a press that began before it follows nothing, one that begins after it follows with one click — again when the camera lets go and the button is back', async () => {
+    const t = mount({ follow: 'packet' });
+    t.alert(1);
+    vi.advanceTimersByTime(2000);
+    t.tick();
+    const b = t.parts(1), follow = t.followButton(1);
+    expect(follow.style.display).toBe('none');
+    // Send nearest, by a press on a banner in place: sent — its reply is still on the way (the packet hosts)
+    expect(tap(b.send)).toBe(true);
+    expect(t.sent).toEqual([1]);
+    await flush();
+    expect(follow.style.display).toBe('none');
+    // a finger rests on the banner, below its buttons, when the reply shows Follow there
+    vi.advanceTimersByTime(40);
+    send(b.body, 'pointerdown', finger);
+    vi.advanceTimersByTime(40);
+    const unit = t.reply(1);
+    expect(follow.style.display).toBe('');
+    expect(follow.closest('.emg-banner')).toBe(b.el);
+    send(b.body, 'pointerup', finger);
+    vi.advanceTimersByTime(5);
+    const click = send(follow, 'click', { detail: 1 });
+    expect([click.stopped, click.prevented]).toEqual([true, true]);
+    expect(t.follow.start).not.toHaveBeenCalled();
+    expect(t.chip().style.display).toBe('none');
+    // it says so, as on every banner control: the banner flashes, the click sounds denied
+    expect(flashing(b.el)).toBe(true);
+    expect(denied(t)).toBe(1);
+    // a press that begins on it — the same millisecond, no frame, no UI tick: the camera follows the unit that was sent
+    expect(tap(follow)).toBe(true);
+    expect(starts(t)).toEqual([unit.id]);
+    expect(t.chip().style.display).toBe('flex');
+    expect(t.chip().textContent).toContain('Following Fire truck from Harbor Fire Station #7');
+    expect(follow.style.display).toBe('none');
+    expect(denied(t)).toBe(1);
+    // the camera lets go (the player pans): the button is back — it appeared again, under a finger down since before
+    vi.advanceTimersByTime(3000);
+    send(b.body, 'pointerdown', finger);
+    vi.advanceTimersByTime(40);
+    t.follow.stop();
+    t.banner.refreshFollow();
+    expect(follow.style.display).toBe('');
+    expect(t.chip().style.display).toBe('none');
+    send(b.body, 'pointerup', finger);
+    vi.advanceTimersByTime(5);
+    expect(send(follow, 'click', { detail: 1 }).stopped).toBe(true);
+    expect(starts(t)).toEqual([unit.id]);
+    expect(denied(t)).toBe(2);
+    expect(tap(follow)).toBe(true);
+    expect(starts(t)).toEqual([unit.id, unit.id]);
+  });
+
+  it('touch, a double tap on Send nearest: the second tap\'s finger is down on it when the reply puts Follow in that button\'s place — its click follows nothing and sends nothing twice; the next tap follows', () => {
+    const t = mount({ follow: 'packet' });
+    t.alert(1);
+    vi.advanceTimersByTime(2000);
+    t.tick();
+    const b = t.parts(1), follow = t.followButton(1);
+    expect(tap(b.send, { touch: true })).toBe(true);
+    expect(t.sent).toEqual([1]);
+    // the second tap begins on Send nearest, still there: the first one's reply is not in
+    vi.advanceTimersByTime(120);
+    expect(send(b.send, 'pointerdown', finger).stopped).toBe(false);
+    vi.advanceTimersByTime(30);
+    // the reply: help is on the way — Send nearest goes, and Follow shows (in a compact banner, right where it was)
+    const unit = t.reply(1);
+    expect([b.send.style.display, follow.style.display]).toEqual(['none', '']);
+    send(b.send, 'pointerup', finger);
+    vi.advanceTimersByTime(5);
+    // (a touch's click goes to what lies under the finger when it lifts)
+    expect(send(follow, 'click', { detail: 1 }).stopped).toBe(true);
+    expect(t.follow.start).not.toHaveBeenCalled();
+    expect(t.sent).toEqual([1]);
+    expect(flashing(b.el)).toBe(true);
+    expect(denied(t)).toBe(1);
+    expect(tap(follow, { touch: true })).toBe(true);
+    expect(starts(t)).toEqual([unit.id]);
+    expect(denied(t)).toBe(1);
+  });
+
+  it('a press that began before Follow appeared, its pointerdown handled after the task that showed it, is ignored; one begun 1 ms after it appeared follows at once', async () => {
+    const t = mount({ follow: 'packet' });
+    t.alert(1);
+    vi.advanceTimersByTime(2000);
+    t.tick();
+    expect(tap(t.parts(1).send)).toBe(true);
+    await flush();
+    vi.advanceTimersByTime(60);
+    // the press begins while the reply's task runs; that task shows Follow under the pointer, then the pointerdown is
+    // handled — on the button that was not there when the press began
+    const began = performance.now();
+    vi.advanceTimersByTime(12);
+    const unit = t.reply(1);
+    vi.advanceTimersByTime(8);
+    const follow = t.followButton(1);
+    expect(send(follow, 'pointerdown', { pointerId: 1, timeStamp: began })).toEqual({ stopped: true, prevented: true });
+    expect(flashing(t.parts(1).el)).toBe(true);
+    // (an ignored press holds no docking: nothing waits for its release)
+    expect((t.banner as unknown as { pressAt: number }).pressAt).toBe(0);
+    send(follow, 'pointerup', { pointerId: 1 });
+    expect(send(follow, 'click', { detail: 1 }).stopped).toBe(true);
+    expect(t.follow.start).not.toHaveBeenCalled();
+    expect(denied(t)).toBe(1);
+    // begun 1 ms after the button appeared, handled 7 ms later: at once
+    expect(tap(follow, { began: performance.now() - 7 })).toBe(true);
+    expect(starts(t)).toEqual([unit.id]);
+    expect(denied(t)).toBe(1);
+  });
+
+  it('on the default host Follow is there before the Send nearest click is over: that click still sends, and the next press — the same millisecond — follows at once; so does a click with no press of its own', () => {
+    const t = mount({ follow: 'local' });
+    t.alert(1);
+    vi.advanceTimersByTime(30);
+    const b = t.parts(1), follow = t.followButton(1);
+    expect(tap(b.send)).toBe(true);
+    expect(t.sent).toEqual([1]);
+    // (the 'dispatched' event came within the command: the button appeared inside the click that sent the unit)
+    expect(follow.style.display).toBe('');
+    expect(flashing(b.el)).toBe(false);
+    // the press that follows began after the button appeared: at once (no 350 ms, no frame to wait out)
+    expect(tap(follow)).toBe(true);
+    expect(starts(t)).toEqual([101]);
+    expect(t.chip().style.display).toBe('flex');
+    expect(t.sounds).not.toContain('error');
+    const u = mount({ follow: 'local' });
+    u.alert(1);
+    expect(tap(u.parts(1).send)).toBe(true);
+    expect(send(u.followButton(1), 'click', { detail: 1 }).stopped).toBe(false);
+    expect(starts(u)).toEqual([101]);
+    expect(u.sounds).not.toContain('error');
+  });
+
+  it('keyboard: Enter / Space on the focused Follow button follows at once — in the millisecond it appeared, while a pointer press from before is still held, and after a press on it was ignored', async () => {
+    const t = mount({ follow: 'packet' });
+    t.alert(1);
+    expect(send(t.parts(1).send, 'click', { detail: 0 }).stopped).toBe(false);
+    expect(t.sent).toEqual([1]);
+    await flush();
+    // a mouse button held on the map since before the reply
+    send(t.map, 'pointerdown', { pointerId: 1 });
+    vi.advanceTimersByTime(40);
+    const unit = t.reply(1);
+    const follow = t.followButton(1);
+    expect(send(follow, 'click', { detail: 0 }).stopped).toBe(false);
+    expect(starts(t)).toEqual([unit.id]);
+    expect(t.sounds).not.toContain('error');
+    // a press on the button ignored at its pointerdown (it began before the button appeared): the keyboard still clicks
+    // it, and the ignored press's own click stays out
+    const u = mount({ follow: 'packet' });
+    u.alert(1);
+    vi.advanceTimersByTime(2000);
+    u.tick();
+    const began = performance.now();
+    vi.advanceTimersByTime(12);
+    u.reply(1, { tag: new DispatchTool(u.ctx) });
+    vi.advanceTimersByTime(8);
+    const again = u.followButton(1);
+    expect(send(again, 'pointerdown', { pointerId: 1, timeStamp: began }).stopped).toBe(true);
+    expect(send(again, 'click', { detail: 0 }).stopped).toBe(false);
+    expect(starts(u)).toEqual([101]);
+    // (the camera lets go first: were that click let through, it would follow again)
+    u.follow.stop();
+    u.banner.refreshFollow();
+    send(again, 'pointerup', { pointerId: 1 });
+    expect(send(again, 'click', { detail: 1 }).stopped).toBe(true);
+    expect(starts(u)).toEqual([101]);
+  });
+
+  it('the Dispatch tool\'s own press: its dispatch adds the banner, Follow on it, under the finger still down — that press\'s click follows nothing, the next press does', () => {
+    const t = mount({ follow: 'packet' });
+    // an incident without a banner (no alert for it); the player sends to it by a press on the map with the Dispatch tool
+    t.incidents.set(1, incident(1));
+    expect(t.banner.bannerIds).toEqual([]);
+    send(t.map, 'pointerdown', finger);
+    vi.advanceTimersByTime(4);
+    const unit = t.reply(1, { tag: new DispatchTool(t.ctx) });
+    expect(t.banner.bannerIds).toEqual([1]);
+    const b = t.parts(1), follow = t.followButton(1);
+    expect(follow.style.display).toBe('');
+    vi.advanceTimersByTime(90);
+    send(t.map, 'pointerup', finger);
+    vi.advanceTimersByTime(5);
+    // (a touch's click goes to what lies under the finger when it lifts)
+    expect(send(follow, 'click', { detail: 1 }).stopped).toBe(true);
+    expect(t.follow.start).not.toHaveBeenCalled();
+    expect(flashing(b.el)).toBe(true);
+    expect(denied(t)).toBe(1);
+    expect(tap(follow)).toBe(true);
+    expect(starts(t)).toEqual([unit.id]);
+    expect(denied(t)).toBe(1);
+  });
+
+  it('following: the chip takes its row and the stack goes compact — a press that began before that move is ignored, one that begins after it clicks at once; the same when the camera lets go and the stack moves back', () => {
+    const t = mount({ follow: 'packet' });
+    Object.assign(t.root, { clientWidth: 1600, clientHeight: 500 });
+    t.alert(1, 2);
+    vi.advanceTimersByTime(2000);
+    t.tick();
+    const compact = () => t.root.querySelectorAll('.emg-banner.compact').length;
+    expect(compact()).toBe(0);
+    const unit = t.reply(1, { tag: new DispatchTool(t.ctx) });
+    vi.advanceTimersByTime(500);
+    t.tick();
+    vi.advanceTimersByTime(500);
+    expect(tap(t.followButton(1))).toBe(true);
+    expect(starts(t)).toEqual([unit.id]);
+    expect(compact()).toBe(0);
+    // the chip's row is kept free from the next UI tick on: both banners go compact, and the other banner's buttons move
+    // under the pointer — whose press began before that, its pointerdown handled after the tick
+    let began = performance.now();
+    vi.advanceTimersByTime(20);
+    t.tick();
+    expect(compact()).toBe(2);
+    vi.advanceTimersByTime(8);
+    const other = t.parts(2);
+    expect(tap(other.jump, { began })).toBe(false);
+    expect(t.focusCell).not.toHaveBeenCalled();
+    expect(flashing(other.el)).toBe(true);
+    expect(denied(t)).toBe(1);
+    // (it was ignored for 350 ms from the move's first frame on screen) a press that begins after the move: at once
+    expect(tap(other.jump)).toBe(true);
+    expect(t.focusCell).toHaveBeenCalledTimes(1);
+    // the camera lets go: the chip goes, and at the next UI tick the banners are full again — they moved once more
+    vi.advanceTimersByTime(3000);
+    t.follow.stop();
+    t.banner.refreshFollow();
+    began = performance.now();
+    vi.advanceTimersByTime(20);
+    t.tick();
+    expect(compact()).toBe(0);
+    vi.advanceTimersByTime(8);
+    expect(tap(other.jump, { began })).toBe(false);
+    expect(t.focusCell).toHaveBeenCalledTimes(1);
+    expect(tap(other.jump)).toBe(true);
+    expect(t.focusCell).toHaveBeenCalledTimes(2);
+    // and Follow, back on its banner, takes the press that begins now
+    expect(tap(t.followButton(1))).toBe(true);
+    expect(starts(t)).toEqual([unit.id, unit.id]);
+    expect(denied(t)).toBe(2);
+  });
+
+  it('after a support-only dispatch the row keeps Send nearest and Choose station… beside Follow: Send nearest and Follow each take a press that begins after Follow appeared, at once', () => {
+    const t = mount({ follow: 'packet' });
+    t.incidents.set(1, { ...incident(1), kind: 'industrial', need: { fire: 1, medical: 1 } });
+    t.alert(1);
+    vi.advanceTimersByTime(2000);
+    t.tick();
+    const b = t.parts(1), follow = t.followButton(1);
+    const choose = (t.banner as unknown as { banners: Map<number, { choose: El }> }).banners.get(1)!.choose;
+    // the player sends the ambulance with the Dispatch tool; the plant keeps waiting for its fire truck
+    const ambulance = t.reply(1, { tag: new DispatchTool(t.ctx), support: true });
+    expect(t.incidents.get(1)!.state).toBe('uncovered');
+    expect([b.jump, b.send, choose, follow].map((e) => e.style.display !== 'none')).toEqual([true, true, true, true]);
+    expect(b.send.disabled).toBe(false);
+    expect(tap(b.send)).toBe(true);
+    expect(t.sent).toEqual([1]);
+    expect(tap(follow)).toBe(true);
+    expect(starts(t)).toEqual([ambulance.id]);
+    expect(t.chip().textContent).toContain('Following Ambulance');
+    expect(t.sounds).not.toContain('error');
   });
 });

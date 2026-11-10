@@ -30,8 +30,9 @@ import { FallbackObjectsView } from './fallback/FallbackObjectsView';
 import { FallbackWorldView } from './fallback/FallbackWorldView';
 import { NullObjectsView, NullWorldView } from './fallback/NullViews';
 import { loadGameModules, type GameModules } from './modules';
-import { loadPref, loadSettings, savePref, saveSettings, type GameSettings } from './settings';
+import { loadPref, loadSettings, resolveMotion, savePref, saveSettings, type GameSettings } from './settings';
 import { NewYearCelebration, type CelebrateOptions } from './NewYear';
+import { YearReview } from '../ui/YearReview';
 import { GameSounds } from './GameSounds';
 import { HOTKEY_CYCLES, PANEL_HOTKEYS } from './toolCatalog';
 import { ToolController } from './tools/ToolController';
@@ -62,6 +63,7 @@ import { EmergencyBanner } from '../ui/EmergencyBanner';
 import { EmergenciesPanel } from '../ui/panels/EmergenciesPanel';
 import { Sirens, type SirenOut, type SirenSource } from '../audio/sirens';
 import type { EmergencyVehicles } from '../render/city/vehicles/EmergencyVehicles';
+import type { CameraController } from '../render/world/CameraController';
 import { DemographicsPanel } from '../ui/panels/DemographicsPanel';
 import { attachOverlays } from '../sim/infra/overlays';
 import { windVector } from '../sim/infra/wind';
@@ -79,6 +81,8 @@ export interface CitySceneOptions {
   host?: WorkerSimHost;
   rctx?: RegionContext;
   persistence?: CityPersistence;
+  /** W1.3: false starts the local or loopback host on the save without its recovery journal (§4.4's crash choices) */
+  replayJournal?: boolean;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
   onSave: (state: HostState, reason?: SaveReason) => Promise<void>;
   /** initial settings (e.g. the app-level settings); keys given here win over the stored in-game prefs */
@@ -145,6 +149,7 @@ export class CityScene {
   private advisors: AdvisorsPanel;
   /** WP8: emergency alert banners (LIVE speed policy) and siren voices */
   private emgBanner: EmergencyBanner;
+  private followedVehicle: number | null = null;
   private sirens: Sirens | null = null;
   private sirenSrc: { x: number; y: number; z: number; responder: string }[] = [];
   private tip: CursorTip;
@@ -220,6 +225,7 @@ export class CityScene {
         flags: { simwasm: pageSimWasmFlag() },
         signal: this.abort.signal,
         persistence: opts.persistence,
+        replayJournal: opts.replayJournal,
       });
     }
     this.degraded.actions = true;
@@ -332,6 +338,8 @@ export class CityScene {
       // NOTE-041: a command, so a worker's clock holds too (the host is already gone when the scene disposes)
       holdCalendar: (on) => { if (!this.disposed) this.host.act('holdCalendar', [on], { tag: this.newYear }); },
     });
+    // ---- CONTENT: yearly feedback follows the celebration, without changing its timing or camera.
+    new YearReview(ctx, { busy: () => this.newYear.active, regionName: opts.persistence?.regionName });
     // CONTENT: rank moments share the renderer, with New Year and LIVE taking priority.
     const rankFireworks = new RankFireworks(ctx, () => this.newYear.busy);
     new MilestoneCard(ctx, this.uiRoot, (rank, intensity) => rankFireworks.start(rank, intensity), () => this.newYear.busy);
@@ -352,7 +360,11 @@ export class CityScene {
     // WP5: demographics panel; derived data-view rasters follow the sim's layer updates
     this.panels.register(new DemographicsPanel(ctx));
     this.offs.push(attachOverlays(this.host.sim));
-    this.emgBanner = new EmergencyBanner(ctx, this.uiRoot);
+    this.emgBanner = new EmergencyBanner(ctx, this.uiRoot, {
+      start: (id) => this.followEmergency(id),
+      active: () => this.followedVehicle,
+      stop: () => this.stopEmergencyFollow(),
+    });
     this.pause = new PauseMenu(ctx, this.uiRoot, { onSettings: () => this.panels.open('settings'), onHelp: () => this.panels.open('help') });
 
     // ---- events
@@ -601,6 +613,7 @@ export class CityScene {
     const lost = this.ctxLost;
     if (!lost || lost.restoring || this.disposed) return;
     lost.restoring = true;
+    this.newYear?.cancel();
     const cam = readCamera(this.world.controls) ?? validCamera(this.sim.state.systemData.camera, this.sim.state);
     const timeOfDay = this.world.timeOfDay;
     // stop watching the old canvas first: disposing its views forces a (second) context loss on it
@@ -1158,6 +1171,32 @@ export class CityScene {
     } catch (e) {
       console.warn(e);
     }
+  }
+
+  /** Follow the renderer's lead unit, using the same extrapolated emergency feed as its road animation. */
+  private followEmergency(id: number): void {
+    const c = this.world.controls as Partial<Pick<CameraController, 'follow'>>;
+    const vehicles = (this.objects as { emergency?: EmergencyVehicles }).emergency;
+    if (!c.follow || !vehicles?.followPosition(id)) return;
+    c.follow((aheadSeconds) => {
+      const secondsPerDay = this.host.secondsPerDay();
+      const aheadDays = this.host.speed > 0 && secondsPerDay > 0 ? aheadSeconds / secondsPerDay : 0;
+      return vehicles.followPosition(id, aheadDays);
+    }, {
+      reducedMotion: resolveMotion(this.settings.motion) === 'reduced',
+      onEnd: () => {
+        this.followedVehicle = null;
+        this.emgBanner.refreshFollow();
+      },
+    });
+    this.followedVehicle = id;
+  }
+
+  private stopEmergencyFollow(): void {
+    const c = this.world.controls as Partial<Pick<CameraController, 'stopFollowing'>>;
+    c.stopFollowing?.();
+    this.followedVehicle = null;
+    this.emgBanner?.refreshFollow();
   }
 
   private showQuery(t: QueryTarget | null, opts: { silent?: boolean } = {}): void {
