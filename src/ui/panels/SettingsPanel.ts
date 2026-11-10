@@ -1,7 +1,7 @@
 /** Settings: graphics quality, time of day, camera, interface, audio, gameplay. Persisted via ctx.applySettings. */
 import type { QualityLevel } from '../../render/contracts';
 import type { GameContext } from '../../game/context';
-import { UI_SCALE, type EmergencyPolicy, type GameSettings, type NewYearMode } from '../../game/settings';
+import { UI_SCALE, type EmergencyPolicy, type GameSettings, type NewYearMode, type NewYearPacing } from '../../game/settings';
 import { Panel } from '../Panel';
 import { h, segmented, setSlider, setText, setToggle, slider, toggle } from '../dom';
 import { asMusicAudio, MusicPlayer } from '../MusicPlayer';
@@ -59,6 +59,8 @@ export class SettingsPanel extends Panel {
     } });
     this.hourRow = this.row('Fixed time', 'Drag to set the hour (turns off the day cycle)', h('div', { class: 'sr-c' }, this.hourSlider, this.hourVal));
     const newYear = segmented<NewYearMode>([{ value: 'cinematic', label: 'Cinematic' }, { value: 'fireworks', label: 'Fireworks' }, { value: 'off', label: 'Off' }], s.newYear ?? 'cinematic', (v) => this.ctx.applySettings({ newYear: v }), this.ctx.signal);
+    // FEEL-02a, D17: "Milestones" paces the full show in real time; "Every year" keeps it every January 1st
+    const pacing = segmented<NewYearPacing>([{ value: 'milestones', label: 'Milestones' }, { value: 'everyYear', label: 'Every year' }], s.newYearPacing ?? 'milestones', (v) => this.ctx.applySettings({ newYearPacing: v }), this.ctx.signal);
     const autosave = segmented<number>([{ value: 0, label: 'Off' }, { value: 3, label: '3 mo' }, { value: 6, label: '6 mo' }, { value: 12, label: '1 yr' }], s.autosaveMonths, (v) => this.ctx.applySettings({ autosaveMonths: v }), this.ctx.signal);
     // sections (Gameplay — autosave / New Year — sits right under Graphics so it is reachable without scrolling far;
     // the long music player stays last). A sticky nav jumps to each section (the body scrolls at 720p).
@@ -81,9 +83,11 @@ export class SettingsPanel extends Panel {
       this.row('Day / night cycle', 'Time of day follows the calendar', this.autoSw),
       this.hourRow,
       sec('gameplay', 'Gameplay'),
-      this.row('Autosave', 'Saves every N game months', autosave),
+      this.row('Autosave', 'Every N game months, at most once a minute', autosave),
       this.row('New Year celebration', 'Fireworks every January 1st — Cinematic switches to night first', newYear),
+      this.row('New Year show', 'Milestones: the full show on the first New Year, a new city rank and at most every 10 minutes; a short burst otherwise', pacing),
       this.row('New Year show camera', 'Cinematic: frame the show from the skyline, then return (any camera move takes over)', this.sw('newYearCamera')),
+      this.row('Year in review', 'Show the annual city report and mayor\'s grade after New Year', this.sw('yearReview')),
       this.row('Pause when hidden', 'Pause the simulation when the tab is in the background', this.sw('pauseWhenHidden')),
       // WP8 emergency dispatch
       this.row('Uncovered emergencies', 'When no station can answer an emergency: slow down to live speed, pause, or keep going', segmented<EmergencyPolicy>([{ value: 'live', label: 'Live speed' }, { value: 'pause', label: 'Pause' }, { value: 'ignore', label: 'Keep going' }], s.emergencyUncovered ?? 'live', (v) => this.ctx.applySettings({ emergencyUncovered: v }), this.ctx.signal)),

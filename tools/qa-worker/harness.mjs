@@ -31,7 +31,7 @@ export function selectedChecks(only) {
 }
 export const help = `Worker acceptance harness (T028, base ${BASE})
 
-  node tools/qa-worker.mjs [options]
+  node tools/qa-worker/cli.mjs [options]
 
   --help                     Print this help; no Vite or Playwright import
   --host local|loopback|worker  Host to require (default loopback)
@@ -51,7 +51,7 @@ Always builds production assets into a temporary directory and starts its own vi
 One fresh browser/context, 256-cell sandbox, synthetic pointer input through the real tools.
 Freeze duration is always 15 s; resume deadline is always 1 s.
 Loopback runs now, including verify/protectors. Worker skips if its host is not in this build.
-Cloud: PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tools/qa-worker.mjs --swiftshader
+Cloud: PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tools/qa-worker/cli.mjs --swiftshader
 Checks: ${Object.keys(CHECKS).join(', ')}
 Exit: 0 = no failures, 1 = failed check (also a verified broken-build control),
       2 = invalid arguments, 3 = all skipped, 130/143 = SIGINT/SIGTERM.

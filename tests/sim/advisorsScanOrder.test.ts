@@ -67,12 +67,21 @@ describe('B3: the advisors\' month scans do not depend on the order of the runti
     expect(g.rt.plopped[0].id).toBe(ids.police[3]);
     expect(g.rt.growables[0].id).toBe(ids.homes[3]);
     const live = g.run();
-    // the loaded copy: lists in Map order
-    const copy = deserializeCity(structuredClone(serializeCity(st, { copy: true })));
+    // the loaded copy keeps the game's list order (T057, systemData.econLists); a save without the record — from before
+    // T057 — loads its lists in Map order: the scans must not depend on which
+    const saved = serializeCity(st, { copy: true });
+    const copy = deserializeCity(structuredClone(saved));
     const h = scan(copy);
     h.rt.ensureLists();
-    expect(asc(h.rt.plopped) && asc(h.rt.growables)).toBe(true);
+    expect(h.rt.plopped.map((b) => b.id)).toEqual(g.rt.plopped.map((b) => b.id));
+    expect(h.rt.growables.map((b) => b.id)).toEqual(g.rt.growables.map((b) => b.id));
     expect(h.run()).toStrictEqual(live);
+    const old = structuredClone(saved);
+    delete (old.data.systemData as Record<string, unknown>).econLists;
+    const o = scan(deserializeCity(old));
+    o.rt.ensureLists();
+    expect(asc(o.rt.plopped) && asc(o.rt.growables)).toBe(true);
+    expect(o.run()).toStrictEqual(live);
     // the lists in ascending id, the lowest unpowered civic building, the lowest id of the equally occupied dark homes
     const fac = live.fac!;
     expect(fac.plants).toEqual(ids.plants);

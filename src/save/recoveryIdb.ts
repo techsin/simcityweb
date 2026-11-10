@@ -64,7 +64,8 @@ export async function findRecoverySnapshot(kv: KV, city?: RecoveryCity): Promise
       if (key.endsWith('#journal')) continue;
       const rec = await kv.get<IdbRecoveryRecord>('recovery', key);
       if (rec?.marker && rec.payload && typeof rec.marker.at === 'number' && (!city || sameCity(rec.marker, city))) cands.push({ key, rec });
-      else if (!rec?.marker || !rec.payload) await kv.delete('recovery', key);
+      // a cleanup refused (another tab owns that region, NEW-04) must not end the scan for the city asked about
+      else if (!rec?.marker || !rec.payload) await kv.delete('recovery', key).catch(() => undefined);
     }
   } catch {
     return null;

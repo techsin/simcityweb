@@ -1,6 +1,7 @@
 /** Clone-only worker messages and lossless replica codecs (WORKER_DESIGN §2). */
 import type { CellRect } from '../core/events';
 import type { Overlay } from '../core/types';
+import type { EmergencyTeaching } from '../game/emergencyPolicy';
 import type { RegionContext } from '../region/regionEffects';
 import type { RegionCitySummary } from '../region/types';
 import type { CityRecord } from '../save/cities';
@@ -29,6 +30,10 @@ export interface SimSettings {
   emergencyUncovered: 'live' | 'pause' | 'ignore';
   emergencyLiveSlowmo: number;
   emergencyAlerts: 'major' | 'all';
+  /** FH-08 profile firsts; omitted flags are off, acknowledgement uses setSettings. */
+  teachFirst?: boolean;
+  teachTooFar?: boolean;
+  teachingAck?: number;
 }
 export interface ViewState { overlay: Overlay; variant: number; panels: string[]; focus: number[] }
 export type CitySource = { kind: 'idb'; regionId: string; tileKey: string }
@@ -84,6 +89,7 @@ export interface PolicyState {
   live: boolean;
   toast?: { text: string; kind: 'info' | 'good' | 'bad' | 'warning' };
   warn?: true;
+  teaching?: EmergencyTeaching;
 }
 export type StationRow = ReturnType<EmergencySystem['stationList']>[number];
 export type IncidentRecord = Incident;
@@ -92,7 +98,8 @@ export interface EmergencyStream {
   stVer: number; stations?: StationRow[];
 }
 export interface TrafficStream { routes?: SampleRoute[]; trucks?: { idx: Uint32Array; val: Float32Array } }
-export interface Streams { emergency?: EmergencyStream; traffic?: TrafficStream; disasters?: ActiveDisaster[] }
+export interface UtilitiesStream { plantLoads: { ids: Uint32Array; loads: Float32Array } }
+export interface Streams { emergency?: EmergencyStream; traffic?: TrafficStream; utilities?: UtilitiesStream; disasters?: ActiveDisaster[] }
 export interface WorkerStats { busy: number; msPerDay: number; units: Record<string, number>; queue: number }
 export const PLAIN_KEYS = ['funds', 'nextBuildingId', 'stats', 'budget', 'milestones', 'neighborConnections'] as const;
 export const SYSTEM_KEYS = ['economy', 'infraVersion', 'infraLayers', 'advisors', 'regionJobs', 'regionWorkers'] as const;

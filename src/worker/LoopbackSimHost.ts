@@ -58,6 +58,8 @@ export interface PacketHostOptions extends LocalSimHostOptions {
   optimistic?: typeof CityActions;
 }
 interface Deferred { resolve(value: any): void; reject(error: unknown): void }
+/** A request's settlement, handed to PacketSimHost.settle (W1.2). */
+export type Settle = Deferred;
 function deferred<T>(): Deferred & { promise: Promise<T> } {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
@@ -205,6 +207,7 @@ export class PacketSimHost implements SimHost {
     this.policy = {
       get alerts() { return host.replica.policy.alerts; }, get live() { return host.replica.policy.live; },
       get toast() { return host.replica.policy.toast; }, get warn() { return host.replica.policy.warn; },
+      get teaching() { return host.replica.policy.teaching; },
       subscribe(listener, signal) {
         host.policies.get(listener)?.();
         const off = () => { host.policies.delete(listener); signal.removeEventListener('abort', off); };
@@ -452,7 +455,12 @@ export class PacketSimHost implements SimHost {
     const wait = this.requests.get(reply.id); this.requests.delete(reply.id);
     if (reply.t === 'qres') {
       if (reply.ok) wait?.resolve(reply.value); else wait?.reject(new Error(reply.error));
-    } else if (reply.t === 'saved') {
+    } else this.settle(reply, wait);
+  }
+  /** A save or snapshot reply, applied whether or not a caller still waits for it (T033). W1.2's persistence 'main'
+   *  (WorkerSimHost) stores the worker's record or payload first. */
+  protected settle(reply: Extract<Reply, { t: 'saved' | 'snapped' }>, wait: Settle | undefined): void {
+    if (reply.t === 'saved') {
       if (!reply.ok) { this.mirror?.onSaveFailed(); wait?.reject(new Error(reply.error)); return; }
       const p = this.options.persistence;
       const dropped = p ? clearRecoveryAfterSave(p.regionId, p.tileKey, reply.savedAt!) : false;

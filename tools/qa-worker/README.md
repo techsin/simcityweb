@@ -5,6 +5,10 @@ production assets. **Loopback runs now and is the default.** `--host` selects lo
 the URL uses `simworker=0`, `simworker=loopback` or `simworker=1` respectively. A requested host must actually
 boot; local fallback cannot pass a loopback/worker gate. No files under `src/` are modified.
 
+**Launcher: `tools/qa-worker/cli.mjs`** (moved there in the cloud carry-over, Nov 10). `tools/qa-worker.mjs` is a
+different tool: T034's W1.2 browser QA (boot, tools, crash/recover/watchdog/fallback, region pre-spawn on
+`?simworker=1`), which T034's and T061's gates use. Both run; consolidating them is a backlog item after W1.4.
+
 ## Desktop commands
 
 Run sequentially from this worktree. Each browser command creates one disposable Chromium context, builds
@@ -14,15 +18,16 @@ production assets in an owned temporary directory and serves them on its own Vit
 $root = 'C:/Users/techsin/Desktop/projects/simcityweb-T028'
 $scratch = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T028r/scratch'
 Set-Location $root
-node "$root/tools/qa-worker.mjs" --help
-node "$root/tools/qa-worker.mjs" --host loopback --out "$scratch/loopback.json"
-node "$root/tools/qa-worker.mjs" --host local --out "$scratch/local.json"
-node "$root/tools/qa-worker.mjs" --host worker --out "$scratch/worker.json"
+node "$root/tools/qa-worker/cli.mjs" --help
+node "$root/tools/qa-worker/cli.mjs" --host loopback --out "$scratch/loopback.json"
+node "$root/tools/qa-worker/cli.mjs" --host local --out "$scratch/local.json"
+node "$root/tools/qa-worker/cli.mjs" --host worker --out "$scratch/worker.json"
 ```
 
-Worker currently prints **`worker host not in this build; requires T034 / W1.2 WorkerSimHost`** for every
-check and exits **3**, before importing Vite/Playwright or opening a browser. Once `src/worker/WorkerSimHost.ts`
-lands, the same command runs the real gate. If its App selection is missing or falls back to local, it fails.
+On a tree without `src/worker/WorkerSimHost.ts`, worker prints **`worker host not in this build; requires T034 /
+W1.2 WorkerSimHost`** for every check and exits **3**, before importing Vite/Playwright or opening a browser.
+T034 (W1.2) is in dev since 5c40d77, so on dev the same command runs the real gate; its real-GPU run is a Desktop
+QA item. If its App selection is missing or falls back to local, it fails.
 
 Loopback automatically enables the shared `src/worker/queries.ts` exact digest and the main-isolate protector.
 Worker adds the protector in the dedicated worker named `sim`. `--w1` remains an optional local-mode switch
@@ -31,13 +36,13 @@ for these checks; `--digest-module PATH` can override the shared export if its o
 Focused diagnostics and controls:
 
 ```powershell
-node "$root/tools/qa-worker.mjs" --host loopback --only ghosts --out "$scratch/ghosts.json"
-node "$root/tools/qa-worker.mjs" --host loopback --only freeze --out "$scratch/freeze.json"
-node "$root/tools/qa-worker.mjs" --host loopback --only freeze --headed --out "$scratch/freeze-headed.json"
-node "$root/tools/qa-worker.mjs" --host loopback --break-ack zone --out "$scratch/broken-zone.json"
-node "$root/tools/qa-worker.mjs" --host local --break-ack zone --out "$scratch/broken-local-zone.json"
-node "$root/tools/qa-worker.mjs" --host loopback --drop-ack dispatch --out "$scratch/probe-control.json"
-node "$root/tools/qa-worker.mjs" --host local --w1 --out "$scratch/local-verify.json"
+node "$root/tools/qa-worker/cli.mjs" --host loopback --only ghosts --out "$scratch/ghosts.json"
+node "$root/tools/qa-worker/cli.mjs" --host loopback --only freeze --out "$scratch/freeze.json"
+node "$root/tools/qa-worker/cli.mjs" --host loopback --only freeze --headed --out "$scratch/freeze-headed.json"
+node "$root/tools/qa-worker/cli.mjs" --host loopback --break-ack zone --out "$scratch/broken-zone.json"
+node "$root/tools/qa-worker/cli.mjs" --host local --break-ack zone --out "$scratch/broken-local-zone.json"
+node "$root/tools/qa-worker/cli.mjs" --host loopback --drop-ack dispatch --out "$scratch/probe-control.json"
+node "$root/tools/qa-worker/cli.mjs" --host local --w1 --out "$scratch/local-verify.json"
 ```
 
 The positive full run must exit **0** with every applicable check PASS. `--only` runs a named check plus
@@ -60,7 +65,7 @@ Default Chromium requests the real GPU and rejects SwiftShader, llvmpipe, WARP a
 `--executable PATH` selects Chromium; `--headed` shows it. For the cloud only:
 
 ```sh
-PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tools/qa-worker.mjs --host loopback --swiftshader --out /tmp/qa-worker-loopback.json
+PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tools/qa-worker/cli.mjs --host loopback --swiftshader --out /tmp/qa-worker-loopback.json
 ```
 
 SwiftShader uses §5.4's flags and is marked in the report; it cannot establish the desktop GPU gate. Both modes
