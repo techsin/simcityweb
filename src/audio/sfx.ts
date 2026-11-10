@@ -91,6 +91,8 @@ const META = {
   good: { cat: 'event', dur: 0.7, group: 'alert', jitter: 0 },
   warning: { cat: 'event', dur: 0.6, group: 'alert', jitter: 0 },
   bad: { cat: 'event', dur: 0.7, group: 'alert', jitter: 0 },
+  saved: { cat: 'event', dur: 0.8, jitter: 0 },
+  lost: { cat: 'event', dur: 0.8, jitter: 0 },
   advisor: { cat: 'event', dur: 0.7, group: 'alert', jitter: 0 },
   coin: { cat: 'event', dur: 0.5 },
   cashLow: { cat: 'event', dur: 0.6, jitter: 0 },
@@ -614,6 +616,17 @@ const VOICES: Record<SoundName, Voice> = {
     const lp = lowpass(e, d, 1500);
     [76, 72, 69].forEach((m, k) => tone(e, lp, 'triangle', N(m) * p, t + k * 0.11, k === 2 ? 0.35 : 0.12, 0.15, undefined, 0.006));
     tone(e, e.wet, 'sine', N(69) * p, t + 0.22, 0.4, 0.03);
+  },
+  /** player dispatch saved the incident: bright C6-E6-G6 with a final C7 sparkle */
+  saved(e, t, d, { p }) {
+    [84, 88, 91].forEach((m, k) => tone(e, d, 'triangle', N(m) * p, t + k * 0.09, k === 2 ? 0.56 : 0.16, 0.11));
+    bell(e, e.wet, N(96) * p, t + 0.18, 0.56, 0.035, 2, 0.8);
+  },
+  /** failed incident or losses: low A3-E3-A2, falling and muffled */
+  lost(e, t, d, { p }) {
+    const lp = lowpass(e, d, 900);
+    [57, 52, 45].forEach((m, k) => tone(e, lp, 'triangle', N(m) * p, t + k * 0.13, k === 2 ? 0.48 : 0.18, 0.16, undefined, 0.01));
+    tone(e, e.wet, 'sine', N(45) * p, t + 0.26, 0.48, 0.04, undefined, 0.01);
   },
   /** advisor message: G5 / E5 ding-dong */
   advisor(e, t, d, { p }) {

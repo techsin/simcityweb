@@ -10,9 +10,13 @@
  * item), at most once per real second (final fixes A1: the signature changed with every 50 residents, a full rebuild
  * on every UI tick at ultra speed).
  * "Show me" opens the data view of the advice (advisorModel.adviceView) together with the camera move (final fixes N8).
+ * Polish FH-03 / LG-05: a card's top issue also gets its buttons from src/ui/adviceActions.ts — by id, never by text
+ * ("Zone homes", "Build roads"; a built-out city's "Rezone" and "Connect a highway") — and a "no room to grow" card says
+ * how many empty road-facing lots of that family are left (emptyFrontTiles, read from the mirrored zone / road layers).
  */
 import type { NewsItem } from '../../sim/CityState';
 import { adviceIdOf, type OpenAdvice } from '../../sim/economy/advisors';
+import { emptyFrontTiles, issueButtons, type AdviceButton } from '../adviceActions';
 import { watchFor, type WatchHandle } from '../../worker/SimHost';
 import type { GameContext } from '../../game/context';
 import { type AdviceView, adviceView, outageAssessment, utilityOutages } from '../advisorModel';
@@ -175,7 +179,8 @@ export class AdvisorsPanel extends Panel {
       const n = news[i];
       if (st.day - n.day >= RECENT_DAYS) break;
       if (!n.advisor || !(a.keys.test(n.advisor) || n.advisor === a.id)) continue;
-      if (adviceIdOf(st, n)) continue;
+      // (an advice post carries its rule's ref; older posts are found in the advisors' post list)
+      if (n.ref?.advice || adviceIdOf(st, n)) continue;
       return n;
     }
     return undefined;
@@ -281,9 +286,21 @@ export class AdvisorsPanel extends Panel {
       const src = top ?? latest ?? null;
       const at = src ? (src.x !== undefined && src.z !== undefined ? { x: src.x, z: src.z } : null) : res.at ?? null;
       const view = top ? adviceView(top.id) : latest ? null : res.view ?? null;
-      out.push({ a, level, text, at, view, more: open.slice(1, 1 + MORE_MAX), extra: open.slice(1 + MORE_MAX) });
+      // (the count belongs to the zoning advice; a variant whose fix is another rule's — roads, land value — has a ref)
+      const fam = top && !top.ref ? ZONE_RULE_FAMILY[top.id] : undefined;
+      out.push({ a, level, text, at, view, buttons: top ? issueButtons(top) : [], room: fam === undefined ? null : this.roomLine(fam),
+        more: open.slice(1, 1 + MORE_MAX), extra: open.slice(1 + MORE_MAX) });
     }
     return out;
+  }
+
+  /** FH-03: the count a "no room to grow" card adds (the tiles re-counted at most once per ROOM_REUSE_MS) */
+  private roomMemo: { st: unknown; fam: number; at: number; n: number } | null = null;
+  private roomLine(fam: number): string {
+    const st = this.ctx.state, now = performance.now();
+    let m = this.roomMemo;
+    if (!m || m.st !== st || m.fam !== fam || !(now >= m.at && now - m.at < ROOM_REUSE_MS)) m = this.roomMemo = { st, fam, at: now, n: emptyFrontTiles(st, fam) };
+    return `${m.n === 0 ? 'No' : m.n.toLocaleString('en-US')} empty ${FAMILY_WORD[fam]} ${m.n === 1 ? 'lot' : 'lots'} left — demand wants many more`;
   }
 
   /** "Show me": the advice's data view (its variant) and the camera on the place */
@@ -303,7 +320,8 @@ export class AdvisorsPanel extends Panel {
     if (this.tab === 'advisors') {
       this.refreshOpen();
       const cards = this.cards();
-      const sig = cards.map((c) => `${c.level}|${c.text}|${c.at ? c.at.x + ',' + c.at.z : ''}|${c.view ? c.view.overlay + ':' + (c.view.variant ?? '') : ''}|${c.more.map((o) => o.id + '|' + o.text).join('/')}|${c.extra.length}`).join('\n');
+      const sig = cards.map((c) => `${c.level}|${c.text}|${c.at ? c.at.x + ',' + c.at.z : ''}|${c.view ? c.view.overlay + ':' + (c.view.variant ?? '') : ''}|${c.more.map((o) => o.id + '|' + o.text).join('/')}|${c.extra.length}`
+        + `|${c.buttons.map((b) => b.action.label + (b.at ? `@${b.at.x},${b.at.z}` : '')).join('/')}|${c.room ?? ''}`).join('\n');
       if (!this.gate('advisors', sig)) return;
       clear(this.content);
       const grid = h('div', { class: 'adv-grid' });
@@ -313,12 +331,19 @@ export class AdvisorsPanel extends Panel {
         // ("Show me" without a place opens the data view that shows where: a city-wide issue)
         const go = c.at || c.view;
         const tip = c.view ? `Opens the ${overlayTitle(c.view.overlay, c.view.variant ?? -1)} data view${c.at ? ' and shows the place' : ''}` : 'Shows the place on the map';
+        const show = go ? h('button', { class: 'btn sm ghost', style: c.buttons.length ? 'padding-left:0' : 'margin-top:6px;padding-left:0', title: tip, html: icon(c.at ? 'target' : 'layers', 13) + '<span>Show me</span>', signal: this.ctx.signal, onclick: () => this.showMe(c.at, c.view) }) : null;
+        // (FH-03 / LG-05: the advice's own buttons next to "Show me")
+        const acts = c.buttons.length
+          ? h('div', { class: 'am-acts', style: 'display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:6px' }, show,
+            ...c.buttons.map((b) => h('button', { class: 'btn sm', title: b.action.tip, html: icon(b.action.icon, 13) + `<span>${escapeHtml(b.action.label)}</span>`, signal: this.ctx.signal, onclick: () => b.action.run(this.ctx, b.at) })))
+          : show;
         const card = h('div', { class: 'adv' },
           h('div', { class: 'av', style: { background: `linear-gradient(145deg, ${a.color}, color-mix(in srgb, ${a.color} 55%, #000))`, '--st': stColor } as Record<string, string>, html: icon(a.icon, 19) }),
           h('div', { class: 'ab' },
             h('div', { style: 'display:flex;align-items:baseline;gap:8px' }, h('span', { class: 'an' }, a.name), h('span', { class: 'ar' }, a.role)),
             h('div', { class: 'am' }, c.text),
-            go ? h('button', { class: 'btn sm ghost', style: 'margin-top:6px;padding-left:0', title: tip, html: icon(c.at ? 'target' : 'layers', 13) + '<span>Show me</span>', signal: this.ctx.signal, onclick: () => this.showMe(c.at, c.view) }) : null,
+            c.room ? h('div', { class: 'am-room', style: 'margin-top:4px;font-size:11.5px;font-weight:600;color:var(--warn)' }, c.room) : null,
+            acts,
             c.more.length ? h('ul', { class: 'am-more' }, ...c.more.map((o) => this.moreRow(o))) : null,
             c.extra.length ? h('div', { class: 'am-extra', title: c.extra.map((o) => o.text).join('\n') }, `+ ${c.extra.length} more`) : null,
           ),
@@ -377,9 +402,19 @@ interface Card {
   text: string;
   at: { x: number; z: number } | null;
   view: AdviceView | null;
+  /** the top issue's buttons (adviceActions) */
+  buttons: AdviceButton[];
+  /** FH-03: "4 empty residential lots left — …" under a "no room to grow" issue */
+  room: string | null;
   more: OpenAdvice[];
   extra: OpenAdvice[];
 }
+
+/** FH-03: the "no room to grow" rules (advisors.ts) → their family (0 R, 1 C, 2 I) */
+const ZONE_RULE_FAMILY: Readonly<Record<string, number>> = { zoneR: 0, zoneC: 1, zoneI: 2 };
+const FAMILY_WORD = ['residential', 'commercial', 'industrial'];
+/** a room count is reused this long (real ms): the panel asks on every UI tick */
+const ROOM_REUSE_MS = 1000;
 
 /** further open issues listed under the top one */
 const MORE_MAX = 2;

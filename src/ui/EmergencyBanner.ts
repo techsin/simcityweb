@@ -50,16 +50,21 @@
  * days, so ETAs, "time since" and "time left" all use the same unit ("Send nearest 4.7 min" vs "4.0 min left").
  */
 import './emergency.css';
+import './fx.css';
+import { Overlay } from '../core/types';
 import type { GameContext } from '../game/context';
-import { MAX_BANNERS, sendDays } from '../game/emergencyPolicy';
+import { emergencyStingPending } from '../game/GameSounds';
+import { MAX_BANNERS, sendDays, type EmergencyTeaching, type EmergencyTeachingSettings } from '../game/emergencyPolicy';
+import { loadPref, savePref } from '../game/settings';
 import type { EmergencyView, PolicySnapshot } from '../worker/SimHost';
 import { DispatchOptionsWatches } from './dispatchOptions';
 import type { IncidentKind, Responder } from '../sim/CityState';
 import type { EmergencyEvent } from '../sim/Simulation';
 import {
   INCIDENT_COLOR, INCIDENT_ICON, INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_UNIT, dispatchWindowEnd,
-  type EmergencyDispatchEvent, type EmergencyVehicle, type Incident,
+  type DispatchOption, type EmergencyDispatchEvent, type EmergencyVehicle, type Incident,
 } from '../sim/infra/emergency';
+import { getDef } from '../sim/catalog';
 import { EMERG_DAYS_PER_MIN } from '../sim/infra/params';
 import { DispatchTool, openDispatch } from '../game/tools/DispatchTool';
 import { clear, h, setText, toggleClass } from './dom';
@@ -366,12 +371,49 @@ export function missingResponders(em: EmergencyView, inc: Incident): Responder[]
 export function placeText(inc: Incident, sep = ' '): string {
   return /\(\d+, \d+\)$/.test(inc.place) ? inc.place : `${inc.place}${sep}(${inc.x}, ${inc.z})`;
 }
+
+// ------------------------------------------------------------------------------------------------ FH-08 teaching
+interface TeachingSeen { E1a: boolean; E1b: boolean; E2: boolean; E3: boolean }
+interface TeachingCard { episode: Readonly<EmergencyTeaching>; el: HTMLElement; text: HTMLElement; send?: HTMLButtonElement }
+interface FailureTeaching { id: number; place: string; reason: string; prevention: string; primary: Responder; cell: { x: number; z: number } }
+const TEACHING_PREF = 'emergencyTeaching';
+const TEACHING_STATION = { fire: 'civ_fire_station', police: 'civ_police_station', medical: 'civ_clinic' } as const;
+const TEACHING_TAB = { fire: 'Fire', police: 'Police', medical: 'Health' } as const;
+const LIVE_LESSON = 'LIVE: the game slowed down so you can follow the truck. Your speed comes back when help arrives (Settings → Gameplay).';
+
+function teachingSeen(): TeachingSeen {
+  const saved = loadPref<Partial<TeachingSeen> | null>(TEACHING_PREF, null);
+  return { E1a: saved?.E1a === true, E1b: saved?.E1b === true, E2: saved?.E2 === true, E3: saved?.E3 === true };
+}
+
+function preventionText(inc: Incident): string {
+  const responder = INCIDENT_RESPONDERS[inc.kind][0];
+  const def = getDef(TEACHING_STATION[responder])!;
+  // A clinic's walk catchment is not its ambulance's road range.
+  const where = responder === 'medical' ? 'closer to this area' : `within ~${def.coverage!.radius} road tiles`;
+  return `Build a ${def.name} ${where} — areas marked “Auto-dispatch” in the Emergency view get help automatically.`;
+}
+
+/** Observed host values only: no invented travel time when the options never reached the page. */
+export function firstFailureReason(inc: Incident, now: number, etaMin?: number, primarySent = false, fireWindow?: number): string {
+  const primary = INCIDENT_RESPONDERS[inc.kind][0], unit = RESPONDER_UNIT[primary][0];
+  const arrived = inc.firstAt?.[primary];
+  const elapsed = emgTime(now - inc.start);
+  if (inc.kind === 'industrial' && !primarySent && arrived === undefined) {
+    return `The ${emgTime(dispatchWindowEnd(inc) - inc.start)} dispatch window elapsed before a ${unit} was sent.`;
+  }
+  const end = inc.kind === 'fire' ? `the building burned down ${emgTime(fireWindow ?? inc.deadline - inc.start)} after the alarm` : `this incident ended after ${elapsed}`;
+  if (arrived !== undefined) return `The first ${unit} arrived ${emgTime(arrived - inc.start)} after the alarm; ${end}.`;
+  return Number.isFinite(etaMin) ? `The ${primarySent ? 'dispatched' : 'nearest free'} ${unit} needed ${minText(etaMin!)}; ${end}.` : `No ${unit} reached it; ${end}.`;
+}
+
 // ------------------------------------------------------------------------------------------------ banners
 interface BannerEl {
   id: number;
   /** the incident (its final lost / deaths are read when it ends) */
   inc: Incident;
   el: HTMLDivElement;
+  body: HTMLDivElement;
   title: HTMLElement;
   place: HTMLElement;
   note: HTMLElement;
@@ -390,6 +432,12 @@ interface BannerEl {
   outcome?: string;
   /** a unit could make it in time at some point (the alert held the speed policy) */
   wasPossible?: boolean;
+  /** FH-08: the latest observed free primary unit's travel time, retained after the incident leaves the view. */
+  teachingEta?: number;
+  teachingWindow?: number;
+  teachingPrimarySent?: boolean;
+  teachingReason?: HTMLElement;
+  teachingLesson?: FailureTeaching;
   /**
    * its heights as last measured as a full / compact banner, per stack width (layout px, rounded; dock: the stack's
    * height either way). The same banner is taller in a narrower stack — close-out c2: heights measured in the narrow
@@ -414,10 +462,10 @@ const FOLLOW_CHIP_H = 34;
 
 /** a banner's height as a full / compact one in a stack `w` layout px wide: as measured there, else the default */
 function fullAt(b: BannerEl, w: number): number {
-  return b.hts?.get(Math.round(w))?.full ?? FULL_H;
+  return b.hts?.get(Math.round(w))?.full ?? FULL_H + (b.el.classList.contains('teaching') ? 210 : 0);
 }
 function compAt(b: BannerEl, w: number): number {
-  return b.hts?.get(Math.round(w))?.comp ?? COMP_H;
+  return b.hts?.get(Math.round(w))?.comp ?? COMP_H + (b.el.classList.contains('teaching') ? 210 : 0);
 }
 /** an element's box on screen (null: no layout to read) */
 function boxOf(e: Element): DOMRect | null {
@@ -432,6 +480,16 @@ export class EmergencyBanner {
   readonly el: HTMLDivElement;
   private banners = new Map<number, BannerEl>();
   private options: DispatchOptionsWatches;
+  /** Packet policy subscriptions carry additive fields that older getter-only views do not expose. */
+  private policy: PolicySnapshot;
+  private seen = teachingSeen();
+  private teaching: TeachingCard | null = null;
+  private teachingAck: number | undefined;
+  private teachingFallback: HTMLElement | null = null;
+  private teachingToasts = new Set<'E2' | 'E3'>();
+  private pendingFailure: FailureTeaching | null = null;
+  /** Local hosts remove a finished incident before its event; keep the view's reference until the first failure. */
+  private failureIncidents = new Map<number, Incident>();
   /** the "N more emergencies" pill and its text (built once: EM-4) */
   private more: HTMLDivElement;
   private moreText: HTMLElement;
@@ -476,12 +534,17 @@ export class EmergencyBanner {
   /** close-out c1: the highest an open toolbar flyout's top reached since it opened (relative to the bottom block, <= 0;
    *  flyoutTop): a switch to a shorter tab keeps the bound of the tallest — the stack does not re-dock with every tab */
   private flyHigh = 0;
+  private flashes = new Set<ReturnType<typeof setTimeout>>();
+  private episodeIds = new Set<number>();
+  private episodeLive = false;
+  private episodePolicy: string | undefined;
   private followDispatches = new Map<number, { seq: number; vehicleId: number; arrive: number }>();
   private activeFollow: { id: number; incidentId: number; label: string } | null = null;
   private followChip: HTMLDivElement;
   private followText: HTMLElement;
 
   constructor(private ctx: GameContext, parent: HTMLElement, private follow?: EmergencyFollow) {
+    this.policy = ctx.host.policy;
     this.options = new DispatchOptionsWatches(ctx.host, ctx.signal);
     this.el = h('div', { class: 'emg-banners' });
     this.moreText = h('span');
@@ -567,23 +630,34 @@ export class EmergencyBanner {
     // (a release the window never sees: the pointer capture ends, or the window loses focus with the button held)
     win?.addEventListener('blur', release);
     this.el.addEventListener('lostpointercapture', release, { capture: true, signal: ctx.signal });
-    const off = ctx.sim.events.on('emergency', (e) => this.onEvent(e));
-    const offReset = ctx.sim.events.on('reset', () => this.reset());
+    const off = ctx.host.events.on('emergency', (e) => this.onEvent(e));
+    const offReset = ctx.host.events.on('reset', () => this.reset());
     const offTick = ctx.ui.on('uiTick', () => this.tick());
-    const offPolicy = ctx.host.policy.subscribe((policy) => this.renderPolicy(policy, true), ctx.signal);
+    const offSpeed = ctx.host.events.on('speedChanged', (speed) => this.renderLive(ctx.host.policy, speed));
+    const offPolicy = ctx.host.policy.subscribe((policy) => {
+      this.policy = policy;
+      this.renderPolicy(policy, true);
+    }, ctx.signal);
     const offSettings = ctx.ui.on('settings', () => this.sendSettings());
+    if (ctx.settings.tips === true && !this.seen.E3) for (const inc of ctx.host.emergency.incidents()) this.failureIncidents.set(inc.id, inc);
     this.sendSettings();
-    this.renderPolicy(ctx.host.policy);
+    this.renderPolicy(this.policy);
     ctx.signal.addEventListener('abort', () => {
       this.follow?.stop();
       this.refreshFollow();
-      off(); offReset(); offTick(); offPolicy(); offSettings();
+      off(); offReset(); offTick(); offSpeed(); offPolicy(); offSettings();
+      this.clearFlashes();
+      toggleClass(ctx.root, 'emg-live', false);
       this.ro?.disconnect();
       this.mo?.disconnect();
       win?.removeEventListener('resize', resized);
       win?.removeEventListener('pointerup', release, true);
       win?.removeEventListener('pointercancel', release, true);
       win?.removeEventListener('blur', release);
+      this.failureIncidents.clear();
+      this.pendingFailure = null;
+      this.teachingToasts.clear();
+      this.clearTeaching();
     });
   }
 
@@ -638,10 +712,21 @@ export class EmergencyBanner {
   /** The LIVE badge follows the authoritative policy, even while the sim is paused. */
   get liveActive(): boolean { return this.ctx.host.policy.live; }
 
+  private renderLive(policy: PolicySnapshot, speed = this.ctx.host.speed): void {
+    toggleClass(this.ctx.root, 'emg-live', policy.live && speed !== 0);
+  }
+
   private reset(): void {
     this.follow?.stop();
     this.followDispatches.clear();
     this.refreshFollow();
+    this.clearFlashes();
+    this.episodeIds.clear();
+    this.episodeLive = false;
+    this.clearTeaching();
+    this.teachingAck = undefined;
+    this.failureIncidents.clear();
+    this.pendingFailure = null;
     this.options.dispose();
     for (const b of this.banners.values()) b.el.remove();
     this.banners.clear();
@@ -651,6 +736,12 @@ export class EmergencyBanner {
   /** Policy snapshots contain no incident objects; the emergency view supplies their display data. */
   private renderPolicy(policy: PolicySnapshot, feedback = false): void {
     const em = this.ctx.host.emergency;
+    if (policy.live && !this.episodeLive) this.episodeIds.clear();
+    if (policy.live || feedback && policy.warn && this.episodePolicy !== 'ignore') for (const { id } of policy.alerts) {
+      const inc = em.incident(id);
+      if (policy.live || inc?.state === 'uncovered' || inc?.state === 'queued') this.episodeIds.add(id);
+    }
+    this.episodeLive = policy.live;
     const ids = new Set(policy.alerts.map((a) => a.id));
     for (const id of this.followDispatches.keys()) if (this.followVehicle(id)) ids.add(id);
     for (const id of this.banners.keys()) if (!ids.has(id)) this.removeBanner(id);
@@ -662,18 +753,220 @@ export class EmergencyBanner {
       const b = this.banners.get(alert.id);
       if (b) b.wasPossible = alert.wasPossible;
     }
-    toggleClass(this.ctx.root, 'emg-live', policy.live);
+    this.renderLive(policy);
     if (feedback && policy.warn) this.ctx.sound('warning');
-    if (feedback && policy.toast) this.ctx.toast(policy.toast.text, policy.toast.kind, undefined, 'Emergency');
+    if (feedback && policy.toast) {
+      this.ctx.toast(policy.toast.text, policy.toast.kind, undefined, 'Emergency', { silent: emergencyStingPending(this.ctx.host, this.episodeIds) });
+      this.episodeIds.clear();
+    }
+    this.renderTeaching(policy);
+    if (this.ctx.settings.tips === true && this.ctx.settings.toasts !== false && !this.seen.E2 && policy.live && this.ctx.host.speed === 1 && this.ctx.host.liveSlowdown > 1) {
+      this.queueTeachingToast('E2', LIVE_LESSON, 'info');
+    }
   }
 
-  /** Only the three simulation settings cross the host seam. */
+  /** FH-08's profile flags travel with settings; the worker owns the teaching pause and its acknowledgement. */
   private sendSettings(): void {
     const s = this.ctx.settings;
-    this.ctx.host.act('setSettings', [{
+    const policy = s.emergencyUncovered ?? 'live';
+    if (policy !== this.episodePolicy) { this.episodeIds.clear(); this.episodeLive = false; this.episodePolicy = policy; }
+    if (s.tips === false && this.teaching) {
+      this.teachingAck = this.teaching.episode.id;
+      this.clearTeaching();
+    }
+    const settings: EmergencyTeachingSettings & {
+      emergencyUncovered: typeof s.emergencyUncovered; emergencyLiveSlowmo: number; emergencyAlerts: 'major' | 'all';
+    } = {
       emergencyUncovered: s.emergencyUncovered ?? 'live', emergencyLiveSlowmo: s.emergencyLiveSlowmo ?? 3,
       emergencyAlerts: s.emergencyAlerts ?? 'major',
-    }], { tag: this });
+      ...(s.tips === undefined ? {} : { teachFirst: s.tips && !this.seen.E1a, teachTooFar: s.tips && !this.seen.E1b }),
+      ...(this.teachingAck === undefined ? {} : { teachingAck: this.teachingAck }),
+    };
+    this.ctx.host.act('setSettings', [settings], { tag: this });
+  }
+
+  private markTeachingSeen(id: keyof TeachingSeen): void {
+    this.seen[id] = true;
+    savePref(TEACHING_PREF, this.seen);
+  }
+
+  private newYearBusy(): boolean { return this.ctx.newYearBusy?.() === true; }
+
+  /** The shared news budget retains one-shot tips until they can actually be displayed. */
+  private queueTeachingToast(id: 'E2' | 'E3', text: string, kind: string, cell?: { x: number; z: number }): void {
+    if (this.seen[id] || this.teachingToasts.has(id) || this.ctx.settings.tips !== true || this.ctx.settings.toasts === false) return;
+    this.teachingToasts.add(id);
+    this.ctx.toast(text, kind, cell, 'Emergency', {
+      budget: true, teaching: true,
+      action: { hint: 'Open Emergencies', run: () => { if (!this.ctx.signal.aborted) this.ctx.panels.open('emergencies'); } },
+      deferWhile: () => this.newYearBusy() || this.ctx.settings.tips !== true || this.ctx.settings.toasts === false,
+      isRelevant: () => id !== 'E2' || (this.policy.live && this.ctx.host.speed === 1 && this.ctx.host.liveSlowdown > 1),
+      onDrop: () => { this.teachingToasts.delete(id); },
+      onShow: () => {
+        if (this.ctx.signal.aborted) return;
+        this.teachingToasts.delete(id);
+        this.markTeachingSeen(id);
+      },
+    });
+  }
+
+  private syncTeachingVisibility(): void {
+    const display = this.newYearBusy() ? 'none' : '';
+    if (this.teaching) this.teaching.el.style.display = display;
+    if (this.teachingFallback) this.teachingFallback.style.display = display;
+    for (const b of this.banners.values()) if (b.teachingReason) b.teachingReason.style.display = display;
+  }
+
+  private clearTeaching(): void {
+    if (!this.teaching) return;
+    const b = this.banners.get(this.teaching.episode.id);
+    this.teaching.el.remove();
+    this.teachingFallback?.remove();
+    this.teachingFallback = null;
+    if (b) { b.hts?.clear(); toggleClass(b.el, 'teaching', false); }
+    this.teaching = null;
+    this.dockDirty = true;
+  }
+
+  private acknowledgeTeaching(id: number): void {
+    if (this.teaching?.episode.id !== id && (this.teachingAck === id || this.policy.teaching?.id !== id)) return;
+    this.teachingAck = id;
+    if (this.teaching?.episode.id === id) this.clearTeaching();
+    this.sendSettings();
+  }
+
+  /** A folded stack must never leave the first-incident pause without a visible way to answer it. */
+  private placeTeaching(): void {
+    const card = this.teaching;
+    if (!card) return;
+    const b = this.banners.get(card.episode.id);
+    if (!b) return;
+    if (b.el.classList.contains('capped')) {
+      if (!this.teachingFallback) {
+        this.teachingFallback = h('div', { class: 'emg-teach-fallback mp-glass' });
+        this.ctx.root.appendChild(this.teachingFallback);
+      }
+      if (card.el.parentElement !== this.teachingFallback) this.teachingFallback.appendChild(card.el);
+    } else if (this.teachingFallback) {
+      b.body.appendChild(card.el);
+      this.teachingFallback.remove();
+      this.teachingFallback = null;
+    }
+    this.syncTeachingVisibility();
+  }
+
+  private teachingAction(label: string, action: () => void): HTMLButtonElement {
+    const b = h('button', { class: 'btn sm', type: 'button' }, label);
+    b.addEventListener('click', action, { signal: this.ctx.signal });
+    return b;
+  }
+
+  private openTeachingService(inc: Incident): void {
+    const primary = INCIDENT_RESPONDERS[inc.kind][0];
+    this.ctx.openFlyout?.('civic', primary === 'medical' ? 'health' : primary);
+    this.ctx.setOverlay(Overlay.Emergency);
+  }
+
+  private renderTeaching(policy: PolicySnapshot): void {
+    const episode = policy.teaching;
+    if (this.teaching && (!episode || episode.id !== this.teaching.episode.id || episode.variant !== this.teaching.episode.variant)) this.clearTeaching();
+    this.syncTeachingVisibility();
+    if (!episode) return;
+    if (this.ctx.settings.tips !== true) { this.acknowledgeTeaching(episode.id); return; }
+    if (this.newYearBusy()) return;
+    const b = this.banners.get(episode.id), inc = this.ctx.host.emergency.incident(episode.id);
+    if (!b || !inc) return;
+    if (!(inc.state === 'uncovered' || inc.state === 'queued') || inc.reason === 'busy' || inc.lost > 0) {
+      this.acknowledgeTeaching(episode.id);
+      return;
+    }
+    const primary = INCIDENT_RESPONDERS[inc.kind][0];
+    const options = this.options.get(inc.id).value;
+    const best = options?.find((o) => o.responder === primary && o.free > 0 && Number.isFinite(o.etaMin));
+    if (!this.teaching) {
+      if (this.seen[episode.variant]) { this.acknowledgeTeaching(episode.id); return; }
+      const title = h('div', { class: 'emg-teach-title' }, `Emergency! ${INCIDENT_LABEL[inc.kind]} at ${inc.place}.`);
+      const text = h('div', { class: 'emg-teach-text' });
+      const buttons = h('div', { class: 'emg-btns' });
+      const card: TeachingCard = { episode, el: h('div', { class: 'emg-teach', role: 'region', 'aria-label': 'Emergency dispatch tip' }, title, text, buttons), text };
+      if (episode.variant === 'E1a') {
+        card.send = this.teachingAction('Send nearest', () => { void this.sendNearest(episode.id); });
+        card.send.classList.add('primary');
+        buttons.appendChild(card.send);
+      } else buttons.appendChild(this.teachingAction(`${TEACHING_TAB[primary]} tab`, () => {
+        this.acknowledgeTeaching(episode.id);
+        this.openTeachingService(inc);
+      }));
+      buttons.appendChild(this.teachingAction('Emergency view', () => {
+        this.acknowledgeTeaching(episode.id);
+        this.ctx.setOverlay(Overlay.Emergency);
+      }));
+      if (episode.variant === 'E1a') buttons.appendChild(this.teachingAction('Got it', () => this.acknowledgeTeaching(episode.id)));
+      this.teaching = card;
+      b.body.appendChild(card.el);
+      toggleClass(b.el, 'teaching', true);
+      b.hts?.clear();
+      this.dockDirty = true;
+      this.markTeachingSeen(episode.variant);
+      this.sendSettings();
+      this.layout();
+    }
+    const card = this.teaching;
+    if (!card || card.episode.id !== episode.id) return;
+    if (card.send) card.send.disabled = !best;
+    const dispatchText = options === undefined ? 'Loading dispatch options…'
+      : best ? `Send nearest dispatches ${best.name} (${minText(best.etaMin)}).` : 'No free unit can go right now.';
+    setText(card.text, episode.variant === 'E1a'
+      ? `No ${primary === 'medical' ? 'clinic or hospital' : primary + ' station'} covers this spot, so nobody comes on their own. ${dispatchText} Areas marked “Auto-dispatch” in the Emergency view are answered automatically.`
+      : `No station can reach this in time. ${preventionText(inc)}`);
+  }
+
+  private teachFailure(b: BannerEl | undefined, inc: Incident | undefined): void {
+    if (!b || !inc || this.ctx.settings.tips !== true || this.seen.E3 || this.pendingFailure || this.teachingToasts.has('E3')) return;
+    const eta = inc.answered > 0 && Number.isFinite(inc.etaMin) ? inc.etaMin : b.teachingEta;
+    // During packet replay the state is at the event's day; the interpolated clock is still at the previous packet.
+    const reason = firstFailureReason(inc, this.ctx.state.day, eta, inc.answered > 0 || b.teachingPrimarySent, b.teachingWindow);
+    this.failureIncidents.clear();
+    const lesson: FailureTeaching = { id: inc.id, place: `${INCIDENT_LABEL[inc.kind]} at ${inc.place}`, reason, prevention: preventionText(inc), primary: INCIDENT_RESPONDERS[inc.kind][0], cell: { x: inc.x, z: inc.z } };
+    if (this.newYearBusy()) { this.pendingFailure = lesson; return; }
+    this.showFailureTeaching(lesson, b);
+  }
+
+  private showFailureTeaching(lesson: FailureTeaching, b: BannerEl | undefined): void {
+    if (!b) {
+      this.queueFailureTeaching(lesson);
+      return;
+    }
+    this.markTeachingSeen('E3');
+    b.teachingLesson = lesson;
+    b.teachingReason = h('div', { class: 'emg-teach-reason' }, h('div', null, lesson.reason), h('div', null, lesson.prevention),
+      this.teachingAction(`${TEACHING_TAB[lesson.primary]} tab`, () => {
+        this.ctx.openFlyout?.('civic', lesson.primary === 'medical' ? 'health' : lesson.primary);
+        this.ctx.setOverlay(Overlay.Emergency);
+      }));
+    b.body.appendChild(b.teachingReason);
+    b.hts?.clear();
+    this.dockDirty = true;
+  }
+
+  /** Keep the first failure readable after its short-lived outcome banner leaves the stack. */
+  private queueFailureTeaching(lesson: FailureTeaching, continuation = false): void {
+    if ((this.seen.E3 && !continuation) || this.teachingToasts.has('E3') || this.ctx.settings.tips !== true || this.ctx.settings.toasts === false) return;
+    this.teachingToasts.add('E3');
+    this.ctx.toast(`${lesson.place}. ${lesson.reason} ${lesson.prevention}`, 'warning', lesson.cell, 'Emergency', {
+      budget: true, teaching: true, ttl: 12000,
+      action: { hint: `${TEACHING_TAB[lesson.primary]} tab`, run: () => {
+        if (this.ctx.signal.aborted) return;
+        this.ctx.openFlyout?.('civic', lesson.primary === 'medical' ? 'health' : lesson.primary);
+        this.ctx.setOverlay(Overlay.Emergency);
+      } },
+      deferWhile: () => this.newYearBusy() || this.ctx.settings.tips !== true || this.ctx.settings.toasts === false,
+      onShow: () => {
+        if (this.ctx.signal.aborted) return;
+        this.teachingToasts.delete('E3');
+        if (!this.seen.E3) this.markTeachingSeen('E3');
+      },
+    });
   }
 
   /** Layout and the count pill use the policy's send window with the latest delivered options; a call waiting for a
@@ -685,12 +978,23 @@ export class EmergencyBanner {
   private onEvent(e: EmergencyEvent): void {
     this.recordDispatch(e);
     const b = this.banners.get(e.id);
+    const current = this.ctx.host.emergency.incident(e.id);
+    if (current && this.ctx.settings.tips === true && !this.seen.E3) this.failureIncidents.set(e.id, current);
     if (e.type === 'resolved' || e.type === 'failed') {
+      const inc = current ?? b?.inc ?? this.failureIncidents.get(e.id);
       if (b) {
-        b.inc = this.ctx.host.emergency.incident(e.id) ?? b.inc;
+        b.inc = inc ?? b.inc;
         const losses = lossText(b.inc);
         b.outcome = (e.type === 'failed' ? failText(b.inc, !!b.wasPossible) : `${INCIDENT_LABEL[e.kind]} under control`) + (losses ? ` — ${losses}` : '');
+        this.ended(b, this.ctx.host.simTime());
+        const flash = e.type === 'failed' || b.inc.lost > 0 || b.inc.deaths > 0 ? 'emg-lost' : 'emg-saved';
+        b.el.classList.add(flash);
+        const timer = setTimeout(() => { b.el.classList.remove(flash); this.flashes.delete(timer); }, 600);
+        this.flashes.add(timer);
       }
+      if (e.type === 'failed') this.teachFailure(b, inc);
+      this.failureIncidents.delete(e.id);
+      this.acknowledgeTeaching(e.id);
       return;
     }
     // Any dispatch can take the unit another banner's Send nearest button counted on (EM-1).
@@ -765,9 +1069,10 @@ export class EmergencyBanner {
     const choose = h('button', { class: 'btn sm emg-choose', title: 'Pick the station yourself (Dispatch tool)', html: '<span>Choose station…</span>' }) as HTMLButtonElement;
     const follow = h('button', { class: 'btn sm emg-follow', title: 'Follow the unit you sent', style: 'display:none', html: FOLLOW_ICON + '<span>Follow</span>' });
     const close = h('button', { class: 'icon-btn emg-x', title: 'Dismiss', html: icon('close', 14) });
+    const body = h('div', { class: 'emg-body' }, h('div', { class: 'emg-head' }, title, time), place, note, sub, h('div', { class: 'emg-btns' }, jump, send, choose, follow));
     const el = h('div', { class: 'emg-banner mp-glass', style: { '--kc': color } as Record<string, string> },
       h('div', { class: 'emg-ico', html: kindIcon(inc.kind, 22) }),
-      h('div', { class: 'emg-body' }, h('div', { class: 'emg-head' }, title, time), place, note, sub, h('div', { class: 'emg-btns' }, jump, send, choose, follow)),
+      body,
       close,
     );
     jump.addEventListener('click', () => this.jump(inc.id), { signal: this.ctx.signal });
@@ -781,10 +1086,11 @@ export class EmergencyBanner {
     }, { signal: this.ctx.signal });
     close.addEventListener('click', () => {
       this.followDispatches.delete(inc.id);
+      this.acknowledgeTeaching(inc.id);
       this.ctx.host.act('dismissAlert', [inc.id], { tag: this });
     }, { signal: this.ctx.signal });
     this.el.insertBefore(el, this.more);
-    const b: BannerEl = { id: inc.id, inc, el, title, place, note, sub, time, send, sendLbl, sendEta, choose, follow, optsVersion: -1, settleUntil: 0, settleGen: 0 };
+    const b: BannerEl = { id: inc.id, inc, el, body, title, place, note, sub, time, send, sendLbl, sendEta, choose, follow, optsVersion: -1, settleUntil: 0, settleGen: 0 };
     this.banners.set(inc.id, b);
     this.ro?.observe(el);
     this.dockDirty = true;
@@ -804,13 +1110,17 @@ export class EmergencyBanner {
     const em = this.ctx.host.emergency;
     let r;
     try {
-      r = await this.ctx.host.act('dispatchBest', [id], { tag: this }).done;
+      const gesture = this.ctx.host.beginGesture?.(this);
+      try { r = await this.ctx.host.act('dispatchBest', [id], { tag: this, gesture }).done; }
+      finally { gesture?.end(); }
     } catch (e) {
       console.warn('[dispatch] failed', e);
       r = { ok: false, reason: 'No unit available' };
     }
     if (this.ctx.signal.aborted) return;
     if (r.ok) {
+      const inc = em.incident(id);
+      if (inc && !(inc.state === 'uncovered' || inc.state === 'queued')) this.acknowledgeTeaching(id);
       this.ctx.sound('confirm');
       // named by its own kind; a unit that could not go is said too ("Ambulance dispatched … · no free fire truck can
       // reach it": the fire truck is still up to the player)
@@ -833,6 +1143,8 @@ export class EmergencyBanner {
   private removeBanner(id: number): void {
     const b = this.banners.get(id);
     if (!b) return;
+    if (b.teachingLesson) this.queueFailureTeaching(b.teachingLesson, true);
+    if (this.teaching?.episode.id === id) this.clearTeaching();
     this.banners.delete(id);
     this.ro?.unobserve(b.el);
     this.dockDirty = true;
@@ -872,6 +1184,7 @@ export class EmergencyBanner {
     // refreshes changed fleets while paused, capped at 5 Hz. The texts change in place (EM-4).
     const watch = waiting ? this.options.get(inc.id) : null;
     const options = watch?.value;
+    this.rememberTeachingResponse(b, inc, options);
     if (watch && b.optsVersion !== watch.version) {
       b.optsVersion = watch.version;
       const miss = missingResponders(em, inc);
@@ -891,6 +1204,16 @@ export class EmergencyBanner {
     const vd = waiting ? '' : 'none';
     if (b.send.style.display !== vd) b.send.style.display = vd;
     this.refreshFollowButton(b);
+  }
+
+  private rememberTeachingResponse(b: BannerEl, inc: Incident, options: readonly DispatchOption[] | undefined): void {
+    if (this.ctx.settings.tips !== true || this.seen.E3) return;
+    if (inc.kind === 'fire' && (inc.state === 'uncovered' || inc.state === 'queued')) b.teachingWindow ??= inc.deadline - inc.start;
+    const primary = INCIDENT_RESPONDERS[inc.kind][0];
+    const best = options?.find((o) => o.responder === primary && o.free > 0 && Number.isFinite(o.etaMin));
+    if (best) b.teachingEta = best.etaMin;
+    const sent = this.ctx.host.emergency.vehicles().find((v) => v.incidentId === inc.id && v.responder === primary);
+    if (sent) b.teachingPrimarySent = true;
   }
 
   /** the incident is over: the banner lingers briefly with the outcome — no countdown, no urgency, no dispatch buttons */
@@ -917,7 +1240,7 @@ export class EmergencyBanner {
     for (const b of this.banners.values()) {
       const inc = em?.incident(b.id);
       const waiting = !!inc && (inc.state === 'uncovered' || inc.state === 'queued');
-      prio.set(b.id, !inc ? 2 : this.answerable(inc) ? 0 : waiting && b.send.disabled ? 3 : 1);
+      prio.set(b.id, this.teaching?.episode.id === b.id ? -1 : !inc ? 2 : this.answerable(inc) ? 0 : waiting && b.send.disabled ? 3 : 1);
     }
     return [...this.banners.values()].sort((a, b) => prio.get(a.id)! - prio.get(b.id)! || a.inc.start - b.inc.start || a.id - b.id);
   }
@@ -958,6 +1281,7 @@ export class EmergencyBanner {
     const pill = above !== this.moreSlot;
     this.moreSlot = above;
     if (moved.length || pill) this.markMoved(moved, pill);
+    this.placeTeaching();
   }
 
   /** observe a panel (its size, position and closing class) for the docking (EM-3) */
@@ -1196,7 +1520,11 @@ export class EmergencyBanner {
     this.refreshFollow();
     const incidentIds = new Set(em.incidents().map((inc) => inc.id));
     for (const id of this.followDispatches.keys()) if (!incidentIds.has(id) || !this.followVehicle(id)) this.followDispatches.delete(id);
-    this.renderPolicy(this.ctx.host.policy);
+    this.renderPolicy(this.policy);
+    if (this.pendingFailure && !this.newYearBusy() && this.ctx.settings.tips === true) {
+      const lesson = this.pendingFailure, b = this.banners.get(lesson.id);
+      if (b || this.ctx.settings.toasts !== false) { this.pendingFailure = null; this.showFailureTeaching(lesson, b); }
+    }
     for (const b of this.banners.values()) {
       const inc = em?.incident(b.id);
       if (inc) this.refresh(b, inc);
@@ -1242,10 +1570,21 @@ export class EmergencyBanner {
     return [...this.banners.keys()];
   }
 
+  private clearFlashes(): void {
+    for (const timer of this.flashes) clearTimeout(timer);
+    this.flashes.clear();
+    for (const b of this.banners.values()) b.el.classList.remove('emg-saved', 'emg-lost');
+  }
+
   dispose(): void {
     this.follow?.stop();
     this.followDispatches.clear();
     this.activeFollow = null;
+    this.clearFlashes();
+    toggleClass(this.ctx.root, 'emg-live', false);
+    this.clearTeaching();
+    this.failureIncidents.clear();
+    this.pendingFailure = null;
     this.options.dispose();
     this.ro?.disconnect();
     this.mo?.disconnect();

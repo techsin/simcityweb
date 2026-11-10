@@ -1,0 +1,192 @@
+{
+ "rev": "aba092d",
+ "city": "vet_s7_y21 (304,650 residents at load)",
+ "renderer": "SwiftShader, headless Chromium (Playwright), 1280x720, quality low",
+ "runs": {
+  "default": {
+   "host": "LocalSimHost",
+   "frames": 167,
+   "frameGapMedianMs": 5473,
+   "frameGapMaxMs": 14175,
+   "stings": [
+    [
+     756171,
+     "saved"
+    ],
+    [
+     994264,
+     "lost"
+    ]
+   ],
+   "chimesAndStings": [
+    [
+     756171,
+     "saved"
+    ],
+    [
+     765194,
+     "good"
+    ],
+    [
+     994264,
+     "lost"
+    ],
+    [
+     1005505,
+     "bad"
+    ]
+   ],
+   "restoreToasts": [
+    {
+     "t": 713161,
+     "text": "Emergencies handled",
+     "silent": true
+    }
+   ],
+   "flashes": [
+    [
+     994311,
+     "emg-lost",
+     "on",
+     "No fire truck could reach it in time — 1 building lost",
+     "rgb(255, 93, 93)"
+    ],
+    [
+     994312,
+     "emg-lost",
+     "on",
+     "No fire truck could reach it in time — 1 building lost",
+     "rgb(255, 93, 93)"
+    ],
+    [
+     1005506,
+     "emg-lost",
+     "off"
+    ]
+   ],
+   "pillOnFrames": 78,
+   "pillOnVignetteVisible": 70,
+   "pillOffFrames": 89,
+   "pillOffVignetteVisible": 2,
+   "pillOnMusicDb": {
+    "0": 25,
+    "-2.4": 5,
+    "-4.59": 4,
+    "-1.61": 16,
+    "-4.95": 1,
+    "-1.36": 1,
+    "-2.68": 5,
+    "-0.88": 5,
+    "-0.65": 9,
+    "-6": 6,
+    "-3.58": 1
+   },
+   "pageErrors": 0
+  },
+  "loopback": {
+   "host": "LoopbackSimHost",
+   "frames": 129,
+   "frameGapMedianMs": 5188,
+   "frameGapMaxMs": 9823,
+   "stings": [
+    [
+     588308,
+     "saved"
+    ],
+    [
+     664079,
+     "lost"
+    ]
+   ],
+   "chimesAndStings": [
+    [
+     588308,
+     "saved"
+    ],
+    [
+     599166,
+     "good"
+    ],
+    [
+     664079,
+     "lost"
+    ],
+    [
+     675607,
+     "bad"
+    ]
+   ],
+   "restoreToasts": [
+    {
+     "t": 543109,
+     "text": "Emergencies handled",
+     "silent": true
+    }
+   ],
+   "flashes": [
+    [
+     588319,
+     "emg-saved",
+     "on",
+     "Fire under control"
+    ],
+    [
+     599167,
+     "emg-saved",
+     "off"
+    ],
+    [
+     664089,
+     "emg-lost",
+     "on",
+     "No fire truck could reach it in time — 1 building lost"
+    ],
+    [
+     664089,
+     "emg-lost",
+     "on",
+     "No fire truck could reach it in time — 1 building lost"
+    ],
+    [
+     664089,
+     "emg-lost",
+     "on",
+     "No fire truck could reach it in time — 1 building lost"
+    ],
+    [
+     675608,
+     "emg-lost",
+     "off"
+    ]
+   ],
+   "pillOnFrames": 75,
+   "pillOnVignetteVisible": 75,
+   "pillOffFrames": 54,
+   "pillOffVignetteVisible": 2,
+   "pillOnMusicDb": {
+    "0": 28,
+    "-0.65": 10,
+    "-6": 3,
+    "-2.68": 1,
+    "-1.61": 9,
+    "-0.88": 8,
+    "-0.43": 1,
+    "-4.95": 1,
+    "-3.58": 4,
+    "-2.4": 5,
+    "-5.72": 1,
+    "-4.59": 2,
+    "-3.27": 1,
+    "-1.36": 1
+   },
+   "pageErrors": 0
+  }
+ },
+ "notes": [
+  "default: 8 pill-on frames without a visible vignette are the QA script forcing the layer off for the comparison screenshot (266-322 s)",
+  "both: the 2 pill-off frames with a visible vignette are the 0.5 s fade sampled at ~5 s frame spacing",
+  "stings play once each; the good / bad chimes 9-11 s after them are the outcome news flushed late (its 120 ms timer starved by ~5 s frames, past the 6 s NEWS_GAP)",
+  "default: the two emg-lost on records 1 ms apart are one flash: two class mutations in one observer batch, both read against the current class list",
+  "default: no emg-saved flash because the banner had already closed (SimCore closes an alert 4 s of real time after the follow window; the outcome came 43 s later at SwiftShader speed); loopback kept it and flashed"
+ ]
+}

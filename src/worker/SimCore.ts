@@ -10,7 +10,7 @@ import type { Command, CommandOp, CommandResult } from './SimHost';
 import { runQuery, watchSignature, type QueryName, type QueryArgs, type QueryResult, type WatchPolicy } from './queries';
 // W0.4: headless policy and its read-only host view.
 import { Emitter } from '../core/events';
-import { AlertQueue, LIVE_COOLDOWN_MS, LIVE_IDLE, followingDispatch, pendingCount, sendDays, speedPolicy, unbanneredPrompt, urgentSeconds, type LiveState, type PolicyAlert } from '../game/emergencyPolicy';
+import { AlertQueue, EmergencyTeachingPolicy, LIVE_COOLDOWN_MS, LIVE_IDLE, followingDispatch, pendingCount, sendDays, speedPolicy, unbanneredPrompt, urgentSeconds, type LiveState, type PolicyAlert } from '../game/emergencyPolicy';
 import type { EmergencyEvent } from '../sim/Simulation';
 import type { Incident } from '../sim/infra/emergency';
 import type { PolicySnapshot, PolicyView, SimSettings } from './SimHost';
@@ -27,6 +27,9 @@ import {
   buildRecoverySnapshot, JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, journalMatches,
   type JournalBase, type RecoveryJournal, type RecoverySnapshot, type SnapshotInfo,
 } from '../save/recoveryCodec';
+// W1.3: the boot replay's pieces, shared by every host
+import { carriedJournal, type BootJournal } from './journal';
+import type { Journal } from './protocol';
 
 export interface CitySaveCopy { record: CityRecord; fp: string; summary: RegionCitySummary }
 
@@ -160,6 +163,16 @@ export class SimCore {
     return { applied, failed };
   }
 
+  /** W1.3: the boot replay of every host (§4.3), right after boot() and before the first tick. Never throws: a journal
+   *  that cannot replay is reported and the save stays as it is. `applied` counts the commands that took effect;
+   *  `carried` holds them renumbered for a Ready that no save follows yet (journal.ts). */
+  replayBootJournal(boot: BootJournal): { applied: number; carried?: Journal } {
+    let result: ReturnType<SimCore['replayRecoveryJournal']> = null;
+    try { result = this.replayRecoveryJournal(boot.journal, boot.base); }
+    catch (e) { this.report('Recovery journal could not be replayed', e, { key: 'recovery' }); return { applied: 0 }; }
+    return { applied: result?.applied.length ?? 0, carried: result ? carriedJournal(boot, result.applied) : undefined };
+  }
+
   /** FH-07a: the journal records the refund that was charged, not the rule. A replay at the base's day would re-date
    *  it (a day-20 bulldoze becomes a same-day one), so both budget lines and the funds move to the ack's amounts. */
   private keepCharge(cost: number, refund: number | undefined, replayCost: number, replayRefund = 0): void {
@@ -286,6 +299,7 @@ export class LivePolicy {
   private changes = new Emitter<{ change: PolicySnapshot }>();
   private settings: SimSettings = { emergencyUncovered: 'live', emergencyLiveSlowmo: 3, emergencyAlerts: 'major' };
   private queue = new AlertQueue();
+  private teacher = new EmergencyTeachingPolicy();
   private alerts = new Map<number, LiveAlert>();
   private dismissed = new Set<number>();
   private incoming = new Set<number>();
@@ -304,6 +318,7 @@ export class LivePolicy {
     this.view = {
       get alerts() { return self.snapshot.alerts; },
       get live() { return self.snapshot.live; },
+      get teaching() { return self.snapshot.teaching; },
       get toast() { return self.snapshot.toast; },
       get warn() { return self.snapshot.warn; },
       subscribe(listener, signal) {
@@ -330,6 +345,7 @@ export class LivePolicy {
       this.incoming.clear();
       this.dismissed.clear();
       this.queue.clear();
+      this.teacher.reset();
       this.snapshot = { alerts: [], live: false };
     }, { once: true });
     this.boot();
@@ -343,6 +359,7 @@ export class LivePolicy {
     this.dismissed.clear();
     this.incoming.clear();
     this.live = { ...LIVE_IDLE };
+    this.teacher.reset();
     this.cooldownLeft = 0;
     this.cooldownAt = this.clock();
     this.cooldownRunning = this.sim.speed > 0;
@@ -466,7 +483,8 @@ export class LivePolicy {
     const pending = pendingCount(policy, this.alerts, incidents, this.dismissed, now, send);
     this.episodeBad ||= pending.bad;
     const was = this.live.active;
-    const step = speedPolicy(policy, this.live, sim.speed, this.trigger && this.cooldownLeft === 0, pending.count, slowmo, this.episodeBad, policy === 'live' ? urgentSeconds(this.alerts, incidents, this.dismissed, now, slowmo, send) : Infinity);
+    const teaching = this.teacher.update(this.settings, this.alerts, incidents);
+    const step = speedPolicy(policy, this.live, sim.speed, this.trigger && this.cooldownLeft === 0, pending.count, slowmo, this.episodeBad, policy === 'live' ? urgentSeconds(this.alerts, incidents, this.dismissed, now, slowmo, send) : Infinity, teaching);
     this.trigger = false;
     this.live = step.state;
     if (was !== this.live.active || step.toast) this.episodeBad = false;
@@ -479,9 +497,10 @@ export class LivePolicy {
   private publish(toast?: string, warn = false): void {
     const live = this.live.active && this.live.policy === 'live';
     const alerts = [...this.alerts.values()].map(({ id, wasPossible }) => ({ id, wasPossible }));
+    const teaching = this.teacher.episode;
     const before = this.snapshot;
-    if (!toast && !warn && before.live === live && before.alerts.length === alerts.length && alerts.every((a, k) => a.id === before.alerts[k].id && a.wasPossible === before.alerts[k].wasPossible)) return;
-    this.snapshot = { alerts, live, ...(toast ? { toast: { text: toast, kind: toast.startsWith('Emergencies handled') ? 'good' as const : 'info' as const } } : {}), ...(warn ? { warn: true as const } : {}) };
+    if (!toast && !warn && before.live === live && before.teaching?.id === teaching?.id && before.teaching?.variant === teaching?.variant && before.alerts.length === alerts.length && alerts.every((a, k) => a.id === before.alerts[k].id && a.wasPossible === before.alerts[k].wasPossible)) return;
+    this.snapshot = { alerts, live, ...(teaching ? { teaching: { ...teaching } } : {}), ...(toast ? { toast: { text: toast, kind: toast.startsWith('Emergencies handled') ? 'good' as const : 'info' as const } } : {}), ...(warn ? { warn: true as const } : {}) };
     this.changes.emit('change', this.snapshot);
   }
 }

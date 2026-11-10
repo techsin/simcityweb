@@ -280,6 +280,252 @@ export function transitSearch(T: TransitNet, S: Search, _heap: MinHeap, seeds: S
   S.settled = cnt;
 }
 
+// ---------------------------------------------------------------------------------------------- B2 resumable runs
+/**
+ * B2 (docs/dev/B2_DESIGN.md §2.4): roadSearch as a resumable run — start() is roadSearch's prologue (reset, graph
+ * version, seeding), run(maxSettled) its Dial bucket loop, resumed from the saved (bucket, entry, settled count); the
+ * budget is checked before an entry is taken (like SearchK.run) and S.settled is set when the search completes. Exact:
+ * the bucket width is at most the minimum edge cost and every push from bucket b lands in a later bucket, so bucket b's
+ * list is fixed while it drains and resuming at (b, the next entry) replays the identical pop sequence (dist, src, next,
+ * hops, order, done and settled come out identical to roadSearch()). Each run has its own bucket queue: other code
+ * (garageReach, emergency's dispatch) may run roadSearch() between two pieces. The Search's arrays are re-read on every
+ * run() (a WasmSearch re-points them when wasm memory grows), never cached across calls. Nothing the search reads (graph,
+ * times, ramp minutes) may change between start() and the last run().
+ * (A separate implementation of the same loop: roadSearch() itself is unchanged, so the frozen-original traffic test
+ * cross-checks the runs against it.)
+ */
+export class RoadSearchRun {
+  private readonly q = new BucketQueue();
+  private g: RoadGraph | null = null;
+  private adj: Int32Array = new Int32Array(0);
+  private time: Float32Array = new Float32Array(0);
+  private ramp: Float32Array | null = null;
+  private S: Search | null = null;
+  private limit = 0;
+  private nb = 0;
+  private b = 0;
+  /** entry to continue with in bucket b (-2 = bucket not opened yet) */
+  private e = -2;
+  private cnt = 0;
+  /** a started search has buckets left */
+  running = false;
+
+  /** roadSearch's prologue (same arguments, minus the unused heap) */
+  start(g: RoadGraph, adj: Int32Array, time: Float32Array, S: Search, seeds: Seeds, limit = 400, ramp: Float32Array | null = null): void {
+    const n = g.n;
+    S.reset(n);
+    S.graphVersion = g.version;
+    const dist = S.dist, src = S.src, next = S.next, hops = S.hops;
+    if (!(limit < 2000)) limit = 2000;
+    const invQ = 1 / Q;
+    const nb = Math.ceil(limit * invQ) + 2;
+    const bq = this.q;
+    bq.reset(nb, n * 2 + seeds.n + 16);
+    for (let s = 0; s < seeds.n; s++) {
+      const v = seeds.node[s];
+      const l = seeds.label[s];
+      if (v < 0 || v >= n || !(l <= limit)) continue;
+      if (l < dist[v]) {
+        dist[v] = l;
+        src[v] = seeds.id[s];
+        next[v] = -1;
+        hops[v] = 0;
+        bq.push((l * invQ) | 0, v);
+      }
+    }
+    this.g = g; this.adj = adj; this.time = time; this.ramp = ramp; this.S = S; this.limit = limit; this.nb = nb;
+    this.b = 0; this.e = -2; this.cnt = 0;
+    this.running = true;
+  }
+
+  /** nodes settled so far */
+  get settled(): number {
+    return this.cnt;
+  }
+
+  /** settle at most maxSettled more nodes; true = the search is complete (S.settled set) */
+  run(maxSettled: number): boolean {
+    if (!this.running) return true;
+    const S = this.S!, g = this.g!;
+    const dist = S.dist, src = S.src, next = S.next, hops = S.hops, order = S.order, done = S.done;
+    const adj = this.adj, time = this.time, ramp = this.ramp, limit = this.limit, nb = this.nb;
+    const type = g.type;
+    const HW = Network.Highway;
+    const invQ = 1 / Q;
+    const bq = this.q, head = bq.head;
+    let cnt = this.cnt, b = this.b, e = this.e;
+    const stop = cnt + maxSettled;
+    for (; b < nb; b++, e = -2) {
+      if (e === -2) e = head[b];
+      while (e >= 0) {
+        if (cnt >= stop) { this.b = b; this.e = e; this.cnt = cnt; return false; }
+        const u = bq.enode[e];
+        e = bq.enext[e];
+        if (done[u] === 1) continue;
+        done[u] = 1;
+        order[cnt++] = u;
+        const key = dist[u];
+        const tu = time[u];
+        const hu = type[u] === HW;
+        const su = src[u];
+        const hp = hops[u] + 1;
+        const base = u * 4;
+        for (let k = 0; k < 4; k++) {
+          const v = adj[base + k];
+          if (v < 0 || done[v] === 1) continue;
+          let c = 0.5 * (tu + time[v]);
+          if (hu !== (type[v] === HW)) c += ramp === null ? RAMP_PENALTY : ramp[hu ? v : u];
+          const nd = key + c;
+          if (nd < dist[v] && nd <= limit) {
+            dist[v] = nd;
+            src[v] = su;
+            next[v] = u;
+            hops[v] = hp > 65535 ? 65535 : hp;
+            const bi = (nd * invQ) | 0;
+            bq.push(bi > b ? bi : b + 1, v);
+          }
+        }
+      }
+      head[b] = -1;
+    }
+    this.b = nb; this.e = -2; this.cnt = cnt;
+    S.settled = cnt;
+    this.running = false;
+    return true;
+  }
+}
+
+/** B2: transitSearch as a resumable run (see RoadSearchRun; transitSearch() itself is unchanged) */
+export class TransitSearchRun {
+  private readonly q = new BucketQueue();
+  private T: TransitNet | null = null;
+  private S: Search | null = null;
+  private limit = 0;
+  private nb = 0;
+  private b = 0;
+  private e = -2;
+  private cnt = 0;
+  running = false;
+
+  /** transitSearch's prologue (same arguments, minus the unused heap) */
+  start(T: TransitNet, S: Search, seeds: Seeds, limit = 400): void {
+    const n = T.total;
+    S.reset(n);
+    const dist = S.dist, src = S.src, next = S.next, hops = S.hops;
+    if (!(limit < 2000)) limit = 2000;
+    const invQ = 1 / QT;
+    const nb = Math.ceil(limit * invQ) + 2;
+    const bq = this.q;
+    bq.reset(nb, n * 2 + seeds.n + 16);
+    for (let s = 0; s < seeds.n; s++) {
+      const v = seeds.node[s];
+      const l = seeds.label[s];
+      if (v < 0 || v >= n || !(l <= limit)) continue;
+      if (l < dist[v]) {
+        dist[v] = l;
+        src[v] = seeds.id[s];
+        next[v] = -1;
+        hops[v] = 0;
+        bq.push((l * invQ) | 0, v);
+      }
+    }
+    this.T = T; this.S = S; this.limit = limit; this.nb = nb;
+    this.b = 0; this.e = -2; this.cnt = 0;
+    this.running = true;
+  }
+
+  get settled(): number {
+    return this.cnt;
+  }
+
+  run(maxSettled: number): boolean {
+    if (!this.running) return true;
+    const T = this.T!, S = this.S!;
+    const dist = S.dist, src = S.src, next = S.next, hops = S.hops, order = S.order, done = S.done;
+    const limit = this.limit, nb = this.nb, invQ = 1 / QT;
+    const nR = T.nR, nRR = T.nR + T.nRail, nGrid = nRR + T.nSub;
+    const roadAdj = T.roadAdj, busTime = T.busTime, railAdj = T.railAdj, subAdj = T.subAdj;
+    const trStart = T.trStart, trTo = T.trTo, trCost = T.trCost;
+    const railTime = T.railTime, subTime = T.subTime;
+    const bq = this.q, head = bq.head;
+    let cnt = this.cnt, b = this.b, e = this.e;
+    const stop = cnt + maxSettled;
+    for (; b < nb; b++, e = -2) {
+      if (e === -2) e = head[b];
+      while (e >= 0) {
+        if (cnt >= stop) { this.b = b; this.e = e; this.cnt = cnt; return false; }
+        const u = bq.enode[e];
+        e = bq.enext[e];
+        if (done[u] === 1) continue;
+        done[u] = 1;
+        order[cnt++] = u;
+        const key = dist[u];
+        const su = src[u];
+        const hp = Math.min(65535, hops[u] + 1);
+        for (let k = u < nGrid ? 0 : 4; k < 4; k++) {
+          let v: number, c: number;
+          if (u < nR) {
+            v = roadAdj[u * 4 + k];
+            if (v < 0) continue;
+            c = 0.5 * (busTime[u] + busTime[v]);
+          } else if (u < nRR) {
+            const a = railAdj[(u - nR) * 4 + k];
+            if (a < 0) continue;
+            v = a + nR;
+            c = railTime;
+          } else {
+            const a = subAdj[(u - nRR) * 4 + k];
+            if (a < 0) continue;
+            v = a + nRR;
+            c = subTime;
+          }
+          if (done[v] === 1) continue;
+          const nd = key + c;
+          if (nd < dist[v] && nd <= limit) {
+            dist[v] = nd; src[v] = su; next[v] = u; hops[v] = hp;
+            const bi = (nd * invQ) | 0;
+            bq.push(bi > b ? bi : b + 1, v);
+          }
+        }
+        for (let t = trStart[u], t1 = trStart[u + 1]; t < t1; t++) {
+          const v = trTo[t];
+          if (done[v] === 1) continue;
+          const nd = key + trCost[t];
+          if (nd < dist[v] && nd <= limit) {
+            dist[v] = nd; src[v] = su; next[v] = u; hops[v] = hp;
+            const bi = (nd * invQ) | 0;
+            bq.push(bi > b ? bi : b + 1, v);
+          }
+        }
+      }
+      head[b] = -1;
+    }
+    this.b = nb; this.e = -2; this.cnt = cnt;
+    S.settled = cnt;
+    this.running = false;
+    return true;
+  }
+}
+
+/**
+ * B2: accumulate() over the settle-order range [k0, k1) only, walked backwards (k1 - 1 down to k0). Walking the
+ * ranges from the end of `order` to its start — [k1, settled) before [k0, k1) — reproduces accumulate(S, acc, onSink)
+ * exactly: a node's flow moves to its parent, which settled earlier (a smaller k), and the sink calls come in the same
+ * order.
+ */
+export function accumulateRange(S: Search, acc: Float32Array | Float64Array, k0: number, k1: number,
+  onSink?: (seedId: number, flow: number, node: number) => void): void {
+  const order = S.order, next = S.next, src = S.src;
+  for (let k = k1 - 1; k >= k0; k--) {
+    const v = order[k];
+    const f = acc[v];
+    if (f === 0) continue;
+    const nx = next[v];
+    if (nx >= 0) acc[nx] += f;
+    else if (onSink) onSink(src[v], f, v);
+  }
+}
+
 /**
  * Accumulate flows injected in `acc` (per node) along the search forest toward the seeds.
  * After the call acc[v] = total flow through v. `onSink(seedId, flow)` receives flow reaching a seed.
@@ -536,6 +782,36 @@ export class SearchK {
     const altStamp = this.altStamp, tick = this.altTick;
     if (altStamp.length > 0) for (let k = 0, n = this.settled; k < n; k++) altStamp[order[k]] = tick;
     for (let k = 0, n = this.settled; k < n; k++) {
+      const s = order[k], p = next[s];
+      if (p < 0) { alt[s] = 0; continue; }
+      const v = snode[s], u = snode[p];
+      let c = alt[p] + 0.5 * (time2[u] + time2[v]);
+      const tu = type[u], tv = type[v];
+      if ((tu === HW) !== (tv === HW)) { const r = tu === HW ? v : u; c += ramp2 === null ? (RAMP_BY_NET[type[r]] ?? RAMP_PENALTY) : ramp2[r]; }
+      alt[s] = c;
+    }
+  }
+
+  /** B2: refreshAlt in pieces — begin (new time2 / ramp2, stamps), then refreshAltRange over [0, settled) in order */
+  refreshAltBegin(time2: Float32Array, ramp2: Float32Array | null): boolean {
+    const g = this.g;
+    if (!g || this.running) return false;
+    const order = this.order;
+    this.time2 = time2; this.ramp2 = ramp2;
+    this.nextAltTick();
+    const altStamp = this.altStamp, tick = this.altTick;
+    if (altStamp.length > 0) for (let k = 0, n = this.settled; k < n; k++) altStamp[order[k]] = tick;
+    return true;
+  }
+
+  /** B2: refreshAlt's pass over the states of settle order [k0, k1) (call in increasing order after refreshAltBegin:
+   *  parents settle before their children, so ranges in order give refreshAlt's sums exactly) */
+  refreshAltRange(k0: number, k1: number): void {
+    const g = this.g, time2 = this.time2, ramp2 = this.ramp2;
+    if (!g || time2 === null) return;
+    const order = this.order, next = this.next, alt = this.alt, snode = this.node, type = g.type, HW = Network.Highway;
+    const end = Math.min(k1, this.settled);
+    for (let k = k0; k < end; k++) {
       const s = order[k], p = next[s];
       if (p < 0) { alt[s] = 0; continue; }
       const v = snode[s], u = snode[p];
