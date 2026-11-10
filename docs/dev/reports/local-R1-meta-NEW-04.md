@@ -155,6 +155,184 @@ D16; this report and the FEEL-02b one; the diff against dev; the Nov 4 handoff's
   real worker.
 - The merge step: the full vitest and the bot against dev.
 
+### Fix round (Nov 9): the cloud review's findings
+
+Branch `cloud/t036s4` at `5c44ee8` before this round. Read again: the Nov 4 handoff README, NOTE-044, NOTE-058,
+NOTE-059 (new on dev) and the review's 8 findings.
+- **`8911c3d` merges dev `87c7c9c`** (T053 merged, NOTE-059). It merged cleanly; the only shared file is `CityScene.ts`,
+  where T053 added its imports and two constructor lines.
+- **`7b3a70c` holds the fixes.** Its files: `StorageDialog.ts`, `db.ts`, `regionLock.ts`, one line in `recoveryIdb.ts`,
+  and `main.ts` (+16/-2, listed below). It changes no file in src/sim, src/worker or src/game.
+- **`5c10c85` merges dev `1c2019c`** (T058 merged, NOTE-060, NOTE-061). It merged cleanly. NOTE-061 names this lane
+  only to keep the desktop's new lanes off its files until it merges.
+
+| # | Finding (severity) | Fix | Test |
+|---|---|---|---|
+| 1 | Two tabs on different regions: a city opened without its pending snapshot, which was then overwritten (major) | See below | `tests/save/recoveryGateScope.test.ts` (new, 4 cases); 4 gate cases and the Retry case in `storageDialog.test.ts` rewritten |
+| 2 | Continue, Load Region or Delete during the start-up scan: this tab's own temporary lock made it read-only (minor) | `main.ts` `startupOffer()`: `continueInCity` and `openRegion` wait for the start-up offer before `storage.open`. `continueInCity` returns on `recovered` or `later`, as `recoveryGate` already did; `openRegion` returns on `recovered`. `deleteStorageRegion` waits for this tab's recovery scan (`recoveryScan`, set by `withRecoveryStorage`) | `storageDialog` "waits for this tab's recovery scan …". The two `main.ts` waits have no unit harness: covered by reading and tsc, plus Desktop QA item 3 |
+| 3 | The `IdbKV` write guard had no test (minor) | No code change | `recoveryIdb.test.ts` "refuses a revoked tab's IndexedDB put and delete …": a stubbed `indexedDB.open` and a Web Lock that another tab steals. The tab's put and delete reject with `NotAllowedError` and open no transaction; other regions still write |
+| 4 | The lock notice: it flashed on every open, and it overlaps `.emg-banners` (minor) | `RegionStorageSession` keeps the notice hidden until its first `acquire` settles. Its placement is unchanged (decision 8) | `storageDialog` "keeps the read-only notice hidden until the first acquire settles …" |
+| 5 | `loadCurrentRegion` read every city record on every region open (minor) | Only a region marked stale has its city records read (see below) | `regionSummaryReload` (4 updated, 2 new cases), `storageDb` "marks the region summary stale …" |
+| 6 | Every founding failure read "City could not be saved" (minor) | `startNewCity` sends an error to the storage dialog only when it came from the founding write (`storing`) or `isStorageError` (quota or `NotAllowedError`). Any other error gets dev's toast, "Could not found the city: …" | `storageDialog` "classifies only a full store or a refused write …" |
+| 7 | The desktop's real-GPU evidence could not be reviewed (minor) | The desktop's to do (Remaining) | none |
+| 8 | The handed-off T039 and T061 items have no owner (minor) | The lead's to do (decision 9, Remaining) | none |
+
+**Finding 1, the fix (`StorageDialog.ts` `findCityRecovery`, used by `recoveryStorageGate` and the quota Retry).**
+- **The cause:** the old gate went through `withRecoveryStorage`. That function locks every region with a recovery
+  record, plus the region named in the localStorage slot. When any of those locks was held elsewhere, it returned
+  `unavailable`, which was `true`, so the city opened without being asked about.
+- **The scan now writes only to the city's own region,** which this tab already holds. During discovery,
+  `restrictRegionSaveAccess` allows that region alone.
+- **The global localStorage slot** is moved into IndexedDB only in two cases: it belongs to this region, or it belongs
+  to a region whose lock is free. In the second case the scan takes that region's lock and releases it before the
+  dialog opens. A slot whose region another tab holds stays where it is, and no other region's record is deleted.
+- **`recoveryIdb.findRecoverySnapshot` keeps scanning when a malformed-record cleanup is refused.** That cleanup
+  belongs to the other region's owner, so the refusal must not end the scan for this city. This is one line, with
+  `.catch`.
+- **The gate never opens a city whose snapshot is undecided.** That covers two cases: nothing was offered while a copy
+  of the city's snapshot is still stored (`hasRecoverySnapshot`), and a scan that throws. In both, the gate returns
+  `false` and shows `RECOVERY_UNDECIDED_MESSAGE`: "This city's unsaved progress could not be checked, so the city was
+  not opened. Free some browser storage, then try again."
+- **A tab without the region's lock still enters read-only, without asking.** It cannot write a snapshot. The holder is
+  asked, or this tab after "Use it here instead", because the takeover reloads the region.
+- **The start-up offer (`offerRecovery`) still scans all or nothing.** If another tab owns any region in it, the offer
+  is skipped, and that is now safe: each city's own gate asks when the city is opened.
+- **The lane's B6 takeover offer is covered too.** The old tab's last periodic snapshot of the city is in IndexedDB.
+  The new holder's gate finds it even after the old tab has moved to another region and owns the slot. Case 1 below
+  models exactly that.
+
+**Finding 5, the fix (`db.ts`, `regionLock.ts`).**
+- **The mark** is set with `markRegionSummaryStale(regionId)`. It is a localStorage key,
+  `metropolis.regionSummaryStale.<id>`, with an in-memory fallback.
+- **Three things set it:**
+  - a lock this tab owned is lost (`RegionSaveLock.lose`; a `dispose` does not set it);
+  - the takeover reload, just before it reloads;
+  - `withRegionSaveAccess`, when a write finishes after its lock was lost.
+- **`loadCurrentRegion` reads city records only when the region is marked.**
+  - The holder clears the mark before it reads, so a write that lands after the read marks the region again.
+  - A read-only tab repairs only its own view and leaves the mark for the holder.
+  - An unmarked region open reads no city records, as on dev before the lane (O6).
+
+**The new test, `tests/save/recoveryGateScope.test.ts`.** It uses the real `RegionSaveLock` (with a fake
+`navigator.locks` across tabs), the real recovery store (`PersistentMemoryKV`) and the real localStorage slot. Only the
+toast is stubbed. Its four cases:
+1. This tab owns `rtest`. Another tab owns `other`, which has an IndexedDB record, a malformed record and a newer
+   snapshot in the slot. The `rtest:0_0` city is asked about. `other`'s records and the slot are unchanged.
+2. After the player's choice the city opens, and a city with no snapshot opens without a question.
+3. When the slot's region is free, the slot moves into IndexedDB under that region's lock. The slot is then cleared, and
+   the lock is free again.
+4. Undecided: only the unload slot holds the city's snapshot and IndexedDB is full. The city does not open, the toast
+   shows, and the slot is kept.
+
+The review's probe (dev's assertion `expect(ask).toHaveBeenCalled`) is case 1 here. It fails on the old gate.
+
+**Mutation checks: 16 of 16 caught.** Each code change was reverted on its own, its test files rerun, and the code
+restored. Logs: `scratchpad/t036s4fix/<name>.log`.
+
+| Code reverted | Result |
+|---|---|
+| the gate back to an all-or-nothing scan (`withRecoveryStorage`) | 6 failed (gateScope 3, storageDialog 3) |
+| `recoveryIdb`'s `.catch` on the malformed-record cleanup | 1 failed (gateScope case 1) |
+| the discovery restriction allowing every region | 4 failed |
+| no undecided check (`hasRecoverySnapshot`) | 3 failed |
+| the free slot region never adopted | 3 failed |
+| the `IdbKV.put` guard removed | 1 failed |
+| the `IdbKV.delete` guard removed | 1 failed |
+| `deleteStorageRegion` not waiting for this tab's scan | 1 failed |
+| the notice shown before the first acquire settles | 1 failed |
+| `loadCurrentRegion` repairing without a mark | 1 failed |
+| the mark cleared by a read-only tab | 1 failed |
+| no mark when a lock is lost | 1 failed |
+| a mark on `dispose` too | 1 failed |
+| no mark when a write outlives its lock | 1 failed |
+| no mark from the takeover reload | 1 failed |
+| `isStorageError` without the quota case | 1 failed |
+
+The finding's listed mutation is the `IdbKV.put` guard; it now fails the new test in 17 ms, where it used to pass.
+
+**`main.ts` hunks added this round** (each sits in its listed place):
+- `startupOffer()` beside `recoveryGate`;
+- one line in `openRegion`, and two in `continueInCity`, before `storage.open`;
+- the `storing` flag around `startNewCity`'s founding write, and its catch (storage dialog or dev's toast);
+- `isStorageError` in the `StorageDialog` import.
+
+**Merging with the cloud branches in flight** (`git merge-tree` against this round's head):
+- `cloud/t057`, `cloud/t061` and `cloud/b2m` merge cleanly.
+- `cloud/w13` conflicts in `main.ts` (`continueInCity`) and `dialogs.ts`, exactly as it did at `5c44ee8` before this
+  round. The two `continueInCity` changes combine in this order: the lane's `startupOffer()` check and `storage.open`,
+  then W1.3's `if (gate && …)`. W1.3's own call, `continueInCity(…, false)`, runs after `offerPending` is cleared, so
+  the wait cannot block on itself.
+- `recoveryIdb.ts` merges cleanly with W1.3, which changes the lines around this round's line but not the line itself.
+
+#### Gates (this round)
+
+All of these ran on `5c10c85`: this round's fixes `7b3a70c`, with dev `1c2019c` merged in. Dev's T058 merged cleanly;
+it touches only `playCity`'s load timer in `main.ts` and the quality labels in `dialogs.ts`. The full vitest and the
+bot ran under the shared lock; tsc and the file sets under the CPU semaphore.
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | **clean**, on `7b3a70c` and on `5c10c85` |
+| The lane's test files, the new `recoveryGateScope.test.ts`, `recoveryIdb`, `recoveryLs`, `workerStorage`, the worker `hygiene` gate, and T058's two new files (`--maxWorkers=2`) | **20 files, 173 tests passed** on `5c10c85` (18 files, 166 tests on `7b3a70c`) |
+| Full vitest, `npx vitest run --configLoader runner`, with the main checkout's `tools/bench/.fixtures` linked in, so the fixture cases ran | **254 files passed, 2 skipped; 2,538 tests passed, 7 skipped, 0 failed** (543 s). Log: `scratchpad/t036s4fix/vitest-full.log` |
+| Bot, 128×15 seed 7 | **identical to dev:** `residents [ 61124, 93804, 37971 ]` = 192,899. Log: `scratchpad/t036s4fix/bot.log` |
+| Mutation checks | 16 of 16 caught (above) |
+| Browser | **none** (NOTE-059 and NOTE-061: the desktop runs every browser check). This round's checks are the Desktop QA list below |
+
+#### Decisions (this round)
+
+6. **An undecided snapshot keeps the city closed, with a toast.** That is the review's conservative reading ("never
+   enter the city while its snapshot is undecided"). A toast is enough here: nothing was lost, and retrying is the
+   whole action. The usual cause is a full store, so the text points to freeing storage.
+7. **The start-up offer stays all or nothing.** Only the city gate needed scoping. Skipping the start-up offer while
+   another tab is open loses nothing now, because the city's own gate asks.
+8. **The lock notice keeps its place (top 82 px, z 95).** The review asks the desktop to decide that on the real GPU.
+   The emergency stack docks beside open panels (`EmergencyBanner.dock` sets `top` and `left` inline), so a new place
+   needs a visual check. Only the flash is fixed here, because it is certain from the code.
+9. **The T039 and T061 task files are not edited here.** They are the lead's files, and adding to another lane's scope
+   is the lead's call. The two items are restated under Remaining.
+10. **The stale mark replaces the repair on every open.** One case stays uncovered, the same as on dev: a tab that
+    crashes between a city write and its region write leaves a stale summary until that city is next saved.
+
+#### Desktop QA (this round's changes, on the real GPU; default host)
+
+1. **Two tabs, two regions (finding 1).**
+   - Steps: in tab A, play a city of region X, change it, wait more than 30 s for a snapshot, then close the tab.
+     Open tab B on region Y, play a city, and stay dirty for more than 30 s, so B owns the localStorage slot. Open a new
+     tab A' and click X's city.
+   - Expected: the Recover dialog for X's city opens.
+   - Also with Continue from A's title screen.
+2. **The takeover offer (B6).**
+   - Steps: tab A plays X's city, dirty. Tab B takes X over ("Use it here instead"). A moves to region Y and plays for
+     30 s. B opens X's city.
+   - Expected: the Recover dialog, worded "This region was opened in another tab".
+3. **The start-up race (finding 2).**
+   - Steps: with a crash snapshot pending, reload, then click Continue at once, before the Recover dialog appears.
+     Repeat with Load Region, and Delete on a region that has a snapshot.
+   - Expected: no "This region is open in another tab" notice and no "open in another tab" refusal. The Recover dialog
+     decides first.
+4. **The lock notice (finding 4).**
+   - Open a region with `navigator.locks` removed (the BroadcastChannel fallback). Expected: no flash of the notice.
+   - Open a read-only city tab while an emergency banner is up. If the notice covers the banner or its Dispatch button,
+     move the notice clear of `.emg-banners`.
+5. **The founding copy (finding 6).**
+   - Stub `saveCity` to throw `QuotaExceededError`. Expected: the guided storage dialog.
+   - Make terrain generation throw. Expected: the toast "Could not found the city: …".
+6. **Region-open time (finding 5):** on a region with several 100k+ cities, the open is back to dev's time. After a
+   takeover, the region's tiles show the last written city.
+
+#### Remaining (after this round)
+
+- **The desktop (finding 7):** push the QA notes and key screenshots to `docs/dev/reports/local-T036s4-qa/`. Wanted:
+  two tabs and the handover, the guided quota dialog, the backup reminder at 1024×600, and the read-only chip. Or attach
+  them to the DONE message. Then run the Desktop QA list above.
+- **The lead (finding 8):** add the two handed-off items to their task files before W1.3 merges:
+  - T039: `'worker-idb'` writes need the region lock in the worker, with a lock case in
+    `tests/worker/workerStorage.test.ts`;
+  - T061: `WorkerSimHost.storeSnapshot` returns the payload with `idb: false` when the IndexedDB write fails, so Export
+    works on the worker host.
+- **Unchanged from above:** FEEL-02b's recovery check after W1.3, and B9 (T061 item 7).
+
 ## Gates
 
 | Gate | Result |
