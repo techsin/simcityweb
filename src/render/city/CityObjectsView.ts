@@ -35,6 +35,7 @@ import { VehicleRenderer, type TrafficRoute } from './vehicles/VehicleRenderer';
 import { Previews } from './previews/Previews';
 import { EmergencyVehicles, type EmergencyFeed } from './vehicles/EmergencyVehicles';
 import { Underground } from './underground/Underground';
+import { Pedestrians, type PedestrianFeed } from './Pedestrians';
 
 export interface CityObjectsViewContext {
   scene: THREE.Scene;
@@ -42,6 +43,10 @@ export interface CityObjectsViewContext {
   renderer: THREE.WebGLRenderer;
   canvas: HTMLCanvasElement;
   getTrafficRoutes?: (max: number) => TrafficRoute[];
+  getTimeOfDay?: () => number;
+  getPedestrianActivity?: PedestrianFeed;
+  /** FEEL-23 supplies the visual rain state when its weather view is available. */
+  getRain?: () => boolean;
   /** WP8 emergency dispatch: vehicles, incidents and the continuous sim time (EmergencyVehicles) */
   getEmergency?: EmergencyFeed | null;
   /** returns the current CityState (used on 'reset' when the Simulation replaced its state) */
@@ -93,6 +98,7 @@ export class CityObjectsView implements CityObjectsViewApi {
   /** New Year fireworks show (start / stop / active); driven by src/game/NewYear.ts */
   readonly fireworks: Fireworks;
   readonly vehicles: VehicleRenderer;
+  readonly pedestrians: Pedestrians;
   readonly previews: Previews;
   readonly underground: Underground;
   /** WP8: fire trucks / police cars / ambulances on their dispatch routes + incident beacons */
@@ -146,6 +152,8 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.vehicles = new VehicleRenderer(state, this.net, this.surf, this.culler, this.quality);
     this.vehicles.signalized = this.roads.signalized;
     this.vehicles.getRoutes = ctx.getTrafficRoutes ?? null;
+    this.pedestrians = new Pedestrians(state, this.net, this.surf, this.quality);
+    this.pedestrians.getActivity = ctx.getPedestrianActivity ?? null;
     this.previews = new Previews(state, this.surf);
     this.underground = new Underground(state, this.surf);
     this.emergency = new EmergencyVehicles(state, this.surf, ctx.getEmergency ?? null);
@@ -154,6 +162,7 @@ export class CityObjectsView implements CityObjectsViewApi {
       this.roads.group, this.props.batch.mesh, this.props.pools, this.props.glows, this.power.wires, this.buildings.batch.mesh,
       this.vehicles.batch.mesh, this.vehicles.headlights, this.effects.smoke, this.effects.flames, this.disasters.group, this.previews.group, this.underground.group,
       this.fireworks.group,
+      this.pedestrians.mesh,
     );
     ctx.scene.add(this.root);
     this.subscribe(events);
@@ -177,6 +186,7 @@ export class CityObjectsView implements CityObjectsViewApi {
         this.roads.markDirty(expand(d, 1, N()));
         this.props.invalidateGarbage(r);
         this.vehicles.invalidate();
+        this.pedestrians.invalidate();
       }),
       ev.on('terrainChanged', (r) => {
         const d = this.net.update(expand(r, 1, N()));
@@ -230,6 +240,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.power.setState(state, this.surf);
     this.buildings.setState(state);
     this.vehicles.setState(state, this.net, this.surf);
+    this.pedestrians.setState(state, this.net, this.surf);
     this.previews.setState(state, this.surf);
     this.underground.setState(state, this.surf);
     this.disasters.setState(state, this.surf);
@@ -254,6 +265,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.effects.update();
     this.vehicles.clear();
     this.vehicles.refreshSpawn();
+    this.pedestrians.clear();
   }
 
   private flushPower(): void {
@@ -275,6 +287,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.props.lodFull = this.props.lodDistance * 0.4;
     this.buildings.lodPixels = q === 'low' ? 11 : q === 'medium' ? 10 : q === 'high' ? 9 : 7;
     this.vehicles.setQuality(q);
+    this.pedestrians.setQuality(q);
     this.effects.maxSmoke = q === 'low' ? 2500 : 7000;
     this.fireworks.setQuality(q);
   }
@@ -333,6 +346,8 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.vehicles.update(dt, cam, this.ctx.renderer.domElement.height);
     this.emergency.update(dt);
     lap('vehicles');
+    this.pedestrians.update(dt, cam, this.ctx.getTimeOfDay?.() ?? (sharedUniforms.uNight.value > 0.5 ? 3 : 12), this.ctx.getRain?.() ?? false);
+    lap('pedestrians');
     this.previews.update(dt);
     // overlay fade
     const o = cityUniforms.uCityOverlay;
@@ -347,7 +362,7 @@ export class CityObjectsView implements CityObjectsViewApi {
   }
 
   /** accumulated CPU ms per subsystem (reset with resetProfile) */
-  readonly prof = { cull: 0, roads: 0, props: 0, buildings: 0, effects: 0, vehicles: 0, misc: 0, frames: 0 };
+  readonly prof = { cull: 0, roads: 0, props: 0, buildings: 0, effects: 0, vehicles: 0, pedestrians: 0, misc: 0, frames: 0 };
   resetProfile(): void {
     for (const k of Object.keys(this.prof) as (keyof typeof this.prof)[]) this.prof[k] = 0;
   }
@@ -444,7 +459,7 @@ export class CityObjectsView implements CityObjectsViewApi {
       trains: this.vehicles.trainCount,
       particles: this.effects.particleCount + this.fireworks.liveCount,
       pylons: this.power.pylonCount,
-      drawCalls: rd + 1 + 1 + 1 + 1 + 1 + 1 + 2 + this.fireworks.drawCalls + (this.props.garbage.visible ? 1 : 0),
+      drawCalls: rd + 1 + 1 + 1 + 1 + 1 + 1 + 2 + this.fireworks.drawCalls + (this.props.garbage.visible ? 1 : 0) + (this.pedestrians.mesh.visible ? 1 : 0),
       updateMs: Math.round(this.lastUpdateMs * 100) / 100,
     };
   }
@@ -463,6 +478,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.disasters.dispose();
     this.fireworks.dispose();
     this.vehicles.dispose();
+    this.pedestrians.dispose();
     this.previews.dispose();
     this.underground.dispose();
     this.emergency.dispose();
