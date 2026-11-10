@@ -231,3 +231,21 @@ Round 2 browser checklist for the lead:
 - [ ] Hold either route through six months, with a daily setback first; verify only that route resets and the eventual toast/placement still works.
 - [ ] Save/load during recovery and migrate a Round 1 save; verify the low, both counters and permanent earned Statue remain correct.
 
+
+## Acceptance amendment (NOTE-066, the lead, 10 Nov)
+
+FH-26 keeps the plan's literal rule: 2,500 residents, plus either 55 % approval or a ten-point recovery from the saved
+lowest, held for six months, with both routes shown in Rewards. The acceptance changes from "years 4-6" to **"years 4-7
+on the Medium 128x15 bot, on both s7 and s11"**.
+
+| Rule | s7 Statue | s11 Statue | Status |
+|---|---|---|---|
+| Shipped: 55 % or ten points up, six months | day 2,610, April 2007 | day 2,670, June 2007 | **meets years 4-7 on both seeds** |
+| (a) 53 %, six months | day 2,490, December 2006 | not measured | not shipped |
+| (b) 52 %, six months | day 960, September 2002 | not measured | not shipped |
+| (c) 55 %, four months | day 2,550, February 2007 | not measured | not shipped |
+
+Why the lead kept the literal rule: it gives the same answer on two seeds; option (a) gains four months on one seed
+only, inside the bot's fork noise (NOTE-053); 55 % and "ten points up from your lowest" are numbers a player can read;
+and the years 4-6 window was the plan's estimate, not a design requirement. The options stay recorded here so the
+owner can overrule the choice later. FH-26's designed bot change stands: 192,647 on 128x15 s7.
