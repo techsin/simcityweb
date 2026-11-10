@@ -12,10 +12,12 @@ import { button, formatMoney, formatPop, h, icon, timeAgo } from './dom';
 import { importRegion, listRegions, type RecoveryMarker } from '../../save';
 import { deleteStorageRegion, exportStorageRegion, regionTakenOver } from '../../ui/StorageDialog';
 import { EMBLEM_SVG } from './emblem';
+import { detectQuality } from '../../render/world/quality';
 
 // ------------------------------------------------------------------ settings
 export function openSettings(onChange?: (s: AppSettings) => void): Modal {
   const s = loadSettings();
+  const recommended = detectQuality();
   const vol = (label: string, kind: 'master' | 'music' | 'sfx' | 'ambience', ic: string) =>
     slider({ label, icon: ic, value: audio.getVolume(kind), onInput: (v) => audio.setVolume(kind, v) }).el;
   const commit = () => {
@@ -46,12 +48,12 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
       { class: 'field' },
       h('label', {}, 'Default quality'),
       segmented({
-        items: [
+        items: ([
           { value: 'low', title: 'Low', sub: 'Laptops' },
           { value: 'medium', title: 'Medium', sub: 'Balanced' },
-          { value: 'high', title: 'High', sub: 'Recommended' },
+          { value: 'high', title: 'High', sub: 'Detailed' },
           { value: 'ultra', title: 'Ultra', sub: 'Fast GPUs' },
-        ],
+        ] as const).map((it) => ({ ...it, sub: it.value === recommended ? 'Recommended' : it.sub })),
         value: s.quality,
         cols: 4,
         onChange: (v) => {

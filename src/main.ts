@@ -570,7 +570,6 @@ class App {
   }
 
   async playCity(tile: RegionTile, existing?: LoadingScreen): Promise<void> {
-    const t0 = performance.now();
     if (this.busy || !this.region) {
       existing?.remove();
       return;
@@ -581,6 +580,7 @@ class App {
       this.busy = false;
       return;
     }
+    const t0 = performance.now();
     const ld = existing ?? new LoadingScreen(this.root);
     try {
       ld.set(`Loading ${tile.city?.name ?? 'city'}…`, 0.25);
