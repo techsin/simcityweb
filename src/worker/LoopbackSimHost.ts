@@ -635,7 +635,7 @@ export class LoopbackSimHost extends PacketSimHost {
           this.opts.actions ? undefined : ACTION_MODULES['./HostActions.ts']?.()]);
         // T033: the core replays a journal bound to the loaded save before its Ready (§4.3)
         let journal: Awaited<ReturnType<typeof bootJournal>>;
-        if (this.opts.journal ?? typeof localStorage !== 'undefined') {
+        if ((this.opts.journal ?? typeof localStorage !== 'undefined') && this.opts.replayJournal !== false) {
           try { journal = await bootJournal(this.opts.persistence); }
           catch (e) { this.report('recovery', e, 'The recovery journal could not be read'); }
         }
