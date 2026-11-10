@@ -15,7 +15,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Network, Zone } from '../../src/core/types';
 import { BF, type Building, type CityState } from '../../src/sim/CityState';
-import { CATALOG, getDef } from '../../src/sim/catalog';
+import { CATALOG } from '../../src/sim/catalog';
 import { Simulation } from '../../src/sim/Simulation';
 import { createSystems } from '../../src/sim/systems/index';
 import type { GameContext } from '../../src/game/context';
