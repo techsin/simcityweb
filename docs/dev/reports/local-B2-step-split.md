@@ -7,6 +7,16 @@ report collects the results; every number below is from those sections unless it
 **`2d2940a`** (`2db4097` records its bot rows); the fix round after the gates role and the two verify reviews (§19, the
 section below) is the final code now: **`2c4f75b`** (`00ae9e5` records its bot rows).
 
+**Done line (lane b2m, cloud carry-over, Nov 10; status partial):** `cloud/b2m` = `b2-step-split` (final code `2c4f75b`)
+with dev merged in four times, last `51ec328` (`99d19e9`), every conflict resolved with both sides kept (B3's month spread
+and B2's pieces and estimates). On `99d19e9`: tsc clean; full vitest 2,501 passed, 0 failed; bot `residents [ 61828,
+95515, 40772 ]` = 198,115 in 2015 (by design; dev 192,899); exactness 4 of 4 checkpoints identical and determinism
+identical; save / load against dev 93 of 95 cuts equal (the other 2 differ only in T057's `lvRun` record and are equal
+20 days later); balance 256 × 60 seed 7 passes (`b2b3` rows recorded). Gate 4 under the lead's amendment (recorded below
+as a plan amendment): p99, the first cold runs and the warm cost model pass; on the one busy-box hold the from-load max
+was not confirmed (5.94 / 6.38 / 2.96 ms), so the quiet-machine re-measure is Desktop QA item 1. The S5 follow-up is in
+POLISH_BACKLOG. Details: "Cloud carry-over (Nov 3)" and its "Resume (Nov 9–10)".
+
 Machine: the cloud container (Linux, node 22, 4 cores shared with other workflows), headless, wall clock
 (`performance.now`). The timing lock (`scratchpad/timing.lock`) was taken for every timing run listed as "locked".
 
@@ -323,9 +333,13 @@ and estimates are unchanged since; dev's later code is outside `src/sim/infra`.
    an unbounded publish is a city-wide flip (a blackout turning every building's Powered bit), which runs in one piece,
    as pre-B2's step did; the measured bursts stay ≤ 467 events (about 0.5 ms). It is in the S5 line.
 3. **Dev merged twice on the resume, then left for the merge step.** After the gates on `99d19e9` (dev `51ec328`), dev
-   gained `41fcecc` (T048, T036 steps 5 and 4): no `src/sim` file, the bot unchanged at 192,899 in each of their merges.
-   A trial merge of `cloud/b2m` (`0f0ad56`) with dev `41fcecc` is clean and tsc-clean (`9064d1a`, not kept), so the
-   merge step can take it without another hour in the lock queue for this lane.
+   gained T048, T036 steps 5 and 4, R1, T051, T081, T054, T059 and T061 (to `a3634e0`). Their only `src/sim` change is
+   T054's year review (`CityState.ts`, `economy/history.ts`; nothing in `src/sim/infra`), and dev's bot stayed at
+   192,899 in every one of those merges. A trial merge of `cloud/b2m` with dev `a3634e0` is clean (`POLISH_BACKLOG.md`
+   auto-merged), tsc-clean, and passes `b2PiecesInfra`, `b2FlagEvents`, `j10` and `loadContinuity` (4 files, 31 tests;
+   the trial commit `8d588c0` is not kept). The merge step can take it without this lane spending another hour in the
+   lock queue; its own full vitest and bot then run on the merged tree (expected bot: 198,115, as T054 leaves dev's bot
+   unchanged).
 4. **The T057 × B2 save at traffic's last piece** (save / load row): T057's land value record `lvRun` keeps a `changed`
    list of plopped buildings whose flags changed since the last band, fed by `buildingChanged`. B2 runs traffic final2's
    publish piece (NoJobs / Congested flags with their events, integration item 1) one piece before the cycle's end, so a
