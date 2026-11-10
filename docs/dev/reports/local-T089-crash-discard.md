@@ -344,9 +344,9 @@ Logs: `…/scratchpad/lanes/T089/scratch/r2/` (`gate-*.log`, `mutate-N*.log`, `s
 3. **The row's order changed** (Continue on the main thread, Restart from autosave, Recover unsaved progress), so that
    the default is the last button, as in the other dialogs. With the old order a plain Restart would sit at the right
    end, where each other dialog here has its default.
-4. **The quota notice shows under T036s4's storage dialog.** The toasts are at z 60 and the storage dialog's backdrop
-   (`#0008`) at z 130, so while "Storage full" is open the toast is dimmed by the backdrop; it is at full strength for
-   the rest of its 9 s once the dialog is closed. The dialog itself names the failure, and its Retry asks about the copy
+4. **The quota notice shows under T036s4's storage dialog.** In the build the storage backdrop draws at z 40 (`.modal-back`
+   wins over `.storage-back`, a stacking issue outside this lane, reported to T036s4’s owner), so the toast (z 60) draws
+   above it and is readable while "Storage full" is open (real-GPU QA, 10 Nov). The dialog itself names the failure, and its Retry asks about the copy
    again. A sentence in the dialog would be clearer ("<city> was not recovered. Its recovery copy is kept."): that is a
    hunk in src/ui/StorageDialog.ts (`handleRecoveryStorageError` passing a line to `showStorageError`), which is not
    this lane's. Not made.
@@ -403,9 +403,10 @@ Updated in round 2 (NOTE-092): items 1, 2, 8, 9 and 10 changed, item 13 is rewri
 **D4, changed by (a)**
 3. Save, raise the tax, zone a block, crash, **Restart from autosave**, and pause at once. The city is the save without
    the edits. The recovery store holds no record of the city, and localStorage no `metropolis.recovery*` key.
-4. Reload at `/?simworker=1&simdev=1` without exiting the city. Continue enters the city with **no recovery offer**
-   (W1.3's D4 expected the journal here). If a day passed before the pause and 30 s went by, an offer can appear, but
-   it is a snapshot of the restarted session, without the edits of step 3.
+4. Reload at `/?simworker=1&simdev=1` without exiting the city. Continue may offer the restarted session’s own
+   snapshot (the restarted city resumes at speed 1 and is a day on before any pause, and the reload’s hidden snapshot
+   captures it; no 30 s wait is needed). Recovering it brings back none of the edits of step 3; no record of the
+   crashed session is left after Restart (real-GPU QA, 10 Nov).
 
 **D4b, new: Restart, then Recover**
 5. Save and pause. Raise the residential tax (edit A). Take a worker snapshot. Crash. The dialog offers Recover. Choose
