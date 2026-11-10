@@ -60,6 +60,8 @@ export interface RewardDef {
   conds: Cond[];
   /** custom announcement */
   announce?: string;
+  /** composite goals describe their alternative routes together */
+  progressText?: (st: CityState) => string;
 }
 
 const pop = (need: number): Cond => ({ label: 'Population', value: (s) => s.stats.population, need });
@@ -206,33 +208,76 @@ function updateHonours(st: CityState, monthly: boolean): void {
   data.cleanAirInterrupted = data.safeCityInterrupted = data.employmentInterrupted = false;
 }
 
-/** FH-26: six complete months at 55% approval, on every difficulty (D7). */
+const STATUE_APPROVAL = 55;
+const STATUE_MONTHS = 6;
+const STATUE_RECOVERY = 10;
+
+/** FH-26: independent approval and recovery holds, on every difficulty (D7). */
 export interface ApprovalRewardData {
   month: number;
   months: number;
   interrupted?: boolean;
+  /** Exact minimum observed from founding, including before 2,500 residents. Old saves start this record at load. */
+  lowestApproval?: number;
+  recoveryMonths?: number;
+  recoveryInterrupted?: boolean;
 }
 
 function approvalRewardData(st: CityState): ApprovalRewardData | undefined {
   return (st.systemData.economy as { approvalReward?: ApprovalRewardData } | undefined)?.approvalReward;
 }
 
-function updateApprovalReward(st: CityState, monthly: boolean): void {
+function updateApprovalReward(st: CityState, monthly: boolean, initial = false): void {
   const economy = st.systemData.economy as { approvalReward?: ApprovalRewardData };
+  const existing = economy.approvalReward;
   const data = (economy.approvalReward ??= { month: Math.ceil(st.day / DAYS_PER_MONTH), months: 0 });
-  const qualifies = st.stats.population >= 2500 && st.stats.approval >= 55;
+  // Rounded, capped history cannot reconstruct an exact founding low. Never grant retroactive recovery credit.
+  if (data.lowestApproval === undefined) {
+    data.lowestApproval = st.stats.approval;
+    data.recoveryMonths = 0;
+    data.recoveryInterrupted = st.day % DAYS_PER_MONTH !== 0;
+  }
+  data.recoveryMonths ??= 0;
+  if (initial && existing) return;
+  data.lowestApproval = Math.min(data.lowestApproval, st.stats.approval);
+  const qualifies = st.stats.population >= 2500 && st.stats.approval >= STATUE_APPROVAL;
+  const recovered = st.stats.population >= 2500 && st.stats.approval >= data.lowestApproval + STATUE_RECOVERY;
   if (!qualifies) {
     data.months = 0;
     data.interrupted = true;
   }
-  if (!monthly || data.month === st.monthIndex) return;
-  data.months = qualifies && !data.interrupted ? Math.min(6, (data.month === st.monthIndex - 1 ? data.months : 0) + 1) : 0;
+  if (!recovered) {
+    data.recoveryMonths = 0;
+    data.recoveryInterrupted = true;
+  }
+  if (!monthly) return;
+  if (data.month === st.monthIndex) {
+    // The first partial month earns nothing; its setbacks must not poison the next full month.
+    if (st.day % DAYS_PER_MONTH === 0) data.interrupted = data.recoveryInterrupted = false;
+    return;
+  }
+  const consecutive = data.month === st.monthIndex - 1;
+  data.months = qualifies && !data.interrupted ? Math.min(STATUE_MONTHS, (consecutive ? data.months : 0) + 1) : 0;
+  data.recoveryMonths = recovered && !data.recoveryInterrupted ? Math.min(STATUE_MONTHS, (consecutive ? data.recoveryMonths : 0) + 1) : 0;
   data.month = st.monthIndex;
   data.interrupted = false;
+  data.recoveryInterrupted = false;
 }
 
-const statueApprovalMonths: Cond = { label: 'Months at approval ≥55%', need: 6, fullState: true,
-  value: (s) => approvalRewardData(s)?.months ?? 0 };
+const statueApprovalMonths: Cond = { label: 'Approval goal (months)', need: STATUE_MONTHS, fullState: true,
+  value: (s) => {
+    const data = approvalRewardData(s), low = data?.lowestApproval ?? s.stats.approval;
+    const recovery = s.stats.approval >= low + STATUE_RECOVERY ? 1 : Math.max(0, s.stats.approval - low) / STATUE_RECOVERY;
+    return Math.max(Math.min(data?.months ?? 0, s.stats.approval / STATUE_APPROVAL * STATUE_MONTHS),
+      Math.min(data?.recoveryMonths ?? 0, recovery * STATUE_MONTHS));
+  } };
+
+function statueProgressText(st: CityState): string {
+  const data = approvalRewardData(st), low = data?.lowestApproval ?? st.stats.approval;
+  const gain = st.stats.approval - low;
+  return `Population ${Math.floor(st.stats.population).toLocaleString('en-US')} / 2,500 · Approval ${Math.floor(st.stats.approval)} / ${STATUE_APPROVAL} · Months at approval ≥${STATUE_APPROVAL}% ${data?.months ?? 0} / ${STATUE_MONTHS}`
+    + ` OR +${Math.max(0, gain).toFixed(1)} / ${STATUE_RECOVERY} points from lowest ${low.toFixed(1)}% · Recovery months ${data?.recoveryMonths ?? 0} / ${STATUE_MONTHS}`;
+}
 
 export const REWARDS: RewardDef[] = [
   // ---------------- infrastructure unlocks
@@ -254,8 +299,9 @@ export const REWARDS: RewardDef[] = [
   { id: 'mayor_house', name: "Mayor's House", kind: 'reward', defIds: ['civ_mayor_house'], conds: [pop(1200)], description: 'The town wants a proper home for its mayor.',
     announce: "The citizens have built you a Mayor's House! Place it from Rewards." },
   { id: 'cemetery', name: 'Cemetery', kind: 'reward', defIds: ['civ_cemetery'], conds: [pop(2000)], description: 'A quiet resting place.' },
-  { id: 'statue', name: 'Statue of the Mayor', kind: 'reward', defIds: ['civ_statue'], conds: [pop(2500), { label: 'Approval', value: (s) => s.stats.approval, need: 55 }, statueApprovalMonths],
-    description: 'Keep 2,500 residents and approval of at least 55% for six months.', announce: 'Six months of popular leadership — the grateful citizens award you a Statue of the Mayor!' },
+  { id: 'statue', name: 'Statue of the Mayor', kind: 'reward', defIds: ['civ_statue'], conds: [pop(2500), statueApprovalMonths],
+    description: 'Keep 2,500 residents and, for six months, either approval of at least 55% or a recovery of 10 points from its lowest recorded approval.',
+    progressText: statueProgressText, announce: 'Six months of popular leadership — the grateful citizens award you a Statue of the Mayor!' },
   { id: 'courthouse', name: 'Courthouse', kind: 'reward', defIds: ['civ_courthouse'], conds: [pop(8000), has('civ_police_station', 'Police station built')], description: 'Justice for all.' },
   { id: 'city_hall', name: 'City Hall', kind: 'reward', defIds: ['civ_city_hall'], conds: [pop(20000)], description: 'A seat of government worthy of the city.' },
   { id: 'country_club', name: 'Country Club', kind: 'reward', defIds: ['park_golf'], conds: [{ label: 'R$$$ residents', value: (s) => s.stats.residents[2], need: 4000 }],
@@ -381,7 +427,7 @@ export function listRewards(state: CityState): RewardInfo[] {
       id: r.id, name: r.name, description: r.description, kind: r.kind, defIds: r.defIds, unlocked,
       built: r.defIds.some((d) => (state.milestones[d] ?? 0) > 0),
       progress: unlocked ? 1 : progress,
-      progressText: unlocked ? (r.kind === 'honour' ? 'Earned · Commemorative plaque awarded' : 'Unlocked') : parts.join(' · '),
+      progressText: unlocked ? (r.kind === 'honour' ? 'Earned · Commemorative plaque awarded' : 'Unlocked') : r.progressText?.(state) ?? parts.join(' · '),
     };
   });
 }
@@ -424,7 +470,7 @@ export function rewardsSystem(rt: EconRuntime): SimSystem {
     init(sim) {
       rt.attach(sim);
       updateHonours(sim.state, false);
-      updateApprovalReward(sim.state, false);
+      updateApprovalReward(sim.state, false, true);
       check(sim, true);
     },
     daily(sim) {

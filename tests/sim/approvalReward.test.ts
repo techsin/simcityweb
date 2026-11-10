@@ -200,8 +200,8 @@ describe('FH-26 mirrored progress', () => {
     const row = normalizeReward(listRewards(st).find((r) => r.id === 'statue'));
     expect(row).toMatchObject({
       id: 'statue', unlocked: false, progress: 0.5, category: 'reward',
-      description: 'Keep 2,500 residents and approval of at least 55% for six months.',
-      requirement: 'Population 2,500 / 2,500 \u00b7 Approval 55 / 55 \u00b7 Months at approval \u226555% 3 / 6',
+      description: 'Keep 2,500 residents and, for six months, either approval of at least 55% or a recovery of 10 points from its lowest recorded approval.',
+      requirement: 'Population 2,500 / 2,500 \u00b7 Approval 55 / 55 \u00b7 Months at approval \u226555% 3 / 6 OR +0.0 / 10 points from lowest 55.0% \u00b7 Recovery months 0 / 6',
       defIds: ['civ_statue'],
     });
   });

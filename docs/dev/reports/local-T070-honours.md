@@ -1,6 +1,6 @@
 # T070: honours and the young-town approval reward
 
-Worktree `local/T070-honours`, based on `1c2019c`. Changes are uncommitted.
+Worktree `local/T070-honours`, based on `1c2019c`. Round 1 is committed as `b7d40a7`; the Round 2 changes below are uncommitted.
 
 ## LG-20 — Honours
 
@@ -54,7 +54,7 @@ Acceptance evidence and remaining browser checks:
 - [ ] Place the Eco Plaza / Firefighters' Memorial after earning their honours; inspect models close up and at distant LOD.
 - [ ] Save/load partway through a streak and after earning an honour; verify progress and permanent earned status in the Worker game.
 
-## FH-26 — A young-town approval reward
+## FH-26 — A young-town approval reward (round 1)
 
 The Statue now requires 2,500 residents and approval of at least 55% for six complete months, on **all difficulties**, as D7 specifies. Its row displays current approval, population and the six-month progress. This uses the plan's 55%-for-six-months option; it does not add the alternative lowest-approval recovery route.
 
@@ -76,7 +76,7 @@ Browser acceptance checklist:
 - [ ] Save/load during the streak and load an old save with an already earned Statue; verify continuation/permanence on each difficulty.
 - [ ] Confirm the measured Medium 128×15 seed-7 unlock date against the plan's years 4–6 target.
 
-## Final gates and handoff
+## Round 1 gates and handoff
 
 Final `npx tsc --noEmit` and `git diff --check` pass. **30 targeted files: 559 tests passed, one fixture-dependent test skipped**, run individually and sequentially through the quiet gate. All seven new test files pass (130 cases). No existing test file was edited. The facilities failures encountered during integration are fixed and its complete 15-case file now passes.
 
@@ -143,4 +143,91 @@ No cloud-held files changed. **Cloud-held-file requests: none.** The only infra 
 The final facility fixes affect sandbox auto-awards and manually placed plaques. The default bot buys only reward/landmark kinds, so it does not place honours' plaques or gardens, and these final fixes do not alter the recorded bot runs.
 
 The lead still owns the full suite, canonical `tsx` reruns, balance-fixture `polish` sign-off (including G-POP/G-TOUR), two-process continuity/hash review if desired, and all real-GPU/browser checks above. The FH-26 date miss needs a plan/balance decision; no unrelated balance file was changed to force it.
+
+## Round 2 — The approval recovery alternative
+
+The shipped Statue goal now requires **2,500 residents and either approval ≥55% for six complete months, or approval at least ten points above its lowest recorded value for six complete months**. The two holds are independent: progress cannot splice together partial months from different routes. Both require the population floor throughout the hold. Daily setbacks reset only their own route, and either completed route unlocks the permanent reward.
+
+“Lowest” is the minimum exact, unrounded `stats.approval` observed by the rewards system from its first founding init and then at daily/monthly checks, including observations before the town has 2,500 residents. It is monotone and saved as optional `systemData.economy.approvalReward.lowestApproval`; `recoveryMonths` and `recoveryInterrupted` are optional too. Reinitializing a tracked city preserves its record and counters.
+
+Old saves have no exact founding minimum: monthly approval history is rounded and capped, so reconstructing a minimum from it could invent a ten-point recovery. They seed the new record at their exact saved approval when first loaded, retain their existing 55% streak and earned Statue, and receive no retroactive recovery months. Subsequent saves preserve the new exact minimum. Thus “since founding” applies to newly founded cities; legacy cities begin the new record at migration. This unavailable historical detail is the only continuity limitation.
+
+The Rewards panel shows both held-month counts, current approval, the saved low and the current gain toward ten points. Its existing normalized requirement rendering consumes the composite goal text; `ListPanels.ts` needs no additional source hunk.
+
+Round 2 files:
+
+- `src/sim/economy/rewards.ts`: optional recovery fields and independent hold, OR eligibility/progress, composite goal text and description. No other balance changes.
+- `tests/sim/approvalRecovery.test.ts`, `tests/game/approvalRecoveryPanel.test.ts` (new): recovery boundaries, founding/population behavior, hold/reset/no-splicing rules, old saves, exact save continuation, RNG/read purity and both UI routes.
+- `tests/sim/approvalReward.test.ts`, `tests/game/approvalRewardPanel.test.ts`: minimal updates to this lane's Round 1 copy expectations for the now-complete goal; their original timing cases remain.
+- This report: definitions, measured dates, commands and remaining checks.
+
+No Round 2 infra hunks, asset changes, cloud-held edits or cloud requests. No commits, pushes, merges or done files.
+
+### Round 2 bot measurements
+
+The literal rule still misses the years 4–6 acceptance on seed 7: **day 2,610, April 2007**, unchanged from Round 1. Its recorded low is **47.20152933069691%**, so recovery requires **57.20152933069691%**. At the award, approval is **56.64348168974983%**, population is **59,577**, the 55% route has six months and the recovery route has zero. No other balance was tuned.
+
+| Literal rule, Medium 128×15 | Statue day / date | 2015 residents [R$, R$$, R$$$] | Total residents | 2015 approval |
+|---|---|---|---:|---:|
+| Seed 7 | **2,610 / April 2007** | [61,566, 92,988, 38,093] | **192,647** | **81.58809280194733%** |
+| Seed 11 | **2,670 / June 2007** | [61,130, 94,613, 37,863] | **193,606** | **81.34357771903817%** |
+
+Seed 11 has 63,444 residents and 57.047980728952766% approval at its award. Its saved low is 45.95578301881083%, and its recovery hold has reached four months when the absolute route completes six. The seed-7 population and approval are identical to Round 1, so this alternative introduces no further balance change on that gate.
+
+Three scratch-only candidate rules were measured on actual seed-7 bot runs, retaining the 2,500 population floor and the ten-point recovery alternative. These are **options for the lead, not shipped changes**:
+
+| Candidate | Statue day / date | Years 4–6 target |
+|---|---|---|
+| Absolute threshold **53%**, both holds six months | **2,490 / December 2006** | **Meets** |
+| Absolute threshold **52%**, both holds six months | **960 / September 2002** | Too early |
+| Absolute threshold **55%**, both holds four months | **2,550 / February 2007** | Too late |
+
+All three unlock through the absolute route; recovery has zero completed months then. The sharp jump between 52% and 53% reflects the bot's early approval plateau and later setbacks. The shipped constants remain **55%, ten points, six months**. Candidate runs stop immediately after the actual award day; their dates are measured, not inferred from the literal run's history.
+
+All five final measurements ran sequentially through `quietrun`. `tsx` remains unavailable as recorded in Round 1, so the measured runners bundle the same `SimBot`, `parseArgs`, `botSystems` and simulation code with Rolldown; only event/result logging and candidate-stop instrumentation are added. No repository bot source or config changed. Exact commands, from this worktree:
+
+```powershell
+$quiet = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs'
+$scratch = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T070/scratch'
+node $quiet node "$scratch/round2-build.mjs"
+node $quiet node "$scratch/round2-literal.mjs" --size 128 --years 15 --seed 7 > "$scratch/round2-literal-s7.log"
+node $quiet node "$scratch/round2-literal.mjs" --size 128 --years 15 --seed 11 > "$scratch/round2-literal-s11.log"
+node $quiet node "$scratch/round2-absolute53x6.mjs" --size 128 --years 15 --seed 7 --stop-at-statue > "$scratch/round2-absolute53x6-s7.log"
+node $quiet node "$scratch/round2-absolute52x6.mjs" --size 128 --years 15 --seed 7 --stop-at-statue > "$scratch/round2-absolute52x6-s7.log"
+node $quiet node "$scratch/round2-absolute55x4.mjs" --size 128 --years 15 --seed 7 --stop-at-statue > "$scratch/round2-absolute55x4-s7.log"
+```
+
+Each log has a corresponding JSON result in that scratch folder. The candidate labels name the absolute route; their bundles retain recovery. The lead's canonical confirmation commands are:
+
+```powershell
+node $quiet npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
+node $quiet npx tsx tools/simbot.ts --size 128 --years 15 --seed 11
+```
+
+### Round 2 validation and handoff
+
+`npx tsc --noEmit`, `git diff --check` and the changed-file UTF-8/no-BOM check pass. **19 targeted files: 398 tests passed, one known missing-fixture test skipped**, each file run separately and sequentially through the quiet gate with the scratch native config. Passing files and case counts:
+
+- `tests/sim/`: `approvalRecovery` (13), `approvalReward` (20), `honours` (84), `ranks` (48), `economy` (12), `milestoneNews` (10), `advisorsTexts` (6), `botVenues` (10).
+- `tests/game/`: `approvalRecoveryPanel` (4), `approvalRewardPanel` (4), `honoursPanel` (5), `guideCopy` (137), `cityTeardown` (4), `inspectorRetention` (1), `rewardToast` (7), `thumbsPendingRetention` (2), `uiRuins` (11).
+- `tests/worker/`: `hygiene` (18), `replicaSafe` (2 passed; missing grown-city fixture skipped).
+
+Each name has the `.test.ts` suffix. Reproduce a single-file run with:
+
+```powershell
+node $quiet npx vitest run tests/sim/approvalRecovery.test.ts --maxWorkers=1 --silent --configLoader native --config "$scratch/vitest.config.mjs"
+```
+
+The new tests cover exact ten-point equality below 55%, just-short values, the 2,500 floor, lows observed before that floor, independent full-month holds, interruptions/new lows, no route splicing, partial-month migration, exact save/load continuation, retained legacy 55% progress/earned rewards, no RNG draw and pure mirrored UI progress. The first-partial-month guard now clears that skipped month's interruption flags at its boundary, so they cannot also disqualify the next full month.
+
+The literal seed-7 timing acceptance remains open; **53% / six months** is the measured candidate that reaches years 4–6. The legacy minimum fallback and the timing miss are the plan-versus-code limitations described above. No new worker/save protocol, UI mutation path or shared-file request is needed. Round 2 has **no infra hunk, no source hunk outside `rewards.ts`, and no cloud-held-file request**.
+
+Not verified here: canonical `tsx` reruns, the full suite, the missing grown-city fixture, real-GPU/browser behavior, or a new two-process hash gate. The seed-7 and seed-11 literal 128×15 measurements are complete; no 256×60 rerun was needed for this round. Full-suite/canonical-bot/browser sign-off remains with the lead. Changes remain uncommitted.
+
+Round 2 browser checklist for the lead:
+
+- [ ] Before 2,500 residents, verify the low is recorded while both hold counters remain at zero.
+- [ ] In Rewards, verify the OR goal shows the absolute approval route, saved low (rounded to one decimal for display), recovery gain and separate six-month progress.
+- [ ] Hold either route through six months, with a daily setback first; verify only that route resets and the eventual toast/placement still works.
+- [ ] Save/load during recovery and migrate a Round 1 save; verify the low, both counters and permanent earned Statue remain correct.
 

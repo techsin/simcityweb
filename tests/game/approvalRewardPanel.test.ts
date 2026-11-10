@@ -58,7 +58,7 @@ describe('FH-26 approval reward row', () => {
     const { row } = make();
     const text = textOf(row());
     expect(text).toContain('Statue of the Mayor');
-    expect(text).toContain('Keep 2,500 residents and approval of at least 55% for six months.');
+    expect(text).toContain('Keep 2,500 residents and, for six months, either approval of at least 55% or a recovery of 10 points from its lowest recorded approval.');
     expect(text).toContain('Population 2,500 / 2,500');
     expect(text).toContain('Approval 55 / 55');
     expect(text).toContain('Months at approval \u226555% 0 / 6');
