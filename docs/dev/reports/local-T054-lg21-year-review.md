@@ -423,7 +423,7 @@ that state.
 | Gate | Result |
 |---|---|
 | tsc (sem) | clean, exit 0 |
-| The lane's 8 test files plus hygiene, milestoneCard (game and worker) and replicaSafe (sem, `--maxWorkers=2`) | **11 files passed; 127 tests passed, 1 skipped** |
+| The lane's 8 test files (replicaSafe among them) plus hygiene and milestoneCard (game and worker) (sem, `--maxWorkers=2`) | **11 files passed; 127 tests passed, 1 skipped** |
 | The full vitest (lock), with `SIM_FIXTURES`/`SIM_SNAP` set to the main checkout's fixtures, at `f946fa2` (src and tests as `3ef6034`) | **244 files passed, 2 skipped; 2,463 tests passed, 7 skipped** (437 s). A first run without the fixture variables skipped the fixture cases (2,439 passed, 27 skipped, 185 s), so it was rerun with them |
 | The bot, 128×15 s7 (lock), at `3ef6034` | **identical:** `residents [ 61124, 93804, 37971 ]` = 192,899, 193k in 2015; 24 s under the lock |
 | Before the dev merge, at `0a06c74` (Nov 4, lock) | full vitest 227 files passed, 2 skipped; 2,274 tests passed, 8 skipped. Bot `residents [ 61124, 93804, 37971 ]`, identical |
