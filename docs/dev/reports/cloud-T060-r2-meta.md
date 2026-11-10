@@ -236,3 +236,241 @@ the next item, whose ResizeObserver report read the new widths (2 reads, after l
   rerun them) and `tests/game/tickerProbe.test.ts` + `tests/game/tickerLayout.ts` (test helpers). No other lane's
   file is touched; `Notifications.ts`'s hunks stay inside the ticker's old lines 26-124 (T058's question container in
   `Toasts` merges around them).
+
+## Cloud carry-over (Nov 3): FH-12
+
+Branch `cloud/t060fh12`, a new lane from dev `51ec328` (FEEL-01 merged as `156e0bc`). No desktop branch, WIP or report
+existed for FH-12: this sub-lane starts from dev itself.
+
+### Gap list (what was required, against what was done when this step started)
+
+Sources: the task file (owns, do, gates); POLISH_PLAN FH-12 in full (Problem, Change, Files, Acceptance, Depends on,
+Risk) and §4.3 Phase A (A1, A2, A3); the items it builds on, FH-11 (the dialog, `recommendedTile`), FH-04
+(`difficultyRules`, Easy's `defaultDisasters: false`) and FEEL-05 (the day-90 founding in `startNewCity`); the guide's
+copy (`src/ui/guide/copy.ts` `phaseA`, T037d); NOTE-044, and the NOTEs naming T060 (NOTE-057, -059, -060, -061, -064);
+the handoff README (docs/dev/handoff/2026-11-04); the in-flight branches that edit the same files (T036s4 and W1.3 in
+`src/main.ts`, T042's one funds line, T037a's `WIND_START`).
+
+| # | required (POLISH_PLAN FH-12, §4.3) | state on dev `51ec328` | left for this step |
+|---|---|---|---|
+| 1 | With no region saved, the primary button is "Start your first city", sub-line "Guided · your first road in about 2 minutes" | the menu leads with a disabled "Continue — No saved region yet" and "New Region" is primary (`TitleScreen.ts:61-62`); the strings exist as `guideCopy.phaseA.A1`, `A1Subtitle`, `A1Region`, used nowhere | **all of it** |
+| 2 | "New Region" moves to second place | — | **all of it** |
+| 3 | One click creates a Greenvale Valley region with a unique id | only `?quickstart=1`, which deletes and recreates the fixed id `quickstart` (`main.ts:1013-1014`) | **all of it** (a persistent region, never the fixed id) |
+| 4 | …founds FH-11's recommended tile on Easy, with Guided start and Disasters off, on day 90 (FEEL-05) | the parts exist: `RegionModel.recommendedTile()` (FH-11), `defaultCityConfig({ difficulty: 'easy' })` gives §250k and Disasters off (FH-04), `rememberNewCity` records Guided start (FH-11), `startNewCity` founds on day 90 (FEEL-05) | **wire them into one path** |
+| 5 | …and opens the paused city | `CityScene` starts a city with no camera and no building paused (`CityScene.ts:200-202`); the guide card opens while its pref is not dismissed and the town is young (`Onboarding.ts:161-164`) | **verify on the new path** |
+| 6 | The first-city loading screen rotates the three tips of §4.3 A2 | one tip list of 8 general tips from a random start (`LoadingScreen.ts:5-14`), among them the region tip the plan quotes; the three tips exist as `guideCopy.phaseA.A2Wind/A2Zones/A2Play`, used nowhere | **all of it** |
+| 7 | Acceptance: on a fresh profile, one click reaches a founded, paused city with the guide card, after one loading screen | `quickstart` shows two (its own, removed, then `startNewCity`'s) | **one loading screen handed to `startNewCity`; unit tests; the browser check** |
+| 8 | Acceptance: exiting shows the city on its tile, and Continue returns to it | `exitCity` shows the region with the city's tile selected; it stores the session without the tile, so the title's Continue then opens the region with nothing selected | **Continue selects the last-played city on its region; browser check** |
+| 9 | Acceptance: an existing region is never overwritten (a unit test on region ids) | — | **a unique-id rule and its test** |
+| 10 | Task gates: tsc, the full vitest, the bot identical to dev (192,899), browser checks at 1280×720 (the one click to a playable first city on a persistent region; a second start offers to continue it; the loading screen) | — | **run them; the browser checks go to the Desktop QA list (NOTE-061, below)** |
+| 11 | Keep `main.ts` hunks small (T036s4, W1.3 and T042 edit it too) | — | **the logic in a new module, `main.ts` only wires it** |
+| 12 | The report section and a `.done` line | — | **write them** |
+
+### What this step did
+
+**The title screen (`src/region/ui/TitleScreen.ts`).** A new option, `onFirstCity`, which main.ts passes only when no
+region is saved. The menu then reads:
+
+| # | item | sub-line | state |
+|---|---|---|---|
+| 1 | **Start your first city** (`guideCopy.phaseA.A1`) | "Guided · your first road in about 2 minutes" (`A1Subtitle(FIRST_ROAD_MINUTES)`) | primary; the click plays the founding fanfare (`found`), as the New City dialog's Found City does |
+| 2 | Create a new region (`A1Region`) | — | opens the New Region dialog, as "New Region" did |
+| 3-5 | Load Region · Settings · Credits | — | unchanged |
+
+The dead-end disabled "Continue — No saved region yet" is not shown. With a region saved, the menu is as it was
+(Continue primary with its confirm chime, then New Region); with regions saved but no last session, too (the
+disabled Continue and a primary New Region).
+
+**One click (`src/region/firstCity.ts`, new; main.ts `startFirstCity`).**
+1. One loading screen comes up at once, with the first-city tips (below), and the click is guarded (`busy`), so Enter
+   on the focused button under it makes no second region. Inside the click, before anything is awaited, it asks for
+   persistent storage (NEW-04's `requestPersistentStorage`, as the New City dialog's Found City does since T036s4).
+2. `createFirstCity` makes a Greenvale Valley region (preset `greenvale`, a random seed, as New Region makes one) with
+   an id from `uniqueRegionId`: a fresh `newRegionId()` checked against the ids of every saved region (a clash takes
+   another, then a suffix), so a stored region is never overwritten and the fixed `quickstart` id is never used. It
+   draws the overview image, saves the region before anything is founded on it, makes it the last region, and records
+   Easy and Guided start as the profile's choices (FH-11's `rememberNewCity`: the guide pref is not dismissed, the
+   veteran box is off, and later New City dialogs preselect Easy).
+3. The city config is FH-11's recommended tile (`RegionModel.recommendedTile()`, the medium tile the region screen
+   outlines as "A good first city for you"), region terrain, Easy (§250k), Disasters off (set explicitly), a random city and
+   mayor name.
+4. `startNewCity` takes the region's NEW-04 lock and founds the city on day 90 (FEEL-05) on **the same loading
+   screen**: it takes an `existing` screen now (`const ld = existing ?? new LoadingScreen(this.root)`), as `playCity`
+   already does, and removes it if the lock is refused; with `?simworker=1` the worker's boot phases show on it too.
+5. The city opens paused (CityScene pauses a city with no stored camera and no building) with the guide card (the
+   guide opens while its pref is not dismissed and the town is young).
+
+**The loading screen (`src/region/ui/LoadingScreen.ts`).** A third constructor argument, a tip list, shown in its
+order from the first. The first city passes `firstCityTips()`, the guide's three §4.3 A2 tips, every 5 s:
+"Start small: 3 wind turbines power about 2,500 of your first residents." → "Your zones only grow next to roads." →
+"The game waits for you until you press Play." Every other loading screen keeps the 8 general tips from a random one.
+The wind numbers are the founding guide's (`FIRST_CITY_WIND`: 3 turbines, 1 MW per 300 residents, rounded down to
+500), the same as T037a's `WIND_START`, so the tip and the guide's step 3 say the same "about 2,500".
+
+**Continue returns to the city (main.ts `showTitle`, one line).** A city left by closing the tab is entered directly,
+as before. A city left through Exit to Region stores the region only, so Continue opened the region with nothing
+selected; it now selects the region's last-played city (`lastCityTileKey`), whose card has Play.
+
+**main.ts hunks (kept small: T036s4, W1.3 and T042 edit the file too):** one import line, and
+`requestPersistentStorage` added to T036s4's `./save/db` import; three lines in `showTitle` (the `firstRun` check,
+`onFirstCity`, Continue's selection); the new `startFirstCity` method (21 lines with its comment) between `showTitle`
+and `newRegionFlow`; `startNewCity`'s signature, its lock line and its `ld` line. `?quickstart=1` is unchanged (the
+`tools/qa-*.mjs` scripts use it; T042 edits its funds line).
+
+**A node probe of the whole founding** (`scratchpad/fh12/probe.mts`, not a test: `createFirstCity`, then
+`startNewCity`'s founding steps, on a memory store), log `scratchpad/fh12/probe.log`:
+
+    fresh profile: hasSavedRegion = false
+    region rmw9zgkw8ci16 Greenvale Valley preset greenvale seed 761427316 (505 ms)
+    tile 4_4 size 2 water 0.00 flat 0.98 recommended true
+    cfg {"name":"Fairville","difficulty":"easy","startFunds":250000,"disasters":false,"sandbox":false,"terrain":"region","size":128}
+    founded: day 90 month 3 year 2000 foundedDay 90 funds 250000 buildings 0 pop 0 camera null
+    guide pref {"dismissed":false,"dismissedAll":false,"veteran":false} newCity pref {"difficulty":"easy"}
+    scene: newCity (paused) = true ; guide young = true
+    after founding: hasSavedRegion = true ; recommendedTile = null ; lastSession {"regionId":"rmw9zgkw8ci16","at":0} ; lastCityTileKey 4_4
+
+The region takes 337-505 ms to generate in node (7 seeds); its recommended tile was flat on all of them (95-100 % flat
+buildable land, no water).
+
+### Tests (`tests/game/firstCity.test.ts`, 12, all pass)
+
+| test | checks |
+|---|---|
+| title, no region saved | the five items in order; item 1's sub-line, primary, enabled; one primary; nothing disabled; the click calls `onFirstCity` once and plays `found`; item 2 opens New Region |
+| title, a saved region | Continue first and primary with its sub-line and confirm chime, then a plain New Region |
+| title, regions but no session | the disabled "No saved region yet" Continue and a primary New Region, as before |
+| first-city loading screen | `firstCityTips()` is the three texts; five 5 s steps show wind, zones, play, wind, zones |
+| other loading screens | a general tip under the "Tip" label, none of the three |
+| region ids | `uniqueRegionId` never returns a taken id, even from a generator that keeps clashing; 50 real ids match `^r[0-9a-z]+$` and avoid `quickstart` |
+| never overwritten | with time and randomness frozen so the generator repeats a saved region's id, `createFirstCity` takes another id and the saved region (with its city) is byte-identical after |
+| the plan | Greenvale Valley, the given seed, no city yet; the tile is `recommendedTile()` and medium; the config is Easy, §250k, Disasters off, not sandbox, region terrain, this region and tile, 128 cells |
+| stored first | the region is saved (no city yet) and the last region, the overview callback ran once, and a profile that had dismissed the guide, ticked the veteran box and founded on Hard now gets Easy, Guided start, no veteran |
+| Continue | `lastCityTileKey` picks the most recently played city, undefined for none |
+| main.ts: the title | `firstRun = !last && !(await hasSavedRegion()…)`, `onFirstCity` only then, Continue's `lastCityTileKey` (a source read, as `playLoadTime.test.ts` and `graphicsFirstRun.test.ts` read main.ts: App is not exported and main.ts boots on import) |
+| main.ts: one loading screen | `startFirstCity` makes exactly one LoadingScreen, with `firstCityTips()`, after the busy guard, asks for persistent storage before its first `await`, and hands the screen to `startNewCity`, which takes the region's lock (removing the screen if refused), keeps it and founds on day 90 |
+
+**Each new test fails with its fix reverted: 23 of 23 reverts on the final code** (after the dev merge;
+`scratchpad/fh12/revert.py`, log `scratchpad/fh12/revert2.log`; 21 of 21 before it, `revert.log`): the old menu, no fanfare, Continue's chime lost, tips ignored, tips from a random one,
+no id check, an unchecked fresh id, Medium, the quickstart pick, a fixed id, Guided start not recorded, the region not
+stored, not the last region, Continue's first city instead of the last played, `hasSavedRegion` always false, no
+`onFirstCity`, Continue without the selection, a second loading screen in `startNewCity`, no tips on the first city's
+screen, no busy guard, the screen not handed over, no persistent-storage request, a refused lock leaving the screen up. The
+neighbouring files pass unchanged: `newCityStart.test.ts`
+(FH-11), `guideCopy.test.ts`, `playLoadTime.test.ts`, `graphicsFirstRun.test.ts`, `settingsSchema.test.ts`,
+`foundingDay.test.ts` (FEEL-05) and `labelFrame.test.ts`: 8 files, 207 tests before the dev merge; after it, with
+T036s4's `regionStorage.test.ts`, `foundingPersistence.test.ts`, `storageDb.test.ts` and `regionSaveAccess.test.ts`:
+12 files, 237 tests.
+
+### Desktop QA list (the task's FH-12 browser checks, at 1280×720; NOTE-061)
+
+Browser checks do not run on the cloud since 9 Nov: NOTE-061 moved every browser and real-GPU check to the desktop,
+and the shared lock (`lock.sh`) refuses them with that note's message, which says not to retry and not to run them
+another way. So this lane gates on tsc, the full vitest, the bot and its tests, and the browser gate is **deferred to
+Desktop QA (NOTE-061)**. Run this list on `cloud/t060fh12` at the commit that adds this section (or on dev at the
+merge commit), with `npm run dev` or a production build. Q1-Q7 on the default host; Q8 on `?simworker=1`. Take one
+screenshot per line.
+
+| # | steps | expected |
+|---|---|---|
+| Q1 | A **fresh profile** (a new browser profile, or clear the site's IndexedDB `metropolis` and its localStorage), window 1280×720, open `/` | The title menu reads **Start your first city** (large, primary, the orange building icon) with the sub-line "Guided · your first road in about 2 minutes", then **Create a new region**, Load Region, Settings, Credits. No disabled "Continue — No saved region yet". Nothing clipped (a long sub-line ends in an ellipsis). |
+| Q2 | Click **Start your first city** once | The founding fanfare plays (and, in Firefox, the persistent-storage prompt of NEW-04 may show), and **one** loading screen comes up at once and stays until the city shows: no flash back to the title, no second loading screen. Its tip line starts with "Start small: 3 wind turbines power about 2,500 of your first residents.", then "Your zones only grow next to roads.", then "The game waits for you until you press Play." (every 5 s, if the load is long enough); never "Each region tile is its own city…". |
+| Q3 | Wait for the city | A founded city, **paused**, dated **Apr 1, 2000** with spring foliage, §250,000 (Easy), Disasters off, on a medium (128×128) tile, with the **guide card** open (the founding steps). Pressing Play runs it. |
+| Q4 | Exit to the region (the city menu's Exit to Region) | The **Greenvale Valley** region screen with the new city **on its tile**, selected (its card with Play and its thumbnail); the "A good first city for you" outline is gone. |
+| Q5 | The region's Menu button, back to the title | **Continue** is primary: "Greenvale Valley · N residents · just now"; no first-city button. Click Continue: the region opens with the city's tile **selected** (its card with Play). Play enters the city. |
+| Q6 | In the city, reload the page (F5) | **A second start offers to continue it:** the title's Continue reads "<the city's name> · Greenvale Valley · N residents · …"; one click enters the same city (its date at least that of the last save). With changes made since the last save, the existing "Recover unsaved progress?" offer comes first. |
+| Q7 | Then open `/?quickstart=1` in the same profile, and go back to `/` → Load Region | The list holds **both** "Greenvale Valley" (the first city's region, its city intact) and "Quickstart Valley": the first city's region was not overwritten. |
+| Q8 | Q1-Q3 again in a second fresh profile, with `/?simworker=1` | The same, on the worker host: one loading screen, which also shows the worker's boot phases ("Starting the simulation…"), the tips rotating; the paused city with the guide card. |
+
+### Dev merged into the lane (NOTE-057), and the other in-flight branches
+
+`git merge-tree` of this lane against each open branch that touches its files: **T036s4** (`cloud/t036s4` and
+`local/T036s4-storage`) conflicted in one place, `startNewCity`'s head; W1.3 (`cloud/w13`), T042
+(`local/T042-lg09-difficulty`), T061, T037b, T037a (`local/R1-guide-a`) and B2 (`cloud/b2m`) merge cleanly. **T036s4
+then landed in dev during this step (308ade3)**, so, by NOTE-057, dev (`34e3f81`: T048, T036s5, T036s4 and R1) is
+merged into the lane as `39806f1`. The resolution keeps both: NEW-04's lock first, this lane's handed-over screen, the
+screen removed when the lock is refused (so a refused first city does not leave its loading screen up), then NEW-04's
+`storing` flag:
+
+    /** `t0`: …; `existing`: a loading screen already up (FH-12's first city keeps its one screen; removed if the region's lock is refused) */
+    private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData, t0 = performance.now(), existing?: LoadingScreen): Promise<void> {
+      if (!(await this.storage.hold(model.data))) return void existing?.remove();
+      this.busy = true;
+      const ld = existing ?? new LoadingScreen(this.root);
+      let storing = false; // NEW-04: only a failed write gets the storage dialog
+
+With NEW-04 in, `startFirstCity` also calls `requestPersistentStorage()` inside the click (NEW-04: "after the first
+city is founded (inside the player's Found click), call `navigator.storage.persist()`"; its helper says to call it
+before awaiting anything). `createFirstCity` saves the new region with a plain `saveRegion`, as NEW-04's own
+`newRegionFlow` does (no other tab can hold a region that did not exist yet), and `startNewCity` then takes its lock.
+`tests/game/firstCity.test.ts` checks the lock line, the screen's removal and the request. After the merge, the lane's
+diff against dev is its own six files only. It still merges cleanly with W1.3, T061, T037b, T037a and B2; with T042,
+`src/main.ts` merges automatically (T042's one conflict, `src/ui/EmergencyBanner.ts`, is with dev's T048, not with this
+lane).
+When T037a lands, `FIRST_CITY_WIND` can import its `WIND_START` (the same values).
+
+### Gates
+
+| gate | result |
+|---|---|
+| tsc (sem) | clean on the first code (19 s), on `fe394fb` (39 s) and on the dev merge `39806f1` (5 s) |
+| full vitest (lock), on `fe394fb` | **244 files passed, 3 skipped; 2,422 tests passed, 30 skipped, 0 failed** (209 s; log `scratchpad/fh12/vitest-full.log`) |
+| full vitest (lock), on the dev merge `39806f1` | **269 files passed, 3 skipped; 2,688 tests passed, 30 skipped, 0 failed** (343 s; log `scratchpad/fh12/vitest-full2.log`) |
+| the bot (lock), `--size 128 --years 15 --seed 7`, on `fe394fb` | **residents [ 61124, 93804, 37971 ] = 192,899**, identical to dev's reference (NOTE-044's handoff; every merge line of the carry-over log since). Not required by the carry-over rule (no `src/sim`, `src/worker`, `src/game` or `src/save` change, and its import closure holds no changed file); run for the task's gate (D13). Log `scratchpad/fh12/bot-lane.log` |
+| each new test fails with its fix reverted | 21 of 21 before the dev merge, **23 of 23 after it** |
+| neighbouring tests | 8 files, 207 tests before the merge; 12 files, 237 tests after it (with NEW-04's storage tests) |
+| FH-12's acceptance | (1) one click to a founded, paused city with the guide card after one loading screen: unit tests, main.ts source checks and the node probe here; the browser look in Desktop QA Q1-Q3, Q8. (2) Exiting shows the city on its tile, Continue returns to it: `lastCityTileKey` test and the source check; Desktop QA Q4-Q6. (3) An existing region is never overwritten: the region-id tests (a frozen generator repeating a saved id); Desktop QA Q7 |
+| the task's browser checks at 1280×720 | **deferred to Desktop QA (NOTE-061)**: Q1-Q8 above |
+| merge with dev | dev `34e3f81` merged into the lane (`39806f1`), one conflict resolved (above); the newest dev, `d83f0d0` (T051, T081), touches none of the lane's files and merges cleanly |
+
+### Decisions (the conservative reading, with the evidence; the lead's to confirm)
+
+- **D1 · The browser checks are deferred to Desktop QA (NOTE-061).** The task file plans browser checks at 1280×720,
+  and this step's brief says to run them here; NOTE-061 (9 Nov, the lead, later than both) moved every browser check
+  to the desktop, and `lock.sh` refuses them on the cloud with "do NOT retry, and do NOT run the browser check without
+  the lock or with another runner". The later decision wins: the Desktop QA list above holds the task's three checks
+  (one click to a playable first city on a persistent region, a second start offering to continue it, the loading
+  screen) as Q1-Q8. The unit tests, the main.ts source checks and the node probe cover the logic meanwhile.
+- **D2 · The second item reads "Create a new region" in the first-run menu.** The plan's A1 says "New Region" comes
+  second; the guide's copy file (T037d, merged after the plan) words exactly this button `A1Region` = "Create a new
+  region" ("§4.3 A1 · FH-12: secondary title-screen button"). Every FH-12 string comes from that file, so the guide
+  lane can change them in one place. The menu with a saved region keeps "New Region".
+- **D3 · The tips and the title texts are the guide's wording,** in the second person (§4.1's tone): "Start small: 3
+  wind turbines power about 2,500 of your first residents." and "Your zones only grow next to roads." where §4.3 A2
+  has "…power your first 2,500 or so residents." and "Zones only grow next to roads." The 2,500 is computed from the
+  catalog and `params.ts` (3 turbines × 3 MW × 300, rounded down to 500), as the guide's step 3 computes it.
+- **D4 · The first city's region has a random seed,** as New Region makes one; the plan names only the preset. Its
+  recommended tile was 95-100 % flat with no water on all 7 seeds tried. A fixed, QA'd seed (every newcomer gets the
+  same map) is the alternative; the lead's call.
+- **D5 · "No region saved" means the regions store is empty** (IndexedDB, or the page's memory store when it is
+  unavailable), read with one `keys('regions')` call. A profile with regions but no last session keeps today's menu;
+  a failed read counts as "saved" (today's menu). On a fresh profile the title now waits for the IndexedDB open that
+  `boot()` already started (`isPersistent()`); with a saved session it already waited for `loadRegion`.
+- **D6 · "Continue returns to it" covers both ways out of a city.** Closing the tab in the city: Continue enters it,
+  as before. Exit to Region: Continue opens the region with its last-played city selected (one line in `showTitle`;
+  it applies to every region, not only the first city's, since Continue on a region with nothing selected was the
+  only gap).
+- **D7 · The first-run menu drops the disabled Continue.** The plan's Problem calls it a dead end, and A1 lists only
+  the first city and New Region before the rest.
+- **D8 · Guided start is recorded the way the New City dialog records it** (`rememberNewCity` with Easy, guided, not
+  veteran): a profile that had dismissed the guide or ticked the veteran box gets the guide again for this city, and
+  later dialogs preselect Easy. Disasters off is set explicitly, not only through Easy's `defaultDisasters`.
+- **D9 · The click plays the founding fanfare** (`found`), as the dialog's Found City does; the plan names no sound.
+- **D10 · A new file outside the owns list, `src/region/firstCity.ts`,** so that main.ts carries only small hunks
+  (the task asks for that, since T036s4, W1.3 and T042 edit main.ts). It holds the logic and its helpers; main.ts
+  wires it. `FIRST_CITY_WIND` repeats T037a's `WIND_START` values until T037a is in dev (above). The test file
+  `tests/game/firstCity.test.ts` is new too.
+- **D11 · A failed first city leaves the title as it was.** If the region cannot be made or saved, a toast says so and
+  the title stays; if the founding fails after the region was saved, `startNewCity`'s own toast shows and the region
+  stays saved without a city (Continue offers it on the next start). The click can be retried.
+- **D12 · `?quickstart=1` is unchanged.** The plan's Problem names it, but its Change adds a separate visible path; the
+  `tools/qa-*.mjs` scripts rely on the testing path, and T042 edits its funds line.
+- **D13 · The bot ran anyway.** No file under `src/sim`, `src/worker`, `src/game` or `src/save` changed, and the bot's
+  static import closure (90 files from `tools/simbot.ts`; 95 after the dev merge) holds none of the changed files
+  (`scratchpad/fh12/closure.py`), so its output cannot change; the task's gates list it, so it ran once, before the dev
+  merge (Gates). After the merge the lane's diff against dev is still only its six files, and dev's own bot at
+  `dbcbae5` (R1's merge, the carry-over log) prints the same 192,899, so it was not rerun behind the lock.
+- **D14 · The first city asks for persistent storage, and dev was merged in mid-step.** T036s4 (NEW-04) landed in dev
+  while this step's gates queued; NOTE-057 says to merge dev into a lane that conflicts with a landed one the same
+  day, so the lane carries the resolution itself (`39806f1`) instead of leaving it to the merge step. NEW-04 asks for
+  `navigator.storage.persist()` inside the first Found click; "Start your first city" is that click for a newcomer,
+  so it calls NEW-04's `requestPersistentStorage()` too (once per profile; the helper remembers the answer).
