@@ -1,5 +1,7 @@
 // Frozen advisors.ts month scans (scanZones, scanOutages, scanRubble, lotFit, lotFitAny, lotFitAt) from a59f08f, the
-// base of B3 A0; only import paths and names differ (zoneScanOriginal is advisorsSystem's zoneScan closure).
+// base of B3 A0; only import paths and names differ (zoneScanOriginal is advisorsSystem's zoneScan closure). Plus T037b's
+// two counters in scanZones (FH-03 zonedFam, LG-05 free), applied at the merge exactly as that lane wrote them against
+// this base, so the kernels are still compared field for field.
 import { BF, type Building, type CityState } from '../../../src/sim/CityState';
 import { DEV_TYPE_COUNT, DevType, Network, Zone, zoneDensity } from '../../../src/core/types';
 import type { EconRuntime } from '../../../src/sim/economy/runtime';
@@ -67,6 +69,10 @@ export interface ZoneScan {
   /** the same per family (0 R, 1 C, 2 I) and the first tile of each (-1 = none) */
   noAccessFam: [number, number, number];
   noAccessFamAt: [number, number, number];
+  /** T037b FH-03: zoned tiles per family (0 R, 1 C, 2 I) */
+  zonedFam?: [number, number, number];
+  /** T037b LG-05: unzoned tiles without a building, network, water or power line */
+  free?: number;
   /**
    * occupied growables (residents or jobs) without power / without the piped water they need, from the buildings' own
    * flags (what population reads), with their residents and jobs and the centre cell of the biggest one (-1 = none).
@@ -282,7 +288,7 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
   const zone = st.zone, net = st.network, bld = st.building, powered = st.powered, watered = st.watered;
   const r: ZoneScan = {
     zoned: 0, front: 0, unpowered: 0, unpoweredAt: -1, needWater: 0, unwatered: 0, unwateredAt: -1, ready: 0, readyZones: 0, readyAt: -1, noAccess: 0, noAccessAt: -1,
-    noAccessFam: [0, 0, 0], noAccessFamAt: [-1, -1, -1], unpoweredLots: 0, unwateredLots: 0,
+    noAccessFam: [0, 0, 0], noAccessFamAt: [-1, -1, -1], zonedFam: [0, 0, 0], unpoweredLots: 0, unwateredLots: 0,
     host: new Array(DEV_TYPE_COUNT).fill(0), fit: new Array(DEV_TYPE_COUNT).fill(0), fitEmpty: new Array(DEV_TYPE_COUNT).fill(0), bestAt: new Array(DEV_TYPE_COUNT).fill(-1),
     emptyReady: [0, 0, 0], emptyReadyAt: [-1, -1, -1],
     lotOk: [0, 0, 0], lotOkAt: [-1, -1, -1], lotSmall: [0, 0, 0], lotSmallAt: [-1, -1, -1], lotSteep: [0, 0, 0], lotSteepAt: [-1, -1, -1],
@@ -295,11 +301,17 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
   const lotSmallZ = r.lotSmallZ!, lotSmallZAt = r.lotSmallZAt!;
   const bestDes = new Float32Array(DEV_TYPE_COUNT).fill(-Infinity);
   const isZ = (i: number) => zone[i] >= Zone.ResLow && zone[i] <= Zone.IndHigh;
+  const water = st.water, lines = st.powerLines;
   // per block: tiles per family (0 R, 1 C, 2 I) and the first tile of each
   const fam = [0, 0, 0], famAt = [-1, -1, -1];
+  let free = 0;
   visited.fill(0);
   for (let s = 0; s < C; s++) {
-    if (visited[s] || !isZ(s)) continue;
+    if (visited[s]) continue;
+    if (!isZ(s)) {
+      if (zone[s] === Zone.None && bld[s] < 0 && net[s] === Network.None && !water[s] && !lines[s]) free++;
+      continue;
+    }
     let sp = 0, cells = 0, access = false;
     fam[0] = fam[1] = fam[2] = 0;
     famAt[0] = famAt[1] = famAt[2] = -1;
@@ -348,6 +360,7 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
       if (i + N < C && !visited[i + N] && isZ(i + N)) { visited[i + N] = 1; stack[sp++] = i + N; }
     }
     r.zoned += cells;
+    for (let f = 0; f < 3; f++) r.zonedFam![f] += fam[f];
     if (!access) {
       r.noAccess += cells;
       if (r.noAccessAt < 0) r.noAccessAt = s;
@@ -377,6 +390,7 @@ function scanZones(st: CityState, util: boolean, visited: Uint8Array, stack: Int
   }
   r.unpoweredLots = lotsP;
   r.unwateredLots = lotsW;
+  r.free = free;
   return r;
 }
 

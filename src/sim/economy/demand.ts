@@ -36,7 +36,7 @@ import {
   FREIGHT_BOOST, FREIGHT_BOOST_MAX, I_BASE, I_SHARE_MAX, I_SHARE_MIN, IA_BASE, IA_PER_RES, ID_EQ_START,
   ID_SHARE_AT_EQ0, ID_SHARE_EQ_SLOPE, ID_SHARE_MIN, IHT_EQ_START, IHT_SHARE_MAX, IHT_SHARE_PER_EQ, JOB_MIX_AVG, JOB_SLACK,
   JOB_WEALTH_MIX, LABOUR_MIN_HEAD, LABOUR_POP0, LABOUR_POP1, LABOUR_UNEMP0, LABOUR_VAC0, R_BASE, R_JOB_SLACK, REGION_WEALTH_MIX,
-  RG_CAP, RG_CI, RG_CI_SPLIT, RG_CS, RG_CS_MAX, RG_MARKET, RG_MARKET_POP, RG_R, TAX_FACTOR_MAX, TAX_FACTOR_MIN, TAX_NEUTRAL, TAX_SENS, TOURISM_CS_PER_POINT, TOURISM_CS_SPLIT, UNEMP_CI_BOOST,
+  RG_CAP, RG_CI, RG_CI_SPLIT, RG_CS, RG_CS_MAX, RG_MARKET, RG_MARKET_POP, RG_R, TAX_DEMAND_PIVOT, TAX_DEMAND_RESPONSE, TAX_FACTOR_MAX, TAX_FACTOR_MIN, TAX_NEUTRAL, TAX_SENS, TOURISM_CS_PER_POINT, TOURISM_CS_SPLIT, UNEMP_CI_BOOST,
   UNEMP_NEUTRAL, UNEMP_R_PENALTY, WORKFORCE_RATIO,
 } from './tuning';
 import { type EconRuntime, type RegionTerms, econData, infraFlags } from './runtime';
@@ -45,6 +45,7 @@ import { ordinanceEffect } from './ordinances';
 import { venueIssue, venueOp } from './tourism';
 import { facilityUseFactor } from '../infra/facilities';
 import type { RegionContext } from '../../region/regionEffects';
+import { setSaveHook } from '../persist';
 
 const DEV_ENUM = ['R1', 'R2', 'R3', 'CS1', 'CS2', 'CS3', 'CO2', 'CO3', 'IA', 'ID', 'IM', 'IHT'];
 
@@ -151,7 +152,10 @@ export function connectionRelief(st: CityState, relief: { R: number; C: number; 
 }
 
 export function taxFactor(dev: number, rate: number): number {
-  return clamp(1 - TAX_SENS[dev] * (rate - TAX_NEUTRAL) / TAX_NEUTRAL, TAX_FACTOR_MIN, TAX_FACTOR_MAX);
+  if (rate <= TAX_DEMAND_PIVOT) return clamp(1 - TAX_SENS[dev] * (rate - TAX_NEUTRAL) / TAX_NEUTRAL, TAX_FACTOR_MIN, TAX_FACTOR_MAX);
+  const delta = rate - TAX_DEMAND_PIVOT;
+  const atPivot = 1 - TAX_SENS[dev] * (TAX_DEMAND_PIVOT - TAX_NEUTRAL) / TAX_NEUTRAL;
+  return clamp(atPivot - (TAX_SENS[dev] / TAX_NEUTRAL) * delta / (1 + TAX_DEMAND_RESPONSE * delta), TAX_FACTOR_MIN, TAX_FACTOR_MAX);
 }
 
 function softmin(t: number, cap: number): number {
@@ -369,15 +373,28 @@ export function demandSystem(rt: EconRuntime): SimSystem {
       rt.attach(sim);
       ctx = null;
       const st = sim.state;
-      // a loaded city keeps its smoothed demand (growth reads demandAbs, the UI stats.demand): only the derived context
-      // is rebuilt and the next daily update continues the EMA, so a save / load does not jolt growth. A new city
-      // starts from its instantaneous demand.
+      // a loaded city keeps its smoothed demand (growth reads demandAbs, the UI stats.demand): the next daily update
+      // continues the EMA, so a save / load does not jolt growth. A new city starts from its instantaneous demand.
+      // T057: the context too is the one the game last built (plopped relief, freight, connections: rebuilt on a change and
+      // monthly; a rebuild at load would read today's buildings), with its dirty flag (systemData.demandRun, a save hook)
       if (st.day > 0 && econData(st).demandAbs.some((v) => v !== 0)) {
-        ctx = demandContext(st, rt);
-        rt.capsDirty = false;
+        const run = st.systemData.demandRun as { v?: number; ctx?: DemandContext; capsDirty?: boolean } | undefined;
+        if (run && run.v === 1 && run.ctx && typeof run.ctx === 'object' && run.ctx.relief && run.ctx.reliefLost && run.ctx.reliefIssues) {
+          ctx = structuredClone(run.ctx);
+          contexts.set(st, ctx);
+          rt.capsDirty = run.capsDirty === true;
+        } else {
+          ctx = demandContext(st, rt);
+          rt.capsDirty = false;
+        }
       } else {
         compute(st, true);
       }
+      setSaveHook(st, 'economy.demand', () => {
+        if (sim.state !== st) return;
+        if (ctx) st.systemData.demandRun = { v: 1, ctx: structuredClone(ctx), capsDirty: rt.capsDirty };
+        else delete st.systemData.demandRun;
+      });
     },
     daily(sim) {
       const t0 = performance.now();

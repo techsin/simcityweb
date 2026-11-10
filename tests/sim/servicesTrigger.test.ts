@@ -40,9 +40,10 @@ function city(withJustice = false) {
 type City = ReturnType<typeof city>;
 
 // N = 2: an eventless staffing / water change needs one end-of-day observation, then the next day's urgent pass.
-// This 32² fixture's cached pass takes at most six steps, within the scheduler's eight urgent steps per day.
-// A month-boundary access refresh can use both days. Latency checks never flush / compute past the scheduler;
-// larger cities still spread their work over steps.
+// B2: this 32² fixture's pass is a few dozen pieces of a few estimated µs each, far inside the scheduler's urgent budget
+// per run (INFRA_URGENT_BUDGET estimated ms headless; pre-B2: eight urgent steps per day, of which the cached pass took at
+// most six). A month-boundary access refresh can use both days. Latency checks never flush / compute past the scheduler;
+// larger cities still spread their work over steps (a services urgent pass at dense1m takes 2-3 days).
 const LATENCY_DAYS = 2;
 function withinLatency(c: City, changed: () => boolean): void {
   expect(changed()).toBe(false);
@@ -275,9 +276,12 @@ describe('services: urgent coverage latency', () => {
     const c = city();
     const before = c.st.eduElemCov[c.at];
     c.st.day = SERVICES_PERIOD;
-    c.task.step(c.sim); // prep captured the old funding
-    c.A.setFunding('education', 25);
     const progress = c.services as unknown as { stepIdx: number };
+    // prep captured the old funding (B2: prep is several pieces, and every one of them reads the live funding — step
+    // while the pass is in prep, S_PREP = 0)
+    c.task.step(c.sim);
+    while (progress.stepIdx === 0) c.task.step(c.sim);
+    c.A.setFunding('education', 25);
     while (progress.stepIdx >= 0) c.task.step(c.sim);
     expect(c.st.eduElemCov[c.at]).toBe(before);
     expect(c.task.due(c.sim)).toBe(true);

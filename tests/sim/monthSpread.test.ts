@@ -568,18 +568,28 @@ describe('B3: the venue pass on TOURISM_DAY, the attract step on the month tick'
     const pl = tourismOf(u.sim).rt.plopped.map((b) => b.id);
     expect(pl.some((id, k) => k > 0 && id < pl[k - 1])).toBe(true);
     runTo(u.sim, 55);
-    const copy = load(serializeCity(u.st, { copy: true }));
-    const pl2 = tourismOf(copy.sim).rt.plopped.map((b) => b.id);
+    // (T057: a load keeps the game's list order, systemData.econLists; a save without it — from before T057 — rebuilds
+    //  the list in Map order, ascending id: the pass must not depend on which)
+    const saved = serializeCity(u.st, { copy: true });
+    const copy = load(saved);
+    expect(tourismOf(copy.sim).rt.plopped.map((b) => b.id)).toEqual(tourismOf(u.sim).rt.plopped.map((b) => b.id));
+    const old = serializeCity(u.st, { copy: true });
+    delete (old.data.systemData as Record<string, unknown>).econLists;
+    const copy2 = load(old);
+    const pl2 = tourismOf(copy2.sim).rt.plopped.map((b) => b.id);
     expect(pl2).toEqual([...pl2].sort((x, y) => x - y));
     runTo(u.sim, 56);
     runTo(copy.sim, 56);
+    runTo(copy2.sim, 56);
     const ven = passOf(u.st).ven;
     const vid: number[] = [];
     for (let k = 0; k < ven.length; k += 3) vid.push(ven[k]);
     expect(vid.length).toBe(VENUES.filter(([d]) => ATTRACTIONS[d]).length - 1);
     expect(vid).toEqual([...vid].sort((x, y) => x - y));
-    expect(diffPath(passOf(u.st), passOf(copy.st))).toBe('');
-    expect(diffPath(tourismOutputs(u.st), tourismOutputs(copy.st))).toBe('');
+    for (const c of [copy, copy2]) {
+      expect(diffPath(passOf(u.st), passOf(c.st))).toBe('');
+      expect(diffPath(tourismOutputs(u.st), tourismOutputs(c.st))).toBe('');
+    }
   });
 });
 
