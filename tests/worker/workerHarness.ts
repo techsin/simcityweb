@@ -40,10 +40,11 @@ export async function bootNode(city: SerializedCity, opts: Omit<WorkerSimHostOpt
     { dev: true, ...opts, port: opts.wrap?.(port) ?? port });
 }
 /** W1.3: the real worker on its own IndexedDB (`kv`, through nodeWorker.ts's bridge), as the App boots it: main sends
- *  no city (persistence 'worker-idb'). With `memoryWorker` the worker's openKV() falls back to memory (no bridge). */
-export async function bootIdb(regionId: string, tileKey: string, opts: Omit<WorkerSimHostOptions, 'port'> & { kv: KV; memoryWorker?: boolean; wrap?: (port: WorkerPort) => WorkerPort }): Promise<WorkerSimHost> {
+ *  no city (persistence 'worker-idb'). With `memoryWorker` the worker's openKV() falls back to memory (no bridge).
+ *  T083 `locks`: the worker thread's navigator.locks is this thread's (the test's stand-in for Web Locks). */
+export async function bootIdb(regionId: string, tileKey: string, opts: Omit<WorkerSimHostOptions, 'port'> & { kv: KV; memoryWorker?: boolean; locks?: boolean; wrap?: (port: WorkerPort) => WorkerPort }): Promise<WorkerSimHost> {
   const url = await buildWorkerTest();
-  const port = (kv?: KV) => opts.wrap?.(nodeWorkerPort(url, { kv })) ?? nodeWorkerPort(url, { kv });
+  const port = (kv?: KV) => { const p = nodeWorkerPort(url, { kv, locks: opts.locks }); return opts.wrap?.(p) ?? p; };
   return loadWorkerSimHost(regionId, tileKey, { dev: true, respawn: () => port(), ...opts, port: port(opts.memoryWorker ? undefined : opts.kv) });
 }
 /** post a command and send it at once (sliders otherwise coalesce until the next frame) */

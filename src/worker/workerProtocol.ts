@@ -14,6 +14,9 @@ export type WorkerInit = Extract<M2W, { t: 'init' }> & ({ city: IdbSource; persi
   deterministic?: boolean;
   /** W1.3 (§4.4): false boots the save as it is, without the journal bound to it ("Restart from autosave") */
   replay?: boolean;
+  /** T083 (NEW-04), 'worker-idb' only: whether this tab holds its region's lock. A worker told false writes nothing to
+   *  its IndexedDB; `access` follows each change. Left out, the worker writes (harnesses that build init by hand). */
+  writer?: boolean;
 };
 /** W1.3 (§4.1 step 3): the worker's IndexedDB open fell back to memory while main's store persists; the host restarts
  *  the worker with persistence 'main' rather than let it save into memory */
@@ -24,8 +27,18 @@ export type WorkerInput = Exclude<M2W, { t: 'init' }> | WorkerInit
    *  resync's Ready carry acks of the old packet numbering, so the worker trusts tick acks only once it sees this one. */
   | { t: 'ack'; ack: number; epoch: number }
   /** persistence 'main': main stored a save's record (or failed to), so the worker deltas its snapshots against it */
-  | { t: 'stored'; savedAt: number; ok: boolean };
+  | { t: 'stored'; savedAt: number; ok: boolean }
+  /** T083 (NEW-04), 'worker-idb': this tab took its region's lock, or lost it to another tab ("Use it here instead").
+   *  The worker applies it on arrival, ahead of the FIFO: from a loss on, it writes nothing more to its IndexedDB. */
+  | { t: 'access'; writable: boolean };
 export type WorkerOutput = W2M;
+
+/** T083 (b): a store refused a write because it is full (QuotaExceededError), or because this tab is not its region's
+ *  writer (NEW-04: NotAllowedError). A snapshot refused this way still reaches its caller, as the local host's does. */
+export function writeRefused(e: unknown): boolean {
+  const name = e !== null && typeof e === 'object' && 'name' in e ? e.name : undefined;
+  return name === 'QuotaExceededError' || name === 'NotAllowedError';
+}
 
 /** debug.verify's result (§2.2; dev harnesses and tools/qa-worker.mjs): what the worker isolate runs on */
 export interface WorkerDebugReport {

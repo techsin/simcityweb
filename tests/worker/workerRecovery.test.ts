@@ -18,6 +18,7 @@ import { CityActions } from '../../src/sim/actions';
 import { createSystems } from '../../src/sim/systems';
 import type { M2W } from '../../src/worker/protocol';
 import { periodicSnapshotDue, SNAPSHOT_SIM_DAYS, SNAPSHOT_WALL_MS } from '../../src/worker/recoveryMirror';
+import { SimCore } from '../../src/worker/SimCore';
 import { LocalSimHost } from '../../src/worker/SimHost';
 import type { WorkerSimHost } from '../../src/worker/WorkerSimHost';
 import { buildWorkerTest } from '../../tools/bench/worker/buildTests.mjs';
@@ -273,6 +274,34 @@ describe('W1.3: the worker\'s save as two units (§4.2), the copy\'s task', () =
       expect(order.length).toBeGreaterThan(2);
       expect(order).not.toContain('packet in the copy\'s task');
     } finally { w.dispose(); }
+  });
+
+  it('save:copy ends its unit, and a snapshot\'s copy ends its own (T083, W1.3 decision 19): the run queued behind the snapshot takes its first day in a later task', async () => {
+    const city = initialCity();
+    await kv.put('cities', { key: 'units:0', regionId: 'units', tileKey: '0', savedAt: city.savedAt, city } satisfies CityRecord, 'units:0');
+    const order: string[] = [];
+    // true from the snapshot's build (50-110 ms at 1M) until the rest of that task's microtasks have run
+    let copyTask = false;
+    const build = SimCore.prototype.copyRecoverySnapshot;
+    const built = vi.spyOn(SimCore.prototype, 'copyRecoverySnapshot').mockImplementation(function (this: SimCore, ...args) {
+      order.push('copy'); copyTask = true;
+      const clear = (n: number): void => { if (n) queueMicrotask(() => clear(n - 1)); else copyTask = false; };
+      clear(50);
+      return build.apply(this, args);
+    });
+    const w = inProcess([], { deterministic: true, idb: true, tap: (m) => {
+      if (m.t === 'pkt' && order.length) order.push(copyTask ? 'packet in the copy\'s task' : 'packet');
+    } });
+    try {
+      await w.until((m) => m.t === 'ready', 'ready');
+      w.send({ t: 'snapshot', id: 1, why: 'hidden' });
+      w.send({ t: 'cmd', seq: 1, op: 'debug.runDays', args: [2] });
+      await w.until((m) => m.t === 'pkt' && !!m.p.acks?.length, 'the run\'s ack');
+      await w.until((m) => m.t === 'pkt' && !!m.p.replies?.some((r) => r.t === 'snapped'), 'the snapped reply');
+      expect(order[0]).toBe('copy');
+      expect(order.length).toBeGreaterThan(2);
+      expect(order).not.toContain('packet in the copy\'s task');
+    } finally { w.dispose(); built.mockRestore(); }
   });
 });
 

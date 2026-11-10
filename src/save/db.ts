@@ -489,3 +489,73 @@ export class RegionSaveLock {
     }
   }
 }
+
+// ------------------------------------------------------------------ a worker's own writes (T083)
+const WORKER_LOCK_PREFIX = 'metropolis.region-worker.';
+
+/** One region's write right in a worker realm that writes IndexedDB itself (holdWorkerSaveAccess). */
+export interface WorkerSaveAccess {
+  /** this realm may write the region now */
+  readonly writable: boolean;
+  /** The page's word: its tab holds the region's lock, or does not. A loss applies before this returns; resolves as
+   *  `settled`. A repeated word changes nothing: only the page's false-to-true takes a stolen lock back. */
+  set(writer: boolean): Promise<boolean>;
+  /** Resolves to `writable` once the page's last word has taken effect: a writer's own lock is granted in a later
+   *  task, and a write asked for meanwhile waits for it rather than be refused. */
+  settled(): Promise<boolean>;
+  dispose(): void;
+}
+
+/**
+ * NEW-04 for W1.3's 'worker-idb' worker. It writes IndexedDB from its own realm, where no RegionSaveLock is active, so
+ * the region's lock did not reach its writes (W1.3 decision 21). Here the page says whether its tab is the region's
+ * writer, at init and at once when that changes, and a writer's worker holds a Web Lock of its own. It takes that lock
+ * by stealing: its page holds the region, so a worker that still holds this lock belongs to a tab that lost the region,
+ * and that worker's request rejects with AbortError, as the page's does. Until the page says so and from a loss on,
+ * every put and delete of this realm's KV for the region is refused at the write itself (requireStoreSaveAccess), with
+ * the page's NotAllowedError. A realm without Web Locks follows the page's word alone, as the page's own fallback does.
+ */
+export function holdWorkerSaveAccess(regionId: string): WorkerSaveAccess {
+  const name = WORKER_LOCK_PREFIX + regionId;
+  let writer = false, held = false, turn = 0, release: (() => void) | null = null;
+  /** the lock request of the page's last word, once it is granted or refused */
+  let asked: Promise<void> = Promise.resolve();
+  const unrestrict = restrictRegionSaveAccess((id) => id !== regionId || (writer && held));
+  const drop = () => { held = false; release?.(); release = null; };
+  const acquire = (mine: number): Promise<void> => {
+    const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+    if (!locks) { held = true; return Promise.resolve(); }
+    return new Promise<void>((resolve) => {
+      const hold = new Promise<void>((done) => { release = done; });
+      let granted = false, lost = false;
+      const refused = (e: unknown) => {
+        lost = true;
+        // stolen (AbortError): another tab's worker writes the region now. Any other refusal is the lock API's own, and
+        // the page's word stands, as it does without Web Locks
+        if (mine === turn) { if (granted || (e as { name?: unknown } | null)?.name === 'AbortError') drop(); else held = true; }
+        resolve();
+      };
+      try {
+        locks.request(name, { steal: true }, async () => {
+          if (mine === turn && !lost) { granted = held = true; resolve(); await hold; }
+          else resolve();
+        }).catch(refused);
+      } catch (e) { refused(e); }
+    });
+  };
+  const settled = () => asked.then(() => writer && held);
+  return {
+    get writable() { return writer && held; },
+    set(next) {
+      if (next !== writer) {
+        writer = next;
+        drop();
+        const mine = ++turn;
+        asked = next ? acquire(mine) : Promise.resolve();
+      }
+      return settled();
+    },
+    settled,
+    dispose() { writer = false; ++turn; drop(); unrestrict(); },
+  };
+}

@@ -6,15 +6,18 @@
  * W1.3 (§4): with a persistent store the worker reads and writes its own IndexedDB (`'worker-idb'`), and the page keeps
  * T033's journal mirror; with a store that does not persist, or when the worker's IndexedDB falls back to memory, R14's
  * persistence 'main' stays: main reads the record, stores the worker's saves and snapshots, and passes the journal.
+ * T083 (NEW-04): with 'worker-idb' the page tells the worker whether this tab holds its region's lock, at init and at
+ * each change, since the page's own write guard does not reach the worker's IndexedDB connection.
  */
-import { openKV, type KV } from '../save/db';
+import { openKV, regionSaveAccess, watchRegionSaveAccess, type KV } from '../save/db';
 import { cityKey, type CityRecord } from '../save/cities';
 import { clearRecoveryAfterSave as clearRecoveryIdb, storeRecoveryIdb } from '../save/recoveryIdb';
 import { PacketSimHost, type PacketHostOptions, type Settle } from './LoopbackSimHost';
 import { exactDigest } from './queries';
 import { readBootJournal } from './journal';
 import { PROTOCOL_VERSION, assertOwnedBuffers, errorText, type CitySource, type Journal, type Ready, type Reply, type SimSettings, type W2M } from './protocol';
-import { ACK_WINDOW, IDB_UNAVAILABLE, WorkerLiveness, type WorkerDebugReport, type WorkerInit, type WorkerInput, type WorkerOutput, type WorkerPort } from './workerProtocol';
+import { ACK_WINDOW, IDB_UNAVAILABLE, WorkerLiveness, writeRefused, type WorkerDebugReport, type WorkerInit, type WorkerInput, type WorkerOutput, type WorkerPort } from './workerProtocol';
+import type { SnapshotAck } from './SimHost';
 
 /** A save or snapshot reply no caller waits for any more */
 const NO_WAIT: Settle = { resolve: () => {}, reject: () => {} };
@@ -107,6 +110,14 @@ class WorkerLink {
     this.timer = setInterval(() => this.poll(), 250);
   }
   retarget(target: LinkTarget): void { this.target = target; }
+  /** T083 (NEW-04), 'worker-idb': whether this tab holds the region's lock now, for the worker's init; from here until
+   *  this link closes, each change is posted at once (`access`). The page's guard fences the page's own KV, not the
+   *  worker's IndexedDB connection, so the worker is told. */
+  writer(regionId: string): boolean {
+    let writable = regionSaveAccess(regionId);
+    watchRegionSaveAccess(regionId, (now) => { if (now !== writable) this.post({ t: 'access', writable: writable = now }); }, this.lifetime.signal);
+    return writable;
+  }
   post(m: WorkerInput): void {
     if (this.closing) return;
     assertOwnedBuffers(m); // §1.4; never a transfer list
@@ -196,7 +207,9 @@ export function bootWorkerSimHost(source: CitySource, opts: WorkerSimHostOptions
     // after `link` is assigned: what a pre-spawned port queued is delivered inside start()
     link.start();
     if (done) return;
-    const persistence = (source.kind === 'idb' ? { city: source, persistence: 'worker-idb' } : { city: source, persistence: 'main', ...(journal ? { journal } : {}) }) as Pick<WorkerInit, 'city' | 'persistence' | 'journal'>;
+    // T083: a worker that writes its own IndexedDB learns whether this tab is its region's writer, from init on
+    const persistence = (source.kind === 'idb' ? { city: source, persistence: 'worker-idb', writer: link.writer(source.regionId) }
+      : { city: source, persistence: 'main', ...(journal ? { journal } : {}) }) as Pick<WorkerInit, 'city' | 'persistence' | 'journal' | 'writer'>;
     link.post({ t: 'init', v: PROTOCOL_VERSION, ...persistence, rctx: opts.rctx ?? null,
       initialSpeed: opts.initialSpeed ?? 1, settings: opts.settings ?? DEFAULT_SETTINGS,
       flags: { simwasm: opts.flags?.simwasm ?? null, dev: opts.dev ?? !!import.meta.env?.DEV },
@@ -312,7 +325,12 @@ export class WorkerSimHost extends PacketSimHost {
    *  when no caller waits any more (T033), since the worker counts on main's put either way. With 'worker-idb' the
    *  worker wrote them: the base class settles them at once (the localStorage part, the journal mirror, the ack). */
   protected override settle(reply: Extract<Reply, { t: 'saved' | 'snapped' }>, waiting: Settle | undefined): void {
-    if (this.persistence === 'worker-idb') { super.settle(reply, waiting); return; }
+    if (this.persistence === 'worker-idb') {
+      // T083 (b): `idb` false here is the worker's own store refusing the snapshot (WorkerIdbStore.putSnapshot)
+      if (reply.t === 'snapped' && reply.ok !== false && reply.result?.idb === false) this.unstored(reply, waiting ?? NO_WAIT);
+      else super.settle(reply, waiting);
+      return;
+    }
     const wait = waiting ?? NO_WAIT;
     if (reply.t === 'saved' && reply.ok && reply.record) this.storeSave(reply, reply.record, wait);
     else if (reply.t === 'snapped' && reply.ok !== false) this.storeSnapshot(reply, wait);
@@ -337,11 +355,21 @@ export class WorkerSimHost extends PacketSimHost {
       // a delta of a save main did not store (its put failed, or a resync lost it) restores nothing: not an error
       if (reply.marker.baseSavedAt !== this.storedAt) { wait.resolve(null); return; }
       const kv = this.kv ?? await openKV(), start = this.now();
-      await storeRecoveryIdb(kv, reply.marker, reply.payload);
+      try { await storeRecoveryIdb(kv, reply.marker, reply.payload); }
+      catch (e) { if (!writeRefused(e)) throw e; this.unstored(reply, wait); return; }
       // the journal mirror takes it up and writes its localStorage slot (the base class), as with 'worker-idb'
       const ms = (reply.result?.ms ?? 0) + this.now() - start;
       super.settle({ ...reply, result: { ok: true, bytes: reply.payload.length, ls: false, dropped: reply.marker.dropped, ...reply.result, idb: kv.persistent, ms } }, wait);
     });
+  }
+  /** T083 (b): a snapshot whose store refused it, because the store is full or this tab is not its region's writer
+   *  (NEW-04). The caller still gets the encoded payload, with `ok` and `idb` false, as the local host's snapshot does,
+   *  so Export rebuilds the running city from a full or read-only tab. The journal mirror does not take it up: the
+   *  journal stays bound to a base that is stored (§4.3). */
+  private unstored(reply: Extract<Reply, { t: 'snapped'; ok?: true }>, wait: Settle): void {
+    wait.resolve({ ...reply.result, marker: reply.marker, payload: reply.payload, dropped: reply.marker.dropped,
+      ok: false, bytes: reply.payload.length, ms: reply.result?.ms ?? 0, idb: false, ls: false,
+      cmd: reply.cmd, fp: reply.fp!, changes: reply.changes ?? this.changes } satisfies SnapshotAck);
   }
   private write(wait: Settle, run: () => Promise<void>): void {
     this.storing.add(wait);

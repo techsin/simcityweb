@@ -6,6 +6,8 @@
  * recovery base in this realm, writes its saves and snapshots there, and replays the journal bound to the save before
  * its Ready, then saves. With 'main' (R14; non-persistent stores and the boot fallback) saves and snapshots go to the
  * page, snapshots are deltas of the newest save the page has not refused, and the page passes the journal at init.
+ * T083 (NEW-04): with 'worker-idb' this realm writes only while its tab holds the region's lock (`init.writer`, then
+ * `access`), and a writer's worker holds a Web Lock of its own (db.ts holdWorkerSaveAccess).
  */
 // first: the worker isolate's protector probe predates every other module of the bundle (protectorProbe.ts)
 import { WORKER_ISOLATE_PROBE, makeProtectorProbe } from './protectorProbe';
@@ -15,7 +17,7 @@ import type { DisastersSystem } from '../sim/infra/disasters';
 import { schedulerOf } from '../sim/infra/scheduler';
 import { deserializeCity } from '../save/serialize';
 import { getCityRecord, getRecoveryBase, setRecoveryBase, type CityRecord } from '../save/cities';
-import { openKV } from '../save/db';
+import { holdWorkerSaveAccess, openKV, type WorkerSaveAccess } from '../save/db';
 import { initSimWasm, simWasmFlagSelects, simWasmStatus } from '../wasm/simWasm';
 import { SimCore, type CitySaveCopy, type SimModules } from './SimCore';
 import { ChangeRecorder } from './recorder';
@@ -24,7 +26,7 @@ import { idbStore } from './idbStore';
 import { readBootJournal, type BootJournal } from './journal';
 import { exactDigest } from './queries';
 import { PROTOCOL_VERSION, assertOwnedBuffers, errorText, type Journal, type M2W, type Packet, type Reply } from './protocol';
-import { ACK_WINDOW, IDB_UNAVAILABLE, sourceRecord, type SerializedSource, type SimWorkerScope, type WorkerDebugReport, type WorkerInit, type WorkerInput, type WorkerOutput } from './workerProtocol';
+import { ACK_WINDOW, IDB_UNAVAILABLE, sourceRecord, writeRefused, type SerializedSource, type SimWorkerScope, type WorkerDebugReport, type WorkerInit, type WorkerInput, type WorkerOutput } from './workerProtocol';
 
 const IN_NODE = typeof (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node === 'string';
 
@@ -59,16 +61,23 @@ class MainStore implements InboxStore {
 /** W1.3 (§4.2, §4.3): 'worker-idb' writes this realm's IndexedDB; the Ready names the save the worker loaded. */
 class WorkerIdbStore implements InboxStore {
   private store: InboxStore;
-  constructor(core: SimCore, private loaded: CityRecord, private nextUnit: () => Promise<void>) { this.store = idbStore(core); }
+  /** `access` (T083): each write waits until the realm's write right has caught up with its page's last word. The
+   *  refusal itself is the KV's, at the write (db.ts holdWorkerSaveAccess). */
+  constructor(core: SimCore, private loaded: CityRecord, private nextUnit: () => Promise<void>, private access: WorkerSaveAccess) { this.store = idbStore(core); }
   get savedAt(): number { return getRecoveryBase(this.loaded.regionId, this.loaded.tileKey)?.savedAt ?? this.loaded.savedAt; }
   /** §4.2's two units: save:copy ran in a unit of its own (`drain` ends the unit after a save, with no simulation
    *  step); save:put (the put's synchronous clone, about 10-15 ms at 1M) waits for the next unit to finish and then runs
    *  in a task of its own (`unit`). So the worker never blocks for the copy, a unit's simulation work and the clone
    *  together, and work queued meanwhile runs first. */
-  async putSave(copy: CitySaveCopy) { await this.nextUnit(); return this.store.putSave(copy); }
+  async putSave(copy: CitySaveCopy) { await this.nextUnit(); await this.access.settled(); return this.store.putSave(copy); }
   /** the boot's save, before the Ready: no unit runs yet */
   bootSave(copy: CitySaveCopy) { return this.store.putSave(copy); }
-  putSnapshot(snapshot: Parameters<InboxStore['putSnapshot']>[0]) { return this.store.putSnapshot(snapshot); }
+  /** T083 (b): a store that refuses the write (it is full, or this tab is not the region's writer) still answers with
+   *  the encoded payload, `idb` false, as the local host's snapshot does: Export rebuilds the running city from it */
+  putSnapshot(snapshot: Parameters<InboxStore['putSnapshot']>[0]) {
+    return this.access.settled().then(() => this.store.putSnapshot(snapshot))
+      .catch((e: unknown) => { if (writeRefused(e)) return false; throw e; });
+  }
   recoveryBase(regionId: string, tileKey: string) { return this.store.recoveryBase(regionId, tileKey); }
 }
 
@@ -92,6 +101,8 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
   /** W1.3: work that waits for the next unit to finish (a save's put, §4.2), and the waiters whose unit has run */
   let afterUnit: (() => void)[] = [], released: (() => void)[] = [];
   const nextUnit = () => new Promise<void>((resolve) => { afterUnit.push(resolve); kick(); });
+  /** T083 (NEW-04), 'worker-idb': this realm's write right for the city's region, which follows its tab's lock */
+  let access: WorkerSaveAccess | null = null;
 
   function post(message: WorkerOutput): void {
     if (abort.signal.aborted) return;
@@ -126,6 +137,11 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
     let record: CityRecord, kv: Awaited<ReturnType<typeof openKV>> | null = null;
     if (m.city.kind === 'idb') {
       post({ t: 'boot', phase: 'idb', pct: 0.05 });
+      // T083 (NEW-04): this realm's writes follow its tab's region lock from here on. A writer takes the worker's own
+      // lock before it reads the city, so a tab that lost the region cannot write the record after this worker loaded it
+      access = holdWorkerSaveAccess(m.city.regionId);
+      await access.set(m.writer !== false);
+      if (abort.signal.aborted) return;
       kv = await openKV();
       if (abort.signal.aborted) return;
       if (!kv.persistent) throw Object.assign(new Error('The simulation worker could not open IndexedDB'), { code: IDB_UNAVAILABLE });
@@ -162,7 +178,7 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
       const { alerts, live, toast, warn, teaching } = c.livePolicy.view;
       return { alerts: alerts.map((a) => ({ ...a })), live, toast, warn, ...(teaching ? { teaching } : {}) };
     } });
-    const inboxStore = store = m.city.kind === 'idb' ? new WorkerIdbStore(c, record, nextUnit) : new MainStore(m.city);
+    const inboxStore = store = m.city.kind === 'idb' ? new WorkerIdbStore(c, record, nextUnit, access!) : new MainStore(m.city);
     const p = { regionId: m.city.regionId, tileKey: m.city.tileKey, regionName: m.regionName };
     const inbox = protocol = new ProtocolInbox(c, recorder, {
       now: () => performance.now(), signal: abort.signal, store: inboxStore, fatal, persistence: p,
@@ -179,14 +195,17 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
     if (journal) {
       post({ t: 'boot', phase: 'journal', pct: 0.8 });
       const replayed = c.replayBootJournal(journal);
-      if (replayed.applied && m.city.kind === 'idb') {
+      // T083: a tab without its region's lock does not save (NEW-04): its Ready carries the edits, as LocalSimHost's
+      // replay leaves them, and the journal stays for the region's holder
+      if (replayed.applied && m.city.kind === 'idb' && access?.writable) {
         // §4.3: saved before the Ready, so the replayed edits are durable and the old journal is deleted with the put
         try {
           await (inboxStore as WorkerIdbStore).bootSave(c.copySave(p.regionId, p.tileKey));
           inbox.changes = 0;
         } catch (e) {
-          // the journal record still matches the old save: the Ready carries the edits, and a second crash loses nothing
-          c.report('The recovered edits could not be saved', e, { key: 'recovery' });
+          // the journal record still matches the old save: the Ready carries the edits, and a second crash loses nothing.
+          // T083: a region lost to another tab during this save is not an error, as on the page
+          if (access?.writable) c.report('The recovered edits could not be saved', e, { key: 'recovery' });
           carried = replayed.carried;
         }
         if (abort.signal.aborted) return;
@@ -276,7 +295,8 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
       default: return false;
     }
   }
-  /** true when it handled a save: §4.2's save:copy is its unit's work */
+  /** true when it handled a save or a snapshot: §4.2's save:copy, and a snapshot's copy as well (T083, W1.3 decision
+   *  19), is its unit's work */
   function drain(): boolean {
     for (let i = 0; i < inbox.length;) {
       if (inbox[i].t === 'dispose') { dispose(); return false; }
@@ -294,8 +314,9 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
       }
       if (m.t === 'cmd' && m.op === 'debug.verify') { inbox.shift(); protocol.acknowledge(m.seq, debugReport()); continue; }
       inbox.shift(); protocol.handle(m);
-      // the copy (40-60 ms at 1M) ends the unit: the rest of the FIFO and the simulation step wait for the next task
-      if (m.t === 'save') return true;
+      // the copy (40-60 ms at 1M; a snapshot's, 50-110 ms) ends the unit: the rest of the FIFO and the simulation step
+      // wait for the next task
+      if (m.t === 'save' || m.t === 'snapshot') return true;
     }
     return false;
   }
@@ -381,6 +402,9 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
       void boot(m).then(() => { booting = false; kick(); }, fatal);
       return;
     }
+    // T083: the tab's region lock changed hands. Applied on arrival, ahead of the FIFO and during the boot too: from a
+    // loss on, this realm's next write is refused
+    if (m.t === 'access') { void access?.set(m.writable); return; }
     inbox.push(m); kick();
   }
   function dispose(): void {
@@ -388,6 +412,7 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
     abort.abort('dispose');
     loop.port1.close(); loop.port2.close();
     if (core) { schedulerOf(core.sim).endFrame(); core.dispose(); core.sim.events.clear(); }
+    access?.dispose(); access = null; // T083: the worker's own lock is free for the tab's next worker
     core = null; recorder = null; protocol = null; store = null; run = null; frame = null;
     inbox.length = 0; unacked = []; afterUnit = []; released = [];
   }

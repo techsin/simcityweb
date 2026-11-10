@@ -249,14 +249,23 @@ describe('the real worker (node worker_threads)', () => {
 
   it('a fatal message from the worker after ready takes the crash path', { timeout: 30000 }, async () => {
     for (const handled of [true, false]) {
-      let raw!: WorkerPort;
+      let raw!: WorkerPort, arrived!: () => void;
+      /** the worker's fatal message, once the host has taken it */
+      const fatal = new Promise<void>((resolve) => { arrived = resolve; });
       const crashes: boolean[] = [], reports: string[] = [];
       const host = await bootNode(initialCity(), { kv: new MemoryKV(), errors: { report: (title) => reports.push(title) },
-        onCrash: handled ? (_e, boot) => crashes.push(boot) : undefined, wrap: (port) => (raw = port) });
+        onCrash: handled ? (_e, boot) => crashes.push(boot) : undefined, wrap: (port) => (raw = port, {
+          ...port,
+          listen(receive, fail, signal) { port.listen((m) => { receive(m); if (m.t === 'fatal') arrived(); }, fail, signal); },
+        }) });
       try {
+        // T083 (NOTE-081): the tick goes first. The worker refuses it (Invalid tick) in the unit that reads it, before the
+        // FIFO, so it never answers the query posted behind it: under load the query used to win when it was posted first.
+        raw.postMessage({ t: 'tick', seq: 1, dt: -1, ack: 0 });
         const read = host.query('verify', {});
-        raw.postMessage({ t: 'tick', seq: 1, dt: -1, ack: 0 }); // the worker refuses it: Invalid tick
-        await expect(within(read)).rejects.toBeInstanceOf(HostCrashed);
+        // the crash itself, then what it did: the read that was outstanding, the crash path, the overlay
+        await within(fatal, 10000);
+        await expect(read).rejects.toBeInstanceOf(HostCrashed);
         expect(crashes).toEqual(handled ? [false] : []);
         // the App's crash dialog shows a crash it takes: the error overlay gets no 'host' card for it (§4.4)
         expect(reports, handled ? 'handled by onCrash' : 'no crash path').toEqual(handled ? [] : ['host']);
