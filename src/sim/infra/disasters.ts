@@ -32,7 +32,7 @@ import { nowMs, removeBuilding } from './common';
 import { getDef } from '../catalog';
 import type { BuildingDef } from '../catalogTypes';
 import { ATTRACTIONS } from '../economy/tourism';
-import { DISASTER_MIN_POP, TOURISM_INCOME_PER_VISITOR } from '../economy/tuning';
+import { DISASTER_MIN_POP, TOURISM_INCOME_PER_VISITOR, difficultyRules } from '../economy/tuning';
 import type { FireSystem } from './fire';
 import { emergencyOf } from './emergency';
 
@@ -179,9 +179,16 @@ export class DisastersSystem implements SimSystem {
     const r = this.rng.next();
     const N = st.size;
     const x = this.rng.int(8, N - 9), z = this.rng.int(8, N - 9);
-    if (r < 0.008) this.trigger(sim, 'tornado', x, z);
-    else if (r < 0.012) this.trigger(sim, 'earthquake', x, z);
-    else if (r < 0.0145) this.trigger(sim, 'meteor', x, z);
+    if (st.config.difficulty === 'hard' || st.config.difficulty === 'expert') {
+      const multiplier = difficultyRules(st.config.difficulty).disasterMultiplier;
+      if (r < 0.008 * multiplier) this.trigger(sim, 'tornado', x, z);
+      else if (r < 0.012 * multiplier) this.trigger(sim, 'earthquake', x, z);
+      else if (r < 0.0145 * multiplier) this.trigger(sim, 'meteor', x, z);
+    } else {
+      if (r < 0.008) this.trigger(sim, 'tornado', x, z);
+      else if (r < 0.012) this.trigger(sim, 'earthquake', x, z);
+      else if (r < 0.0145) this.trigger(sim, 'meteor', x, z);
+    }
     this.persist();
   }
 

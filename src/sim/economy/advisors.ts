@@ -1896,7 +1896,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     if (rTax >= TAX_HIGH_ADVICE - 1e-9 && pop > 1000) {
       const cost = -APPROVAL.taxPerPoint * (rTax - TAX_NEUTRAL);
       out.push({ id: 'taxHigh', cooldown: 180, priority: 5, kind: 'warning', advisor: 'finance',
-        text: `Residential taxes average ${rTax.toFixed(1)}%. Each point above ${TAX_NEUTRAL}% costs ${-APPROVAL.taxPerPoint} approval, so approval heads ${Number(cost.toFixed(1))} points lower; above 13% demand collapses.` });
+        text: `Residential taxes average ${rTax.toFixed(1)}%. Each point above ${TAX_NEUTRAL}% costs ${-APPROVAL.taxPerPoint} approval, so approval heads ${Number(cost.toFixed(1))} points lower; higher rates also slow growth.` });
     }
     // ---------------- utilities
     let zoned = 0;

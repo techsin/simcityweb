@@ -31,6 +31,6 @@ export interface UpkeepEstimate {
 export function upkeepEstimate(st: CityState | null, def: BuildingDef | undefined): UpkeepEstimate | null {
   if (!def || !opexTierOf(def) || !((def.upkeep ?? 0) > 0) || (st && !opexActive(st))) return null;
   const now = expectedUpkeep(st, def);
-  const full = Math.max(now, fullUseUpkeep(def));
+  const full = Math.max(now, fullUseUpkeep(def, st));
   return { now, full, title: `≈${money(now)}/mo typical in this city · up to ${money(full)} at full use` };
 }

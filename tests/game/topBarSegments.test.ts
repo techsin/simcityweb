@@ -75,6 +75,22 @@ describe('the TopBar segments (src/ui/topbar/)', () => {
     abort.abort();
   });
 
+  it('FH-08: the LIVE pill\'s title states the in-range rule and the restore; the pill and the speed buttons are as before', () => {
+    const { ctx, abort } = context();
+    const city = new CityDateGroup(ctx);
+    city.update();
+    const pill = fel(city.el).querySelector('.live-pill')!;
+    expect(pill.getAttribute('title')).toBe('Within station range never slows. Outside it, LIVE slows your dispatch; your speed returns when help arrives. Settings → Gameplay.');
+    expect(pill.title).toBe(pill.getAttribute('title'));
+    expect(textOf(pill)).toBe('LIVE');
+    // emergency.css shows it from `.mp-ui.emg-live` and the speed group's `.is-paused`; neither reads the text
+    expect(pill.className).toBe('live-pill');
+    expect(textOf(pill.parentNode!)).toBe('DatePAUSEDLIVE');
+    const speed = fel(city.el).querySelector('.speed')!;
+    expect(speed.children.map((b) => b.title)).toEqual(['Pause (Space)', 'Normal speed (1)', 'Fast (2)', 'Ultra (3)']);
+    abort.abort();
+  });
+
   it('the RCI segment refreshes the whole bar once per opening, not on closing', () => {
     const { ctx, abort } = context();
     const refresh = vi.fn();

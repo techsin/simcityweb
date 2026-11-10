@@ -4,8 +4,9 @@
  * 256 x 60 seed 7 gate (an hour or more).
  *   BALANCE=1 npx vitest run tests/sim/balance.test.ts --testTimeout=7200000
  *
- * 128 x 15 seed 7, the partB baseline set (tests/sim/fixtures/balance-baseline.json, recorded by WP6b; phase0 kept):
- *  - population >= 0.9 x phase0 every year and >= 0.9 x partB from year 5, approval >= 50 from year 10, funds >= 0,
+ * 128 x 15 seed 7, the current baseline set (tests/sim/fixtures/balance-baseline.json, selected by reference; historical
+ * partB and phase0 rows kept):
+ *  - population >= 0.9 x phase0 every year and >= 0.9 x current reference from year 5, approval >= 50 from year 10, funds >= 0,
  *    EQ >= 100 by year 15;
  *  - one employment ledger: |unemployment - (1 - access-weighted employment)| <= 0.02 every year;
  *  - emergencies: >= 85 % of the incidents auto-dispatched from year 10, <= 5 % failed over the run; justice overflow
@@ -20,7 +21,7 @@
  *    run" — see the test); one who refuses smokestack industry
  *    (--skip dirty) breathes cleaner air but pays with unemployment (labour headroom: commerce alone no longer employs
  *    everyone) and a smaller city.
- * The yearly tables for seeds 7 and 11 (256 x 60) live in the partB set; tools/simbot.ts prints the same columns.
+ * The yearly tables for seeds 7 and 11 (256 x 60) live in the fixture; tools/simbot.ts prints the same columns.
  */
 import { describe, expect, it } from 'vitest';
 import { SimBot, botSystems, type BotOptions } from '../../tools/simbot';
@@ -67,18 +68,20 @@ async function play(size: number, years: number, seed: number, extra: Partial<Bo
   return out;
 }
 
-type Runs = Record<string, { phase0: number[][]; partB?: number[][] }>;
+type Runs = Record<string, { phase0: number[][]; [reference: string]: unknown }>;
 const runs = (baseline as unknown as { runs: Runs }).runs;
 
 function gates(key: string, y: Yearly[], opts: { approvalFrom: number; eqBy: number; overflowFrom: number; utilFrom: number }) {
+  const currentRows = runs[key]?.[baseline.reference];
+  if (!Array.isArray(currentRows)) throw new Error(`Balance fixture ${key} is missing an array for reference ${baseline.reference}`);
   const p0 = new Map(runs[key].phase0.map((r) => [r[0], r[1]]));
-  const pb = new Map((runs[key].partB ?? []).map((r) => [r[0], r[1]]));
+  const current = new Map((currentRows as number[][]).map((r) => [r[0], r[1]]));
   let inc = 0, failed = 0;
   y.forEach((r, k) => {
     const n = k + 1;
     if (p0.has(r.year)) expect(r.pop, `pop ${r.year} vs phase0`).toBeGreaterThanOrEqual(0.9 * p0.get(r.year)!);
-    // (partB from year 5: a 5k town moves by more than 10 % with any change of the chaotic bot)
-    if (n >= 5 && pb.has(r.year)) expect(r.pop, `pop ${r.year} vs partB`).toBeGreaterThanOrEqual(0.9 * pb.get(r.year)!);
+    // (current reference from year 5: a 5k town moves by more than 10 % with any change of the chaotic bot)
+    if (n >= 5 && current.has(r.year)) expect(r.pop, `pop ${r.year} vs ${baseline.reference}`).toBeGreaterThanOrEqual(0.9 * current.get(r.year)!);
     expect(r.funds, `funds ${r.year}`).toBeGreaterThanOrEqual(0);
     if (n >= opts.approvalFrom) expect(r.approval, `approval ${r.year}`).toBeGreaterThanOrEqual(50);
     expect(Math.abs(r.unemployment - r.accUnemp), `unemployment vs access ${r.year}`).toBeLessThanOrEqual(0.02);
@@ -96,7 +99,7 @@ function gates(key: string, y: Yearly[], opts: { approvalFrom: number; eqBy: num
 }
 
 describe.skipIf(process.env.BALANCE !== '1' && process.env.BALANCE !== '256')('WP6b balance gate (slow, BALANCE=1)', () => {
-  it('128 x 15 seed 7: the acceptance gates, the partB baseline and the wrong choices', { timeout: 7_200_000 }, async () => {
+  it('128 x 15 seed 7: the acceptance gates, the current baseline and the wrong choices', { timeout: 7_200_000 }, async () => {
     const y = await play(128, 15, 7);
     gates('128x15_seed7', y, { approvalFrom: 10, eqBy: 15, overflowFrom: 8, utilFrom: 6 });
     const base = y.at(-1)!;

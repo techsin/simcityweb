@@ -34,6 +34,7 @@ export const DIFFICULTY_FUNDS: Record<Difficulty, number> = {
   easy: 250_000,
   medium: 100_000,
   hard: 40_000,
+  expert: 40_000,
   sandbox: 10_000_000,
 };
 
