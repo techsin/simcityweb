@@ -102,3 +102,7 @@ under 1 %. So the flag feeds nothing but the series.
 - Dezone more than 1 % of the map and play to the next New Year: `growth:` follows population growth again.
 - The same card text on `?simworker=loopback` and the default host; a save and reload mid-month leaves the next card
   unchanged.
+
+## Desktop gate (10 Nov, a7faf737)
+
+tsc clean; full vitest 291 files passed, 3 skipped; 2,904 tests passed, 13 skipped; 0 failing. The 128x15 s7 bot with the action log is identical to dev: residents [ 61124, 93804, 37971 ] = 192,899.
