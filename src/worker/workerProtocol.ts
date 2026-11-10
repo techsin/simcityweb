@@ -3,14 +3,21 @@ import type { CityRecord } from '../save/cities';
 import type { CitySource, M2W, W2M } from './protocol';
 
 export type SerializedSource = Extract<CitySource, { kind: 'serialized' }>;
-/** R14: W1.2 boots a city main read without deserializing it, and main stores what the worker saves. */
-export type WorkerInit = Extract<M2W, { t: 'init' }> & {
-  city: SerializedSource; persistence: 'main';
+export type IdbSource = Extract<CitySource, { kind: 'idb' }>;
+/** W1.3 (§4.1 step 2): the worker reads the city from its own IndexedDB and writes its saves and snapshots there
+ *  (`'worker-idb'`). R14's W1.2 mode stays for non-persistent stores and the boot fallback: main reads the record
+ *  without deserializing it, and stores what the worker saves (`'main'`). */
+export type WorkerInit = Extract<M2W, { t: 'init' }> & ({ city: IdbSource; persistence: 'worker-idb' } | { city: SerializedSource; persistence: 'main' }) & {
   /** recovery markers name the region (CityPersistence.regionName) */
   regionName?: string;
   /** deterministic mode (§5.1, hosts.test): the live flag stays off, ticks are ignored, days come from debug.runDays */
   deterministic?: boolean;
+  /** W1.3 (§4.4): false boots the save as it is, without the journal bound to it ("Restart from autosave") */
+  replay?: boolean;
 };
+/** W1.3 (§4.1 step 3): the worker's IndexedDB open fell back to memory while main's store persists; the host restarts
+ *  the worker with persistence 'main' rather than let it save into memory */
+export const IDB_UNAVAILABLE = 'idb-unavailable';
 export type WorkerInput = Exclude<M2W, { t: 'init' }> | WorkerInit
   /** Backpressure (§2.10) without ticks: main acks after a packet with replies and before the worker's window fills,
    *  so a hidden tab's save still replies (T032 minor 8). `epoch` counts the Readys main adopted: ticks posted before a

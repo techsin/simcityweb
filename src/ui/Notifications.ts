@@ -5,6 +5,7 @@ import { escapeHtml, h } from './dom';
 import { icon } from './icons';
 import { dayLabel } from './format';
 import { newsMark, tickerItems } from './newsLog';
+import { newsAction as adviceNewsAction } from './adviceActions';
 import type { RewardsPanel } from './panels/ListPanels';
 import { isEventHeadline, sightingCameraDistance } from '../sim/economy/eventHeadlines';
 
@@ -496,6 +497,12 @@ export class Toasts {
   constructor(private ctx: GameContext, parent: HTMLElement) {
     this.el = h('div', { class: 'toasts' });
     parent.appendChild(this.el);
+    // FH-03: the advice's button ("Zone homes", "Rezone"...), found by NewsItem.ref, never by the text (adviceActions.ts)
+    this.newsAction = (n) => {
+      const act = adviceNewsAction(n);
+      const cell = n.x !== undefined && n.z !== undefined ? { x: n.x, z: n.z } : null;
+      return act ? { hint: act.label, icon: act.icon, run: () => act.run(ctx, cell) } : undefined;
+    };
     ctx.signal?.addEventListener('abort', () => {
       for (const t of this.timers) clearTimeout(t);
       this.timers.clear();
