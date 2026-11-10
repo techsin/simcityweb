@@ -30,6 +30,18 @@ export interface RegionScreenCallbacks {
   onImported?(region: RegionData): void;
 }
 
+/**
+ * FH-11: what the recommended tile's card says about its land, worded from the tile's own shares (fractions of the tile:
+ * RegionModel.tileWaterFraction and tileFlatFraction), so it cannot promise "a little water" next to "0% water". The
+ * water words follow the rounded percentage the card shows; "mostly" means more than half of the tile.
+ */
+export function recommendedTileLand(water: number, flat: number): string {
+  const pct = Math.round(water * 100);
+  const land = flat > 0.5 ? 'mostly flat land' : flat >= 0.25 ? 'some flat land' : 'little flat land';
+  const wet = pct === 0 ? (water > 0 ? 'almost no water' : 'no water') : pct < 20 ? 'a little water' : pct <= 40 ? 'some water' : 'a lot of water';
+  return `${land} with ${wet}`;
+}
+
 export class RegionScreen {
   readonly el: HTMLElement;
   readonly view: RegionView;
@@ -233,7 +245,8 @@ export class RegionScreen {
     if (!tile) return;
     const c = tile.city;
     const km = tile.size;
-    const water = Math.round(this.model.tileWaterFraction(tile) * 100);
+    const waterShare = this.model.tileWaterFraction(tile);
+    const water = Math.round(waterShare * 100);
     const img = c?.thumbnail ? h('img', { class: 'tc-img', src: c.thumbnail, alt: '' }) : this.tilePreview(tile);
     const actions = h('div', { class: 'tc-actions' });
     if (c) {
@@ -260,7 +273,7 @@ export class RegionScreen {
         'div',
         { style: 'min-width:0' },
         h('div', { class: 'tc-title' }, h('h3', {}, c ? c.name : 'Unfounded land'), h('span', { class: `size-badge s${tile.size}` }, TILE_SIZE_LABEL[tile.size])),
-        h('div', { class: 'tc-sub' }, c ? `Mayor ${c.mayor} · ${c.difficulty} difficulty` : tile === this.view.recommendedTile ? `${guideCopy.phaseA.A3Tile()}: mostly flat land with a little water.` : 'Found a city here — its terrain will match the neighbouring tiles.'),
+        h('div', { class: 'tc-sub' }, c ? `Mayor ${c.mayor} · ${c.difficulty} difficulty` : tile === this.view.recommendedTile ? `${guideCopy.phaseA.A3Tile()}: ${recommendedTileLand(waterShare, this.model.tileFlatFraction(tile))}.` : 'Found a city here — its terrain will match the neighbouring tiles.'),
         h('div', { class: 'tc-stats' }, ...stats),
         actions,
       ),

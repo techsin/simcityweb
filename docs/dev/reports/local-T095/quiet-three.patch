@@ -1,0 +1,250 @@
+diff --git a/src/render/world/PostFX.ts b/src/render/world/PostFX.ts
+index 95331b25..fc57480c 100644
+--- a/src/render/world/PostFX.ts
++++ b/src/render/world/PostFX.ts
+@@ -13,6 +13,7 @@ import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
+ import { GTAOShader, generateMagicSquareNoise } from 'three/examples/jsm/shaders/GTAOShader.js';
+ import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
+ import type { QualitySettings } from './quality';
++import { quietFxaaShader } from './quietShaders';
+ 
+ const QUAD_VERT = /* glsl */ `
+ varying vec2 vUv;
+@@ -445,7 +446,7 @@ export class PostFX {
+     this.fxaaMat = new THREE.ShaderMaterial({
+       uniforms: THREE.UniformsUtils.clone(FXAAShader.uniforms),
+       vertexShader: FXAAShader.vertexShader,
+-      fragmentShader: FXAAShader.fragmentShader,
++      fragmentShader: quietFxaaShader(FXAAShader.fragmentShader) ?? FXAAShader.fragmentShader,
+       depthTest: false,
+       depthWrite: false,
+       toneMapped: false,
+diff --git a/src/render/world/Sky.ts b/src/render/world/Sky.ts
+index fceea1d5..b78d94db 100644
+--- a/src/render/world/Sky.ts
++++ b/src/render/world/Sky.ts
+@@ -8,6 +8,7 @@
+ import * as THREE from 'three';
+ import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
+ import { ATMOS_GLSL, atmTransmittanceJS } from './atmosphere';
++import { quietPmrem } from './quietShaders';
+ import { getNoiseTexture } from './textures';
+ import type { Climate } from '../../core/types';
+ 
+@@ -442,7 +443,7 @@ export class SkySystem {
+       toneMapped: false,
+     });
+     this.envQuad = new FullScreenQuad(this.envMat);
+-    this.pmrem = new THREE.PMREMGenerator(renderer);
++    this.pmrem = quietPmrem(new THREE.PMREMGenerator(renderer));
+ 
+     const geo = new THREE.BufferGeometry();
+     geo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
+diff --git a/src/ui/thumbs.ts b/src/ui/thumbs.ts
+index bfb6aeda..7baf8a7a 100644
+--- a/src/ui/thumbs.ts
++++ b/src/ui/thumbs.ts
+@@ -5,6 +5,7 @@
+  */
+ import * as THREE from 'three';
+ import { viewOf } from '../game/geometryView';
++import { quietPmrem } from '../render/world/quietShaders';
+ 
+ type Assets = {
+   getModelGeometry: (id: string, variant?: number) => THREE.BufferGeometry;
+@@ -71,7 +72,7 @@ class ThumbRenderer {
+         vertexShader: 'varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0);} ',
+         fragmentShader: 'varying vec3 vP; void main(){ float h=vP.y; vec3 top=vec3(0.32,0.52,0.85), hor=vec3(0.78,0.85,0.92), gr=vec3(0.32,0.30,0.27); vec3 c = h>0.0? mix(hor, top, pow(h,0.6)) : mix(hor, gr, pow(-h,0.4)); gl_FragColor=vec4(c*1.4,1.0);} ',
+       })));
+-      const pm = new THREE.PMREMGenerator(this.renderer);
++      const pm = quietPmrem(new THREE.PMREMGenerator(this.renderer));
+       this.scene.environment = pm.fromScene(env, 0.02).texture;
+       this.scene.environmentIntensity = 0.9;
+       const sun = new THREE.DirectionalLight(0xfff1dc, 2.4);
+diff --git a/src/render/world/quietShaders.ts b/src/render/world/quietShaders.ts
+new file mode 100644
+index 00000000..3076e201
+--- /dev/null
++++ b/src/render/world/quietShaders.ts
+@@ -0,0 +1,63 @@
++/**
++ * Text patches for two of three.js' own programs (r186) whose D3D compile (ANGLE on Windows) logs warnings on every
++ * city load. Neither changes what is drawn; each leaves the source alone when it is not the text it was written for
++ * (tests/render/quietShaders.test.ts fails then, so a three.js update is noticed).
++ *  - the PMREM prefilter ("PMREMGGXConvolution", PMREMGenerator._getGGXShader): five X4122 lines, "sum of 0.996094 and
++ *    -2.98545e-017 cannot be represented accurately in double precision"
++ *  - FXAAShader (the presets without MSAA): two X3595 "gradient instruction used in a loop with varying iteration" and
++ *    X4000 "use of potentially uninitialized variable (f_ApplyFXAA)"
++ */
++import type * as THREE from 'three';
++
++const GGX_UNIFORM = 'uniform float mipInt;';
++const GGX_LOOP = 'for(uint i = 0u; i < uint(GGX_SAMPLES); i++) {';
++
++/**
++ * The prefilter's 256-sample loop starts at a constant, so D3D's compiler evaluates its first samples while it
++ * analyses the loop; samples 1-3 lie a float's rounding of 2 pi away from an axis, their 1.0 - t * t absorbs a 1e-17
++ * and each is reported. With the start read from a uniform (always 0) there is nothing to evaluate ahead: the compiled
++ * loop body is the same, instruction for instruction. Returns null for any other source.
++ */
++export function quietGgxShader(fragmentShader: string): string | null {
++  if (!fragmentShader.includes(GGX_UNIFORM) || !fragmentShader.includes(GGX_LOOP)) return null;
++  return fragmentShader.replace(GGX_UNIFORM, `${GGX_UNIFORM}\nuniform int ggxFirst;`).replace(GGX_LOOP, 'for(uint i = uint(ggxFirst); i < uint(GGX_SAMPLES); i++) {');
++}
++
++/**
++ * Patch the prefilter material of a PMREM generator when the generator allocates it (before its first compile, and
++ * again after a size change makes a new one).
++ */
++export function quietPmrem<T extends THREE.PMREMGenerator>(pmrem: T): T {
++  const p = pmrem as unknown as { _allocateTargets?: () => unknown; _ggxMaterial?: THREE.ShaderMaterial | null };
++  const allocate = p._allocateTargets;
++  if (typeof allocate !== 'function') return pmrem;
++  p._allocateTargets = function (this: typeof p) {
++    const target = allocate.call(this);
++    const m = this._ggxMaterial;
++    const src = m && !m.uniforms.ggxFirst ? quietGgxShader(m.fragmentShader) : null;
++    if (m && src) {
++      m.fragmentShader = src;
++      m.uniforms.ggxFirst = { value: 0 };
++    }
++    return target;
++  };
++  return pmrem;
++}
++
++const FXAA_SAMPLE = 'return texture( tex2D, uv );';
++const FXAA_SKIP = /if \( ShouldSkipPixel\( luminance \) \) \{\s*return Sample\( tex2D, uv \);\s*\}/;
++const FXAA_TAIL = /(uv\.x \+= edge\.pixelStep \* finalBlend;\s*\})(\s*return Sample\( tex2D, uv \);)/;
++
++/**
++ * FXAA reads its input with implicit derivatives inside the two edge-search loops (X3595), and ApplyFXAA returns from
++ * inside a branch (X4000). The input is a render target with one mip level, so sampling level 0 reads the same texels;
++ * a skipped pixel leaves uv untouched, so skipping the blend block and falling through to the last return samples what
++ * the early return did. Returns null for any other source.
++ */
++export function quietFxaaShader(fragmentShader: string): string | null {
++  if (!fragmentShader.includes(FXAA_SAMPLE) || !FXAA_SKIP.test(fragmentShader) || !FXAA_TAIL.test(fragmentShader)) return null;
++  return fragmentShader
++    .replace(FXAA_SAMPLE, 'return textureLod( tex2D, uv, 0.0 );')
++    .replace(FXAA_SKIP, 'if ( ! ShouldSkipPixel( luminance ) ) {')
++    .replace(FXAA_TAIL, '$1\n}$2');
++}
+diff --git a/tests/render/quietShaders.test.ts b/tests/render/quietShaders.test.ts
+new file mode 100644
+index 00000000..8a7c0736
+--- /dev/null
++++ b/tests/render/quietShaders.test.ts
+@@ -0,0 +1,112 @@
++/**
++ * T095: the text patches of three.js' own programs (src/render/world/quietShaders.ts). Pure JS, no WebGL context.
++ *  - three's PMREM prefilter and FXAA sources still hold the text the patches were written for (a three.js update
++ *    that changes them fails here instead of silently bringing the compiler warnings back)
++ *  - the prefilter patch changes the loop's start and nothing else; quietPmrem applies it to every prefilter material a
++ *    generator allocates, before its first compile
++ *  - the FXAA patch samples level 0 and gives ApplyFXAA one return around the same blend block
++ */
++import { describe, expect, it } from 'vitest';
++import * as THREE from 'three';
++import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
++import { quietFxaaShader, quietGgxShader, quietPmrem } from '../../src/render/world/quietShaders';
++
++type Pmrem = { _setSize(size: number): void; _allocateTargets(): THREE.WebGLRenderTarget; _ggxMaterial: THREE.ShaderMaterial; _blurMaterial: THREE.ShaderMaterial };
++/** a generator that has allocated its materials for a cube size (three's own code path, without a renderer) */
++function allocated(pmrem: THREE.PMREMGenerator, size = 256): Pmrem {
++  const p = pmrem as unknown as Pmrem;
++  p._setSize(size);
++  p._allocateTargets().dispose();
++  return p;
++}
++const generator = () => new THREE.PMREMGenerator({} as THREE.WebGLRenderer);
++const flat = (s: string) => s.replace(/\s+/g, ' ').trim();
++
++/** the body of a GLSL function (between its braces), whitespace collapsed (in the signature too) */
++function body(source: string, signature: string): string {
++  const src = flat(source), at = src.indexOf(signature);
++  if (at < 0) throw new Error(`no ${signature}`);
++  const open = src.indexOf('{', at);
++  for (let i = open, depth = 0; i < src.length; i++) {
++    if (src[i] === '{') depth++;
++    else if (src[i] === '}' && --depth === 0) return src.slice(open + 1, i).trim();
++  }
++  throw new Error(`unbalanced ${signature}`);
++}
++
++describe('T095: three\'s PMREM prefilter starts its sample loop from a uniform', () => {
++  const original = allocated(generator())._ggxMaterial.fragmentShader;
++
++  it('changes the loop start and declares its uniform, nothing else', () => {
++    const patched = quietGgxShader(original);
++    expect(patched, 'three.js changed PMREMGenerator._getGGXShader: check the X4122 warnings again').not.toBeNull();
++    expect(patched).toContain('uniform int ggxFirst;');
++    expect(patched).toContain('for(uint i = uint(ggxFirst); i < uint(GGX_SAMPLES); i++) {');
++    expect(patched!.replace('\nuniform int ggxFirst;', '').replace('uint i = uint(ggxFirst);', 'uint i = 0u;')).toBe(original);
++    // the lines D3D's compiler evaluated ahead for samples 1-3 are untouched
++    expect(patched).toContain('t2 = (1.0 - s) * sqrt(1.0 - t1 * t1) + s * t2;');
++    expect(patched).toContain('vec3 Nh = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * V;');
++  });
++
++  it('quietPmrem patches each prefilter material a generator allocates, with the start at 0', () => {
++    const pmrem = quietPmrem(generator());
++    const first = allocated(pmrem)._ggxMaterial;
++    expect(first.fragmentShader).toBe(quietGgxShader(original));
++    expect(first.uniforms.ggxFirst).toEqual({ value: 0 });
++    expect(Object.keys(first.uniforms).sort()).toEqual(['envMap', 'ggxFirst', 'mipInt', 'roughness']);
++    // another size: three disposes its materials and makes new ones
++    const second = allocated(pmrem, 64)._ggxMaterial;
++    expect(second).not.toBe(first);
++    expect(second.fragmentShader).toContain('uint i = uint(ggxFirst);');
++    expect(second.uniforms.ggxFirst).toEqual({ value: 0 });
++    // the same size again keeps the material (and its patch) as it is
++    const src = second.fragmentShader;
++    expect(allocated(pmrem, 64)._ggxMaterial).toBe(second);
++    expect(second.fragmentShader).toBe(src);
++    // the other PMREM material is not touched
++    expect(allocated(pmrem, 64)._blurMaterial.fragmentShader).toBe(allocated(generator(), 64)._blurMaterial.fragmentShader);
++  });
++
++  it('leaves any other source and object alone', () => {
++    expect(quietGgxShader('void main() { gl_FragColor = vec4(1.0); }')).toBeNull();
++    expect(quietGgxShader(original.replace('uniform float mipInt;', 'uniform float mip;'))).toBeNull();
++    const other = {} as THREE.PMREMGenerator;
++    expect(quietPmrem(other)).toBe(other);
++    expect(Object.keys(other)).toEqual([]);
++  });
++});
++
++describe('T095: three\'s FXAA samples level 0 and returns once', () => {
++  const original = FXAAShader.fragmentShader;
++  const patched = quietFxaaShader(original);
++
++  it('reads its input at level 0 everywhere', () => {
++    expect(patched, 'three.js changed FXAAShader: check the X3595 / X4000 warnings again').not.toBeNull();
++    expect(body(original, 'vec4 Sample( sampler2D tex2D, vec2 uv )')).toBe('return texture( tex2D, uv );');
++    expect(body(patched!, 'vec4 Sample( sampler2D tex2D, vec2 uv )')).toBe('return textureLod( tex2D, uv, 0.0 );');
++    // (every other read goes through Sample)
++    expect(patched).not.toMatch(/\btexture(2D)?\s*\(/);
++  });
++
++  it('ApplyFXAA skips the same blend block and falls through to its last return', () => {
++    const signature = 'vec4 ApplyFXAA( sampler2D tex2D, vec2 texSize, vec2 uv )';
++    const was = /^(.+?) if \( ShouldSkipPixel\( luminance \) \) \{ return Sample\( tex2D, uv \); \} (.+) return Sample\( tex2D, uv \);$/.exec(body(original, signature));
++    const now = /^(.+?) if \( ! ShouldSkipPixel\( luminance \) \) \{ (.+) \} return Sample\( tex2D, uv \);$/.exec(body(patched!, signature));
++    expect(was).not.toBeNull();
++    expect(now).not.toBeNull();
++    expect(now![1]).toBe(was![1]);
++    expect(now![2]).toBe(was![2]);
++    // the block only moves uv, so a skipped pixel reads what the early return read
++    expect(was![2]).toMatch(/uv\.y \+= edge\.pixelStep \* finalBlend; \} else \{ uv\.x \+= edge\.pixelStep \* finalBlend; \}$/);
++    expect(body(patched!, signature).match(/\breturn\b/g)).toHaveLength(1);
++    // nothing outside Sample and ApplyFXAA changed
++    const cut = (s: string) => flat(s.slice(0, s.indexOf('vec4 ApplyFXAA'))).replace('textureLod( tex2D, uv, 0.0 )', 'texture( tex2D, uv )');
++    expect(cut(patched!)).toBe(cut(original));
++    expect(flat(patched!.slice(patched!.indexOf('void main()')))).toBe(flat(original.slice(original.indexOf('void main()'))));
++  });
++
++  it('leaves any other source alone', () => {
++    expect(quietFxaaShader('void main() { gl_FragColor = vec4(1.0); }')).toBeNull();
++    expect(quietFxaaShader(original.replace('return texture( tex2D, uv );', 'return texture2D( tex2D, uv );'))).toBeNull();
++  });
++});

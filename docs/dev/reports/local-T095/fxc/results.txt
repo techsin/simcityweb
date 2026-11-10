@@ -1,0 +1,37 @@
+T095: FXC output for the hand-translated replicas in this folder (no browser, no GPU: the compiler only).
+Compiler: "C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64\fxc.exe" (Microsoft (R) Direct3D Shader Compiler 10.1)
+Command, per file: fxc /nologo /T ps_5_0 /E main /Fo out.cso <file>.hlsl
+The replicas are written in the style of ANGLE's HLSL output; their line numbers differ from the browser's (ANGLE's
+own preamble is longer), the columns and the numbers do not.
+
+== water_before.hlsl    (waterGround as it was: a return inside the in-map branch)
+water_before.hlsl(26,1): warning X4000: use of potentially uninitialized variable (f_waterGround_float3)
+
+== water_after.hlsl     (this lane: one return after an if / else)
+(no warnings)
+
+== pmrem_ggx_before.hlsl    (three.js r186 PMREMGenerator._getGGXShader, as shipped)
+pmrem_ggx_before.hlsl(124,81-129): warning X4122: sum of 0.996094 and -2.98545e-017 cannot be represented accurately in double precision
+pmrem_ggx_before.hlsl(123,37-61): warning X4122: sum of 1 and -1.49272e-017 cannot be represented accurately in double precision
+pmrem_ggx_before.hlsl(124,82-106): warning X4122: sum of 1 and -1.49272e-017 cannot be represented accurately in double precision
+pmrem_ggx_before.hlsl(123,37-61): warning X4122: sum of 1 and -1.66644e-018 cannot be represented accurately in double precision
+pmrem_ggx_before.hlsl(124,82-106): warning X4122: sum of 1 and -1.66644e-018 cannot be represented accurately in double precision
+
+== pmrem_ggx_after.hlsl     (the optional patch: the sample loop starts from a uniform that is always 0)
+(no warnings)
+
+== fxaa_before.hlsl     (three.js r186 FXAAShader, as shipped; the two loops carry ANGLE's [loop])
+fxaa_before.hlsl(11,12-86): warning X3595: gradient instruction used in a loop with varying iteration; partial derivatives may have undefined value
+fxaa_before.hlsl(11,12-86): warning X3595: gradient instruction used in a loop with varying iteration; partial derivatives may have undefined value
+fxaa_before.hlsl(191,1): warning X4000: use of potentially uninitialized variable (f_ApplyFXAA)
+
+== fxaa_after.hlsl      (the optional patch: level-0 samples, one return in ApplyFXAA)
+(no warnings)
+
+Variants tried and not kept:
+- water, the local declared without an initialiser, or the else written as a second if on the negated flag: no warnings
+- water, profile ps_4_0: the same as ps_5_0 (X4000 before, none after)
+- PMREM, the loop's upper bound from a uniform (start still constant): three of the five X4122 remain
+- PMREM, the tiny squares clamped to zero before the subtraction: no warnings, but the compiled loop body changes
+- FXAA, level-0 samples only: the two X3595 go, X4000 (f_ApplyFXAA) stays
+- FXAA, one return only: X4000 goes, the two X3595 stay

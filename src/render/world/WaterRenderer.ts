@@ -52,12 +52,16 @@ vec3 wCityRefl = vec3(0.0);
 
 float waterGround(vec3 P) {
   float W = uN * uCell;
+  // (one return: D3D's compiler reports a return from inside the branch as a possibly uninitialised result, X4000)
+  float ground;
   if (P.x >= 0.0 && P.z >= 0.0 && P.x <= W && P.z <= W) {
     vec2 uv = (P.xz / uCell + 0.5) / (uN + 1.0);
-    return texture2D(uHeightTex, uv).r;
+    ground = texture2D(uHeightTex, uv).r;
+  } else {
+    vec2 uv = (P.xz + uOuterExt) / (W + 2.0 * uOuterExt);
+    ground = texture2D(uOuterTex, uv).r;
   }
-  vec2 uv = (P.xz + uOuterExt) / (W + 2.0 * uOuterExt);
-  return texture2D(uOuterTex, uv).r;
+  return ground;
 }
 
 vec3 waterShade(vec3 P) {
