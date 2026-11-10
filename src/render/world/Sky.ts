@@ -84,9 +84,9 @@ const lum = (c: THREE.Color) => c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722;
 const _lc = new THREE.Color();
 const _lc2 = new THREE.Color();
 
-/** Smog only dims the sun above the tint threshold; the moon and the sky LUT keep their normal cadence. */
-export function smogSunTransmission(smog: number): number {
-  return 1 - 0.25 * THREE.MathUtils.smoothstep(smog, 0.25, 0.6);
+/** The eased tint also dims the sun; the moon and the sky LUT keep their normal cadence. */
+export function smogSunTransmission(tint: number): number {
+  return 1 - 0.25 * THREE.MathUtils.clamp(tint, 0, 1);
 }
 
 /**
@@ -401,7 +401,7 @@ export class SkySystem {
   };
   /** 0..1 amount of city lights (population driven), set by WorldView (1 = no dark-city exposure boost) */
   cityLights = 1;
-  /** Camera-local smog, disabled by WorldView on Low and in data views. */
+  /** Eased camera-local tint (0..1), disabled by WorldView on Low and in data views. */
   smog = 0;
   climate: ClimateSky;
 

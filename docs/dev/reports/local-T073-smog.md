@@ -1,106 +1,133 @@
-# T073 — FEEL-16 local smog haze
+# T073 — FEEL-16 local smog haze, QA fix round 2
 
-Branch `local/T073-smog`, based on dev `1c2019c`. Changes are uncommitted.
+Branch `local/T073-smog`. Round 1 is committed at `deb0ad9`; these NOTE-071 fixes are **uncommitted**.
+The desktop worker reports round 1's full gate green and real-GPU FEEL-16 Acceptance checks passed. Its supplemental
+`qa_round1.md` identified B1–B3 below; B4 (twilight dimming alongside the sun, with moonlight untouched) is
+informational and keeps its behavior. Round 2 has not been browser-tested here.
 
 ## Changes per file
 
-- `src/render/world/WorldView.ts`: `DistrictSmog` snapshots mirrored building centers and `BF.Polluted` into
-  32-cell buckets after pollution/building changes, at most once per absolute game month (plus initialization or
-  replica replacement). At 2 Hz it checks at most nine buckets and an exact 32-cell circle, counting each building
-  once. Smog is `0.8 * localShare + 0.2 * min(localShare, latestAirHistory)`, with invalid history treated as zero.
-  This keeps clean districts neutral even with stale dirty-air history. The scalar eases with a three-second
-  exponential time constant. Existing event callbacks invalidate the snapshot; reset drops it. Haze gains
-  `1 + 2.5 * smog`. All data overlays disable the effect; Low keeps density only.
-- `src/render/world/PostFX.ts`: one new float uniform, `uSmog`, in the existing composite. Above 0.25 it applies
-  brown-grey chromaticity `(0.55, 0.50, 0.42)`, normalized around green, reaching full strength at 0.6. The zero
-  branch preserves existing grading. No new pass, render target, texture sample, or draw call.
-- `src/render/world/Sky.ts`: a camera-local CPU scalar dims daytime direct light and the existing sun-disk value,
-  smoothly to 75% at smog 0.6. Moonlight is unchanged. Smog does not change sky-LUT parameters, LUT invalidation,
-  or environment refresh cadence.
-- `tests/render/smog.test.ts` (new, 17 cases): radius/centers, unique counts, history handling, clean neutrality,
-  2 Hz sampling including uneven frames, three-second easing, dirty/monthly cache rules, replica replacement,
-  and the single-uniform/zero-branch shader contract without WebGL.
-- `tests/render/smogWiring.test.ts` (new, seven cases): all four quality tiers, every data overlay, invalidation
-  through existing callbacks and unsubscribe cleanup, sun threshold/floor, actual Sky update dimming, unchanged
-  moonlight, and no additional LUT/PMREM refresh from smog.
-- This report is the only documentation change. **No infra hunks, no source hunks outside the three owned files,
-  and no cloud-held files changed.** No simulation, save schema, systemData key, command, or RNG draw changes.
+- `src/render/world/WorldView.ts`:
+  - **B1 / NOTE-071:** the monthly snapshot reads catalog metadata with the renderers' existing `getDef` API.
+    A building counts as polluted when `BF.Polluted` is set **or** `def.pollution.air > 0`. Buildings whose catalog
+    category is exactly `park` or `civic` are excluded from both counts. Other categories, including utilities,
+    transport, and non-emitting growables, remain eligible. Unknown defs still use flags. This is the lead's
+    **reading of the plan under NOTE-071**, not an independent plan change. No pollution raster or sim-system read.
+  - **B2:** density share and visible tint each ease with a **one-second time constant**. At the 2 Hz sample,
+    the tint target is `smoothstep(0.25, 0.6, targetShare)`; this target is eased directly. Thresholding no longer
+    delays arriving tint or cuts departing tint short. Density still multiplies the original climate/time/zoom
+    haze by `1 + 2.5 * value`. Air-history blending remains
+    `0.8 * localShare + 0.2 * min(localShare, latestAirHistory)`, with invalid history treated as zero.
+  - **B3:** a fresh, branded replica of the same city keeps both eased values, while discarding its old monthly
+    snapshot and rebuilding from the replacement. A direct `setState`, an unbranded/local reset, a same-object
+    reset, or a different city starts from zero. The existing reset callback is reused; no new subscriptions.
+    Identity checks size, seed, start year, name, region, and tile. `CityState` has no city UUID; the explicit
+    resync path plus existing `REPLICA` brand distinguishes replica adoption from `Simulation.replaceState`.
+- `src/render/world/PostFX.ts`: existing `uSmog` now carries the **eased tint factor** (0..1), consumed directly
+  by the brown-grey composite tint. No shader-side threshold on the eased value. Still only one added uniform
+  relative to pre-T073, no extra pass, texture sample, render target, or draw call.
+- `src/render/world/Sky.ts`: the same eased tint directly controls sun/disk attenuation, from 1 to 0.75. No second
+  threshold. Existing twilight policy, moonlight, LUT parameters, and LUT/PMREM refresh cadence are unchanged.
+- `tests/render/smog.test.ts`: updated easing assertions; added symmetric partial-strength tint/density fade,
+  immediate tint onset, below-threshold exact-zero tint, eventual exact-zero clean tail, and explicit adoption
+  preservation versus reset coverage. Radius, 2 Hz sampling, history, monthly caching, and shader checks remain.
+- `tests/render/smogWiring.test.ts`: updated tint-uniform and sun semantics; added exact-zero clean-city uniform
+  checks and a reset matrix covering same-city replica resync, changed seed/name/region/tile, real/local reset,
+  and a same-replica reset. All quality tiers and data overlays remain covered.
+- `tests/render/smogEmitters.test.ts` (new): emitting factory/plant plus flagged homes; park/civic exclusion;
+  all-excluded neutrality; positive/zero/negative/missing air versus noise-only metadata; missing defs; monthly
+  cached emitter decisions. Uses actual catalog metadata, with temporary test metadata restored afterward.
+- This report records the decisions, check results, and round-2 browser checklist.
 
-The monthly rebuild is O(buildings). A 2 Hz sample only visits nearby buckets; the remaining per-frame work is
-scalar easing and atmosphere values. No new event subscriptions were added: the existing WorldView callbacks and
-their existing disposal cleanup are reused.
+**No infra hunks, no other source files edited, no cloud-held files edited, no cloud requests.** Importing the
+existing replica brand from `src/save/state.ts` only reads its marker; that file is untouched. No simulation,
+save schema, systemData, action, balance, or RNG changes.
 
-## Acceptance and checks
+The monthly rebuild remains O(buildings), only after invalidation and at most once per absolute game month
+(initialization/resync rebuilds are exceptions). At 2 Hz an exact 32-cell circle checks at most nine spatial
+buckets. Between samples only the two scalar easing updates run; no per-frame map scan or catalog lookup.
+Low still changes density only. Data overlays disable density gain, tint, and sun dimming.
 
-| Gate | Result |
+## Expected in/out times (B2)
+
+Both directions use `1 - exp(-dt)` on the **visible tint itself**, including partial-strength tint. From the
+first sample of the new district:
+
+| Fraction of transition completed | Arriving | Leaving |
+|---|---:|---:|
+| 50% | 0.693 s | 0.693 s |
+| 90% | 2.303 s | 2.303 s |
+| 95% | 2.996 s | 2.996 s |
+
+Sampling adds **0–0.5 s** each way, plus frame quantization: expect **about 3.0–3.5 s to 95%** after the camera move
+at 60 fps. Tint begins on the first eased frame after the sample, with no extra threshold wait. These are scalar
+expectations, not a new GPU measurement. The faint exponential tail snaps to exact zero below `1e-5` (at most
+about 11.52 s after sampling a clean target). A fresh clean city is exactly zero from its first frame.
+
+## Gates and diagnostics
+
+| Check | Round-2 result |
 |---|---|
-| Dirty district (at least 60% Polluted): frame R−B rises by at least six 8-bit levels | **Pending real-GPU comparison.** Tint is implemented; no browser was run. Check Medium/High/Ultra; Low has the plan's density-only exception. |
-| No change when nothing is polluted | Exact-zero cache result passed the native Node probe. Tests cover empty/clean districts with stale air history, plus zero shader branch. Pixel comparison remains for the lead. |
-| One uniform added | Source diff adds only `uSmog`; the new PostFX test checks its declaration, shared uniform object, and neutral branch. |
-| `npx tsc --noEmit` | **Passed**, including both new test files. |
-| New focused Vitest files, through quietrun | **Startup blocked:** both files fail before collection while Vite loads `vite.config.ts`: `externalize-deps`, `windowsSafeRealPathSync`, `spawn EPERM`. No test pass is claimed. |
-| Existing focused tests / worker hygiene | **Left to lead:** common Vitest startup failure prevents execution. Files listed below. |
-| Native Node functional probe | **Passed:** exact circular radius/centers; monthly dirty snapshot/no repeated scan; high-history clean neutrality/replica replacement; three-second easing; 2 Hz uneven-frame cadence. This does not replace Vitest or GPU checks. |
+| `npx tsc --noEmit`, including all three smog test files | **Passed.** |
+| Focused Vitest, through quietrun | **Startup blocked:** Vite config loading fails before collection with `externalize-deps` / `windowsSafeRealPathSync` / `spawn EPERM`. No round-2 Vitest pass claimed. |
+| Short native Node diagnostic | **Five checks passed:** emitters/denominator; dirty monthly cache; symmetric tint/density easing and exact-zero tail; production `setState` resync/reset routing; clean high-history exact-zero values. |
 | `git diff --check` | **Passed.** |
-| 128 × 15 seed-7 bot | **Could not start:** `tsx` is absent from the offline npm cache (`ENOTCACHED`). Expected unchanged 2015 residents `[61124, 93804, 37971]`, total **192,899**; not measured here. |
-| Medium/Hard determinism; old-save continuation | Render-only changes; expected unchanged. Two-process hashes and continuation runs were not performed. |
-| Full Vitest / browser / real-GPU frame budget | Left to lead as requested. No full suite, bench, or browser run. |
+| 128 × 15 seed-7 bot, through quietrun | **Could not start:** `tsx` is unavailable in the offline npm cache (`ENOTCACHED`). Expected unchanged 2015 residents `[61124, 93804, 37971]`, total **192,899**, not remeasured here. |
+| Full Vitest, two-process Medium/Hard hashes, old-save continuation | Not run here. Round-1 full gate is green per desktop worker; round-2 focused/full reruns remain with lead. |
+| Real-GPU acceptance, transition timings, and frame cost | Not run here, per lane rules; browser checklist below. |
 
-Exact attempted commands (from this worktree):
+The native diagnostic extracts the production `DistrictSmog` class and `WorldView.setState` method verbatim and
+runs them using Node type stripping, actual Three math helpers, and small metadata/state stand-ins. It does not
+replace Vitest or GPU QA. Scratch files: `smog-round2-probe.mts`, `smog-round2-probe.txt`,
+`vitest-round2-smog.txt`, and `simbot-round2-128x15-s7.txt`.
+
+Exact attempted commands from this worktree:
 
 ```powershell
 npx tsc --noEmit
 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/render/smog.test.ts --maxWorkers=1
-node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/render/smogWiring.test.ts --maxWorkers=1
 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
 ```
 
-The bot uses default Medium, plains, water 0.2, default profile, no strategy flags. The rerun must reproduce all
-three wealth counts and their 192,899 total in 2015. No 256 × 60 run is needed for this render-only item.
+The bot uses default Medium, plains, water 0.2, default profile, no strategy flags. Check all three wealth counts
+as well as their 192,899 total; no 256 × 60 run is needed for this render-only fix.
 
-Rerun each test file separately using the same quietrun prefix and `npx vitest run <file> --maxWorkers=1`:
+Rerun these files separately with the same quietrun prefix and `npx vitest run <file> --maxWorkers=1`:
 
-- New: `tests/render/smog.test.ts`, `tests/render/smogWiring.test.ts`.
+- `tests/render/smog.test.ts`, `tests/render/smogWiring.test.ts`, `tests/render/smogEmitters.test.ts`.
 - Existing render coverage: `tests/render/lighting.test.ts`, `tests/render/shadows.test.ts`,
   `tests/render/cutShadows.test.ts`, `tests/render/seasons.test.ts`, `tests/render/exitRetention.test.ts`,
   `tests/render/pendingPreviews.test.ts`.
 - Existing worker coverage: `tests/worker/worldResync.test.ts`, `tests/worker/hygiene.test.ts`.
 
-Diagnostics in the supplied T073 scratch folder: `vitest-smog.txt`, `simbot-128x15-s7.txt`, `smog-probe.mts`, and
-`smog-probe.txt`. The probe extracts the production DistrictSmog class verbatim and executes it with Node's type
-stripping against small read-model stand-ins; it is a functional diagnostic, not a timing run.
+## Plan/code notes
 
-## Plan versus current code
+- NOTE-071 supplies the emitter/denominator and whole-transition readings above. The original plan's global
+  constant haze reference is obsolete; the existing climate/time/zoom baseline is preserved.
+- The raw pollution raster remains unnecessary. The flag and catalog metadata are read only when building the
+  monthly snapshot; the city's air history is mirrored plain data. Old saves need no new keys.
+- The old QA clean fixture cleared `BF.Polluted` but retained emitting factories/plants. Under NOTE-071 that is
+  **not a clean district**. For the unchanged-clean comparison use a neighborhood with neither eligible flagged
+  buildings nor positive-air-emitting defs. Stale city air history alone still gives exactly zero smog.
+- Supplemental round-1 QA reported R−B +8.9 on the qualifying dirty view, Low density-only and all data views
+  correct, and moonlight unchanged. It left controlled frame-cost timing pending. These historical measurements
+  are not claimed as round-2 results.
 
-- The plan's constant global-haze reference is obsolete: WorldView already varies haze by climate, golden hour,
-  and camera distance. The multiplier preserves that baseline.
-- FEEL-16 explicitly specifies building flags rather than the pollution raster. Exact mirrored flags and monthly
-  mirrored `history.air` are available; the raw air raster is only subscribed in its overlay. No sim read or new
-  worker subscription is used.
-- `BF.Polluted` currently applies to residential/commercial buildings and can also represent severe water
-  pollution. Pure factory/plant blocks may therefore have no smog under the specified flag metric. This follows
-  FEEL-16 literally; the air simulation was not changed.
-- The plan leaves the history blend weights and tint ramp unspecified; the values above keep the signal local
-  and clean districts neutral. Easing uses a three-second time constant, so visual comparisons should allow
-  about 12–15 seconds to settle after a camera move.
-- **Cloud-held file requests: none.** Existing host-backed state/events and reset accessor supply the needed data.
+## Round-2 browser checklist
 
-## Browser checklist for the lead
-
-- [ ] On Medium, High, and Ultra, compare the same fixed camera/time/climate over a district with at least 60%
-  Polluted buildings within 32 cells. Allow 12–15 real seconds to settle. Measure frame-average R−B against the
-  clean/control frame: increase must be at least six 8-bit levels. Confirm brown-grey haze and a dimmer sun.
-- [ ] Pan between dirty and clean districts: updates sample at 2 Hz and ease smoothly, without LUT/PMREM refresh
-  spikes caused by the camera-local smog value.
-- [ ] On an entirely clean/empty city, compare baseline pixels at day/dusk/night and across climates; stale air
-  history alone must not change the frame. After leaving dirty air, allow easing to finish.
-- [ ] Open each data overlay, including Air and Emergency: smog density gain, tint, and sun dimming are disabled;
-  returning to normal world restores them.
-- [ ] Switch all four quality tiers. Low changes only haze density; Medium/High/Ultra also tint and dim the sun.
-  Check both daytime and moonlit night; the moon keeps its brightness.
-- [ ] Change pollution/buildings, advance to the following game month, and confirm the snapshot updates once;
-  repeated pollution events in one month do not rebuild the map-sized cache repeatedly. Reload/resync and confirm
-  no stale district values survive.
-- [ ] On the 287k save, check all quality tiers while panning and at rest, including a monthly rebuild frame:
-  remain within the round's +1.0 ms/frame and +3-draw-call budget. This implementation adds zero draws/passes.
-- [ ] Re-run focused/full Vitest and the exact bot command above; verify the unchanged resident counts.
+- [ ] **B1:** revisit the bot industrial core (220,104) and dense1m industrial cores. Confirm factories/plants count
+  without flags and `park`/`civic` categories do not dilute the share. Check brown-grey tint and sun dimming on
+  Medium/High/Ultra; repeat the ≥6-level frame-average R−B Acceptance comparison over a qualifying dirty district.
+- [ ] **B2:** pan dirty → clean and clean → dirty from settled endpoints. Measure 50/90/95% transitions against
+  0.693/2.303/2.996 s plus up to 0.5 s sampling lag, each way. No multi-second initial brown delay; no abrupt
+  disappearance on leaving. Also check a district whose target tint is below full strength.
+- [ ] **B3:** loopback and worker resync at a fixed dirty view: preserve raw `value`, `tint`, and current uniform;
+  rebuild once from the fresh replica without the former clean-frame flash. Direct/local reset and a different
+  city must start from zero.
+- [ ] **Clean baseline:** use a genuinely clean/empty district with no flags or emitting defs, and stale air
+  history 0.9. Confirm density gain/tint/sun values exactly match base across tiers, day/dusk/night, and climates.
+- [ ] **Quality/overlays/B4:** Low density-only; all 25 data overlays disable the whole smog effect. Normal view
+  restores it. Twilight policy remains as round 1, and moonlight stays unchanged.
+- [ ] **Cost/cadence:** monthly rebuild limit after hundreds of invalidations; 2 Hz nearby sampling; all other
+  frames avoid map/catalog traversal. Repeat the controlled large-save rest/pan timing gate; no new draws/passes.
+- [ ] Rerun focused/full Vitest and the exact bot command above; check **192,899** and its three wealth counts.

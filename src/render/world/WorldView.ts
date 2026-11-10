@@ -14,6 +14,8 @@ import { setFoliageSeason, sharedUniforms } from '../../assets/materials';
 import { registerAllModels } from '../../assets/builders';
 import { setTreeSeason } from '../../assets/builders/nat_season';
 import { BF, type CityState, type Building } from '../../sim/CityState';
+import { getDef } from '../../sim/catalog';
+import { REPLICA } from '../../save/state';
 import type { CityEvents } from '../../sim/Simulation';
 import type { CameraControllerApi, CellHit, QualityLevel, WorldViewApi } from '../contracts';
 import { CameraController } from './CameraController';
@@ -74,26 +76,32 @@ export const DUSK_GRADE = {
   lift: [0.0003, 0.001, 0.003] as [number, number, number],
 };
 
-/** Monthly snapshot of mirrored flags. Only the nine nearby buckets are sampled, twice a second. */
+/** Monthly snapshot of mirrored flags and catalog emitters. Only nine nearby buckets are sampled, twice a second. */
 export class DistrictSmog {
   value = 0;
+  tint = 0;
   private state: CityState | undefined;
   private buckets = new Map<number, number[]>();
   private dirty = true;
   private month = -1;
   private sampleIn = 0;
   private target = 0;
+  private tintTarget = 0;
 
   invalidate(): void { this.dirty = true; }
 
+  /** A same-city resync replaces the snapshot without restarting the atmosphere's transition. */
+  adopt(state: CityState, keepValue = false): void {
+    this.state = state;
+    this.buckets.clear();
+    this.dirty = true;
+    this.month = -1;
+    this.sampleIn = 0;
+    if (!keepValue) this.target = this.tintTarget = this.value = this.tint = 0;
+  }
+
   update(state: CityState, dt: number, x: number, z: number): number {
-    if (this.state !== state) {
-      this.state = state;
-      this.buckets.clear();
-      this.dirty = true;
-      this.month = -1;
-      this.sampleIn = this.target = this.value = 0;
-    }
+    if (this.state !== state) this.adopt(state);
     this.sampleIn -= dt;
     if (this.sampleIn <= 1e-9) {
       this.sampleIn += 0.5;
@@ -101,11 +109,13 @@ export class DistrictSmog {
       if (this.dirty && this.month !== state.monthIndex) {
         this.buckets.clear();
         for (const b of state.buildings.values()) {
+          const def = getDef(b.def);
+          if (def?.category === 'park' || def?.category === 'civic') continue;
           const bx = b.x + b.w * 0.5, bz = b.z + b.d * 0.5;
           const key = Math.floor(bz / 32) * stride + Math.floor(bx / 32);
           let bucket = this.buckets.get(key);
           if (!bucket) this.buckets.set(key, (bucket = []));
-          bucket.push(bx, bz, (b.flags & BF.Polluted) ? 1 : 0);
+          bucket.push(bx, bz, (b.flags & BF.Polluted) || (def?.pollution?.air ?? 0) > 0 ? 1 : 0);
         }
         this.month = state.monthIndex;
         this.dirty = false;
@@ -129,9 +139,14 @@ export class DistrictSmog {
       const air = state.history.air.at(-1) ?? 0;
       // History moderates the local signal; it cannot put smog over an unpolluted district.
       this.target = 0.8 * local + 0.2 * Math.min(local, Number.isFinite(air) ? Math.max(0, air) : 0);
+      this.tintTarget = THREE.MathUtils.smoothstep(this.target, 0.25, 0.6);
     }
-    this.value += (this.target - this.value) * (1 - Math.exp(-dt / 3));
+    const ease = 1 - Math.exp(-dt);
+    this.value += (this.target - this.value) * ease;
+    // Threshold the sampled target, not the eased share: tint and sun take the same time in either direction.
+    this.tint += (this.tintTarget - this.tint) * ease;
     if (this.target === 0 && this.value < 1e-5) this.value = 0;
+    if (this.tintTarget === 0 && this.tint < 1e-5) this.tint = 0;
     return this.value;
   }
 }
@@ -456,14 +471,19 @@ export class WorldView implements WorldViewApi {
         if (d.active && d.kind === 'earthquake') this.cameraController.shake(1, 3);
       }),
       // rebuilt as a load does, from the state the host holds now; the camera stays where it is
-      ev.on('reset', () => this.setState(this.getState?.() ?? this.state)),
+      ev.on('reset', () => this.setState(this.getState?.() ?? this.state, true)),
     );
   }
 
-  /** replace / reload the city state (after load). Same map size required; otherwise create a new WorldView. */
-  setState(state: CityState) {
+  /** Replace / reload the city state; only fresh replicas of the same city keep easing on resync.
+   *  Same map size required; otherwise create a new WorldView. */
+  setState(state: CityState, resync = false) {
+    const a = this.state.config, b = state.config;
+    const sameCity = this.state.size === state.size && a.seed === b.seed && a.startYear === b.startYear &&
+      a.name === b.name && a.regionId === b.regionId && a.tileX === b.tileX && a.tileZ === b.tileZ;
+    if (resync && sameCity && state !== this.state && REPLICA in this.state && REPLICA in state) this.smog?.adopt(state, true);
+    else this.smog = undefined;
     this.state = state;
-    this.smog = undefined;
     this.terrain.reset(state);
     this.trees.reset(state);
     this.sky.setClimate(state.config.climate);
@@ -621,8 +641,9 @@ export class WorldView implements WorldViewApi {
 
   private updateSmog(dt: number): void {
     const target = this.cameraController.target;
-    const value = (this.smog ??= new DistrictSmog()).update(this.state, dt, target.x / CELL_SIZE, target.z / CELL_SIZE);
-    this.sky.smog = this.overlay === Overlay.None && this.q.level !== 'low' ? value : 0;
+    const smog = this.smog ??= new DistrictSmog();
+    smog.update(this.state, dt, target.x / CELL_SIZE, target.z / CELL_SIZE);
+    this.sky.smog = this.overlay === Overlay.None && this.q.level !== 'low' ? smog.tint : 0;
   }
 
   /** fog, haze, grading and bloom per time of day & climate */
@@ -635,7 +656,7 @@ export class WorldView implements WorldViewApi {
     const d = this.cameraController.distance;
     const climate = this.state.config.climate;
     const smog = this.overlay === Overlay.None ? this.smog?.value ?? 0 : 0;
-    f.uSmog.value = this.q.level === 'low' ? 0 : smog;
+    f.uSmog.value = this.overlay === Overlay.None && this.q.level !== 'low' ? this.smog?.tint ?? 0 : 0;
     const hazeBase = climate === 'desert' ? 1.6e-4 : climate === 'tropical' ? 1.35e-4 : climate === 'alpine' ? 0.6e-4 : 1.05e-4;
     // morning mist (5..9h), thin at noon, a bit of evening haze
     const mist = Math.max(0, 1 - Math.abs(h - 6.8) / 2.6);
