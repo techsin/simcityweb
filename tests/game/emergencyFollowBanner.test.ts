@@ -37,13 +37,13 @@ function harness(initial = [incident()], fleet: EmergencyVehicle[] = []) {
   const policy = { alerts: initial.map((inc) => ({ id: inc.id, wasPossible: true })), live: false, subscribe: () => () => {} };
   let cause: Cause | null = null, active: number | null = null, now = 0, command = 0;
   const follow = { start: vi.fn((id: number) => { active = id; }), active: () => active, stop: vi.fn(() => { active = null; }) };
-  const dispatch = (id: number, units: EmergencyVehicle[], tag: object | null, type: EmergencyEvent['type'] = 'dispatched', seq = ++command) => {
+  const dispatch = (id: number, units: EmergencyVehicle[], tag: object | null, type: EmergencyEvent['type'] = 'dispatched', seq = ++command, forceSent = false) => {
     const inc = incidents.get(id)!;
     for (const v of units) { if (!fleet.some((q) => q.id === v.id)) fleet.push(v); if (!inc.units.includes(v.id)) inc.units.push(v.id); }
     if (type === 'dispatched' && units.some((v) => v.responder === 'fire')) inc.state = 'dispatched';
     cause = tag ? { seq, tag } : null;
     const event: EmergencyDispatchEvent = { type, id, kind: inc.kind, x: inc.x, z: inc.z, major: inc.major, manualPossible: inc.manualPossible };
-    if (type === 'dispatched' && (tag instanceof DispatchTool || tag === banner)) event.sent = units.map((v) => v.id);
+    if (type === 'dispatched' && (forceSent || tag instanceof DispatchTool || tag === banner)) event.sent = units.map((v) => v.id);
     events.emit('emergency', event);
     cause = null;
   };
@@ -80,6 +80,18 @@ describe('FEEL-09 emergency Follow banner', () => {
   it('never offers Follow for automatic dispatch, including a disaster with a cause tag', () => {
     const h = harness();
     h.dispatch(1, [vehicle(1)], { source: 'triggerDisaster' });
+    h.tick();
+    expect(h.button().style.display).toBe('none');
+    h.button().click();
+    expect(h.follow.start).not.toHaveBeenCalled();
+    expect(h.chip().style.display).toBe('none');
+  });
+
+  it('needs the DispatchTool or Send nearest cause: sent IDs under another cause or none offer no Follow', () => {
+    // (cloud carry-over: sent IDs come only from dispatch commands today; this pins the cause check behind them)
+    const h = harness();
+    h.dispatch(1, [vehicle(5)], { source: 'another command' }, 'dispatched', undefined, true);
+    h.dispatch(1, [vehicle(6)], null, 'dispatched', undefined, true);
     h.tick();
     expect(h.button().style.display).toBe('none');
     h.button().click();
