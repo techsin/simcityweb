@@ -105,7 +105,7 @@ async function scenario({ browser, base, log, shot }) {
   const j1 = await idb(p2, 'recovery', key + '#journal');
   log('1 title: dialog', o1, 'LS', await slot(p2), 'IDB journal', j1, 'IDB snapshot', await idb(p2, 'recovery', key));
   await shot(p2, '12-journal-offered');
-  check('1 the title offers the journal', o1.count === 1 && /record of your edits since the last save/.test(o1.text) && j1?.ops?.length === 3, { o1, j1 });
+  check('1 the title offers the journal', o1.count === 1 && /record of your edits since the last save/.test(o1.text) && j1?.ops?.filter((o) => (o?.op ?? o?.[1]) !== 'setOnboarding').length === 3 /* T037a: a guided city also journals its guide record */, { o1, j1 });
   await p2.getByRole('button', { name: 'Recover' }).click();
   await waitCity(p2);
   const back = await probe(p2, [r1]);
