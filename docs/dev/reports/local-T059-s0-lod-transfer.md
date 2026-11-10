@@ -80,6 +80,13 @@ and a page-side probe control were still queued. On Nov 9, dev `87c7c9c` (T053, 
 `fdd4702`. This branch includes `local/T059-s0-lod-transfer` up to its head, `4fb8bf2`, which is what the handoff
 asks the merge to carry. Every gate below was run again on `fdd4702`.
 
+Dev moved on while the gates waited for the lock, to `cb6ca4c`: T058, T057, T060 FEEL-01, T048, T036s5, and NOTE-060
+to NOTE-064. That is not merged here; the merge step merges and gates it.
+- `git merge-tree` merges it with this branch cleanly. None of it touches the lane's two files.
+- On that merged tree, in a scratch export: tsc is clean, and `lodNoTransfer` + `lod.test.ts` pass, 37 of 37. So
+  none of the new worker or game code adds a main-thread transfer (`t059-tmp/logs/tsc-mt-cb6ca4c.log` and
+  `targeted-mt-cb6ca4c.log`).
+
 The machine is a shared 4-core container with WebGL on SwiftShader. Its browser runs check function, not timings.
 
 ### Gap list (required against done)
@@ -90,16 +97,19 @@ WORKER_DESIGN §1.4, §1.5 and §6 row S0 (Acceptance: `tests/render/lod.test.ts
 the Chromium main thread after 10 min of `demo-ui.html` play, the M6 procedure; LOD proxies per second within ±5 %);
 WASM_PLAN M6 and J0; and this report. On Nov 9, two more: NOTE-059 (browser checks move to the desktop: for a
 desktop lane verified on the real GPU, the cloud reviews the evidence and runs the full vitest and the bot once) and
-the Nov 4 handoff (section 4: "after T059 merges, also merge `local/T059` @ 4fb8bf2 or later").
+the Nov 4 handoff (section 4: "after T059 merges, also merge `local/T059` @ 4fb8bf2 or later"). NOTE-060 lists T059
+among the cloud's reviews. NOTE-061 (posted during this run) moves every browser check to the desktop, with a
+Desktop QA list in each report. NOTE-064 (also posted during this run) has the desktop merge its own lanes, but keeps
+"T059 + T028" with the cloud's merge.
 
 | # | Required | At `2aaf32d` (the cloud's start) | Now |
 |---|---|---|---|
 | 1 | lodBuilder's main-thread post without a transfer list | done (`ad0bb73`) | verified line by line (below) |
 | 2 | tsc clean | **not met**: `tests/render/lodNoTransfer.test.ts(41,10): TS2339 Property 'dispose' does not exist on type 'LodProxyBuilder'` (the test called `pb.dispose?.()`; the class has none) | fixed in `d21fe03`; clean on the final tree |
 | 3 | The new test fails on the old code | claimed. Its "still attached" check was vacuous: the fake worker ignored the transfer list, so nothing could detach | `d21fe03`: the fake worker detaches on a transfer list; both cases fail on the old code, and the attached check fails on its own (below) |
-| 4 | Full vitest; `lod.test.ts` green | the desktop's tree | re-run on the merged tree (gates) |
-| 5 | The bot identical (192,899) | the desktop's tree | re-run here, lane and a clean dev export (gates) |
-| 6 | Nothing else transfers from the main thread | not checked | grep and an AST scan of `src/` except `src/sim`; pinned by a test case (below) |
+| 4 | Full vitest; `lod.test.ts` green | the desktop's tree | **green on the merged tree `fdd4702`**: 2,391 passed, 0 failed (gates) |
+| 5 | The bot identical (192,899) | the desktop's tree | **identical**: lane `fdd4702` against a clean export of dev `87c7c9c`, 192,899 both (gates) |
+| 6 | Nothing else transfers from the main thread | not checked | grep and an AST scan of `src/` except `src/sim`, pinned by a test case (below); again on `fdd4702` and on its clean merge with dev `cb6ca4c` |
 | 7 | Protector intact after 10 min of `demo-ui.html` play (M6) | not run (the desktop had run T028's qa-worker A/B, a different procedure) | **done on the real GPU by the desktop** (`de062e3`, A/B/B/A: intact in both T059 runs, invalidated in both dev runs). The cloud ran the same procedure on SwiftShader (below) |
 | 8 | LOD proxies/s within ±5 % of dev | not run | **done on the real GPU by the desktop** (`de062e3`): −1.36 %. Not measurable here |
 | 9 | `docs/dev/queue/T059-s0-lod-transfer.done` | missing | the desktop's line (`de062e3`), plus one cloud line |
@@ -234,16 +244,17 @@ The scratchpad is
 
 | Gate | Result |
 |---|---|
-| tsc (`--noEmit`) | **clean** on `b09d9f4`, `dcf2ad1` and `1ddc5e9` |
-| `tests/render/lodNoTransfer.test.ts` + `tests/render/lod.test.ts` | **37 passed** (2 + 35) on `b09d9f4` and on `dcf2ad1`; `lodNoTransfer` 2 passed on `1ddc5e9` |
-| The new test on the old code (negative control) | **fails**, both cases, at `b09d9f4` and at `1ddc5e9`; the attached check also fails on its own (above) |
-| Full vitest with the fixtures (`SIM_FIXTURES` / `SIM_SNAP` from the main checkout's `tools/bench/.fixtures`) | first run at `dcf2ad1`: 1 failed (this lane's scan case, a 5 s timeout), 2,236 passed, 8 skipped; 224 files passed, 2 skipped (851 s). The rerun at `1ddc5e9` is pending |
-| The bot, `--size 128 --years 15 --seed 7`, lane `b09d9f4` against a clean export of dev `50a6b29` | **identical**: both `residents [ 61124, 93804, 37971 ]` = 192,899, the same jobs and caps lines |
+| tsc (`--noEmit`) | **clean** on `b09d9f4`, `dcf2ad1`, `1ddc5e9`, `c72293b` and, on Nov 9, on **`fdd4702`** (exit 0) |
+| `tests/render/lodNoTransfer.test.ts` + `tests/render/lod.test.ts` | **37 passed** (2 + 35) on `b09d9f4`, `dcf2ad1`, `c72293b` and **`fdd4702`** (12.4 s); `lodNoTransfer` 2 passed on `1ddc5e9` |
+| The new test on the old code (negative control) | **fails**, both cases, at `b09d9f4`, at `1ddc5e9` and on Nov 9 on a scratch export of **`fdd4702`** with dev's `lodBuilder.ts` (`t059-tmp/neg5`, removed afterwards): case 1 `TypeError: Cannot perform DataView constructor on a detached ArrayBuffer`, case 2 two transfers against one (`t059-tmp/logs/negctl-fdd4702.log`). The attached check also fails on its own (above) |
+| Full vitest with the fixtures (`SIM_FIXTURES` / `SIM_SNAP` from the main checkout's `tools/bench/.fixtures`) | first run at `dcf2ad1`: 1 failed (this lane's scan case, a 5 s timeout), 2,236 passed, 8 skipped; 224 files passed, 2 skipped (851 s). The Nov 4 rerun never got the lock. **Nov 9, on `fdd4702` (`b1bc414`, docs only on top): 0 failed; 2,391 passed, 7 skipped; 238 files passed, 2 skipped (418 s)** (`t059-tmp/logs/vitest-full-5.log`) |
+| The bot, `--size 128 --years 15 --seed 7`, lane against a clean export of dev | **identical**: lane `b09d9f4` against dev `50a6b29`, and on Nov 9 lane **`fdd4702`** against a clean export of dev **`87c7c9c`** (`co/t059-devbase`). Both read `residents [ 61124, 93804, 37971 ]` = 192,899, with the same jobs and caps lines. The whole log is the same except the timing columns (`t059-tmp/logs/bot-lane-6.log`, `bot-dev-6.log`) |
 | S0 on the real GPU (protector intact after 10 min of demo-ui play; LOD proxies/s within ±5 %) | **PASS, by the desktop** (`de062e3`, the section above); not re-measurable here |
 | S0's procedure on SwiftShader (function) | T059: 0 main-thread detaches in 600 s of play (170 LOD jobs), probe intact. Dev: 72 of 72 and 124 of 124 jobs transferred, probe also intact, because single-view detaches are free on Chromium 153's V8. The discriminating protector A/B is the desktop's Chromium 141 run |
 
-The bot did not run again after `dcf2ad1`. Dev's later commits there are T052 (`src/render`, `src/assets`) and docs.
-The lane touches only `src/render` and a test, so the bot cannot differ (NOTE-048: "the merge needs no bot run").
+The lane touches only `src/render` and a test, so the bot cannot differ (NOTE-048: "the merge needs no bot run"). It
+was run anyway on Nov 9, on the merged tree, because dev had moved through T034, T040 and T053 (`src/worker`,
+`src/sim`, `src/game`). The new dev commits since `87c7c9c` were not gated here; see the start of this section.
 
 ### Decisions
 
@@ -257,12 +268,15 @@ The lane touches only `src/render` and a test, so the bot cannot differ (NOTE-04
   - The Nov 9 brief again said "partial" for the two real-GPU items. That brief was written from the desktop's
     earlier `2aaf32d` state: both items are in `de062e3`, which is merged here, and their numbers check out (above).
     So nothing listed is left and the status stays ready.
-- **No more cloud browser runs for this lane (NOTE-059).** The Nov 9 resume ran no SwiftShader game session. The one
-  browser job queued was a short `data:`-page control of the probe, not a check of the game. Its lock waiter was
-  terminated from outside while queued; the conservative reading is not to queue it again. The lock had 23 waiters,
-  NOTE-059 moves browser work for desktop lanes off the cloud, and the result could not change T059 (J0 is right on
-  every V8, and the S0 gate stands on the desktop's Chromium 141 A/B). The claim it would have backed (this V8 counts
-  two-view and DataView detaches) rests on T034b's experiment 9, with that experiment's scope stated above.
+- **No more cloud browser runs for this lane (NOTE-059, NOTE-061).** The Nov 9 resume ran no SwiftShader game
+  session. The one browser job queued was a short `data:`-page control of the probe, not a check of the game. Its lock
+  waiter was terminated from outside while it waited.
+  - NOTE-061, posted on dev (`1c2019c`) during this run, moves every browser check to the desktop, and the lock
+    script now refuses them. So it was not queued again.
+  - The result could not change T059 anyway: J0 is right on every V8, and the S0 gate stands on the desktop's
+    Chromium 141 A/B.
+  - The claim it would have backed (this V8 counts two-view and DataView detaches) rests on T034b's experiment 9, with
+    that experiment's scope stated above. The control is item 2 of the Desktop QA list.
 - **The saturated-burst finding stays recorded, not gated**, as the desktop left it: the catalog burst is 28 % slower
   with structured clone, about 65 ms on a full prefetch. S0's gate is the play-time proxy rate, which passes. Avoiding
   the transfer is the point of J0, and the alternatives (SharedArrayBuffer, batching posts) are design changes for
@@ -291,3 +305,26 @@ The lane touches only `src/render` and a test, so the bot cannot differ (NOTE-04
   - a page-side positive control, if the page's own probe is ever gated (above);
   - what J0 buys on a current Chrome, where single-view transfers are free (T034b's open item; a real-GPU timing
     question).
+
+### Desktop QA list (NOTE-059, NOTE-061)
+
+S0's browser gate is **already PASS on the real GPU** (`de062e3`: A/B/B/A on `2aaf32d` against dev `683d02b`). The
+cloud ran no browser check on Nov 9 (NOTE-061). Nothing below gates T059's merge. These are optional rechecks on dev
+at T059's merge commit, after it lands.
+
+1. **S0 on the merged dev, both hosts (optional).**
+   - Use `de062e3`'s S0 harness (`qa/T059s0/run_full.sh` on the desktop's scratchpad: Chromium 141 with T028's V8
+     flags). Run 10 minutes of `demo-ui.html?town=1&speed=1&quality=high`, once on the default host and once with
+     `&simworker=loopback`. demo-ui mounts CityScene itself, so it has no `?simworker=1`.
+   - For the real worker host (`index.html?…&simworker=1`), use T028's harness in worker mode (`--host worker`,
+     `local/T028-qa-worker`; NOTE-060 item 4). It already reads the page's protector.
+   - Expected: the main thread's protector is intact at boot, at every minute and at the end, in every run. Dev now
+     posts to the sim worker too (`WorkerSimHost`, no transfer list), and that must not change the result.
+   - Also expected: 0 page errors, and the LOD proxies all built (none pending at the end).
+2. **A page-side positive control (optional; only if T028 gates the page's probe).**
+   - On a `data:` page with the probe installed first, detach an `ArrayBuffer` that has a `Uint8Array` and a
+     `Float32Array` view: `structuredClone(b, { transfer: [b] })`. Then detach one that has a `DataView`.
+   - Expected: on Chromium 153, both flip the probe and lodBuilder's old three-buffer transfer does not; on Chromium
+     141, all three flip it.
+   - The cloud's script is `t059-tmp/probe/chromeprobe3.mjs` in the cloud scratchpad. It is not in the repo, and the
+     steps above are all it does.
