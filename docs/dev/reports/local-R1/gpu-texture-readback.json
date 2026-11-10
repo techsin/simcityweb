@@ -1,0 +1,126 @@
+{
+ "low": {
+  "base": {
+   "zone": {
+    "size": "256x256",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "b5c88593"
+   },
+   "light": {
+    "size": "256x256",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "689f5bfa"
+   },
+   "tree": {
+    "size": "256x256",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "879d3b3c"
+   },
+   "exit": {
+    "size": "256x4",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "11a02905"
+   }
+  },
+  "branch": {
+   "zone": {
+    "size": "256x256",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "b5c88593"
+   },
+   "light": {
+    "size": "256x256",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "689f5bfa"
+   },
+   "tree": {
+    "size": "256x256",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "879d3b3c"
+   },
+   "exit": {
+    "size": "256x4",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "11a02905"
+   }
+  }
+ },
+ "high": {
+  "base": {
+   "zone": {
+    "size": "256x256",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "b5c88593"
+   },
+   "light": {
+    "size": "256x256",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "689f5bfa"
+   },
+   "tree": {
+    "size": "256x256",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "879d3b3c"
+   },
+   "exit": {
+    "size": "256x4",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "11a02905"
+   }
+  },
+  "branch": {
+   "zone": {
+    "size": "256x256",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "b5c88593"
+   },
+   "light": {
+    "size": "256x256",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "689f5bfa"
+   },
+   "tree": {
+    "size": "256x256",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "879d3b3c"
+   },
+   "exit": {
+    "size": "256x4",
+    "fbOk": true,
+    "glErr": 0,
+    "texelsDifferingFromCpu": 0,
+    "gpuHash": "11a02905"
+   }
+  }
+ }
+}

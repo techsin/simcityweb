@@ -9,6 +9,7 @@ import type { CityActionsApi } from '../sim/actions';
 import type { CityState } from '../sim/CityState';
 import type { Simulation } from '../sim/Simulation';
 import type { SimHost } from '../worker/SimHost';
+import type { ToastOptions } from '../ui/Notifications';
 import type { GameModules } from './modules';
 import type { GameSettings } from './settings';
 import type { ToolController } from './tools/ToolController';
@@ -93,7 +94,9 @@ export interface GameContext {
   showQuery(t: QueryTarget | null, opts?: { silent?: boolean }): void;
   applySettings(patch: Partial<GameSettings>): void;
   /** opts.budget: the toast shares FEEL-02a's budget for news (Toasts.show), e.g. the demand-cap warning */
-  toast(text: string, kind?: string, cell?: { x: number; z: number }, title?: string, opts?: { silent?: boolean; ttl?: number; budget?: boolean }): void;
+  toast(text: string, kind?: string, cell?: { x: number; z: number }, title?: string, opts?: ToastOptions): void;
+  /** Full New Year show, including bursts and lingering fireworks. */
+  newYearBusy?(): boolean;
   /** open a toolbar category flyout (e.g. 'parks') */
   openFlyout?(categoryId: string, tab?: string): void;
   /** show the getting-started card again */

@@ -5,7 +5,7 @@
  */
 import { h, icon, timeAgo } from './dom';
 
-export type SaveState = 'saved' | 'dirty' | 'saving' | 'error';
+export type SaveState = 'saved' | 'dirty' | 'saving' | 'error' | 'readonly';
 
 export class SaveStatus {
   readonly el: HTMLButtonElement;
@@ -21,7 +21,7 @@ export class SaveStatus {
     this.el = h('button', { class: 'save-status', type: 'button', 'data-sfx': 'none' }, this.mark, this.label) as HTMLButtonElement;
     this.el.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (this.state === 'dirty' || this.state === 'error') this.onSaveNow();
+      if (!this.el.disabled && (this.state === 'dirty' || this.state === 'error')) this.onSaveNow();
     });
     // keep canvas tools from treating a click here as a map click
     this.el.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -37,6 +37,7 @@ export class SaveStatus {
 
   set(state: SaveState, lastSave?: number): void {
     if (lastSave) this.lastSave = lastSave;
+    if (this.el.disabled) state = 'readonly';
     if (state === this.state) {
       if (state === 'saved') this.el.title = this.savedTitle();
       return;
@@ -59,6 +60,10 @@ export class SaveStatus {
       this.mark.replaceChildren(h('i', { class: 'ss-spin' }));
       this.label.textContent = 'Saving…';
       this.el.title = 'Saving the city…';
+    } else if (state === 'readonly') {
+      this.mark.replaceChildren(h('i', { class: 'ss-dot' }));
+      this.label.textContent = 'Open in another tab';
+      this.el.title = 'This tab cannot save while the region is open in another tab';
     } else {
       this.mark.replaceChildren(h('i', { class: 'ss-dot' }));
       this.label.textContent = 'Save failed — retry';
