@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as idb from '../../src/save/recoveryIdb';
-import { deferred, journalFixture, PersistentMemoryKV, recoveryFixture, regionData } from './fixtures';
+import { restrictRegionSaveAccess } from '../../src/save/db';
+import { createCityRecord } from '../../src/save/cities';
+import { buildRecoverySnapshot } from '../../src/save/recoveryCodec';
+import { deferred, journalFixture, PersistentMemoryKV, recoveryFixture, regionData, smallCity } from './fixtures';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -30,10 +33,46 @@ describe('recovery IDB records', () => {
       expect(await idb.findRecoverySnapshot(kv)).toBeNull();
       expect(await idb.peekRecoveryMarker(kv, f.marker)).toBeNull();
     }
+    // W1.3: findRecoverySnapshot also offers a journal alone, so it drops one that can never apply, as such snapshots:
+    // this one is bound to the save the loop replaced
+    expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
     await kv.put('cities', f.record, f.record.key); await kv.delete('regions', 'rtest');
     await idb.storeRecoveryIdb(kv, f.marker, f.payload);
+    await idb.storeJournalIdb(kv, journalFixture());
     expect(await idb.findRecoverySnapshot(kv)).toBeNull();
+    // and one whose region is gone
+    expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
+  });
+
+  it('W1.3: offers no journal alone for a city that still stores a snapshot, even when another city\'s is the newest', async () => {
+    const kv = new PersistentMemoryKV(), f = recoveryFixture();
+    await kv.put('regions', regionData()); await kv.put('cities', f.record, f.record.key);
+    // 0_0: a snapshot at 1010 and, newer than every snapshot, a journal at 1020 bound to the save under that snapshot
+    await idb.storeRecoveryIdb(kv, f.marker, f.payload);
+    await idb.storeJournalIdb(kv, journalFixture());
+    // 1_0: the newest snapshot, at 1015
+    const state = smallCity(), record = createCityRecord('rtest', '1_0', state);
+    record.savedAt = record.city.savedAt = 1000;
+    state.zone[3] = 1;
+    const other = buildRecoverySnapshot('rtest', '1_0', state, record, { at: 1015, cityName: 'Other', population: 0, funds: state.funds });
+    await kv.put('cities', record, record.key); await idb.storeRecoveryIdb(kv, other.marker, other.payload);
+    expect(await idb.findRecoverySnapshot(kv)).toMatchObject({ marker: { tileKey: '1_0', at: 1015 } });
+    expect((await idb.findRecoverySnapshot(kv))?.marker.kind).not.toBe('journal');
+    // the journal is kept (the city's snapshot decides it), and the city's own offer is its snapshot
     expect(await kv.get('recovery', 'rtest:0_0#journal')).toEqual(journalFixture());
+    expect(await idb.findRecoverySnapshot(kv, { regionId: 'rtest', tileKey: '0_0' })).toMatchObject({ marker: { tileKey: '0_0', at: 1010 } });
+  });
+
+  it('NEW-04: reading a journal bound to another save leaves it in place, without failing, when the delete is refused', async () => {
+    const kv = new PersistentMemoryKV();
+    await idb.storeJournalIdb(kv, journalFixture());
+    const release = restrictRegionSaveAccess((regionId) => regionId !== 'rtest');
+    try {
+      expect(await idb.readRecoveryJournal(kv, { regionId: 'rtest', tileKey: '0_0', savedAt: 999 })).toBeNull();
+      expect(await kv.get('recovery', 'rtest:0_0#journal')).toEqual(journalFixture());
+    } finally { release(); }
+    expect(await idb.readRecoveryJournal(kv, { regionId: 'rtest', tileKey: '0_0', savedAt: 999 })).toBeNull();
+    expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
   });
 
   it('awaits both deletions, reports an IDB-only newer snapshot, and leaves other cities alone', async () => {
