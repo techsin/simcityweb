@@ -87,7 +87,8 @@ describe('bot: NOTE-053 base gates and second stage', () => {
       { boundary: 'upper', value: 135, reasons: ['median-plus-allowed-delta'], distance: 35 },
     ]);
     expect(metric.nearThreshold).toBe(true);
-    expect(compareBase(dev, lane).needsNine).toBe(true);
+    expect(compareBase(dev, lane).needsNine).toBe(false); // NOTE-062 starts base rows at nine.
+    expect(compareBase(dev, lane, { runs: 5 }).needsNine).toBe(true);
     change(lane, 10, 'population', 170.1);
     expect(compareBase(dev, lane).years[0].metrics.population.nearThreshold).toBe(false);
     const resolved = compareBase(dev, bands(100), { runs: 9 });
@@ -99,7 +100,7 @@ describe('bot: NOTE-053 base gates and second stage', () => {
     const equal = compareBase(bands(0), bands(0));
     expect(equal.pass).toBe(true);
     expect(equal.years[0].metrics.air.relativePercent).toBe(0);
-    expect(equal.needsNine).toBe(true); // Distance zero is within the zero half-band.
+    expect(equal.needsNine).toBe(false); // NOTE-062: nine is final, including zero-width bands.
     const moved = compareBase(bands(0), bands(1));
     expect(moved.pass).toBe(false);
     expect(moved.years[0].metrics.air.relativePercent).toBeNull();

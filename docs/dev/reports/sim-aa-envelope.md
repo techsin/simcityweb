@@ -1,6 +1,6 @@
 # Shared SIM A/A envelope (NOTE-048)
 
-> Current rule: [NOTE-053 / Round 4](#note-053-sim-ensembles-round-4) replaces the earlier base and variant margin rules. Gates use ensemble medians and min-max bands; the single-run measurements below remain historical evidence.
+> Current workflow: [NOTE-062 final gates and collectors](#note-062-final-gate-runner-and-observers) amends NOTE-053. Base rows and 256×60 variants go directly to nine members; only 128×15 variants start at five. Earlier measured tables and verdicts remain historical evidence, subject to the lead's NOTE-062 amendments.
 
 Measured commit: `0df76bce1a663ee44957cf47cfecdb8b18eed187` (branch `local/T062-sim-aa-envelope`). Host: `none`; independent node processes.
 
@@ -3139,6 +3139,8 @@ node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5
 
 ### How a SIM lane runs its ensemble gate
 
+This is the historical NOTE-053 workflow. The NOTE-062 section below replaces its member-count, staging and zero-width guidance for final gates; retain these commands as the provenance of the earlier measurements.
+
 Use [tools/simEnsemble.mts](../../../tools/simEnsemble.mts) from this tree, or the merged copy in dev, against the selected `--tree`. The runner reads that tree and writes only the specified output directory. It bundles the selected tree's bot with its local Rolldown; `tsx` is unnecessary. Run the row commands sequentially so there are at most `--jobs` members across this lane. The default is three concurrent members; each goes through the supplied quiet gate. The gate waits before launching a member while a timing hold exists; the existing gate does not suspend an already running member.
 
 Until T062 is in dev, the measured lane tree needs the funds flag from `3833c8d`:
@@ -3212,3 +3214,71 @@ The collection tool keeps the original exact checks available: every raw annual 
 ### Round 5: interim lane judgements (NOTE-055)
 
 The T043/T044/T045 campaign completed all five-member ensembles and required nine-member stages against the original dev simulation at `805d7d4`. Paste-ready `T043.md`, `T044.md`, `T045.md` and `SUMMARY.md` are in `C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-lanes/`, beside exact commands, verdict JSON, independent audits and `validation.json`. Shared nine-member dev references are under `data/dev/base`. Fifteen existing dev members were reused; 170 new members ran with `--jobs 4` through the quiet gate, one ensemble command at a time. No baseline or simulation code changed. These are interim judgements; final gates after T041 lands remain separate.
+
+## NOTE-062 final-gate runner and observers
+
+The lead's `scratchpad/lanes/NOTE-062.md` supersedes the Round 5 interim verdicts where amended. T043 has a fix round; its neglect targets cannot be confirmed while the corresponding base fails. T044's mechanics are accepted provisionally under its own narrow amendments, with the late approval target still open. T045 is held pending diagnosis and final measurements. This implementation changes collection and reporting only; it does not rerun those campaigns or sign off any lane. Final gates run on dev including B2, T041 and the preceding SIM lanes.
+
+### Member counts, gates and origin
+
+- Every base row and every 256×60 variant uses **nine members directly**, for lane and dev: control, ±§100 and ±§200 on days 1 and 1441. `--nudge` overrides X, with the outer members at ±2X. Nine is final; there is no third stage.
+- Only 128×15 variants start with five members, retaining NOTE-053's inclusive half-dev-band proximity rule for stage two. When a short variant has five members and its base/dev summaries have nine, the comparison reads the actual matching control/±X raw members and recomputes five-member bands. It never infers those medians from a nine-member aggregate. Output records original and effective member counts. Stage two compares nine on all sides.
+- Base checks retain both NOTE-053 clauses in every year from year 10: lane median inside dev's band, and absolute median difference at most `max(item tolerance, half dev's band)`. Population tolerance is 1% for T043/T044/T045; approval, air and I-HT have no generic percentage floor. T044's intended-direction and realised-I-HT exemptions remain lane-specific report decisions. T045 selects `approvalNetCommute` instead of raw approval, with zero tolerance.
+- In addition to the three-row endpoint check, **three consecutive disjoint lane/dev bands in any row/metric are a real shift**. Touching endpoints overlap. A mixed-direction sequence still qualifies under the literal consecutive-years rule. The JSON records each run and direction; a lane must explain the mechanism. The tool does not infer it.
+- When all nine dev members have I-HT share exactly zero, that year does not gate I-HT or contribute to either shift check. Values remain reported, along with the first year the lane's median leaves zero. Other zero-width metrics retain the usual exact boundary.
+- Every 256×60 collection/comparison includes transposed year-60 member columns, population in 2050, growth through 2060, each member's stalled flag, and counts for the compared lane/base/variant and dev. Growth **under 100,000** is stalled; exactly 100,000 is not. These diagnostics do not gate.
+
+New summaries carry the measured commit, its parent, source/dependency identities and each raw member path/observer. Existing members from the known pre-collector observer are reused in place when commit, simulation, dependencies, row, signed nudge, timing and bot arguments match. The new observer identity includes the collector helper's bytes. Missing old observations are **unavailable**, never invented as zero; a gate requesting a missing metric fails explicitly. `--report-only` rebuilds reports without bots. An incomplete `--members` selection writes `.partial.json` and `.partial.md`, explicitly not a final ensemble.
+
+The earlier measured trees trace to these lane parents; no push or measurement-tree edit was made:
+
+| Measured tree | Measured commit | Lane parent before the funds flag |
+|---|---|---|
+| T043m | `414e491e08b847e425323d67b79ed4aeedfa97a9` | `4a6aaff2c5263f3282542f82cc8ec8fd73110fef` |
+| T044m | `a1a4e79e709e12a368af0645c3ac9dd50e9ac7f1` | `57ed98340cf91aeeb3dcebe13ca46a3708d54c59` |
+| T045m | `f8b3f145a379694adedb1e26bb825886d49282a2` | `59f7ce9aff92ceecb3f1fc1ff815100b92dfe5f4` |
+
+`git diff e01526a 4a6aaff -- src/sim` and `git diff 4a6aaff 414e491 -- src/sim` are empty, confirming NOTE-062's T043 simulation-source statement for the measured parent and tree.
+
+### Observation columns (FX1, FX2 and T044)
+
+The bot's original `YearRow`, decisions and state remain separate from observations. `tools/simBotObservations.ts` attaches in the external fork wrapper; neither `tools/simbot.ts` nor simulation files need edits. Annual NDJSON and raw member JSON add these optional fields, and ensemble tables give each available field's median and min-max band:
+
+| Field | Definition |
+|---|---|
+| `commuteTermRaw` | Stored `economy.approvalTerms.commute`, including LG-08's population fade; no reconstruction from average commute. |
+| `commuteTerm` | That member's commute term, seeded after new-city approval initialization and updated after every monthly approval tick with the selected tree's `APPROVAL.ema`. |
+| `resCommute` | Stored resident-weighted survey commute, distinct from the traffic-wide `stats.avgCommute`. |
+| `approvalNetCommute` | Recorded approval minus that member's smoothed `commuteTerm`; derived before taking ensemble medians. The separately named clamp contribution remains in approval. This is not a simulated counterfactual city. |
+| `ihtDemandShareRaw` | I-HT uncapped target / (I-D + I-M + I-HT uncapped targets). |
+| `ihtDemandShareCapped` | I-HT capped target / (I-D + I-M + I-HT capped targets). |
+| `ihtDemandShare` | Positive I-HT `demandAbs` / sum of positive I-D, I-M and I-HT `demandAbs`; zero when that denominator is zero. This is T044 gate (a)'s incremental-demand metric. |
+| `dirtyJobShare` | `industrialStrategy(st).dirtyShare`, whose filled-industrial-job denominator includes farms; old dev derives the same filled-job share. |
+| `retooledIM`, `retooledIHT` | Read-only `industrialStrategy(st)` readings. Unavailable on trees without that strategy. |
+
+The member JSON also carries `approvalActions`: successful reward/landmark purchases and newly enacted ordinances, stamped with absolute day, calendar date/year and approval at the decision. Approval thresholds are included where applicable (reward unlock or bot ordinance gate). Preview attempts, failed purchases and unchanged ordinance setters do not add entries. The original successful-action journal and full decision log remain unchanged. Stored economy data is read directly; the collector does not call mutating initialization/survey getters or draw RNG.
+
+### Current command workflow
+
+Use this tool against a clean selected tree; the tree still needs the `3833c8d` funds flag. Resolve a `simbot.ts` conflict by retaining both the lane's rules and the small nudge option/parser/once-only after-advance addition described in Round 4. The observation helper stays with this runner and is bundled against the selected tree's tuning, reward metadata and optional industry getter.
+
+```powershell
+$ensembleTool = 'C:/Users/techsin/Desktop/projects/simcityweb-T062/tools/simEnsemble.mts'
+$ensembleQuietGate = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs'
+$ensembleTree = 'CLEAN_MEASUREMENT_TREE'
+$ensembleBaseOut = 'BASE_SCRATCH'
+$ensembleVariantOut = 'VARIANT_SCRATCH'
+
+node --experimental-strip-types $ensembleTool --tree $ensembleTree --base --size 128 --years 15 --seed 7 --runs 9 --jobs 3 --out-dir $ensembleBaseOut --quiet-gate $ensembleQuietGate
+node --experimental-strip-types $ensembleTool --tree $ensembleTree --base --size 256 --years 60 --seed 7 --runs 9 --jobs 3 --out-dir $ensembleBaseOut --quiet-gate $ensembleQuietGate
+node --experimental-strip-types $ensembleTool --tree $ensembleTree --base --size 256 --years 60 --seed 11 --runs 9 --jobs 3 --out-dir $ensembleBaseOut --quiet-gate $ensembleQuietGate
+
+node --experimental-strip-types $ensembleTool --tree $ensembleTree --variant --size 256 --years 60 --seed 7 --runs 9 --jobs 3 --out-dir $ensembleVariantOut --quiet-gate $ensembleQuietGate -- --skip dirty
+node --experimental-strip-types $ensembleTool --tree $ensembleTree --variant --size 128 --years 15 --seed 7 --runs 5 --jobs 3 --out-dir $ensembleVariantOut --quiet-gate $ensembleQuietGate -- --skip dirty
+```
+
+Repeat the base commands on dev and lane trees, and long variants on every required seed/strategy, using distinct output directories. `--base` explicitly marks configured bases; bot arguments otherwise imply a variant, while `--variant` can label an unflagged variant. Five-member base/long requests and any count other than five/nine are rejected. Run one outer command at a time; every member uses quietrun, and this follow-up uses at most three bot processes.
+
+Comparison syntax is unchanged. Supply all three dev/lane row pairs for the endpoint check. Select `--metric population --tolerance-percent 1` for population; select `--metric approvalNetCommute --tolerance 0` for T045's approval gate, and `--metric air,ihtShare --tolerance 0` for its remaining generic metrics. Collection tables report both raw approval and its commute term beside the net metric. T044 gate (a) can select `--metric ihtDemandShare --target-above 0.25 --from-year N --to-year 40`, with N chosen from the first year the EQ ensemble median reaches 110. Its other special exemptions and targets remain explicit in its report.
+
+For a short variant flagged near its threshold, expand that variant to `--runs 9` in the same directory and compare against the already-nine base/dev. Exit 2 names required nine-member rows; exit 3 reports a real disjoint/systematic shift requiring explanation; exit 4 denotes a missing three-row endpoint check. Nine-member results never request another stage. A real shift remains reported even when an ordinary median check passes.

@@ -1,17 +1,17 @@
-/** NOTE-053 ensemble collection. The selected tree is read only; every member uses the quiet gate. */
+/** NOTE-062 ensemble collection. The selected tree is read only; every member uses the quiet gate. */
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Row, Source } from './simAaForkEnvelope.mjs';
 const { bundleChild, validateCompleted } = await import(new URL('./simAaForkEnvelope.mts', import.meta.url).href) as typeof import('./simAaForkEnvelope.mjs');
-const { METRICS, summarizeEnsemble } = await import(new URL('./simEnsembleStats.ts', import.meta.url).href) as typeof import('./simEnsembleStats');
+const { METRICS, OBSERVATION_METRICS, memberEndpoints, metricsIn, summarizeEnsemble } = await import(new URL('./simEnsembleStats.ts', import.meta.url).href) as typeof import('./simEnsembleStats');
 
 interface Options extends Row {
   tree: string; outDir: string; quietGate: string; importDirs: string[];
-  nudge: number; runs: 5 | 9; jobs: number; botArgs: string[]; reportOnly: boolean; members?: string[];
+  nudge: number; runs: 5 | 9; jobs: number; botArgs: string[]; variant: boolean; reportOnly: boolean; members?: string[];
 }
 interface Identity extends Source { dependencies: string; observer: string }
 interface Member { nudge: number; day: number; id: string }
@@ -25,10 +25,15 @@ type Completed = ReturnType<typeof validateCompleted> & { spec: MemberSpec; exec
 interface Evidence { path: string; run: Completed }
 const SELF = fileURLToPath(import.meta.url);
 const DEFAULTS = { difficulty: 'medium', terrain: 'plains', water: 0.2, noInfra: false, profile: 'default' };
-const HELP = `NOTE-053 SIM ensemble
+// NOTE-062 adds read-only observations to this observer; its earlier core rows remain usable.
+const COMPATIBLE_OBSERVERS = new Set(['d521f1e3fbd7a0b4c03d37c356d798a87ad78e06461ba8fcd9bc217e1bf82270']);
+const HELP = `NOTE-062 SIM ensemble
 usage: node --experimental-strip-types tools/simEnsemble.mts --tree ROOT --size N --years N --seed N --out-dir DIR --quiet-gate FILE [options]
   --nudge X         positive funds amount (default 100)
-  --runs 5|9        control, +/-X on days 1 and 1441; 9 adds +/-2X at both timings
+  --runs 5|9        base rows and 256x60 variants require 9; 128x15 variants default to 5
+                    9 adds +/-2X at both timings; it is final (no third stage)
+  --variant         label an otherwise unflagged variant; nonempty bot arguments imply variant
+  --base            label a configured base with bot arguments (always 9); excludes --variant
   --jobs N          maximum concurrent quiet-gated members (default 3)
   --import-dir DIR  repeatable explicit import of old default-configuration records; simulation source must match
   --bot-args JSON   JSON array of variant bot arguments; alternatively put arguments after --
@@ -36,7 +41,8 @@ usage: node --experimental-strip-types tools/simEnsemble.mts --tree ROOT --size 
   --members IDS     diagnostic comma-separated member IDs, e.g. control,p100-d1,m100-d1
                     a subset writes a partial manifest, never an ensemble summary
 Output: ROW_ensemble.summary.json and ROW_ensemble.md, plus individually keyed complete raw members.
-Reuse requires exact tree commit, simbot/src identity, dependencies, observer, row, amount, timing and bot args.
+Reuse requires exact tree commit, simbot/src identity, dependencies, row, amount, timing and bot args.
+The known pre-collector observer is reusable; unavailable observations are reported, never filled with zero.
 Explicit legacy imports retain original provenance and require identical simulation sources and default configuration.
 Compare: append the compare subcommand; use compare --help for verdict options.`;
 
@@ -52,6 +58,7 @@ function command(args: string[]): string {
 export function rowId(row: Row): string { return `${row.size}x${row.years}_s${row.seed}`; }
 function rawId(row: Row, nudge: number, day: number): string { return `${rowId(row)}_${nudge ? `n${nudge}_d${day}` : 'base'}`; }
 function shortId(nudge: number, day: number): string { return nudge ? `${nudge > 0 ? 'p' : 'm'}${Math.abs(nudge)}-d${day}` : 'control'; }
+export function requiredRuns(row: Row, variant: boolean): 5 | 9 { return variant && row.size === 128 && row.years === 15 ? 5 : 9; }
 export function ensembleMembers(nudge: number, runs: 5 | 9): { nudge: number; day: number; id: string }[] {
   if (!Number.isFinite(nudge) || nudge <= 0 || ![5, 9].includes(runs) || runs === 9 && !Number.isFinite(2 * nudge)) throw new Error('invalid ensemble nudge or member count');
   return [{ nudge: 0, day: 1, id: 'control' }, ...[1, ...(runs === 9 ? [2] : [])].flatMap((multiple) =>
@@ -97,10 +104,13 @@ async function bundleVariantChild(opts: Options): Promise<string> {
     `import * as botModule from ${JSON.stringify(join(opts.tree, 'tools/simbot.ts'))};`,
     `import { DevType } from ${JSON.stringify(join(opts.tree, 'src/core/types.ts'))};`,
     `import { serializeCity } from ${JSON.stringify(join(opts.tree, 'src/save/serialize.ts'))};`,
+    `import { APPROVAL } from ${JSON.stringify(join(opts.tree, 'src/sim/economy/tuning.ts'))};`,
+    `import { REWARDS } from ${JSON.stringify(join(opts.tree, 'src/sim/economy/rewards.ts'))};`,
+    `import * as demandModule from ${JSON.stringify(join(opts.tree, 'src/sim/economy/demand.ts'))};`,
     `import { readFileSync } from 'node:fs';`,
     `const spec = JSON.parse(readFileSync(process.argv[3], 'utf8'));`,
     `const guarded = { ...botModule, parseArgs(args) { const parsed = botModule.parseArgs(args); assertParsedBotArgs(spec.botArgs, parsed); return parsed; } };`,
-    'await runChild(guarded, DevType, serializeCity, process.argv[3]);', '',
+    'await runChild(guarded, DevType, serializeCity, process.argv[3], { approvalEma: APPROVAL.ema, rewards: REWARDS, industrialStrategy: ({ ...demandModule } as any).industrialStrategy });', '',
   ].join('\n'), 'utf8');
   const require = createRequire(join(opts.tree, 'package.json'));
   const { rolldown } = await import(pathToFileURL(require.resolve('rolldown')).href) as typeof import('rolldown');
@@ -110,11 +120,13 @@ async function bundleVariantChild(opts: Options): Promise<string> {
 }
 export function parseOptions(argv: string[]): Options {
   const values: Record<string, string> = {}, importDirs: string[] = [];
-  let reportOnly = false, trailing: string[] = [];
+  let reportOnly = false, variant = false, base = false, trailing: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === '--') { trailing = argv.slice(i + 1); break; }
     if (flag === '--report-only') { reportOnly = true; continue; }
+    if (flag === '--variant') { variant = true; continue; }
+    if (flag === '--base') { base = true; continue; }
     if (!['--tree', '--size', '--years', '--seed', '--out-dir', '--quiet-gate', '--nudge', '--runs', '--jobs', '--import-dir', '--bot-args', '--members'].includes(flag)) throw new Error(`unknown option ${flag}`);
     const value = argv[++i];
     if (!value || value.startsWith('--')) throw new Error(`${flag} needs a value`);
@@ -122,17 +134,21 @@ export function parseOptions(argv: string[]): Options {
   }
   const size = Number(values['--size']), years = Number(values['--years']), seed = Number(values['--seed']);
   if (!(size === 128 && years === 15 && seed === 7 || size === 256 && years === 60 && [7, 11].includes(seed))) throw new Error('row must be 128x15 s7, 256x60 s7 or 256x60 s11');
-  const nudge = Number(values['--nudge'] ?? 100), runs = Number(values['--runs'] ?? 5), jobs = Number(values['--jobs'] ?? 3);
+  const nudge = Number(values['--nudge'] ?? 100), jobs = Number(values['--jobs'] ?? 3);
   if (!Number.isFinite(nudge) || nudge <= 0) throw new Error('--nudge must be finite and positive');
-  if (runs !== 5 && runs !== 9) throw new Error('--runs must be 5 or 9');
   if (!Number.isInteger(jobs) || jobs < 1) throw new Error('--jobs must be a positive integer');
   if (!values['--out-dir'] || !values['--quiet-gate']) throw new Error('--out-dir and --quiet-gate are required');
   if (values['--bot-args'] && trailing.length) throw new Error('use either --bot-args or trailing bot arguments');
   const botArgs = validateBotArgs(values['--bot-args'] ? JSON.parse(values['--bot-args']) : trailing);
+  if (base && variant) throw new Error('--base and --variant are mutually exclusive');
+  if (!base) variant ||= botArgs.length > 0;
+  const minimum = requiredRuns({ size, years, seed }, variant), runs = Number(values['--runs'] ?? minimum);
+  if (runs !== 5 && runs !== 9) throw new Error('--runs must be 5 or 9; there is no third stage');
+  if (runs < minimum) throw new Error('NOTE-062 requires --runs 9 for base rows and 256x60 variants; use --members only for a diagnostic subset');
   const members = values['--members']?.split(',');
   if (members && (new Set(members).size !== members.length || members.some((id) => !ensembleMembers(nudge, runs).some((member) => member.id === id)))) throw new Error('--members contains an unknown or duplicate member');
   return { tree: resolve(values['--tree'] ?? process.cwd()), outDir: resolve(values['--out-dir']), quietGate: resolve(values['--quiet-gate']),
-    size, years, seed, nudge, runs, jobs, importDirs, botArgs, reportOnly, ...(members ? { members } : {}) };
+    size, years, seed, nudge, runs, jobs, importDirs, botArgs, variant, reportOnly, ...(members ? { members } : {}) };
 }
 
 let gitCounter = 0;
@@ -157,19 +173,36 @@ async function identity(opts: Options): Promise<Identity> {
   const dependencyFiles = ['package.json', 'package-lock.json'].map((name) => [name, existsSync(join(opts.tree, name)) ? readFileSync(join(opts.tree, name), 'utf8') : null]);
   return { commit: await git(opts.tree, opts.outDir, 'rev-parse', 'HEAD'), simBlob: await git(opts.tree, opts.outDir, 'hash-object', 'tools/simbot.ts'),
     srcTree: await git(opts.tree, opts.outDir, 'rev-parse', 'HEAD:src'), dependencies: digest(dependencyFiles),
-    observer: digest(readFileSync(fileURLToPath(new URL('./simAaForkEnvelope.mts', import.meta.url)), 'utf8')) };
+    observer: digest(['./simAaForkEnvelope.mts', './simBotObservations.ts'].map((name) =>
+      [name, readFileSync(fileURLToPath(new URL(name, import.meta.url)), 'utf8')])) };
 }
 export function memberCacheKey(source: Identity, row: Row, member: Pick<Member, 'nudge' | 'day'>, botArgs: string[]): string {
   return digest({ format: 1, source, row: { size: row.size, years: row.years, seed: row.seed }, nudge: member.nudge, day: member.day, botArgs });
 }
-function load(path: string, opts: Options, source: Identity, member: Member, key: string): Evidence | undefined {
+export function compatibleCacheSource(cached: Identity, current: Identity): boolean {
+  return cached.commit === current.commit && cached.simBlob === current.simBlob && cached.srcTree === current.srcTree &&
+    cached.dependencies === current.dependencies && (cached.observer === current.observer || COMPATIBLE_OBSERVERS.has(cached.observer));
+}
+function load(path: string, opts: Options, source: Identity, member: Member, key: string, previousObserver = false): Evidence | undefined {
   if (!existsSync(path)) return undefined;
   const value = JSON.parse(readFileSync(path, 'utf8'));
   const run = validateCompleted(value, opts, source, member.nudge, member.day, path) as Completed;
-  if (run.spec.cacheKey !== key || run.spec.commit !== source.commit || run.spec.dependencies !== source.dependencies || run.spec.observer !== source.observer || JSON.stringify(run.spec.botArgs) !== JSON.stringify(opts.botArgs)) throw new Error(`ensemble cache identity mismatch: ${path}`);
+  const expected = previousObserver ? memberCacheKey({ ...source, observer: run.spec.observer }, opts, member, opts.botArgs) : key;
+  if (run.spec.cacheKey !== expected || !compatibleCacheSource(run.spec, source) || !previousObserver && run.spec.observer !== source.observer || JSON.stringify(run.spec.botArgs) !== JSON.stringify(opts.botArgs)) throw new Error(`ensemble cache identity mismatch: ${path}`);
   if (run.spec.jsonPath !== path || run.spec.annualPath !== path.replace(/\.json$/, '.ndjson') || run.spec.actionPath !== path.replace(/\.json$/, '.actions.ndjson') || run.spec.logPath !== path.replace(/\.json$/, '.actions.log')) throw new Error(`ensemble output path mismatch: ${path}`);
   restoreSidecars(run);
   return { path, run };
+}
+function previousObserverCache(opts: Options, source: Identity, member: Member): Evidence | undefined {
+  const prefix = `${rawId(opts, member.nudge, member.day)}_`;
+  for (const name of readdirSync(opts.outDir).sort()) {
+    if (!name.startsWith(prefix) || !/^[a-f0-9]{16}\.json$/.test(name.slice(prefix.length))) continue;
+    const path = join(opts.outDir, name), value = JSON.parse(readFileSync(path, 'utf8'));
+    if (!value.spec || !compatibleCacheSource(value.spec, source) || JSON.stringify(value.spec.botArgs) !== JSON.stringify(opts.botArgs)) continue;
+    const found = load(path, opts, source, member, value.spec.cacheKey, true);
+    if (found) return found;
+  }
+  return undefined;
 }
 function restoreSidecars(run: Completed): void {
   if (!existsSync(run.spec.annualPath)) writeFileSync(run.spec.annualPath, `${run.rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
@@ -198,33 +231,59 @@ function cliArgs(opts: Options, member: Member): string[] {
     ...(member.day === 1 && member.nudge ? ['--aa-funds-nudge', String(member.nudge)] : [])];
 }
 function numeric(value: number): string { return Number.isInteger(value) ? String(value) : String(Number(value.toPrecision(10))); }
-function writeSummary(opts: Options, source: Identity, evidence: Evidence[]): void {
+function writeSummary(opts: Options, source: Identity, evidence: Evidence[], parentCommit: string): void {
   const members = evidence.map(({ path, run }) => ({ id: shortId(run.spec.nudge, run.spec.day), path, cacheKey: run.spec.cacheKey,
-    nudge: run.spec.nudge, day: run.spec.day, command: run.spec.command, ...(run.spec.importedFrom ? { importedFrom: run.spec.importedFrom } : {}),
+    nudge: run.spec.nudge, day: run.spec.day, observer: run.spec.observer, command: run.spec.command, ...(run.spec.importedFrom ? { importedFrom: run.spec.importedFrom } : {}),
     ...(run.execution ? { execution: run.execution } : {}) }));
   const full = evidence.length === opts.runs;
-  const summary = { protocol: 'NOTE-053', complete: full, row: { size: opts.size, years: opts.years, seed: opts.seed }, source,
-    configuration: { botArgs: opts.botArgs }, nudge: opts.nudge, runs: opts.runs, jobs: opts.jobs, members,
-    ...(full ? { years: summarizeEnsemble(evidence.map(({ run }) => ({ id: run.spec.id, rows: run.rows }))) } : {}) };
+  const annualMembers = evidence.map(({ run }) => ({ id: shortId(run.spec.nudge, run.spec.day), rows: run.rows }));
+  const years = summarizeEnsemble(annualMembers), available = metricsIn(years);
+  const endpoints = opts.size === 256 && opts.years === 60 ? memberEndpoints(annualMembers, [...METRICS, ...OBSERVATION_METRICS]) : undefined;
+  const summary = { protocol: 'NOTE-062', complete: full, row: { size: opts.size, years: opts.years, seed: opts.seed }, source,
+    provenance: { parentCommit }, configuration: { botArgs: opts.botArgs, variant: opts.variant }, nudge: opts.nudge, runs: opts.runs, jobs: opts.jobs, members,
+    policy: { minimumRuns: requiredRuns(opts, opts.variant), noThirdStage: true },
+    observations: { available, unavailable: OBSERVATION_METRICS.filter((metric) => !available.includes(metric)) },
+    ...(endpoints ? { memberEndpoints: endpoints } : {}), ...(full ? { years } : { previewYears: years }) };
   const stem = join(opts.outDir, `${rowId(opts)}_ensemble${full ? '.summary' : '.partial'}`);
   atomicJSON(`${stem}.json`, summary);
-  if (!full) {
-    console.error(`PARTIAL ${stem}.json; any earlier complete summary/Markdown is unchanged and does not describe this diagnostic selection.`);
-    return;
-  }
-  const lines = [`# NOTE-053 ${rowId(opts)} ensemble`, '', `Commit: \`${source.commit}\`; nudge: ${opts.nudge}; ${opts.runs} members.`, '',
+  const lines = [`# NOTE-062 ${rowId(opts)} ${full ? 'ensemble' : 'partial diagnostic (not a gate)'}`, '',
+    `Commit: \`${source.commit}\`; parent: \`${parentCommit}\`; nudge: ${opts.nudge}; ${members.length}/${opts.runs} members; ${opts.variant ? 'variant' : 'base'} row.`, '',
+    ...(full ? [] : ['This selection is incomplete. The preview below is not an ensemble verdict; earlier complete summaries are unchanged.', '']),
     'Each cell is median [min, max]. Approval is in points; I-HT share is a fraction. The gate judges every year from year 10.', '',
     '| Year index | Calendar year | Population | Approval | Air at homes | I-HT share |', '|---:|---:|---:|---:|---:|---:|'];
-  for (const year of summary.years!) lines.push(`| ${year.yearIndex} | ${year.year} | ${METRICS.map((metric) => {
+  for (const year of years) lines.push(`| ${year.yearIndex} | ${year.year} | ${METRICS.map((metric) => {
     const band = year.metrics[metric]; return `${numeric(band.median)} [${numeric(band.min)}, ${numeric(band.max)}]`;
   }).join(' | ')} |`);
+  const observed = available.filter((metric) => !METRICS.includes(metric as typeof METRICS[number]));
+  lines.push('', '## Observation columns', '',
+    `Unavailable across all members/years: ${summary.observations.unavailable.length ? summary.observations.unavailable.map((metric) => `\`${metric}\``).join(', ') : 'none'}. Existing core records are reused; missing collectors are not reconstructed or treated as zero.`, '');
+  if (observed.length) {
+    lines.push(`| Year index | Calendar year | ${observed.join(' | ')} |`, `|---:|---:|${observed.map(() => '---:|').join('')}`);
+    for (const year of years) lines.push(`| ${year.yearIndex} | ${year.year} | ${observed.map((metric) => {
+      const value = year.metrics[metric]!; return `${numeric(value.median)} [${numeric(value.min)}, ${numeric(value.max)}]`;
+    }).join(' | ')} |`);
+  }
+  if (endpoints) {
+    lines.push('', '## Year-60 member values and stall diagnostics', '',
+      `Stalled members: ${endpoints.stalledCount}/${endpoints.memberCount}. A member is stalled when population growth from 2050 to 2060 is under ${endpoints.stalledBelow.toLocaleString('en-US')}; this is reported, not gated. A comparison table reports both lane and dev counts.`, '',
+      `| Metric | ${endpoints.members.map((member) => member.id).join(' | ')} |`, `|---|${endpoints.members.map(() => '---:|').join('')}`);
+    for (const metric of [...METRICS, ...OBSERVATION_METRICS]) lines.push(`| ${metric} (2060) | ${endpoints.members.map((member) => {
+      const value = member.values[metric]; return value === undefined ? 'unavailable' : numeric(value);
+    }).join(' | ')} |`);
+    lines.push(`| population (2050) | ${endpoints.members.map((member) => numeric(member.population2050)).join(' | ')} |`,
+      `| growth (2050–2060) | ${endpoints.members.map((member) => numeric(member.growth2050to2060)).join(' | ')} |`,
+      `| stalled | ${endpoints.members.map((member) => member.stalled ? 'yes' : 'no').join(' | ')} |`);
+  }
   lines.push('', '## Members', '', '| Member | Nudge | Day | Raw completed output |', '|---|---:|---:|---|');
   for (const member of members) lines.push(`| ${member.id} | ${member.nudge} | ${member.day} | \`${member.path}\` |`);
   lines.push('', '## Repeat', '', '```powershell', command([process.execPath, '--experimental-strip-types', SELF, '--tree', opts.tree,
     '--size', String(opts.size), '--years', String(opts.years), '--seed', String(opts.seed), '--out-dir', opts.outDir,
     '--quiet-gate', opts.quietGate, '--nudge', String(opts.nudge), '--runs', String(opts.runs), '--jobs', String(opts.jobs),
+    ...(opts.variant && !opts.botArgs.length ? ['--variant'] : []), ...(opts.members ? ['--members', opts.members.join(',')] : []),
+    ...(!opts.variant && opts.botArgs.length ? ['--base'] : []),
     ...(opts.botArgs.length ? ['--bot-args', JSON.stringify(opts.botArgs)] : [])]), '```', '');
-  writeFileSync(join(opts.outDir, `${rowId(opts)}_ensemble.md`), lines.join('\n'), 'utf8');
+  writeFileSync(join(opts.outDir, `${rowId(opts)}_ensemble${full ? '' : '.partial'}.md`), lines.join('\n'), 'utf8');
+  if (!full) console.error(`PARTIAL ${stem}.json; any earlier complete summary/Markdown is unchanged and does not describe this diagnostic selection.`);
 }
 export async function measure(opts: Options): Promise<void> {
   if (!existsSync(join(opts.tree, 'tools/simbot.ts')) || !existsSync(opts.quietGate)) throw new Error('selected tree simbot or quiet gate is missing');
@@ -238,7 +297,7 @@ export async function measure(opts: Options): Promise<void> {
       botArgs: opts.botArgs, cacheKey: key, jsonPath: `${stem}.json`, annualPath: `${stem}.ndjson`, actionPath: `${stem}.actions.ndjson`, logPath: `${stem}.actions.log`,
       command: '', equivalentCommand: member.day === 1 ? command(['node', opts.quietGate, 'npx', 'tsx', join(opts.tree, 'tools/simbot.ts'), ...cliArgs(opts, member)])
         : `observer adds ${member.nudge} funds once on day ${member.day}, after advanceDay and before daily; bot args ${JSON.stringify(cliArgs(opts, member))}` };
-    const found = load(spec.jsonPath, opts, source, member, key) ?? importLegacy(opts, source, member, spec);
+    const found = load(spec.jsonPath, opts, source, member, key) ?? previousObserverCache(opts, source, member) ?? importLegacy(opts, source, member, spec);
     if (found) { completed.set(member.id, found); console.error(`REUSE ${member.id} ${found.path}`); }
     else if (opts.reportOnly) throw new Error(`missing completed ${member.id}; omit --report-only to measure`);
     else pending.push({ member, spec });
@@ -272,7 +331,7 @@ export async function measure(opts: Options): Promise<void> {
   }));
   if (failure) throw failure;
   if (JSON.stringify(await identity(opts)) !== JSON.stringify(source)) throw new Error('selected source identity changed during measurement');
-  writeSummary(opts, source, members.map((member) => completed.get(member.id)!));
+  writeSummary(opts, source, members.map((member) => completed.get(member.id)!), await git(opts.tree, opts.outDir, 'rev-parse', 'HEAD^'));
   console.error(`WROTE ${join(opts.outDir, `${rowId(opts)}_ensemble`)} (${completed.size} members)`);
 }
 async function main(): Promise<void> {

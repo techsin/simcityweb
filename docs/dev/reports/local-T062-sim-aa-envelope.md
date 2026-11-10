@@ -1,6 +1,6 @@
 # T062 — shared SIM A/A envelope
 
-Current final-gate workflow: [NOTE-053 / Round 4](sim-aa-envelope.md#note-053-sim-ensembles-round-4). Earlier rounds below retain historical measurements; their old margin recommendations are superseded by ensemble medians and bands.
+Current final-gate workflow: [NOTE-062 runner and observers](sim-aa-envelope.md#note-062-final-gate-runner-and-observers), amending NOTE-053. Earlier rounds below retain historical measurements and interim verdicts; final gates use the lead's current rules on dev including B2 and T041.
 
 Implemented on `local/T062-sim-aa-envelope`, HEAD `0df76bce1a663ee44957cf47cfecdb8b18eed187`,
 whose parent/base is dev `9fcc2ec`. The task file's `683d02b` base is stale; this measures the worktree supplied
