@@ -1,3 +1,317 @@
+# T044 / LG-07 — NOTE-062 report update
+
+**Mechanics accepted for now; no fix round.** This update implements NOTE-062 §3 fix item 3 only: report amendments and reduction of existing campaign records. No source, tool, test, tuning, baseline or POLISH_PLAN change, and no new simulation run. The round-3 single-run numbers are **SUPERSEDED** as acceptance evidence, including the 28.29% demand-share claim and +1.188 year-60 approval gain. Historical sections below retain their original measurements and then-current verdicts for audit only.
+
+**The year-60 approval gate is FAIL (OPEN). The two GUIDE requests are OPEN.** NOTE-062 accepts mechanics provisionally, not a merge: final gates repeat after merging dev with B2, T041 and the SIM lanes ahead of T044 (NOTE-057). These campaign results are against the pre-B2/pre-T041 dev each lane was built on, `805d7d466972eaf89cfba4e1fc8c5f2df16ae0ef`.
+
+## Measured tree and evidence
+
+Measured tree: pushed `local/T044-measured` at `a1a4e79e709e12a368af0645c3ac9dd50e9ac7f1` (`a1a4e79`), verified against `refs/remotes/origin/local/T044-measured`. Its parent is `57ed98340cf91aeeb3dcebe13ca46a3708d54c59`, the round-4 labour correction. The measurement commit adds T062’s A/A funds-nudge flag for the ensemble. This report update is on `local/T044-lg07-industry` after `e4d38e3`; it does not claim that this later docs/runner tree was the measured commit.
+
+Campaign root `C` = `C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-lanes`. Sources: `C/T044.md`, `C/SUMMARY.md`, `C/T044.manifest.json`, `C/T044.audit.json`, and the complete raw member JSON referenced by each ensemble summary. All new tables below are reductions of those files. No absent collector field is inferred from aggregate demand or treated as zero.
+
+| Table / group | Summary relative to C | Members |
+| --- | --- | ---: |
+| 128 clean/base yearly comparison | `stages/5/T044/{dirty,base}/128x15_s7_ensemble.summary.json` | 5 clean + 5 base |
+| 256 s7 clean/base yearly comparison | `data/T044/{dirty,base}/256x60_s7_ensemble.summary.json` | 9 clean + 9 base |
+| Base checks, all three rows | `data/{T044,dev}/base/{128x15_s7,256x60_s7,256x60_s11}_ensemble.summary.json` | 9 per group/row |
+
+The 128 clean target is determined by its five-member stage; its table uses the matching five-member base snapshot, not the later nine-member base. Each summary records member IDs, JSON paths, nudge/day, exact bot commands, commit, source/dependency/observer fingerprints and completion. The measured T044 source fingerprint is `simBlob=4e8cb6cf1ef29e3c695f4c3d659b234358f14dd9`, `srcTree=9072ecc544849893dca0bd08227bc5d534eca71e`. The complete command ledger remains `C/commands.json`.
+
+## Current campaign verdict under NOTE-062
+
+Gate contrasts below are ratios of separately reduced ensemble medians, or the difference of medians for approval. The run-mean air row first averages all 15 annual home-air observations for each member, then reduces the member means; it is not the year-15 endpoint.
+
+| Check | Determining members | Measurement / margin | Current status |
+| --- | ---: | --- | --- |
+| Base population, approval and air, years 10–end | 9 per lane/dev row | Population and air pass all three rows; four s11 upward approval excursions become intended effects below | PASS under the T044-only amendment; G-AB still OPEN |
+| EQ | 9 | 128 s7: 103.582245 in 2015; 256 s7: 121.273510 in 2030; s11: 121.542963 in 2030 | PASS on this measured tree |
+| Systematic shift / disjoint bands | 9 | No three-row endpoint systematic flag; no ≥3-year disjoint base-band streak on any row | PASS on available metrics |
+| 128 s7 clean population ≥0.80× base | 5 | 167,218 / 191,771 = 0.871967×; margin +13,801.2 people / +0.071967× | PASS |
+| 128 s7 clean run-mean home air ≥15% cleaner | 5 | 0.045198588 / 0.057274630 = 0.789155×: 21.084452% cleaner; margin 6.084452 percentage points / 0.003484848 pollution units | PASS |
+| 256 s7 clean population ≥0.97× base, one-sided | 9 | 1,534,036 / 1,475,130 = 1.039933×; margin +103,159.9 people / +0.069933× | PASS |
+| Upper clean population / “clean industry dominates” | 9 | +58,906 people / +3.993275%; dev year-60 band 1,341,715–1,542,590, half-width 100,437.5; 41,531.5 below flag boundary | REPORT ONLY; flag NOT triggered |
+| 256 s7 clean year-60 approval gain ≥+1 | 9 | 80.112583 − 80.084679 = +0.027904; margin −0.972096 points | **FAIL (OPEN)** |
+| Required 256 s11 clean row | 9 required | No clean s11 ensemble in this campaign | PENDING |
+| High-tech gate (a) | 9 required | EQ median first reaches 110 in 2023; positive/raw/capped I-HT component demand is absent in old member JSON | PENDING T062 collector; no gate result |
+| High-tech gate (b) | Final tree, twice | Existing round-3 probe is superseded as final acceptance evidence | PENDING final replay and fresh selection |
+| G-AB abandoned ≤3% | 9 per base row required | Abandoned counts absent from these old annual records | OPEN on all three base rows |
+| G-UNEMP | Final fresh aggregation | Stored access in this campaign is not balance.test’s fresh workerAccess aggregation | OPEN |
+
+The four s11 approval excursions are 2035, 2056, 2058 and 2059, respectively 0.052496, 0.144833, 0.106856 and 0.082796 points above dev’s maximum. NOTE-062 classifies them as **INTENDED EFFECT**, not failures. This exemption applies only to approval up / air cleaner, with the specified half-dev-band bound; it does not excuse population drift or an adverse move.
+
+Approval is not rescued by a different averaging window or a matched-member median. The strict gain is at most +0.54 in every year 2054–2060, mean about +0.15; the mean gain from 2030 is +0.995 at nine members. Those diagnostics do not meet the strict year-60 +1 gate. Late clean-city air converges toward base as the larger clean city and retooled I-M emit pollution; NOTE-062 calls that explanation plausible, not established attribution. Whether it is a lane regression waits for dev’s own clean ensemble and the two decision branches below.
+
+## Gate amendments — exact NOTE-062 §3 wording
+
+**Gate amendments (T044 only; not extended to T043 or T045):**
+- **Base rows:** NOTE-053's rule on population (1 %), approval and air at homes. A year that leaves dev's band only in
+  LG-07's intended direction (approval up, air cleaner), by less than half of dev's band, is reported as an intended
+  effect and does not fail. The other direction fails as usual. The realised I-HT share in base rows is reported, not
+  gated (NOTE-048 T044 item 3). Add G-AB (abandoned ≤ 3 %) on all three rows; the plan lists it for LG-07. Under this
+  rule, today's s11 approval misses are intended effects.
+- **256×60 s7 `--skip dirty` population:** the year-60 median is at least 0.97× the same-commit base median, one-sided.
+  Report the upper side. If the clean median exceeds base by more than half of dev's year-60 band, it goes to the user
+  as "clean industry dominates". Why: LG-07's Problem is the cost of going clean, and half of dev's year-60 band is
+  100,437 people (6.8 %), so a 3 % upper side reads noise. A 9-member 256×60 s11 `--skip dirty` row is required as a
+  second-seed check, under the same flag rule.
+- **"Keeping the +1 approval"** stays the year-60 gain on strict 9-member medians: at least +1. NOTE-048 T044 item 4's
+  A/A-envelope slack is dropped, because NOTE-052's 5.5-point envelope would pass anything. Then:
+  - if dev's own clean ensemble gains at least +1 at year 60 and T044 does not, it is a real regression: open a T044 fix
+    round on the late clean-city air and approval, within NOTE-048 item 4;
+  - if dev's gain is also below +1, the +1.2 premise was one run, and the question goes to the user (section 5). Any new
+    target is written before T044's final run, and its window excludes years 10-14, when the clean city is 17-25 %
+    smaller.
+- **High-tech gate (a), defined now:** the I-HT share of positive incremental demand (econData.demandAbs, with
+  I-D + I-M + I-HT as the denominator), as the per-year median of the 256×60 s7 base ensemble. It must be at least 25 %
+  from the first year the EQ median reaches 110 through 2040. That is NOTE-048's "what a player who zones IndHigh can
+  get". Report the raw and capped readings beside it. Round 3's 28.29 % predates round 4 and is not a result.
+
+NOTE-053’s ordinary base rule checks each year from year 10: the lane median is within dev’s min–max band and its distance from dev’s median is at most max(item tolerance, half dev’s full min–max width). Item tolerance is 1% of dev median for population, zero for approval and air. The quoted T044-only intended-direction exemption is then applied. The three-row systematic-shift check remains, supplemented by NOTE-062’s disjoint-band rule; realised base I-HT is report-only.
+
+## Shared final-run protocol — exact NOTE-062 §1 wording
+
+Set now, before any final run, so that no rule follows a result:
+- **9 members, directly.** Every base row and every 256×60 variant row runs 9 members (control, ±§100 and ±§200 on day 1
+  and day 1441), for the lane and for dev at the same dev commit. 128×15 variant rows run 5, with NOTE-053's second
+  stage. Cached members are reused, so this saves a scheduling round, not bot time.
+- **No third stage.** The 9-member median verdict is final. No lane gets extra members.
+- **Fewer failures at 9 members than at 5 is not evidence of noise.** Dev's min-max band widens as members are added:
+  s7's year-60 band grew from 133,913 to 200,875 wide. At the final gate a failure stands unless a rule in this NOTE
+  exempts it.
+- **Disjoint bands are a real shift.** If a row's lane min-max band lies wholly outside dev's for 3 or more consecutive
+  years, report it as a real shift, whatever the other rows show, and explain its mechanism. This adds to NOTE-053's
+  three-row check, which missed T043's s11 row (44 years disjoint) because the rows moved in opposite directions.
+- **Zero-width dev band.** A year in which all 9 dev members sit at exactly 0 on the I-HT share does not gate that
+  metric. Report the first year the lane's median leaves 0.
+- **Per-member columns.** Every 256×60 table adds each member's year-60 value, a stalled flag (growth under 100,000 from
+  2050 to 2060), and the stalled count for lane and dev. They are reported, not gated: they show when a median sits
+  between two groups.
+- **Trace every table to origin.** The measured trees are not on origin: T043 at 414e491, T044 at a1a4e79, and T045's
+  measured tree. Push each as `local/<lane>-measured`, or name its parent commit in the report. On T043's pushed head,
+  the commits after e01526a touch only src/worker, tests and docs (4a6aaff, cd4d0d0), so its src/sim should match the
+  measured tree; confirm it.
+
+The quoted provenance paragraph records the status when the NOTE was issued. T044’s push requirement is now satisfied by `origin/local/T044-measured` at `a1a4e79`, as verified above. No push was performed in this report-only round.
+
+## Yearly clean-against-base comparisons
+
+For each population, approval and air cell, **G** is the gate contrast (ratio of ensemble medians, or difference of medians); **P** is the median [minimum, maximum] of matched-member contrasts using identical control/nudge/day IDs. P bands are paired diagnostics, not confidence intervals or gate envelopes. In particular, 2060 paired approval is +0.904966 but the gated difference of medians is only +0.027904: the gate remains FAIL (OPEN).
+
+Job-share cells give **clean median [min,max]; base median [min,max]**, in percent of filled jobs. Realised I-HT = I-HT/(I-D+I-M+I-HT), excluding farms; dirty = I-D/(IA+I-D+I-M+I-HT), including farms, reconstructed from annual `jobsByDev[9] / sum(jobsByDev[8..11])` to match the strategy accessor’s denominator. These are annual census observations, not demand or retooled target additions. A zero denominator is represented as zero, matching the existing observation convention.
+
+**Collector gaps:** I-HT demand share (positive demandAbs / raw / capped), direct `dirtyJobShare`, `retooledIM` and `retooledIHT` are **PENDING T062’s new collector** for all old annual rows. The I-HT demand column is therefore explicitly pending. The reconstructed dirty census column is available; its direct collector reading remains pending. The old aggregate `botRow.dI` cannot supply the missing components.
+
+### 128×15 s7 — five clean and five base members
+
+| Year | Population clean/base: G; P [band] | Approval gain: G; P [band], points | Home air clean/base: G; P [band] | Realised I-HT jobs: clean; base (%) | Dirty jobs (reconstructed): clean; base (%) | I-HT demand + / raw / capped |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2001 | 0.96515; 0.96515 [0.96515, 0.96515] | +1.715; +1.715 [+1.715, +1.715] | 1.22678; 1.22678 [1.22678, 1.22678] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 60.61 [60.61, 60.61] | PENDING / PENDING / PENDING |
+| 2002 | 0.99010; 0.99010 [0.99010, 0.99010] | +3.863; +3.863 [+3.863, +3.863] | 0.90808; 0.90808 [0.90808, 0.90808] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 65.64 [65.64, 65.64] | PENDING / PENDING / PENDING |
+| 2003 | 0.99289; 0.99289 [0.98760, 0.99289] | +0.910; +0.910 [+0.910, +0.978] | 0.74653; 0.74653 [0.74274, 0.74653] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 62.28 [62.28, 62.28] | PENDING / PENDING / PENDING |
+| 2004 | 0.86186; 0.86186 [0.85120, 0.86186] | +3.066; +3.066 [+3.066, +3.165] | 0.62767; 0.62767 [0.62345, 0.62769] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 65.44 [65.44, 68.49] | PENDING / PENDING / PENDING |
+| 2005 | 0.74047; 0.73940 [0.73694, 0.75780] | +6.520; +6.517 [+6.183, +7.137] | 0.74706; 0.74818 [0.72967, 0.77903] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 65.08 [65.08, 67.17] | PENDING / PENDING / PENDING |
+| 2006 | 0.72732; 0.72346 [0.70433, 0.75035] | +6.351; +6.203 [+4.930, +6.648] | 0.89573; 0.89573 [0.84348, 0.93125] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 63.57 [62.60, 67.45] | PENDING / PENDING / PENDING |
+| 2007 | 0.76259; 0.76999 [0.75345, 0.78573] | +5.349; +5.298 [+4.031, +5.455] | 1.06540; 1.05059 [1.01925, 1.09999] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 65.03 [64.13, 65.71] | PENDING / PENDING / PENDING |
+| 2008 | 0.78021; 0.78255 [0.77357, 0.79883] | +1.555; +1.760 [+0.528, +2.201] | 1.10369; 1.10438 [1.04546, 1.16943] | 0.36 [0.00, 2.75]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 59.88 [59.72, 63.56] | PENDING / PENDING / PENDING |
+| 2009 | 0.79783; 0.80000 [0.78981, 0.81493] | +0.554; +0.205 [−0.305, +3.773] | 0.66843; 0.69675 [0.66028, 0.71729] | 9.90 [8.85, 13.43]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 57.65 [56.31, 57.92] | PENDING / PENDING / PENDING |
+| 2010 | 0.81444; 0.81781 [0.80811, 0.82885] | +3.136; +3.243 [+1.169, +3.908] | 0.67223; 0.69969 [0.66196, 0.71622] | 13.30 [12.07, 15.89]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 57.00 [53.22, 60.72] | PENDING / PENDING / PENDING |
+| 2011 | 0.83059; 0.83001 [0.82549, 0.84104] | +2.061; +2.047 [+0.262, +2.746] | 0.71006; 0.71966 [0.68672, 0.72674] | 17.27 [15.57, 18.68]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 52.70 [49.43, 60.35] | PENDING / PENDING / PENDING |
+| 2012 | 0.84031; 0.84266 [0.83477, 0.85245] | +1.457; +1.411 [+0.145, +1.686] | 0.76534; 0.78557 [0.76411, 0.82891] | 19.75 [17.54, 21.13]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 51.77 [49.74, 55.43] | PENDING / PENDING / PENDING |
+| 2013 | 0.85060; 0.85416 [0.84656, 0.86245] | +1.344; +1.194 [+0.334, +1.366] | 0.76551; 0.77004 [0.76131, 0.78033] | 18.09 [17.41, 19.78]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 51.69 [49.62, 55.70] | PENDING / PENDING / PENDING |
+| 2014 | 0.86242; 0.86236 [0.85594, 0.87521] | +2.248; +1.385 [−0.848, +4.224] | 0.75753; 0.75941 [0.73414, 0.76241] | 17.29 [16.57, 17.43]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 51.68 [49.62, 55.68] | PENDING / PENDING / PENDING |
+| 2015 | 0.87197; 0.87121 [0.86769, 0.88558] | +1.033; +1.033 [−0.560, +2.625] | 0.73823; 0.73754 [0.72728, 0.76144] | 16.23 [15.04, 17.22]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 51.57 [49.62, 55.62] | PENDING / PENDING / PENDING |
+
+### 256×60 s7 — nine clean and nine base members
+
+| Year | Population clean/base: G; P [band] | Approval gain: G; P [band], points | Home air clean/base: G; P [band] | Realised I-HT jobs: clean; base (%) | Dirty jobs (reconstructed): clean; base (%) | I-HT demand + / raw / capped |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2001 | 0.96461; 0.96461 [0.96461, 0.96461] | −0.108; −0.108 [−0.108, −0.108] | 0.97209; 0.97209 [0.97209, 0.97209] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 56.19 [56.19, 56.19] | PENDING / PENDING / PENDING |
+| 2002 | 0.92727; 0.92727 [0.92717, 0.94141] | −3.240; −3.240 [−3.240, −2.644] | 0.88462; 0.88462 [0.87796, 0.88462] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 65.55 [65.55, 66.40] | PENDING / PENDING / PENDING |
+| 2003 | 0.93471; 0.93471 [0.87259, 0.94185] | +2.247; +2.247 [+2.206, +2.313] | 0.73890; 0.73890 [0.73890, 0.87507] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 69.29 [66.85, 72.80] | PENDING / PENDING / PENDING |
+| 2004 | 0.75633; 0.75633 [0.75633, 0.76483] | +0.121; +0.121 [−0.472, +2.920] | 0.71242; 0.71242 [0.71242, 0.78530] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 63.94 [63.94, 67.52] | PENDING / PENDING / PENDING |
+| 2005 | 0.66221; 0.66221 [0.64167, 0.66881] | +4.608; +4.783 [+3.506, +5.405] | 0.72757; 0.72757 [0.67514, 0.78795] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 65.80 [65.36, 68.84] | PENDING / PENDING / PENDING |
+| 2006 | 0.63632; 0.63632 [0.61740, 0.67214] | +2.525; +2.656 [+0.119, +3.750] | 0.79789; 0.79789 [0.75266, 0.86288] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 63.31 [62.27, 64.19] | PENDING / PENDING / PENDING |
+| 2007 | 0.66133; 0.66467 [0.63835, 0.68803] | +1.168; +1.758 [−1.188, +2.787] | 0.92881; 0.91244 [0.81175, 1.00839] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 61.15 [60.05, 61.95] | PENDING / PENDING / PENDING |
+| 2008 | 0.69636; 0.69636 [0.67470, 0.72719] | −1.032; −0.888 [−4.426, +1.295] | 0.87511; 0.87511 [0.73235, 0.98940] | 0.00 [0.00, 0.00]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 56.02 [54.40, 57.50] | PENDING / PENDING / PENDING |
+| 2009 | 0.72460; 0.72430 [0.71691, 0.76767] | −1.488; −1.698 [−4.081, +5.145] | 0.61021; 0.61808 [0.58504, 0.66696] | 13.05 [8.80, 17.28]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 52.05 [51.36, 52.96] | PENDING / PENDING / PENDING |
+| 2010 | 0.75387; 0.75305 [0.74655, 0.78686] | +3.265; +3.603 [+1.017, +9.658] | 0.71520; 0.70733 [0.60007, 0.74968] | 14.10 [10.05, 21.91]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 50.69 [49.85, 53.15] | PENDING / PENDING / PENDING |
+| 2011 | 0.77645; 0.77645 [0.76600, 0.81171] | +4.982; +5.213 [+1.185, +9.206] | 0.71209; 0.70927 [0.61466, 0.85191] | 13.85 [9.76, 26.88]; 0.00 [0.00, 1.77] | 0.00 [0.00, 0.00]; 49.44 [48.77, 51.35] | PENDING / PENDING / PENDING |
+| 2012 | 0.79286; 0.79159 [0.77177, 0.81499] | +6.828; +5.786 [+2.341, +8.054] | 0.84823; 0.83591 [0.76834, 0.88641] | 13.68 [8.76, 26.87]; 0.00 [0.00, 1.59] | 0.00 [0.00, 0.00]; 48.65 [48.04, 52.71] | PENDING / PENDING / PENDING |
+| 2013 | 0.80828; 0.80737 [0.78938, 0.82803] | +5.890; +4.019 [+0.903, +8.665] | 0.82869; 0.81186 [0.75627, 0.86510] | 13.15 [8.72, 25.33]; 0.00 [0.00, 1.41] | 0.00 [0.00, 0.00]; 49.66 [46.61, 52.60] | PENDING / PENDING / PENDING |
+| 2014 | 0.82101; 0.82101 [0.80554, 0.83927] | +4.349; +4.726 [+1.565, +6.852] | 0.75641; 0.75834 [0.70463, 0.82216] | 13.12 [8.67, 24.55]; 0.00 [0.00, 0.79] | 0.00 [0.00, 0.00]; 49.18 [45.35, 52.57] | PENDING / PENDING / PENDING |
+| 2015 | 0.83262; 0.83343 [0.81222, 0.84312] | +1.852; +1.487 [+0.685, +5.548] | 0.75928; 0.74628 [0.69669, 0.82149] | 13.02 [8.65, 22.66]; 0.00 [0.00, 0.73] | 0.00 [0.00, 0.00]; 48.34 [45.17, 52.34] | PENDING / PENDING / PENDING |
+| 2016 | 0.83937; 0.83862 [0.82091, 0.85029] | +1.168; +1.102 [+0.052, +5.255] | 0.71933; 0.72375 [0.68466, 0.80233] | 13.06 [8.64, 22.52]; 0.00 [0.00, 0.70] | 0.00 [0.00, 0.00]; 48.86 [44.94, 52.31] | PENDING / PENDING / PENDING |
+| 2017 | 0.84515; 0.84946 [0.83064, 0.85630] | +1.517; +1.649 [+0.985, +3.785] | 0.68247; 0.67868 [0.60156, 0.78829] | 13.09 [8.63, 22.86]; 0.00 [0.00, 0.45] | 0.00 [0.00, 0.00]; 48.57 [44.89, 52.27] | PENDING / PENDING / PENDING |
+| 2018 | 0.85344; 0.85700 [0.83772, 0.86303] | +1.941; +1.595 [+1.217, +3.778] | 0.63776; 0.66619 [0.57123, 0.73416] | 13.06 [8.60, 22.80]; 0.00 [0.00, 0.44] | 0.00 [0.00, 0.00]; 47.45 [44.01, 49.73] | PENDING / PENDING / PENDING |
+| 2019 | 0.86027; 0.86297 [0.84700, 0.86949] | +1.044; +1.922 [−0.004, +3.341] | 0.66290; 0.66287 [0.58220, 0.77506] | 13.04 [8.65, 22.76]; 0.00 [0.00, 0.43] | 0.00 [0.00, 0.00]; 47.09 [43.86, 49.39] | PENDING / PENDING / PENDING |
+| 2020 | 0.86311; 0.86377 [0.84856, 0.87739] | +0.980; +1.505 [+0.538, +3.137] | 0.69081; 0.68177 [0.54709, 0.77626] | 13.05 [8.64, 22.79]; 0.00 [0.00, 0.41] | 0.00 [0.00, 0.00]; 47.73 [44.15, 49.56] | PENDING / PENDING / PENDING |
+| 2021 | 0.86788; 0.87114 [0.86090, 0.87908] | +1.987; +2.554 [−1.467, +3.704] | 0.69612; 0.69742 [0.54695, 0.75068] | 13.05 [8.68, 22.82]; 0.00 [0.00, 0.21] | 0.00 [0.00, 0.00]; 47.64 [43.69, 49.52] | PENDING / PENDING / PENDING |
+| 2022 | 0.87394; 0.87578 [0.86817, 0.88377] | +1.514; +1.388 [−1.854, +4.810] | 0.72801; 0.73132 [0.59219, 0.78926] | 13.07 [8.69, 22.85]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 47.63 [44.47, 49.50] | PENDING / PENDING / PENDING |
+| 2023 | 0.87611; 0.88062 [0.87069, 0.88629] | +1.797; +1.671 [−1.129, +3.884] | 0.75355; 0.73708 [0.65678, 0.78152] | 13.04 [8.70, 22.85]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 47.63 [44.43, 49.48] | PENDING / PENDING / PENDING |
+| 2024 | 0.88209; 0.88568 [0.87729, 0.89195] | +0.811; +0.912 [−1.945, +4.057] | 0.76942; 0.75034 [0.64915, 0.78141] | 13.01 [8.68, 22.81]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 47.61 [44.60, 49.46] | PENDING / PENDING / PENDING |
+| 2025 | 0.88725; 0.88998 [0.88159, 0.89698] | +0.810; +0.541 [−1.783, +3.758] | 0.77086; 0.75906 [0.62191, 0.82157] | 13.08 [8.68, 22.81]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 47.63 [44.42, 49.57] | PENDING / PENDING / PENDING |
+| 2026 | 0.88905; 0.89290 [0.88392, 0.89711] | +0.669; +0.669 [−0.988, +3.333] | 0.79060; 0.77126 [0.60688, 0.87376] | 13.04 [8.69, 23.05]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 46.60 [41.06, 49.43] | PENDING / PENDING / PENDING |
+| 2027 | 0.89291; 0.89474 [0.88628, 0.90238] | +0.528; +0.528 [−2.060, +3.153] | 0.78518; 0.74922 [0.63268, 0.83165] | 13.00 [8.70, 21.04]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 44.61 [36.75, 49.16] | PENDING / PENDING / PENDING |
+| 2028 | 0.89678; 0.89844 [0.88721, 0.90535] | +0.309; +0.639 [−0.369, +3.517] | 0.79873; 0.75406 [0.62568, 0.83293] | 12.60 [8.21, 21.04]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 39.82 [35.88, 49.20] | PENDING / PENDING / PENDING |
+| 2029 | 0.90144; 0.90285 [0.89045, 0.90953] | +1.120; +1.353 [−0.674, +6.260] | 0.79191; 0.75292 [0.62733, 0.82626] | 12.61 [8.20, 19.80]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 38.41 [34.73, 49.14] | PENDING / PENDING / PENDING |
+| 2030 | 0.90467; 0.90622 [0.89594, 0.91385] | +1.661; +1.361 [+0.158, +5.623] | 0.83027; 0.78477 [0.66168, 0.89914] | 11.81 [8.03, 17.75]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 35.85 [31.49, 48.02] | PENDING / PENDING / PENDING |
+| 2031 | 0.91068; 0.91202 [0.89792, 0.91811] | +1.372; +1.407 [−0.404, +7.629] | 0.79515; 0.76369 [0.63614, 0.92396] | 11.63 [8.06, 16.68]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 34.98 [31.61, 43.14] | PENDING / PENDING / PENDING |
+| 2032 | 0.91343; 0.91470 [0.90369, 0.91987] | +1.009; +1.027 [−0.729, +6.942] | 0.81395; 0.78028 [0.65537, 0.87051] | 11.46 [8.06, 16.62]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 34.24 [30.89, 42.43] | PENDING / PENDING / PENDING |
+| 2033 | 0.91627; 0.91909 [0.90611, 0.92163] | +0.601; +0.771 [−1.193, +4.487] | 0.80189; 0.78503 [0.66740, 0.90982] | 11.47 [7.88, 15.62]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 32.25 [29.36, 42.56] | PENDING / PENDING / PENDING |
+| 2034 | 0.92177; 0.92185 [0.91069, 0.92607] | +1.609; +1.484 [−0.184, +5.139] | 0.80880; 0.79472 [0.68173, 0.88443] | 11.48 [5.77, 15.17]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 33.80 [29.72, 42.82] | PENDING / PENDING / PENDING |
+| 2035 | 0.92383; 0.92259 [0.91127, 0.92937] | +1.042; +1.099 [−0.509, +5.164] | 0.82268; 0.82268 [0.68364, 0.91751] | 10.44 [5.34, 15.56]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 35.95 [31.34, 42.80] | PENDING / PENDING / PENDING |
+| 2036 | 0.92705; 0.92644 [0.91385, 0.93290] | +1.205; +1.277 [−0.032, +5.155] | 0.82509; 0.81012 [0.68322, 0.88946] | 11.01 [4.29, 15.62]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 36.04 [29.91, 42.55] | PENDING / PENDING / PENDING |
+| 2037 | 0.92787; 0.92787 [0.91585, 0.93673] | +1.062; +0.578 [+0.345, +4.795] | 0.77494; 0.77761 [0.72909, 0.90860] | 16.85 [2.42, 19.03]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 36.64 [33.68, 43.02] | PENDING / PENDING / PENDING |
+| 2038 | 0.92965; 0.92965 [0.91843, 0.94093] | +1.737; +1.160 [+0.069, +5.737] | 0.81123; 0.80407 [0.69212, 0.94170] | 15.21 [3.04, 20.62]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 37.24 [33.58, 44.36] | PENDING / PENDING / PENDING |
+| 2039 | 0.92984; 0.93066 [0.92069, 0.94233] | +1.356; +1.356 [−0.446, +5.120] | 0.84609; 0.85262 [0.73594, 1.01421] | 14.08 [2.54, 21.16]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 37.67 [33.59, 45.02] | PENDING / PENDING / PENDING |
+| 2040 | 0.93289; 0.93289 [0.92390, 0.94588] | +1.451; +1.400 [−0.709, +5.509] | 0.85161; 0.88615 [0.77083, 0.95184] | 15.30 [2.21, 25.21]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 37.97 [33.61, 44.99] | PENDING / PENDING / PENDING |
+| 2041 | 0.93510; 0.93622 [0.92268, 0.94861] | +1.498; +0.563 [−0.126, +6.638] | 0.85671; 0.87439 [0.82198, 0.96117] | 19.11 [1.96, 26.23]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 38.14 [34.41, 45.00] | PENDING / PENDING / PENDING |
+| 2042 | 0.93995; 0.93890 [0.92317, 0.95097] | +2.018; +2.136 [+0.288, +6.044] | 0.87664; 0.86945 [0.81647, 0.97044] | 23.40 [4.22, 29.59]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 37.95 [34.77, 45.16] | PENDING / PENDING / PENDING |
+| 2043 | 0.94060; 0.94087 [0.92250, 0.95352] | +1.499; +1.631 [+0.447, +5.337] | 0.87941; 0.90153 [0.82450, 0.97114] | 26.77 [4.47, 32.19]; 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00]; 37.73 [35.62, 44.97] | PENDING / PENDING / PENDING |
+| 2044 | 0.94235; 0.94235 [0.92741, 0.95487] | +0.783; +1.641 [+0.048, +5.526] | 0.90701; 0.91169 [0.84737, 0.97179] | 30.34 [8.02, 34.32]; 0.00 [0.00, 0.06] | 0.00 [0.00, 0.00]; 38.70 [35.77, 44.72] | PENDING / PENDING / PENDING |
+| 2045 | 0.94419; 0.94507 [0.93467, 0.95585] | +0.779; +1.475 [−0.182, +5.558] | 0.90517; 0.89163 [0.80614, 1.00030] | 33.09 [14.21, 35.57]; 0.00 [0.00, 0.19] | 0.00 [0.00, 0.00]; 38.03 [35.90, 44.03] | PENDING / PENDING / PENDING |
+| 2046 | 0.94794; 0.94514 [0.93523, 0.96103] | +1.283; +1.338 [+0.984, +5.200] | 0.93234; 0.91811 [0.80771, 1.06332] | 33.18 [18.43, 36.99]; 0.00 [0.00, 0.94] | 0.00 [0.00, 0.00]; 37.90 [37.10, 42.89] | PENDING / PENDING / PENDING |
+| 2047 | 0.94882; 0.94874 [0.93837, 0.96578] | +1.448; +1.900 [−0.195, +5.287] | 0.92730; 0.92730 [0.82308, 1.03103] | 33.85 [21.92, 36.66]; 0.00 [0.00, 1.81] | 0.00 [0.00, 0.00]; 38.16 [37.05, 41.59] | PENDING / PENDING / PENDING |
+| 2048 | 0.94687; 0.94796 [0.94021, 0.96832] | +0.791; +0.786 [−0.197, +4.949] | 0.92239; 0.90476 [0.84614, 1.01439] | 31.27 [24.29, 36.71]; 0.00 [0.00, 3.11] | 0.00 [0.00, 0.00]; 38.16 [36.65, 40.33] | PENDING / PENDING / PENDING |
+| 2049 | 0.95060; 0.95060 [0.93823, 0.98251] | +0.352; +1.340 [+0.059, +4.924] | 0.94438; 0.93508 [0.85384, 0.99512] | 29.02 [23.27, 38.53]; 0.00 [0.00, 4.22] | 0.00 [0.00, 0.00]; 38.16 [36.75, 39.54] | PENDING / PENDING / PENDING |
+| 2050 | 0.95006; 0.94925 [0.93841, 1.00073] | +1.261; +1.455 [−0.148, +4.650] | 0.95598; 0.96477 [0.84741, 0.99536] | 27.43 [21.37, 38.06]; 0.77 [0.00, 5.48] | 0.00 [0.00, 0.00]; 37.79 [36.09, 39.09] | PENDING / PENDING / PENDING |
+| 2051 | 0.95127; 0.95371 [0.93775, 1.02664] | +1.154; +1.268 [−0.939, +4.111] | 0.98199; 0.94718 [0.88977, 1.01846] | 25.54 [18.80, 35.91]; 2.06 [0.00, 6.47] | 0.00 [0.00, 0.00]; 37.06 [35.18, 38.48] | PENDING / PENDING / PENDING |
+| 2052 | 0.95849; 0.95849 [0.94467, 1.05440] | +1.700; +1.439 [−0.065, +4.673] | 0.96185; 0.96185 [0.89274, 1.01504] | 24.27 [17.05, 34.59]; 3.12 [0.10, 7.53] | 0.00 [0.00, 0.00]; 36.12 [34.15, 37.49] | PENDING / PENDING / PENDING |
+| 2053 | 0.97857; 0.97802 [0.94947, 1.08051] | +1.106; +0.601 [−0.135, +4.291] | 0.97921; 0.94650 [0.91556, 1.04733] | 23.17 [15.37, 33.01]; 3.60 [0.43, 8.33] | 0.00 [0.00, 0.00]; 35.45 [33.01, 36.54] | PENDING / PENDING / PENDING |
+| 2054 | 1.00152; 1.00238 [0.95166, 1.10637] | +0.209; +0.403 [−1.680, +4.473] | 0.99875; 0.97888 [0.92347, 1.04038] | 22.52 [13.46, 31.83]; 3.88 [0.88, 8.91] | 0.00 [0.00, 0.00]; 34.71 [32.26, 35.76] | PENDING / PENDING / PENDING |
+| 2055 | 1.01609; 1.01817 [0.97106, 1.12133] | +0.022; +0.395 [−1.091, +4.498] | 0.95436; 0.93790 [0.87933, 1.04622] | 22.66 [11.70, 31.10]; 4.67 [1.36, 9.73] | 0.00 [0.00, 0.00]; 34.00 [31.32, 35.07] | PENDING / PENDING / PENDING |
+| 2056 | 1.03366; 1.03484 [0.98402, 1.12303] | +0.191; +0.393 [−0.352, +3.807] | 0.99772; 1.00812 [0.92055, 1.07823] | 24.43 [10.89, 31.01]; 5.76 [2.84, 10.42] | 0.00 [0.00, 0.00]; 32.55 [30.30, 34.68] | PENDING / PENDING / PENDING |
+| 2057 | 1.04698; 1.03488 [1.00500, 1.12038] | +0.005; +0.672 [−1.565, +4.470] | 0.99113; 0.96320 [0.90609, 1.06773] | 25.52 [10.67, 32.54]; 6.79 [3.22, 10.09] | 0.00 [0.00, 0.00]; 31.72 [29.37, 33.97] | PENDING / PENDING / PENDING |
+| 2058 | 1.03745; 1.03925 [1.00988, 1.12185] | +0.065; +0.933 [−1.566, +4.411] | 0.97440; 0.96973 [0.93752, 1.01851] | 26.37 [11.30, 34.02]; 7.58 [4.58, 10.19] | 0.00 [0.00, 0.00]; 31.10 [29.05, 33.44] | PENDING / PENDING / PENDING |
+| 2059 | 1.04284; 1.03715 [1.01399, 1.12461] | +0.544; +0.778 [−1.444, +4.059] | 0.96035; 0.95510 [0.90281, 1.04064] | 25.54 [11.73, 34.89]; 7.77 [5.21, 11.14] | 0.00 [0.00, 0.00]; 30.71 [28.33, 32.79] | PENDING / PENDING / PENDING |
+| 2060 | 1.03993; 1.03208 [1.00855, 1.11531] | +0.028; +0.905 [−2.428, +4.220] | 1.00578; 0.98410 [0.90059, 1.02878] | 24.88 [12.37, 35.02]; 7.55 [5.91, 12.79] | 0.00 [0.00, 0.00]; 30.11 [27.30, 32.25] | PENDING / PENDING / PENDING |
+
+### 256×60 s11 — required clean row pending
+
+The campaign contains the nine-member base s11 row, but no clean s11 member set. All yearly clean/base ratios, approval gains, air ratios and clean job/demand shares for s11 remain **PENDING**; they are not inferred from s7. The required final nine-member second-seed row uses the same one-sided population and dominance-flag rules.
+
+## Member year-60 values and stalled counts
+
+All values below come from individual raw member annual records, not medians. Growth is population(2060) − population(2050); stalled means growth **<100,000** (strict). These endpoints are reported, not gated. The base s7 group is the same comparator for the clean s7 table; dev-clean endpoints remain pending. I-HT demand fields and direct dirty-share collector values remain pending in all five groups.
+
+### T044 base 256×60 s7
+
+Source: `C/data/T044/base/256x60_s7_ensemble.summary.json`. Stalled: **1/9**.
+
+| Member | Population 2060 | Growth 2050–2060 | Stalled | Approval 2060 | Home air 2060 | I-HT jobs 2060 (%) | Dirty jobs 2060 (%; reconstructed) |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| control | 1,497,089 | 223,757 | no | 80.084679 | 0.17740746 | 6.2666 | 30.6476 |
+| p100-d1 | 1,442,195 | 172,682 | no | 77.986572 | 0.16762767 | 5.9142 | 31.3328 |
+| m100-d1 | 1,475,130 | 210,338 | no | 80.339595 | 0.16869256 | 12.1072 | 28.7869 |
+| p100-d1441 | 1,491,101 | 225,312 | no | 79.607694 | 0.18839481 | 7.4176 | 30.5477 |
+| m100-d1441 | 1,475,130 | 210,338 | no | 80.339595 | 0.16869256 | 12.1072 | 28.7869 |
+| p200-d1 | 1,541,123 | 264,818 | no | 78.702291 | 0.16851983 | 7.0153 | 30.1107 |
+| m200-d1 | 1,423,079 | 158,980 | no | 80.153400 | 0.16267099 | 7.5474 | 29.2772 |
+| p200-d1441 | 1,486,347 | 225,047 | no | 80.867961 | 0.17082590 | 12.7882 | 27.3000 |
+| m200-d1441 | 1,293,939 | 87,103 | yes | 76.973966 | 0.16245595 | 9.6285 | 32.2490 |
+
+### T044 clean 256×60 s7
+
+Source: `C/data/T044/dirty/256x60_s7_ensemble.summary.json`. Stalled: **0/9**.
+
+| Member | Population 2060 | Growth 2050–2060 | Stalled | Approval 2060 | Home air 2060 | I-HT jobs 2060 (%) | Dirty jobs 2060 (%; reconstructed) |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| control | 1,564,702 | 363,076 | no | 79.970982 | 0.18214593 | 28.4761 | 0.0000 |
+| p100-d1 | 1,550,653 | 353,116 | no | 78.891537 | 0.16496210 | 12.3655 | 0.0000 |
+| m100-d1 | 1,487,747 | 287,148 | no | 80.112583 | 0.17106456 | 24.8819 | 0.0000 |
+| p100-d1441 | 1,581,881 | 371,385 | no | 80.663597 | 0.16966738 | 35.0228 | 0.0000 |
+| m100-d1441 | 1,487,747 | 287,148 | no | 80.112583 | 0.17106456 | 24.8819 | 0.0000 |
+| p200-d1 | 1,569,874 | 372,177 | no | 80.164943 | 0.17336970 | 12.5265 | 0.0000 |
+| m200-d1 | 1,443,140 | 235,418 | no | 81.194389 | 0.15792142 | 29.5665 | 0.0000 |
+| p200-d1441 | 1,534,036 | 331,078 | no | 78.439496 | 0.16341111 | 23.1054 | 0.0000 |
+| m200-d1441 | 1,443,140 | 235,418 | no | 81.194389 | 0.15792142 | 29.5665 | 0.0000 |
+
+### Dev base 256×60 s7
+
+Source: `C/data/dev/base/256x60_s7_ensemble.summary.json`. Stalled: **0/9**.
+
+| Member | Population 2060 | Growth 2050–2060 | Stalled | Approval 2060 | Home air 2060 | I-HT jobs 2060 (%) | Dirty jobs 2060 (%; reconstructed) |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| control | 1,513,835 | 248,094 | no | 80.357425 | 0.17862633 | 10.2399 | 31.9481 |
+| p100-d1 | 1,379,922 | 117,959 | no | 79.939502 | 0.15830317 | 13.7624 | 27.0925 |
+| m100-d1 | 1,461,087 | 189,499 | no | 80.541410 | 0.16719038 | 12.6147 | 28.6274 |
+| p100-d1441 | 1,504,801 | 243,852 | no | 79.739801 | 0.18320919 | 11.4822 | 31.4343 |
+| m100-d1441 | 1,461,087 | 189,499 | no | 80.541410 | 0.16719038 | 12.6147 | 28.6274 |
+| p200-d1 | 1,522,489 | 249,500 | no | 78.183649 | 0.16956750 | 4.8647 | 35.0544 |
+| m200-d1 | 1,438,474 | 175,613 | no | 80.531927 | 0.15547329 | 7.8350 | 30.3147 |
+| p200-d1441 | 1,542,590 | 271,208 | no | 80.164557 | 0.17858071 | 4.7377 | 31.7573 |
+| m200-d1441 | 1,341,715 | 139,257 | no | 79.942015 | 0.16889537 | 13.5058 | 32.3443 |
+
+### T044 base 256×60 s11
+
+Source: `C/data/T044/base/256x60_s11_ensemble.summary.json`. Stalled: **0/9**.
+
+| Member | Population 2060 | Growth 2050–2060 | Stalled | Approval 2060 | Home air 2060 | I-HT jobs 2060 (%) | Dirty jobs 2060 (%; reconstructed) |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| control | 1,394,907 | 123,680 | no | 81.301122 | 0.14714698 | 12.2860 | 27.9656 |
+| p100-d1 | 1,492,437 | 224,950 | no | 80.279979 | 0.17537274 | 9.1800 | 26.9295 |
+| m100-d1 | 1,514,767 | 254,912 | no | 79.952489 | 0.18315024 | 8.4382 | 28.9704 |
+| p100-d1441 | 1,533,543 | 255,646 | no | 81.145869 | 0.15584565 | 6.3413 | 28.3007 |
+| m100-d1441 | 1,497,506 | 232,052 | no | 80.996946 | 0.16660565 | 0.0000 | 37.6412 |
+| p200-d1 | 1,408,811 | 135,890 | no | 80.988454 | 0.15249062 | 9.6622 | 29.6879 |
+| m200-d1 | 1,530,201 | 251,725 | no | 80.495800 | 0.15582964 | 0.4653 | 35.3340 |
+| p200-d1441 | 1,476,839 | 205,332 | no | 79.322044 | 0.17632138 | 0.0000 | 36.7794 |
+| m200-d1441 | 1,460,806 | 197,324 | no | 80.770068 | 0.16466274 | 7.5114 | 31.7226 |
+
+### Dev base 256×60 s11
+
+Source: `C/data/dev/base/256x60_s11_ensemble.summary.json`. Stalled: **0/9**.
+
+| Member | Population 2060 | Growth 2050–2060 | Stalled | Approval 2060 | Home air 2060 | I-HT jobs 2060 (%) | Dirty jobs 2060 (%; reconstructed) |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| control | 1,427,340 | 155,237 | no | 81.356695 | 0.14748506 | 10.3252 | 29.5516 |
+| p100-d1 | 1,483,518 | 216,565 | no | 81.271740 | 0.16888214 | 8.8674 | 24.5744 |
+| m100-d1 | 1,498,791 | 244,718 | no | 79.137167 | 0.18256159 | 8.1910 | 29.9381 |
+| p100-d1441 | 1,503,201 | 240,951 | no | 80.441199 | 0.17151689 | 0.4585 | 38.0380 |
+| m100-d1441 | 1,472,527 | 210,888 | no | 79.955820 | 0.17772391 | 0.0000 | 39.8873 |
+| p200-d1 | 1,467,836 | 192,149 | no | 79.776494 | 0.15961019 | 8.4702 | 27.9190 |
+| m200-d1 | 1,504,163 | 227,698 | no | 81.276958 | 0.15719813 | 0.4671 | 34.8691 |
+| p200-d1441 | 1,511,108 | 240,837 | no | 80.231064 | 0.19051273 | 5.9883 | 31.0513 |
+| m200-d1441 | 1,465,363 | 201,961 | no | 80.762989 | 0.17074979 | 10.5790 | 29.2437 |
+
+Stalled totals: T044/dev base s7 **1/9 versus 0/9**; T044/dev base s11 **0/9 versus 0/9**; T044 clean/base s7 **0/9 versus 1/9**. The required clean s11 and dev-clean endpoint tables await final ensembles.
+
+No base population, approval, home-air or realised I-HT min–max band is wholly disjoint from dev’s for three consecutive years from year 10 on any of the three rows. The first nonzero realised I-HT median is 2050 for T044 base s7 (dev 2051), 2052 for both T044/dev base s11, and never within 128×15 for either base. Clean s7 first becomes nonzero in 2008 at 128 and 2009 at 256. This zero-width/first-emergence diagnostic does not certify demand gate (a).
+
+## Final-dev repeats — exact NOTE-062 §3 wording
+
+**Runs to repeat on the final dev:**
+- T062 first: dev's 9-member `--skip dirty` 256×60 s7 ensemble.
+- 9-member base ensembles on all three rows, with the collector.
+- `--skip dirty` 128×15 s7 at 5 members, with stage two near 0.80× or 15 %; `--skip dirty` 256×60 s7 and s11 at 9.
+- industryProbe gate (b), tsc and the full vitest, including tests/sim/botCleanIndustry.test.ts and
+  tests/sim/balance.test.ts: G-UNEMP with the fresh workerAccess aggregation, LD15a, and lines 146-147, "no dirty
+  industry: unemployment" > 0.04 and "population" < 0.9× base. Retooling pushes against those two: the 128 clean median
+  is 0.872×, its largest member 0.886×. If a balance.test line fails because LG-07 works as specified, send me the
+  numbers; do not edit the test in the lane.
+
+Gate (b) repeats `tools/industryProbe.ts` without a code change, first replaying `--site 95,230`, then using a fresh site selection, from the y43 checkpoint and advancing 24 months. Keep its ≥25% I-HT block-job criterion. T062’s new read-only collector must verify unchanged default annual rows and state hashes. No lane balance change or balance.test assertion edit is authorised by this report update.
+
+## Open GUIDE requests, verification and browser checklist
+
+- **OPEN — `src/ui/TopBar.ts`, `buildRciPop()`/`update()` or the split RCI equivalent:** read `industrialStrategy(ctx.state)` through the host-mirrored state and show retooled I-M/I-HT demand-target additions, with missing optional data hidden. Label targets rather than filled jobs.
+- **OPEN — `src/ui/panels/StatsPanel.ts`, `build()`/`update()`:** add Industrial strategy with converted target jobs, dirty share with its farm-inclusive denominator clear, and resident-weighted home air. Bind listeners to `ctx.signal`; reads stay through `ctx.host`/`ctx.state`, mutations through `host.act`.
+
+This round changes only `docs/dev/reports/local-T044-lg07-industry.md`. **Infra hunks: none. Production/tool/test hunks: none. Cloud-held edits: none.** No tests, tsc, bot, probe, browser, benchmark or GPU run was started. The JSON reduction checked member completion/counts, every annual population/approval/air/I-HT median/min/max against the source summaries, matched nudge/day IDs and the census I-HT denominator. Local git provenance and diff/UTF-8 checks were read-only. Scratch reduction and full-precision data are `C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T044/scratch/note062-report.mjs` and `C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T044/scratch/note062-report-data.json`.
+
+The final-dev gates, new collector readings, G-AB, fresh G-UNEMP, both probe runs, full tests and browser behavior are unverified here. Their required schedule is above. The lead writes POLISH_PLAN amendments after the final run. This report remains uncommitted.
+
+- [ ] Check the no-dirty-room 12-month ramp/unwind; I-HT conversion off at EQ 70 and on above it; mature expansion stays within labour headroom.
+- [ ] Check Clean Air Act / Industrial Pollution Controls conversion, costs and ordinance text.
+- [ ] Inspect I-D EQ penalties and persistent soil costs on R/CO$$$ after demolition; Brownfield Cleanup accelerates recovery.
+- [ ] After GUIDE work, compare RCI/Industrial strategy numbers to host-mirrored targets, job shares and home air; check 720p layout and missing optional data on an old save.
+- [ ] Save/load mid-ramp, inspect the y43 replayed and freshly selected 6×6 campuses after 24 months, and distinguish realised jobs from demand.
+
+---
+
+## Historical reports — superseded acceptance numbers
+
 **T044 / LG-07 — round 4: labour conservation bug fixed**
 
 Starting commit `be057d9bb9b2a84e1f57b0b61b8679da90b45b91`. Round-4 changes are **uncommitted**. This is case **(a), a bug**, specifically the blocked I-D output/reservation mismatch. I-M and I-HT receiving demand already passed through the headroom allocation. No test metric or bound was loosened, and `tests/sim/balanceEconomy.test.ts` is unchanged.
@@ -122,7 +436,7 @@ Browser checklist, left for the lead:
 
 ---
 
-**Historical round-3 report.** The following measurements predate the conservation fix. Only the repeated 128 default result is reconfirmed in round 4; other bot/probe figures are historical, not a fresh acceptance claim. NOTE-052 supersedes the +§1 A/A protocol described below. The base-row decision remains with the lead.
+**SUPERSEDED — historical round-3 single-run report.** These numbers predate the round-4 conservation fix and are superseded as acceptance evidence by the T062 ensemble campaign and NOTE-062 above. Only the repeated 128 default result was reconfirmed in round 4; that identity check is historical, not a current ensemble gate. In particular, round 3’s 28.29% demand-share and +1.188 approval figures are not current results. The historical protocol and then-current verdicts below are retained for audit; NOTE-062 controls the final rules.
 
 **T044 / LG-07 — round 3: approved changes measured; base gate still fails**
 
@@ -466,9 +780,9 @@ Browser acceptance checklist (all unchecked; GUIDE rows need its follow-up):
 - [ ] Save/load mid-ramp without instant reset/conversion; inspect ordinance/RCI text at 720p.
 - [ ] On y43, replay the 6×6 site near the elementary school and inspect staffed campuses after 24 months; distinguish demand targets from filled jobs.
 
-## NOTE-053 ensemble verdicts (T062 campaign, against the dev this lane is built on)
+## Historical NOTE-053 ensemble verdicts — amended by NOTE-062 above
 
-Measured on a throwaway tree (this lane plus T062's flag commit 3833c8d); final gates on the dev with T041 follow after B2 and T041 land.
+These are the original campaign tables and then-current verdicts, retained verbatim for audit. Their two-sided 1.03× clean-population failure and four s11 upward approval failures are SUPERSEDED by NOTE-062 above; the strict year-60 approval failure stays OPEN. Realised I-HT is report-only. Measured on pushed local/T044-measured at a1a4e79 (parent 57ed983, plus T062’s measurement flag); final gates repeat on dev including B2 and T041.
 
 # T044 (LG-07): NOTE-053 ensemble judgement
 
