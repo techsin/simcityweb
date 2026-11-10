@@ -1,0 +1,3726 @@
+[
+ {
+  "name": "homes: construct",
+  "calls": [],
+  "writes": {
+   "0 div.hud-top": "children×4 class",
+   "0.0 div.mp-glass": "children×3 class",
+   "0.0.0 div.hud-seg": "attr.title children×2 class title",
+   "0.0.0.0 div.city-badge": "class html",
+   "0.0.0.1 div.hud-stack": "children×2 class",
+   "0.0.0.1.0 div.city-name": "class",
+   "0.0.0.1.1 div.hud-sub": "class",
+   "0.0.1 div.hud-seg": "children class",
+   "0.0.1.0 div.hud-stack": "children×2 class",
+   "0.0.1.0.0 div.hud-label": "children×3 class",
+   "0.0.1.0.0.0 span.paused-pill": "children class",
+   "0.0.1.0.0.1 span.live-pill": "attr.title children class title",
+   "0.0.1.0.1 div.hud-value": "class",
+   "0.0.2 div.hud-seg": "children×2 class",
+   "0.0.2.0 div.speed": "children×4 class",
+   "0.0.2.0.0 button": "attr.title html title",
+   "0.0.2.0.1 button": "attr.title html title",
+   "0.0.2.0.2 button": "attr.title html title",
+   "0.0.2.0.3 button": "attr.title html title",
+   "0.0.2.1 div.tod": "class",
+   "0.1 div.mp-glass": "children×4 class",
+   "0.1.0 div.hud-seg": "attr.title children×2 class title",
+   "0.1.0.0 span.ico-wrap": "class html style.cssText",
+   "0.1.0.1 div.hud-stack": "children×2 class",
+   "0.1.0.1.0 div.hud-value": "class",
+   "0.1.0.1.1 div.hud-sub": "class",
+   "0.1.1 div.hud-seg": "attr.title children×2 class title",
+   "0.1.1.0 span.ico-wrap": "class html style.cssText",
+   "0.1.1.1 div.hud-stack": "children×2 class",
+   "0.1.1.1.0 div.hud-value": "class",
+   "0.1.1.1.1 div.hud-sub": "class",
+   "0.1.2 div.hud-seg": "attr.title children×4 class title",
+   "0.1.2.0 div.rci": "children×3 class",
+   "0.1.2.0.0 div.rci-col": "children×2 class",
+   "0.1.2.0.0.0 div.rci-bar": "children×2 class",
+   "0.1.2.0.0.0.1 span.rci-cap": "class",
+   "0.1.2.0.0.1 span.rci-l": "children class style.color",
+   "0.1.2.0.1 div.rci-col": "children×2 class",
+   "0.1.2.0.1.0 div.rci-bar": "children×2 class",
+   "0.1.2.0.1.0.1 span.rci-cap": "class",
+   "0.1.2.0.1.1 span.rci-l": "children class style.color",
+   "0.1.2.0.2 div.rci-col": "children×2 class",
+   "0.1.2.0.2.0 div.rci-bar": "children×2 class",
+   "0.1.2.0.2.0.1 span.rci-cap": "class",
+   "0.1.2.0.2.1 span.rci-l": "children class style.color",
+   "0.1.2.1 span.rci-capdot": "class",
+   "0.1.2.2 button.rci-zone": "attr.type children class style.display",
+   "0.1.2.3 div.rci-pop": "children×6 class",
+   "0.1.2.3.0 div.sec-title": "children class",
+   "0.1.2.3.1 div.rci-grid": "children×12 class",
+   "0.1.2.3.1.0 div.g": "children×3 class",
+   "0.1.2.3.1.0.0 span.val": "class",
+   "0.1.2.3.1.0.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.0.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.0.2 span.lbl": "children class",
+   "0.1.2.3.1.1 div.g": "children×3 class",
+   "0.1.2.3.1.1.0 span.val": "class",
+   "0.1.2.3.1.1.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.1.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.1.2 span.lbl": "children class",
+   "0.1.2.3.1.10 div.g": "children×3 class",
+   "0.1.2.3.1.10.0 span.val": "class",
+   "0.1.2.3.1.10.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.10.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.10.2 span.lbl": "children class",
+   "0.1.2.3.1.11 div.g": "children×3 class",
+   "0.1.2.3.1.11.0 span.val": "class",
+   "0.1.2.3.1.11.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.11.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.11.2 span.lbl": "children class",
+   "0.1.2.3.1.2 div.g": "children×3 class",
+   "0.1.2.3.1.2.0 span.val": "class",
+   "0.1.2.3.1.2.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.2.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.2.2 span.lbl": "children class",
+   "0.1.2.3.1.3 div.g": "children×3 class",
+   "0.1.2.3.1.3.0 span.val": "class",
+   "0.1.2.3.1.3.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.3.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.3.2 span.lbl": "children class",
+   "0.1.2.3.1.4 div.g": "children×3 class",
+   "0.1.2.3.1.4.0 span.val": "class",
+   "0.1.2.3.1.4.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.4.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.4.2 span.lbl": "children class",
+   "0.1.2.3.1.5 div.g": "children×3 class",
+   "0.1.2.3.1.5.0 span.val": "class",
+   "0.1.2.3.1.5.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.5.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.5.2 span.lbl": "children class",
+   "0.1.2.3.1.6 div.g": "children×3 class",
+   "0.1.2.3.1.6.0 span.val": "class",
+   "0.1.2.3.1.6.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.6.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.6.2 span.lbl": "children class",
+   "0.1.2.3.1.7 div.g": "children×3 class",
+   "0.1.2.3.1.7.0 span.val": "class",
+   "0.1.2.3.1.7.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.7.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.7.2 span.lbl": "children class",
+   "0.1.2.3.1.8 div.g": "children×3 class",
+   "0.1.2.3.1.8.0 span.val": "class",
+   "0.1.2.3.1.8.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.8.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.8.2 span.lbl": "children class",
+   "0.1.2.3.1.9 div.g": "children×3 class",
+   "0.1.2.3.1.9.0 span.val": "class",
+   "0.1.2.3.1.9.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.9.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.9.2 span.lbl": "children class",
+   "0.1.2.3.2 div.rci-groups": "children×3 class",
+   "0.1.2.3.2.0 div": "children style.borderColor style.color",
+   "0.1.2.3.2.1 div": "children style.borderColor style.color",
+   "0.1.2.3.2.2 div": "children style.borderColor style.color",
+   "0.1.2.3.3 div.rci-region": "class",
+   "0.1.2.3.4 div.rci-hints": "class",
+   "0.1.2.3.5 div.rci-foot": "children×2 class",
+   "0.1.2.3.5.0 span.cap-key": "children class",
+   "0.1.2.3.5.1 span.faint": "children class",
+   "0.1.3 div.hud-seg": "attr.title children×3 class title",
+   "0.1.3.0 span.ico-wrap": "class html",
+   "0.1.3.1 div.hud-stack": "children×2 class",
+   "0.1.3.1.0 div.hud-label": "children class",
+   "0.1.3.1.1 div.hud-value": "class",
+   "0.1.3.2 div.appr-pop": "class",
+   "0.2 div.spacer": "class",
+   "0.3 div.mp-glass": "children×12 class style.cssText",
+   "0.3.0 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.1 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.10 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.11 button.icon-btn": "attr.title class html title",
+   "0.3.2 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.3 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.4 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.5 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.6 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.7 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.8 div": "style.cssText",
+   "0.3.9 button.icon-btn": "attr.title class html title"
+  },
+  "tree": [
+   "div",
+   "  div class=\"hud-top\"",
+   "    div class=\"mp-glass\"",
+   "      div class=\"hud-seg click\" title=\"City menu (Esc)\" L1",
+   "        div class=\"city-badge\" html=\"<svg#2424f34e>\"",
+   "        div class=\"hud-stack\"",
+   "          div class=\"city-name\"",
+   "          div class=\"hud-sub dim\"",
+   "      div class=\"hud-seg\"",
+   "        div class=\"hud-stack\"",
+   "          div class=\"hud-label\"",
+   "            \"Date\"",
+   "            span class=\"paused-pill\"",
+   "              \"PAUSED\"",
+   "            span class=\"live-pill\" title=\"An emergency needs you: the game runs at live speed until the help you send arrives (Settings → Gameplay)\"",
+   "              \"LIVE\"",
+   "          div class=\"hud-value\"",
+   "      div class=\"hud-seg\"",
+   "        div class=\"speed\"",
+   "          button title=\"Pause (Space)\" html=\"<svg#66456159>\" L1",
+   "          button title=\"Normal speed (1)\" html=\"<svg#923c75e9>\" L1",
+   "          button title=\"Fast (2)\" html=\"<svg#fda8efda>\" L1",
+   "          button title=\"Ultra (3)\" html=\"<svg#9ce28af5>\" L1",
+   "        div class=\"tod hide-sm\"",
+   "    div class=\"mp-glass\"",
+   "      div class=\"hud-seg click\" title=\"Budget (M)\" L1",
+   "        span class=\"ico-wrap\" style{cssText:color:#7ee2a0} html=\"<svg#c49e1922>\"",
+   "        div class=\"hud-stack\"",
+   "          div class=\"hud-value\"",
+   "          div class=\"hud-sub\"",
+   "      div class=\"hud-seg click\" title=\"City statistics (J)\" L1",
+   "        span class=\"ico-wrap\" style{cssText:color:#8fc8ff} html=\"<svg#a2a9d9ec>\"",
+   "        div class=\"hud-stack\"",
+   "          div class=\"hud-value\"",
+   "          div class=\"hud-sub\"",
+   "      div class=\"hud-seg click rci-seg\" title=\"RCI demand — click for details\" L1",
+   "        div class=\"rci\"",
+   "          div class=\"rci-col\"",
+   "            div class=\"rci-bar\"",
+   "              i",
+   "              span class=\"rci-cap\"",
+   "            span class=\"rci-l\" style{color:var(--res)}",
+   "              \"R\"",
+   "          div class=\"rci-col\"",
+   "            div class=\"rci-bar\"",
+   "              i",
+   "              span class=\"rci-cap\"",
+   "            span class=\"rci-l\" style{color:var(--com)}",
+   "              \"C\"",
+   "          div class=\"rci-col\"",
+   "            div class=\"rci-bar\"",
+   "              i",
+   "              span class=\"rci-cap\"",
+   "            span class=\"rci-l\" style{color:var(--ind)}",
+   "              \"I\"",
+   "        span class=\"rci-capdot\"",
+   "        button class=\"rci-zone\" style{display:none} attrs{type=button} L1",
+   "          \"+ zone\"",
+   "        div class=\"rci-pop mp-glass i\"",
+   "          div class=\"sec-title\"",
+   "            \"Demand by type\"",
+   "          div class=\"rci-grid\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Low-wealth residents\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"R$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Medium-wealth residents\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"R$$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"High-wealth residents\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"R$$$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Low-wealth services\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"CS$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Medium-wealth services\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"CS$$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"High-wealth services\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"CS$$$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Medium-wealth offices\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"CO$$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"High-wealth offices\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"CO$$$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Agriculture\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"I-Ag\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Dirty industry\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"I-D\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Manufacturing\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"I-M\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"High-tech industry\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"I-HT\"",
+   "          div class=\"rci-groups\"",
+   "            div style{borderColor:var(--res);color:var(--res)}",
+   "              \"RESIDENTIAL\"",
+   "            div style{borderColor:var(--com);color:var(--com)}",
+   "              \"COMMERCIAL\"",
+   "            div style{borderColor:var(--ind);color:var(--ind)}",
+   "              \"INDUSTRIAL\"",
+   "          div class=\"rci-region\"",
+   "          div class=\"rci-hints\"",
+   "          div class=\"rci-foot\"",
+   "            span class=\"cap-key\"",
+   "              \"Demand cap reached\"",
+   "            span class=\"faint\"",
+   "              \"Bars above the line = growth wanted\"",
+   "      div class=\"hud-seg click approval\" title=\"Mayor approval — advisors (N)\" L2",
+   "        span class=\"ico-wrap\" html=\"<svg#17af13b5>\"",
+   "        div class=\"hud-stack\"",
+   "          div class=\"hud-label\"",
+   "            \"Approval\"",
+   "          div class=\"hud-value\"",
+   "        div class=\"appr-pop mp-glass\"",
+   "    div class=\"spacer\"",
+   "    div class=\"mp-glass\" style{cssText:gap:2px}",
+   "      button class=\"icon-btn\" title=\"Budget (M)\" data{panel:budget} html=\"<svg#df4117fc>\" L1",
+   "      button class=\"icon-btn\" title=\"Graphs (G)\" data{panel:graphs} html=\"<svg#246c6c72>\" L1",
+   "      button class=\"icon-btn\" title=\"City statistics (J)\" data{panel:stats} html=\"<svg#cfbddc03>\" L1",
+   "      button class=\"icon-btn\" title=\"Demographics — ages, schools, services, tourism (P)\" data{panel:demographics} html=\"<svg#7de1242c>\" L1",
+   "      button class=\"icon-btn\" title=\"Advisors & news (N)\" data{panel:advisors} html=\"<svg#0c046094>\" L1",
+   "      button class=\"icon-btn\" title=\"Ordinances (Y)\" data{panel:ordinances} html=\"<svg#fae6ae71>\" L1",
+   "      button class=\"icon-btn\" title=\"Rewards & unlocks\" data{panel:rewards} html=\"<svg#1075f528>\" L1",
+   "      button class=\"icon-btn\" title=\"Emergencies — active incidents, fleets, statistics\" data{panel:emergencies} html=\"<svg#7e974663>\" L1",
+   "      div style{cssText:width:1px;height:24px;background:var(--hair);margin:0 4px}",
+   "      button class=\"icon-btn\" title=\"Help & shortcuts (F1)\" html=\"<svg#552a9b19>\" L1",
+   "      button class=\"icon-btn\" title=\"Settings\" data{panel:settings} html=\"<svg#0d63ab3c>\" L1",
+   "      button class=\"icon-btn\" title=\"Menu (Esc)\" html=\"<svg#332a668d>\" L1"
+  ]
+ },
+ {
+  "name": "homes: first update (paused, a city of 12,345)",
+  "calls": [],
+  "writes": {
+   "0.0 div.mp-glass": "class",
+   "0.0.0.1.0 div.city-name": "text",
+   "0.0.0.1.1 div.hud-sub": "text",
+   "0.0.1.0.1 div.hud-value": "text",
+   "0.0.2.0.0 button.on": "class×2",
+   "0.0.2.1 div.tod": "data.h html",
+   "0.1.0.1.0 div.hud-value": "text",
+   "0.1.0.1.1 div.hud-sub": "class text",
+   "0.1.1.1.0 div.hud-value": "text",
+   "0.1.1.1.1 div.hud-sub": "data.h html",
+   "0.1.2.0.0.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.0.1.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.0.2.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.2 button.rci-zone": "data.fam style.--fc style.display title",
+   "0.1.3 div.hud-seg": "class data.face title",
+   "0.1.3.0 span.ico-wrap": "html",
+   "0.1.3.1.1 div.hud-value": "text",
+   "0.1.3.2 div.appr-pop": "children×9 class",
+   "0.1.3.2.0 div.ap-h": "children×2 class",
+   "0.1.3.2.0.0 b": "children",
+   "0.1.3.2.0.1 span.faint": "children class",
+   "0.1.3.2.1 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.1.0 span.l": "children class",
+   "0.1.3.2.1.1 span.t": "children×2 class",
+   "0.1.3.2.1.1.0 i.p": "class style.left style.width",
+   "0.1.3.2.1.2 span.v": "children class",
+   "0.1.3.2.1.3 span.d": "children class",
+   "0.1.3.2.2 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.2.0 span.l": "children class",
+   "0.1.3.2.2.1 span.t": "children×2 class",
+   "0.1.3.2.2.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.2.2 span.v": "children class",
+   "0.1.3.2.2.3 span.d": "children class",
+   "0.1.3.2.3 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.3.0 span.l": "children class",
+   "0.1.3.2.3.1 span.t": "children×2 class",
+   "0.1.3.2.3.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.3.2 span.v": "children class",
+   "0.1.3.2.3.3 span.d": "children class",
+   "0.1.3.2.4 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.4.0 span.l": "children class",
+   "0.1.3.2.4.1 span.t": "children×2 class",
+   "0.1.3.2.4.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.4.2 span.v": "children class",
+   "0.1.3.2.5 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.5.0 span.l": "children class",
+   "0.1.3.2.5.1 span.t": "children×2 class",
+   "0.1.3.2.5.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.5.2 span.v": "children class",
+   "0.1.3.2.6 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.6.0 span.l": "children class",
+   "0.1.3.2.6.1 span.t": "children×2 class",
+   "0.1.3.2.6.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.6.2 span.v": "children class",
+   "0.1.3.2.7 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.7.0 span.l": "children class",
+   "0.1.3.2.7.1 span.t": "children×2 class",
+   "0.1.3.2.7.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.7.2 span.v": "children class",
+   "0.1.3.2.7.3 span.d": "children class",
+   "0.1.3.2.8 div.ap-f": "children class"
+  },
+  "patch": [
+   [
+    2,
+    1,
+    [
+     "    div class=\"mp-glass is-paused\""
+    ]
+   ],
+   [
+    6,
+    2,
+    [
+     "          div class=\"city-name\" text=\"Test City\"",
+     "          div class=\"hud-sub dim\" text=\"Mayor Pat · Medium\""
+    ]
+   ],
+   [
+    16,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"Apr 13, 2001\""
+    ]
+   ],
+   [
+    19,
+    1,
+    [
+     "          button class=\"on paused\" title=\"Pause (Space)\" html=\"<svg#66456159>\" L1"
+    ]
+   ],
+   [
+    23,
+    1,
+    [
+     "        div class=\"tod hide-sm\" data{h:<svg#c3a09da4><span class=\"num\">10:30</span>} html=\"<svg#c3a09da4><span class=\"num\">10:30</span>\""
+    ]
+   ],
+   [
+    28,
+    2,
+    [
+     "          div class=\"hud-value\" text=\"§100,000\"",
+     "          div class=\"hud-sub pos\" text=\"+§4,000/mo\""
+    ]
+   ],
+   [
+    33,
+    2,
+    [
+     "          div class=\"hud-value\" text=\"12,345\"",
+     "          div class=\"hud-sub\" data{h:<span class=\"trend pos\"><svg#f41f0b35>1,345 (12.2%)</span>} html=\"<span class=\"trend pos\"><svg#f41f0b35>1,345 (12.2%)</span>\""
+    ]
+   ],
+   [
+    39,
+    1,
+    [
+     "              i style{background:var(--res);borderRadius:2px / 2.5px;opacity:1;transform:scaleY(-0.8)} data{color:var(--res);scale:-0.8}"
+    ]
+   ],
+   [
+    45,
+    1,
+    [
+     "              i style{background:var(--com);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--com);scale:0}"
+    ]
+   ],
+   [
+    51,
+    1,
+    [
+     "              i style{background:var(--ind);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--ind);scale:0}"
+    ]
+   ],
+   [
+    56,
+    1,
+    [
+     "        button class=\"rci-zone\" title=\"Residential demand is strong, with 4 empty residential lots left. Click to zone homes.\" style{--fc:var(--res)} data{fam:R} attrs{type=button} L1"
+    ]
+   ],
+   [
+    160,
+    1,
+    [
+     "      div class=\"hud-seg click approval \" data{face:smile} L2"
+    ]
+   ],
+   [
+    165,
+    2,
+    [
+     "          div class=\"hud-value\" text=\"68%\"",
+     "        div class=\"appr-pop mp-glass empty\"",
+     "          div class=\"ap-h\"",
+     "            b",
+     "              \"Approval 68%\"",
+     "            span class=\"faint\"",
+     "              \" heading for 66%\"",
+     "          div class=\"ap-r\" title=\"every city starts at 61\"",
+     "            span class=\"l\"",
+     "              \"Starting approval\"",
+     "            span class=\"t\"",
+     "              i class=\"p\" style{left:50%;width:50%}",
+     "              b",
+     "            span class=\"v pos\"",
+     "              \"+61.0\"",
+     "            span class=\"d\"",
+     "              \"every city starts at 61\"",
+     "          div class=\"ap-r fix\" title=\"crime at homes 41% — low-wealth homes, uncollected garbage and low land value; police remove up to 85% where they patrol. Click: Police view\" data{fix:crime}",
+     "            span class=\"l\"",
+     "              \"Crime at homes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:39.91803278688525%;width:10.081967213114755%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−12.3\"",
+     "            span class=\"d\"",
+     "              \"crime at homes 41% — low-wealth homes, uncollected garbage and low land value; police remove up to 85% where they patrol\"",
+     "          div class=\"ap-r fix\" title=\"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5. Click: Budget · Taxes\" data{fix:tax}",
+     "            span class=\"l\"",
+     "              \"Residential taxes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:44.26229508196721%;width:5.737704918032787%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−7.0\"",
+     "            span class=\"d\"",
+     "              \"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5\"",
+     "          div class=\"ap-r fix\" title=\"Click: Police view; click again for Fire, then Health\" data{fix:services}",
+     "            span class=\"l\"",
+     "              \"City services at homes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:45.57377049180328%;width:4.426229508196721%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−5.4\"",
+     "          div class=\"ap-r fix\" title=\"Click: Air pollution view\" data{fix:pollution}",
+     "            span class=\"l\"",
+     "              \"Air pollution\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:47.540983606557376%;width:2.459016393442623%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−3.0\"",
+     "          div class=\"ap-r fix\" title=\"Click: Parks tab\" data{fix:parks}",
+     "            span class=\"l\"",
+     "              \"Parks near homes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:48.68852459016394%;width:1.3114754098360655%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−1.6\"",
+     "          div class=\"ap-r\" title=\"0% unemployed\"",
+     "            span class=\"l\"",
+     "              \"Unemployment\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:49.18032786885246%;width:0.819672131147541%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−1.0\"",
+     "            span class=\"d\"",
+     "              \"0% unemployed\"",
+     "          div class=\"ap-f\"",
+     "            \"Click a row to open its fix; anywhere else for your advisors (N)\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: five unchanged ticks",
+  "calls": [],
+  "writes": {}
+ },
+ {
+  "name": "homes: click Fast",
+  "calls": [
+   "sound(\"speed2\")",
+   "host.setSpeed(2, \"topbar\")"
+  ],
+  "writes": {
+   "0.0 div.mp-glass": "class",
+   "0.0.2.0.0 button": "class×2",
+   "0.0.2.0.2 button.on": "class"
+  },
+  "patch": [
+   [
+    2,
+    1,
+    [
+     "    div class=\"mp-glass\""
+    ]
+   ],
+   [
+    19,
+    1,
+    [
+     "          button title=\"Pause (Space)\" html=\"<svg#66456159>\" L1"
+    ]
+   ],
+   [
+    21,
+    1,
+    [
+     "          button class=\"on\" title=\"Fast (2)\" html=\"<svg#fda8efda>\" L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: click Fast again (the active speed ticks)",
+  "calls": [
+   "sound(\"tap\")",
+   "host.setSpeed(2, \"topbar\")"
+  ],
+  "writes": {}
+ },
+ {
+  "name": "homes: click Pause",
+  "calls": [
+   "sound(\"pause\")",
+   "host.setSpeed(0, \"topbar\")"
+  ],
+  "writes": {
+   "0.0 div.mp-glass": "class",
+   "0.0.2.0.0 button.on": "class×2",
+   "0.0.2.0.2 button": "class"
+  },
+  "patch": [
+   [
+    2,
+    1,
+    [
+     "    div class=\"mp-glass is-paused\""
+    ]
+   ],
+   [
+    19,
+    1,
+    [
+     "          button class=\"on paused\" title=\"Pause (Space)\" html=\"<svg#66456159>\" L1"
+    ]
+   ],
+   [
+    21,
+    1,
+    [
+     "          button title=\"Fast (2)\" html=\"<svg#fda8efda>\" L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: click Normal",
+  "calls": [
+   "sound(\"speed1\")",
+   "host.setSpeed(1, \"topbar\")"
+  ],
+  "writes": {
+   "0.0 div.mp-glass": "class",
+   "0.0.2.0.0 button": "class×2",
+   "0.0.2.0.1 button.on": "class"
+  },
+  "patch": [
+   [
+    2,
+    1,
+    [
+     "    div class=\"mp-glass\""
+    ]
+   ],
+   [
+    19,
+    2,
+    [
+     "          button title=\"Pause (Space)\" html=\"<svg#66456159>\" L1",
+     "          button class=\"on\" title=\"Normal speed (1)\" html=\"<svg#923c75e9>\" L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: time of day 22 (night)",
+  "calls": [],
+  "writes": {
+   "0.0.2.1 div.tod": "class data.h html"
+  },
+  "patch": [
+   [
+    23,
+    1,
+    [
+     "        div class=\"tod hide-sm night\" data{h:<svg#9e2f66d3><span class=\"num\">22:00</span>} html=\"<svg#9e2f66d3><span class=\"num\">22:00</span>\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: time of day 7 (sunrise)",
+  "calls": [],
+  "writes": {
+   "0.0.2.1 div.tod": "class data.h html"
+  },
+  "patch": [
+   [
+    23,
+    1,
+    [
+     "        div class=\"tod hide-sm\" data{h:<svg#118fb3ee><span class=\"num\">07:00</span>} html=\"<svg#118fb3ee><span class=\"num\">07:00</span>\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: time of day 5.9 (before dawn)",
+  "calls": [],
+  "writes": {
+   "0.0.2.1 div.tod": "class data.h html"
+  },
+  "patch": [
+   [
+    23,
+    1,
+    [
+     "        div class=\"tod hide-sm night\" data{h:<svg#9e2f66d3><span class=\"num\">05:54</span>} html=\"<svg#9e2f66d3><span class=\"num\">05:54</span>\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: time of day 19.5 (dusk)",
+  "calls": [],
+  "writes": {
+   "0.0.2.1 div.tod": "data.h html"
+  },
+  "patch": [
+   [
+    23,
+    1,
+    [
+     "        div class=\"tod hide-sm night\" data{h:<svg#9e2f66d3><span class=\"num\">19:30</span>} html=\"<svg#9e2f66d3><span class=\"num\">19:30</span>\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: time of day 12 (noon)",
+  "calls": [],
+  "writes": {
+   "0.0.2.1 div.tod": "class data.h html"
+  },
+  "patch": [
+   [
+    23,
+    1,
+    [
+     "        div class=\"tod hide-sm\" data{h:<svg#c3a09da4><span class=\"num\">12:00</span>} html=\"<svg#c3a09da4><span class=\"num\">12:00</span>\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: time of day throws",
+  "calls": [],
+  "writes": {}
+ },
+ {
+  "name": "homes: in debt, a deficit",
+  "calls": [],
+  "writes": {
+   "0.1.0.1.0 div.hud-value": "class text",
+   "0.1.0.1.1 div.hud-sub": "class text"
+  },
+  "patch": [
+   [
+    28,
+    2,
+    [
+     "          div class=\"hud-value neg\" text=\"−§500\"",
+     "          div class=\"hud-sub neg\" text=\"−§4,000/mo\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: a big surplus (compact)",
+  "calls": [],
+  "writes": {
+   "0.1.0.1.0 div.hud-value": "class text",
+   "0.1.0.1.1 div.hud-sub": "class text"
+  },
+  "patch": [
+   [
+    28,
+    2,
+    [
+     "          div class=\"hud-value\" text=\"§2,500,000\"",
+     "          div class=\"hud-sub pos\" text=\"+§400k/mo\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: no report yet",
+  "calls": [],
+  "writes": {
+   "0.1.0.1.1 div.hud-sub": "class text"
+  },
+  "patch": [
+   [
+    29,
+    1,
+    [
+     "          div class=\"hud-sub faint\" text=\"No report yet\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: sandbox",
+  "calls": [],
+  "writes": {
+   "0.0.0.1.1 div.hud-sub": "text",
+   "0.1.0.1.0 div.hud-value": "text"
+  },
+  "patch": [
+   [
+    7,
+    1,
+    [
+     "          div class=\"hud-sub dim\" text=\"Mayor Pat · Sandbox\""
+    ]
+   ],
+   [
+    28,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"∞\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: back from sandbox, no mayor, hard",
+  "calls": [],
+  "writes": {
+   "0.0.0.1.0 div.city-name": "text",
+   "0.0.0.1.1 div.hud-sub": "text",
+   "0.1.0.1.0 div.hud-value": "text"
+  },
+  "patch": [
+   [
+    6,
+    2,
+    [
+     "          div class=\"city-name\" text=\"New City\"",
+     "          div class=\"hud-sub dim\" text=\"Mayor · Hard\""
+    ]
+   ],
+   [
+    28,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"§2,500,000\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: population falling",
+  "calls": [],
+  "writes": {
+   "0.1.1.1.0 div.hud-value": "text",
+   "0.1.1.1.1 div.hud-sub": "data.h html"
+  },
+  "patch": [
+   [
+    33,
+    2,
+    [
+     "          div class=\"hud-value\" text=\"12,000\"",
+     "          div class=\"hud-sub\" data{h:<span class=\"trend neg\"><svg#ced43e02>1,000 (7.7%)</span>} html=\"<span class=\"trend neg\"><svg#ced43e02>1,000 (7.7%)</span>\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: population stable",
+  "calls": [],
+  "writes": {
+   "0.1.1.1.1 div.hud-sub": "data.h html"
+  },
+  "patch": [
+   [
+    34,
+    1,
+    [
+     "          div class=\"hud-sub\" data{h:<span class=\"zero\">Stable</span>} html=\"<span class=\"zero\">Stable</span>\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: population from nothing",
+  "calls": [],
+  "writes": {
+   "0.1.1.1.0 div.hud-value": "text",
+   "0.1.1.1.1 div.hud-sub": "data.h html",
+   "0.1.3 div.hud-seg": "class data.face title",
+   "0.1.3.0 span.ico-wrap": "html",
+   "0.1.3.1.1 div.hud-value": "text",
+   "0.1.3.2 div.appr-pop": "children×12 class",
+   "0.1.3.2.0 div.ap-h": "children class",
+   "0.1.3.2.0.0 b": "children",
+   "0.1.3.2.1 div.ap-note": "children class",
+   "0.1.3.2.2 div.ap-f": "children class"
+  },
+  "patch": [
+   [
+    33,
+    2,
+    [
+     "          div class=\"hud-value\" text=\"40\"",
+     "          div class=\"hud-sub\" data{h:<span class=\"trend pos\"><svg#f41f0b35>40</span>} html=\"<span class=\"trend pos\"><svg#f41f0b35>40</span>\""
+    ]
+   ],
+   [
+    160,
+    1,
+    [
+     "      div class=\"hud-seg click approval none\" data{face:smile} L2"
+    ]
+   ],
+   [
+    165,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"—\""
+    ]
+   ],
+   [
+    169,
+    67,
+    [
+     "              \"Approval —\"",
+     "          div class=\"ap-note\"",
+     "            \"Approval starts with your first residents.\""
+    ]
+   ],
+   [
+    237,
+    1,
+    [
+     "            \"Click for your advisors (N)\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: population, one month of history",
+  "calls": [],
+  "writes": {
+   "0.1.1.1.0 div.hud-value": "text",
+   "0.1.1.1.1 div.hud-sub": "data.h html",
+   "0.1.3 div.hud-seg": "class data.face title",
+   "0.1.3.0 span.ico-wrap": "html",
+   "0.1.3.1.1 div.hud-value": "text",
+   "0.1.3.2 div.appr-pop": "children×13 class",
+   "0.1.3.2.0 div.ap-h": "children×2 class",
+   "0.1.3.2.0.0 b": "children",
+   "0.1.3.2.0.1 span.faint": "children class",
+   "0.1.3.2.1 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.1.0 span.l": "children class",
+   "0.1.3.2.1.1 span.t": "children×2 class",
+   "0.1.3.2.1.1.0 i.p": "class style.left style.width",
+   "0.1.3.2.1.2 span.v": "children class",
+   "0.1.3.2.1.3 span.d": "children class",
+   "0.1.3.2.2 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.2.0 span.l": "children class",
+   "0.1.3.2.2.1 span.t": "children×2 class",
+   "0.1.3.2.2.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.2.2 span.v": "children class",
+   "0.1.3.2.2.3 span.d": "children class",
+   "0.1.3.2.3 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.3.0 span.l": "children class",
+   "0.1.3.2.3.1 span.t": "children×2 class",
+   "0.1.3.2.3.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.3.2 span.v": "children class",
+   "0.1.3.2.3.3 span.d": "children class",
+   "0.1.3.2.4 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.4.0 span.l": "children class",
+   "0.1.3.2.4.1 span.t": "children×2 class",
+   "0.1.3.2.4.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.4.2 span.v": "children class",
+   "0.1.3.2.5 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.5.0 span.l": "children class",
+   "0.1.3.2.5.1 span.t": "children×2 class",
+   "0.1.3.2.5.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.5.2 span.v": "children class",
+   "0.1.3.2.6 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.6.0 span.l": "children class",
+   "0.1.3.2.6.1 span.t": "children×2 class",
+   "0.1.3.2.6.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.6.2 span.v": "children class",
+   "0.1.3.2.7 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.7.0 span.l": "children class",
+   "0.1.3.2.7.1 span.t": "children×2 class",
+   "0.1.3.2.7.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.7.2 span.v": "children class",
+   "0.1.3.2.7.3 span.d": "children class",
+   "0.1.3.2.8 div.ap-note": "children class",
+   "0.1.3.2.9 div.ap-f": "children class"
+  },
+  "patch": [
+   [
+    33,
+    2,
+    [
+     "          div class=\"hud-value\" text=\"900\"",
+     "          div class=\"hud-sub\" data{h:<span class=\"trend pos\"><svg#f41f0b35>400 (80.0%)</span>} html=\"<span class=\"trend pos\"><svg#f41f0b35>400 (80.0%)</span>\""
+    ]
+   ],
+   [
+    160,
+    1,
+    [
+     "      div class=\"hud-seg click approval \" data{face:smile} L2"
+    ]
+   ],
+   [
+    165,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"68%\""
+    ]
+   ],
+   [
+    169,
+    1,
+    [
+     "              \"Approval 68%\"",
+     "            span class=\"faint\"",
+     "              \" heading for 66%\"",
+     "          div class=\"ap-r\" title=\"every city starts at 61\"",
+     "            span class=\"l\"",
+     "              \"Starting approval\"",
+     "            span class=\"t\"",
+     "              i class=\"p\" style{left:50%;width:50%}",
+     "              b",
+     "            span class=\"v pos\"",
+     "              \"+61.0\"",
+     "            span class=\"d\"",
+     "              \"every city starts at 61\"",
+     "          div class=\"ap-r fix\" title=\"crime at homes 41% — low-wealth homes, uncollected garbage and low land value; police remove up to 85% where they patrol. Click: Police view\" data{fix:crime}",
+     "            span class=\"l\"",
+     "              \"Crime at homes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:39.91803278688525%;width:10.081967213114755%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−12.3\"",
+     "            span class=\"d\"",
+     "              \"crime at homes 41% — low-wealth homes, uncollected garbage and low land value; police remove up to 85% where they patrol\"",
+     "          div class=\"ap-r fix\" title=\"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5. Click: Budget · Taxes\" data{fix:tax}",
+     "            span class=\"l\"",
+     "              \"Residential taxes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:44.26229508196721%;width:5.737704918032787%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−7.0\"",
+     "            span class=\"d\"",
+     "              \"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5\"",
+     "          div class=\"ap-r fix\" title=\"Click: Police view; click again for Fire, then Health\" data{fix:services}",
+     "            span class=\"l\"",
+     "              \"City services at homes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:45.57377049180328%;width:4.426229508196721%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−5.4\"",
+     "          div class=\"ap-r fix\" title=\"Click: Air pollution view\" data{fix:pollution}",
+     "            span class=\"l\"",
+     "              \"Air pollution\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:47.540983606557376%;width:2.459016393442623%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−3.0\"",
+     "          div class=\"ap-r fix\" title=\"Click: Parks tab\" data{fix:parks}",
+     "            span class=\"l\"",
+     "              \"Parks near homes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:48.68852459016394%;width:1.3114754098360655%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−1.6\"",
+     "          div class=\"ap-r\" title=\"0% unemployed\"",
+     "            span class=\"l\"",
+     "              \"Unemployment\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:49.18032786885246%;width:0.819672131147541%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−1.0\"",
+     "            span class=\"d\"",
+     "              \"0% unemployed\""
+    ]
+   ],
+   [
+    171,
+    1,
+    [
+     "            \"New towns usually sit at 45–55% until police, parks and land value arrive.\""
+    ]
+   ],
+   [
+    173,
+    1,
+    [
+     "            \"Click a row to open its fix; anywhere else for your advisors (N)\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: population, no history",
+  "calls": [],
+  "writes": {
+   "0.1.1.1.0 div.hud-value": "text",
+   "0.1.1.1.1 div.hud-sub": "data.h html",
+   "0.1.3 div.hud-seg": "title",
+   "0.1.3.2 div.appr-pop": "children×19 class",
+   "0.1.3.2.0 div.ap-h": "children×2 class",
+   "0.1.3.2.0.0 b": "children",
+   "0.1.3.2.0.1 span.faint": "children class",
+   "0.1.3.2.1 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.1.0 span.l": "children class",
+   "0.1.3.2.1.1 span.t": "children×2 class",
+   "0.1.3.2.1.1.0 i.p": "class style.left style.width",
+   "0.1.3.2.1.2 span.v": "children class",
+   "0.1.3.2.1.3 span.d": "children class",
+   "0.1.3.2.2 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.2.0 span.l": "children class",
+   "0.1.3.2.2.1 span.t": "children×2 class",
+   "0.1.3.2.2.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.2.2 span.v": "children class",
+   "0.1.3.2.2.3 span.d": "children class",
+   "0.1.3.2.3 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.3.0 span.l": "children class",
+   "0.1.3.2.3.1 span.t": "children×2 class",
+   "0.1.3.2.3.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.3.2 span.v": "children class",
+   "0.1.3.2.3.3 span.d": "children class",
+   "0.1.3.2.4 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.4.0 span.l": "children class",
+   "0.1.3.2.4.1 span.t": "children×2 class",
+   "0.1.3.2.4.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.4.2 span.v": "children class",
+   "0.1.3.2.5 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.5.0 span.l": "children class",
+   "0.1.3.2.5.1 span.t": "children×2 class",
+   "0.1.3.2.5.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.5.2 span.v": "children class",
+   "0.1.3.2.6 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.6.0 span.l": "children class",
+   "0.1.3.2.6.1 span.t": "children×2 class",
+   "0.1.3.2.6.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.6.2 span.v": "children class",
+   "0.1.3.2.7 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.7.0 span.l": "children class",
+   "0.1.3.2.7.1 span.t": "children×2 class",
+   "0.1.3.2.7.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.7.2 span.v": "children class",
+   "0.1.3.2.7.3 span.d": "children class",
+   "0.1.3.2.8 div.ap-f": "children class"
+  },
+  "patch": [
+   [
+    33,
+    2,
+    [
+     "          div class=\"hud-value\" text=\"12,345\"",
+     "          div class=\"hud-sub\" data{h:<span class=\"zero\">Stable</span>} html=\"<span class=\"zero\">Stable</span>\""
+    ]
+   ],
+   [
+    236,
+    2,
+    []
+   ]
+  ]
+ },
+ {
+  "name": "homes: demand mixed (no caps)",
+  "calls": [],
+  "writes": {
+   "0.1.2.0.1.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.0.2.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.2 button.rci-zone": "data.fam style.--fc title"
+  },
+  "patch": [
+   [
+    45,
+    1,
+    [
+     "              i style{background:var(--com);borderRadius:2px / 2px;opacity:1;transform:scaleY(-1)} data{color:var(--com);scale:-1}"
+    ]
+   ],
+   [
+    51,
+    1,
+    [
+     "              i style{background:var(--ind);borderRadius:2px / 3.3333333333333335px;opacity:1;transform:scaleY(-0.6)} data{color:var(--ind);scale:-0.6}"
+    ]
+   ],
+   [
+    56,
+    1,
+    [
+     "        button class=\"rci-zone\" title=\"Residential, commercial and industrial demand is strong, with 4 empty residential lots and no empty commercial lots and no empty industrial lots left. Click to zone shops.\" style{--fc:var(--com)} data{fam:C} attrs{type=button} L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: the residential cap binds (fallback heuristic) and toasts",
+  "calls": [
+   "toast(\"Residential growth is capped. Build parks, plazas, a zoo or landmarks to raise the residential cap.\", \"warning\", undefined, \"Demand cap\", {\"budget\":true})"
+  ],
+  "writes": {
+   "0.1.2 div.hud-seg": "class title",
+   "0.1.2.0.0 div.rci-col": "class",
+   "0.1.2.0.0.0 div.rci-bar": "class"
+  },
+  "patch": [
+   [
+    35,
+    1,
+    [
+     "      div class=\"hud-seg click rci-seg has-cap\" title=\"RCI demand — Residential capped · click for details\" L1"
+    ]
+   ],
+   [
+    37,
+    2,
+    [
+     "          div class=\"rci-col capped\"",
+     "            div class=\"rci-bar capped\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: still capped: no second toast",
+  "calls": [],
+  "writes": {}
+ },
+ {
+  "name": "homes: sim-core demandInfo: commercial and industrial capped",
+  "calls": [
+   "toast(\"Commercial growth is capped. Build an airport, a convention center or landmarks to raise the commercial cap.\", \"warning\", undefined, \"Demand cap\", {\"budget\":true})",
+   "toast(\"Industrial growth is capped. Connect to neighbors (highway / rail), build freight stations or a seaport to raise the industrial cap.\", \"warning\", undefined, \"Demand cap\", {\"budget\":true})"
+  ],
+  "writes": {
+   "0.0.1.0.1 div.hud-value": "text",
+   "0.1.2 div.hud-seg": "title",
+   "0.1.2.0.0 div.rci-col": "class",
+   "0.1.2.0.0.0 div.rci-bar": "class",
+   "0.1.2.0.1 div.rci-col": "class",
+   "0.1.2.0.1.0 div.rci-bar": "class",
+   "0.1.2.0.2 div.rci-col": "class",
+   "0.1.2.0.2.0 div.rci-bar": "class"
+  },
+  "patch": [
+   [
+    16,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"Nov 3, 2001\""
+    ]
+   ],
+   [
+    35,
+    1,
+    [
+     "      div class=\"hud-seg click rci-seg has-cap\" title=\"RCI demand — Commercial, Industrial capped · click for details\" L1"
+    ]
+   ],
+   [
+    37,
+    2,
+    [
+     "          div class=\"rci-col\"",
+     "            div class=\"rci-bar\""
+    ]
+   ],
+   [
+    43,
+    2,
+    [
+     "          div class=\"rci-col capped\"",
+     "            div class=\"rci-bar capped\""
+    ]
+   ],
+   [
+    49,
+    2,
+    [
+     "          div class=\"rci-col capped\"",
+     "            div class=\"rci-bar capped\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: demandInfo throws: the heuristic again",
+  "calls": [
+   "toast(\"Residential growth is capped. Build parks, plazas, a zoo or landmarks to raise the residential cap.\", \"warning\", undefined, \"Demand cap\", {\"budget\":true})"
+  ],
+  "writes": {
+   "0.1.2 div.hud-seg": "title",
+   "0.1.2.0.0 div.rci-col": "class",
+   "0.1.2.0.0.0 div.rci-bar": "class",
+   "0.1.2.0.1 div.rci-col": "class",
+   "0.1.2.0.1.0 div.rci-bar": "class",
+   "0.1.2.0.2 div.rci-col": "class",
+   "0.1.2.0.2.0 div.rci-bar": "class"
+  },
+  "patch": [
+   [
+    35,
+    1,
+    [
+     "      div class=\"hud-seg click rci-seg has-cap\" title=\"RCI demand — Residential capped · click for details\" L1"
+    ]
+   ],
+   [
+    37,
+    2,
+    [
+     "          div class=\"rci-col capped\"",
+     "            div class=\"rci-bar capped\""
+    ]
+   ],
+   [
+    43,
+    2,
+    [
+     "          div class=\"rci-col\"",
+     "            div class=\"rci-bar\""
+    ]
+   ],
+   [
+    49,
+    2,
+    [
+     "          div class=\"rci-col\"",
+     "            div class=\"rci-bar\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: the neighbours add demand",
+  "calls": [],
+  "writes": {}
+ },
+ {
+  "name": "homes: open the RCI popover",
+  "calls": [
+   "sound(\"flyout\")"
+  ],
+  "writes": {
+   "0.1.2.3 div.rci-pop": "class",
+   "0.1.2.3.1.0 div.g": "class",
+   "0.1.2.3.1.0.0 span.val": "text",
+   "0.1.2.3.1.0.1 div.rci-bar": "class title",
+   "0.1.2.3.1.0.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.1.0 span.val": "text",
+   "0.1.2.3.1.1.1 div.rci-bar": "title",
+   "0.1.2.3.1.1.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.10.0 span.val": "text",
+   "0.1.2.3.1.10.1 div.rci-bar": "title",
+   "0.1.2.3.1.10.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.11.0 span.val": "text",
+   "0.1.2.3.1.11.1 div.rci-bar": "title",
+   "0.1.2.3.1.11.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.2.0 span.val": "text",
+   "0.1.2.3.1.2.1 div.rci-bar": "title",
+   "0.1.2.3.1.2.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.3.0 span.val": "text",
+   "0.1.2.3.1.3.1 div.rci-bar": "title",
+   "0.1.2.3.1.3.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.4.0 span.val": "text",
+   "0.1.2.3.1.4.1 div.rci-bar": "title",
+   "0.1.2.3.1.4.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.5.0 span.val": "text",
+   "0.1.2.3.1.5.1 div.rci-bar": "title",
+   "0.1.2.3.1.5.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.6.0 span.val": "text",
+   "0.1.2.3.1.6.1 div.rci-bar": "title",
+   "0.1.2.3.1.6.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.7.0 span.val": "text",
+   "0.1.2.3.1.7.1 div.rci-bar": "title",
+   "0.1.2.3.1.7.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.8.0 span.val": "text",
+   "0.1.2.3.1.8.1 div.rci-bar": "title",
+   "0.1.2.3.1.8.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.9.0 span.val": "text",
+   "0.1.2.3.1.9.1 div.rci-bar": "title",
+   "0.1.2.3.1.9.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.3 div.rci-region": "children×3",
+   "0.1.2.3.3.0 div.rr-t": "class html",
+   "0.1.2.3.3.1 div.rr-v": "class html",
+   "0.1.2.3.3.2 div.rr-s": "children class",
+   "0.1.2.3.4 div.rci-hints": "children×3",
+   "0.1.2.3.4.0 div.cap-hint": "children×3 class style.--fc",
+   "0.1.2.3.4.0.0 span.ch-ico": "class html",
+   "0.1.2.3.4.0.1 div.ch-body": "children×2 class",
+   "0.1.2.3.4.0.1.0 div.ch-t": "children×2 class",
+   "0.1.2.3.4.0.1.0.0 span.ch-devs": "children class",
+   "0.1.2.3.4.0.1.1 div.ch-d": "children class",
+   "0.1.2.3.4.0.2 button.btn": "class html",
+   "0.1.2.3.4.1 div.cap-hint": "children×3 class style.--fc",
+   "0.1.2.3.4.1.0 span.ch-ico": "class html",
+   "0.1.2.3.4.1.1 div.ch-body": "children×2 class",
+   "0.1.2.3.4.1.1.0 div.ch-t": "children×2 class",
+   "0.1.2.3.4.1.1.0.0 span.ch-devs": "children class",
+   "0.1.2.3.4.1.1.1 div.ch-d": "children class",
+   "0.1.2.3.4.1.2 button.btn": "class html",
+   "0.1.2.3.4.2 div.cap-hint": "children×3 class style.--fc",
+   "0.1.2.3.4.2.0 span.ch-ico": "class html",
+   "0.1.2.3.4.2.1 div.ch-body": "children×2 class",
+   "0.1.2.3.4.2.1.0 div.ch-t": "children×2 class",
+   "0.1.2.3.4.2.1.0.0 span.ch-devs": "children class",
+   "0.1.2.3.4.2.1.1 div.ch-d": "children class",
+   "0.1.2.3.4.2.2 button.btn": "class html"
+  },
+  "patch": [
+   [
+    58,
+    1,
+    [
+     "        div class=\"rci-pop mp-glass i open\""
+    ]
+   ],
+   [
+    62,
+    4,
+    [
+     "            div class=\"g capped\"",
+     "              span class=\"val\" text=\"+80\"",
+     "              div class=\"rci-bar capped\" title=\"Low-wealth residents: demand 80 · cap 10,000 — CAPPED\"",
+     "                i style{background:var(--res);borderRadius:2px / 2.5px;opacity:1;transform:scaleY(-0.8)} data{color:var(--res);scale:-0.8}"
+    ]
+   ],
+   [
+    70,
+    3,
+    [
+     "              span class=\"val\" text=\"-30\"",
+     "              div class=\"rci-bar\" title=\"Medium-wealth residents: demand -30\"",
+     "                i style{background:var(--res);borderRadius:2px / 6.666666666666667px;opacity:0.45;transform:scaleY(0.3)} data{color:var(--res);scale:0.3}"
+    ]
+   ],
+   [
+    77,
+    3,
+    [
+     "              span class=\"val\" text=\"+10\"",
+     "              div class=\"rci-bar\" title=\"High-wealth residents: demand 10\"",
+     "                i style{background:var(--res);borderRadius:2px / 20px;opacity:1;transform:scaleY(-0.1)} data{color:var(--res);scale:-0.1}"
+    ]
+   ],
+   [
+    84,
+    3,
+    [
+     "              span class=\"val\" text=\"+170\"",
+     "              div class=\"rci-bar\" title=\"Low-wealth services: demand 170\"",
+     "                i style{background:var(--com);borderRadius:2px / 2px;opacity:1;transform:scaleY(-1)} data{color:var(--com);scale:-1}"
+    ]
+   ],
+   [
+    91,
+    3,
+    [
+     "              span class=\"val\" text=\"-170\"",
+     "              div class=\"rci-bar\" title=\"Medium-wealth services: demand -170\"",
+     "                i style{background:var(--com);borderRadius:2px / 2px;opacity:0.45;transform:scaleY(1)} data{color:var(--com);scale:1}"
+    ]
+   ],
+   [
+    98,
+    3,
+    [
+     "              span class=\"val\" text=\"0\"",
+     "              div class=\"rci-bar\" title=\"High-wealth services: demand 0\"",
+     "                i style{background:var(--com);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--com);scale:0}"
+    ]
+   ],
+   [
+    105,
+    3,
+    [
+     "              span class=\"val\" text=\"+45\"",
+     "              div class=\"rci-bar\" title=\"Medium-wealth offices: demand 45\"",
+     "                i style{background:var(--com);borderRadius:2px / 4.444444444444445px;opacity:1;transform:scaleY(-0.45)} data{color:var(--com);scale:-0.45}"
+    ]
+   ],
+   [
+    112,
+    3,
+    [
+     "              span class=\"val\" text=\"-5\"",
+     "              div class=\"rci-bar\" title=\"High-wealth offices: demand -5\"",
+     "                i style{background:var(--com);borderRadius:2px / 40px;opacity:0.45;transform:scaleY(0.05)} data{color:var(--com);scale:0.05}"
+    ]
+   ],
+   [
+    119,
+    3,
+    [
+     "              span class=\"val\" text=\"+20\"",
+     "              div class=\"rci-bar\" title=\"Agriculture: demand 20\"",
+     "                i style{background:var(--ind);borderRadius:2px / 10px;opacity:1;transform:scaleY(-0.2)} data{color:var(--ind);scale:-0.2}"
+    ]
+   ],
+   [
+    126,
+    3,
+    [
+     "              span class=\"val\" text=\"-100\"",
+     "              div class=\"rci-bar\" title=\"Dirty industry: demand -100\"",
+     "                i style{background:var(--ind);borderRadius:2px / 2px;opacity:0.45;transform:scaleY(1)} data{color:var(--ind);scale:1}"
+    ]
+   ],
+   [
+    133,
+    3,
+    [
+     "              span class=\"val\" text=\"+60\"",
+     "              div class=\"rci-bar\" title=\"Manufacturing: demand 60\"",
+     "                i style{background:var(--ind);borderRadius:2px / 3.3333333333333335px;opacity:1;transform:scaleY(-0.6)} data{color:var(--ind);scale:-0.6}"
+    ]
+   ],
+   [
+    140,
+    3,
+    [
+     "              span class=\"val\" text=\"+2\"",
+     "              div class=\"rci-bar\" title=\"High-tech industry: demand 2\"",
+     "                i style{background:var(--ind);borderRadius:2px / 100px;opacity:1;transform:scaleY(-0.02)} data{color:var(--ind);scale:-0.02}"
+    ]
+   ],
+   [
+    154,
+    0,
+    [
+     "            div class=\"rr-t\" html=\"<svg#be0dc69c><span>Neighbour cities add</span>\"",
+     "            div class=\"rr-v\" html=\"<b>R</b> +1,540 residents · <b>C</b> +640 jobs · <b>I</b> +900 jobs\"",
+     "            div class=\"rr-s\"",
+     "              \"industry market ×1.25 · caps R +2,000 · I +450 · better road / rail links raise it\""
+    ]
+   ],
+   [
+    155,
+    0,
+    [
+     "            div class=\"cap-hint\" style{--fc:var(--res)}",
+     "              span class=\"ch-ico\" html=\"<svg#d8884f18>\"",
+     "              div class=\"ch-body\"",
+     "                div class=\"ch-t\"",
+     "                  \"Residential demand is capped\"",
+     "                  span class=\"ch-devs\"",
+     "                    \"R$\"",
+     "                div class=\"ch-d\"",
+     "                  \"Build parks, plazas, a zoo or landmarks to raise the residential cap.\"",
+     "              button class=\"btn sm\" html=\"<svg#c8ed882b><span>Parks</span>\" L1",
+     "            div class=\"cap-hint\" style{--fc:var(--com)}",
+     "              span class=\"ch-ico\" html=\"<svg#d8884f18>\"",
+     "              div class=\"ch-body\"",
+     "                div class=\"ch-t\"",
+     "                  \"Commercial demand is capped\"",
+     "                  span class=\"ch-devs\"",
+     "                    \"CS$\"",
+     "                div class=\"ch-d\"",
+     "                  \"Build an airport, a convention center or landmarks to raise the commercial cap.\"",
+     "              button class=\"btn sm\" html=\"<svg#c5a91e44><span>Airports</span>\" L1",
+     "            div class=\"cap-hint\" style{--fc:var(--ind)}",
+     "              span class=\"ch-ico\" html=\"<svg#d8884f18>\"",
+     "              div class=\"ch-body\"",
+     "                div class=\"ch-t\"",
+     "                  \"Industrial demand is capped\"",
+     "                  span class=\"ch-devs\"",
+     "                    \"I-M\"",
+     "                div class=\"ch-d\"",
+     "                  \"Connect to neighbors (highway / rail), build freight stations or a seaport to raise the industrial cap.\"",
+     "              button class=\"btn sm\" html=\"<svg#756d09e8><span>Freight & ports</span>\" L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: three ticks with it open",
+  "calls": [],
+  "writes": {
+   "0.1.2.3.1.0.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.1.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.10.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.11.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.2.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.3.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.4.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.5.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.6.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.7.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.8.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.9.1 div.rci-bar": "title×3"
+  }
+ },
+ {
+  "name": "homes: demand moves while open",
+  "calls": [],
+  "writes": {
+   "0.1.2.0.0.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.0.1 div.rci-bar": "title",
+   "0.1.2.3.1.1.0 span.val": "text",
+   "0.1.2.3.1.1.1 div.rci-bar": "title",
+   "0.1.2.3.1.1.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.10.1 div.rci-bar": "title",
+   "0.1.2.3.1.11.1 div.rci-bar": "title",
+   "0.1.2.3.1.2.1 div.rci-bar": "title",
+   "0.1.2.3.1.3.1 div.rci-bar": "title",
+   "0.1.2.3.1.4.1 div.rci-bar": "title",
+   "0.1.2.3.1.5.1 div.rci-bar": "title",
+   "0.1.2.3.1.6.1 div.rci-bar": "title",
+   "0.1.2.3.1.7.1 div.rci-bar": "title",
+   "0.1.2.3.1.8.1 div.rci-bar": "title",
+   "0.1.2.3.1.9.1 div.rci-bar": "title"
+  },
+  "patch": [
+   [
+    39,
+    1,
+    [
+     "              i style{background:var(--res);borderRadius:2px / 2.2222222222222223px;opacity:1;transform:scaleY(-0.9)} data{color:var(--res);scale:-0.9}"
+    ]
+   ],
+   [
+    70,
+    3,
+    [
+     "              span class=\"val\" text=\"+90\"",
+     "              div class=\"rci-bar\" title=\"Medium-wealth residents: demand 90\"",
+     "                i style{background:var(--res);borderRadius:2px / 2.2222222222222223px;opacity:1;transform:scaleY(-0.9)} data{color:var(--res);scale:-0.9}"
+    ]
+   ],
+   [
+    92,
+    1,
+    [
+     "              div class=\"rci-bar\" title=\"Medium-wealth services: demand -170 · cap 5,000\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: a click inside the popover keeps it open",
+  "calls": [],
+  "writes": {
+   "0.1.2.3.1.0.1 div.rci-bar": "title",
+   "0.1.2.3.1.1.1 div.rci-bar": "title",
+   "0.1.2.3.1.10.1 div.rci-bar": "title",
+   "0.1.2.3.1.11.1 div.rci-bar": "title",
+   "0.1.2.3.1.2.1 div.rci-bar": "title",
+   "0.1.2.3.1.3.1 div.rci-bar": "title",
+   "0.1.2.3.1.4.1 div.rci-bar": "title",
+   "0.1.2.3.1.5.1 div.rci-bar": "title",
+   "0.1.2.3.1.6.1 div.rci-bar": "title",
+   "0.1.2.3.1.7.1 div.rci-bar": "title",
+   "0.1.2.3.1.8.1 div.rci-bar": "title",
+   "0.1.2.3.1.9.1 div.rci-bar": "title"
+  }
+ },
+ {
+  "name": "homes: a cap hint's button",
+  "calls": [
+   "sound(\"flyoutClose\")",
+   "openFlyout(\"parks\")"
+  ],
+  "writes": {
+   "0.1.2.3 div.rci-pop": "class"
+  },
+  "patch": [
+   [
+    58,
+    1,
+    [
+     "        div class=\"rci-pop mp-glass i\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: reopen, then pointerdown inside the segment",
+  "calls": [
+   "sound(\"flyout\")"
+  ],
+  "writes": {
+   "0.1.2.3 div.rci-pop": "class",
+   "0.1.2.3.1.0.1 div.rci-bar": "title",
+   "0.1.2.3.1.1.1 div.rci-bar": "title",
+   "0.1.2.3.1.10.1 div.rci-bar": "title",
+   "0.1.2.3.1.11.1 div.rci-bar": "title",
+   "0.1.2.3.1.2.1 div.rci-bar": "title",
+   "0.1.2.3.1.3.1 div.rci-bar": "title",
+   "0.1.2.3.1.4.1 div.rci-bar": "title",
+   "0.1.2.3.1.5.1 div.rci-bar": "title",
+   "0.1.2.3.1.6.1 div.rci-bar": "title",
+   "0.1.2.3.1.7.1 div.rci-bar": "title",
+   "0.1.2.3.1.8.1 div.rci-bar": "title",
+   "0.1.2.3.1.9.1 div.rci-bar": "title"
+  },
+  "patch": [
+   [
+    58,
+    1,
+    [
+     "        div class=\"rci-pop mp-glass i open\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: pointerdown elsewhere closes it",
+  "calls": [
+   "sound(\"flyoutClose\")"
+  ],
+  "writes": {
+   "0.1.2.3 div.rci-pop": "class"
+  },
+  "patch": [
+   [
+    58,
+    1,
+    [
+     "        div class=\"rci-pop mp-glass i\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: reopen, then pointerdown on the funds segment closes it",
+  "calls": [
+   "sound(\"flyout\")",
+   "sound(\"flyoutClose\")"
+  ],
+  "writes": {
+   "0.1.2.3 div.rci-pop": "class×2",
+   "0.1.2.3.1.0.1 div.rci-bar": "title",
+   "0.1.2.3.1.1.1 div.rci-bar": "title",
+   "0.1.2.3.1.10.1 div.rci-bar": "title",
+   "0.1.2.3.1.11.1 div.rci-bar": "title",
+   "0.1.2.3.1.2.1 div.rci-bar": "title",
+   "0.1.2.3.1.3.1 div.rci-bar": "title",
+   "0.1.2.3.1.4.1 div.rci-bar": "title",
+   "0.1.2.3.1.5.1 div.rci-bar": "title",
+   "0.1.2.3.1.6.1 div.rci-bar": "title",
+   "0.1.2.3.1.7.1 div.rci-bar": "title",
+   "0.1.2.3.1.8.1 div.rci-bar": "title",
+   "0.1.2.3.1.9.1 div.rci-bar": "title"
+  }
+ },
+ {
+  "name": "homes: closePopover while closed, then open, then closePopover",
+  "calls": [
+   "closePopover → false",
+   "sound(\"flyout\")",
+   "sound(\"flyoutClose\")",
+   "closePopover → true"
+  ],
+  "writes": {
+   "0.1.2.3 div.rci-pop": "class×2",
+   "0.1.2.3.1.0.1 div.rci-bar": "title",
+   "0.1.2.3.1.1.1 div.rci-bar": "title",
+   "0.1.2.3.1.10.1 div.rci-bar": "title",
+   "0.1.2.3.1.11.1 div.rci-bar": "title",
+   "0.1.2.3.1.2.1 div.rci-bar": "title",
+   "0.1.2.3.1.3.1 div.rci-bar": "title",
+   "0.1.2.3.1.4.1 div.rci-bar": "title",
+   "0.1.2.3.1.5.1 div.rci-bar": "title",
+   "0.1.2.3.1.6.1 div.rci-bar": "title",
+   "0.1.2.3.1.7.1 div.rci-bar": "title",
+   "0.1.2.3.1.8.1 div.rci-bar": "title",
+   "0.1.2.3.1.9.1 div.rci-bar": "title"
+  }
+ },
+ {
+  "name": "homes: funds and date move, then the popover opens: the whole bar refreshes",
+  "calls": [
+   "sound(\"flyout\")",
+   "sound(\"flyoutClose\")"
+  ],
+  "writes": {
+   "0.0.1.0.1 div.hud-value": "text",
+   "0.1.0.1.0 div.hud-value": "text",
+   "0.1.2.3 div.rci-pop": "class×2",
+   "0.1.2.3.1.0.1 div.rci-bar": "title",
+   "0.1.2.3.1.1.1 div.rci-bar": "title",
+   "0.1.2.3.1.10.1 div.rci-bar": "title",
+   "0.1.2.3.1.11.1 div.rci-bar": "title",
+   "0.1.2.3.1.2.1 div.rci-bar": "title",
+   "0.1.2.3.1.3.1 div.rci-bar": "title",
+   "0.1.2.3.1.4.1 div.rci-bar": "title",
+   "0.1.2.3.1.5.1 div.rci-bar": "title",
+   "0.1.2.3.1.6.1 div.rci-bar": "title",
+   "0.1.2.3.1.7.1 div.rci-bar": "title",
+   "0.1.2.3.1.8.1 div.rci-bar": "title",
+   "0.1.2.3.1.9.1 div.rci-bar": "title",
+   "0.1.3.1.1 div.hud-value": "text"
+  },
+  "patch": [
+   [
+    16,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"Nov 4, 2001\""
+    ]
+   ],
+   [
+    28,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"§777,777\""
+    ]
+   ],
+   [
+    199,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"64%\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: the neighbours leave",
+  "calls": [],
+  "writes": {
+   "0.1.2 div.hud-seg": "class title",
+   "0.1.2.0.0 div.rci-col": "class",
+   "0.1.2.0.0.0 div.rci-bar": "class",
+   "0.1.2.0.0.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.0.1.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.0.2.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.2 button.rci-zone": "data.fam style.--fc title"
+  },
+  "patch": [
+   [
+    35,
+    1,
+    [
+     "      div class=\"hud-seg click rci-seg\" title=\"RCI demand — click for details\" L1"
+    ]
+   ],
+   [
+    37,
+    3,
+    [
+     "          div class=\"rci-col\"",
+     "            div class=\"rci-bar\"",
+     "              i style{background:var(--res);borderRadius:2px / 2.5px;opacity:1;transform:scaleY(-0.8)} data{color:var(--res);scale:-0.8}"
+    ]
+   ],
+   [
+    45,
+    1,
+    [
+     "              i style{background:var(--com);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--com);scale:0}"
+    ]
+   ],
+   [
+    51,
+    1,
+    [
+     "              i style{background:var(--ind);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--ind);scale:0}"
+    ]
+   ],
+   [
+    56,
+    1,
+    [
+     "        button class=\"rci-zone\" title=\"Residential demand is strong, with 4 empty residential lots left. Click to zone homes.\" style{--fc:var(--res)} data{fam:R} attrs{type=button} L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: \"+ zone\" click",
+  "calls": [
+   "tools.select(\"zone:1\")"
+  ],
+  "writes": {}
+ },
+ {
+  "name": "homes: 8 more lots, 100 ms later (no recount yet)",
+  "calls": [],
+  "writes": {}
+ },
+ {
+  "name": "homes: a second later: recounted, gone",
+  "calls": [],
+  "writes": {
+   "0.1.2.2 button.rci-zone": "style.display"
+  },
+  "patch": [
+   [
+    56,
+    1,
+    [
+     "        button class=\"rci-zone\" title=\"Residential demand is strong, with 4 empty residential lots left. Click to zone homes.\" style{--fc:var(--res);display:none} data{fam:R} attrs{type=button} L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: one built on: back",
+  "calls": [],
+  "writes": {
+   "0.1.2.2 button.rci-zone": "style.display title"
+  },
+  "patch": [
+   [
+    56,
+    1,
+    [
+     "        button class=\"rci-zone\" title=\"Residential demand is strong, with 11 empty residential lots left. Click to zone homes.\" style{--fc:var(--res)} data{fam:R} attrs{type=button} L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: industry wants in more",
+  "calls": [],
+  "writes": {
+   "0.1.2.0.2.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.2 button.rci-zone": "data.fam style.--fc title"
+  },
+  "patch": [
+   [
+    51,
+    1,
+    [
+     "              i style{background:var(--ind);borderRadius:2px / 2.1052631578947367px;opacity:1;transform:scaleY(-0.95)} data{color:var(--ind);scale:-0.95}"
+    ]
+   ],
+   [
+    56,
+    1,
+    [
+     "        button class=\"rci-zone\" title=\"Residential and industrial demand is strong, with 11 empty residential lots and no empty industrial lots left. Click to zone industry.\" style{--fc:var(--ind)} data{fam:I} attrs{type=button} L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: emergencies: 3 waiting",
+  "calls": [],
+  "writes": {
+   "0.3.7 button.icon-btn": "children",
+   "0.3.7.0 span.badge": "class text"
+  },
+  "patch": [
+   [
+    282,
+    0,
+    [
+     "        span class=\"badge\" text=\"3\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: emergencies: 12 waiting",
+  "calls": [],
+  "writes": {
+   "0.3.7.0 span.badge": "text"
+  },
+  "patch": [
+   [
+    282,
+    1,
+    [
+     "        span class=\"badge\" text=\"9+\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: emergencies: none",
+  "calls": [],
+  "writes": {
+   "0.3.7 button.icon-btn": "children"
+  },
+  "patch": [
+   [
+    282,
+    1,
+    []
+   ]
+  ]
+ },
+ {
+  "name": "homes: badges",
+  "calls": [],
+  "writes": {
+   "0.3.4 button.icon-btn": "children",
+   "0.3.4.0 span.badge": "class text×2",
+   "0.3.6 button.icon-btn": "children",
+   "0.3.6.0 span.badge": "class text"
+  },
+  "patch": [
+   [
+    279,
+    0,
+    [
+     "        span class=\"badge\" text=\"9+\""
+    ]
+   ],
+   [
+    281,
+    0,
+    [
+     "        span class=\"badge\" text=\"1\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: badges cleared",
+  "calls": [],
+  "writes": {
+   "0.3.4 button.icon-btn": "children",
+   "0.3.6 button.icon-btn": "children"
+  },
+  "patch": [
+   [
+    279,
+    1,
+    []
+   ],
+   [
+    282,
+    1,
+    []
+   ]
+  ]
+ },
+ {
+  "name": "homes: coach on Play",
+  "calls": [],
+  "writes": {
+   "0.0.2.0.1 button.on": "class"
+  },
+  "patch": [
+   [
+    20,
+    1,
+    [
+     "          button class=\"on coach\" title=\"Normal speed (1)\" html=\"<svg#923c75e9>\" L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: coach off",
+  "calls": [],
+  "writes": {
+   "0.0.2.0.1 button.on": "class"
+  },
+  "patch": [
+   [
+    20,
+    1,
+    [
+     "          button class=\"on\" title=\"Normal speed (1)\" html=\"<svg#923c75e9>\" L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: panel events",
+  "calls": [],
+  "writes": {
+   "0.3.0 button.icon-btn": "class×2",
+   "0.3.10 button.icon-btn": "class"
+  },
+  "patch": [
+   [
+    284,
+    1,
+    [
+     "      button class=\"icon-btn on\" title=\"Settings\" data{panel:settings} html=\"<svg#0d63ab3c>\" L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: every panel button",
+  "calls": [
+   "panels.toggle(\"budget\")",
+   "panels.toggle(\"graphs\")",
+   "panels.toggle(\"stats\")",
+   "panels.toggle(\"demographics\")",
+   "panels.toggle(\"advisors\")",
+   "panels.toggle(\"ordinances\")",
+   "panels.toggle(\"rewards\")",
+   "panels.toggle(\"emergencies\")",
+   "panels.toggle(\"help\")",
+   "panels.toggle(\"settings\")",
+   "openPauseMenu()"
+  ],
+  "writes": {}
+ },
+ {
+  "name": "homes: city, funds and population clicks",
+  "calls": [
+   "openPauseMenu()",
+   "panels.toggle(\"budget\")",
+   "panels.toggle(\"stats\")"
+  ],
+  "writes": {}
+ },
+ {
+  "name": "homes: approval: a click on the segment",
+  "calls": [
+   "panels.toggle(\"advisors\")"
+  ],
+  "writes": {}
+ },
+ {
+  "name": "homes: approval: the crime row",
+  "calls": [
+   "sound(\"overlay\")",
+   "setOverlay(8, undefined)"
+  ],
+  "writes": {}
+ },
+ {
+  "name": "homes: approval: the services row (in the Police view)",
+  "calls": [
+   "sound(\"overlay\")",
+   "setOverlay(9, undefined)"
+  ],
+  "writes": {}
+ },
+ {
+  "name": "homes: approval: the tax row",
+  "calls": [
+   "panels.open(\"budget\")",
+   "budget.showTab(\"taxes\")"
+  ],
+  "writes": {
+   "0.1.3 div.hud-seg": "data.dismissed"
+  },
+  "patch": [
+   [
+    194,
+    1,
+    [
+     "      div class=\"hud-seg click approval \" data{dismissed:1;face:smile} L2"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: approval: pointer leaves",
+  "calls": [],
+  "writes": {
+   "0.1.3 div.hud-seg": "data.dismissed-"
+  },
+  "patch": [
+   [
+    194,
+    1,
+    [
+     "      div class=\"hud-seg click approval \" data{face:smile} L2"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: approval: the parks row",
+  "calls": [
+   "openFlyout(\"parks\")"
+  ],
+  "writes": {
+   "0.1.3 div.hud-seg": "data.dismissed data.dismissed-"
+  }
+ },
+ {
+  "name": "homes: approval: an unchanged report (no rebuild)",
+  "calls": [],
+  "writes": {}
+ },
+ {
+  "name": "homes: approval: a new town of 3,000 at 52%",
+  "calls": [],
+  "writes": {
+   "0.1.1.1.0 div.hud-value": "text",
+   "0.1.3 div.hud-seg": "title",
+   "0.1.3.1.1 div.hud-value": "text",
+   "0.1.3.2 div.appr-pop": "children×19 class",
+   "0.1.3.2.0 div.ap-h": "children×2 class",
+   "0.1.3.2.0.0 b": "children",
+   "0.1.3.2.0.1 span.faint": "children class",
+   "0.1.3.2.1 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.1.0 span.l": "children class",
+   "0.1.3.2.1.1 span.t": "children×2 class",
+   "0.1.3.2.1.1.0 i.p": "class style.left style.width",
+   "0.1.3.2.1.2 span.v": "children class",
+   "0.1.3.2.1.3 span.d": "children class",
+   "0.1.3.2.2 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.2.0 span.l": "children class",
+   "0.1.3.2.2.1 span.t": "children×2 class",
+   "0.1.3.2.2.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.2.2 span.v": "children class",
+   "0.1.3.2.2.3 span.d": "children class",
+   "0.1.3.2.3 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.3.0 span.l": "children class",
+   "0.1.3.2.3.1 span.t": "children×2 class",
+   "0.1.3.2.3.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.3.2 span.v": "children class",
+   "0.1.3.2.3.3 span.d": "children class",
+   "0.1.3.2.4 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.4.0 span.l": "children class",
+   "0.1.3.2.4.1 span.t": "children×2 class",
+   "0.1.3.2.4.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.4.2 span.v": "children class",
+   "0.1.3.2.5 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.5.0 span.l": "children class",
+   "0.1.3.2.5.1 span.t": "children×2 class",
+   "0.1.3.2.5.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.5.2 span.v": "children class",
+   "0.1.3.2.6 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.6.0 span.l": "children class",
+   "0.1.3.2.6.1 span.t": "children×2 class",
+   "0.1.3.2.6.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.6.2 span.v": "children class",
+   "0.1.3.2.7 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.7.0 span.l": "children class",
+   "0.1.3.2.7.1 span.t": "children×2 class",
+   "0.1.3.2.7.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.7.2 span.v": "children class",
+   "0.1.3.2.7.3 span.d": "children class",
+   "0.1.3.2.8 div.ap-note": "children class",
+   "0.1.3.2.9 div.ap-f": "children class"
+  },
+  "patch": [
+   [
+    33,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"3,000\""
+    ]
+   ],
+   [
+    199,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"52%\""
+    ]
+   ],
+   [
+    203,
+    1,
+    [
+     "              \"Approval 52%\""
+    ]
+   ],
+   [
+    205,
+    1,
+    [
+     "              \" heading for 50%\""
+    ]
+   ],
+   [
+    270,
+    0,
+    [
+     "          div class=\"ap-note\"",
+     "            \"New towns usually sit at 45–55% until police, parks and land value arrive.\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: approval: 38% (meh)",
+  "calls": [],
+  "writes": {
+   "0.1.3 div.hud-seg": "class data.face title",
+   "0.1.3.0 span.ico-wrap": "html",
+   "0.1.3.1.1 div.hud-value": "text",
+   "0.1.3.2 div.appr-pop": "children×20 class",
+   "0.1.3.2.0 div.ap-h": "children×2 class",
+   "0.1.3.2.0.0 b": "children",
+   "0.1.3.2.0.1 span.faint": "children class",
+   "0.1.3.2.1 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.1.0 span.l": "children class",
+   "0.1.3.2.1.1 span.t": "children×2 class",
+   "0.1.3.2.1.1.0 i.p": "class style.left style.width",
+   "0.1.3.2.1.2 span.v": "children class",
+   "0.1.3.2.1.3 span.d": "children class",
+   "0.1.3.2.2 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.2.0 span.l": "children class",
+   "0.1.3.2.2.1 span.t": "children×2 class",
+   "0.1.3.2.2.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.2.2 span.v": "children class",
+   "0.1.3.2.2.3 span.d": "children class",
+   "0.1.3.2.3 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.3.0 span.l": "children class",
+   "0.1.3.2.3.1 span.t": "children×2 class",
+   "0.1.3.2.3.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.3.2 span.v": "children class",
+   "0.1.3.2.3.3 span.d": "children class",
+   "0.1.3.2.4 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.4.0 span.l": "children class",
+   "0.1.3.2.4.1 span.t": "children×2 class",
+   "0.1.3.2.4.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.4.2 span.v": "children class",
+   "0.1.3.2.5 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.5.0 span.l": "children class",
+   "0.1.3.2.5.1 span.t": "children×2 class",
+   "0.1.3.2.5.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.5.2 span.v": "children class",
+   "0.1.3.2.6 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.6.0 span.l": "children class",
+   "0.1.3.2.6.1 span.t": "children×2 class",
+   "0.1.3.2.6.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.6.2 span.v": "children class",
+   "0.1.3.2.7 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.7.0 span.l": "children class",
+   "0.1.3.2.7.1 span.t": "children×2 class",
+   "0.1.3.2.7.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.7.2 span.v": "children class",
+   "0.1.3.2.7.3 span.d": "children class",
+   "0.1.3.2.8 div.ap-note": "children class",
+   "0.1.3.2.9 div.ap-f": "children class"
+  },
+  "patch": [
+   [
+    194,
+    2,
+    [
+     "      div class=\"hud-seg click approval meh\" data{face:meh} L2",
+     "        span class=\"ico-wrap\" html=\"<svg#c96741f7>\""
+    ]
+   ],
+   [
+    199,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"38%\""
+    ]
+   ],
+   [
+    203,
+    1,
+    [
+     "              \"Approval 38%\""
+    ]
+   ],
+   [
+    205,
+    1,
+    [
+     "              \" heading for 36%\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: approval: 30% (bad)",
+  "calls": [],
+  "writes": {
+   "0.1.3 div.hud-seg": "class data.face title",
+   "0.1.3.0 span.ico-wrap": "html",
+   "0.1.3.1.1 div.hud-value": "text",
+   "0.1.3.2 div.appr-pop": "children×20 class",
+   "0.1.3.2.0 div.ap-h": "children×2 class",
+   "0.1.3.2.0.0 b": "children",
+   "0.1.3.2.0.1 span.faint": "children class",
+   "0.1.3.2.1 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.1.0 span.l": "children class",
+   "0.1.3.2.1.1 span.t": "children×2 class",
+   "0.1.3.2.1.1.0 i.p": "class style.left style.width",
+   "0.1.3.2.1.2 span.v": "children class",
+   "0.1.3.2.1.3 span.d": "children class",
+   "0.1.3.2.2 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.2.0 span.l": "children class",
+   "0.1.3.2.2.1 span.t": "children×2 class",
+   "0.1.3.2.2.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.2.2 span.v": "children class",
+   "0.1.3.2.2.3 span.d": "children class",
+   "0.1.3.2.3 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.3.0 span.l": "children class",
+   "0.1.3.2.3.1 span.t": "children×2 class",
+   "0.1.3.2.3.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.3.2 span.v": "children class",
+   "0.1.3.2.3.3 span.d": "children class",
+   "0.1.3.2.4 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.4.0 span.l": "children class",
+   "0.1.3.2.4.1 span.t": "children×2 class",
+   "0.1.3.2.4.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.4.2 span.v": "children class",
+   "0.1.3.2.5 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.5.0 span.l": "children class",
+   "0.1.3.2.5.1 span.t": "children×2 class",
+   "0.1.3.2.5.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.5.2 span.v": "children class",
+   "0.1.3.2.6 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.6.0 span.l": "children class",
+   "0.1.3.2.6.1 span.t": "children×2 class",
+   "0.1.3.2.6.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.6.2 span.v": "children class",
+   "0.1.3.2.7 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.7.0 span.l": "children class",
+   "0.1.3.2.7.1 span.t": "children×2 class",
+   "0.1.3.2.7.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.7.2 span.v": "children class",
+   "0.1.3.2.7.3 span.d": "children class",
+   "0.1.3.2.8 div.ap-note": "children class",
+   "0.1.3.2.9 div.ap-f": "children class"
+  },
+  "patch": [
+   [
+    194,
+    2,
+    [
+     "      div class=\"hud-seg click approval bad\" data{face:frown} L2",
+     "        span class=\"ico-wrap\" html=\"<svg#5a1f90c2>\""
+    ]
+   ],
+   [
+    199,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"30%\""
+    ]
+   ],
+   [
+    203,
+    1,
+    [
+     "              \"Approval 30%\""
+    ]
+   ],
+   [
+    205,
+    1,
+    [
+     "              \" heading for 28%\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: approval: easy difficulty footer",
+  "calls": [],
+  "writes": {
+   "0.0.0.1.1 div.hud-sub": "text",
+   "0.1.3 div.hud-seg": "title",
+   "0.1.3.2 div.appr-pop": "children×20 class",
+   "0.1.3.2.0 div.ap-h": "children×2 class",
+   "0.1.3.2.0.0 b": "children",
+   "0.1.3.2.0.1 span.faint": "children class",
+   "0.1.3.2.1 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.1.0 span.l": "children class",
+   "0.1.3.2.1.1 span.t": "children×2 class",
+   "0.1.3.2.1.1.0 i.p": "class style.left style.width",
+   "0.1.3.2.1.2 span.v": "children class",
+   "0.1.3.2.1.3 span.d": "children class",
+   "0.1.3.2.2 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.2.0 span.l": "children class",
+   "0.1.3.2.2.1 span.t": "children×2 class",
+   "0.1.3.2.2.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.2.2 span.v": "children class",
+   "0.1.3.2.2.3 span.d": "children class",
+   "0.1.3.2.3 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.3.0 span.l": "children class",
+   "0.1.3.2.3.1 span.t": "children×2 class",
+   "0.1.3.2.3.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.3.2 span.v": "children class",
+   "0.1.3.2.3.3 span.d": "children class",
+   "0.1.3.2.4 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.4.0 span.l": "children class",
+   "0.1.3.2.4.1 span.t": "children×2 class",
+   "0.1.3.2.4.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.4.2 span.v": "children class",
+   "0.1.3.2.5 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.5.0 span.l": "children class",
+   "0.1.3.2.5.1 span.t": "children×2 class",
+   "0.1.3.2.5.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.5.2 span.v": "children class",
+   "0.1.3.2.6 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.6.0 span.l": "children class",
+   "0.1.3.2.6.1 span.t": "children×2 class",
+   "0.1.3.2.6.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.6.2 span.v": "children class",
+   "0.1.3.2.7 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.7.0 span.l": "children class",
+   "0.1.3.2.7.1 span.t": "children×2 class",
+   "0.1.3.2.7.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.7.2 span.v": "children class",
+   "0.1.3.2.7.3 span.d": "children class",
+   "0.1.3.2.8 div.ap-note": "children class",
+   "0.1.3.2.9 div.ap-f": "children class"
+  },
+  "patch": [
+   [
+    7,
+    1,
+    [
+     "          div class=\"hud-sub dim\" text=\"Mayor · Easy\""
+    ]
+   ],
+   [
+    216,
+    1,
+    [
+     "          div class=\"ap-r fix\" title=\"new-town grace. Click: Police view\" data{fix:crime}"
+    ]
+   ],
+   [
+    225,
+    1,
+    [
+     "              \"new-town grace\""
+    ]
+   ],
+   [
+    271,
+    1,
+    [
+     "            \"New towns usually sit at 55–60% until police, parks and land value arrive.\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: approval: no residents",
+  "calls": [],
+  "writes": {
+   "0.1.1.1.0 div.hud-value": "text",
+   "0.1.3 div.hud-seg": "class data.face title",
+   "0.1.3.0 span.ico-wrap": "html",
+   "0.1.3.1.1 div.hud-value": "text",
+   "0.1.3.2 div.appr-pop": "children×13 class",
+   "0.1.3.2.0 div.ap-h": "children class",
+   "0.1.3.2.0.0 b": "children",
+   "0.1.3.2.1 div.ap-note": "children class",
+   "0.1.3.2.2 div.ap-f": "children class"
+  },
+  "patch": [
+   [
+    33,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"0\""
+    ]
+   ],
+   [
+    194,
+    2,
+    [
+     "      div class=\"hud-seg click approval none\" data{face:smile} L2",
+     "        span class=\"ico-wrap\" html=\"<svg#17af13b5>\""
+    ]
+   ],
+   [
+    199,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"—\""
+    ]
+   ],
+   [
+    203,
+    67,
+    [
+     "              \"Approval —\""
+    ]
+   ],
+   [
+    271,
+    1,
+    [
+     "            \"Approval starts with your first residents.\""
+    ]
+   ],
+   [
+    273,
+    1,
+    [
+     "            \"Click for your advisors (N)\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: approval: 20,000 residents at 45%",
+  "calls": [],
+  "writes": {
+   "0.1.1.1.0 div.hud-value": "text",
+   "0.1.3 div.hud-seg": "class data.face title",
+   "0.1.3.0 span.ico-wrap": "html",
+   "0.1.3.1.1 div.hud-value": "text",
+   "0.1.3.2 div.appr-pop": "children×12 class",
+   "0.1.3.2.0 div.ap-h": "children×2 class",
+   "0.1.3.2.0.0 b": "children",
+   "0.1.3.2.0.1 span.faint": "children class",
+   "0.1.3.2.1 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.1.0 span.l": "children class",
+   "0.1.3.2.1.1 span.t": "children×2 class",
+   "0.1.3.2.1.1.0 i.p": "class style.left style.width",
+   "0.1.3.2.1.2 span.v": "children class",
+   "0.1.3.2.1.3 span.d": "children class",
+   "0.1.3.2.2 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.2.0 span.l": "children class",
+   "0.1.3.2.2.1 span.t": "children×2 class",
+   "0.1.3.2.2.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.2.2 span.v": "children class",
+   "0.1.3.2.2.3 span.d": "children class",
+   "0.1.3.2.3 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.3.0 span.l": "children class",
+   "0.1.3.2.3.1 span.t": "children×2 class",
+   "0.1.3.2.3.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.3.2 span.v": "children class",
+   "0.1.3.2.3.3 span.d": "children class",
+   "0.1.3.2.4 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.4.0 span.l": "children class",
+   "0.1.3.2.4.1 span.t": "children×2 class",
+   "0.1.3.2.4.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.4.2 span.v": "children class",
+   "0.1.3.2.5 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.5.0 span.l": "children class",
+   "0.1.3.2.5.1 span.t": "children×2 class",
+   "0.1.3.2.5.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.5.2 span.v": "children class",
+   "0.1.3.2.6 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.6.0 span.l": "children class",
+   "0.1.3.2.6.1 span.t": "children×2 class",
+   "0.1.3.2.6.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.6.2 span.v": "children class",
+   "0.1.3.2.7 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.7.0 span.l": "children class",
+   "0.1.3.2.7.1 span.t": "children×2 class",
+   "0.1.3.2.7.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.7.2 span.v": "children class",
+   "0.1.3.2.7.3 span.d": "children class",
+   "0.1.3.2.8 div.ap-f": "children class"
+  },
+  "patch": [
+   [
+    33,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"20,000\""
+    ]
+   ],
+   [
+    194,
+    2,
+    [
+     "      div class=\"hud-seg click approval meh\" data{face:meh} L2",
+     "        span class=\"ico-wrap\" html=\"<svg#c96741f7>\""
+    ]
+   ],
+   [
+    199,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"45%\""
+    ]
+   ],
+   [
+    203,
+    3,
+    [
+     "              \"Approval 45%\"",
+     "            span class=\"faint\"",
+     "              \" heading for 49%\"",
+     "          div class=\"ap-r\" title=\"every city starts at 61\"",
+     "            span class=\"l\"",
+     "              \"Starting approval\"",
+     "            span class=\"t\"",
+     "              i class=\"p\" style{left:50%;width:50%}",
+     "              b",
+     "            span class=\"v pos\"",
+     "              \"+61.0\"",
+     "            span class=\"d\"",
+     "              \"every city starts at 61\"",
+     "          div class=\"ap-r fix\" title=\"crime at homes 41% — low-wealth homes, uncollected garbage and low land value; police remove up to 85% where they patrol. Click: Police view\" data{fix:crime}",
+     "            span class=\"l\"",
+     "              \"Crime at homes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:39.91803278688525%;width:10.081967213114755%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−12.3\"",
+     "            span class=\"d\"",
+     "              \"crime at homes 41% — low-wealth homes, uncollected garbage and low land value; police remove up to 85% where they patrol\"",
+     "          div class=\"ap-r fix\" title=\"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5. Click: Budget · Taxes\" data{fix:tax}",
+     "            span class=\"l\"",
+     "              \"Residential taxes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:44.26229508196721%;width:5.737704918032787%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−7.0\"",
+     "            span class=\"d\"",
+     "              \"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5\"",
+     "          div class=\"ap-r fix\" title=\"Click: Police view; click again for Fire, then Health\" data{fix:services}",
+     "            span class=\"l\"",
+     "              \"City services at homes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:45.57377049180328%;width:4.426229508196721%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−5.4\"",
+     "          div class=\"ap-r fix\" title=\"Click: Air pollution view\" data{fix:pollution}",
+     "            span class=\"l\"",
+     "              \"Air pollution\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:47.540983606557376%;width:2.459016393442623%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−3.0\"",
+     "          div class=\"ap-r fix\" title=\"Click: Parks tab\" data{fix:parks}",
+     "            span class=\"l\"",
+     "              \"Parks near homes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:48.68852459016394%;width:1.3114754098360655%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−1.6\"",
+     "          div class=\"ap-r\" title=\"0% unemployed\"",
+     "            span class=\"l\"",
+     "              \"Unemployment\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:49.18032786885246%;width:0.819672131147541%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−1.0\"",
+     "            span class=\"d\"",
+     "              \"0% unemployed\""
+    ]
+   ],
+   [
+    207,
+    1,
+    [
+     "            \"Click a row to open its fix; anywhere else for your advisors (N)\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: approval: one term only (the plain title)",
+  "calls": [],
+  "writes": {
+   "0.1.3 div.hud-seg": "title",
+   "0.1.3.2 div.appr-pop": "children×9 class"
+  },
+  "patch": [
+   [
+    194,
+    1,
+    [
+     "      div class=\"hud-seg click approval meh\" title=\"Mayor approval — advisors (N)\" data{face:meh} L2"
+    ]
+   ],
+   [
+    201,
+    71,
+    []
+   ]
+  ]
+ },
+ {
+  "name": "homes: approval: no report",
+  "calls": [],
+  "writes": {
+   "0.1.3 div.hud-seg": "title",
+   "0.1.3.1.1 div.hud-value": "text",
+   "0.1.3.2 div.appr-pop": "class"
+  },
+  "patch": [
+   [
+    199,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"50%\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "homes: dispose, then clicks",
+  "calls": [],
+  "writes": {},
+  "patch": [
+   [
+    3,
+    1,
+    [
+     "      div class=\"hud-seg click\" title=\"City menu (Esc)\""
+    ]
+   ],
+   [
+    19,
+    4,
+    [
+     "          button title=\"Pause (Space)\" html=\"<svg#66456159>\"",
+     "          button class=\"on\" title=\"Normal speed (1)\" html=\"<svg#923c75e9>\"",
+     "          button title=\"Fast (2)\" html=\"<svg#fda8efda>\"",
+     "          button title=\"Ultra (3)\" html=\"<svg#9ce28af5>\""
+    ]
+   ],
+   [
+    25,
+    1,
+    [
+     "      div class=\"hud-seg click\" title=\"Budget (M)\""
+    ]
+   ],
+   [
+    30,
+    1,
+    [
+     "      div class=\"hud-seg click\" title=\"City statistics (J)\""
+    ]
+   ],
+   [
+    35,
+    1,
+    [
+     "      div class=\"hud-seg click rci-seg\" title=\"RCI demand — click for details\""
+    ]
+   ],
+   [
+    56,
+    1,
+    [
+     "        button class=\"rci-zone\" title=\"Residential and industrial demand is strong, with 11 empty residential lots and no empty industrial lots left. Click to zone industry.\" style{--fc:var(--ind)} data{fam:I} attrs{type=button}"
+    ]
+   ],
+   [
+    168,
+    1,
+    [
+     "              button class=\"btn sm\" html=\"<svg#c8ed882b><span>Parks</span>\""
+    ]
+   ],
+   [
+    178,
+    1,
+    [
+     "              button class=\"btn sm\" html=\"<svg#c5a91e44><span>Airports</span>\""
+    ]
+   ],
+   [
+    188,
+    1,
+    [
+     "              button class=\"btn sm\" html=\"<svg#756d09e8><span>Freight & ports</span>\""
+    ]
+   ],
+   [
+    194,
+    1,
+    [
+     "      div class=\"hud-seg click approval meh\" title=\"Mayor approval — advisors (N)\" data{face:meh}"
+    ]
+   ],
+   [
+    203,
+    8,
+    [
+     "      button class=\"icon-btn\" title=\"Budget (M)\" data{panel:budget} html=\"<svg#df4117fc>\"",
+     "      button class=\"icon-btn\" title=\"Graphs (G)\" data{panel:graphs} html=\"<svg#246c6c72>\"",
+     "      button class=\"icon-btn\" title=\"City statistics (J)\" data{panel:stats} html=\"<svg#cfbddc03>\"",
+     "      button class=\"icon-btn\" title=\"Demographics — ages, schools, services, tourism (P)\" data{panel:demographics} html=\"<svg#7de1242c>\"",
+     "      button class=\"icon-btn\" title=\"Advisors & news (N)\" data{panel:advisors} html=\"<svg#0c046094>\"",
+     "      button class=\"icon-btn\" title=\"Ordinances (Y)\" data{panel:ordinances} html=\"<svg#fae6ae71>\"",
+     "      button class=\"icon-btn\" title=\"Rewards & unlocks\" data{panel:rewards} html=\"<svg#1075f528>\"",
+     "      button class=\"icon-btn\" title=\"Emergencies — active incidents, fleets, statistics\" data{panel:emergencies} html=\"<svg#7e974663>\""
+    ]
+   ],
+   [
+    212,
+    3,
+    [
+     "      button class=\"icon-btn\" title=\"Help & shortcuts (F1)\" html=\"<svg#552a9b19>\"",
+     "      button class=\"icon-btn on\" title=\"Settings\" data{panel:settings} html=\"<svg#0d63ab3c>\"",
+     "      button class=\"icon-btn\" title=\"Menu (Esc)\" html=\"<svg#332a668d>\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "built out: construct",
+  "calls": [],
+  "writes": {
+   "0 div.hud-top": "children×4 class",
+   "0.0 div.mp-glass": "children×3 class",
+   "0.0.0 div.hud-seg": "attr.title children×2 class title",
+   "0.0.0.0 div.city-badge": "class html",
+   "0.0.0.1 div.hud-stack": "children×2 class",
+   "0.0.0.1.0 div.city-name": "class",
+   "0.0.0.1.1 div.hud-sub": "class",
+   "0.0.1 div.hud-seg": "children class",
+   "0.0.1.0 div.hud-stack": "children×2 class",
+   "0.0.1.0.0 div.hud-label": "children×3 class",
+   "0.0.1.0.0.0 span.paused-pill": "children class",
+   "0.0.1.0.0.1 span.live-pill": "attr.title children class title",
+   "0.0.1.0.1 div.hud-value": "class",
+   "0.0.2 div.hud-seg": "children×2 class",
+   "0.0.2.0 div.speed": "children×4 class",
+   "0.0.2.0.0 button": "attr.title html title",
+   "0.0.2.0.1 button": "attr.title html title",
+   "0.0.2.0.2 button": "attr.title html title",
+   "0.0.2.0.3 button": "attr.title html title",
+   "0.0.2.1 div.tod": "class",
+   "0.1 div.mp-glass": "children×4 class",
+   "0.1.0 div.hud-seg": "attr.title children×2 class title",
+   "0.1.0.0 span.ico-wrap": "class html style.cssText",
+   "0.1.0.1 div.hud-stack": "children×2 class",
+   "0.1.0.1.0 div.hud-value": "class",
+   "0.1.0.1.1 div.hud-sub": "class",
+   "0.1.1 div.hud-seg": "attr.title children×2 class title",
+   "0.1.1.0 span.ico-wrap": "class html style.cssText",
+   "0.1.1.1 div.hud-stack": "children×2 class",
+   "0.1.1.1.0 div.hud-value": "class",
+   "0.1.1.1.1 div.hud-sub": "class",
+   "0.1.2 div.hud-seg": "attr.title children×4 class title",
+   "0.1.2.0 div.rci": "children×3 class",
+   "0.1.2.0.0 div.rci-col": "children×2 class",
+   "0.1.2.0.0.0 div.rci-bar": "children×2 class",
+   "0.1.2.0.0.0.1 span.rci-cap": "class",
+   "0.1.2.0.0.1 span.rci-l": "children class style.color",
+   "0.1.2.0.1 div.rci-col": "children×2 class",
+   "0.1.2.0.1.0 div.rci-bar": "children×2 class",
+   "0.1.2.0.1.0.1 span.rci-cap": "class",
+   "0.1.2.0.1.1 span.rci-l": "children class style.color",
+   "0.1.2.0.2 div.rci-col": "children×2 class",
+   "0.1.2.0.2.0 div.rci-bar": "children×2 class",
+   "0.1.2.0.2.0.1 span.rci-cap": "class",
+   "0.1.2.0.2.1 span.rci-l": "children class style.color",
+   "0.1.2.1 span.rci-capdot": "class",
+   "0.1.2.2 button.rci-zone": "attr.type children class style.display",
+   "0.1.2.3 div.rci-pop": "children×6 class",
+   "0.1.2.3.0 div.sec-title": "children class",
+   "0.1.2.3.1 div.rci-grid": "children×12 class",
+   "0.1.2.3.1.0 div.g": "children×3 class",
+   "0.1.2.3.1.0.0 span.val": "class",
+   "0.1.2.3.1.0.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.0.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.0.2 span.lbl": "children class",
+   "0.1.2.3.1.1 div.g": "children×3 class",
+   "0.1.2.3.1.1.0 span.val": "class",
+   "0.1.2.3.1.1.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.1.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.1.2 span.lbl": "children class",
+   "0.1.2.3.1.10 div.g": "children×3 class",
+   "0.1.2.3.1.10.0 span.val": "class",
+   "0.1.2.3.1.10.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.10.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.10.2 span.lbl": "children class",
+   "0.1.2.3.1.11 div.g": "children×3 class",
+   "0.1.2.3.1.11.0 span.val": "class",
+   "0.1.2.3.1.11.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.11.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.11.2 span.lbl": "children class",
+   "0.1.2.3.1.2 div.g": "children×3 class",
+   "0.1.2.3.1.2.0 span.val": "class",
+   "0.1.2.3.1.2.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.2.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.2.2 span.lbl": "children class",
+   "0.1.2.3.1.3 div.g": "children×3 class",
+   "0.1.2.3.1.3.0 span.val": "class",
+   "0.1.2.3.1.3.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.3.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.3.2 span.lbl": "children class",
+   "0.1.2.3.1.4 div.g": "children×3 class",
+   "0.1.2.3.1.4.0 span.val": "class",
+   "0.1.2.3.1.4.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.4.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.4.2 span.lbl": "children class",
+   "0.1.2.3.1.5 div.g": "children×3 class",
+   "0.1.2.3.1.5.0 span.val": "class",
+   "0.1.2.3.1.5.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.5.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.5.2 span.lbl": "children class",
+   "0.1.2.3.1.6 div.g": "children×3 class",
+   "0.1.2.3.1.6.0 span.val": "class",
+   "0.1.2.3.1.6.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.6.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.6.2 span.lbl": "children class",
+   "0.1.2.3.1.7 div.g": "children×3 class",
+   "0.1.2.3.1.7.0 span.val": "class",
+   "0.1.2.3.1.7.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.7.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.7.2 span.lbl": "children class",
+   "0.1.2.3.1.8 div.g": "children×3 class",
+   "0.1.2.3.1.8.0 span.val": "class",
+   "0.1.2.3.1.8.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.8.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.8.2 span.lbl": "children class",
+   "0.1.2.3.1.9 div.g": "children×3 class",
+   "0.1.2.3.1.9.0 span.val": "class",
+   "0.1.2.3.1.9.1 div.rci-bar": "children×2 class title",
+   "0.1.2.3.1.9.1.1 span.rci-cap": "class",
+   "0.1.2.3.1.9.2 span.lbl": "children class",
+   "0.1.2.3.2 div.rci-groups": "children×3 class",
+   "0.1.2.3.2.0 div": "children style.borderColor style.color",
+   "0.1.2.3.2.1 div": "children style.borderColor style.color",
+   "0.1.2.3.2.2 div": "children style.borderColor style.color",
+   "0.1.2.3.3 div.rci-region": "class",
+   "0.1.2.3.4 div.rci-hints": "class",
+   "0.1.2.3.5 div.rci-foot": "children×2 class",
+   "0.1.2.3.5.0 span.cap-key": "children class",
+   "0.1.2.3.5.1 span.faint": "children class",
+   "0.1.3 div.hud-seg": "attr.title children×3 class title",
+   "0.1.3.0 span.ico-wrap": "class html",
+   "0.1.3.1 div.hud-stack": "children×2 class",
+   "0.1.3.1.0 div.hud-label": "children class",
+   "0.1.3.1.1 div.hud-value": "class",
+   "0.1.3.2 div.appr-pop": "class",
+   "0.2 div.spacer": "class",
+   "0.3 div.mp-glass": "children×12 class style.cssText",
+   "0.3.0 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.1 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.10 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.11 button.icon-btn": "attr.title class html title",
+   "0.3.2 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.3 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.4 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.5 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.6 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.7 button.icon-btn": "attr.title class data.panel html title",
+   "0.3.8 div": "style.cssText",
+   "0.3.9 button.icon-btn": "attr.title class html title"
+  },
+  "tree": [
+   "div",
+   "  div class=\"hud-top\"",
+   "    div class=\"mp-glass\"",
+   "      div class=\"hud-seg click\" title=\"City menu (Esc)\" L1",
+   "        div class=\"city-badge\" html=\"<svg#2424f34e>\"",
+   "        div class=\"hud-stack\"",
+   "          div class=\"city-name\"",
+   "          div class=\"hud-sub dim\"",
+   "      div class=\"hud-seg\"",
+   "        div class=\"hud-stack\"",
+   "          div class=\"hud-label\"",
+   "            \"Date\"",
+   "            span class=\"paused-pill\"",
+   "              \"PAUSED\"",
+   "            span class=\"live-pill\" title=\"An emergency needs you: the game runs at live speed until the help you send arrives (Settings → Gameplay)\"",
+   "              \"LIVE\"",
+   "          div class=\"hud-value\"",
+   "      div class=\"hud-seg\"",
+   "        div class=\"speed\"",
+   "          button title=\"Pause (Space)\" html=\"<svg#66456159>\" L1",
+   "          button title=\"Normal speed (1)\" html=\"<svg#923c75e9>\" L1",
+   "          button title=\"Fast (2)\" html=\"<svg#fda8efda>\" L1",
+   "          button title=\"Ultra (3)\" html=\"<svg#9ce28af5>\" L1",
+   "        div class=\"tod hide-sm\"",
+   "    div class=\"mp-glass\"",
+   "      div class=\"hud-seg click\" title=\"Budget (M)\" L1",
+   "        span class=\"ico-wrap\" style{cssText:color:#7ee2a0} html=\"<svg#c49e1922>\"",
+   "        div class=\"hud-stack\"",
+   "          div class=\"hud-value\"",
+   "          div class=\"hud-sub\"",
+   "      div class=\"hud-seg click\" title=\"City statistics (J)\" L1",
+   "        span class=\"ico-wrap\" style{cssText:color:#8fc8ff} html=\"<svg#a2a9d9ec>\"",
+   "        div class=\"hud-stack\"",
+   "          div class=\"hud-value\"",
+   "          div class=\"hud-sub\"",
+   "      div class=\"hud-seg click rci-seg\" title=\"RCI demand — click for details\" L1",
+   "        div class=\"rci\"",
+   "          div class=\"rci-col\"",
+   "            div class=\"rci-bar\"",
+   "              i",
+   "              span class=\"rci-cap\"",
+   "            span class=\"rci-l\" style{color:var(--res)}",
+   "              \"R\"",
+   "          div class=\"rci-col\"",
+   "            div class=\"rci-bar\"",
+   "              i",
+   "              span class=\"rci-cap\"",
+   "            span class=\"rci-l\" style{color:var(--com)}",
+   "              \"C\"",
+   "          div class=\"rci-col\"",
+   "            div class=\"rci-bar\"",
+   "              i",
+   "              span class=\"rci-cap\"",
+   "            span class=\"rci-l\" style{color:var(--ind)}",
+   "              \"I\"",
+   "        span class=\"rci-capdot\"",
+   "        button class=\"rci-zone\" style{display:none} attrs{type=button} L1",
+   "          \"+ zone\"",
+   "        div class=\"rci-pop mp-glass i\"",
+   "          div class=\"sec-title\"",
+   "            \"Demand by type\"",
+   "          div class=\"rci-grid\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Low-wealth residents\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"R$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Medium-wealth residents\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"R$$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"High-wealth residents\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"R$$$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Low-wealth services\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"CS$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Medium-wealth services\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"CS$$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"High-wealth services\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"CS$$$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Medium-wealth offices\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"CO$$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"High-wealth offices\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"CO$$$\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Agriculture\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"I-Ag\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Dirty industry\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"I-D\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"Manufacturing\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"I-M\"",
+   "            div class=\"g\"",
+   "              span class=\"val\"",
+   "              div class=\"rci-bar\" title=\"High-tech industry\"",
+   "                i",
+   "                span class=\"rci-cap\"",
+   "              span class=\"lbl\"",
+   "                \"I-HT\"",
+   "          div class=\"rci-groups\"",
+   "            div style{borderColor:var(--res);color:var(--res)}",
+   "              \"RESIDENTIAL\"",
+   "            div style{borderColor:var(--com);color:var(--com)}",
+   "              \"COMMERCIAL\"",
+   "            div style{borderColor:var(--ind);color:var(--ind)}",
+   "              \"INDUSTRIAL\"",
+   "          div class=\"rci-region\"",
+   "          div class=\"rci-hints\"",
+   "          div class=\"rci-foot\"",
+   "            span class=\"cap-key\"",
+   "              \"Demand cap reached\"",
+   "            span class=\"faint\"",
+   "              \"Bars above the line = growth wanted\"",
+   "      div class=\"hud-seg click approval\" title=\"Mayor approval — advisors (N)\" L2",
+   "        span class=\"ico-wrap\" html=\"<svg#17af13b5>\"",
+   "        div class=\"hud-stack\"",
+   "          div class=\"hud-label\"",
+   "            \"Approval\"",
+   "          div class=\"hud-value\"",
+   "        div class=\"appr-pop mp-glass\"",
+   "    div class=\"spacer\"",
+   "    div class=\"mp-glass\" style{cssText:gap:2px}",
+   "      button class=\"icon-btn\" title=\"Budget (M)\" data{panel:budget} html=\"<svg#df4117fc>\" L1",
+   "      button class=\"icon-btn\" title=\"Graphs (G)\" data{panel:graphs} html=\"<svg#246c6c72>\" L1",
+   "      button class=\"icon-btn\" title=\"City statistics (J)\" data{panel:stats} html=\"<svg#cfbddc03>\" L1",
+   "      button class=\"icon-btn\" title=\"Demographics — ages, schools, services, tourism (P)\" data{panel:demographics} html=\"<svg#7de1242c>\" L1",
+   "      button class=\"icon-btn\" title=\"Advisors & news (N)\" data{panel:advisors} html=\"<svg#0c046094>\" L1",
+   "      button class=\"icon-btn\" title=\"Ordinances (Y)\" data{panel:ordinances} html=\"<svg#fae6ae71>\" L1",
+   "      button class=\"icon-btn\" title=\"Rewards & unlocks\" data{panel:rewards} html=\"<svg#1075f528>\" L1",
+   "      button class=\"icon-btn\" title=\"Emergencies — active incidents, fleets, statistics\" data{panel:emergencies} html=\"<svg#7e974663>\" L1",
+   "      div style{cssText:width:1px;height:24px;background:var(--hair);margin:0 4px}",
+   "      button class=\"icon-btn\" title=\"Help & shortcuts (F1)\" html=\"<svg#552a9b19>\" L1",
+   "      button class=\"icon-btn\" title=\"Settings\" data{panel:settings} html=\"<svg#0d63ab3c>\" L1",
+   "      button class=\"icon-btn\" title=\"Menu (Esc)\" html=\"<svg#332a668d>\" L1"
+  ]
+ },
+ {
+  "name": "built out: first update",
+  "calls": [],
+  "writes": {
+   "0.0 div.mp-glass": "class",
+   "0.0.0.1.0 div.city-name": "text",
+   "0.0.0.1.1 div.hud-sub": "text",
+   "0.0.1.0.1 div.hud-value": "text",
+   "0.0.2.0.0 button.on": "class×2",
+   "0.0.2.1 div.tod": "data.h html",
+   "0.1.0.1.0 div.hud-value": "text",
+   "0.1.0.1.1 div.hud-sub": "class text",
+   "0.1.1.1.0 div.hud-value": "text",
+   "0.1.1.1.1 div.hud-sub": "data.h html",
+   "0.1.2.0.0.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.0.1.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.0.2.0.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.3 div.hud-seg": "class data.face title",
+   "0.1.3.0 span.ico-wrap": "html",
+   "0.1.3.1.1 div.hud-value": "text",
+   "0.1.3.2 div.appr-pop": "children×9 class",
+   "0.1.3.2.0 div.ap-h": "children×2 class",
+   "0.1.3.2.0.0 b": "children",
+   "0.1.3.2.0.1 span.faint": "children class",
+   "0.1.3.2.1 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.1.0 span.l": "children class",
+   "0.1.3.2.1.1 span.t": "children×2 class",
+   "0.1.3.2.1.1.0 i.p": "class style.left style.width",
+   "0.1.3.2.1.2 span.v": "children class",
+   "0.1.3.2.1.3 span.d": "children class",
+   "0.1.3.2.2 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.2.0 span.l": "children class",
+   "0.1.3.2.2.1 span.t": "children×2 class",
+   "0.1.3.2.2.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.2.2 span.v": "children class",
+   "0.1.3.2.2.3 span.d": "children class",
+   "0.1.3.2.3 div.ap-r": "attr.title children×4 class data.fix title",
+   "0.1.3.2.3.0 span.l": "children class",
+   "0.1.3.2.3.1 span.t": "children×2 class",
+   "0.1.3.2.3.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.3.2 span.v": "children class",
+   "0.1.3.2.3.3 span.d": "children class",
+   "0.1.3.2.4 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.4.0 span.l": "children class",
+   "0.1.3.2.4.1 span.t": "children×2 class",
+   "0.1.3.2.4.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.4.2 span.v": "children class",
+   "0.1.3.2.5 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.5.0 span.l": "children class",
+   "0.1.3.2.5.1 span.t": "children×2 class",
+   "0.1.3.2.5.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.5.2 span.v": "children class",
+   "0.1.3.2.6 div.ap-r": "attr.title children×3 class data.fix title",
+   "0.1.3.2.6.0 span.l": "children class",
+   "0.1.3.2.6.1 span.t": "children×2 class",
+   "0.1.3.2.6.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.6.2 span.v": "children class",
+   "0.1.3.2.7 div.ap-r": "attr.title children×4 class title",
+   "0.1.3.2.7.0 span.l": "children class",
+   "0.1.3.2.7.1 span.t": "children×2 class",
+   "0.1.3.2.7.1.0 i.n": "class style.left style.width",
+   "0.1.3.2.7.2 span.v": "children class",
+   "0.1.3.2.7.3 span.d": "children class",
+   "0.1.3.2.8 div.ap-f": "children class"
+  },
+  "patch": [
+   [
+    2,
+    1,
+    [
+     "    div class=\"mp-glass is-paused\""
+    ]
+   ],
+   [
+    6,
+    2,
+    [
+     "          div class=\"city-name\" text=\"Test City\"",
+     "          div class=\"hud-sub dim\" text=\"Mayor Pat · Medium\""
+    ]
+   ],
+   [
+    16,
+    1,
+    [
+     "          div class=\"hud-value\" text=\"Feb 1, 2000\""
+    ]
+   ],
+   [
+    19,
+    1,
+    [
+     "          button class=\"on paused\" title=\"Pause (Space)\" html=\"<svg#66456159>\" L1"
+    ]
+   ],
+   [
+    23,
+    1,
+    [
+     "        div class=\"tod hide-sm\" data{h:<svg#c3a09da4><span class=\"num\">10:30</span>} html=\"<svg#c3a09da4><span class=\"num\">10:30</span>\""
+    ]
+   ],
+   [
+    28,
+    2,
+    [
+     "          div class=\"hud-value\" text=\"§100,000\"",
+     "          div class=\"hud-sub faint\" text=\"No report yet\""
+    ]
+   ],
+   [
+    33,
+    2,
+    [
+     "          div class=\"hud-value\" text=\"50,000\"",
+     "          div class=\"hud-sub\" data{h:<span class=\"zero\">Stable</span>} html=\"<span class=\"zero\">Stable</span>\""
+    ]
+   ],
+   [
+    39,
+    1,
+    [
+     "              i style{background:var(--res);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--res);scale:0}"
+    ]
+   ],
+   [
+    45,
+    1,
+    [
+     "              i style{background:var(--com);borderRadius:2px / 2.5px;opacity:1;transform:scaleY(-0.8)} data{color:var(--com);scale:-0.8}"
+    ]
+   ],
+   [
+    51,
+    1,
+    [
+     "              i style{background:var(--ind);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--ind);scale:0}"
+    ]
+   ],
+   [
+    160,
+    1,
+    [
+     "      div class=\"hud-seg click approval \" data{face:smile} L2"
+    ]
+   ],
+   [
+    165,
+    2,
+    [
+     "          div class=\"hud-value\" text=\"61%\"",
+     "        div class=\"appr-pop mp-glass empty\"",
+     "          div class=\"ap-h\"",
+     "            b",
+     "              \"Approval 61%\"",
+     "            span class=\"faint\"",
+     "              \" heading for 59%\"",
+     "          div class=\"ap-r\" title=\"every city starts at 61\"",
+     "            span class=\"l\"",
+     "              \"Starting approval\"",
+     "            span class=\"t\"",
+     "              i class=\"p\" style{left:50%;width:50%}",
+     "              b",
+     "            span class=\"v pos\"",
+     "              \"+61.0\"",
+     "            span class=\"d\"",
+     "              \"every city starts at 61\"",
+     "          div class=\"ap-r fix\" title=\"crime at homes 41% — low-wealth homes, uncollected garbage and low land value; police remove up to 85% where they patrol. Click: Police view\" data{fix:crime}",
+     "            span class=\"l\"",
+     "              \"Crime at homes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:39.91803278688525%;width:10.081967213114755%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−12.3\"",
+     "            span class=\"d\"",
+     "              \"crime at homes 41% — low-wealth homes, uncollected garbage and low land value; police remove up to 85% where they patrol\"",
+     "          div class=\"ap-r fix\" title=\"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5. Click: Budget · Taxes\" data{fix:tax}",
+     "            span class=\"l\"",
+     "              \"Residential taxes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:44.26229508196721%;width:5.737704918032787%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−7.0\"",
+     "            span class=\"d\"",
+     "              \"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5\"",
+     "          div class=\"ap-r fix\" title=\"Click: Police view; click again for Fire, then Health\" data{fix:services}",
+     "            span class=\"l\"",
+     "              \"City services at homes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:45.57377049180328%;width:4.426229508196721%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−5.4\"",
+     "          div class=\"ap-r fix\" title=\"Click: Air pollution view\" data{fix:pollution}",
+     "            span class=\"l\"",
+     "              \"Air pollution\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:47.540983606557376%;width:2.459016393442623%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−3.0\"",
+     "          div class=\"ap-r fix\" title=\"Click: Parks tab\" data{fix:parks}",
+     "            span class=\"l\"",
+     "              \"Parks near homes\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:48.68852459016394%;width:1.3114754098360655%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−1.6\"",
+     "          div class=\"ap-r\" title=\"0% unemployed\"",
+     "            span class=\"l\"",
+     "              \"Unemployment\"",
+     "            span class=\"t\"",
+     "              i class=\"n\" style{left:49.18032786885246%;width:0.819672131147541%}",
+     "              b",
+     "            span class=\"v neg\"",
+     "              \"−1.0\"",
+     "            span class=\"d\"",
+     "              \"0% unemployed\"",
+     "          div class=\"ap-f\"",
+     "            \"Click a row to open its fix; anywhere else for your advisors (N)\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "built out: open the RCI popover: the built-out line",
+  "calls": [
+   "sound(\"flyout\")"
+  ],
+  "writes": {
+   "0.1.2.3 div.rci-pop": "class",
+   "0.1.2.3.1.0.0 span.val": "text",
+   "0.1.2.3.1.0.1 div.rci-bar": "title",
+   "0.1.2.3.1.0.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.1.0 span.val": "text",
+   "0.1.2.3.1.1.1 div.rci-bar": "title",
+   "0.1.2.3.1.1.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.10.0 span.val": "text",
+   "0.1.2.3.1.10.1 div.rci-bar": "title",
+   "0.1.2.3.1.10.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.11.0 span.val": "text",
+   "0.1.2.3.1.11.1 div.rci-bar": "title",
+   "0.1.2.3.1.11.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.2.0 span.val": "text",
+   "0.1.2.3.1.2.1 div.rci-bar": "title",
+   "0.1.2.3.1.2.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.3.0 span.val": "text",
+   "0.1.2.3.1.3.1 div.rci-bar": "title",
+   "0.1.2.3.1.3.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.4.0 span.val": "text",
+   "0.1.2.3.1.4.1 div.rci-bar": "title",
+   "0.1.2.3.1.4.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.5.0 span.val": "text",
+   "0.1.2.3.1.5.1 div.rci-bar": "title",
+   "0.1.2.3.1.5.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.6.0 span.val": "text",
+   "0.1.2.3.1.6.1 div.rci-bar": "title",
+   "0.1.2.3.1.6.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.7.0 span.val": "text",
+   "0.1.2.3.1.7.1 div.rci-bar": "title",
+   "0.1.2.3.1.7.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.8.0 span.val": "text",
+   "0.1.2.3.1.8.1 div.rci-bar": "title",
+   "0.1.2.3.1.8.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.1.9.0 span.val": "text",
+   "0.1.2.3.1.9.1 div.rci-bar": "title",
+   "0.1.2.3.1.9.1.0 i": "data.color data.scale style.background style.borderRadius style.opacity style.transform",
+   "0.1.2.3.4 div.rci-hints": "children",
+   "0.1.2.3.4.0 div.cap-hint": "children×3 class style.--fc",
+   "0.1.2.3.4.0.0 span.ch-ico": "class html",
+   "0.1.2.3.4.0.1 div.ch-body": "children×2 class",
+   "0.1.2.3.4.0.1.0 div.ch-t": "children class",
+   "0.1.2.3.4.0.1.1 div.ch-d": "children class",
+   "0.1.2.3.4.0.2 div.ch-acts": "children×2 class",
+   "0.1.2.3.4.0.2.0 button.btn": "attr.title class html title",
+   "0.1.2.3.4.0.2.1 button.btn": "attr.title class html title"
+  },
+  "patch": [
+   [
+    58,
+    1,
+    [
+     "        div class=\"rci-pop mp-glass i open\""
+    ]
+   ],
+   [
+    63,
+    3,
+    [
+     "              span class=\"val\" text=\"0\"",
+     "              div class=\"rci-bar\" title=\"Low-wealth residents: demand 0\"",
+     "                i style{background:var(--res);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--res);scale:0}"
+    ]
+   ],
+   [
+    70,
+    3,
+    [
+     "              span class=\"val\" text=\"0\"",
+     "              div class=\"rci-bar\" title=\"Medium-wealth residents: demand 0\"",
+     "                i style{background:var(--res);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--res);scale:0}"
+    ]
+   ],
+   [
+    77,
+    3,
+    [
+     "              span class=\"val\" text=\"0\"",
+     "              div class=\"rci-bar\" title=\"High-wealth residents: demand 0\"",
+     "                i style{background:var(--res);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--res);scale:0}"
+    ]
+   ],
+   [
+    84,
+    3,
+    [
+     "              span class=\"val\" text=\"+80\"",
+     "              div class=\"rci-bar\" title=\"Low-wealth services: demand 80\"",
+     "                i style{background:var(--com);borderRadius:2px / 2.5px;opacity:1;transform:scaleY(-0.8)} data{color:var(--com);scale:-0.8}"
+    ]
+   ],
+   [
+    91,
+    3,
+    [
+     "              span class=\"val\" text=\"0\"",
+     "              div class=\"rci-bar\" title=\"Medium-wealth services: demand 0\"",
+     "                i style{background:var(--com);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--com);scale:0}"
+    ]
+   ],
+   [
+    98,
+    3,
+    [
+     "              span class=\"val\" text=\"0\"",
+     "              div class=\"rci-bar\" title=\"High-wealth services: demand 0\"",
+     "                i style{background:var(--com);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--com);scale:0}"
+    ]
+   ],
+   [
+    105,
+    3,
+    [
+     "              span class=\"val\" text=\"0\"",
+     "              div class=\"rci-bar\" title=\"Medium-wealth offices: demand 0\"",
+     "                i style{background:var(--com);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--com);scale:0}"
+    ]
+   ],
+   [
+    112,
+    3,
+    [
+     "              span class=\"val\" text=\"0\"",
+     "              div class=\"rci-bar\" title=\"High-wealth offices: demand 0\"",
+     "                i style{background:var(--com);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--com);scale:0}"
+    ]
+   ],
+   [
+    119,
+    3,
+    [
+     "              span class=\"val\" text=\"0\"",
+     "              div class=\"rci-bar\" title=\"Agriculture: demand 0\"",
+     "                i style{background:var(--ind);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--ind);scale:0}"
+    ]
+   ],
+   [
+    126,
+    3,
+    [
+     "              span class=\"val\" text=\"0\"",
+     "              div class=\"rci-bar\" title=\"Dirty industry: demand 0\"",
+     "                i style{background:var(--ind);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--ind);scale:0}"
+    ]
+   ],
+   [
+    133,
+    3,
+    [
+     "              span class=\"val\" text=\"0\"",
+     "              div class=\"rci-bar\" title=\"Manufacturing: demand 0\"",
+     "                i style{background:var(--ind);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--ind);scale:0}"
+    ]
+   ],
+   [
+    140,
+    3,
+    [
+     "              span class=\"val\" text=\"0\"",
+     "              div class=\"rci-bar\" title=\"High-tech industry: demand 0\"",
+     "                i style{background:var(--ind);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--ind);scale:0}"
+    ]
+   ],
+   [
+    155,
+    0,
+    [
+     "            div class=\"cap-hint built-out\" style{--fc:#ffd46b}",
+     "              span class=\"ch-ico\" html=\"<svg#d8884f18>\"",
+     "              div class=\"ch-body\"",
+     "                div class=\"ch-t\"",
+     "                  \"The city is built out\"",
+     "                div class=\"ch-d\"",
+     "                  \"Commercial demand is strong, but the city is built out: no free land is left. Rezone the lowest-value blocks (around (32, 28), (32, 12) and (32, 44)) to denser shops and offices, or connect a highway to Fooville on the east edge, which has 30,000 jobs to spare.\"",
+     "              div class=\"ch-acts\"",
+     "                button class=\"btn sm\" title=\"Shows the lowest-value block on the Land value view and opens the Zones tools\" html=\"<svg#1fbe7a8f><span>Rezone</span>\" L1",
+     "                button class=\"btn sm\" title=\"Selects the Highway tool at the neighbour’s edge\" html=\"<svg#8460139d><span>Connect a highway</span>\" L1"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "built out: Rezone",
+  "calls": [
+   "sound(\"flyoutClose\")",
+   "focusCell(32, 28, 420)",
+   "setOverlay(6, undefined)",
+   "openFlyout(\"zones\")"
+  ],
+  "writes": {
+   "0.1.2.3 div.rci-pop": "class"
+  },
+  "patch": [
+   [
+    58,
+    1,
+    [
+     "        div class=\"rci-pop mp-glass i\""
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "built out: reopen, Connect a highway",
+  "calls": [
+   "sound(\"flyout\")",
+   "sound(\"flyoutClose\")",
+   "focusCell(63, 32, 420)",
+   "tools.select(\"net:5\")"
+  ],
+  "writes": {
+   "0.1.2.3 div.rci-pop": "class×2",
+   "0.1.2.3.1.0.1 div.rci-bar": "title",
+   "0.1.2.3.1.1.1 div.rci-bar": "title",
+   "0.1.2.3.1.10.1 div.rci-bar": "title",
+   "0.1.2.3.1.11.1 div.rci-bar": "title",
+   "0.1.2.3.1.2.1 div.rci-bar": "title",
+   "0.1.2.3.1.3.1 div.rci-bar": "title",
+   "0.1.2.3.1.4.1 div.rci-bar": "title",
+   "0.1.2.3.1.5.1 div.rci-bar": "title",
+   "0.1.2.3.1.6.1 div.rci-bar": "title",
+   "0.1.2.3.1.7.1 div.rci-bar": "title",
+   "0.1.2.3.1.8.1 div.rci-bar": "title",
+   "0.1.2.3.1.9.1 div.rci-bar": "title"
+  }
+ },
+ {
+  "name": "built out: reopen, then two ticks",
+  "calls": [
+   "sound(\"flyout\")"
+  ],
+  "writes": {
+   "0.1.2.3 div.rci-pop": "class",
+   "0.1.2.3.1.0.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.1.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.10.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.11.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.2.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.3.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.4.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.5.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.6.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.7.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.8.1 div.rci-bar": "title×3",
+   "0.1.2.3.1.9.1 div.rci-bar": "title×3"
+  },
+  "patch": [
+   [
+    58,
+    1,
+    [
+     "        div class=\"rci-pop mp-glass i open\""
+    ]
+   ]
+  ]
+ }
+]
