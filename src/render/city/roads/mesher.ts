@@ -13,7 +13,7 @@
 import { Network } from '../../../core/types';
 import { CELL_SIZE } from '../../../core/constants';
 import {
-  NetInfo, DX, DZ, OPP, RX, RZ, HALF_W, HALF, LIFT, CURB_H, NF_TUNNEL, isRoadT, hasSidewalk, popcount4, oneWayDir,
+  NetInfo, DX, DZ, OPP, RX, RZ, HALF_W, HALF, LIFT, CURB_H, NF_TUNNEL, isRoadT, hasSidewalk, popcount4, oneWayDir, junctionFillet,
 } from '../common/netinfo';
 import type { RoadSurface } from '../common/surface';
 import { GeoBuf, type GeoSlice } from './geobuf';
@@ -751,7 +751,7 @@ export class RoadMesher {
     const add = (al: number, be: number, curbToNext: boolean) => { pts.push(al, be); curb.push(curbToNext); };
     if (hasA) add(HALF, eh[dA], true);
     else { add(HALF, 0, false); add(b, 0, true); }
-    const rf = Math.min(2.5, HALF - b - 0.05);
+    const rf = junctionFillet(b);
     if (hasA && hasB && rf > 0.3) {
       const cxA = b + rf, cxB = b + rf;
       const segs = 5;
