@@ -26,6 +26,7 @@ import {
   setKV,
 } from '../../src/save/index';
 import { createRegionData } from '../../src/region/RegionModel';
+import { CONTINUITY_RECORDS } from '../../src/sim/persist';
 
 function makeBuilding(id: number, x: number, z: number, def: string, extra: Partial<Building> = {}): Building {
   return {
@@ -297,6 +298,7 @@ describe('WP1 demographics building fields', () => {
     const obj = serializeCity(st);
     delete obj.buildings.opt;
     delete (obj.data.systemData as Record<string, unknown>).demographics;
+    for (const k of CONTINUITY_RECORDS) delete (obj.data.systemData as Record<string, unknown>)[k]; // (T057's records: not in an old save)
     const old = deserializeCity(obj);
     for (const b of old.buildings.values()) for (const f of FIELDS) expect(b[f]).toBeUndefined();
     const sim = new WP1Simulation(old, wp1Systems());
@@ -325,6 +327,7 @@ describe('WP1 demographics building fields', () => {
     const obj = serializeCity(st);
     delete obj.buildings.opt;
     delete (obj.data.systemData as Record<string, unknown>).demographics;
+    for (const k of CONTINUITY_RECORDS) delete (obj.data.systemData as Record<string, unknown>)[k]; // (T057's records: not in an old save)
     const old = deserializeCity(obj);
     expect(old.stats.population).toBeGreaterThan(0);
     old.stats.eq = 90; // (the pre-WP1 coverage model) — EDU_NEWCOMER would pull it toward 46
