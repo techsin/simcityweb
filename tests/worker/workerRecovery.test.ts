@@ -215,15 +215,25 @@ describe('W1.3: the worker\'s own IndexedDB', () => {
 });
 
 describe('W1.3: the worker\'s save as two units (§4.2)', () => {
-  it('save:copy and save:put are separate worker units: a command that arrives after the copy runs before the put', async () => {
+  it('save:copy and save:put are separate worker tasks: a command that arrives after the copy runs before the put, and the put runs in a task of its own', async () => {
     const city = initialCity();
     await kv.put('cities', { key: 'units:0', regionId: 'units', tileKey: '0', savedAt: city.savedAt, city } satisfies CityRecord, 'units:0');
     const order: string[] = [], put = kv.put.bind(kv);
-    vi.spyOn(kv, 'put').mockImplementation(async (store, value, key) => { if (store === 'cities') order.push('put'); return put(store, value, key); });
+    // true from the ack's packet until a long microtask chain queued then has run: the rest of that unit's task. The put's
+    // continuation is queued earlier in a task that resolves it, so a put in the ack's task sees this still true.
+    let ackTask = false;
+    vi.spyOn(kv, 'put').mockImplementation(async (store, value, key) => {
+      if (store === 'cities') order.push(ackTask ? 'put in the ack unit\'s task' : 'put');
+      return put(store, value, key);
+    });
     let saving = false;
     const w = inProcess([], { deterministic: true, idb: true, tap: (m, send) => {
       if (m.t !== 'pkt') return;
-      if (m.p.acks?.length) order.push('ack');
+      if (m.p.acks?.length) {
+        order.push('ack'); ackTask = true;
+        const clear = (n: number): void => { if (n) queueMicrotask(() => clear(n - 1)); else ackTask = false; };
+        clear(50);
+      }
       // the save's boundary packet, posted inside its copy unit: a command arrives as that task ends
       if (saving) { saving = false; order.push('copy'); queueMicrotask(() => send({ t: 'cmd', seq: 1, op: 'setTax', args: [DevType.R1, 9] })); }
     } });
@@ -233,6 +243,35 @@ describe('W1.3: the worker\'s save as two units (§4.2)', () => {
       w.send({ t: 'save', id: 1, reason: 'manual' });
       await w.until((m) => m.t === 'pkt' && !!m.p.replies?.some((r) => r.t === 'saved'), 'the saved reply');
       expect(order).toEqual(['copy', 'ack', 'put']);
+    } finally { w.dispose(); }
+  });
+});
+
+describe('W1.3: the worker\'s save as two units (§4.2), the copy\'s task', () => {
+  it('save:copy ends its unit: the run queued behind the save takes its first day in a later task', async () => {
+    const city = initialCity();
+    await kv.put('cities', { key: 'units:0', regionId: 'units', tileKey: '0', savedAt: city.savedAt, city } satisfies CityRecord, 'units:0');
+    const order: string[] = [];
+    // as above: true from the copy's boundary packet until the rest of that task's microtasks have run
+    let saving = false, copyTask = false;
+    const w = inProcess([], { deterministic: true, idb: true, tap: (m) => {
+      if (m.t !== 'pkt') return;
+      if (saving) {
+        saving = false; order.push('copy'); copyTask = true;
+        const clear = (n: number): void => { if (n) queueMicrotask(() => clear(n - 1)); else copyTask = false; };
+        clear(50);
+      } else if (order.length) order.push(copyTask ? 'packet in the copy\'s task' : 'packet');
+    } });
+    try {
+      await w.until((m) => m.t === 'ready', 'ready');
+      saving = true;
+      w.send({ t: 'save', id: 1, reason: 'manual' });
+      w.send({ t: 'cmd', seq: 1, op: 'debug.runDays', args: [2] });
+      await w.until((m) => m.t === 'pkt' && !!m.p.acks?.length, 'the run\'s ack');
+      await w.until((m) => m.t === 'pkt' && !!m.p.replies?.some((r) => r.t === 'saved'), 'the saved reply');
+      expect(order[0]).toBe('copy');
+      expect(order.length).toBeGreaterThan(2);
+      expect(order).not.toContain('packet in the copy\'s task');
     } finally { w.dispose(); }
   });
 });

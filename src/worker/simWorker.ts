@@ -61,8 +61,10 @@ class WorkerIdbStore implements InboxStore {
   private store: InboxStore;
   constructor(core: SimCore, private loaded: CityRecord, private nextUnit: () => Promise<void>) { this.store = idbStore(core); }
   get savedAt(): number { return getRecoveryBase(this.loaded.regionId, this.loaded.tileKey)?.savedAt ?? this.loaded.savedAt; }
-  /** §4.2's two units: save:copy ran in the inbox's unit; save:put (the put's synchronous clone, about 10-15 ms at 1M)
-   *  waits for the next unit to finish, so the worker never blocks for both at once and work queued meanwhile runs first */
+  /** §4.2's two units: save:copy ran in a unit of its own (`drain` ends the unit after a save, with no simulation
+   *  step); save:put (the put's synchronous clone, about 10-15 ms at 1M) waits for the next unit to finish and then runs
+   *  in a task of its own (`unit`). So the worker never blocks for the copy, a unit's simulation work and the clone
+   *  together, and work queued meanwhile runs first. */
   async putSave(copy: CitySaveCopy) { await this.nextUnit(); return this.store.putSave(copy); }
   /** the boot's save, before the Ready: no unit runs yet */
   bootSave(copy: CitySaveCopy) { return this.store.putSave(copy); }
@@ -87,8 +89,8 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
   let unacked: { seq: number; ids: number[]; saves: number[]; writes: Reply[] }[] = [];
   /** dev: this isolate's protector probe (§5.4, risk 7), read by debug.verify and once per frame (it is sticky) */
   let protector: (() => boolean) | null = null;
-  /** W1.3: work that waits for the next unit to finish (a save's put, §4.2) */
-  let afterUnit: (() => void)[] = [];
+  /** W1.3: work that waits for the next unit to finish (a save's put, §4.2), and the waiters whose unit has run */
+  let afterUnit: (() => void)[] = [], released: (() => void)[] = [];
   const nextUnit = () => new Promise<void>((resolve) => { afterUnit.push(resolve); kick(); });
 
   function post(message: WorkerOutput): void {
@@ -274,9 +276,10 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
       default: return false;
     }
   }
-  function drain(): void {
+  /** true when it handled a save: §4.2's save:copy is its unit's work */
+  function drain(): boolean {
     for (let i = 0; i < inbox.length;) {
-      if (inbox[i].t === 'dispose') { dispose(); return; }
+      if (inbox[i].t === 'dispose') { dispose(); return false; }
       if (protocol && control(inbox[i])) inbox.splice(i, 1);
       else i++;
     }
@@ -285,13 +288,16 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
       const m = inbox[0] as M2W;
       if (m.t === 'init') throw new Error('Duplicate init');
       if (m.t === 'cmd' && m.op === 'debug.runDays') {
-        if (frame) return; // the frame in progress finishes first: its scheduler steps are not headless
+        if (frame) return false; // the frame in progress finishes first: its scheduler steps are not headless
         inbox.shift(); startRun(m);
         continue;
       }
       if (m.t === 'cmd' && m.op === 'debug.verify') { inbox.shift(); protocol.acknowledge(m.seq, debugReport()); continue; }
       inbox.shift(); protocol.handle(m);
+      // the copy (40-60 ms at 1M) ends the unit: the rest of the FIFO and the simulation step wait for the next task
+      if (m.t === 'save') return true;
     }
+    return false;
   }
   function startRun(m: Extract<M2W, { t: 'cmd' }>): void {
     const days = m.args[0];
@@ -344,15 +350,26 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
   function unit(): void {
     scheduled = false;
     if (abort.signal.aborted) return;
-    // their continuations run once this unit's task is done
-    for (const resolve of afterUnit.splice(0)) resolve();
+    // §4.2: waiters whose unit has run get this task to themselves. Their continuations (a save's put) run at its microtask
+    // checkpoint, once unit() returns, which belongs to this task: had a drain or a step run here too, the put would
+    // block the worker together with them. The simulation resumes in the next task.
+    if (released.length) {
+      for (const resolve of released.splice(0)) resolve();
+      kick();
+      return;
+    }
+    const waiting = afterUnit.splice(0);
     try {
-      drain();
+      const copied = drain();
       if (abort.signal.aborted || !protocol) return;
-      const kind = step();
+      const kind = copied ? null : step();
       if (kind === 'day' || kind === 'end' || flushWanted) flush();
-      if (run || frame || pendingDt !== null || inbox.length || flushWanted) kick();
+      if (copied || run || frame || pendingDt !== null || inbox.length || flushWanted) kick();
     } catch (e) { fatal(e); }
+    finally {
+      // this unit has run: release its waiters in the next task
+      if (waiting.length) { released.push(...waiting); kick(); }
+    }
   }
   function kick(): void {
     if (!scheduled && !abort.signal.aborted) { scheduled = true; loop.port2.postMessage(0); }
@@ -372,7 +389,7 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
     loop.port1.close(); loop.port2.close();
     if (core) { schedulerOf(core.sim).endFrame(); core.dispose(); core.sim.events.clear(); }
     core = null; recorder = null; protocol = null; store = null; run = null; frame = null;
-    inbox.length = 0; unacked = []; afterUnit = [];
+    inbox.length = 0; unacked = []; afterUnit = []; released = [];
   }
   loop.port1.onmessage = unit;
   scope.listen(receive, fatal, abort.signal);
