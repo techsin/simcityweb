@@ -90,6 +90,10 @@ import type { TrafficSystem } from './traffic';
 
 export type IncidentState = 'queued' | 'uncovered' | 'dispatched' | 'onScene' | 'resolved' | 'failed';
 export type UncoveredReason = 'noStation' | 'outOfRange' | 'busy';
+export type EmergencyDispatchEvent = EmergencyEvent & {
+  /** Vehicle ids sent by this manual dispatch, absent on automatic dispatches. */
+  sent?: number[];
+};
 
 export interface Incident {
   id: number;
@@ -1390,8 +1394,9 @@ export class EmergencySystem implements SimSystem {
     const now = this.now(sim);
     const n = Math.max(1, Math.min(free, units | 0));
     const route = this.extractPath(found);
-    for (let q = 0; q < n; q++) this.sendUnit(sim, inc, s, route, fd, now, true);
-    this.afterDispatch(sim, inc);
+    const sent: number[] = [];
+    for (let q = 0; q < n; q++) sent.push(this.sendUnit(sim, inc, s, route, fd, now, true).id);
+    this.afterDispatch(sim, inc, sent);
     // (the station's last free unit may have been the one another waiting incident's prompt counted on)
     this.revalidate(sim);
     this.persist();
@@ -1767,13 +1772,14 @@ export class EmergencySystem implements SimSystem {
     return v;
   }
 
-  private afterDispatch(sim: Simulation, inc: Incident): void {
+  private afterDispatch(sim: Simulation, inc: Incident, sent?: number[]): void {
     const wasWaiting = inc.state === 'uncovered' || inc.state === 'queued';
     const primary = INCIDENT_RESPONDERS[inc.kind][0];
     if (wasWaiting && this.assigned(inc, primary) === 0) {
       // only a supporting responder was sent (the ambulance of an industrial accident or a collapse): the incident keeps
       // waiting for its primary one — state, reason, note and the player's prompt (manualPossible / canSend) stay, so
       // the banner and LIVE mode stay until a fire truck is on its way (the plant still ignites without one)
+      if (sent) this.emit(sim, inc, 'dispatched', sent);
       this.writeStats(sim.state);
       return;
     }
@@ -1783,7 +1789,7 @@ export class EmergencySystem implements SimSystem {
     inc.note = '';
     inc.manualPossible = false;
     inc.canSend = false;
-    if (wasWaiting || inc.units.length > 0) this.emit(sim, inc, 'dispatched');
+    if (wasWaiting || inc.units.length > 0) this.emit(sim, inc, 'dispatched', sent);
     this.writeStats(sim.state);
   }
 
@@ -3059,10 +3065,11 @@ export class EmergencySystem implements SimSystem {
     sim.notify(text, kind, x, z, adv);
   }
 
-  private emit(sim: Simulation, inc: Incident, type: EmergencyEvent['type']): void {
-    const ev: EmergencyEvent = { type, id: inc.id, kind: inc.kind, x: inc.x, z: inc.z, major: inc.major, manualPossible: inc.manualPossible };
+  private emit(sim: Simulation, inc: Incident, type: EmergencyEvent['type'], sent?: number[]): void {
+    const ev: EmergencyDispatchEvent = { type, id: inc.id, kind: inc.kind, x: inc.x, z: inc.z, major: inc.major, manualPossible: inc.manualPossible };
     if (inc.reason && (type === 'uncovered' || type === 'queued')) ev.reason = inc.reason;
     if (inc.etaMin !== undefined && (type === 'dispatched' || type === 'queued')) ev.etaMin = inc.etaMin;
+    if (sent) ev.sent = sent;
     sim.events.emit('emergency', ev);
   }
 
