@@ -11,6 +11,7 @@ import { icon } from '../icons';
 import { money, titleCase } from '../format';
 import { upkeepEstimate } from '../upkeepModel';
 import { ruinsFor, type RuinState } from '../ruinState';
+import '../rewards.css';
 export { ruinState, type RuinState } from '../ruinState';
 
 /**
@@ -161,6 +162,8 @@ export class RewardsPanel extends Panel {
   override icon = 'trophy';
   override width = 480;
   private listEl!: HTMLDivElement;
+  private shownReward = '';
+  private rows = new Map<string, HTMLDivElement>();
 
   protected build(): void {
     this.listEl = h('div', { class: 'list' });
@@ -193,6 +196,19 @@ export class RewardsPanel extends Panel {
     this.resetGate();
   }
 
+  /** A reward toast opens this row, even if its progress changed inside the rebuild gate. */
+  showReward(id: string): void {
+    this.shownReward = id;
+    this.resetGate();
+    this.update();
+    this.rows.get(id)?.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }
+
+  override onClose(): void {
+    this.shownReward = '';
+    for (const row of this.rows.values()) row.classList.remove('reward-highlight');
+  }
+
   /** Share the catalog's mirrored index, including same-day flag changes. */
   private ruins(): RuinState {
     return ruinsFor(this.ctx);
@@ -215,6 +231,7 @@ export class RewardsPanel extends Panel {
     const sig = items.map((r) => `${r.id}:${r.unlocked}:${r.built}:${ruinOf(r)?.id ?? ''}:${Math.round(r.progress * 100)}:${r.requirement}`).join('|');
     if (!this.gate('rewards', sig)) return;
     clear(this.listEl);
+    this.rows.clear();
     if (!items.length) {
       this.listEl.appendChild(h('div', { class: 'empty', html: icon('trophy', 28) + '<div>Rewards unlock as your city reaches milestones.</div>' }));
       return;
@@ -246,7 +263,7 @@ export class RewardsPanel extends Panel {
       const status = ruin
         ? h('span', { class: 'chip bad', style: 'max-width:150px;white-space:normal;text-align:right;line-height:1.25', title: 'It lies in ruins: no income and no effects until you bulldoze the rubble and build it again', html: icon('alert', 11) + `<span>${escapeHtml(REWARD_RUIN_TEXT)}</span>` })
         : r.built ? h('span', { class: 'chip info', html: icon('check', 11) + 'Built' }) : r.unlocked ? h('span', { class: 'chip good', html: icon('check', 11) + 'Unlocked' }) : h('span', { class: 'chip warn', html: icon('lock', 11) + 'Locked' });
-      const row = h('div', { class: 'li' + (r.unlocked ? ' on' : ' locked') },
+      const row = h('div', { class: 'li' + (r.unlocked ? ' on' : ' locked') + (r.id === this.shownReward ? ' reward-highlight' : ''), dataset: { reward: r.id } },
         h('div', { class: 'li-ico', html: icon(def ? defIcon(def) : 'trophy', 17) }),
         h('div', null,
           h('div', { class: 'li-t' }, r.name),
@@ -258,6 +275,7 @@ export class RewardsPanel extends Panel {
         ),
         h('div', { class: 'li-r' }, status, place?.firstChild ? place : null),
       );
+      this.rows.set(r.id, row);
       this.listEl.appendChild(row);
     }
   }

@@ -22,7 +22,7 @@
  * becomes (un)occupied — not for every resident moving in.
  */
 import type { SimSystem, Simulation } from '../Simulation';
-import { BF, type Building, type CityState } from '../CityState';
+import { BF, type Building, type CityState, type CityStats } from '../CityState';
 import type { BuildingDef } from '../catalogTypes';
 import { hash2, smoothstep } from '../../core/rng';
 import { DevType, zoneDensity } from '../../core/types';
@@ -37,15 +37,17 @@ import {
   WORKFORCE_MAX, WORKFORCE_MIN, WORKFORCE_RATIO, COHORT_BASE, NEEDS_ABANDON_SHARE, NEEDS_PENALTY_MAX, NEEDS_UNMET_PEOPLE,
   EQ_FLOOR, EQ_SPAN_STOCK, OUTAGE_EXIT_DAYS, RENT_CONDITION_MIN,
 } from './tuning';
-import { type EconRuntime, type InfraFlags, GROWABLE_SLICES, infraFlags } from './runtime';
+import { type EconRuntime, type InfraFlags, type Totals, GROWABLE_SLICES, infraFlags } from './runtime';
 import { frontHasRoad, removeBuilding } from './buildings';
 import { ordinanceEffect } from './ordinances';
 import { conditionDesirability, garbageFade, lotCell } from './factors';
 import type { FactorTerm } from '../explain';
 import { getDef } from '../catalog';
+import { setSaveHook } from '../persist';
 import {
   type DemographicsCtx, DemographicsCache, REC_NOISE, REC_RAW, REC_UNMET, bindDemographics, demographicsCtx,
-  EQHQ_SLICES, demographicsData, demographicsSim, eqHqDaily, evaluateNeeds, needsOf, updateDemographics,
+  C_SAVED, EQHQ_SLICES, demographicsData, demographicsSim, ensureDemographicsFields, eqHqDaily, evaluateNeeds, needsOf,
+  updateDemographics,
 } from './demographics';
 
 /** duck-typed view of sim-infra's TrafficSystem (optional methods; -1 = not assessed yet) */
@@ -309,6 +311,49 @@ export const DEMOGRAPHICS_EVENT_PHASE = 1;
 
 /** EMPLOYED_EMA per day compounded over one OCC_PERIOD (the traffic ledger is sampled every OCC_PERIOD days) */
 const EMPLOYED_EMA_PERIOD = 1 - Math.pow(1 - EMPLOYED_EMA, OCC_PERIOD);
+
+/**
+ * T057: what the population system carries from one day to the next beyond the buildings and the saved stats, written
+ * into systemData.popRun by a save hook (no daily cost) so a loaded game continues exactly:
+ *  - the last aggregation's runtime outputs (totals, the coarse residents / wealth grids, job fill, access, employment):
+ *    the next day's land value, desirability and occupancy read them before population aggregates again, and a load
+ *    would re-aggregate the buildings as they are at the end of the day instead of where population read them;
+ *  - the home records (access record, demographics schedule, last population, hiring factor, workforce mirror), which a
+ *    load would refill from today's layers and cohorts on a fresh schedule; the refill days left; the rubble clocks.
+ * A save without it loads as before.
+ */
+interface PopRun {
+  v: 1;
+  totals: Totals; coarsePop: Float32Array; coarseWealth: Float32Array; jobFill: number; accessAvg: number; employedRatio: number;
+  refillDays: number;
+  burnt: number[];
+  cache: { ids: Int32Array; rec: Int32Array; wf: Float32Array } | null;
+}
+function popRunOf(st: CityState, cc: number): PopRun | undefined {
+  const r = st.systemData.popRun as PopRun | undefined;
+  if (!r || r.v !== 1 || !r.totals || !(r.coarsePop instanceof Float32Array) || r.coarsePop.length !== cc) return undefined;
+  if (!(r.coarseWealth instanceof Float32Array) || r.coarseWealth.length !== cc || !Array.isArray(r.burnt)) return undefined;
+  const c = r.cache;
+  if (c && (!(c.ids instanceof Int32Array) || !(c.rec instanceof Int32Array) || !(c.wf instanceof Float32Array)
+    || c.rec.length !== c.ids.length * C_SAVED || c.wf.length !== c.ids.length)) return undefined;
+  return r;
+}
+/** the stats aggregate() writes (a resumed init keeps the saved ones) */
+function aggregateStats(s: CityStats): unknown {
+  return structuredClone({
+    population: s.population, residents: s.residents, jobsByDev: s.jobsByDev, jobCapByDev: s.jobCapByDev, workforce: s.workforce,
+    employed: s.employed, unemployment: s.unemployment, workforceRatio: s.workforceRatio, cohorts: s.cohorts,
+    cohortsByWealth: s.cohortsByWealth, buildingCount: s.buildingCount,
+  });
+}
+function restoreStats(s: CityStats, saved: unknown): void {
+  const v = saved as Record<string, unknown>;
+  const rec = s as unknown as Record<string, unknown>;
+  for (const [k, x] of Object.entries(v)) {
+    const cur = rec[k];
+    if (Array.isArray(cur) && Array.isArray(x)) { cur.length = 0; cur.push(...x); } else rec[k] = x;
+  }
+}
 
 export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime } {
   let cursor = 0;
@@ -712,7 +757,13 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       cache = new DemographicsCache();
       refillDays = OCC_PERIOD; // every record starts stale
       cache.ensure(sim.state.nextBuildingId);
-      for (const b of sim.state.buildings.values()) cache.sync(b);
+      const run = sim.state.day > 0 ? popRunOf(sim.state, rt.cw * rt.cw) : undefined;
+      if (run?.cache) {
+        // (T057: the records and schedules as the save left them; a building the game had not met yet is met as there)
+        for (const b of sim.state.buildings.values()) ensureDemographicsFields(b);
+        cache.restoreRecords(run.cache);
+      } else for (const b of sim.state.buildings.values()) cache.sync(b);
+      if (run) refillDays = run.refillDays;
       if (layersSim !== sim) {
         unsubLayers?.();
         unsubLayers = sim.events.on('layerUpdated', (name) => {
@@ -723,7 +774,35 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
       cursor = Math.max(0, demographicsData(sim.state).cursor ?? 0); // a loaded city keeps its visiting order
       burntSince.clear();
       rt.ensureLists();
-      aggregate(sim, true);
+      if (run) {
+        // a resumed game: the grids and samples of the first aggregation as before, but the stats stay the saved ones and
+        // the runtime's outputs are the last aggregation's (T057)
+        for (let k = 0; k + 1 < run.burnt.length; k += 2) burntSince.set(run.burnt[k], run.burnt[k + 1]);
+        const keep = aggregateStats(sim.state.stats);
+        aggregate(sim, true);
+        restoreStats(sim.state.stats, keep);
+        const t = structuredClone(run.totals);
+        Object.assign(rt.totals, t);
+        rt.coarsePop.set(run.coarsePop);
+        rt.coarseWealth.set(run.coarseWealth);
+        rt.jobFill = run.jobFill;
+        rt.accessAvg = run.accessAvg;
+        rt.employedRatio = run.employedRatio;
+      } else aggregate(sim, true);
+      const st0 = sim.state;
+      setSaveHook(st0, 'economy.population', () => {
+        if (sim.state !== st0) return;
+        const ids = new Int32Array(st0.buildings.size);
+        let k = 0;
+        for (const id of st0.buildings.keys()) ids[k++] = id;
+        const burnt: number[] = [];
+        for (const [id, d] of burntSince) burnt.push(id, d);
+        const r: PopRun = {
+          v: 1, totals: structuredClone(rt.totals), coarsePop: rt.coarsePop.slice(), coarseWealth: rt.coarseWealth.slice(),
+          jobFill: rt.jobFill, accessAvg: rt.accessAvg, employedRatio: rt.employedRatio, refillDays, burnt, cache: cache.saveRecords(ids),
+        };
+        st0.systemData.popRun = r;
+      });
     },
     daily(sim) {
       const t0 = performance.now();

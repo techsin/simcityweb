@@ -11,6 +11,16 @@ import type { RecoveryMirror as RecoveryWriter, SnapshotWhy } from './SimHost';
 
 type Entry = RecoveryJournal['ops'][number];
 
+/** W1.3 (§4.3 Worker): a packet host's periodic snapshot request while the city is dirty, every min(30 s, 90 sim days).
+ *  Without the day bound, 30 s at ultra with autosave off would be 600 sim days of unrecoverable simulated time. */
+export const SNAPSHOT_WALL_MS = 30_000;
+export const SNAPSHOT_SIM_DAYS = 90;
+/** Counted from the last snapshot or completed save, whichever is later: a save within the window is the better base,
+ *  and the journal holds every edit since it. Wall times in ms, days in sim days. */
+export function periodicSnapshotDue(o: { now: number; day: number; snapAt: number; snapDay: number; saveAt: number; saveDay: number }): boolean {
+  return o.now - Math.max(o.snapAt, o.saveAt) >= SNAPSHOT_WALL_MS || o.day - Math.max(o.snapDay, o.saveDay) >= SNAPSHOT_SIM_DAYS;
+}
+
 export interface RecoveryMirrorOptions extends RecoveryCity {
   /** the loaded or last completed save: the journal's base */
   savedAt: number;
@@ -159,9 +169,11 @@ export class RecoveryMirror implements RecoveryWriter {
    *  went into localStorage. The app owns the pagehide / beforeunload / hidden listeners. */
   writeNow(why: SnapshotWhy | 'crash'): boolean {
     if (this.disposed || (!this.snapshot && !this.ops.length) || (why === 'periodic' && !this.dirty)) return false;
-    const journal = this.journal;
+    const journal = this.journal, info = this.describe();
+    // W1.3: a journal alone describes itself for the title screen's offer, in IndexedDB as in localStorage
+    if (!this.snapshot) journal.info = { ...info, why };
     const marker: RecoveryMarker = this.snapshot ? { ...this.snapshot.marker, why } : {
-      ...this.describe(), ...this.city, v: DELTA_VERSION, at: journal.at, baseSavedAt: this.savedAt,
+      ...info, ...this.city, v: DELTA_VERSION, at: journal.at, baseSavedAt: this.savedAt,
       bytes: 0, ls: false, dropped: [], why,
     };
     const ls = storeRecoveryLs(marker, this.snapshot?.payload ?? null, journal);

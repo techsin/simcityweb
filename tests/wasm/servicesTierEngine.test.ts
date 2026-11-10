@@ -6,10 +6,15 @@
  *  1. kernels: V8 Math.hypot (exhaustive probe grid), reachRaw on random maps / all metrics / edge cases, the cell
  *     kernels (finalize, transit disks, footprints, combos, chamfer, box3, block sums, shop taps) on random inputs with
  *     NaN / +-0 / subnormals / huge values, the invalid-network-code fallback;
- *  2. the engine installed into the live ServicesSystem (services test city): every tier phase of a cold, a warm and a
+ *  2. the engine installed into a ServicesSystem instance (services test city): every tier phase of a cold, a warm and a
  *     road-edit pass (A, unseated share, coverage, each facility's pool segment = the touched order, sig / seated / D /
  *     dem, facility loads, layers, stats.needs, the scheduler state), then whole-city identity over 120 days (after a
  *     JS-vs-JS baseline), a mid-run switch to the JS kernels and the migration to JS memory when the heap is full;
+ *     B2 (docs/dev/B2_DESIGN.md §11.6): the engine mirrors the pre-B2 pass structure (one step per state, the tier
+ *     engine's WORK_PER_STEP steps), and its install overrides that structure's methods. The live ServicesSystem runs its
+ *     states in pieces since B2, so these sections install the engine into the frozen pre-B2 class instead
+ *     (tests/sim/exact/servicesOriginal.ts = services.ts at 41ae570), in place of the live system in createSystems();
+ *     the B2 pieces are proved equal to that class at every pass end in tests/infra/b2PiecesServices.test.ts;
  *  3. the real profiler fixtures (dense1m_s7 1.12M pop, bot256_s7_y60 0.65M pop; skipped when absent — built into
  *     tools/bench/.fixtures/fixtures by `npm run fixtures`, or set SIM_FIXTURES=<dir>): every reach against
  *     catchments.reachRaw, per-phase equivalence, identity at design cadence.
@@ -22,6 +27,8 @@ import type { CityState } from '../../src/sim/CityState';
 import { Simulation } from '../../src/sim/Simulation';
 import { createSystems } from '../../src/sim/systems/index';
 import type { ServicesSystem } from '../../src/sim/infra/services';
+import type { SimSystem } from '../../src/sim/Simulation';
+import { ServicesSystemOriginal } from '../sim/exact/servicesOriginal';
 import { reachRaw, reachResult } from '../../src/sim/infra/catchments';
 import { computeTransitCoverage, type StopList } from '../../src/sim/infra/transit';
 import { schedulerOf } from '../../src/sim/infra/scheduler';
@@ -360,9 +367,16 @@ afterEach(() => {
   for (const e of liveEngines.splice(0)) e.dispose();
 });
 
-function makeArm(label: string, st: CityState, backend: TierBackend | 'orig', opts: { wasm?: CatchWasm; minPoolEntries?: number } = {}): Arm {
+/** createSystems() with the frozen pre-B2 ServicesSystem in place of the live one (B2: see the header, section 2) */
+function systemsWithOriginalServices(): { systems: SimSystem[]; svc: ServicesSystem } {
   const systems = createSystems();
-  const svc = systems.find((s) => s.name === 'services') as ServicesSystem;
+  const svc = new ServicesSystemOriginal() as unknown as ServicesSystem;
+  systems[systems.findIndex((s) => s.name === 'services')] = svc as unknown as SimSystem;
+  return { systems, svc };
+}
+
+function makeArm(label: string, st: CityState, backend: TierBackend | 'orig', opts: { wasm?: CatchWasm; minPoolEntries?: number } = {}): Arm {
+  const { systems, svc } = systemsWithOriginalServices();
   const inst = backend === 'orig' ? null : installServicesTierEngine(svc, { backend, wasm: opts.wasm, minPoolEntries: opts.minPoolEntries });
   if (inst) liveEngines.push(inst);
   const sim = new Simulation(st, systems);
@@ -510,7 +524,7 @@ function roadEdit(arms: Arm[], seed: number): string {
   throw new Error('no road cell to edit');
 }
 
-describe('services tier engine installed into the live ServicesSystem', () => {
+describe('services tier engine installed into a ServicesSystem (the frozen pre-B2 class, B2)', () => {
   it('every phase of a cold, a warm and a road-edit pass matches the original (fair JS and wasm)', { timeout: 900000 }, () => {
     const arms = [makeArm('orig', servicesCity(128, 11).st, 'orig'), makeArm('js', servicesCity(128, 11).st, 'js'), makeArm('wasm', servicesCity(128, 11).st, 'wasm')];
     expect(arms[1].inst!.backend).toBe('js');
@@ -730,8 +744,7 @@ describe('revision fixes: staged network, dispose, fault hand-over, pre-sized me
       expect(h.stats().used, `city ${k}: every engine block is back in the heap`).toBe(s0.used);
     }
     // installing again on the same system frees the previous engine
-    const systems = createSystems();
-    const svc = systems.find((x) => x.name === 'services') as ServicesSystem;
+    const { systems, svc } = systemsWithOriginalServices();
     const i1 = installServicesTierEngine(svc, { backend: 'wasm' });
     const sim = new Simulation(servicesCity(64, 3).st, systems);
     const used1 = h.stats().used;

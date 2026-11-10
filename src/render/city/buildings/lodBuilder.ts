@@ -135,7 +135,10 @@ export class LodProxyBuilder {
     const msg = { key: job.key, position: copy('position'), color: copy('color'), surf: copy('surf'), urgent: job.urgent };
     job.worker = k;
     this.posted[k]++;
-    this.workers[k].postMessage(msg, [msg.position.buffer, msg.color.buffer, msg.surf.buffer]);
+    // J0 (WORKER_DESIGN §6 S0): the arrays above are already copies, so they go by structured clone, not transfer. A
+    // transfer would detach buffers on the main thread and invalidate its ArrayBuffer-detach protector, which slows
+    // every typed-array access there; the worker's own reply may still transfer (that detaches in the worker only).
+    this.workers[k].postMessage(msg);
   }
 
   /** hand queued jobs to workers with room (perWorker each) */

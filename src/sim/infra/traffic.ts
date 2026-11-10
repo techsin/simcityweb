@@ -95,9 +95,9 @@ import type { SimSystem, Simulation } from '../Simulation';
 import {
   Fam, Transit, activeJobs, centerCell, detectJobsUnknown, ensureIdFloat, infoOf, isFunctional, jobSlots, nowMs,
   readEffects, setFlagQuiet, wealthOf, type OrdEffects,
-  buildingList, fundingFactor,
+  buildingList, fundingFactor, BuildingSnapshot,
 } from './common';
-import { GridGraph, RoadGraph, findNeighborConnections, perimeterNodes, type NeighborConn } from './graph';
+import { GraphBuildRun, GridGraph, RoadGraph, findNeighborConnections, perimeterNodes, type NeighborConn } from './graph';
 import { MinHeap } from './heap';
 import {
   BPR_ALPHA, BPR_MAX_FACTOR, BUS_PCU_PER_RIDER, BUS_TIME_FACTOR, CAR_BIAS, CAR_OCCUPANCY, CAR_OVERHEAD,
@@ -114,16 +114,19 @@ import {
   STOP_CAP_FERRY, STOP_LOAD_SMOOTH, TRUCK_LOCAL_FACTOR, WAIT_FERRY, PR_GARAGE_BETA, PR_RESERVE_FULL, PR_RESERVE_SMOOTH, PR_RESERVE_SPREAD, PR_STOP_KEEP,
   PR_DOWNTOWN_SHARE, PR_DOWNTOWN_SMOOTH, PR_DOWNTOWN_TIE, PR_OPTIONS, PR_OPTION_MARGIN, PR_OPTION_TAPER, PR_RESERVE_MIN,
 } from './params';
-import { schedulerOf, type InfraTask } from './scheduler';
+import { pieceBudgetUs, pieceUnits, schedulerOf, type InfraTask } from './scheduler';
+import { INFRA_PIECE_COLD_MS, INFRA_PIECE_MS, PARKING_BOX_R } from './params';
 import { REGION_JOBS_FOR_RESIDENTS } from '../economy/tuning';
 import { carlessShare, workerShare } from '../economy/demographics';
-import { Search, SearchK, Seeds, accumulate, roadSearch, transitSearch, type TransitNet } from './search';
-import { TRAFFIC_OF_STATE, collectStops, isStopMode, type StopList } from './transit';
+import { RoadSearchRun, Search, SearchK, Seeds, TransitSearchRun, accumulateRange, roadSearch, type TransitNet } from './search';
+import { StopCollector, TRAFFIC_OF_STATE, copyStopList, isStopMode, type StopList } from './transit';
 import { getDef } from '../catalog';
 import { computeFerryNet, ferryPartnersAt, type FerryLink, type FerryNet, type FerryPartner, type FerryTerminal } from './ferry';
 import {
-  addFootprint, addGarageSupply, baseSupply, garageRelief, garageShortage, parkingBox, parkingFromBoxes, parkingOver, type ParkingSummary,
+  addFootprint, addGarageSupply, baseSupplyRange, garageRelief, garageShortage, parkingFromBoxesRange, parkingOver, parkingSummaryOf,
+  type ParkingSummary,
 } from './parking';
+import { BoxVRun, boxHRows } from './blur';
 import type { RegionNeighbor } from '../../region/regionEffects';
 
 /** netFlags bit 5: rail level crossing on a road cell (see src/sim/actions.ts NET_CROSSING) */
@@ -250,25 +253,88 @@ const NEXT_PHASE: readonly number[] = [
   PH_PREP2, PH_TRANSIT, PH_TRANSIT2, PH_RMATCH, -2, PH_INBOUND, PH_SHOP, PH_FREIGHT, PH_SINKS, PH_FINAL2, -1,
   PH_PARKRIDE, PH_RSEARCH, PH_PARKING, PH_FINAL, -2,
 ];
+/** B2: a step() handler's "more pieces of this phase follow" (any other value is the next phase) */
+const CONT = -100;
+const EMPTY_NUMS: number[] = [];
+const EMPTY_F64: Float64Array<ArrayBuffer> = new Float64Array(0);
+const EMPTY_I32: Int32Array<ArrayBuffer> = new Int32Array(0);
+const EMPTY_F32: Float32Array<ArrayBuffer> = new Float32Array(0);
 /**
- * estimated ms per phase on the reference 256² stress city (scaled by graph / building counts). WP7b phases calibrated
- * by step-wise CPU on stressCity(256) + 853 facilities + 40 garages / 6 terminals / 2 depots (CPU per estimated ms of
- * the cycle unchanged: 3.31 vs 3.35 without WP7b)
+ * traffic's piece budgets (in TC units, see TR_EST): the searches (road, transit, inbound / shop / freight / sinks) at
+ * INFRA_PIECE_MS; every other loop at half INFRA_PIECE_COLD_MS. Those loops run once per cycle (or per matching round),
+ * so they stay cold for the first 10-15 cycles after a load: 10-37 x their warm cost in days 0-80 at dense1m (G1 runs,
+ * and the accept loop's first executions ~45 x). R2's per-loop rule (at most 3 ms at the p99 factor, 5 ms at the max)
+ * needs the half budget there.
  */
-const PHASE_COST = [1.9, 0.9, 2.3, 1.2, 1.2, 1.5, 2.4, 2.8, 2.4, 0.4, 1.6, 0.6, 1.6, 1.2, 1.8, 0.6];
+const COLD = INFRA_PIECE_COLD_MS / 4, WARM = INFRA_PIECE_MS;
+/**
+ * the sizing floor of the cold loops, in estimated µs per unit (chunk sizes only; the estimates keep the loops' own
+ * coefficients): a cold piece holds at most coldUnits(TR_COLD_FLOOR) units (~3,250) however cheap the loop is
+ * warm. B2 fix round (the gates' and the verify runs from a load at dense1m): at half INFRA_PIECE_COLD_MS and without a
+ * floor, traffic's once-per-cycle loops ran at 50-130 x their warm cost in days 0-80 (traffic runs 2-3 cycles there), so
+ * pieces of 13,000 cells or nodes took up to 7.7 ms (parking.2: ~0.6 µs per cell) and the matching's accept, keys and
+ * flows pieces 4-7.4 ms; hence a quarter of INFRA_PIECE_COLD_MS and this floor (G2's cold cell floor, x 2.5).
+ */
+const TR_COLD_FLOOR = 0.01;
+/** units of one piece of a cold traffic loop costing `us` per unit (COLD, with the cold sizing floor) */
+function coldUnits(us: number): number {
+  return pieceUnits(us > TR_COLD_FLOOR ? us : TR_COLD_FLOOR, 1, COLD);
+}
+/**
+ * the absolute scale of the estimates: stepCost = TR_EST x (TC.piece + the piece's units x TC) / 1000. TC sets the
+ * relative costs, so (with the budgets above) the chunk sizes; TR_EST turns the estimate into honest warm wall ms without
+ * moving a chunk. G1 calibration (Oct 28): the median measured / estimated ms of the traffic pieces in the warm window
+ * (days 300-420 after load, dense1m, headless) was 0.79 with TR_EST = 1.
+ */
+const TR_EST = 0.79;
+/**
+ * B2 cost model: estimated warm wall µs per work unit of each kind of piece (stepCost = TC.piece + the piece's own work
+ * counts x these; chunk sizes = pieceUnits(coefficient, 1, COLD | WARM)). Start values: the trafficfit warm in-schedule
+ * fits x ~1.2 (docs/dev/B2_DESIGN.md §9.2); G1 refit (Oct 28): per piece label, the median measured / estimated wall ms
+ * of the pieces in days 80-220 after load (dense1m, headless, cpumap, B2 calibration box), applied to the label's
+ * dominant coefficient where it was off by more than ~1.3 x. A refit moves the step boundaries, so the headless schedule
+ * and the bot — by design. G4 refits on all fixtures.
+ */
+const TC = {
+  /** per piece (dispatch, cursors) */
+  piece: 6,
+  /** refreshAttach after an edit, per map cell (tunnel / rail component rasters, ferry water paths) */
+  attach: 0.0046,
+  prepFix: 20,
+  nodeTime: 0.058, nodePub: 0.002, rampT: 0.033,
+  scanB: 0.14, scanF: 0.035, scanBegin: 0.018, scanPlan: 0.012, scanEnd: 0.003,
+  cycleArrays: 0.004, originInit: 0.015, siteNoise: 0.014, clusters: 0.055,
+  stopB: 0.03, stopCell: 0.002, depotFix: 10, depotBfs: 0.03,
+  stopSetup: 0.003, stopAttach: 0.04, stopRho: 1, stopWait: 0.06, stopBins: 0.01, transfer: 0.21, csr: 0.004, csrCount: 0.004, csrEdge: 0.008,
+  garage: 12, publishT: 0.004,
+  trSeed: 0.34, trStart: 0.005, trNode: 0.085,
+  otFill: 0.002, otOrigin: 0.084, otOriginStop: 0.0052,
+  prGarage: 5, prStart: 0.004, prState: 0.23, prRefresh: 0.02, prOption: 0.1,
+  // road searches: the matching rounds (SA, ramps + seeds by cluster), the inbound / shop / freight / sinks ones (SB)
+  rdStart: 0.005, rdSeed: 0.01, rdNode: 0.080, rdNodeB: 0.052,
+  mCand: 0.020, mKey: 0.012, mProp: 0.004, mAccept: 0.068, mNext: 0.004,
+  // the candidate radix sort in pieces: the safe-integer scan + max, the histograms, the per-pass prefix sums (per
+  // bucket) and scatters (per key)
+  sortScan: 0.003, sortHist: 0.009, sortPrefix: 0.002, sortScatter: 0.004,
+  accumulate: 0.0065, commit: 0.0062, route: 8,
+  poolU: 0.008, poolO: 0.01, poolOrigin: 0.075, poolSite: 0.01,
+  ovState: 0.2, ovRec: 0.1, ovPlan: 20,
+  commitK: 0.01,
+  cePrice: 0.006, ceDist: 0.024, snapGather: 0.015, snapPub: 0.013, garageReport: 3,
+  trAccumulate: 0.010, trFlow: 0.010, cutSetup: 0.004, cutOff: 0.005, ceOrigin: 0.019, cutMin: 0.002, byMode: 0.012,
+  inCached: 0.01, inDesire: 0.036, inFlow: 0.03, inPost: 2,
+  shopOrigin: 0.038, fill: 0.0008,
+  frSource: 0.19, truckTime: 0.017, truckCell: 0.0087,
+  parkDemand: 0.12, parkSupply: 0.005, parkBox: 0.0033, parkBlend: 0.011, parkGarage: 3,
+  finBlend: 0.0043, finRamp: 0.0035, finWrite: 0.0076, finFill: 0.0007, finStop: 0.18, finPub: 0.0008,
+  f2Copy: 0.0004, f2Origin: 0.15, f2Site: 0.17, f2Pub: 0.002, event: 0.8,
+  saveRamp: 0.004, saveParking: 0.004, savePrice: 0.016, saveAssemble: 0.15, routesTransit: 0.004,
+} as const;
 /** car-less share: the car / park & ride utility x exp(-MODE_BETA x CARLESS_EXTRA_MIN) */
 const CARLESS_K = Math.exp(-MODE_BETA * CARLESS_EXTRA_MIN);
 /** transport defs of the WP7b fleet / parking models (per-def data keyed by def id; catalogTypes is read-only) */
 const DEPOT_DEFS: Readonly<Record<string, number>> = { civ_bus_depot: DEPOT_BUSES };
 const GARAGE_DEFS: Readonly<Record<string, number>> = { tr_parking_garage: GARAGE_SPACES };
-/** estimated ms of a road / rail / subway graph rebuild on a 256² map */
-const REBUILD_COST = 2.5;
-/** P&R two-label search: states settled per scheduler step, and the estimated ms of such a step (calibrated like
- *  PHASE_COST: stressTransit, CPU per estimated ms of the utilities task) */
-const PR_CHUNK_STATES = 16000;
-const PR_CHUNK_COST = 1.7;
-/** P&R: estimated ms per kept-forest state of a car-leg refresh (refreshAlt; calibrated like PHASE_COST) */
-const PR_REFRESH_COST = 1.2e-5;
 /** P&R: a fresh K-label search at least every this many assignments, or when a garage's minutes moved more than
  *  PR_SEED_DRIFT since the last one (see prSearchDue) */
 const PR_SEARCH_EVERY = 8;
@@ -299,16 +365,6 @@ const OV_MIN_ROOM = 10;
 const OV_CACHE = 3;
 const OV_SEARCHES = 3;
 const OV_SEARCHES_MAX = 8;
-/** overflow records re-decided per scheduler step (each: a mode split per option tried); estimated ms per record, of a
- *  step and of the round's car flows (accumulate + commit over its forest: they move from roundMatch's step to the
- *  overflow's last one) on the reference city; states of an overflow search per step at PR_CHUNK_COST (the K-label
- *  search's ms per state scale with the labels per node). Calibrated like PHASE_COST (the scheduler-cost driver on
- *  stressCity(256) + facilities + the transport set: CPU per estimated ms of these steps ~ the matching rounds') */
-const OV_CHUNK = 3000;
-const OV_REC_COST = 1e-4;
-const OV_STEP_COST = 0.02;
-const OV_FLOW_COST = 0.15;
-const OV_CHUNK_STATES = Math.round(PR_CHUNK_STATES * (PR_OPTIONS + 1) / OV_K);
 const MAX_ENTRIES = 12;
 /** routed 43: a road component that is not the one with the most job slots, has no road to the map edge (the region)
  *  and holds fewer job slots than this share of the workers living on it is cut off from the city's jobs — its homes'
@@ -508,6 +564,11 @@ export class TrafficSystem implements SimSystem {
   private jConnW: Float64Array<ArrayBuffer> = new Float64Array(0);
   private growth = 1;
   private trStartA: Int32Array<ArrayBuffer> = new Int32Array(0);
+  // B2: the transfer CSR in pieces (stage, edge cursor, the new edge arrays until they are published in tnet)
+  private csrStage = 0;
+  private csrCur = 0;
+  private csrTo: Int32Array<ArrayBuffer> = EMPTY_I32;
+  private csrCost: Float32Array<ArrayBuffer> = EMPTY_F32;
   private busTimeA: Float32Array<ArrayBuffer> = new Float32Array(0);
   private regionWorkerCap = 0;
 
@@ -536,6 +597,21 @@ export class TrafficSystem implements SimSystem {
   private candNode: Int32Array<ArrayBuffer> = new Int32Array(0);
   private candSort: Float64Array<ArrayBuffer> = new Float64Array(0);
   private candHist = new Uint32Array(5 * 2048);
+  // B2: the radix sort's cursor (sortPiece): stage (0 idle / start, 1 scan, 2 histograms, 3 pass prefix, 4 pass scatter),
+  // key cursor, max key, passes, current pass, source / target buffers of the pass
+  private srtStage = 0;
+  // B2: buildClusters' cursor (clusterPiece: stage, job-site cursor, clusters so far)
+  private clStage = 0;
+  private clCur = 0;
+  private clQN = 0;
+  /** B2: prep's per-cycle origin arrays are grown in their own piece (prepPiece8) */
+  private pArr = false;
+  private srtCur = 0;
+  private srtMax = 0;
+  private srtPasses = 0;
+  private srtP = 0;
+  private srtFrom: Float64Array<ArrayBuffer> = EMPTY_F64;
+  private srtTo: Float64Array<ArrayBuffer> = EMPTY_F64;
   private routeCand: number[] = [];
   private routeW: number[] = [];
   private routeCum: Float64Array<ArrayBuffer> = new Float64Array(0);
@@ -879,6 +955,182 @@ export class TrafficSystem implements SimSystem {
   private prKeyNow = '';
   private lastState: CityState | null = null;
 
+  // ---- B2 piece state (docs/dev/B2_DESIGN.md §3). Nothing here is saved (R9): a save never holds a cycle in progress;
+  // init() and every cycle end reset the cursors (endCycle), and each stage's first piece sets up its own.
+  /** PH_PREP: 0 = the cycle's first PH_PREP piece (decides the rebuild once), 1 = graph rebuild pieces, 2 = prep pieces */
+  private rbStage = 0;
+  private readonly gb = new GraphBuildRun();
+  /** the pass snapshot (R4): taken by prep's scan, walked by the stop collector, released at the cycle end */
+  private readonly snap = new BuildingSnapshot();
+  private snapOk = false;
+  // prep
+  private pSub = 0;
+  private pCur = 0;
+  private pWorkers = 0;
+  private nodeTimeB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private scO = 0; private scJ = 0; private scS = 0; private scF = 0; private scK = 0;
+  private gScBid: number[] = [];
+  private gScEntS: number[] = [];
+  private gScEntC: number[] = [];
+  /** the scan's transit index (installed as transportB at the scan end; markT / dropT keep it current meanwhile: R2) */
+  private transportScan = new Map<number, Building>();
+  private scanOpen = false;
+  // prepTransit
+  private tSub = 0;
+  private tCur = 0;
+  private readonly stopCol = new StopCollector();
+  private stopsB: StopList = { n: 0, bid: new Int32Array(64), mode: new Uint8Array(64), cell: new Int32Array(64) };
+  private depotsB: TrafficSystem['depots'] = [];
+  private minibusB = { stops: 0, riders: 0, need: 0, rho: BUS_RHO_MAX };
+  private stIdxByIdB = new Map<number, number>();
+  private stDepotB: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private stRhoB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private stWaitB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gStopB: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private gWalkB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gSpacesB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private gStateB: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  private tDRiders: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private tDStops: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private tRhoOf: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private readonly tTmp6 = new Int32Array(6);
+  private tAn = 0;
+  private tNR = 0; private tNRail = 0; private tNSub = 0; private tNFerry = 0; private tNGrid = 0; private tTotal = 0;
+  private trFrom: number[] = [];
+  private trTo: number[] = [];
+  private trCost: number[] = [];
+  private tPrN = 0;
+  private tPrKey = '';
+  private dbHop: Uint16Array<ArrayBuffer> = new Uint16Array(0);
+  private dbQ: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private dbQh = 0;
+  private dbQt = 0;
+  // transit / transit2 / park & ride / rounds
+  private trSub = 0;
+  private trCur = 0;
+  private otSub = 0;
+  private otCur = 0;
+  private prSub = 0;
+  private prCur = 0;
+  private rsSub = 0;
+  private readonly runA = new RoadSearchRun();
+  private readonly runT = new TransitSearchRun();
+  private readonly runB = new RoadSearchRun();
+  private mSub = 0;
+  private mCur = 0;
+  private mNc = 0; private mMaxD = 1; private mNoRoad = 0; private mM = 1; private mQ = 1;
+  private mCarPcu = 1; private mTrBonus = 0; private mOvOn = false;
+  private mAccepted = 0; private mCarRound = 0; private mNext = 0;
+  // a round's car flows (rfBegin / rfPiece) and a forest's flows (flowBegin / flowPiece)
+  private rfStage = 2;
+  private rfCar = 0;
+  private rfCand: number[] = [];
+  private rfW: number[] = [];
+  private flS: Search | null = null;
+  private flAcc: Float32Array = new Float32Array(0);
+  private flCopy: Float32Array | null = null;
+  private flRamp: Float32Array | null = null;
+  private flPhase = 2;
+  private flCur = 0;
+  // overflow / commute
+  private ovFlow = 0;
+  private cmSub = 0;
+  private cmCur = 0;
+  private cmSaveRound = 0; private cmAvgT = 0; private cmCarPcu = 1; private cmOvOn = false; private cmFlows = false;
+  private cmFlowing = false;
+  private olF: OvForest | null = null;
+  private olCur = 0;
+  private ceSub = 0;
+  private ceCur = 0;
+  private ceE = 0;
+  private ceFerry = 0;
+  private ceTripsC = 0; private ceTripsT = 0; private ceTripsW = 0; private ceCSum = 0; private ceCW = 0;
+  private bmMc = 0; private bmMt = 0; private bmMw = 0; private bmAc = 0; private bmAt = 0; private bmAw = 0; private bmNC = 0; private bmNT = 0; private bmNW = 0;
+  private rsEntSB: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private rsEntB: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private busCellB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private ferryRidersByB = new Map<number, number>();
+  private cutComp: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  /** the transit accumulation's sink calls: stop loads (commuteEnd; created once, not per call) */
+  private readonly stopSink = (_j: number, f: number, node: number): void => {
+    const s = this.nodeStop[node];
+    if (s >= 0) this.stLoad[s] += f;
+  };
+  // inbound / shop / freight / sinks
+  private sfSub = 0;
+  private sfCur = 0;
+  private sfTot = 0;
+  private sfPick = 0;
+  private sfSearched = false;
+  private inConns: number[] = [];
+  private inCand: number[] = [];
+  private frCand: number[] = [];
+  private frCandNode: number[] = [];
+  private truckCellB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  // parking
+  private pkSub = 0;
+  private pkCur = 0;
+  private pkPrB: Building[] = [];
+  private pkPrQ: number[] = [];
+  private readonly pkSums = { wSum: 0, pSum: 0, dCells: 0, high: 0, sTot: 0, dTot: 0 };
+  private parkDB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private parkBoxDB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private parkBoxSB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private parkNext: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private garageFreeB = new Map<number, number>();
+  private bxSrc: Float32Array = new Float32Array(0);
+  private bxDst: Float32Array = new Float32Array(0);
+  private bxStage = 0;
+  private bxRow = 0;
+  private readonly boxV = new BoxVRun();
+  // final / final2 / save
+  private fiSub = 0;
+  private fiCur = 0;
+  private fiAlpha = 0;
+  private fiRa = 0;
+  private fiCongSum = 0;
+  private fiCongN = 0;
+  private rampVolB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private trafficB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private congestionB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private subwayRidersB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private stLoadPrevB = new Map<number, number>();
+  private stPrPrevB = new Map<number, number>();
+  private stopWalkersB = new Map<number, number>();
+  private stopNearB = new Map<number, { near: number; board: number; boardMin: number; other: number }>();
+  private stopRideB = new Map<number, boolean>();
+  private stopReachB = new Map<number, boolean>();
+  private f2Sub = 0;
+  private f2Cur = 0;
+  private commuteB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private cutIdsB = new Set<number>();
+  private accessB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private commuteIdB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private reachedB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private carlessB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private carlessMinB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private jobFillB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private carsB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private customersB: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private modeB: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  private f2OFlag: number[] = [];
+  private f2JFlag: number[] = [];
+  private f2Changed: Building[] = [];
+  private f2Cr: ConnectionReport[] = [];
+  private svRc: number[] = [];
+  private svRv: number[] = [];
+  private svPq: Uint8Array<ArrayBuffer> | null = null;
+  private svSinks: [number, number][] = [];
+  /** the transport save built in final2's piece 11, installed by its last piece (R9: the cycle's last write) */
+  private svSave: TransportSave | null = null;
+  private svJobIds: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private svJobPrice: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private svConnCells: Int32Array<ArrayBuffer> = new Int32Array(0);
+  private svConnPrice: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private srNext: SampleRoute[] = [];
+  /** findPath's BFS scratch (pre-B2 it used SB, the inbound / shop / freight search a resumable run now holds) */
+  private SP = new Search();
+
   // persistent by building id  /** residential: share of workers reaching a job (0..1); -1 = unknown. Index = building id. */
   accessById: Float32Array<ArrayBuffer> = new Float32Array(1024).fill(-1);
   /** job sites: filled share of job slots by reachable workers (local + regional), 0..1; -1 unknown */
@@ -919,14 +1171,21 @@ export class TrafficSystem implements SimSystem {
   init(sim: Simulation): void {
     for (const u of this.unsub) u();
     this.unsub = [];
+    // B2: a cycle in progress is dropped with every piece cursor (replaceState / reload: R3 d)
+    this.endCycle();
     const ev = sim.events;
-    // WP7b: stop attachment / freight rail links / ferry links depend on transport buildings, roads, tunnels, water
+    // WP7b: stop attachment / freight rail links / ferry links depend on transport buildings, roads, tunnels, water (B2:
+    // while prep's scan rebuilds the index privately, its copy too — R2)
     const markT = (b: Building) => {
       if (getDef(b.def)?.category !== 'transport') return;
       this.attachDirty = true;
       this.transportB.set(b.id, b);
+      if (this.scanOpen) this.transportScan.set(b.id, b);
     };
-    const dropT = (b: Building) => { if (this.transportB.delete(b.id) || getDef(b.def)?.category === 'transport') this.attachDirty = true; };
+    const dropT = (b: Building) => {
+      if (this.transportB.delete(b.id) || getDef(b.def)?.category === 'transport') this.attachDirty = true;
+      if (this.scanOpen) this.transportScan.delete(b.id);
+    };
     this.unsub.push(
       // (a road / rail edit re-labels the rail components only, a tunnel edit the subway ones, a terrain edit the ferry
       // water paths only, reset all. The graphs and the rail / tunnel components read the network / tunnel grids only,
@@ -1013,65 +1272,274 @@ export class TrafficSystem implements SimSystem {
     if (sim.state.buildings.size > 0 || sim.state.network.some((v) => v !== 0)) this.runCycleSync(sim);
   }
 
-  /** estimated cost (ms) of the next step */
+  /**
+   * estimated warm wall ms of the next step (B2 §9: the next piece's own work counts x the TC coefficients; the same
+   * chunk sizes as the piece). Pure and O(1): it reads the cursors and sizes, never runs a loop, never sets anything up.
+   */
   stepCost(sim: Simulation): number {
+    return (TR_EST * (TC.piece + this.pieceUs(sim))) / 1000;
+  }
+
+  /** µs of the next piece (stepCost) */
+  private pieceUs(sim: Simulation): number {
+    const st = sim.state, g = this.road, n = g.n, C = st.cells;
     const ph = this.phase < 0 ? PH_PREP : this.phase;
-    const road = Math.max(0.05, this.road.n / 36000);
-    const bld = Math.max(0.05, (this.oN + this.jN) / 20000);
-    const base = PHASE_COST[ph];
-    const size = sim.state.size;
-    // (+ the WP7b attachment refresh after an edit: tunnel / rail components, ferry water paths)
-    const attach = this.attachDirty ? 0.3 * (size * size / 65536) : 0;
-    if (ph === PH_PREP && (this.graphDirty || this.road.N !== size)) return REBUILD_COST * (size * size / 65536) + attach;
-    if (ph === PH_TRANSIT && this.stops.n === 0) return 0.1;
-    // matching rounds / per-origin outputs: a fixed part (candidate lists, sorting) + a size-dependent part
-    if (ph === PH_RSEARCH) return 0.6 + 0.6 * (0.8 * road + 0.2 * bld);
-    if (ph === PH_RMATCH) return 0.7 + 0.5 * (0.3 * road + 0.7 * bld);
-    // WP7b: + persisted state (parking u8 on the cycles that recompute it) / P&R car legs on the P&R forest
-    if (ph === PH_FINAL2) return 1.0 + 0.6 * (0.3 * road + 0.7 * bld) + (this.sfRecompute ? 0.25 * (size * size / 65536) : 0);
-    // (two steps: the pooled match — park & ride choices of the pooled workers with garages —, then the flows; the P&R
-    // car legs on the K-label forest: a pass over its states)
-    if (ph === PH_COMMUTE) {
-      if (this.commuteStage === 0) return 0.6 * base * (0.3 * road + 0.7 * bld) + (this.gPrN > 0 ? 0.3 * bld : 0);
-      // (r4: first the overflow car legs, a pass over one overflow forest used per step)
-      const f = this.ov.find((x) => x.dirty);
-      if (f) return 0.05 + 0.3 * PR_REFRESH_COST * f.S.settled;
-      return 0.5 * base * (0.3 * road + 0.7 * bld) + (this.gPrN > 0 ? 0.1 + PR_REFRESH_COST * this.SPK.settled : 0);
-    }
-    // WP7b prep extras: car-less shares, parking over job footprints, sink / garage / depot lists
-    if (ph === PH_PREP) return base * (0.3 * road + 0.7 * bld) + 0.3 * bld + attach;
-    if (ph === PH_TRANSIT2) return base * (0.3 * road + 0.7 * bld);
-    if ((ph === PH_SHOP || ph === PH_FREIGHT || ph === PH_INBOUND) && !this.sfRecompute) return 0.15;
-    // freight: + truck times and trucks per cell (WP7-10)
-    if (ph === PH_FREIGHT) return base * (0.8 * road + 0.2 * bld) + 0.15 * road + 0.05 * (size * size / 65536);
-    // WP7b: depot BFS on change; P&R search every 2nd cycle (options only in between); parking raster O(cells)
-    if (ph === PH_PREP2) return base * (0.3 * road + 0.7 * bld);
-    // P&R: garages + per-origin options (reused forest), or a two-label search chunk (the first step also places the
-    // garages and seeds the search), then the options in their own step
-    if (ph === PH_PARKRIDE) {
-      if (this.prStage === 1) return PR_CHUNK_COST * Math.min(1, 3 * road);
-      // (refresh: one pass over the kept forest's states; options: per origin; garages + a search's seeding)
-      if (this.prStage === 3) return 0.1 + PR_REFRESH_COST * this.SPK.settled;
-      if (this.prStage === 2) return 0.2 + 1.0 * bld;
-      return 0.1 + 0.15 * road;
-    }
-    // (+ the park & ride garages' reserves: box(supply without them), the pressure over their walk areas)
-    if (ph === PH_PARKING) return 0.3 * bld + (base + (this.gPrN > 0 ? 0.4 : 0)) * (size * size / 65536);
-    // r4 park & ride overflow of a round: an overflow search chunk / a chunk of records re-decided with the groups that
-    // have room (car-leg minutes renewed along the labels read) / a chunk of the rest without park & ride, the last one
-    // with the round's car flows (the overflow car legs: PH_COMMUTE)
-    if (ph === PH_PROVER) {
-      const recs = Math.min(OV_CHUNK, Math.max(0, this.pnN - this.ovCur));
-      if (this.ovStage === 1) {
-        // (at most OV_K states per node: a small graph's search is less than a chunk)
-        const S = this.ov[this.ovSlot]?.S;
-        const left = S ? Math.max(0, S.K * this.road.n - S.settled) : OV_CHUNK_STATES;
-        return PR_CHUNK_COST * Math.min(1, 3 * road) * Math.max(0.1, Math.min(1, left / OV_CHUNK_STATES));
+    const attachUs = this.attachDirty || this.attachFor !== st ? TC.attach * C : 0;
+    const chunk = (us: number, left: number, budget = COLD) => Math.max(0, Math.min(budget === COLD ? coldUnits(us) : pieceUnits(us, 1, budget), left)) * us;
+    switch (ph) {
+      case PH_PREP: {
+        if (this.phase < 0 || this.rbStage === 0) {
+          if (this.graphDirty || g.N !== st.size) return TC.fill * 3 * C;
+          return attachUs > 0 ? attachUs : TC.prepFix;
+        }
+        if (this.rbStage === 1) {
+          if (this.gb.stage >= 10) return this.gb.publishUs();
+          if (this.gb.active) return Math.min(pieceBudgetUs(COLD), this.gb.remainingUs());
+        }
+        switch (this.rbStage === 1 ? 0 : this.pSub) {
+          case 0: return attachUs > 0 ? attachUs : TC.prepFix;
+          case 1: return TC.prepFix;
+          case 2: return chunk(TC.nodeTime, n - this.pCur);
+          case 3: return n * TC.nodePub + this.SPK.K * n * TC.fill;
+          case 4: return chunk(TC.rampT, n - this.pCur) + (this.rail.n + this.subway.n) * TC.fill;
+          case 5: return this.pCur === 0 ? st.buildings.size * TC.scanBegin : chunk(TC.scanPlan, this.snap.n - this.snap.planned);
+          case 6: return this.snap.countOf(this.pCur) * TC.scanB + this.snap.cellsOf(this.pCur) * TC.scanF;
+          case 7: return (this.scO + this.scJ) * TC.scanEnd + this.conns.length * 0.5;
+          case 8: return this.pCur === 0 && !this.pArr ? this.oN * TC.cycleArrays + 20 : chunk(TC.originInit, this.oN - this.pCur);
+          case 9: return this.jN * TC.siteNoise;
+          default: return this.clStage === 0 ? n * TC.fill + 20 : chunk(TC.clusters, this.jN - this.clCur) + (this.clCur + coldUnits(TC.clusters) >= this.jN ? this.jN * TC.fill * 8 + 10 : 0);
+        }
       }
-      if (this.ovStage === 3 || this.ovCur + OV_CHUNK < this.pnN) return OV_STEP_COST + OV_REC_COST * recs;
-      return OV_STEP_COST + OV_REC_COST * recs + OV_FLOW_COST * (0.8 * road + 0.2 * bld);
+      case PH_PREP2: {
+        const stB = this.stopsB.n;
+        switch (this.tSub) {
+          case 0: return attachUs > 0 ? attachUs : chunk(TC.stopB, this.snapOk ? this.snap.n : st.buildings.size);
+          case 1: case 2: return chunk(TC.stopB, (this.snapOk ? this.snap.n : st.buildings.size) - this.stopCol.bi);
+          case 3: return chunk(TC.stopCell, C - this.stopCol.ci);
+          case 4: return TC.depotFix + this.depotB.length * 2;
+          case 5: return n * TC.fill + this.depotB.length * 5;
+          case 6: return chunk(TC.depotBfs, Math.max(1, this.dbQt - this.dbQh));
+          case 7: return (stB + this.tTotal) * TC.stopSetup;
+          case 8: return chunk(TC.stopAttach, stB - this.tCur);
+          case 9: return (this.depotsB.length + 1) * TC.stopRho;
+          case 10: return chunk(TC.stopWait, stB - this.tCur);
+          case 11: return stB * TC.stopBins + (C >> 6) * TC.fill;
+          case 12: return chunk(TC.transfer, stB - this.tCur);
+          case 13: return this.csrStage === 0 ? this.tTotal * TC.csr + this.trFrom.length * TC.csrCount : this.csrStage === 1 ? chunk(TC.csrEdge, this.trFrom.length - this.csrCur) : this.tTotal * TC.csr + this.tNR * TC.fill * 2;
+          case 14: return this.gN * TC.garage;
+          default: return stB * TC.publishT + this.gN;
+        }
+      }
+      case PH_TRANSIT: {
+        const total = this.tnet ? this.tnet.total : n;
+        switch (this.trSub) {
+          case 0: return this.stops.n === 0 ? total * TC.trStart : chunk(TC.trSeed, this.jN, WARM);
+          case 1: return chunk(TC.trSeed, this.jN - this.trCur, WARM);
+          case 2: return total * TC.trStart + this.seeds.n * TC.rdSeed;
+          case 3: return chunk(TC.trNode, total - this.runT.settled, WARM);
+          default: return this.otPieceUs();
+        }
+      }
+      case PH_TRANSIT2: return this.otPieceUs();
+      case PH_PARKRIDE: {
+        switch (this.prStage) {
+          case 0: return this.prSub === 0 ? this.gN * TC.prGarage : this.SPK.K * n * TC.prStart + this.gN * 2;
+          case 1: return chunk(TC.prState, Math.max(1, this.SPK.K * n - this.SPK.settled));
+          case 3: return chunk(TC.prRefresh, Math.max(1, this.SPK.settled - (this.prSub === 1 ? this.prCur : 0)));
+          default: return chunk(TC.prOption, this.oN - this.prCur);
+        }
+      }
+      case PH_RSEARCH:
+        return this.rsSub === 0 ? n * TC.rdStart + this.qN * TC.rdSeed : chunk(TC.rdNode, n - this.runA.settled, WARM);
+      case PH_RMATCH: {
+        const nc = this.mNc;
+        switch (this.mSub) {
+          case 0: return chunk(TC.mCand, this.oN - this.mCur);
+          case 1: return chunk(TC.mKey, nc - this.mCur);
+          case 2: return this.sortPieceUs(nc);
+          case 3: return (this.round === 0 ? nc * TC.mProp : 0) + this.gN;
+          case 4: return chunk(TC.mAccept, nc - this.mCur);
+          case 5: return this.oN * TC.mNext * (this.mNoRoad > 0 ? 2 : 1) + this.qN * TC.mNext + (this.pnN > 0 ? TC.ovPlan : 0);
+          default: return this.rfPieceUs();
+        }
+      }
+      case PH_PROVER: {
+        if (this.ovFlow === 1) return this.rfPieceUs();
+        if (this.ovStage === 1) {
+          const S = this.ov[this.ovSlot]?.S;
+          return chunk(TC.ovState, S ? Math.max(1, S.K * n - S.settled) : coldUnits(TC.ovState));
+        }
+        return chunk(TC.ovRec, this.pnN - this.ovCur) + (this.ovCur + coldUnits(TC.ovRec) >= this.pnN ? TC.ovPlan : 0);
+      }
+      case PH_COMMUTE: {
+        if (this.commuteStage === 0) {
+          if (this.cmFlowing) return this.flowPieceUs();
+          switch (this.cmSub) {
+            case 0: return this.oN * TC.poolU;
+            case 1: return this.qN * TC.poolO + this.oN * TC.poolU;
+            case 2: return chunk(TC.poolOrigin, this.oN - this.cmCur);
+            default: return this.qN * TC.poolSite;
+          }
+        }
+        if (this.ceSub === 0) {
+          const f = this.olF ?? this.ov.find((x) => x.dirty);
+          if (f) return chunk(TC.commitK, this.olF ? this.olCur : f.S.settled);
+        }
+        switch (this.ceSub) {
+          case 0: return this.oN * TC.cePrice + this.qN * TC.cePrice * 4;
+          case 1: return this.jN * TC.ceDist;
+          case 2: return chunk(TC.commitK, this.ceCur);
+          case 3: return chunk(TC.snapGather, this.oN - this.ceCur);
+          case 4: return this.gN * TC.garageReport + this.oN * TC.snapPub;
+          case 5: return chunk(TC.trAccumulate, this.ceCur);
+          case 6: return C * TC.fill;
+          case 7: return chunk(TC.trFlow, this.ST.settled - this.ceCur);
+          case 8: return (this.oN + this.qN + this.jN) * TC.cutSetup;
+          case 9: return chunk(TC.cutOff, this.oN - this.ceCur);
+          case 10: return chunk(TC.ceOrigin, this.oN - this.ceCur);
+          case 11: return chunk(TC.cutMin, this.oN - this.ceCur);
+          default: return chunk(TC.byMode, this.oN - this.ceCur);
+        }
+      }
+      case PH_INBOUND: {
+        switch (this.sfSub) {
+          case 0: return !this.sfRecompute ? this.inCachedUs() : this.sfCur === 0 ? n * 2 * TC.fill + this.jB * TC.fill * 4 : n * TC.rdStart + (this.jN - this.jB) * TC.rdSeed;
+          case 1: return chunk(TC.rdNodeB, n - this.runB.settled, WARM);
+          case 2: return this.jB * TC.inDesire;
+          case 3: return n * TC.fill + this.jB * TC.inFlow;
+          case 4: return this.flowPieceUs();
+          default: return TC.inPost + Math.min(12, this.inCand.length) * TC.route;
+        }
+      }
+      case PH_SHOP: {
+        switch (this.sfSub) {
+          case 0: return this.sfRecompute ? n * (TC.fill + TC.rdStart) + this.sN * 0.02 : chunk(TC.fill * 2, n - this.sfCur);
+          case 1: return chunk(TC.rdNodeB, n - this.runB.settled, WARM) + n * TC.fill;
+          case 2: return chunk(TC.shopOrigin, this.oN - this.sfCur);
+          default: return this.flowPieceUs();
+        }
+      }
+      case PH_FREIGHT: {
+        switch (this.sfSub) {
+          case 0: return this.sfRecompute ? n * TC.fill + this.kN * 0.02 + this.fN * TC.fill : chunk(TC.fill * 2, n - this.sfCur);
+          case 1: return this.sfCur < 0 ? n * TC.rdStart + this.seeds.n * TC.rdSeed : chunk(TC.truckTime, n - this.sfCur);
+          case 2: return chunk(TC.rdNodeB, n - this.runB.settled, WARM);
+          case 3: return n * TC.fill + this.fN * TC.frSource;
+          case 4: return this.flowPieceUs() + C * TC.fill;
+          case 5: return chunk(TC.truckCell, n - this.sfCur, WARM);
+          default: return Math.min(20, this.frCand.length) * TC.route + this.frCand.length * TC.fill;
+        }
+      }
+      case PH_SINKS:
+        return this.sfSub === 0 ? this.sinkK.length * 0.05 + n * TC.rdStart : this.sfSub === 1 ? chunk(TC.rdNodeB, n - this.runB.settled, WARM) : this.fN * 0.02;
+      case PH_PARKING: {
+        switch (this.pkSub) {
+          case 0: return C * TC.fill * (this.parkDB.length !== C ? 4 : 1);
+          case 1: return chunk(TC.parkDemand, this.jB + this.sN - this.pkCur);
+          case 2: return chunk(TC.parkSupply, C - this.pkCur);
+          case 3: return this.gN * TC.parkGarage;
+          case 4: case 5: case 7: {
+            const N = st.size, rows = Math.max(1, Math.floor(coldUnits(TC.parkBox) / Math.max(1, N)));
+            const done = this.bxStage === 0 ? this.bxRow : this.boxV.z;
+            return Math.max(1, Math.min(rows, N - done)) * N * TC.parkBox + (this.pkSub === 7 && this.bxStage === 1 && done + rows >= N ? C * TC.fill * 2 : 0);
+          }
+          case 6: return this.pkPrB.length * 30;
+          case 8: return chunk(TC.parkBlend, C - this.pkCur);
+          default: return C * TC.finPub;
+        }
+      }
+      case PH_FINAL: {
+        switch (this.fiSub) {
+          case 0: case 1: return chunk(TC.finBlend, n - (this.fiSub === 1 ? this.fiCur : 0));
+          case 2: return chunk(TC.finBlend, this.rail.n - this.fiCur) + C * TC.fill;
+          case 3: return chunk(TC.finRamp, n - this.fiCur) + C * TC.fill * 2;
+          case 4: return chunk(TC.finWrite, n - this.fiCur);
+          case 5: return chunk(TC.finWrite, this.rail.n - this.fiCur) + C * TC.fill + this.subway.n * TC.fill;
+          case 6: return chunk(TC.finStop, this.stops.n - this.fiCur);
+          default: return 2 * C * TC.finPub + this.depots.length + this.gN;
+        }
+      }
+      case PH_FINAL2: {
+        switch (this.f2Sub) {
+          case 0: return 9 * this.accessById.length * TC.f2Copy + C * TC.fill;
+          case 1: return chunk(TC.f2Origin, this.oN - this.f2Cur);
+          case 2: return chunk(TC.f2Site, this.jB - this.f2Cur);
+          case 3: return this.sN * TC.fill * 4 + (this.jN - this.jB) * 2;
+          // (the publish piece also emits the flags' events: one per candidate pair)
+          case 4: return C * TC.finPub + (this.f2OFlag.length + this.f2JFlag.length) * (0.05 + TC.event / 2);
+          case 6: return chunk(TC.saveRamp, n - this.f2Cur);
+          case 7: return this.svPq ? chunk(TC.saveParking, C - this.f2Cur) : 1;
+          case 8: return this.jN * TC.savePrice + this.sinkIds.length;
+          case 9: return this.oN * TC.routesTransit + 24 * TC.route;
+          case 10: return (this.stationIds.length > 0 ? 4 * this.rail.n * TC.fill * 4 : 0) + 10 * TC.route;
+          case 11: return (this.stLoadPrev.size + this.stPrPrev.size + this.busNeed.size + this.garageLoad.size) * TC.saveAssemble + this.svRc.length * TC.fill * 2 + 20;
+          default: return 10;
+        }
+      }
+      default: return 50;
     }
-    return base * (0.8 * road + 0.2 * bld);
+  }
+
+  private otPieceUs(): number {
+    const total = this.tnet ? this.tnet.total : this.road.n;
+    switch (this.otSub) {
+      case 0: return total * TC.otFill + this.stops.n * TC.fill * 5;
+      case 1: { const us = this.otOriginUs(); return Math.max(0, Math.min(coldUnits(us), this.oN - this.otCur)) * us; }
+      default: return (this.road.n + total) * TC.fill;
+    }
+  }
+
+  /** the cached inbound piece's estimate (inboundCachedPiece: the job sites, the cached volumes, the ramp flows) */
+  private inCachedUs(): number {
+    const n = this.road.n, jB = this.jB, c = this.sfCur;
+    if (c < jB) return Math.min(coldUnits(TC.inCached), jB - c) * TC.inCached;
+    const end = jB + n + (this.rampSF.length >= n ? n : 0);
+    const e = Math.min(end, c + coldUnits(TC.fill * 2));
+    return (c - jB < n ? Math.min(e, jB + n) - c : e - c) * TC.fill * 2;
+  }
+
+  private flowPieceUs(): number {
+    const S = this.flS;
+    if (!S) return 0;
+    if (this.flPhase === 0) return Math.min(coldUnits(TC.accumulate), this.flCur) * TC.accumulate;
+    return Math.min(coldUnits(TC.commit), Math.max(0, S.settled - this.flCur)) * TC.commit;
+  }
+
+  private rfPieceUs(): number {
+    if (this.rfStage === 0) return this.flowPieceUs();
+    return Math.min(10, this.rfCand.length) * TC.route + this.rfCand.length * TC.fill;
+  }
+
+  /** B2: the name of the next piece ('prep.scan#3'), for the step tools (b2work cpumap / profile labels) */
+  get stepName(): string {
+    const ph = this.phase;
+    if (ph < 0) return 'idle';
+    switch (ph) {
+      case PH_PREP:
+        if (this.rbStage === 0) return this.graphDirty || this.road.N !== this.lastState?.size ? 'prep.rb0' : 'prep.p0';
+        if (this.rbStage === 1) return this.gb.stage >= 10 ? 'prep.rbPublish' : `prep.rb${this.gb.stage}`;
+        return ['prep.attach', 'prep.p0b', 'prep.nodeTime', 'prep.nodePub', 'prep.ramp', 'prep.scanBegin', 'prep.scan', 'prep.scanEnd', 'prep.origins', 'prep.noise', 'prep.clusters'][this.pSub] + (this.pSub === 6 ? '#' + this.pCur : this.pSub === 5 && this.pCur === 1 ? 'Plan' : '');
+      case PH_PREP2:
+        return 'prepTransit.' + (['attach', 'begin', 'stopsB', 'stopsC', 'depots', 'depotBfs0', 'depotBfs', 'stopSetup', 'stopAttach', 'rho', 'waits', 'bins', 'transfers', 'csr', 'garages', 'publish'][this.tSub] ?? this.tSub);
+      case PH_TRANSIT: return 'transit.' + (['start', 'seeds', 'searchStart', 'search', 'options'][this.trSub] ?? this.trSub);
+      case PH_TRANSIT2: return 'transit2.' + (['fills', 'origins', 'end'][this.otSub] ?? this.otSub);
+      case PH_PARKRIDE: return 'parkRide.' + (this.prStage === 0 ? (this.prSub === 0 ? 'garages' : 'start') : this.prStage === 1 ? 'search' : this.prStage === 3 ? 'refresh' : 'options');
+      case PH_RSEARCH: return this.rsSub === 0 ? 'roundSearch.start' : 'roundSearch.search';
+      case PH_RMATCH: return 'roundMatch.' + (['candidates', 'keys', 'sort', 'proposals', 'accept', 'next', 'flows'][this.mSub] ?? this.mSub) + (this.mSub === 2 ? String(this.srtStage) : '');
+      case PH_PROVER: return 'overflow.' + (this.ovFlow === 1 ? 'flows' : this.ovStage === 1 ? 'search' : this.ovStage === 3 ? 'alloc' : 'rest');
+      case PH_COMMUTE:
+        if (this.commuteStage === 0) return this.cmFlowing ? 'commute.poolFlows' : 'commute.pool' + this.cmSub;
+        if (this.ceSub === 0 && (this.olF || this.ov.some((x) => x.dirty))) return 'commute.ovLegs';
+        return 'commute.end' + this.ceSub;
+      case PH_INBOUND: return this.sfSub === 0 && !this.sfRecompute ? (this.sfCur < this.jB ? 'inbound.cachedSites' : this.sfCur < this.jB + this.road.n ? 'inbound.cachedVol' : 'inbound.cachedRamp') : 'inbound.' + this.sfSub;
+      case PH_SHOP: return this.sfSub === 0 && !this.sfRecompute ? 'shop.cached' : 'shop.' + this.sfSub;
+      case PH_FREIGHT: return this.sfSub === 0 && !this.sfRecompute ? 'freight.cached' : 'freight.' + this.sfSub;
+      case PH_SINKS: return 'sinks.' + this.sfSub;
+      case PH_PARKING: return 'parking.' + this.pkSub;
+      case PH_FINAL: return 'final.' + this.fiSub;
+      case PH_FINAL2: return 'final2.' + this.f2Sub;
+      default: return String(ph);
+    }
   }
 
   /** start a new cycle every TRAFFIC_CYCLE_DAYS sim days (with a live renderer at most every TRAFFIC_MIN_CYCLE_MS) */
@@ -1186,6 +1654,16 @@ export class TrafficSystem implements SimSystem {
     const st = this.lastState;
     if (st) this.refreshAttach(st);
     return (this.attach.get(id) ?? 0) === 1;
+  }
+  /**
+   * B2 (G2, design review 2 item 5e): estimated warm ms of the lazy attachment refresh the next stopAttached /
+   * freightRailCells call would run (0 when it is current). Other tasks run it in a piece of their own while it is
+   * pending (stopAttached(-1)), so it never lands inside one of their loop pieces. Pure.
+   */
+  attachRefreshMs(st: CityState): number {
+    const cur = this.lastState;
+    if (!cur) return 0;
+    return this.attachDirty || this.attachFor !== cur ? (TR_EST * (TC.piece + TC.attach * st.cells)) / 1000 : 0;
   }
   /**
    * riders (boardings + alightings / day, smoothed across assignments), current wait (min), the depot (building id, -1 =
@@ -1452,36 +1930,40 @@ export class TrafficSystem implements SimSystem {
     return n;
   }
 
-  /** r4: the reach snapshot (ReachSnap) of the assignment just completed (commuteEnd) */
+  /** r4: the reach snapshot (ReachSnap) of the assignment just completed (commuteEnd; whole state: gather + publish) */
   private snapReach(): void {
-    const oN = this.oN, gN = this.gN, K = PR_OPTIONS, ent = this.ent;
+    this.ceCur = 0;
+    this.ceE = 0;
+    this.ceSub = 3;
+    while (this.ceSub === 3) this.commuteEndPiece();
+    this.snapReachPublish();
+  }
+
+  /** the reach snapshot written from the gathered cells (rsEntSB / rsEntB) and the live per-origin / garage arrays: the
+   *  pre-B2 snapReach's writes (same growth, same values; the copies are .set()) */
+  private snapReachPublish(): void {
+    const oN = this.oN, gN = this.gN, K = PR_OPTIONS, ent = this.ent, E = this.ceE;
     const rs: ReachSnap = this.rs ?? (this.rs = {
       tick: 0, ver: -1, n: 0, entS: new Int32Array(0), entC: new Uint8Array(0), ent: new Int32Array(0), w: new Float32Array(0),
       prN: new Uint8Array(0), prG: new Int32Array(0), prA: new Float32Array(0), f0: new Float32Array(0), ovG: new Int32Array(0),
       gN: 0, gBid: new Int32Array(0), gGrp: new Int32Array(0), gRank: new Float32Array(0), gRoom: new Float32Array(0),
       gEntS: new Int32Array(0), gEntC: new Uint8Array(0), gEnt: new Int32Array(0),
     });
-    let E = 0;
-    for (let o = 0; o < oN; o++) E += this.oEntC[o];
     rs.entS = growI32(rs.entS, oN); rs.entC = growU8(rs.entC, oN); rs.ent = growI32(rs.ent, E);
     rs.w = growF32(rs.w, oN); rs.prN = growU8(rs.prN, oN); rs.f0 = growF32(rs.f0, oN); rs.ovG = growI32(rs.ovG, oN);
     rs.prG = growI32(rs.prG, oN * K); rs.prA = growF32(rs.prA, oN * K);
     // (road cells, not node ids: the hint still finds them after a graph rebuild — routed 53)
     const cellOf = this.road.cellOf;
-    let e = 0;
-    for (let o = 0; o < oN; o++) {
-      const c = this.oEntC[o];
-      rs.entS[o] = e;
-      rs.entC[o] = c;
-      for (let x = this.oEntS[o], x1 = x + c; x < x1; x++) rs.ent[e++] = cellOf[ent[x]];
-    }
+    rs.entS.set(this.rsEntSB.subarray(0, oN));
+    rs.entC.set(this.oEntC.subarray(0, oN));
+    rs.ent.set(this.rsEntB.subarray(0, E));
     rs.w.set(this.oW.subarray(0, oN)); rs.prN.set(this.oPrN.subarray(0, oN)); rs.f0.set(this.oPrF0.subarray(0, oN));
     rs.ovG.set(this.oOvG.subarray(0, oN)); rs.prG.set(this.oPrG.subarray(0, oN * K)); rs.prA.set(this.oPrA.subarray(0, oN * K));
     let GE = 0;
     for (let q = 0; q < gN; q++) GE += this.gEntC[q];
     rs.gBid = growI32(rs.gBid, gN); rs.gGrp = growI32(rs.gGrp, gN); rs.gRank = growF32(rs.gRank, gN); rs.gRoom = growF32(rs.gRoom, gN);
     rs.gEntS = growI32(rs.gEntS, gN); rs.gEntC = growU8(rs.gEntC, gN); rs.gEnt = growI32(rs.gEnt, GE);
-    e = 0;
+    let e = 0;
     for (let q = 0; q < gN; q++) {
       const c = this.gEntC[q];
       rs.gBid[q] = this.gBid[q];
@@ -1497,6 +1979,7 @@ export class TrafficSystem implements SimSystem {
     rs.ver = this.prepVer;
     rs.tick++;
   }
+
   /** ferry links (a, b terminal ids, water path a -> b, crossing minutes) — for the renderer (ferry boats) / inspector */
   ferryLinks(): readonly FerryLink[] {
     const st = this.lastState;
@@ -1565,7 +2048,8 @@ export class TrafficSystem implements SimSystem {
     if (a < 0 || b < 0) return null;
     if (g.comp[a] !== g.comp[b]) return null;
     const n = g.n;
-    const S = this.SB;
+    // (its own scratch: fire dispatch calls it between two pieces of a resumable search on SB — R8)
+    const S = this.SP;
     S.ensure(n);
     const parent = S.next, done = S.done, q = S.order;
     done.fill(0, 0, n);
@@ -1615,62 +2099,38 @@ export class TrafficSystem implements SimSystem {
   }
 
   // ------------------------------------------------------------------------------------------ scheduling
-  /** run one step of the current cycle (no-op when idle) */
+  /**
+   * run one step ("piece", B2) of the current cycle (no-op when idle). Every phase id and transition is the pre-B2 one; a
+   * phase's work is a sequence of pieces (docs/dev/B2_DESIGN.md §3), one per step, each of about INFRA_PIECE_COLD_MS /
+   * INFRA_PIECE_MS estimated ms (stepCost). The phase moves on when its stage reports completion. A phase run in one go
+   * (runCycleSync, a whole-state method, or pieces with nothing in between) computes exactly what the pre-B2 step did.
+   */
   step(sim: Simulation): void {
     const ph = this.phase;
     if (ph < 0) return;
     const t0 = nowMs();
-    if (ph === PH_PREP && !this.rebuiltInCycle) this.phaseMs.fill(0);
-    let next = NEXT_PHASE[ph];
+    let next: number;
     switch (ph) {
-      case PH_PREP:
-        // a graph rebuild is its own step (the prep snapshot follows in the next step)
-        if (this.graphDirty || this.road.N !== sim.state.size) {
-          this.rebuildGraphs(sim.state);
-          this.rebuiltInCycle = true;
-          next = PH_PREP;
-        } else {
-          this.rebuiltInCycle = false;
-          this.prep(sim);
-        }
-        break;
-      case PH_PREP2: this.prepTransit(sim.state); break;
-      case PH_TRANSIT: this.transit(); break;
-      case PH_TRANSIT2: this.originTransit(); break;
-      case PH_PARKRIDE: next = this.parkRide(); break;
-      case PH_PROVER: next = this.overflow(); break;
-      case PH_RSEARCH: this.roundSearch(); break;
-      case PH_RMATCH: next = this.roundMatch(); break;
-      case PH_COMMUTE:
-        // two steps: the pooled match of the workers the rounds left, then the flows / results of the matching (r4: the
-        // overflow records of the pooled match in between — PH_PROVER commits the pooled car flows then)
-        if (this.commuteStage === 0) {
-          this.poolRemaining();
-          next = PH_COMMUTE;
-          if (this.pnN > 0) {
-            this.ovBegin(PH_COMMUTE, this.poolFlows ? 1 : 0, [], []);
-            next = PH_PROVER;
-          } else if (this.poolFlows) {
-            accumulate(this.SA, this.acc);
-            this.commit(this.SA, this.acc, null, null);
-          }
-          this.commuteStage = 1;
-        } else {
-          // (r4: the overflow car legs of this assignment first, one forest per step)
-          const f = this.ov.find((x) => x.dirty);
-          if (f) { this.commitK(f.S, f.acc); f.dirty = false; next = PH_COMMUTE; }
-          else { this.poolCars(); this.commuteEnd(); this.commuteStage = 0; }
-        }
-        break;
-      case PH_INBOUND: this.inbound(); break;
-      case PH_SHOP: this.shopping(); break;
-      case PH_FREIGHT: this.freight(); break;
-      case PH_SINKS: this.freightSinks(); break;
-      case PH_PARKING: this.parkingRaster(sim); break;
-      case PH_FINAL: this.finalize(sim); break;
-      case PH_FINAL2: this.finalize2(sim); break;
+      case PH_PREP: next = this.prepStep(sim); break;
+      case PH_PREP2: next = this.prepTransitPiece(sim.state) ? NEXT_PHASE[ph] : CONT; break;
+      case PH_TRANSIT: next = this.transitPiece() ? NEXT_PHASE[ph] : CONT; break;
+      case PH_TRANSIT2: next = this.otPiece() ? NEXT_PHASE[ph] : CONT; break;
+      case PH_PARKRIDE: next = this.parkRidePiece(); break;
+      case PH_PROVER: next = this.overflowPiece(); break;
+      case PH_RSEARCH: next = this.roundSearchPiece() ? NEXT_PHASE[ph] : CONT; break;
+      case PH_RMATCH: next = this.roundMatchPiece(); break;
+      case PH_COMMUTE: next = this.commutePiece(); break;
+      case PH_INBOUND: next = this.inboundPiece() ? NEXT_PHASE[ph] : CONT; break;
+      case PH_SHOP: next = this.shopPiece() ? NEXT_PHASE[ph] : CONT; break;
+      case PH_FREIGHT: next = this.freightPiece() ? NEXT_PHASE[ph] : CONT; break;
+      case PH_SINKS: next = this.sinksPiece() ? NEXT_PHASE[ph] : CONT; break;
+      case PH_PARKING: next = this.parkingPiece(sim) ? NEXT_PHASE[ph] : CONT; break;
+      case PH_FINAL: next = this.finalPiece(sim) ? NEXT_PHASE[ph] : CONT; break;
+      case PH_FINAL2: next = this.final2Piece(sim) ? NEXT_PHASE[ph] : CONT; break;
+      default: next = NEXT_PHASE[ph];
     }
     this.phaseMs[ph] += nowMs() - t0;
+    if (next === CONT) return;
     // WP7b phases without work this cycle are skipped (no empty scheduler steps)
     while (next >= 0 && this.skipPhase(next)) next = NEXT_PHASE[next];
     this.phase = next;
@@ -1678,7 +2138,39 @@ export class TrafficSystem implements SimSystem {
       let s = 0;
       for (let i = 0; i < PHASES; i++) s += this.phaseMs[i];
       this.lastCycleMs = s;
+      this.endCycle();
     }
+  }
+
+  /** B2: the cycle ended (or init / a reload drops it): every piece cursor back to its reset value (R3 d, R9) */
+  private endCycle(): void {
+    this.rbStage = 0;
+    this.pSub = 0; this.pCur = 0;
+    this.tSub = 0; this.tCur = 0;
+    this.trSub = 0; this.trCur = 0;
+    this.otSub = 0; this.otCur = 0;
+    this.prSub = 0; this.prCur = 0;
+    this.rsSub = 0;
+    this.mSub = 0; this.mCur = 0;
+    this.srtStage = 0; this.srtFrom = this.srtTo = EMPTY_F64;
+    this.clStage = 0; this.pArr = false;
+    this.csrStage = 0; this.csrTo = EMPTY_I32; this.csrCost = EMPTY_F32;
+    // (cmFlowing too: a replaceState in the middle of the pool's car flows must not carry it into the new city's first
+    // cycle, where it would skip the pooled match — fix round, verify-code; an uninterrupted cycle ends with it false)
+    this.cmSub = 0; this.cmCur = 0; this.cmFlowing = false;
+    this.ceSub = 0; this.ceCur = 0;
+    this.olF = null; this.olCur = 0;
+    this.ovFlow = 0;
+    this.sfSub = 0; this.sfCur = 0;
+    this.pkSub = 0; this.pkCur = 0;
+    this.fiSub = 0; this.fiCur = 0;
+    this.f2Sub = 0; this.f2Cur = 0; this.svSave = null;
+    this.flPhase = 2; this.flS = null;
+    this.scanOpen = false;
+    this.transportScan.clear();
+    this.snap.release();
+    this.snapOk = false;
+    if (this.gb.active) this.gb.cancel();
   }
 
   /** WP7b phases with nothing to do this cycle */
@@ -1716,7 +2208,10 @@ export class TrafficSystem implements SimSystem {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   }
 
+  /** the graphs rebuilt synchronously (findPath on a new map, whole-state prep / tests). A piecewise rebuild of the running
+   *  cycle is dropped: these graphs are current (it never re-enters the cycle's pieces — review R3 c) */
   private rebuildGraphs(st: CityState): void {
+    if (this.gb.active) this.gb.cancel();
     this.road.build(st);
     const net = st.network, flags = st.netFlags;
     // level crossings keep their road type with netFlags bit 5 set; the rail passes through them
@@ -1737,13 +2232,91 @@ export class TrafficSystem implements SimSystem {
   }
 
   // ------------------------------------------------------------------------------------------ PREP
+  /**
+   * PH_PREP (B2 §3 "Rebuild" + "Prep"). The cycle's first PH_PREP piece (rbStage 0) resets phaseMs and decides ONCE
+   * whether the graphs are rebuilt (graphDirty or a new map size): a graphDirty set after that waits for the next cycle
+   * (R3 a; interrupted mode only — pre-B2 a second rebuild step caught an edit between the rebuild and the prep step).
+   * Rebuild: RB0 copies the grids (graphDirty = false), GraphBuildRun pieces build private graphs, RBP publishes them
+   * (+ the MSA iteration of a load, as rebuildGraphs). Then the prep pieces (prepPiece).
+   */
+  private prepStep(sim: Simulation): number {
+    const st = sim.state;
+    if (this.rbStage === 0) {
+      this.phaseMs.fill(0);
+      if (this.graphDirty || this.road.N !== st.size) {
+        this.rbStage = 1;
+        this.gb.begin(st);
+        this.graphDirty = false;
+        return CONT;
+      }
+      this.rbStage = 2;
+      this.pSub = 0;
+    }
+    if (this.rbStage === 1) {
+      if (this.gb.stage >= 10) {
+        this.gb.publish(this.road, this.rail, this.subway);
+        // (a load's first build: the saved volumes are of this same network, so the MSA continues the saved iteration)
+        this.iter = this.iterLoad;
+        this.iterLoad = 0;
+        this.rebuiltInCycle = true;
+        this.rbStage = 2;
+        this.pSub = 0;
+        return CONT;
+      }
+      if (this.gb.active) {
+        this.gb.run(pieceBudgetUs(COLD));
+        return CONT;
+      }
+      // (a synchronous rebuildGraphs since — findPath on a new map — dropped the pieces: the graphs are current)
+      this.rbStage = 2;
+      this.pSub = 0;
+    }
+    if (this.pSub === 0) this.rebuiltInCycle = false;
+    return this.prepPiece(sim) ? NEXT_PHASE[PH_PREP] : CONT;
+  }
+
+  /** whole-state prep (tests): a synchronous rebuild when needed, then every prep piece */
   private prep(sim: Simulation): void {
     const st = sim.state;
     if (this.graphDirty || this.road.N !== st.size) this.rebuildGraphs(st);
+    this.pSub = 0;
+    while (!this.prepPiece(sim)) { /* next piece */ }
+  }
+
+  /**
+   * one prep piece; true when prep is complete. P0 (lastState, attachment refresh after an edit: its own piece), P0b
+   * (ordinances, jobs-unknown, per-id arrays), P1 (BPR node times into a back buffer by node ranges, then published
+   * by .set() with the volume fills: nodeTimes is read by other systems), P2 (ramp minutes by node ranges + fills), P3
+   * (scan begin: the pass snapshot and its chunk plan, array growth, connections, list resets), the scan chunks (the
+   * pre-B2 loop body over the snapshot; garages into a back list, the transit index into a private map), Pz1 (scan end:
+   * garages + transit index installed, connections, the regional exchange), Pz2 (per-cycle arrays, origin init by
+   * ranges), Pz3a (destination noise — rand() in j order — and capacities), Pz3b (clusters, round / trip resets).
+   */
+  private prepPiece(sim: Simulation): boolean {
+    const st = sim.state;
+    if (this.pSub === 0) {
+      this.lastState = st;
+      this.pSub = 1;
+      if (this.attachDirty || this.attachFor !== st) { this.refreshAttach(st); return false; }
+    }
+    switch (this.pSub) {
+      case 1: return this.prepPiece1(sim);
+      case 2: return this.prepPiece2(sim);
+      case 3: return this.prepPiece3(sim);
+      case 4: return this.prepPiece4(sim);
+      case 5: return this.prepPiece5(sim);
+      case 6: return this.prepPiece6(sim);
+      case 7: return this.prepPiece7(sim);
+      case 8: return this.prepPiece8(sim);
+      case 9: return this.prepPiece9(sim);
+      default: return this.prepPieceEnd(sim);
+    }
+  }
+
+  /** prepPiece, sub-state 1 (B2 R10: one small method per piece kind) */
+  private prepPiece1(sim: Simulation): boolean {
+    const st = sim.state;
     const g = this.road;
-    const N = st.size;
-    this.lastState = st;
-    this.refreshAttach(st);
     this.fx = readEffects(st);
     this.jobsUnknown = detectJobsUnknown(st);
     // per-id arrays
@@ -1761,19 +2334,39 @@ export class TrafficSystem implements SimSystem {
     this.sinkTrucksById = ensureIdFloat(this.sinkTrucksById, st, -1);
     this.carlessById = ensureIdFloat(this.carlessById, st);
     this.carlessMinById = ensureIdFloat(this.carlessMinById, st);
+    if (this.nodeTimeB.length < g.n) this.nodeTimeB = new Float32Array(g.n + (g.n >> 3) + 16);
+    this.pSub = 2;
+    this.pCur = 0;
+    return false;
+  }
 
-    // node times from smoothed volumes (state.traffic per cell)
-    const n = g.n;
-    this.nodeTime = growF32(this.nodeTime, n);
-    this.volNew = growF32(this.volNew, n);
-    this.acc = growF32(this.acc, n);
-    const traffic = st.traffic;
-    for (let v = 0; v < n; v++) {
-      const r = traffic[g.cellOf[v]] / g.cap[v];
+  /** prepPiece, sub-state 2 (B2 R10: one small method per piece kind) */
+  private prepPiece2(sim: Simulation): boolean {
+    const st = sim.state;
+    const g = this.road;
+    // node times from smoothed volumes (state.traffic per cell), into the back buffer
+    const n = g.n, traffic = st.traffic, cellOf = g.cellOf, cap = g.cap, t0 = g.t0, nt = this.nodeTimeB;
+    const v0 = this.pCur, v1 = Math.min(n, v0 + coldUnits(TC.nodeTime));
+    for (let v = v0; v < v1; v++) {
+      const r = traffic[cellOf[v]] / cap[v];
       let f = 1 + BPR_ALPHA * r * r * r * r;
       if (f > BPR_MAX_FACTOR) f = BPR_MAX_FACTOR;
-      this.nodeTime[v] = g.t0[v] * f;
+      nt[v] = t0[v] * f;
     }
+    this.pCur = v1;
+    if (v1 >= n) this.pSub = 3;
+    return false;
+  }
+
+  /** prepPiece, sub-state 3 (B2 R10: one small method per piece kind) */
+  private prepPiece3(sim: Simulation): boolean {
+    const st = sim.state;
+    const g = this.road;
+    const n = g.n;
+    this.nodeTime = growF32(this.nodeTime, n);
+    this.nodeTime.set(this.nodeTimeB.subarray(0, n));
+    this.volNew = growF32(this.volNew, n);
+    this.acc = growF32(this.acc, n);
     this.volNew.fill(0, 0, n);
     // WP7-10 interchanges: ramp minutes of every non-highway node from the smoothed ramp flow of its cell
     if (this.rampVolCell.length !== st.cells) this.rampVolCell = new Float32Array(st.cells);
@@ -1784,19 +2377,127 @@ export class TrafficSystem implements SimSystem {
     this.prAcc = growF32(this.prAcc, this.SPK.K * n);
     this.prAcc.fill(0, 0, this.SPK.K * n);
     this.prepVer = g.version;
-    {
-      const type = g.type, rv = this.rampVolCell, cellOf = g.cellOf, rt = this.rampT;
-      for (let v = 0; v < n; v++) rt[v] = type[v] === Network.Highway ? RAMP_PENALTY : rampTime(type[v], rv[cellOf[v]]);
-    }
+    this.pSub = 4;
+    this.pCur = 0;
+    return false;
+  }
+
+  /** prepPiece, sub-state 4 (B2 R10: one small method per piece kind) */
+  private prepPiece4(sim: Simulation): boolean {
+    const g = this.road;
+    const n = g.n, type = g.type, rv = this.rampVolCell, cellOf = g.cellOf, rt = this.rampT;
+    const v0 = this.pCur, v1 = Math.min(n, v0 + coldUnits(TC.rampT));
+    for (let v = v0; v < v1; v++) rt[v] = type[v] === Network.Highway ? RAMP_PENALTY : rampTime(type[v], rv[cellOf[v]]);
+    this.pCur = v1;
+    if (v1 < n) return false;
     this.railNew = growF32(this.railNew, this.rail.n);
     this.railNew.fill(0, 0, this.rail.n);
     this.subNew = growF32(this.subNew, this.subway.n);
     this.subNew.fill(0, 0, this.subway.n);
+    this.pSub = 5;
+    this.pCur = 0;
+    return false;
+  }
 
-    // snapshot buildings
+  /** prepPiece, sub-state 5 (B2 R10: one small method per piece kind) */
+  private prepPiece5(sim: Simulation): boolean {
+    const st = sim.state;
+    // P3a the snapshot + growth + list resets, P3b.. the snapshot's chunk plan by building ranges (both O(B))
+    if (this.pCur === 0) {
+      this.prepScanBegin(st);
+      this.snap.planBegin(TC.scanB, TC.scanF, pieceBudgetUs(COLD));
+      this.pCur = 1;
+      return false;
+    }
+    if (!this.snap.planRun(coldUnits(TC.scanPlan))) return false;
+    this.pSub = this.snap.chunks > 0 ? 6 : 7;
+    this.pCur = 0;
+    return false;
+  }
+
+  /** prepPiece, sub-state 6 (B2 R10: one small method per piece kind) */
+  private prepPiece6(sim: Simulation): boolean {
+    const st = sim.state;
+    this.prepScan(st, this.pCur);
+    this.pCur++;
+    if (this.pCur >= this.snap.chunks) this.pSub = 7;
+    return false;
+  }
+
+  /** prepPiece, sub-state 7 (B2 R10: one small method per piece kind) */
+  private prepPiece7(sim: Simulation): boolean {
+    const st = sim.state;
+    this.prepScanEnd(st);
+    this.pSub = 8;
+    this.pCur = 0;
+    return false;
+  }
+
+  /** prepPiece, sub-state 8 (B2 R10: one small method per piece kind) */
+  private prepPiece8(sim: Simulation): boolean {
+    if (this.pCur === 0 && !this.pArr) { this.prepCycleArrays(); this.pArr = true; return false; }
+    const oN = this.oN, o0 = this.pCur, o1 = Math.min(oN, o0 + coldUnits(TC.originInit));
+    for (let o = o0; o < o1; o++) {
+      this.oU[o] = this.oW[o];
+      this.oAsg[o] = 0; this.oTimeSum[o] = 0; this.oCarW[o] = 0; this.oTrW[o] = 0; this.oWalkW[o] = 0; this.oClX[o] = 0;
+      this.oCarNode[o] = -1;
+      this.oLastD[o] = -1;
+    }
+    this.pCur = o1;
+    if (o1 >= oN) { this.pSub = 9; this.pArr = false; }
+    return false;
+  }
+
+  /** prepPiece, sub-state 9 (B2 R10: one small method per piece kind) */
+  private prepPiece9(sim: Simulation): boolean {
+    // destination noise, matching capacities (proportional share first when jobs are in surplus)
+    const jN = this.jN;
+    let slotsAll = 0;
+    for (let j = 0; j < jN; j++) {
+      this.jNoise[j] = this.rand() * (this.jBid[j] >= 0 ? DEST_NOISE : DEST_NOISE * 0.5);
+      this.jAsg[j] = 0;
+      this.jPrice[j] = this.jBid[j] >= 0 ? this.priceById[this.jBid[j]] : this.connPrice[this.jCell[j]];
+      slotsAll += this.jSlots[j];
+    }
+    this.propFactor = slotsAll > 0 ? Math.min(1, (MATCH_PROP_SLACK * this.pWorkers) / slotsAll) : 1;
+    for (let j = 0; j < jN; j++) this.jCapP[j] = this.jSlots[j] * this.propFactor;
+    this.pSub = 10;
+    return false;
+  }
+
+  /** prepPiece, sub-state default (B2 R10: one small method per piece kind) */
+  private prepPieceEnd(sim: Simulation): boolean {
+    const g = this.road;
+    const jN = this.jN, sN = this.sN;
+    if (!this.clusterPiece()) return false;
+    this.round = 0;
+    this.extraRounds = 0;
+    this.commuteStage = 0;
+    this.tripsCar = this.tripsTransit = this.tripsWalk = 0;
+    this.commuteSum = this.commuteW = 0;
+    // shopping / freight: recompute every 2nd cycle or after a graph rebuild
+    this.sfRecompute = this.sfVersion !== g.version || this.cycles % 2 === 0;
+    this.jTimeSum = growF32(this.jTimeSum, jN); this.jTimeSum.fill(0, 0, jN);
+    this.jInbound = growF32(this.jInbound, jN); this.jInbound.fill(0, 0, jN);
+    this.jCar.fill(0, 0, jN);
+    this.sLoad = growF32(this.sLoad, sN);
+    if (this.sfRecompute) { this.sLoad.fill(0, 0, sN); this.sCar.fill(0, 0, sN); }
+    this.pendingRoutes = [];
+    this.prRiders = 0;
+    this.prStage = 0;
+    this.pSub = 0;
+    this.pCur = 0;
+    return true;
+  }
+
+  /** P3a: the pass snapshot (R4), the arrays grown to the snapshot, connections, list resets (P3b plans its chunks) */
+  private prepScanBegin(st: CityState): void {
+    const snap = this.snap;
+    snap.take(st);
+    this.snapOk = true;
     this.entN = 0;
-    let oN = 0, jN = 0, sN = 0, fN = 0, kN = 0;
-    const cap = st.buildings.size + 16;
+    this.scO = this.scJ = this.scS = this.scF = this.scK = 0;
+    const cap = snap.n + 16;
     this.oBid = growI32(this.oBid, cap); this.oW = growF32(this.oW, cap); this.oPop = growF32(this.oPop, cap);
     this.oWealth = growU8(this.oWealth, cap); this.oEntS = growI32(this.oEntS, cap); this.oEntC = growU8(this.oEntC, cap);
     this.oCell = growI32(this.oCell, cap); this.oHalf = growU8(this.oHalf, cap);
@@ -1816,21 +2517,27 @@ export class TrafficSystem implements SimSystem {
     this.oCl = growF32(this.oCl, cap); this.jPark = growF32(this.jPark, jcap); this.jCar = growF32(this.jCar, jcap);
     this.jNoDest = growU8(this.jNoDest, jcap);
     this.sCar = growF32(this.sCar, cap);
-    this.gBid = growI32(this.gBid, 16); this.gEntS = growI32(this.gEntS, 16); this.gEntC = growU8(this.gEntC, 16);
-    const nodeOfCell = g.nodeOfCell;
-    const jobsUnknown = this.jobsUnknown;
     this.patrolIds.length = 0;
     this.stationIds.length = 0;
     this.sinkIds.length = 0;
     this.sinkK.length = 0;
     this.depotB.length = 0;
-    this.transportB.clear();
-    this.transportFor = st;
-    let gN = 0;
-    for (let bI = 0, bL = buildingList(st); bI < bL.length; bI++) {
+    // (the transit index is rebuilt in a private map, installed at the scan end: an attachment refresh between two scan
+    // pieces reads the complete previous one — R2)
+    this.transportScan.clear();
+    this.scanOpen = true;
+    this.gScBid.length = 0; this.gScEntS.length = 0; this.gScEntC.length = 0;
+  }
+
+  /** a scan chunk: the pre-B2 building loop over snapshot chunk k */
+  private prepScan(st: CityState, k: number): void {
+    const snap = this.snap, bL = snap.list, i0 = snap.bounds[k], i1 = snap.bounds[k + 1];
+    const N = st.size, nodeOfCell = this.road.nodeOfCell, jobsUnknown = this.jobsUnknown, tB = this.transportScan;
+    let oN = this.scO, jN = this.scJ, sN = this.scS, fN = this.scF, kN = this.scK;
+    for (let bI = i0; bI < i1; bI++) {
       const b = bL[bI];
       const inf = infoOf(st, b);
-      if (inf.transit !== Transit.None) this.transportB.set(b.id, b);
+      if (inf.transit !== Transit.None) tB.set(b.id, b);
       if (inf.fam === Fam.Plop && isFunctional(b)) {
         if (inf.cov === 0 || inf.cov === 2 || inf.garbageCap > 0) this.patrolIds.push(b.id);
         if (inf.transit === Transit.Freight || inf.transit === Transit.Train) this.stationIds.push(b.id);
@@ -1892,20 +2599,41 @@ export class TrafficSystem implements SimSystem {
         kN++;
       }
       if (DEPOT_DEFS[b.def] !== undefined && isFunctional(b)) this.depotB.push(b);
-      // parking garages (WP7-7 / WP7-8)
+      // parking garages (WP7-7 / WP7-8): into the back list (garageInfo reads gN / gBid: they change at the scan end)
       if (GARAGE_DEFS[b.def] !== undefined && isFunctional(b)) {
-        if (gN >= this.gBid.length) { this.gBid = growI32(this.gBid, gN * 2); this.gEntS = growI32(this.gEntS, gN * 2); this.gEntC = growU8(this.gEntC, gN * 2); }
-        this.gBid[gN] = b.id;
-        this.gEntS[gN] = this.entN;
-        this.gEntC[gN] = this.addEntries(nodeOfCell, N, b);
-        gN++;
+        const e0 = this.entN, c = this.addEntries(nodeOfCell, N, b);
+        this.gScBid.push(b.id); this.gScEntS.push(e0); this.gScEntC.push(c);
       }
     }
+    this.scO = oN; this.scJ = jN; this.scS = sN; this.scF = fN; this.scK = kN;
+  }
+
+  /** Pz1: the scan's garages and transit index installed, connections, counts, the regional exchange */
+  private prepScanEnd(st: CityState): void {
+    const N = st.size, nodeOfCell = this.road.nodeOfCell;
+    // (the pre-B2 garage writes, replayed: the same growth and values as during the scan)
+    this.gBid = growI32(this.gBid, 16); this.gEntS = growI32(this.gEntS, 16); this.gEntC = growU8(this.gEntC, 16);
+    const gN = this.gScBid.length;
+    for (let q = 0; q < gN; q++) {
+      if (q >= this.gBid.length) { this.gBid = growI32(this.gBid, q * 2); this.gEntS = growI32(this.gEntS, q * 2); this.gEntC = growU8(this.gEntC, q * 2); }
+      this.gBid[q] = this.gScBid[q];
+      this.gEntS[q] = this.gScEntS[q];
+      this.gEntC[q] = this.gScEntC[q];
+    }
     this.gN = gN;
+    let jN = this.scJ, kN = this.scK;
+    const oN = this.scO, sN = this.scS, fN = this.scF;
     this.jB = jN;
     this.jObj.length = jN;
     this.sObj.length = sN;
+    const tb = this.transportB;
+    this.transportB = this.transportScan;
+    this.transportScan = tb;
+    tb.clear();
+    this.transportFor = st;
+    this.scanOpen = false;
     // neighbour connections: regional job sources + freight sinks
+    const conns = this.conns;
     const growth = (this.growth = 1 + Math.min(3, st.stats.population / 250000));
     for (let ci = 0; ci < conns.length; ci++) {
       const c = conns[ci];
@@ -1946,14 +2674,20 @@ export class TrafficSystem implements SimSystem {
       kN++;
       this.entN++;
     }
+    void N;
     this.oN = oN; this.jN = jN; this.sN = sN; this.fN = fN; this.kN = kN;
     // regional exchange on the connections (job slots for our residents, workers coming in)
     let workers = 0, citySlots = 0;
     for (let o = 0; o < oN; o++) workers += this.oW[o];
     for (let j = 0; j < this.jB; j++) citySlots += this.jSlots[j];
     for (let j = this.jB; j < jN; j++) this.jPark[j] = 0;
+    this.pWorkers = workers;
     this.placeRegional(st, workers, citySlots);
-    // per-cycle result arrays
+  }
+
+  /** Pz2 (first piece): the per-cycle result arrays and the assignment's overflow state */
+  private prepCycleArrays(): void {
+    const oN = this.oN;
     this.oCarNode = growI32(this.oCarNode, oN); this.oBoard = growI32(this.oBoard, oN);
     this.oShC = growF32(this.oShC, oN); this.oShT = growF32(this.oShT, oN); this.oShW = growF32(this.oShW, oN);
     this.oTime = growF32(this.oTime, oN); this.oEmp = growF32(this.oEmp, oN);
@@ -1980,38 +2714,6 @@ export class TrafficSystem implements SimSystem {
     this.oClX = growF32(this.oClX, oN);
     this.candKey = this.candKey.length >= oN ? this.candKey : new Float64Array(Math.max(oN, 64) * 2);
     this.candNode = growI32(this.candNode, oN);
-    for (let o = 0; o < oN; o++) {
-      this.oU[o] = this.oW[o];
-      this.oAsg[o] = 0; this.oTimeSum[o] = 0; this.oCarW[o] = 0; this.oTrW[o] = 0; this.oWalkW[o] = 0; this.oClX[o] = 0;
-      this.oCarNode[o] = -1;
-      this.oLastD[o] = -1;
-    }
-    // destination noise, matching capacities (proportional share first when jobs are in surplus)
-    let slotsAll = 0;
-    for (let j = 0; j < jN; j++) {
-      this.jNoise[j] = this.rand() * (this.jBid[j] >= 0 ? DEST_NOISE : DEST_NOISE * 0.5);
-      this.jAsg[j] = 0;
-      this.jPrice[j] = this.jBid[j] >= 0 ? this.priceById[this.jBid[j]] : this.connPrice[this.jCell[j]];
-      slotsAll += this.jSlots[j];
-    }
-    this.propFactor = slotsAll > 0 ? Math.min(1, (MATCH_PROP_SLACK * workers) / slotsAll) : 1;
-    for (let j = 0; j < jN; j++) this.jCapP[j] = this.jSlots[j] * this.propFactor;
-    this.buildClusters();
-    this.round = 0;
-    this.extraRounds = 0;
-    this.commuteStage = 0;
-    this.tripsCar = this.tripsTransit = this.tripsWalk = 0;
-    this.commuteSum = this.commuteW = 0;
-    // shopping / freight: recompute every 2nd cycle or after a graph rebuild
-    this.sfRecompute = this.sfVersion !== g.version || this.cycles % 2 === 0;
-    this.jTimeSum = growF32(this.jTimeSum, jN); this.jTimeSum.fill(0, 0, jN);
-    this.jInbound = growF32(this.jInbound, jN); this.jInbound.fill(0, 0, jN);
-    this.jCar.fill(0, 0, jN);
-    this.sLoad = growF32(this.sLoad, sN);
-    if (this.sfRecompute) { this.sLoad.fill(0, 0, sN); this.sCar.fill(0, 0, sN); }
-    this.pendingRoutes = [];
-    this.prRiders = 0;
-    this.prStage = 0;
   }
 
   /**
@@ -2075,48 +2777,137 @@ export class TrafficSystem implements SimSystem {
     }
   }
 
+  /** whole-state prepTransit (tests): every PH_PREP2 piece */
   private prepTransit(st: CityState): void {
-    const g = this.road, rail = this.rail, sub = this.subway;
-    const N = st.size;
-    this.refreshAttach(st);
-    const stops = collectStops(st, this.stops);
-    this.stops = stops;
+    this.tSub = 0;
+    while (!this.prepTransitPiece(st)) { /* next piece */ }
+  }
+
+  /**
+   * one PH_PREP2 piece (B2 §3 "PrepTransit"); true when done. T0 attachment refresh (own piece after an edit), the stop
+   * collector over the pass snapshot (buildings, then road-cell rows) into a private list, ferry nodes and the depots
+   * (into a back list; the depot BFS in its own pieces when roads or depots changed), the per-stop attach loop by stop
+   * ranges, the pool service ratios, the waits by stop ranges, the stop bins, the transfers by stop ranges, ferry links +
+   * CSR + bus times + tnet, the garages' stops, then ONE publish piece: the stop list, stIdxById, depots, minibus pool,
+   * stDepot / stRho / stWait and the garages' gStop / gWalk / gSpaces / gState (everything stopLoad, depotInfo,
+   * depotFleet, minibusInfo, stopsNear and garageInfo read) change together, so no query pairs a new stop list with old
+   * indices or a depot list without its stops. Internal per-stop arrays are written in place by the earlier pieces.
+   */
+  private prepTransitPiece(st: CityState): boolean {
+    if (this.tSub === 0) {
+      this.tSub = 1;
+      if (this.attachDirty || this.attachFor !== st) { this.refreshAttach(st); return false; }
+    }
+    if (this.tSub === 1) {
+      // (the pass snapshot of prep's scan; a standalone call — tests — takes one)
+      if (!this.snapOk) { this.snap.take(st); this.snapOk = true; }
+      this.stopCol.begin(this.stopsB);
+      this.tSub = 2;
+    }
+    switch (this.tSub) {
+      case 2: return this.prepTransitPiece2(st);
+      case 3: return this.prepTransitPiece3(st);
+      case 4: return this.prepTransitPiece4(st);
+      case 5: return this.prepTransitPiece5(st);
+      case 6: return this.prepTransitPiece6(st);
+      case 7: return this.prepTransitPiece7(st);
+      case 8: return this.prepTransitPiece8(st);
+      case 9: return this.prepTransitPiece9(st);
+      case 10: return this.prepTransitPiece10(st);
+      case 11: return this.prepTransitPiece11(st);
+      case 12: return this.prepTransitPiece12(st);
+      case 13: return this.prepTransitPiece13(st);
+      case 14: return this.prepTransitPiece14(st);
+      default: return this.prepTransitPieceEnd(st);
+    }
+  }
+
+  /** prepTransitPiece, sub-state 2 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece2(st: CityState): boolean {
+    if (this.stopCol.buildings(st, this.snap.list, coldUnits(TC.stopB))) this.tSub = 3;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state 3 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece3(st: CityState): boolean {
+    if (!this.stopCol.cells(st, coldUnits(TC.stopCell))) return false;
+    this.stopCol.end();
+    this.tSub = 4;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state 4 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece4(st: CityState): boolean {
+    const g = this.road, N = st.size;
     // ferry nodes: one per linked terminal (WP7-9)
     this.ferryNodeOf.clear();
     let nFerry = 0;
     for (const f of this.ferryTerms) if ((this.ferryNet.partners.get(f.id)?.length ?? 0) > 0) this.ferryNodeOf.set(f.id, nFerry++);
-    const nR = g.n, nRail = rail.n, nSub = sub.n, nGrid = nR + nRail + nSub, total = nGrid + nFerry;
+    this.tNR = g.n; this.tNRail = this.rail.n; this.tNSub = this.subway.n; this.tNFerry = nFerry;
+    this.tNGrid = this.tNR + this.tNRail + this.tNSub; this.tTotal = this.tNGrid + nFerry;
     // depots (WP7-5): fleet, stop ownership by a multi-source road BFS (on road / depot changes only)
-    this.collectDepots(st);
+    this.tSub = this.collectDepots(st) ? 5 : 7;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state 5 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece5(st: CityState): boolean {
+    this.depotBfsBegin(st);
+    this.tSub = 6;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state 6 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece6(st: CityState): boolean {
+    if (this.depotBfsRun(coldUnits(TC.depotBfs))) this.tSub = 7;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state 7 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece7(st: CityState): boolean {
     // attach nodes per stop (combined ids)
+    const stops = this.stopsB, total = this.tTotal;
     this.stAttS = growI32(this.stAttS, stops.n + 1);
     this.stAttC = growU8(this.stAttC, stops.n + 1);
     this.stAtt = growI32(this.stAtt, stops.n * 6 + 8);
-    this.stWait = growF32(this.stWait, stops.n + 1);
+    this.stWaitB = growF32(this.stWaitB, stops.n + 1);
     this.stLoad = growF32(this.stLoad, stops.n + 1);
     this.stLoad.fill(0, 0, stops.n);
     this.stPr = growF32(this.stPr, stops.n + 1);
     this.stPr.fill(0, 0, stops.n);
     this.stWaitPr = growF32(this.stWaitPr, stops.n + 1);
     this.stKey = growI32(this.stKey, stops.n + 1);
-    this.stDepot = growI32(this.stDepot, stops.n + 1);
-    this.stRho = growF32(this.stRho, stops.n + 1);
+    this.stDepotB = growI32(this.stDepotB, stops.n + 1);
+    this.stRhoB = growF32(this.stRhoB, stops.n + 1);
     this.stOk = growU8(this.stOk, stops.n + 1);
-    this.stIdxById.clear();
+    this.stIdxByIdB.clear();
     this.nodeStop = growI32(this.nodeStop, total + 1);
     this.nodeStop.fill(-1, 0, total);
-    let an = 0;
-    const tmp = new Int32Array(6);
-    const nD = this.depots.length;
-    const dRiders = new Float64Array(nD + 1), dStops = new Int32Array(nD + 1);
-    for (let s = 0; s < stops.n; s++) {
+    const nD = this.depotsB.length;
+    if (this.tDRiders.length < nD + 1) { this.tDRiders = new Float64Array(nD + 9); this.tDStops = new Int32Array(nD + 9); }
+    this.tDRiders.fill(0, 0, nD + 1);
+    this.tDStops.fill(0, 0, nD + 1);
+    this.tAn = 0;
+    this.tCur = 0;
+    this.tSub = 8;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state 8 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece8(st: CityState): boolean {
+    const g = this.road, N = st.size;
+    const stops = this.stopsB, nR = this.tNR, nRail = this.tNRail, nGrid = this.tNGrid;
+    const tmp = this.tTmp6, nD = this.depotsB.length, dRiders = this.tDRiders, dStops = this.tDStops;
+    const s0 = this.tCur, s1 = Math.min(stops.n, s0 + coldUnits(TC.stopAttach));
+    let an = this.tAn;
+    for (let s = s0; s < s1; s++) {
       this.stAttS[s] = an;
       const mode = stops.mode[s];
       const bid = stops.bid[s];
       const b = bid >= 0 ? st.buildings.get(bid) : undefined;
       const key = bid >= 0 ? bid : -1 - stops.cell[s];
       this.stKey[s] = key;
-      if (bid >= 0) this.stIdxById.set(bid, s);
+      if (bid >= 0) this.stIdxByIdB.set(bid, s);
       // WP7-6: a stop that does not serve (off-road bus stop, lone station, unlinked ferry) gets no attach nodes
       const ok = b ? this.attach.get(bid) === 1 : g.nodeOfCell[stops.cell[s]] >= 0;
       this.stOk[s] = ok ? 1 : 0;
@@ -2128,10 +2919,10 @@ export class TrafficSystem implements SimSystem {
             if (nd >= 0) tmp[c++] = nd;
           } else c = perimeterNodes(g.nodeOfCell, N, b, tmp, 0, 2);
         } else if (mode === Transit.Train && b) {
-          c = perimeterNodes(rail.nodeOfCell, N, b, tmp, 0, 4);
+          c = perimeterNodes(this.rail.nodeOfCell, N, b, tmp, 0, 4);
           for (let q = 0; q < c; q++) tmp[q] += nR;
         } else if (mode === Transit.Subway && b) {
-          c = sub.perimeterNodes(b, tmp, 0, 4, true);
+          c = this.subway.perimeterNodes(b, tmp, 0, 4, true);
           for (let q = 0; q < c; q++) tmp[q] += nR + nRail;
         } else if (mode === Transit.Ferry && b) {
           const k = this.ferryNodeOf.get(bid);
@@ -2148,42 +2939,71 @@ export class TrafficSystem implements SimSystem {
         dRiders[d] += this.stLoadPrev.get(key) ?? 0;
         dStops[d]++;
       }
-      this.stDepot[s] = d >= 0 && d < nD ? d : -1;
-      this.stRho[s] = d >= 0 ? -1 : 1; // filled below for fleet stops
+      this.stDepotB[s] = d >= 0 && d < nD ? d : -1;
+      this.stRhoB[s] = d >= 0 ? -1 : 1; // filled below for fleet stops
     }
+    this.tAn = an;
+    this.tCur = s1;
+    if (s1 < stops.n) return false;
     this.stAttS[stops.n] = an;
+    this.tSub = 9;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state 9 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece9(st: CityState): boolean {
     // service ratio per depot / minibus pool: rho = fleet / smoothed needed buses (WP7-5)
-    const rhoOf = new Float32Array(nD + 1);
+    const deps = this.depotsB, nD = deps.length, dRiders = this.tDRiders, dStops = this.tDStops, mb = this.minibusB;
+    if (this.tRhoOf.length < nD + 1) this.tRhoOf = new Float32Array(nD + 9);
+    const rhoOf = this.tRhoOf;
     for (let d = 0; d <= nD; d++) {
-      const id = d < nD ? this.depots[d].id : -1;
+      const id = d < nD ? deps[d].id : -1;
       const raw = dRiders[d] / RIDERS_PER_BUS;
       const prev = this.busNeed.get(id);
       const need = prev === undefined ? raw : prev + BUS_NEED_SMOOTH * (raw - prev);
       if (dStops[d] > 0 || d < nD) this.busNeed.set(id, need);
-      const fleet = d < nD ? this.depots[d].fleet : MINIBUS_FLEET;
+      const fleet = d < nD ? deps[d].fleet : MINIBUS_FLEET;
       const rho = need > 1e-6 ? Math.max(BUS_RHO_MIN, Math.min(BUS_RHO_MAX, fleet / need)) : BUS_RHO_MAX;
       rhoOf[d] = rho;
-      if (d < nD) { const D = this.depots[d]; D.stops = dStops[d]; D.riders = dRiders[d]; D.need = need; D.rho = rho; }
-      else { this.minibus.stops = dStops[d]; this.minibus.riders = dRiders[d]; this.minibus.need = need; this.minibus.rho = rho; }
+      if (d < nD) { const D = deps[d]; D.stops = dStops[d]; D.riders = dRiders[d]; D.need = need; D.rho = rho; }
+      else { mb.stops = dStops[d]; mb.riders = dRiders[d]; mb.need = need; mb.rho = rho; }
     }
     if (dStops[nD] === 0) this.busNeed.delete(-1);
     if (this.busNeed.size > nD + 1) {
-      const live = new Set(this.depots.map((x) => x.id));
+      const live = new Set(deps.map((x) => x.id));
       for (const id of [...this.busNeed.keys()]) if (id !== -1 && !live.has(id)) this.busNeed.delete(id);
     }
-    for (let s = 0; s < stops.n; s++) {
+    this.tCur = 0;
+    this.tSub = 10;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state 10 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece10(st: CityState): boolean {
+    const stops = this.stopsB, nD = this.depotsB.length, rhoOf = this.tRhoOf;
+    const s0 = this.tCur, s1 = Math.min(stops.n, s0 + coldUnits(TC.stopWait));
+    for (let s = s0; s < s1; s++) {
       const mode = stops.mode[s];
-      if (this.stRho[s] < 0) this.stRho[s] = rhoOf[this.stDepot[s] >= 0 ? this.stDepot[s] : nD];
+      if (this.stRhoB[s] < 0) this.stRhoB[s] = rhoOf[this.stDepotB[s] >= 0 ? this.stDepotB[s] : nD];
       // wait with crowding from the previous cycle (buses: the base wait shrinks / grows with the fleet)
       const prev = this.stLoadPrev.get(this.stKey[s]) ?? 0;
       const capS = mode === Transit.Bus ? STOP_CAP_BUS : mode === Transit.Subway ? STOP_CAP_SUBWAY : mode === Transit.Ferry ? STOP_CAP_FERRY : STOP_CAP_TRAIN;
-      const base = mode === Transit.Bus ? WAIT_BUS / this.stRho[s] : mode === Transit.Subway ? WAIT_SUBWAY : mode === Transit.Ferry ? WAIT_FERRY : WAIT_TRAIN;
+      const base = mode === Transit.Bus ? WAIT_BUS / this.stRhoB[s] : mode === Transit.Subway ? WAIT_SUBWAY : mode === Transit.Ferry ? WAIT_FERRY : WAIT_TRAIN;
       const r = prev / capS;
-      this.stWait[s] = base * Math.min(4, 1 + r * r);
+      this.stWaitB[s] = base * Math.min(4, 1 + r * r);
       const rx = Math.max(0, prev - (this.stPrPrev.get(this.stKey[s]) ?? 0)) / capS;
       this.stWaitPr[s] = base * Math.min(4, 1 + rx * rx);
     }
+    this.tCur = s1;
+    if (s1 >= stops.n) this.tSub = 11;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state 11 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece11(st: CityState): boolean {
+    const g = this.road, N = st.size;
     // spatial bins of stops (8x8 cells)
+    const stops = this.stopsB;
     const BS = 8;
     const nb = Math.ceil(N / BS);
     this.binN = nb;
@@ -2205,9 +3025,19 @@ export class TrafficSystem implements SimSystem {
       const bi = ((z / BS) | 0) * nb + ((x / BS) | 0);
       this.stopBins[this.stopBinStart[bi] + fillp[bi]++] = s;
     }
+    this.trFrom.length = 0; this.trTo.length = 0; this.trCost.length = 0;
+    this.tCur = 0;
+    this.tSub = 12;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state 12 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece12(st: CityState): boolean {
+    const g = this.road, N = st.size;
     // transfers between stops of different modes within walking distance
-    const trFrom: number[] = [], trTo: number[] = [], trCost: number[] = [];
-    for (let s = 0; s < stops.n; s++) {
+    const stops = this.stopsB, trFrom = this.trFrom, trTo = this.trTo, trCost = this.trCost, wait = this.stWaitB;
+    const s0 = this.tCur, s1 = Math.min(stops.n, s0 + coldUnits(TC.transfer));
+    for (let s = s0; s < s1; s++) {
       if (this.stAttC[s] === 0) continue;
       const x = this.stX[s], z = this.stZ[s];
       const cnt = this.nearStops(N, x, z, STOP_WALK_RADIUS);
@@ -2215,29 +3045,56 @@ export class TrafficSystem implements SimSystem {
         const s2 = this.nsIdx[q], d = this.nsDist[q];
         if (s2 <= s || stops.mode[s2] === stops.mode[s] || this.stAttC[s2] === 0) continue;
         const a = this.stAtt[this.stAttS[s]], b = this.stAtt[this.stAttS[s2]];
-        const cost = d * STOP_WALK_TIME_PER_CELL + 0.5 * (this.stWait[s] + this.stWait[s2]);
+        const cost = d * STOP_WALK_TIME_PER_CELL + 0.5 * (wait[s] + wait[s2]);
         trFrom.push(a, b); trTo.push(b, a); trCost.push(cost, cost);
       }
     }
-    // ferry links (WP7-9): ferry node <-> ferry node, in-vehicle minutes
-    for (const l of this.ferryNet.links) {
-      const ka = this.ferryNodeOf.get(l.a), kb = this.ferryNodeOf.get(l.b);
-      if (ka === undefined || kb === undefined) continue;
-      const a = nGrid + ka, b = nGrid + kb, cost = Math.max(FERRY_TIME_PER_CELL, l.minutes);
-      trFrom.push(a, b); trTo.push(b, a); trCost.push(cost, cost);
+    this.tCur = s1;
+    if (s1 >= stops.n) this.tSub = 13;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state 13 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece13(st: CityState): boolean {
+    const g = this.road;
+    const trFrom = this.trFrom, trTo = this.trTo, trCost = this.trCost;
+    const nR = this.tNR, nRail = this.tNRail, nSub = this.tNSub, nFerry = this.tNFerry, nGrid = this.tNGrid, total = this.tTotal;
+    // (three pieces: the ferry links + the bucket counts, the edge scatter by edge ranges, the start offsets + bus times +
+    // the network; the transit search reads tnet only from PH_TRANSIT on, and nothing outside traffic reads it)
+    if (this.csrStage === 0) {
+      // ferry links (WP7-9): ferry node <-> ferry node, in-vehicle minutes
+      for (const l of this.ferryNet.links) {
+        const ka = this.ferryNodeOf.get(l.a), kb = this.ferryNodeOf.get(l.b);
+        if (ka === undefined || kb === undefined) continue;
+        const a = nGrid + ka, b = nGrid + kb, cost = Math.max(FERRY_TIME_PER_CELL, l.minutes);
+        trFrom.push(a, b); trTo.push(b, a); trCost.push(cost, cost);
+      }
+      this.trStartA = growI32(this.trStartA, total + 1);
+      const trStart = this.trStartA;
+      trStart.fill(0, 0, total + 1);
+      for (const f of trFrom) trStart[f + 1]++;
+      for (let i = 0; i < total; i++) trStart[i + 1] += trStart[i];
+      this.csrTo = new Int32Array(trFrom.length);
+      this.csrCost = new Float32Array(trFrom.length);
+      this.csrCur = 0;
+      this.csrStage = 1;
+      return false;
     }
-    this.trStartA = growI32(this.trStartA, total + 1);
     const trStart = this.trStartA;
-    trStart.fill(0, 0, total + 1);
-    for (const f of trFrom) trStart[f + 1]++;
-    for (let i = 0; i < total; i++) trStart[i + 1] += trStart[i];
-    const to = new Int32Array(trFrom.length), cost = new Float32Array(trFrom.length);
-    for (let e = 0; e < trFrom.length; e++) {
-      // trStart[f+1] (= end of f's bucket) used as a decrementing cursor
-      const f = trFrom[e];
-      const p = --trStart[f + 1];
-      to[p] = trTo[e];
-      cost[p] = trCost[e];
+    if (this.csrStage === 1) {
+      const to = this.csrTo, cost = this.csrCost;
+      const e0 = this.csrCur, e1 = Math.min(trFrom.length, e0 + coldUnits(TC.csrEdge));
+      for (let e = e0; e < e1; e++) {
+        // trStart[f+1] (= end of f's bucket) used as a decrementing cursor
+        const f = trFrom[e];
+        const p = --trStart[f + 1];
+        to[p] = trTo[e];
+        cost[p] = trCost[e];
+      }
+      this.csrCur = e1;
+      if (e1 < trFrom.length) return false;
+      this.csrStage = 2;
+      return false;
     }
     // now trStart[k] = original start[k-1] for k >= 1: shift back
     for (let i = 1; i < total; i++) trStart[i] = trStart[i + 1];
@@ -2246,16 +3103,61 @@ export class TrafficSystem implements SimSystem {
     const busTime = this.busTimeA;
     for (let v = 0; v < nR; v++) busTime[v] = this.nodeTime[v] * BUS_TIME_FACTOR;
     this.tnet = {
-      nR, nRail, nSub, nFerry, total, roadAdj: g.rev, busTime, railAdj: rail.adj, subAdj: sub.adj,
-      railTime: NET_TIME[Network.Rail], subTime: SUBWAY_TIME, trStart, trTo: to, trCost: cost,
+      nR, nRail, nSub, nFerry, total, roadAdj: g.rev, busTime, railAdj: this.rail.adj, subAdj: this.subway.adj,
+      railTime: NET_TIME[Network.Rail], subTime: SUBWAY_TIME, trStart, trTo: this.csrTo, trCost: this.csrCost,
     };
+    this.csrTo = EMPTY_I32;
+    this.csrCost = EMPTY_F32;
+    this.csrStage = 0;
     this.tAcc = growF32(this.tAcc, total);
-    // park & ride garages: an attached stop within PR_STOP_RADIUS (+ half the footprint) (WP7-8)
-    const gN = this.gN;
-    this.gStop = growI32(this.gStop, gN + 1); this.gWalk = growF32(this.gWalk, gN + 1); this.gLabel = growF32(this.gLabel, gN + 1);
+    this.tSub = 14;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state 14 (B2 R10: one small method per piece kind) */
+  private prepTransitPiece14(st: CityState): boolean {
+    this.prepTransitGarages(st);
+    this.tSub = 15;
+    return false;
+  }
+
+  /** prepTransitPiece, sub-state default (B2 R10: one small method per piece kind) */
+  private prepTransitPieceEnd(st: CityState): boolean {
+    // publish: the stop list and everything the stop / depot / garage queries read, together
+    copyStopList(this.stops, this.stopsB);
+    const n = this.stops.n, gN = this.gN;
+    const m = this.stIdxById;
+    this.stIdxById = this.stIdxByIdB;
+    this.stIdxByIdB = m;
+    this.depots = this.depotsB;
+    this.depotsB = [];
+    const mb = this.minibus, B = this.minibusB;
+    mb.stops = B.stops; mb.riders = B.riders; mb.need = B.need; mb.rho = B.rho;
+    this.stDepot = growI32(this.stDepot, n + 1); this.stDepot.set(this.stDepotB.subarray(0, n));
+    this.stRho = growF32(this.stRho, n + 1); this.stRho.set(this.stRhoB.subarray(0, n));
+    this.stWait = growF32(this.stWait, n + 1); this.stWait.set(this.stWaitB.subarray(0, n));
+    this.gStop = growI32(this.gStop, gN + 1); this.gStop.set(this.gStopB.subarray(0, gN));
+    this.gWalk = growF32(this.gWalk, gN + 1); this.gWalk.set(this.gWalkB.subarray(0, gN));
+    this.gSpaces = growF32(this.gSpaces, gN + 1); this.gSpaces.set(this.gSpacesB.subarray(0, gN));
+    this.gState = growU8(this.gState, gN + 1); this.gState.set(this.gStateB.subarray(0, gN));
+    this.gPrN = this.tPrN;
+    this.prKeyNow = this.tPrKey;
+    this.tSub = 0;
+    this.tCur = 0;
+    return true;
+  }
+
+  /** prepTransit's park & ride garages: an attached stop within PR_STOP_RADIUS (+ half the footprint) (WP7-8); the
+   *  arrays garageInfo reads into back buffers (published with the stop list) */
+  private prepTransitGarages(st: CityState): void {
+    const N = st.size, gN = this.gN, wait = this.stWaitB;
+    this.gStopB = growI32(this.gStopB, gN + 1); this.gWalkB = growF32(this.gWalkB, gN + 1);
+    this.gSpacesB = growF32(this.gSpacesB, gN + 1); this.gStateB = growU8(this.gStateB, gN + 1);
+    const gStop = this.gStopB, gWalk = this.gWalkB, gSpaces = this.gSpacesB, gState = this.gStateB;
+    this.gLabel = growF32(this.gLabel, gN + 1);
     this.gSeed = growF32(this.gSeed, gN + 1); this.gBoard = growI32(this.gBoard, gN + 1); this.gLoad = growF32(this.gLoad, gN + 1);
     this.gSeeded = growU8(this.gSeeded, gN + 1); this.gRank = growF32(this.gRank, gN + 1);
-    this.gRide = growU8(this.gRide, gN + 1); this.gState = growU8(this.gState, gN + 1); this.gSpaces = growF32(this.gSpaces, gN + 1);
+    this.gRide = growU8(this.gRide, gN + 1);
     this.gRiders = growF32(this.gRiders, gN + 1); this.gWant = growF32(this.gWant, gN + 1); this.gCatch = growF32(this.gCatch, gN + 1);
     this.gUnpl = growF32(this.gUnpl, gN + 1); this.gUnplX = growF32(this.gUnplX, gN + 1); this.gUnplZ = growF32(this.gUnplZ, gN + 1);
     this.gUnplQ = growF64(this.gUnplQ, gN + 1);
@@ -2265,7 +3167,7 @@ export class TrafficSystem implements SimSystem {
     this.gRidersM = growF32(this.gRidersM, gN + 1); this.gWantR = growF32(this.gWantR, gN + 1); this.gRes = growF32(this.gRes, gN + 1);
     let prN = 0, key = '';
     for (let q = 0; q < gN; q++) {
-      this.gStop[q] = -1; this.gWalk[q] = 0; this.gLoad[q] = 0; this.gBoard[q] = -1; this.gRide[q] = 0;
+      gStop[q] = -1; gWalk[q] = 0; this.gLoad[q] = 0; this.gBoard[q] = -1; this.gRide[q] = 0;
       this.gRiders[q] = 0; this.gWant[q] = 0; this.gWantR[q] = 0; this.gCatch[q] = 0; this.gLabel[q] = Infinity;
       this.gUnpl[q] = 0; this.gUnplX[q] = 0; this.gUnplZ[q] = 0; this.gUnplQ[q] = 0; this.gOvIn[q] = 0;
       this.gGrp[q] = q; this.gGSp[q] = 0; this.gCars[q] = 0; this.gRidersM[q] = 0;
@@ -2273,15 +3175,15 @@ export class TrafficSystem implements SimSystem {
       // (every garage in order: the searches' seed ids are these indices — a garage without a stop shifts them too)
       key += id + ';';
       const b = st.buildings.get(id);
-      this.gSpaces[q] = (b && GARAGE_DEFS[b.def]) || GARAGE_SPACES;
+      gSpaces[q] = (b && GARAGE_DEFS[b.def]) || GARAGE_SPACES;
       this.gPrice[q] = this.garagePrice.get(id) ?? 0;
       // spaces kept for the block around it (local parkers first; park & ride gets the rest; a block barely short of
       // parking keeps none: below PR_RESERVE_MIN x spaces)
-      const res = Math.max(0, Math.min(this.gSpaces[q], this.garageReserve.get(id) ?? 0));
-      this.gRes[q] = res >= PR_RESERVE_MIN * this.gSpaces[q] ? res : 0;
-      this.gState[q] = GARAGE_NO_ROAD;
+      const res = Math.max(0, Math.min(gSpaces[q], this.garageReserve.get(id) ?? 0));
+      this.gRes[q] = res >= PR_RESERVE_MIN * gSpaces[q] ? res : 0;
+      gState[q] = GARAGE_NO_ROAD;
       if (!b || this.gEntC[q] === 0) { this.garageStop.delete(id); this.garageDown.delete(id); this.garageRideT.delete(id); continue; }
-      this.gState[q] = GARAGE_NO_STOP;
+      gState[q] = GARAGE_NO_STOP;
       const c = centerCell(st, b), x = c % N, z = (c - x) / N;
       const half = Math.max(b.w, b.d) >> 1;
       this.gCell[q] = c;
@@ -2295,19 +3197,20 @@ export class TrafficSystem implements SimSystem {
         if (this.stAttC[s] === 0) continue;
         const walk = Math.max(0, this.nsDist[k] - half) * STOP_WALK_TIME_PER_CELL;
         cand += this.stKey[s] + ' ';
-        if (walk + this.stWait[s] < best) { best = walk + this.stWait[s]; this.gStop[q] = s; this.gWalk[q] = walk; }
+        if (walk + wait[s] < best) { best = walk + wait[s]; gStop[q] = s; gWalk[q] = walk; }
       }
-      if (this.gStop[q] >= 0) { prN++; key += id + ':' + cand + ','; this.gState[q] = GARAGE_NO_TRANSIT; }
+      if (gStop[q] >= 0) { prN++; key += id + ':' + cand + ','; gState[q] = GARAGE_NO_TRANSIT; }
       // (no stop within reach: no park & ride stop to keep — PH_PARKRIDE, which drops it otherwise, is skipped when no
       // garage has a stop)
       else { this.garageStop.delete(id); this.garageDown.delete(id); this.garageRideT.delete(id); }
     }
-    this.gPrN = prN;
-    this.prKeyNow = key;
+    this.tPrN = prN;
+    this.tPrKey = key;
   }
 
-  /** WP7-5: depots of this cycle (fleet) and, on road / depot changes, the stop ownership BFS */
-  private collectDepots(st: CityState): void {
+  /** WP7-5: depots of this cycle (fleet) into the back list; true when the stop ownership BFS must run (road / depot
+   *  changes) */
+  private collectDepots(st: CityState): boolean {
     const funding = Math.min(DEPOT_FUNDING_MAX, fundingFactor(st, 'transit'));
     const deps: TrafficSystem['depots'] = [];
     let key = '';
@@ -2316,30 +3219,40 @@ export class TrafficSystem implements SimSystem {
       deps.push({ id: b.id, fleet: (DEPOT_DEFS[b.def] ?? DEPOT_BUSES) * funding * (powered ? 1 : DEPOT_UNPOWERED), stops: 0, riders: 0, need: 0, rho: BUS_RHO_MAX });
       key += b.id + '@' + b.x + ',' + b.z + ';';
     }
-    this.depots = deps;
+    this.depotsB = deps;
     if (key !== this.depotKey || this.depotVer !== this.road.version || this.depotOwner.length < this.road.n) {
       this.depotKey = key;
       this.depotVer = this.road.version;
-      this.depotBfs(st);
+      return true;
     }
+    return false;
   }
 
-  /** multi-source BFS (road hops, both directions) from the depots' road entries, at most DEPOT_RANGE hops: owner per node */
-  private depotBfs(st: CityState): void {
+  /** multi-source BFS (road hops, both directions) from the depots' road entries, at most DEPOT_RANGE hops: owner per
+   *  node — begin (owner reset, seeds), then depotBfsRun by queue chunks (FIFO order: the same owners as one pass) */
+  private depotBfsBegin(st: CityState): void {
     const g = this.road, n = g.n, N = st.size;
     if (this.depotOwner.length < n) this.depotOwner = new Int32Array(n + (n >> 3) + 16);
     const owner = this.depotOwner;
     owner.fill(-1, 0, n);
+    this.dbQh = this.dbQt = 0;
     if (this.depotB.length === 0 || n === 0) return;
-    const hop = new Uint16Array(n), q = new Int32Array(n);
-    let qh = 0, qt = 0;
+    if (this.dbHop.length < n) { this.dbHop = new Uint16Array(n + (n >> 3) + 16); this.dbQ = new Int32Array(n + (n >> 3) + 16); }
+    const hop = this.dbHop, q = this.dbQ;
+    let qt = 0;
     const tmp = new Int32Array(12);
     for (let d = 0; d < this.depotB.length; d++) {
       const c = perimeterNodes(g.nodeOfCell, N, this.depotB[d], tmp, 0, 12);
       for (let k = 0; k < c; k++) { const v = tmp[k]; if (owner[v] >= 0) continue; owner[v] = d; hop[v] = 0; q[qt++] = v; }
     }
-    const fwd = g.fwd, rev = g.rev;
-    while (qh < qt) {
+    this.dbQt = qt;
+  }
+
+  private depotBfsRun(maxNodes: number): boolean {
+    const g = this.road, owner = this.depotOwner, hop = this.dbHop, q = this.dbQ, fwd = g.fwd, rev = g.rev;
+    let qh = this.dbQh, qt = this.dbQt;
+    const stop = qh + maxNodes;
+    while (qh < qt && qh < stop) {
       const u = q[qh++];
       const h = hop[u];
       if (h >= DEPOT_RANGE) continue;
@@ -2351,6 +3264,9 @@ export class TrafficSystem implements SimSystem {
         q[qt++] = v;
       }
     }
+    this.dbQh = qh;
+    this.dbQt = qt;
+    return qh >= qt;
   }
 
   /** wait (minutes) at stop s without crowding: the mode's wait, buses / the service ratio of the stop's bus pool */
@@ -2387,40 +3303,76 @@ export class TrafficSystem implements SimSystem {
   }
 
   // ------------------------------------------------------------------------------------------ TRANSIT
+  /** whole-state transit (tests) */
   private transit(): void {
+    this.trSub = 0;
+    while (!this.transitPiece()) { /* next piece */ }
+  }
+
+  /**
+   * one PH_TRANSIT piece; true when done. Without stops: the reset, then the per-origin options' pieces (transitDone,
+   * PH_TRANSIT2 is skipped). Else the seeds by job-site ranges (seeds grow in j order), the search start, then the
+   * resumable transit search in chunks (TransitSearchRun: exact, §2.4).
+   */
+  private transitPiece(): boolean {
     const T = this.tnet!;
-    const S = this.ST;
-    if (this.stops.n === 0) {
-      S.reset(T.total);
-      this.originTransit();
-      this.transitDone = true;
-      return;
-    }
-    this.transitDone = false;
-    const seeds = this.seeds;
-    seeds.clear();
-    const N = this.road.N;
-    for (let j = 0; j < this.jN; j++) {
-      const label0 = this.jBase[j] + this.jNoise[j];
-      if (this.jRailNode[j] >= 0) {
-        seeds.push(T.nR + this.jRailNode[j], label0, j);
-        continue;
+    if (this.trSub === 0) {
+      if (this.stops.n === 0) {
+        this.ST.reset(T.total);
+        this.otSub = 0;
+        this.trSub = 4;
+        return false;
       }
-      if (this.jBid[j] < 0) continue;
-      // WP7b: no transit destination where nobody can be matched (no road entry) or at a transit facility's own
-      // handful of jobs (stops, terminals, depots, garages sit at the stop: every rider would "ride" 0 minutes there)
-      if (this.jQ[j] < 0 || this.jNoDest[j] === 1) continue;
-      const c = this.jCell[j], x = c % N, z = (c - x) / N;
-      const half = this.jHalf[j];
-      const cnt = this.nearStops(N, x, z, STOP_WALK_RADIUS + half);
-      for (let q = 0; q < cnt; q++) {
-        const s = this.nsIdx[q];
-        const walk = Math.max(0, this.nsDist[q] - half) * STOP_WALK_TIME_PER_CELL;
-        for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1; a++) seeds.push(this.stAtt[a], label0 + walk, j);
+      this.transitDone = false;
+      this.seeds.clear();
+      this.trCur = 0;
+      this.trSub = 1;
+    }
+    switch (this.trSub) {
+      case 1: {
+        const seeds = this.seeds, N = this.road.N;
+        const j0 = this.trCur, j1 = Math.min(this.jN, j0 + pieceUnits(TC.trSeed, 1, WARM));
+        for (let j = j0; j < j1; j++) {
+          const label0 = this.jBase[j] + this.jNoise[j];
+          if (this.jRailNode[j] >= 0) {
+            seeds.push(T.nR + this.jRailNode[j], label0, j);
+            continue;
+          }
+          if (this.jBid[j] < 0) continue;
+          // WP7b: no transit destination where nobody can be matched (no road entry) or at a transit facility's own
+          // handful of jobs (stops, terminals, depots, garages sit at the stop: every rider would "ride" 0 minutes there)
+          if (this.jQ[j] < 0 || this.jNoDest[j] === 1) continue;
+          const c = this.jCell[j], x = c % N, z = (c - x) / N;
+          const half = this.jHalf[j];
+          const cnt = this.nearStops(N, x, z, STOP_WALK_RADIUS + half);
+          for (let q = 0; q < cnt; q++) {
+            const s = this.nsIdx[q];
+            const walk = Math.max(0, this.nsDist[q] - half) * STOP_WALK_TIME_PER_CELL;
+            for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1; a++) seeds.push(this.stAtt[a], label0 + walk, j);
+          }
+        }
+        this.trCur = j1;
+        if (j1 >= this.jN) this.trSub = 2;
+        return false;
+      }
+      case 2: {
+        this.runT.start(T, this.ST, this.seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME);
+        this.trSub = 3;
+        return false;
+      }
+      case 3: {
+        if (!this.runT.run(pieceUnits(TC.trNode, 1, WARM))) return false;
+        // the per-origin options follow in their own step (PH_TRANSIT2)
+        this.trSub = 0;
+        return true;
+      }
+      default: {
+        if (!this.otPiece()) return false;
+        this.transitDone = true;
+        this.trSub = 0;
+        return true;
       }
     }
-    transitSearch(T, S, this.heap, seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME);
-    // the per-origin options follow in their own step (PH_TRANSIT2)
   }
 
   /** pure transit minutes of the transit-forest label d reaching job site j (without the seed's noise) */
@@ -2435,20 +3387,56 @@ export class TrafficSystem implements SimSystem {
    * those workers are counted per stop (stWalk: the report explains the empty stop)
    */
   private originTransit(): void {
+    this.otSub = 0;
+    while (!this.otPiece()) { /* next piece */ }
+  }
+
+  /** one piece of originTransit: the fills, the origins by ranges (per-stop sums in origin order), the acc fills */
+  private otPiece(): boolean {
+    switch (this.otSub) {
+      case 0: {
+        const total = this.tnet ? this.tnet.total : 0;
+        if (this.rideMemo.length < total) this.rideMemo = new Int8Array(total + (total >> 3) + 16);
+        this.rideMemo.fill(0, 0, total);
+        this.stWalk = growF32(this.stWalk, this.stops.n + 1);
+        this.stWalk.fill(0, 0, this.stops.n + 1);
+        const nS = this.stops.n + 1;
+        const nearW = (this.stNearW = growF32(this.stNearW, nS)), boardW = (this.stBoardW = growF32(this.stBoardW, nS));
+        const boardT = (this.stBoardT = growF32(this.stBoardT, nS)), elseW = (this.stElseW = growF32(this.stElseW, nS));
+        nearW.fill(0, 0, nS); boardW.fill(0, 0, nS); boardT.fill(0, 0, nS); elseW.fill(0, 0, nS);
+        this.otCur = 0;
+        this.otSub = 1;
+        return false;
+      }
+      case 1: {
+        const o0 = this.otCur, o1 = Math.min(this.oN, o0 + coldUnits(this.otOriginUs()));
+        this.originTransitRange(o0, o1);
+        this.otCur = o1;
+        if (o1 >= this.oN) this.otSub = 2;
+        return false;
+      }
+      default: {
+        this.acc.fill(0, 0, this.road.n);
+        this.tAcc.fill(0, 0, this.tnet!.total);
+        this.otSub = 0;
+        return true;
+      }
+    }
+  }
+
+  /**
+   * each origin's best transit option (board node, stop, pure minutes, destination) from the transit forest, origins
+   * [o0, o1). Only board nodes whose path rides a vehicle count: a stop whose best path is "walk to the job beside it"
+   * is no transit trip (it would count the walker twice as a rider — boarding and alighting at the same stop — and size
+   * buses for them); those workers are counted per stop (stWalk: the report explains the empty stop)
+   */
+  private originTransitRange(o0: number, o1: number): void {
     const ST = this.ST;
     const distT = ST.dist, srcT = ST.src, doneT = ST.done;
     const N = this.road.N;
     const hasStops = this.stops.n > 0;
-    const total = this.tnet ? this.tnet.total : 0;
-    if (this.rideMemo.length < total) this.rideMemo = new Int8Array(total + (total >> 3) + 16);
-    this.rideMemo.fill(0, 0, total);
-    this.stWalk = growF32(this.stWalk, this.stops.n + 1);
-    this.stWalk.fill(0, 0, this.stops.n + 1);
-    const nS = this.stops.n + 1;
-    const nearW = (this.stNearW = growF32(this.stNearW, nS)), boardW = (this.stBoardW = growF32(this.stBoardW, nS));
-    const boardT = (this.stBoardT = growF32(this.stBoardT, nS)), elseW = (this.stElseW = growF32(this.stElseW, nS));
-    nearW.fill(0, 0, nS); boardW.fill(0, 0, nS); boardT.fill(0, 0, nS); elseW.fill(0, 0, nS);
-    for (let o = 0; o < this.oN; o++) {
+    const nearW = this.stNearW, boardW = this.stBoardW, boardT = this.stBoardT, elseW = this.stElseW;
+    for (let o = o0; o < o1; o++) {
       this.oTrT[o] = Infinity;
       this.oBoard[o] = -1;
       this.oBoardStop[o] = -1;
@@ -2486,8 +3474,12 @@ export class TrafficSystem implements SimSystem {
       boardT[boardStop] += this.oW[o] * t;
       for (let q = 0; q < cnt; q++) if (this.nsIdx[q] !== boardStop) elseW[this.nsIdx[q]] += this.oW[o];
     }
-    this.acc.fill(0, 0, this.road.n);
-    this.tAcc.fill(0, 0, this.tnet!.total);
+  }
+
+  /** estimated µs per origin of originTransit (scales with the stops per 1,000 cells near it) */
+  private otOriginUs(): number {
+    const C = Math.max(1, this.road.C);
+    return TC.otOrigin + TC.otOriginStop * (this.stops.n * 1000 / C);
   }
 
   // ------------------------------------------------------------------------------------------ PARK & RIDE (WP7-8)
@@ -2507,29 +3499,60 @@ export class TrafficSystem implements SimSystem {
    * an origin's options (logit) but never takes a garage out of anybody's choice set.
    */
   private parkRide(): number {
-    // stage 0: stops and groups, then a fresh search (seeded here, run in stage 1: chunks of at most PR_CHUNK_STATES
-    // states per step) or the kept forest (stage 3: this cycle's congested car legs along it, every 2nd cycle); stage 2:
-    // the options per origin. Each its own step (estimated apart in stepCost)
+    this.prSub = 0;
+    for (;;) { const r = this.parkRidePiece(); if (r !== CONT) return r; }
+  }
+
+  /**
+   * one PH_PARKRIDE piece (CONT while more follow). Stage 0: the garages (prGarages), then the search decision and its
+   * seeding (prStart) in the next piece; stage 1: K-label search chunks; stage 3: the kept forest's car legs refreshed by
+   * settle-order ranges (parents before children: the same sums as refreshAlt); stage 2: the per-origin options by ranges
+   */
+  private parkRidePiece(): number {
     switch (this.prStage) {
       case 0:
-        this.prGarages();
+        if (this.prSub === 0) {
+          this.prGarages();
+          this.prSub = 1;
+          return CONT;
+        }
+        this.prSub = 0;
         if (this.prSearchDue()) { this.prStart(); this.prStage = 1; }
         else this.prStage = this.cycles % 2 === 0 ? 3 : 2;
-        return PH_PARKRIDE;
+        this.prCur = 0;
+        return CONT;
       case 1:
-        if (!this.SPK.run(PR_CHUNK_STATES)) return PH_PARKRIDE;
+        if (!this.SPK.run(coldUnits(TC.prState))) return CONT;
         this.prKey = this.prKeyNow;
         this.prSearched = this.cycles;
         this.prStage = 2;
-        return PH_PARKRIDE;
-      case 3:
-        this.SPK.refreshAlt(this.nodeTime, this.rampT);
+        this.prCur = 0;
+        return CONT;
+      case 3: {
+        if (this.prSub === 0) {
+          this.prSub = this.SPK.refreshAltBegin(this.nodeTime, this.rampT) ? 1 : 2;
+          this.prCur = 0;
+        }
+        if (this.prSub === 1) {
+          const k0 = this.prCur, k1 = Math.min(this.SPK.settled, k0 + coldUnits(TC.prRefresh));
+          this.SPK.refreshAltRange(k0, k1);
+          this.prCur = k1;
+          if (k1 < this.SPK.settled) return CONT;
+        }
+        this.prSub = 0;
         this.prStage = 2;
-        return PH_PARKRIDE;
-      default:
-        this.prOptions();
+        this.prCur = 0;
+        return CONT;
+      }
+      default: {
+        const o0 = this.prCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.prOption));
+        this.prOptions(o0, o1);
+        this.prCur = o1;
+        if (o1 < this.oN) return CONT;
         this.prStage = 0;
+        this.prCur = 0;
         return NEXT_PHASE[PH_PARKRIDE];
+      }
     }
   }
 
@@ -2689,14 +3712,14 @@ export class TrafficSystem implements SimSystem {
    * option a group is, weighted by how available). Current groups (a reused forest may hold two members of a group
    * merged since) and labels (the transit part is this cycle's).
    */
-  private prOptions(): void {
+  private prOptions(o0: number, o1: number): void {
     const K = PR_OPTIONS, gN = this.gN, g = this.road, SP = this.SPK, KS = SP.K, grp = this.gGrp, room = this.gGSp;
     const dist = SP.dist, src = SP.src, alt = SP.alt, cntS = SP.cnt;
     const n = Math.min(g.n, SP.n);
     // (scratch per option: free-flow minutes F, congested minutes, garage, state, group)
     const F = this.poT, T = this.poC, Q = this.poQ, S = this.poS, R = this.poR;
     const M = KS; // options collected: PR_OPTIONS + the cutoff
-    for (let o = 0; o < this.oN; o++) {
+    for (let o = o0; o < o1; o++) {
       let m = 0;
       // (from its road entry with the fastest label: the entries of one lot see the same garages within a step or two)
       let v = -1, bd = Infinity;
@@ -2788,18 +3811,32 @@ export class TrafficSystem implements SimSystem {
    * clusters. Cluster price = slot-weighted mean of the members' persistent prices.
    */
   private buildClusters(): void {
+    this.clStage = 0;
+    while (!this.clusterPiece()) { /* next piece */ }
+  }
+
+  /** buildClusters in pieces (B2): the growth + node map fill, the job sites by ranges (qN in a field), the per-cluster
+   *  averages; the same operations in the same order for any cut. True when the clusters are built. */
+  private clusterPiece(): boolean {
     const g = this.road;
     const jN = this.jN;
-    const cap = jN + 1;
-    this.qNode = growI32(this.qNode, cap); this.qSlots = growF32(this.qSlots, cap); this.qCapP = growF32(this.qCapP, cap);
-    this.qAsg = growF32(this.qAsg, cap); this.qPrice = growF32(this.qPrice, cap); this.qProp = growF32(this.qProp, cap);
-    this.qBase = growF32(this.qBase, cap); this.qNoise = growF32(this.qNoise, cap); this.qTimeSum = growF32(this.qTimeSum, cap);
-    this.qPark = growF32(this.qPark, cap); this.qCar = growF32(this.qCar, cap);
-    if (this.nodeQ.length < g.n) this.nodeQ = new Int32Array(g.n + (g.n >> 3) + 16);
+    if (this.clStage === 0) {
+      const cap = jN + 1;
+      this.qNode = growI32(this.qNode, cap); this.qSlots = growF32(this.qSlots, cap); this.qCapP = growF32(this.qCapP, cap);
+      this.qAsg = growF32(this.qAsg, cap); this.qPrice = growF32(this.qPrice, cap); this.qProp = growF32(this.qProp, cap);
+      this.qBase = growF32(this.qBase, cap); this.qNoise = growF32(this.qNoise, cap); this.qTimeSum = growF32(this.qTimeSum, cap);
+      this.qPark = growF32(this.qPark, cap); this.qCar = growF32(this.qCar, cap);
+      if (this.nodeQ.length < g.n) this.nodeQ = new Int32Array(g.n + (g.n >> 3) + 16);
+      this.nodeQ.fill(-1, 0, g.n);
+      this.clQN = 0;
+      this.clCur = 0;
+      this.clStage = 1;
+      return false;
+    }
     const nodeQ = this.nodeQ;
-    nodeQ.fill(-1, 0, g.n);
-    let qN = 0;
-    for (let j = 0; j < jN; j++) {
+    let qN = this.clQN;
+    const j0 = this.clCur, j1 = Math.min(jN, j0 + coldUnits(TC.clusters));
+    for (let j = j0; j < j1; j++) {
       this.jQ[j] = -1;
       if (this.jEntC[j] === 0) continue;
       let node = this.ent[this.jEntS[j]];
@@ -2821,8 +3858,13 @@ export class TrafficSystem implements SimSystem {
       this.qPrice[q] += this.jPrice[j] * this.jSlots[j];
       this.qPark[q] += this.jPark[j] * this.jSlots[j];
     }
+    this.clQN = qN;
+    this.clCur = j1;
+    if (j1 < jN) return false;
     for (let q = 0; q < qN; q++) if (this.qSlots[q] > 0) { this.qPrice[q] /= this.qSlots[q]; this.qPark[q] /= this.qSlots[q]; }
     this.qN = qN;
+    this.clStage = 0;
+    return true;
   }
 
   /** open capacity of job cluster q in the current round */
@@ -2831,71 +3873,174 @@ export class TrafficSystem implements SimSystem {
     return cap - this.qAsg[q];
   }
 
-  /** reverse multi-source search from every job cluster with open capacity this round */
+  /** reverse multi-source search from every job cluster with open capacity this round (whole state: tests) */
   private roundSearch(): void {
-    const seeds = this.seeds;
-    seeds.clear();
-    for (let q = 0; q < this.qN; q++) {
-      if (this.openCap(q) < 0.5) continue;
-      // prices may be negative (subsidies for unattractive sites): shift all labels by MATCH_PRICE_MAX
-      const label = MATCH_PRICE_MAX + this.qBase[q] + this.qNoise[q] + this.qPrice[q];
-      seeds.push(this.qNode[q], label, q);
+    this.rsSub = 0;
+    while (!this.roundSearchPiece()) { /* next piece */ }
+  }
+
+  /** one PH_RSEARCH piece: the seeds + the search start, then resumable search chunks (SA persists, as pre-B2) */
+  private roundSearchPiece(): boolean {
+    if (this.rsSub === 0) {
+      const seeds = this.seeds;
+      seeds.clear();
+      for (let q = 0; q < this.qN; q++) {
+        if (this.openCap(q) < 0.5) continue;
+        // prices may be negative (subsidies for unattractive sites): shift all labels by MATCH_PRICE_MAX
+        const label = MATCH_PRICE_MAX + this.qBase[q] + this.qNoise[q] + this.qPrice[q];
+        seeds.push(this.qNode[q], label, q);
+      }
+      this.runA.start(this.road, this.road.rev, this.nodeTime, this.SA, seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME + 2 * MATCH_PRICE_MAX, this.rampT);
+      this.rsSub = 1;
+      return false;
     }
-    roadSearch(this.road, this.road.rev, this.nodeTime, this.SA, this.heap, seeds, MAX_COMMUTE + DEST_NOISE + REGIONAL_TIME + 2 * MATCH_PRICE_MAX, this.rampT);
+    if (!this.runA.run(pieceUnits(TC.rdNode, 1, WARM))) return false;
+    this.rsSub = 0;
+    return true;
   }
 
   /** Stable 11-bit LSD radix sort of the packed (cost, origin) keys; keep the native order outside safe integers.
    *  Below 1024 keys the native sort is faster: the radix path pays up to 5 × 2048 histogram clears and prefix sums
-   *  per call (measured crossover 700-1024 keys); both paths give the same bytes. */
+   *  per call (measured crossover 700-1024 keys); both paths give the same bytes.
+   *  (whole call: tests; the matching runs it piece by piece, sortPiece) */
   private sortCandidates(nc: number): Float64Array {
-    const key = this.candKey, sorted = key.subarray(0, nc);
-    if (nc < 1024) return sorted.sort();
-    let max = 0;
-    for (let k = 0; k < nc; k++) {
-      const v = key[k];
-      if (!Number.isSafeInteger(v) || v < 0 || Object.is(v, -0)) return sorted.sort();
-      if (v > max) max = v;
-    }
-    const hi = Math.floor(max / 4294967296);
-    const bits = hi > 0 ? 64 - Math.clz32(hi) : 32 - Math.clz32(max >>> 0);
-    const passes = Math.ceil(bits / 11), hist = this.candHist;
-    hist.fill(0, 0, passes * 2048);
-    for (let k = 0; k < nc; k++) {
-      const v = key[k], l = v >>> 0, h = Math.floor(v / 4294967296);
-      hist[l & 2047]++;
-      if (passes > 1) hist[2048 + ((l >>> 11) & 2047)]++;
-      if (passes > 2) hist[4096 + (((l >>> 22) | (h << 10)) & 2047)]++;
-      if (passes > 3) hist[6144 + ((h >>> 1) & 2047)]++;
-      if (passes > 4) hist[8192 + ((h >>> 12) & 2047)]++;
-    }
-    this.candSort = growF64(this.candSort, nc);
-    let from = key, to = this.candSort;
-    for (let p = 0; p < passes; p++) {
-      const row = p * 2048, div = 2 ** (11 * p);
-      if (hist[row + (((from[0] / div) >>> 0) & 2047)] === nc) continue;
-      let sum = 0;
-      for (let b = 0; b < 2048; b++) { const n = hist[row + b]; hist[row + b] = sum; sum += n; }
-      for (let k = 0; k < nc; k++) {
-        const v = from[k];
-        to[hist[row + (((v / div) >>> 0) & 2047)]++] = v;
-      }
-      const tmp = from; from = to; to = tmp;
-    }
-    if (from !== key) sorted.set(from.subarray(0, nc));
-    return sorted;
+    this.srtStage = 0;
+    while (!this.sortPiece(nc)) { /* next piece */ }
+    return this.candKey.subarray(0, nc);
   }
 
-  /** match unassigned workers to their nearest open site (nearest first, up to capacity); returns the next phase */
+  /**
+   * one piece of the candidate sort (B2): the safe-integer scan + max by key ranges (an unsafe key falls back to the
+   * native sort, as pre-B2), the histograms by key ranges, then per radix pass its skip test + prefix sums (one piece)
+   * and its scatter by key ranges (index order: stable), and the copy back. The same operations in the same order as
+   * the one-call sort, so any cut gives the same permutation. Returns true when the keys are sorted.
+   */
+  private sortPiece(nc: number): boolean {
+    const key = this.candKey, hist = this.candHist;
+    if (this.srtStage === 0) {
+      if (nc < 1024) { key.subarray(0, nc).sort(); return true; }
+      this.srtMax = 0;
+      this.srtCur = 0;
+      this.srtStage = 1;
+    }
+    if (this.srtStage === 1) {
+      const k0 = this.srtCur, k1 = Math.min(nc, k0 + coldUnits(TC.sortScan));
+      let max = this.srtMax;
+      for (let k = k0; k < k1; k++) {
+        const v = key[k];
+        if (!Number.isSafeInteger(v) || v < 0 || Object.is(v, -0)) { key.subarray(0, nc).sort(); this.srtStage = 0; return true; }
+        if (v > max) max = v;
+      }
+      this.srtMax = max;
+      this.srtCur = k1;
+      if (k1 < nc) return false;
+      const hi = Math.floor(max / 4294967296);
+      const bits = hi > 0 ? 64 - Math.clz32(hi) : 32 - Math.clz32(max >>> 0);
+      this.srtPasses = Math.ceil(bits / 11);
+      hist.fill(0, 0, this.srtPasses * 2048);
+      this.srtCur = 0;
+      this.srtStage = 2;
+      return false;
+    }
+    if (this.srtStage === 2) {
+      const passes = this.srtPasses;
+      const k0 = this.srtCur, k1 = Math.min(nc, k0 + coldUnits(TC.sortHist));
+      for (let k = k0; k < k1; k++) {
+        const v = key[k], l = v >>> 0, h = Math.floor(v / 4294967296);
+        hist[l & 2047]++;
+        if (passes > 1) hist[2048 + ((l >>> 11) & 2047)]++;
+        if (passes > 2) hist[4096 + (((l >>> 22) | (h << 10)) & 2047)]++;
+        if (passes > 3) hist[6144 + ((h >>> 1) & 2047)]++;
+        if (passes > 4) hist[8192 + ((h >>> 12) & 2047)]++;
+      }
+      this.srtCur = k1;
+      if (k1 < nc) return false;
+      this.candSort = growF64(this.candSort, nc);
+      this.srtFrom = key;
+      this.srtTo = this.candSort;
+      this.srtP = 0;
+      this.srtStage = 3;
+      return false;
+    }
+    if (this.srtStage === 3) {
+      // the next pass that moves a key: its prefix sums (skip passes whose digit is the same for every key)
+      for (; this.srtP < this.srtPasses; this.srtP++) {
+        const row = this.srtP * 2048, div = 2 ** (11 * this.srtP);
+        if (hist[row + (((this.srtFrom[0] / div) >>> 0) & 2047)] === nc) continue;
+        let sum = 0;
+        for (let b = 0; b < 2048; b++) { const n = hist[row + b]; hist[row + b] = sum; sum += n; }
+        this.srtCur = 0;
+        this.srtStage = 4;
+        return false;
+      }
+      if (this.srtFrom !== key) key.subarray(0, nc).set(this.srtFrom.subarray(0, nc));
+      this.srtFrom = this.srtTo = EMPTY_F64;
+      this.srtStage = 0;
+      return true;
+    }
+    // stage 4: the scatter of pass srtP by key ranges
+    const from = this.srtFrom, to = this.srtTo, row = this.srtP * 2048, div = 2 ** (11 * this.srtP);
+    const k0 = this.srtCur, k1 = Math.min(nc, k0 + coldUnits(TC.sortScatter));
+    for (let k = k0; k < k1; k++) {
+      const v = from[k];
+      to[hist[row + (((v / div) >>> 0) & 2047)]++] = v;
+    }
+    this.srtCur = k1;
+    if (k1 < nc) return false;
+    this.srtFrom = to;
+    this.srtTo = from;
+    this.srtP++;
+    this.srtStage = 3;
+    return false;
+  }
+
+  /** µs of the next sort piece (stepCost) */
+  private sortPieceUs(nc: number): number {
+    const chunk = (us: number, left: number) => Math.max(0, Math.min(coldUnits(us), left)) * us;
+    switch (this.srtStage) {
+      case 0: return nc < 1024 ? nc * 0.05 : chunk(TC.sortScan, nc);
+      case 1: return chunk(TC.sortScan, nc - this.srtCur);
+      case 2: return chunk(TC.sortHist, nc - this.srtCur);
+      case 3: return 2048 * TC.sortPrefix + (this.srtP + 1 >= this.srtPasses ? nc * TC.fill : 0);
+      default: return chunk(TC.sortScatter, nc - this.srtCur);
+    }
+  }
+
+  /** match unassigned workers to their nearest open site (nearest first, up to capacity); returns the next phase
+   *  (whole state: tests) */
   private roundMatch(): number {
-    const SA = this.SA;
-    const dist = SA.dist, src = SA.src, hops = SA.hops, done = SA.done;
-    const oN = this.oN;
+    this.mSub = 0;
+    for (;;) { const r = this.roundMatchPiece(); if (r !== CONT) return r; }
+  }
+
+  /**
+   * one PH_RMATCH piece (CONT while more follow): M0 the candidates by origin ranges, M1 the packed keys by candidate
+   * ranges, M2 the sort in pieces (sortPiece), M3 round 0's proposals + the round constants (carPcu, trBonus, ovOn = room for the
+   * overflow — fixed before the accept loop consumes room, as pre-B2), M4 the accept loop by candidate ranges
+   * (nearest first; capacity and park & ride room consumed in the same order), M5 transit-only + the next round (or
+   * the overflow: PH_PROVER), M6 the round's car flows (accumulate, commit) and sample routes (the rand() draws).
+   */
+  private roundMatchPiece(): number {
+    switch (this.mSub) {
+      case 0: return this.roundMatchPiece0();
+      case 1: return this.roundMatchPiece1();
+      case 2: return this.roundMatchPiece2();
+      case 3: return this.roundMatchPiece3();
+      case 4: return this.roundMatchPiece4();
+      case 5: return this.roundMatchPiece5();
+      default: return this.roundMatchPieceEnd();
+    }
+  }
+
+  /** roundMatchPiece, sub-state 0 (B2 R10: one small method per piece kind) */
+  private roundMatchPiece0(): number {
+    const SA = this.SA, oN = this.oN;
+    if (this.mCur === 0) { this.mNc = 0; this.mMaxD = 1; this.mNoRoad = 0; }
     // candidates: origins with unassigned workers -> best entry node
-    const key = this.candKey, cnode = this.candNode;
-    let nc = 0;
-    let maxD = 1;
-    let noRoad = 0;
-    for (let o = 0; o < oN; o++) {
+    const dist = SA.dist, done = SA.done, key = this.candKey, cnode = this.candNode;
+    let nc = this.mNc, maxD = this.mMaxD, noRoad = this.mNoRoad;
+    const o0 = this.mCur, o1 = Math.min(oN, o0 + coldUnits(TC.mCand));
+    for (let o = o0; o < o1; o++) {
       if (this.oU[o] < 0.01) continue;
       let best = -1, bd = Infinity;
       for (let e = this.oEntS[o], e1 = e + this.oEntC[o]; e < e1; e++) {
@@ -2907,13 +4052,27 @@ export class TrafficSystem implements SimSystem {
       key[nc++] = o; // packed with the distance below
       if (bd > maxD) maxD = bd;
     }
+    this.mNc = nc; this.mMaxD = maxD; this.mNoRoad = noRoad;
+    this.mCur = o1;
+    if (o1 >= oN) { this.mSub = 1; this.mCur = 0; }
+    return CONT;
+  }
+
+  /** roundMatchPiece, sub-state 1 (B2 R10: one small method per piece kind) */
+  private roundMatchPiece1(): number {
+    const SA = this.SA, oN = this.oN;
     // sort candidates by generalized cost (car label minus any transit time advantage: origins with a fast transit
     // option compete on transit time) — pack (quantised cost, origin index) into one float64
-    let M = 1;
-    while (M < oN) M *= 2;
-    const q = Math.max(1, Math.floor(2 ** 50 / (M * (maxD + 1))));
-    const qN0 = this.qNoise, qP0 = this.qPrice;
-    for (let k = 0; k < nc; k++) {
+    if (this.mCur === 0) {
+      let M = 1;
+      while (M < oN) M *= 2;
+      this.mM = M;
+      this.mQ = Math.max(1, Math.floor(2 ** 50 / (M * (this.mMaxD + 1))));
+    }
+    const dist = SA.dist, src = SA.src, key = this.candKey, cnode = this.candNode, M = this.mM, q = this.mQ;
+    const qN0 = this.qNoise, qP0 = this.qPrice, nc = this.mNc;
+    const k0 = this.mCur, k1 = Math.min(nc, k0 + coldUnits(TC.mKey));
+    for (let k = k0; k < k1; k++) {
       const o = key[k];
       const node = cnode[o];
       let g = dist[node];
@@ -2925,30 +4084,96 @@ export class TrafficSystem implements SimSystem {
       }
       key[k] = Math.floor(Math.max(0, g) * q) * M + o;
     }
-    const sorted = this.sortCandidates(nc);
-    // accept nearest first
+    this.mCur = k1;
+    if (k1 >= nc) { this.mSub = 2; this.mCur = 0; }
+    return CONT;
+  }
+
+  /** roundMatchPiece, sub-state 2 (B2 R10: one small method per piece kind) */
+  private roundMatchPiece2(): number {
+    if (this.sortPiece(this.mNc)) this.mSub = 3;
+    return CONT;
+  }
+
+  /** roundMatchPiece, sub-state 3 (B2 R10: one small method per piece kind) */
+  private roundMatchPiece3(): number {
+    const SA = this.SA, oN = this.oN;
+    // accept nearest first (the round's constants, fixed before the loop)
     const fx = this.fx;
-    const carPcu = (1 / CAR_OCCUPANCY) * (fx ? fx.trafficCar : 1);
-    const trBonus = fx ? 2.5 * Math.log(fx.transitRidership) : 0;
+    this.mCarPcu = (1 / CAR_OCCUPANCY) * (fx ? fx.trafficCar : 1);
+    this.mTrBonus = fx ? 2.5 * Math.log(fx.transitRidership) : 0;
     // (r4: riders turned away by all their options become overflow records only while some group has room)
-    const ovOn = this.gPrN > 0 && this.ovAnyRoom();
-    const acc = this.acc, tAcc = this.tAcc;
-    const qAsg = this.qAsg, qBase = this.qBase, qNoise = this.qNoise, qPrice = this.qPrice, qTimeSum = this.qTimeSum;
-    const qPark = this.qPark;
+    this.mOvOn = this.gPrN > 0 && this.ovAnyRoom();
     if (this.round === 0) {
       // first round: record unconstrained proposals (excess demand -> shadow prices for the next cycle)
-      for (let k = 0; k < nc; k++) {
+      const sorted = this.candKey, src = SA.src, cnode = this.candNode, M = this.mM;
+      for (let k = 0, nc = this.mNc; k < nc; k++) {
         const o = sorted[k] % M;
         this.qProp[src[cnode[o]]] += this.oU[o];
       }
     }
-    let accepted = 0, carRound = 0;
+    this.mAccepted = 0;
+    this.mCarRound = 0;
     // An interrupted cycle can still hold the previous round's arrays in the overflow records.
     if (this.routeCand === this.ovRouteCand) this.routeCand = [];
     if (this.routeW === this.ovRouteW) this.routeW = [];
+    this.routeCand.length = 0; this.routeW.length = 0;
+    this.mSub = 4;
+    this.mCur = 0;
+    return CONT;
+  }
+
+  /** roundMatchPiece, sub-state 4 (B2 R10: one small method per piece kind) */
+  private roundMatchPiece4(): number {
+    const k0 = this.mCur, k1 = Math.min(this.mNc, k0 + coldUnits(TC.mAccept));
+    this.acceptRange(k0, k1);
+    this.mCur = k1;
+    if (k1 >= this.mNc) { this.mSub = 5; this.mCur = 0; }
+    return CONT;
+  }
+
+  /** roundMatchPiece, sub-state 5 (B2 R10: one small method per piece kind) */
+  private roundMatchPiece5(): number {
+    let accepted = this.mAccepted;
+    // WP7b: transit-only commuters (no road route to any open job — an island reached by ferry or subway) take the job
+    // their transit option reaches, while it has room this round
+    if (this.mNoRoad > 0) accepted += this.transitOnly(this.mCarPcu);
+    this.mAccepted = accepted;
+    this.roundAccepted = accepted;
+    const next = this.nextRound(accepted);
+    // r4: riders turned away by all their options: the overflow decides their mode (its drivers join this round's car
+    // flows), then the round's car flows; else the car flows now
+    if (this.pnN > 0) {
+      this.ovBonus = this.mTrBonus; this.ovCarPcu = this.mCarPcu;
+      this.ovBegin(next, this.mCarRound, this.routeCand, this.routeW);
+      this.mSub = 0;
+      return PH_PROVER;
+    }
+    this.mNext = next;
+    this.mSub = 6;
+    this.rfBegin(this.mCarRound, this.routeCand, this.routeW);
+    return CONT;
+  }
+
+  /** roundMatchPiece, sub-state default (B2 R10: one small method per piece kind) */
+  private roundMatchPieceEnd(): number {
+    if (!this.rfPiece()) return CONT;
+    this.mSub = 0;
+    return this.mNext;
+  }
+
+  /** the accept loop of roundMatch over the sorted candidates [k0, k1) (the pre-B2 loop body; its running sums in fields) */
+  private acceptRange(k0: number, k1: number): void {
+    const SA = this.SA;
+    const dist = SA.dist, src = SA.src, hops = SA.hops;
+    const sorted = this.candKey, cnode = this.candNode, M = this.mM;
+    const carPcu = this.mCarPcu, trBonus = this.mTrBonus, ovOn = this.mOvOn;
+    const acc = this.acc, tAcc = this.tAcc;
+    const qAsg = this.qAsg, qBase = this.qBase, qNoise = this.qNoise, qPrice = this.qPrice, qTimeSum = this.qTimeSum;
+    const qPark = this.qPark;
     const routeCand = this.routeCand, routeW = this.routeW;
-    routeCand.length = 0; routeW.length = 0;
-    for (let k = 0; k < nc; k++) {
+    let accepted = this.mAccepted, carRound = this.mCarRound;
+    for (let k = k0; k < k1; k++) {
       const o = sorted[k] % M;
       const node = cnode[o];
       const q = src[node];
@@ -3019,20 +4244,8 @@ export class TrafficSystem implements SimSystem {
       }
       if (stP > 0) this.addParkRides(o, carPcu);
     }
-    // WP7b: transit-only commuters (no road route to any open job — an island reached by ferry or subway) take the job
-    // their transit option reaches, while it has room this round
-    if (noRoad > 0) accepted += this.transitOnly(carPcu);
-    this.roundAccepted = accepted;
-    const next = this.nextRound(accepted);
-    // r4: riders turned away by all their options: the overflow decides their mode (its drivers join this round's car
-    // flows), then the round's car flows; else the car flows now
-    if (this.pnN > 0) {
-      this.ovBonus = trBonus; this.ovCarPcu = carPcu;
-      this.ovBegin(next, carRound, routeCand, routeW);
-      return PH_PROVER;
-    }
-    this.roundFlows(carRound, routeCand, routeW);
-    return next;
+    this.mAccepted = accepted;
+    this.mCarRound = carRound;
   }
 
   /**
@@ -3049,26 +4262,83 @@ export class TrafficSystem implements SimSystem {
     this.oAw[o] += take * this.mAw;
   }
 
-  /** the car flows of a matching round along its shortest-path forest (SA), and sample car routes of it */
+  /** the car flows of a matching round along its shortest-path forest (SA), and sample car routes of it (whole state) */
   private roundFlows(carRound: number, routeCand: number[], routeW: number[]): void {
-    if (!(carRound > 0)) return;
-    const SA = this.SA, acc = this.acc;
-    accumulate(SA, acc);
-    this.commit(SA, acc, null, null);
-    // sample car routes of this round (weighted by car trips)
-    const K = Math.min(10, routeCand.length);
-    if (K > 0) {
-      this.routeCum = growF64(this.routeCum, routeCand.length);
-      const cum = this.routeCum.subarray(0, routeCand.length);
-      let sw = 0;
-      for (let q = 0; q < routeCand.length; q++) { sw += routeW[q]; cum[q] = sw; }
-      const g = this.road;
-      for (let r = 0; r < K; r++) {
-        const idx = lowerBound(cum, this.rand() * sw);
-        const path = this.tracePath(SA, routeCand[idx], (v) => g.cellOf[v], false);
-        if (path.length >= 2) this.pendingRoutes.push({ cells: path, kind: 'car', weight: carRound / K });
+    this.rfBegin(carRound, routeCand, routeW);
+    while (!this.rfPiece()) { /* next piece */ }
+  }
+
+  /** B2: a round's car flows in pieces — accumulate and commit on SA by settle-order ranges (flowPiece), then the routes */
+  private rfBegin(carRound: number, routeCand: number[], routeW: number[]): void {
+    this.rfCar = carRound;
+    this.rfCand = routeCand;
+    this.rfW = routeW;
+    this.rfStage = carRound > 0 ? 0 : 2;
+    if (carRound > 0) this.flowBegin(this.SA, this.acc, null, null);
+  }
+
+  private rfPiece(): boolean {
+    if (this.rfStage === 0) {
+      if (!this.flowPiece()) return false;
+      this.rfStage = 1;
+      return false;
+    }
+    if (this.rfStage === 1) {
+      const routeCand = this.rfCand, routeW = this.rfW, carRound = this.rfCar, SA = this.SA;
+      // sample car routes of this round (weighted by car trips)
+      const K = Math.min(10, routeCand.length);
+      if (K > 0) {
+        this.routeCum = growF64(this.routeCum, routeCand.length);
+        const cum = this.routeCum.subarray(0, routeCand.length);
+        let sw = 0;
+        for (let q = 0; q < routeCand.length; q++) { sw += routeW[q]; cum[q] = sw; }
+        const g = this.road;
+        for (let r = 0; r < K; r++) {
+          const idx = lowerBound(cum, this.rand() * sw);
+          const path = this.tracePath(SA, routeCand[idx], (v) => g.cellOf[v], false);
+          if (path.length >= 2) this.pendingRoutes.push({ cells: path, kind: 'car', weight: carRound / K });
+        }
       }
     }
+    this.rfStage = 2;
+    this.rfCand = this.rfW = EMPTY_NUMS;
+    return true;
+  }
+
+  /**
+   * B2: flows of a forest in pieces — accumulate(S, acc) by settle-order ranges from the end, then commit(S, acc, copy,
+   * rampCopy) by ranges from the start; the same operations in the same order as accumulate + commit
+   */
+  private flowBegin(S: Search, acc: Float32Array, copy: Float32Array | null, rampCopy: Float32Array | null): void {
+    this.flS = S;
+    this.flAcc = acc;
+    this.flCopy = copy;
+    this.flRamp = rampCopy;
+    this.flPhase = 0;
+    this.flCur = S.settled;
+  }
+
+  /** one flow piece; true when the commit is complete */
+  private flowPiece(): boolean {
+    const S = this.flS!;
+    if (this.flPhase === 0) {
+      const k1 = this.flCur, k0 = Math.max(0, k1 - coldUnits(TC.accumulate));
+      accumulateRange(S, this.flAcc, k0, k1);
+      this.flCur = k0;
+      if (k0 > 0) return false;
+      this.flPhase = 1;
+      this.flCur = 0;
+      return false;
+    }
+    if (this.flPhase === 1) {
+      const k0 = this.flCur, k1 = Math.min(S.settled, k0 + coldUnits(TC.commit));
+      this.commitRange(S, this.flAcc, this.flCopy, this.flRamp, k0, k1);
+      this.flCur = k1;
+      if (k1 < S.settled) return false;
+      this.flPhase = 2;
+    }
+    this.flS = null;
+    return true;
   }
 
   /** the phase after a matching round that accepted `accepted` workers: another round, or the commute results */
@@ -3100,23 +4370,50 @@ export class TrafficSystem implements SimSystem {
    * average + 5 min). Their car trips follow the last round's forest toward the nearest open site.
    */
   private poolRemaining(): void {
-    const g = this.road;
-    const comp = g.comp;
-    const nc = g.nComp;
+    this.cmSub = 0;
+    while (!this.poolPiece()) { /* next piece */ }
+  }
+
+  /**
+   * one piece of the pooled match (poolRemaining, B2 §3 "Commute" stage 0); true when done: C0 the per-component
+   * workers, C0b the open capacity and the average commute (and the constants of the loop: carPcu, ovOn — fixed before
+   * the loop consumes room), C1 the main loop by origin ranges (the pre-B2 body), C2 the sites
+   */
+  private poolPiece(): boolean {
+    switch (this.cmSub) {
+      case 0: return this.poolPiece0();
+      case 1: return this.poolPiece1();
+      case 2: return this.poolPiece2();
+      default: return this.poolPieceEnd();
+    }
+  }
+
+  /** poolPiece, sub-state 0 (B2 R10: one small method per piece kind) */
+  private poolPiece0(): boolean {
+    const g = this.road, comp = g.comp, nc = g.nComp;
     this.poolFlows = false;
     this.poolQ.length = 0;
-    if (nc === 0) return;
+    if (nc === 0) return true;
     this.poolU = growF64(this.poolU, nc); this.poolO = growF64(this.poolO, nc);
-    const U = this.poolU.subarray(0, nc).fill(0), O = this.poolO.subarray(0, nc).fill(0);
+    const U = this.poolU.subarray(0, nc).fill(0);
+    this.poolO.subarray(0, nc).fill(0);
     let any = false;
     for (let o = 0; o < this.oN; o++) {
       if (this.oU[o] < 0.01 || this.oLastD[o] < 0) continue;
       U[comp[this.ent[this.oEntS[o]]]] += this.oU[o];
       any = true;
     }
-    if (!any) return;
+    if (!any) return true;
+    this.cmSub = 1;
+    return false;
+  }
+
+  /** poolPiece, sub-state 1 (B2 R10: one small method per piece kind) */
+  private poolPiece1(): boolean {
+    const g = this.road, comp = g.comp, nc = g.nComp;
+    const O = this.poolO;
     const full = MATCH_PROP_ROUNDS; // full-capacity rounds
-    const saveRound = this.round;
+    this.cmSaveRound = this.round;
     this.round = full;
     for (let q = 0; q < this.qN; q++) {
       const c = this.openCap(q);
@@ -3124,18 +4421,61 @@ export class TrafficSystem implements SimSystem {
     }
     let tw = 0, tt = 0;
     for (let o = 0; o < this.oN; o++) { tw += this.oAsg[o]; tt += this.oTimeSum[o]; }
-    const avgT = tw > 0 ? tt / tw : 15;
+    this.cmAvgT = tw > 0 ? tt / tw : 15;
     const fx = this.fx;
-    const carPcu = (1 / CAR_OCCUPANCY) * (fx ? fx.trafficCar : 1);
-    const SA = this.SA, acc = this.acc;
-    const ovOn = this.gPrN > 0 && this.ovAnyRoom();
-    let flows = false;
+    this.cmCarPcu = (1 / CAR_OCCUPANCY) * (fx ? fx.trafficCar : 1);
+    this.cmOvOn = this.gPrN > 0 && this.ovAnyRoom();
+    this.cmFlows = false;
     // pooled car commuters per component (parking demand of the sites that take them; the overflow records' drivers
     // are added when PH_PROVER decides them: poolCars)
     if (this.poolTk.length !== nc) this.poolTk = new Float64Array(nc);
     if (this.poolCarTk.length !== nc) this.poolCarTk = new Float64Array(nc);
-    const tk = this.poolTk.fill(0), carTk = this.poolCarTk.fill(0);
-    for (let o = 0; o < this.oN; o++) {
+    this.poolTk.fill(0); this.poolCarTk.fill(0);
+    this.cmSub = 2;
+    this.cmCur = 0;
+    return false;
+  }
+
+  /** poolPiece, sub-state 2 (B2 R10: one small method per piece kind) */
+  private poolPiece2(): boolean {
+    const o0 = this.cmCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.poolOrigin));
+    this.poolRange(o0, o1);
+    this.cmCur = o1;
+    if (o1 >= this.oN) this.cmSub = 3;
+    return false;
+  }
+
+  /** poolPiece, sub-state default (B2 R10: one small method per piece kind) */
+  private poolPieceEnd(): boolean {
+    const g = this.road, comp = g.comp, nc = g.nComp;
+    // the sites with open capacity take the pooled workers of their component (their parking demand: poolCars)
+    const U = this.poolU, O = this.poolO, avgT = this.cmAvgT;
+    for (let q = 0; q < this.qN; q++) {
+      const open = this.openCap(q);
+      if (open <= 0.5) continue;
+      const c = comp[this.qNode[q]];
+      if (O[c] <= 0) continue;
+      const add = open * Math.min(1, U[c] / O[c]);
+      this.qAsg[q] += add;
+      this.qTimeSum[q] += add * Math.max(avgT + 5, 20);
+      this.poolQ.push(q, add);
+    }
+    this.round = this.cmSaveRound;
+    this.poolFlows = this.cmFlows;
+    this.ovCarPcu = this.cmCarPcu;
+    this.cmSub = 0;
+    this.cmCur = 0;
+    return true;
+  }
+
+  /** the pooled match's main loop over origins [o0, o1) (the pre-B2 body; flows in cmFlows) */
+  private poolRange(o0: number, o1: number): void {
+    const g = this.road, comp = g.comp;
+    const U = this.poolU, O = this.poolO, tk = this.poolTk, carTk = this.poolCarTk;
+    const avgT = this.cmAvgT, carPcu = this.cmCarPcu, ovOn = this.cmOvOn;
+    const SA = this.SA, acc = this.acc;
+    let flows = this.cmFlows;
+    for (let o = o0; o < o1; o++) {
       const u = this.oU[o];
       if (u < 0.01 || this.oLastD[o] < 0) continue;
       const c = comp[this.ent[this.oEntS[o]]];
@@ -3192,20 +4532,7 @@ export class TrafficSystem implements SimSystem {
       }
       if (sc > 0 && node >= 0) { acc[node] += takeD * sc * carPcu; flows = true; }
     }
-    // the sites with open capacity take the pooled workers of their component (their parking demand: poolCars)
-    for (let q = 0; q < this.qN; q++) {
-      const open = this.openCap(q);
-      if (open <= 0.5) continue;
-      const c = comp[this.qNode[q]];
-      if (O[c] <= 0) continue;
-      const add = open * Math.min(1, U[c] / O[c]);
-      this.qAsg[q] += add;
-      this.qTimeSum[q] += add * Math.max(avgT + 5, 20);
-      this.poolQ.push(q, add);
-    }
-    this.round = saveRound;
-    this.poolFlows = flows;
-    this.ovCarPcu = carPcu;
+    this.cmFlows = flows;
   }
 
   /** the pooled workers' parking demand at the sites that took them (car share of their component; after the overflow
@@ -3502,37 +4829,44 @@ export class TrafficSystem implements SimSystem {
    * the labels read), then stage 4: what is left without park & ride (chunks), and with the last chunk the round's car flows (the
    * overflow car legs: PH_COMMUTE, before commuteEnd). Returns the next phase (the round's successor when done)
    */
-  private overflow(): number {
+  private overflowPiece(): number {
+    // (the last pieces: the round's car flows and routes, as roundFlows)
+    if (this.ovFlow === 1) {
+      if (!this.rfPiece()) return CONT;
+      this.ovFlow = 0;
+      this.ovRouteCand = []; this.ovRouteW = [];
+      this.pnN = 0;
+      return this.ovNext;
+    }
     if (this.ovStage === 1) {
       const S = this.ov[this.ovSlot].S;
       // (a cached forest keeps its result only)
-      if (S.run(OV_CHUNK_STATES)) { S.releaseScratch(); this.ovStartPass(); }
-      return PH_PROVER;
+      if (S.run(coldUnits(TC.ovState))) { S.releaseScratch(); this.ovStartPass(); }
+      return CONT;
     }
     if (this.ovStage === 3) {
       const f = this.ov[this.ovSlot];
       // (a kept forest's car-leg minutes of this assignment: renewed along the labels the records read, altAt)
       if (f.alt !== this.cycles) { f.S.markAlt(this.nodeTime, this.rampT); f.alt = this.cycles; }
-      const end = Math.min(this.pnN, this.ovCur + OV_CHUNK);
+      const end = Math.min(this.pnN, this.ovCur + coldUnits(TC.ovRec));
       this.ovAlloc(this.ovCur, end);
       this.ovCur = end;
-      if (end < this.pnN) return PH_PROVER;
+      if (end < this.pnN) return CONT;
       // another pass while people are left that this pass's forest could not serve: a forest with fewer seeds
       this.ovPass++;
       const more = this.ovPass < OV_PASSES || (this.ovPass < OV_PASSES_MAX && this.ovPlaced >= OV_MIN_ROOM);
       if (this.ovExh >= OV_MIN_ROOM && more && this.ovLeft()) this.ovPlan(true);
       else { this.ovStage = 4; this.ovCur = 0; }
-      return PH_PROVER;
+      return CONT;
     }
-    const end = Math.min(this.pnN, this.ovCur + OV_CHUNK);
+    const end = Math.min(this.pnN, this.ovCur + coldUnits(TC.ovRec));
     this.ovRest(this.ovCur, end);
     this.ovCur = end;
-    if (end < this.pnN) return PH_PROVER;
+    if (end < this.pnN) return CONT;
     // (the overflow car legs stay on their forests until PH_COMMUTE's last steps: one pass per forest and assignment)
-    this.roundFlows(this.ovCarRound, this.ovRouteCand, this.ovRouteW);
-    this.ovRouteCand = []; this.ovRouteW = [];
-    this.pnN = 0;
-    return this.ovNext;
+    this.rfBegin(this.ovCarRound, this.ovRouteCand, this.ovRouteW);
+    this.ovFlow = 1;
+    return CONT;
   }
 
   /** the records of a round / the pooled match are complete: plan the overflow's first pass (PH_PROVER follows) */
@@ -3922,12 +5256,13 @@ export class TrafficSystem implements SimSystem {
   /**
    * add the accumulated per-node flows of forest S (acc after accumulate) to this cycle's volumes, copy them into
    * `copy` (cached volumes) and count highway <-> non-highway moves as ramp flow of the non-highway node (+ `rampCopy`);
-   * clears acc on the settled nodes
+   * clears acc on the settled nodes — B2: over the settle-order range [k0, k1) (ranges in order from 0 to S.settled give
+   * the pre-B2 commit over the whole forest exactly)
    */
-  private commit(S: Search, acc: Float32Array, copy: Float32Array | null, rampCopy: Float32Array | null): void {
+  private commitRange(S: Search, acc: Float32Array, copy: Float32Array | null, rampCopy: Float32Array | null, k0: number, k1: number): void {
     const volNew = this.volNew, rampNew = this.rampNew, order = S.order, next = S.next, type = this.road.type;
     const HW = Network.Highway;
-    for (let k = 0; k < S.settled; k++) {
+    for (let k = k0; k < k1; k++) {
       const v = order[k];
       const f = acc[v];
       if (f === 0) continue;
@@ -3940,6 +5275,26 @@ export class TrafficSystem implements SimSystem {
         rampNew[r] += f;
         if (rampCopy) rampCopy[r] += f;
       }
+    }
+  }
+
+  /** B2: commitK over the settle-order range [k0, k1), walked backwards (ranges from the end of order to its start give
+   *  commitK exactly: a state's flow moves to its parent, settled earlier) */
+  private commitKRange(S: SearchK, acc: Float32Array, k0: number, k1: number): void {
+    const order = S.order, next = S.next, snode = S.node, volNew = this.volNew, rampNew = this.rampNew, type = this.road.type;
+    const HW = Network.Highway;
+    for (let k = k1 - 1; k >= k0; k--) {
+      const s = order[k];
+      const f = acc[s];
+      if (f === 0) continue;
+      acc[s] = 0;
+      const v = snode[s];
+      volNew[v] += f;
+      const p = next[s];
+      if (p < 0) continue;
+      acc[p] += f;
+      const nx = snode[p];
+      if ((type[v] === HW) !== (type[nx] === HW)) rampNew[type[v] === HW ? nx : v] += f;
     }
   }
 
@@ -3966,8 +5321,91 @@ export class TrafficSystem implements SimSystem {
     }
   }
 
-  /** transit rider flows, per-origin results and stats of the commute matching */
+  /**
+   * PH_COMMUTE (B2 §3 "Commute"): stage 0 the pooled match (poolPiece) — then the overflow of its records (PH_PROVER)
+   * or its car flows in pieces; stage 1 the overflow car legs of this assignment (one forest at a time, its backward
+   * walk by settle-order ranges), then commuteEnd's pieces
+   */
+  private commutePiece(): number {
+    if (this.commuteStage === 0) {
+      if (this.cmFlowing) {
+        if (!this.flowPiece()) return CONT;
+        this.cmFlowing = false;
+        this.commuteStage = 1;
+        return CONT;
+      }
+      if (!this.poolPiece()) return CONT;
+      if (this.pnN > 0) {
+        this.ovBegin(PH_COMMUTE, this.poolFlows ? 1 : 0, [], []);
+        this.commuteStage = 1;
+        return PH_PROVER;
+      }
+      if (this.poolFlows) {
+        this.flowBegin(this.SA, this.acc, null, null);
+        this.cmFlowing = true;
+        return CONT;
+      }
+      this.commuteStage = 1;
+      return CONT;
+    }
+    // (r4: the overflow car legs of this assignment first, one forest at a time)
+    if (this.ceSub === 0) {
+      if (this.olF === null) {
+        const f = this.ov.find((x) => x.dirty);
+        if (f) { this.olF = f; this.olCur = f.S.settled; }
+      }
+      const f = this.olF;
+      if (f !== null) {
+        const k1 = this.olCur, k0 = Math.max(0, k1 - coldUnits(TC.commitK));
+        this.commitKRange(f.S, f.acc, k0, k1);
+        this.olCur = k0;
+        if (k0 > 0) return CONT;
+        f.dirty = false;
+        this.olF = null;
+        return CONT;
+      }
+    }
+    if (!this.commuteEndPiece()) return CONT;
+    this.commuteStage = 0;
+    return NEXT_PHASE[PH_COMMUTE];
+  }
+
+  /** transit rider flows, per-origin results and stats of the commute matching (whole state; with poolCars first) */
   private commuteEnd(): void {
+    this.ceSub = 0;
+    while (!this.commuteEndPiece()) { /* next piece */ }
+  }
+
+  /**
+   * one piece of the commute end (poolCars + the pre-B2 commuteEnd); true when done. E0 the pooled parking demand and the
+   * shadow prices; E1 the per-site distribution + persisted prices; E2 the park & ride car legs (backward ranges); E3 the
+   * reach snapshot's road cells gathered by origin ranges (into back arrays); E4 PUBLISH the garage reports, prices and
+   * the reach snapshot (garageInfo / garageReach read them together); E5 the transit forest's accumulation (backward
+   * ranges; the stop loads' sink calls in walk order); E6/E7 the transit flows by settle-order ranges into the back bus
+   * raster and ferry map, swapped in at the end (cellBusRiders / ferryRidersAt); E8/E9 markCutOff; E10 the per-origin
+   * results by ranges (sums as doubles in fields); E11 the cut-off minutes; E12 the commute by mode.
+   */
+  private commuteEndPiece(): boolean {
+    switch (this.ceSub) {
+      case 0: return this.commuteEndPiece0();
+      case 1: return this.commuteEndPiece1();
+      case 2: return this.commuteEndPiece2();
+      case 3: return this.commuteEndPiece3();
+      case 4: return this.commuteEndPiece4();
+      case 5: return this.commuteEndPiece5();
+      case 6: return this.commuteEndPiece6();
+      case 7: return this.commuteEndPiece7();
+      case 8: return this.commuteEndPiece8();
+      case 9: return this.commuteEndPiece9();
+      case 10: return this.commuteEndPiece10();
+      case 11: return this.commuteEndPiece11();
+      default: return this.commuteEndPieceEnd();
+    }
+  }
+
+  /** commuteEndPiece, sub-state 0 (B2 R10: one small method per piece kind) */
+  private commuteEndPiece0(): boolean {
+    this.poolCars();
     // shadow prices: tatonnement on first-round excess demand (proposals / proportional capacity), step scaled to
     // the city's commute time scale
     let tw = 0, tt = 0;
@@ -3981,9 +5419,15 @@ export class TrafficSystem implements SimSystem {
     for (let q = 0; q < this.qN; q++) {
       const cap = Math.max(1, this.qCapP[q]);
       const r = Math.max(0.25, Math.min(8, this.qProp[q] / cap / mean));
-      let p = this.qPrice[q] + stepP * Math.log(r);
+      const p = this.qPrice[q] + stepP * Math.log(r);
       this.qPrice[q] = p < -MATCH_PRICE_MAX ? -MATCH_PRICE_MAX : p > MATCH_PRICE_MAX ? MATCH_PRICE_MAX : p;
     }
+    this.ceSub = 1;
+    return false;
+  }
+
+  /** commuteEndPiece, sub-state 1 (B2 R10: one small method per piece kind) */
+  private commuteEndPiece1(): boolean {
     // distribute cluster results to member job sites (by slots) + persist prices
     for (let j = 0; j < this.jN; j++) {
       const q = this.jQ[j];
@@ -3995,13 +5439,236 @@ export class TrafficSystem implements SimSystem {
       if (this.jBid[j] >= 0) this.priceById[this.jBid[j]] = this.qPrice[q];
       else this.connPrice[this.jCell[j]] = this.qPrice[q];
     }
-    // WP7-8 park & ride: car legs along the K-label P&R forest (the overflow's were committed by PH_PROVER); per garage
-    // the cars / riders / demand of this assignment (the reports and stats.transitFleet.parkRide read the same numbers)
-    // and the rationing price for the next one: tatonnement on wanted (the logit choice) / room (demand beyond the room
-    // raises it, idle room lowers it to 0; a group that is nobody's option has no demand to ration: 0). The price only
-    // splits the riders over their options (r4: the mode choice does not see it, see prPick)
-    if (this.gPrN > 0 && this.prRiders > 0 && this.SPK.graphVersion === this.road.version) this.commitK(this.SPK, this.prAcc);
-    else if (this.prAcc.length > 0) this.prAcc.fill(0, 0, Math.min(this.prAcc.length, this.SPK.K * this.road.n));
+    // WP7-8 park & ride: car legs along the K-label P&R forest (the overflow's were committed by PH_PROVER)
+    if (this.gPrN > 0 && this.prRiders > 0 && this.SPK.graphVersion === this.road.version) {
+      this.ceCur = this.SPK.settled;
+      this.ceSub = 2;
+    } else {
+      if (this.prAcc.length > 0) this.prAcc.fill(0, 0, Math.min(this.prAcc.length, this.SPK.K * this.road.n));
+      this.ceSub = 3;
+      this.ceCur = 0;
+      this.ceE = 0;
+    }
+    return false;
+  }
+
+  /** commuteEndPiece, sub-state 2 (B2 R10: one small method per piece kind) */
+  private commuteEndPiece2(): boolean {
+    const k1 = this.ceCur, k0 = Math.max(0, k1 - coldUnits(TC.commitK));
+    this.commitKRange(this.SPK, this.prAcc, k0, k1);
+    this.ceCur = k0;
+    if (k0 > 0) return false;
+    this.ceSub = 3;
+    this.ceCur = 0;
+    this.ceE = 0;
+    return false;
+  }
+
+  /** commuteEndPiece, sub-state 3 (B2 R10: one small method per piece kind) */
+  private commuteEndPiece3(): boolean {
+    // (the reach snapshot's road cells — not node ids: the hint still finds them after a graph rebuild, routed 53)
+    const oN = this.oN, o0 = this.ceCur, o1 = Math.min(oN, o0 + coldUnits(TC.snapGather));
+    let E = this.ceE;
+    for (let o = o0; o < o1; o++) E += this.oEntC[o];
+    this.rsEntSB = growI32(this.rsEntSB, oN);
+    this.rsEntB = growI32(this.rsEntB, E);
+    const cellOf = this.road.cellOf, ent = this.ent, entS = this.rsEntSB, outE = this.rsEntB;
+    let e = this.ceE;
+    for (let o = o0; o < o1; o++) {
+      const c = this.oEntC[o];
+      entS[o] = e;
+      for (let x = this.oEntS[o], x1 = x + c; x < x1; x++) outE[e++] = cellOf[ent[x]];
+    }
+    this.ceE = e;
+    this.ceCur = o1;
+    if (o1 >= oN) this.ceSub = 4;
+    return false;
+  }
+
+  /** commuteEndPiece, sub-state 4 (B2 R10: one small method per piece kind) */
+  private commuteEndPiece4(): boolean {
+    this.garageReports();
+    this.snapReachPublish();
+    this.ceSub = 5;
+    this.ceCur = this.ST.settled;
+    return false;
+  }
+
+  /** commuteEndPiece, sub-state 5 (B2 R10: one small method per piece kind) */
+  private commuteEndPiece5(): boolean {
+    const k1 = this.ceCur, k0 = Math.max(0, k1 - coldUnits(TC.trAccumulate));
+    accumulateRange(this.ST, this.tAcc, k0, k1, this.stopSink);
+    this.ceCur = k0;
+    if (k0 > 0) return false;
+    this.ceSub = 6;
+    return false;
+  }
+
+  /** commuteEndPiece, sub-state 6 (B2 R10: one small method per piece kind) */
+  private commuteEndPiece6(): boolean {
+    const C = this.road.C;
+    if (this.busCellB.length !== C) this.busCellB = new Float32Array(C);
+    this.busCellB.fill(0);
+    this.ferryRidersByB.clear();
+    this.ceFerry = 0;
+    this.ceCur = 0;
+    this.ceSub = 7;
+    return false;
+  }
+
+  /** commuteEndPiece, sub-state 7 (B2 R10: one small method per piece kind) */
+  private commuteEndPiece7(): boolean {
+    const ST = this.ST, T = this.tnet!, tAcc = this.tAcc;
+    const nR = this.road.n, nRail = T.nRail, nGrid = nR + nRail + T.nSub;
+    const nodeStop = this.nodeStop, volNew = this.volNew, busCell = this.busCellB, ferryBy = this.ferryRidersByB;
+    const type = this.road.type, cellOf = this.road.cellOf, next = ST.next, rampNew = this.rampNew, HW = Network.Highway;
+    const k0 = this.ceCur, k1 = Math.min(ST.settled, k0 + coldUnits(TC.trFlow));
+    let ferry = this.ceFerry;
+    for (let k = k0; k < k1; k++) {
+      const v = ST.order[k];
+      const f = tAcc[v];
+      if (f === 0) continue;
+      if (v < nR) {
+        const pcu = f * BUS_PCU_PER_RIDER;
+        volNew[v] += pcu;
+        busCell[cellOf[v]] = f;
+        const nx = next[v];
+        if (nx >= 0 && nx < nR && (type[v] === HW) !== (type[nx] === HW)) rampNew[type[v] === HW ? nx : v] += pcu;
+      } else if (v < nR + nRail) this.railNew[v - nR] += f;
+      else if (v < nGrid) this.subNew[v - nR - nRail] += f;
+      else {
+        // ferry node: riders through the terminal; flow leaving along a ferry link crossed the water
+        const s = nodeStop[v];
+        if (s >= 0) ferryBy.set(this.stops.bid[s], (ferryBy.get(this.stops.bid[s]) ?? 0) + f);
+        if (next[v] >= nGrid) ferry += f;
+      }
+    }
+    this.ceFerry = ferry;
+    this.ceCur = k1;
+    if (k1 < ST.settled) return false;
+    // (published together: cellBusRiders / ferryRidersAt never see a half-filled raster)
+    const b = this.busCell;
+    this.busCell = this.busCellB;
+    this.busCellB = b;
+    const m = this.ferryRidersBy;
+    this.ferryRidersBy = this.ferryRidersByB;
+    this.ferryRidersByB = m;
+    this.ferryRiders = ferry;
+    this.ceSub = 8;
+    return false;
+  }
+
+  /** commuteEndPiece, sub-state 8 (B2 R10: one small method per piece kind) */
+  private commuteEndPiece8(): boolean {
+    this.ceTripsC = this.ceTripsT = this.ceTripsW = this.ceCSum = this.ceCW = 0;
+    this.ceSub = this.markCutOffBegin() ? 9 : 10;
+    this.ceCur = 0;
+    return false;
+  }
+
+  /** commuteEndPiece, sub-state 9 (B2 R10: one small method per piece kind) */
+  private commuteEndPiece9(): boolean {
+    const o0 = this.ceCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.cutOff));
+    this.markCutOffRange(o0, o1);
+    this.ceCur = o1;
+    if (o1 >= this.oN) { this.ceSub = 10; this.ceCur = 0; }
+    return false;
+  }
+
+  /** commuteEndPiece, sub-state 10 (B2 R10: one small method per piece kind) */
+  private commuteEndPiece10(): boolean {
+    const cut = this.oCut;
+    const o0 = this.ceCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.ceOrigin));
+    let tripsC = this.ceTripsC, tripsT = this.ceTripsT, tripsW = this.ceTripsW, cSum = this.ceCSum, cW = this.ceCW;
+    for (let o = o0; o < o1; o++) {
+      const a = this.oAsg[o];
+      const W = this.oW[o];
+      this.oEmp[o] = W > 0 ? Math.min(1, a / W) : 0;
+      // (routed 43: a cut-off home's few matches are no commute — not in the city average; its minutes are the
+      // unreached ones below; the share matched stays, BF.NoJobs follows it)
+      if (a > 0 && cut[o] === 1) {
+        this.oTime[o] = 0;
+        this.oShC[o] = this.oCarW[o] / a;
+        this.oShT[o] = this.oTrW[o] / a;
+        this.oShW[o] = this.oWalkW[o] / a;
+      } else if (a > 0) {
+        this.oTime[o] = this.oTimeSum[o] / a;
+        this.oShC[o] = this.oCarW[o] / a;
+        this.oShT[o] = this.oTrW[o] / a;
+        this.oShW[o] = this.oWalkW[o] / a;
+        cSum += this.oTimeSum[o];
+        cW += a;
+      } else {
+        this.oTime[o] = 0;
+        this.oShC[o] = this.oShT[o] = this.oShW[o] = 0;
+      }
+      tripsC += this.oCarW[o];
+      tripsT += this.oTrW[o];
+      tripsW += this.oWalkW[o];
+    }
+    this.ceTripsC = tripsC; this.ceTripsT = tripsT; this.ceTripsW = tripsW; this.ceCSum = cSum; this.ceCW = cW;
+    this.ceCur = o1;
+    if (o1 < this.oN) return false;
+    this.tripsCar = tripsC;
+    this.tripsTransit = tripsT;
+    this.tripsWalk = tripsW;
+    this.commuteSum = cSum;
+    this.commuteW = cW;
+    this.ceSub = 11;
+    this.ceCur = 0;
+    return false;
+  }
+
+  /** commuteEndPiece, sub-state 11 (B2 R10: one small method per piece kind) */
+  private commuteEndPiece11(): boolean {
+    // routed 43: every cut-off home reads the longest commute (MAX_COMMUTE: no trip to work) — the commute layer, the
+    // access field it seeds, desirability's and land value's commute terms and approval see "no route to work", not
+    // the 5 minutes to the one job on their road (nor services' milder unreached-cell minutes, ACCESS_UNREACHED x the
+    // city average, which still scores as a fair commute next to the inspector's "No route to work")
+    const cut = this.oCut;
+    const o0 = this.ceCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.cutMin));
+    for (let o = o0; o < o1; o++) if (cut[o] === 1) this.oTime[o] = MAX_COMMUTE;
+    this.ceCur = o1;
+    if (o1 < this.oN) return false;
+    this.bmMc = this.bmMt = this.bmMw = this.bmAc = this.bmAt = this.bmAw = this.bmNC = this.bmNT = this.bmNW = 0;
+    this.ceSub = 12;
+    this.ceCur = 0;
+    return false;
+  }
+
+  /** commuteEndPiece, sub-state default (B2 R10: one small method per piece kind) */
+  private commuteEndPieceEnd(): boolean {
+    // F6: the mean commute of each mode's commuters (cut-off homes left out, like the city average) and what transit
+    // saves its riders against driving the same trip (stats.commuteByMode)
+    const cut = this.oCut;
+    const o0 = this.ceCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.byMode));
+    let mc = this.bmMc, mt = this.bmMt, mw = this.bmMw, ac = this.bmAc, at = this.bmAt, aw = this.bmAw, nC = this.bmNC, nT = this.bmNT, nW = this.bmNW;
+    for (let o = o0; o < o1; o++) {
+      if (cut[o] === 1 || !(this.oAsg[o] > 0)) continue;
+      mc += this.oMc[o]; mt += this.oMt[o]; mw += this.oMw[o]; ac += this.oAc[o]; at += this.oAt[o]; aw += this.oAw[o];
+      nC += this.oCarW[o]; nT += this.oTrW[o]; nW += this.oWalkW[o];
+    }
+    this.bmMc = mc; this.bmMt = mt; this.bmMw = mw; this.bmAc = ac; this.bmAt = at; this.bmAw = aw; this.bmNC = nC; this.bmNT = nT; this.bmNW = nW;
+    this.ceCur = o1;
+    if (o1 < this.oN) return false;
+    const bm = this.byMode;
+    bm.car = nC >= 0.5 ? mc / nC : 0;
+    bm.transit = nT >= 0.5 ? mt / nT : 0;
+    bm.walk = nW >= 0.5 ? mw / nW : 0;
+    bm.transitSaved = aw >= 0.5 ? (ac - at) / aw : 0;
+    this.ceSub = 0;
+    this.ceCur = 0;
+    return true;
+  }
+
+  /**
+   * commuteEnd's garage part (published with the reach snapshot): per garage the cars / riders / demand of this
+   * assignment (the reports and stats.transitFleet.parkRide read the same numbers) and the rationing price for the next
+   * one: tatonnement on wanted (the logit choice) / room (demand beyond the room raises it, idle room lowers it to 0; a
+   * group that is nobody's option has no demand to ration: 0). The price only splits the riders over their options (r4:
+   * the mode choice does not see it, see prPick)
+   */
+  private garageReports(): void {
     this.garageLoad.clear();
     this.garageLast.clear();
     const members = new Int32Array(this.gN + 1);
@@ -4040,92 +5707,6 @@ export class TrafficSystem implements SimSystem {
       for (let q = 0; q < this.gN; q++) live.add(this.gBid[q]);
       for (const m of [this.garagePrice, this.garageReserve, this.garageStop, this.garageDown, this.garageRank, this.garageRideT]) for (const id of [...m.keys()]) if (!live.has(id)) m.delete(id);
     }
-    // (r4: what the idle hint reads of this assignment)
-    this.snapReach();
-    const ST = this.ST, T = this.tnet!;
-    const tAcc = this.tAcc;
-    const nR = this.road.n, nRail = T.nRail, nGrid = nR + nRail + T.nSub;
-    const nodeStop = this.nodeStop, stLoad = this.stLoad;
-    accumulate(ST, tAcc, (_j, f, node) => { const s = nodeStop[node]; if (s >= 0) stLoad[s] += f; });
-    const volNew = this.volNew;
-    const C = this.road.C;
-    if (this.busCell.length !== C) this.busCell = new Float32Array(C);
-    this.busCell.fill(0);
-    const type = this.road.type, cellOf = this.road.cellOf, next = ST.next, rampNew = this.rampNew, HW = Network.Highway;
-    this.ferryRidersBy.clear();
-    let ferry = 0;
-    for (let k = 0; k < ST.settled; k++) {
-      const v = ST.order[k];
-      const f = tAcc[v];
-      if (f === 0) continue;
-      if (v < nR) {
-        const pcu = f * BUS_PCU_PER_RIDER;
-        volNew[v] += pcu;
-        this.busCell[cellOf[v]] = f;
-        const nx = next[v];
-        if (nx >= 0 && nx < nR && (type[v] === HW) !== (type[nx] === HW)) rampNew[type[v] === HW ? nx : v] += pcu;
-      } else if (v < nR + nRail) this.railNew[v - nR] += f;
-      else if (v < nGrid) this.subNew[v - nR - nRail] += f;
-      else {
-        // ferry node: riders through the terminal; flow leaving along a ferry link crossed the water
-        const s = nodeStop[v];
-        if (s >= 0) this.ferryRidersBy.set(this.stops.bid[s], (this.ferryRidersBy.get(this.stops.bid[s]) ?? 0) + f);
-        if (next[v] >= nGrid) ferry += f;
-      }
-    }
-    this.ferryRiders = ferry;
-    let tripsC = 0, tripsT = 0, tripsW = 0, cSum = 0, cW = 0;
-    this.markCutOff();
-    const cut = this.oCut;
-    for (let o = 0; o < this.oN; o++) {
-      const a = this.oAsg[o];
-      const W = this.oW[o];
-      this.oEmp[o] = W > 0 ? Math.min(1, a / W) : 0;
-      // (routed 43: a cut-off home's few matches are no commute — not in the city average; its minutes are the unreached
-      // ones below; the share matched stays, BF.NoJobs follows it)
-      if (a > 0 && cut[o] === 1) {
-        this.oTime[o] = 0;
-        this.oShC[o] = this.oCarW[o] / a;
-        this.oShT[o] = this.oTrW[o] / a;
-        this.oShW[o] = this.oWalkW[o] / a;
-      } else if (a > 0) {
-        this.oTime[o] = this.oTimeSum[o] / a;
-        this.oShC[o] = this.oCarW[o] / a;
-        this.oShT[o] = this.oTrW[o] / a;
-        this.oShW[o] = this.oWalkW[o] / a;
-        cSum += this.oTimeSum[o];
-        cW += a;
-      } else {
-        this.oTime[o] = 0;
-        this.oShC[o] = this.oShT[o] = this.oShW[o] = 0;
-      }
-      tripsC += this.oCarW[o];
-      tripsT += this.oTrW[o];
-      tripsW += this.oWalkW[o];
-    }
-    this.tripsCar = tripsC;
-    this.tripsTransit = tripsT;
-    this.tripsWalk = tripsW;
-    this.commuteSum = cSum;
-    this.commuteW = cW;
-    // routed 43: every cut-off home reads the longest commute (MAX_COMMUTE: no trip to work) — the commute layer, the
-    // access field it seeds, desirability's and land value's commute terms and approval see "no route to work", not the
-    // 5 minutes to the one job on their road (nor services' milder unreached-cell minutes, ACCESS_UNREACHED x the city
-    // average, which still scores as a fair commute next to the inspector's "No route to work")
-    for (let o = 0; o < this.oN; o++) if (cut[o] === 1) this.oTime[o] = MAX_COMMUTE;
-    // F6: the mean commute of each mode's commuters (cut-off homes left out, like the city average) and what transit
-    // saves its riders against driving the same trip (stats.commuteByMode)
-    let mc = 0, mt = 0, mw = 0, ac = 0, at = 0, aw = 0, nC = 0, nT = 0, nW = 0;
-    for (let o = 0; o < this.oN; o++) {
-      if (cut[o] === 1 || !(this.oAsg[o] > 0)) continue;
-      mc += this.oMc[o]; mt += this.oMt[o]; mw += this.oMw[o]; ac += this.oAc[o]; at += this.oAt[o]; aw += this.oAw[o];
-      nC += this.oCarW[o]; nT += this.oTrW[o]; nW += this.oWalkW[o];
-    }
-    const bm = this.byMode;
-    bm.car = nC >= 0.5 ? mc / nC : 0;
-    bm.transit = nT >= 0.5 ? mt / nT : 0;
-    bm.walk = nW >= 0.5 ? mw / nW : 0;
-    bm.transitSaved = aw >= 0.5 ? (ac - at) / aw : 0;
   }
 
   /**
@@ -4133,13 +5714,19 @@ export class TrafficSystem implements SimSystem {
    * not the one with the most job slots (regional connections included) and holds fewer than CUTOFF_JOB_SHARE job slots
    * per worker living on it; an origin with a transit option (walk to a stop, park & ride) is never cut off (an island
    * town with a ferry or a subway commutes for real), nor is a component with a road to the map edge (its residents
-   * commute to the region: a second town on a highway is not cut off however few jobs it has)
+   * commute to the region: a second town on a highway is not cut off however few jobs it has). Whole state (begin + the
+   * origins).
    */
   private markCutOff(): void {
+    if (this.markCutOffBegin()) this.markCutOffRange(0, this.oN);
+  }
+
+  /** markCutOff's components (slots, workers, edge, the cut components); false = nobody is cut off (no origin loop) */
+  private markCutOffBegin(): boolean {
     const g = this.road, comp = g.comp, nc = g.nComp, oN = this.oN;
     const cut = (this.oCut = growU8(this.oCut, oN));
     cut.fill(0, 0, oN);
-    if (nc <= 1 || oN === 0) return;
+    if (nc <= 1 || oN === 0) return false;
     const slots = new Float64Array(nc), workers = new Float64Array(nc);
     for (let q = 0; q < this.qN; q++) { const v = this.qNode[q]; if (v >= 0 && v < g.n) slots[comp[v]] += this.qSlots[q]; }
     for (let o = 0; o < oN; o++) if (this.oEntC[o] > 0) workers[comp[this.ent[this.oEntS[o]]]] += this.oW[o];
@@ -4148,10 +5735,15 @@ export class TrafficSystem implements SimSystem {
     let main = -1, best = -1;
     for (let c = 0; c < nc; c++) if (slots[c] > best) { best = slots[c]; main = c; }
     // (no job pool anywhere yet — a new town: nobody is "cut off" from it)
-    if (!(best >= 1)) return;
-    const cc = new Uint8Array(nc);
+    if (!(best >= 1)) return false;
+    const cc = (this.cutComp = new Uint8Array(nc));
     for (let c = 0; c < nc; c++) cc[c] = c !== main && edge[c] === 0 && workers[c] > 0 && slots[c] < CUTOFF_JOB_SHARE * workers[c] ? 1 : 0;
-    for (let o = 0; o < oN; o++) {
+    return true;
+  }
+
+  private markCutOffRange(o0: number, o1: number): void {
+    const comp = this.road.comp, cut = this.oCut, cc = this.cutComp;
+    for (let o = o0; o < o1; o++) {
       if (this.oEntC[o] === 0 || this.oTrT[o] < Infinity || this.oPrN[o] > 0) continue;
       let all = true;
       for (let e = this.oEntS[o], e1 = e + this.oEntC[o]; e < e1; e++) if (cc[comp[this.ent[e]]] === 0) { all = false; break; }
@@ -4160,42 +5752,124 @@ export class TrafficSystem implements SimSystem {
   }
 
   // ------------------------------------------------------------------------------------------ INBOUND
+  /** whole-state inbound (tests) */
   private inbound(): void {
-    const g = this.road;
-    if (!this.sfRecompute) {
-      // cached: last inflows by building (capped by this cycle's vacancies) + cached volumes
-      let tot = 0;
-      for (let j = 0; j < this.jB; j++) {
-        const spare = this.jSlots[j] - Math.min(this.jSlots[j], this.jAsg[j]);
-        const v = Math.min(spare, this.inboundById[this.jBid[j]]);
-        this.jInbound[j] = v > 0 ? v : 0;
-        this.jCar[j] += this.jInbound[j];
-        tot += this.jInbound[j];
-      }
-      this.tripsInbound = tot;
-      this.addCached(this.volInbound);
-      // ramp flows of the cached inbound / shop / freight passes
-      if (this.rampSF.length >= g.n) { const rn = this.rampNew, rs = this.rampSF; for (let v = 0; v < g.n; v++) rn[v] += rs[v]; }
-      return;
+    this.sfSub = 0;
+    this.sfCur = 0;
+    while (!this.inboundPiece()) { /* next piece */ }
+  }
+
+  /**
+   * one PH_INBOUND piece; true when done. Cached cycles: one piece. Recompute: the fills + seeds + search start, the
+   * forward search in chunks (RoadSearchRun on SB), the desire / scale, the inflows, the flows (accumulate + commit
+   * by ranges), then tripsInbound (inboundTotal: changes in this one piece), the connection inflows and the routes
+   */
+  private inboundPiece(): boolean {
+    switch (this.sfSub) {
+      case 0: return this.inboundPiece0();
+      case 1: return this.inboundPiece1();
+      case 2: return this.inboundPiece2();
+      case 3: return this.inboundPiece3();
+      case 4: return this.inboundPiece4();
+      default: return this.inboundPieceEnd();
     }
-    this.volInbound = growF32(this.volInbound, g.n);
-    this.volInbound.fill(0, 0, g.n);
-    this.rampSF = growF32(this.rampSF, g.n);
-    this.rampSF.fill(0, 0, g.n);
-    for (let j = 0; j < this.jB; j++) this.inboundById[this.jBid[j]] = 0;
-    const S = this.SB;
+  }
+
+  /** inboundPiece, sub-state 0 (B2 R10: one small method per piece kind) */
+  private inboundPiece0(): boolean {
+    const g = this.road;
+    if (!this.sfRecompute) return this.inboundCachedPiece();
+    // (two pieces: the fills, then the seeds + the search start; sfCur = -1 between them)
+    if (this.sfCur === 0) {
+      this.volInbound = growF32(this.volInbound, g.n);
+      this.volInbound.fill(0, 0, g.n);
+      this.rampSF = growF32(this.rampSF, g.n);
+      this.rampSF.fill(0, 0, g.n);
+      for (let j = 0; j < this.jB; j++) this.inboundById[this.jBid[j]] = 0;
+      this.sfCur = -1;
+      return false;
+    }
+    this.sfCur = 0;
     const seeds = this.seeds;
     seeds.clear();
-    const conns: number[] = [];
+    const conns = this.inConns;
+    conns.length = 0;
     for (let j = this.jB; j < this.jN; j++) {
       if (this.jEntC[j] === 0) continue;
       const node = this.ent[this.jEntS[j]];
       seeds.push(node, REGIONAL_TIME, conns.length);
       conns.push(j);
     }
-    this.tripsInbound = 0;
-    if (seeds.n === 0) return;
-    roadSearch(g, g.fwd, this.nodeTime, S, this.heap, seeds, REGIONAL_TIME + 90, this.rampT);
+    if (seeds.n === 0) { this.tripsInbound = 0; return true; }
+    this.runB.start(g, g.fwd, this.nodeTime, this.SB, seeds, REGIONAL_TIME + 90, this.rampT);
+    this.sfSub = 1;
+    return false;
+  }
+
+  /**
+   * inboundPiece, sub-state 0 of a cached cycle, by ranges (B2 fix round: in one piece it ran 2.2-5.8 ms on its first
+   * executions after a load, cached cycles being every other one): sfCur walks the job sites [0, jB) — the last inflows
+   * by building, capped by this cycle's vacancies; the sum in sfTot, a double as pre-B2's local; tripsInbound in the
+   * range's last piece — then the cached volumes [jB, jB + n), then the ramp flows of the cached inbound / shop / freight
+   * passes [jB + n, jB + 2n) when they exist. Element-wise loops in pre-B2's order: a whole stage = pre-B2's piece.
+   */
+  private inboundCachedPiece(): boolean {
+    const n = this.road.n, jB = this.jB, c0 = this.sfCur;
+    // (no job sites: pre-B2's empty loop still set tripsInbound = 0)
+    if (c0 === 0 && jB === 0) this.tripsInbound = 0;
+    if (c0 < jB) {
+      if (c0 === 0) this.sfTot = 0;
+      const j1 = Math.min(jB, c0 + coldUnits(TC.inCached));
+      let tot = this.sfTot;
+      for (let j = c0; j < j1; j++) {
+        const spare = this.jSlots[j] - Math.min(this.jSlots[j], this.jAsg[j]);
+        const v = Math.min(spare, this.inboundById[this.jBid[j]]);
+        this.jInbound[j] = v > 0 ? v : 0;
+        this.jCar[j] += this.jInbound[j];
+        tot += this.jInbound[j];
+      }
+      this.sfTot = tot;
+      this.sfCur = j1;
+      if (j1 === jB) this.tripsInbound = tot;
+      if (j1 < jB || n > 0) return false;
+      this.sfCur = 0;
+      return true;
+    }
+    const ramp = this.rampSF.length >= n;
+    const end = jB + n + (ramp ? n : 0);
+    const v0 = c0 - jB, v1 = Math.min(end, c0 + coldUnits(TC.fill * 2)) - jB;
+    if (v0 < n) {
+      const v1c = Math.min(n, v1);
+      this.addCachedRange(this.volInbound, v0, v1c);
+      this.sfCur = jB + v1c;
+    } else {
+      const rn = this.rampNew, rs = this.rampSF;
+      for (let v = v0 - n, e = v1 - n; v < e; v++) rn[v] += rs[v];
+      this.sfCur = jB + v1;
+    }
+    if (this.sfCur < end) return false;
+    this.sfCur = 0;
+    return true;
+  }
+
+  /** shop / freight, sub-state 0 of a cached cycle: the cached volumes by node ranges (B2 fix round; sfCur) */
+  private cachedVolPiece(v: Float32Array): boolean {
+    const n = this.road.n, v0 = this.sfCur, v1 = Math.min(n, v0 + coldUnits(TC.fill * 2));
+    this.addCachedRange(v, v0, v1);
+    if (v1 < n) { this.sfCur = v1; return false; }
+    this.sfCur = 0;
+    return true;
+  }
+
+  /** inboundPiece, sub-state 1 (B2 R10: one small method per piece kind) */
+  private inboundPiece1(): boolean {
+    if (this.runB.run(pieceUnits(TC.rdNodeB, 1, WARM))) this.sfSub = 2;
+    return false;
+  }
+
+  /** inboundPiece, sub-state 2 (B2 R10: one small method per piece kind) */
+  private inboundPiece2(): boolean {
+    const S = this.SB, conns = this.inConns;
     const dist = S.dist, src = S.src, done = S.done;
     this.inDesire = growF32(this.inDesire, this.jB); this.inBestNode = growI32(this.inBestNode, this.jB);
     this.inConnSum = growF64(this.inConnSum, conns.length);
@@ -4224,11 +5898,21 @@ export class TrafficSystem implements SimSystem {
       const capW = this.jConnW[conns[k]];
       scale[k] = connSum[k] > capW ? capW / connSum[k] : 1;
     }
+    this.sfSub = 3;
+    return false;
+  }
+
+  /** inboundPiece, sub-state 3 (B2 R10: one small method per piece kind) */
+  private inboundPiece3(): boolean {
+    const g = this.road;
+    const S = this.SB, src = S.src, conns = this.inConns;
+    const desire = this.inDesire, bestNode = this.inBestNode, scale = this.inScale;
     const acc = this.acc;
     acc.fill(0, 0, g.n);
     const carPcu = 1 / CAR_OCCUPANCY;
     let tot = 0;
-    const cand: number[] = [];
+    const cand = this.inCand;
+    cand.length = 0;
     this.inConn = growF64(this.inConn, conns.length);
     const connIn = this.inConn.subarray(0, conns.length).fill(0);
     for (let j = 0; j < this.jB; j++) {
@@ -4243,11 +5927,25 @@ export class TrafficSystem implements SimSystem {
       connIn[src[bn]] += inflow;
       if (inflow > 0) cand.push(j);
     }
-    accumulate(S, acc);
-    this.commit(S, acc, this.volInbound, this.rampSF);
+    this.sfTot = tot;
+    this.flowBegin(S, acc, this.volInbound, this.rampSF);
+    this.sfSub = 4;
+    return false;
+  }
+
+  /** inboundPiece, sub-state 4 (B2 R10: one small method per piece kind) */
+  private inboundPiece4(): boolean {
+    if (this.flowPiece()) this.sfSub = 5;
+    return false;
+  }
+
+  /** inboundPiece, sub-state default (B2 R10: one small method per piece kind) */
+  private inboundPieceEnd(): boolean {
+    const g = this.road;
+    const S = this.SB, conns = this.inConns, cand = this.inCand, bestNode = this.inBestNode, tot = this.sfTot;
     this.tripsInbound = tot;
     this.connInbound.clear();
-    for (let k = 0; k < conns.length; k++) this.connInbound.set(this.jCell[conns[k]], connIn[k]);
+    for (let k = 0; k < conns.length; k++) this.connInbound.set(this.jCell[conns[k]], this.inConn[k]);
     // sample inbound routes (connection -> job)
     const K = Math.min(12, cand.length);
     for (let q = 0; q < K; q++) {
@@ -4255,33 +5953,68 @@ export class TrafficSystem implements SimSystem {
       const path = this.tracePath(S, bestNode[j], (v) => g.cellOf[v], true);
       if (path.length >= 2) this.pendingRoutes.push({ cells: path, kind: 'car', weight: tot / Math.max(1, K) });
     }
+    this.sfSub = 0;
+    this.sfCur = 0;
+    return true;
   }
 
   // ------------------------------------------------------------------------------------------ SHOP
   /** add cached per-node volumes into this cycle's volumes (shop / freight skipped this cycle) */
   private addCached(v: Float32Array): void {
-    const n = this.road.n, volNew = this.volNew;
-    for (let i = 0; i < n; i++) volNew[i] += v[i];
+    this.addCachedRange(v, 0, this.road.n);
+  }
+
+  /** addCached over the nodes [i0, i1) (B2 fix round: the cached pieces by ranges; element-wise, so exact) */
+  private addCachedRange(v: Float32Array, i0: number, i1: number): void {
+    const volNew = this.volNew;
+    for (let i = i0; i < i1; i++) volNew[i] += v[i];
   }
 
   private shopping(): void {
+    this.sfSub = 0;
+    this.sfCur = 0;
+    while (!this.shopPiece()) { /* next piece */ }
+  }
+
+  /** one PH_SHOP piece: cached (one piece), or seeds + start, search chunks, the origins' trips by ranges, the flows */
+  private shopPiece(): boolean {
+    switch (this.sfSub) {
+      case 0: return this.shopPiece0();
+      case 1: return this.shopPiece1();
+      case 2: return this.shopPiece2();
+      default: return this.shopPieceEnd();
+    }
+  }
+
+  /** shopPiece, sub-state 0 (B2 R10: one small method per piece kind) */
+  private shopPiece0(): boolean {
     const g = this.road;
-    if (!this.sfRecompute) { this.addCached(this.volShop); return; }
+    if (!this.sfRecompute) return this.cachedVolPiece(this.volShop);
     this.volShop = growF32(this.volShop, g.n);
     this.volShop.fill(0, 0, g.n);
-    const S = this.SB;
     const seeds = this.seeds;
     seeds.clear();
     for (let s = 0; s < this.sN; s++) for (let e = this.sEntS[s], e1 = e + this.sEntC[s]; e < e1; e++) seeds.push(this.ent[e], 0, s);
-    this.tripsShop = 0;
-    if (seeds.n === 0) return;
-    roadSearch(g, g.rev, this.nodeTime, S, this.heap, seeds, 45, this.rampT);
-    const dist = S.dist, src = S.src, done = S.done;
-    const acc = this.acc;
-    acc.fill(0, 0, g.n);
+    if (seeds.n === 0) { this.tripsShop = 0; return true; }
+    this.runB.start(g, g.rev, this.nodeTime, this.SB, seeds, 45, this.rampT);
+    this.sfSub = 1;
+    return false;
+  }
+
+  /** shopPiece, sub-state 1 (B2 R10: one small method per piece kind) */
+  private shopPiece1(): boolean {
+    const g = this.road;
+    if (this.runB.run(pieceUnits(TC.rdNodeB, 1, WARM))) { this.sfSub = 2; this.sfCur = 0; this.sfTot = 0; this.acc.fill(0, 0, g.n); }
+    return false;
+  }
+
+  /** shopPiece, sub-state 2 (B2 R10: one small method per piece kind) */
+  private shopPiece2(): boolean {
+    const S = this.SB, dist = S.dist, src = S.src, done = S.done, acc = this.acc;
     const pcu = SHOP_PCU_WEIGHT / CAR_OCCUPANCY;
-    let tot = 0;
-    for (let o = 0; o < this.oN; o++) {
+    let tot = this.sfTot;
+    const o0 = this.sfCur, o1 = Math.min(this.oN, o0 + coldUnits(TC.shopOrigin));
+    for (let o = o0; o < o1; o++) {
       let bd = Infinity, bn = -1;
       for (let e = this.oEntS[o], e1 = e + this.oEntC[o]; e < e1; e++) {
         const v = this.ent[e];
@@ -4297,38 +6030,99 @@ export class TrafficSystem implements SimSystem {
       this.sCar[src[bn]] += car;
       tot += trips;
     }
-    accumulate(S, acc);
-    this.commit(S, acc, this.volShop, this.rampSF);
-    this.tripsShop = tot;
+    this.sfTot = tot;
+    this.sfCur = o1;
+    if (o1 >= this.oN) { this.flowBegin(S, acc, this.volShop, this.rampSF); this.sfSub = 3; }
+    return false;
+  }
+
+  /** shopPiece, sub-state default (B2 R10: one small method per piece kind) */
+  private shopPieceEnd(): boolean {
+    if (!this.flowPiece()) return false;
+    this.tripsShop = this.sfTot;
+    this.sfSub = 0;
+    this.sfCur = 0;
+    return true;
   }
 
   // ------------------------------------------------------------------------------------------ FREIGHT
   private freight(): void {
+    this.sfSub = 0;
+    this.sfCur = 0;
+    while (!this.freightPiece()) { /* next piece */ }
+  }
+
+  /**
+   * one PH_FREIGHT piece: cached (one piece), or the fills + seeds, the truck times + search start, search chunks, the
+   * sources (freightById: one piece), the flows, the trucks per cell (a back raster swapped in: truckVolume), routes
+   */
+  private freightPiece(): boolean {
+    switch (this.sfSub) {
+      case 0: return this.freightPiece0();
+      case 1: return this.freightPiece1();
+      case 2: return this.freightPiece2();
+      case 3: return this.freightPiece3();
+      case 4: return this.freightPiece4();
+      case 5: return this.freightPiece5();
+      default: return this.freightPieceEnd();
+    }
+  }
+
+  /** freightPiece, sub-state 0 (B2 R10: one small method per piece kind) */
+  private freightPiece0(): boolean {
     const g = this.road;
-    if (!this.sfRecompute) { this.addCached(this.volFreight); return; }
+    if (!this.sfRecompute) return this.cachedVolPiece(this.volFreight);
     this.volFreight = growF32(this.volFreight, g.n);
     this.volFreight.fill(0, 0, g.n);
     this.sfVersion = g.version;
     this.truckRoutes = [];
-    const S = this.SB;
     const seeds = this.seeds;
     seeds.clear();
     for (let k = 0; k < this.kN; k++) for (let e = this.kEntS[k], e1 = e + this.kEntC[k]; e < e1; e++) seeds.push(this.ent[e], this.kLabel[k], k);
-    this.tripsFreight = 0;
     if (seeds.n === 0) {
+      this.tripsFreight = 0;
       for (let f = 0; f < this.fN; f++) this.freightById[this.fBid[f]] = 0.15;
-      return;
+      return true;
+    }
+    this.sfSub = 1;
+    this.sfCur = 0;
+    return false;
+  }
+
+  /** freightPiece, sub-state 1 (B2 R10: one small method per piece kind) */
+  private freightPiece1(): boolean {
+    const g = this.road;
+    // (the truck times by node ranges, then the search start in its own piece: sfCur = -1)
+    if (this.sfCur < 0) {
+      this.runB.start(g, g.rev, this.truckTime, this.SB, this.seeds, 150, this.rampT);
+      this.sfSub = 2;
+      this.sfCur = 0;
+      return false;
     }
     // trucks prefer highways (WP7-10): truck time x TRUCK_LOCAL_FACTOR off highways, congestion-priced ramps
-    const tt = (this.truckTime = growF32(this.truckTime, g.n));
-    for (let v = 0, type = g.type; v < g.n; v++) tt[v] = type[v] === Network.Highway ? this.nodeTime[v] : this.nodeTime[v] * TRUCK_LOCAL_FACTOR;
-    roadSearch(g, g.rev, tt, S, this.heap, seeds, 150, this.rampT);
-    const dist = S.dist, done = S.done;
+    if (this.sfCur === 0) this.truckTime = growF32(this.truckTime, g.n);
+    const tt = this.truckTime, type = g.type, nt = this.nodeTime;
+    const v0 = this.sfCur, v1 = Math.min(g.n, v0 + coldUnits(TC.truckTime));
+    for (let v = v0; v < v1; v++) tt[v] = type[v] === Network.Highway ? nt[v] : nt[v] * TRUCK_LOCAL_FACTOR;
+    this.sfCur = v1 < g.n ? v1 : -1;
+    return false;
+  }
+
+  /** freightPiece, sub-state 2 (B2 R10: one small method per piece kind) */
+  private freightPiece2(): boolean {
+    if (this.runB.run(pieceUnits(TC.rdNodeB, 1, WARM))) this.sfSub = 3;
+    return false;
+  }
+
+  /** freightPiece, sub-state 3 (B2 R10: one small method per piece kind) */
+  private freightPiece3(): boolean {
+    const g = this.road;
+    const S = this.SB, dist = S.dist, done = S.done;
     const acc = this.acc;
     acc.fill(0, 0, g.n);
     let tot = 0;
-    const cand: number[] = [];
-    const candNode: number[] = [];
+    const cand = this.frCand, candNode = this.frCandNode;
+    cand.length = 0; candNode.length = 0;
     for (let f = 0; f < this.fN; f++) {
       let bd = Infinity, bn = -1;
       for (let e = this.fEntS[f], e1 = e + this.fEntC[f]; e < e1; e++) {
@@ -4344,15 +6138,46 @@ export class TrafficSystem implements SimSystem {
       cand.push(f);
       candNode.push(bn);
     }
-    accumulate(S, acc);
-    this.commit(S, acc, this.volFreight, this.rampSF);
-    this.tripsFreight = tot;
-    // trucks / day per road cell (Traffic overlay "Trucks", roadCellReport)
-    if (this.truckCell.length !== g.C) this.truckCell = new Float32Array(g.C);
-    this.truckCell.fill(0);
-    for (let v = 0; v < g.n; v++) { const f = this.volFreight[v]; if (f > 0) this.truckCell[g.cellOf[v]] = f / TRUCK_PCU; }
+    this.sfTot = tot;
+    this.flowBegin(S, acc, this.volFreight, this.rampSF);
+    this.sfSub = 4;
+    return false;
+  }
+
+  /** freightPiece, sub-state 4 (B2 R10: one small method per piece kind) */
+  private freightPiece4(): boolean {
+    const g = this.road;
+    if (!this.flowPiece()) return false;
+    this.tripsFreight = this.sfTot;
+    // trucks / day per road cell (Traffic overlay "Trucks", roadCellReport): a back raster, swapped in when complete
+    if (this.truckCellB.length !== g.C) this.truckCellB = new Float32Array(g.C);
+    this.truckCellB.fill(0);
+    this.sfCur = 0;
+    this.sfSub = 5;
+    return false;
+  }
+
+  /** freightPiece, sub-state 5 (B2 R10: one small method per piece kind) */
+  private freightPiece5(): boolean {
+    const g = this.road;
+    const tc = this.truckCellB, vf = this.volFreight, cellOf = g.cellOf;
+    const v0 = this.sfCur, v1 = Math.min(g.n, v0 + pieceUnits(TC.truckCell, 1, WARM));
+    for (let v = v0; v < v1; v++) { const f = vf[v]; if (f > 0) tc[cellOf[v]] = f / TRUCK_PCU; }
+    this.sfCur = v1;
+    if (v1 < g.n) return false;
+    const t = this.truckCell;
+    this.truckCell = this.truckCellB;
+    this.truckCellB = t;
     this.hasTruckData = true;
+    this.sfSub = 6;
+    return false;
+  }
+
+  /** freightPiece, sub-state default (B2 R10: one small method per piece kind) */
+  private freightPieceEnd(): boolean {
+    const g = this.road;
     // sample truck routes weighted by trucks
+    const S = this.SB, cand = this.frCand, candNode = this.frCandNode, tot = this.sfTot;
     const K = Math.min(20, cand.length);
     if (K > 0) {
       const cum = new Float64Array(cand.length);
@@ -4364,6 +6189,9 @@ export class TrafficSystem implements SimSystem {
         if (path.length >= 2) this.truckRoutes.push({ cells: path, kind: 'truck', weight: tot / K });
       }
     }
+    this.sfSub = 0;
+    this.sfCur = 0;
+    return true;
   }
 
   // ------------------------------------------------------------------------------------------ FREIGHT SINKS
@@ -4374,57 +6202,142 @@ export class TrafficSystem implements SimSystem {
    * value first, then round-robin in building order; the others keep their last value.
    */
   private freightSinks(): void {
-    const g = this.road, S = this.SB, seeds = this.seeds;
-    const K = this.sinkK.length;
-    if (K === 0 || this.truckTime.length < g.n) { this.sinksDone = true; return; }
-    // pick: the first sink without a value, else the one after the last searched (round-robin)
-    let pick = -1;
-    for (let q = 0; q < K; q++) { const id = this.sinkIds[q]; if (!(id < this.sinkTrucksById.length) || this.sinkTrucksById[id] < 0) { pick = q; break; } }
-    if (pick < 0) {
-      const last = this.sinkIds.indexOf(this.sinkLast);
-      pick = last >= 0 ? (last + 1) % K : 0;
-    }
-    seeds.clear();
-    const k = this.sinkK[pick];
-    for (let e = this.kEntS[k], e1 = e + this.kEntC[k]; e < e1; e++) seeds.push(this.ent[e], 0, 0);
-    let tot = 0;
-    if (seeds.n > 0) {
-      roadSearch(g, g.rev, this.truckTime, S, this.heap, seeds, FREIGHT_SINK_MIN, this.rampT);
-      const done = S.done;
-      for (let f = 0; f < this.fN; f++) {
-        for (let e = this.fEntS[f], e1 = e + this.fEntC[f]; e < e1; e++) if (done[this.ent[e]] === 1) { tot += this.fTrucks[f]; break; }
+    this.sfSub = 0;
+    this.sfCur = 0;
+    while (!this.sinksPiece()) { /* next piece */ }
+  }
+
+  /** one PH_SINKS piece: the pick + seeds + search start, search chunks, the sources reached (sinkTrucks: one piece) */
+  private sinksPiece(): boolean {
+    const g = this.road, seeds = this.seeds;
+    switch (this.sfSub) {
+      case 0: {
+        const K = this.sinkK.length;
+        if (K === 0 || this.truckTime.length < g.n) { this.sinksDone = true; return true; }
+        // pick: the first sink without a value, else the one after the last searched (round-robin)
+        let pick = -1;
+        for (let q = 0; q < K; q++) { const id = this.sinkIds[q]; if (!(id < this.sinkTrucksById.length) || this.sinkTrucksById[id] < 0) { pick = q; break; } }
+        if (pick < 0) {
+          const last = this.sinkIds.indexOf(this.sinkLast);
+          pick = last >= 0 ? (last + 1) % K : 0;
+        }
+        this.sfPick = pick;
+        seeds.clear();
+        const k = this.sinkK[pick];
+        for (let e = this.kEntS[k], e1 = e + this.kEntC[k]; e < e1; e++) seeds.push(this.ent[e], 0, 0);
+        this.sfSearched = seeds.n > 0;
+        if (this.sfSearched) {
+          this.runB.start(g, g.rev, this.truckTime, this.SB, seeds, FREIGHT_SINK_MIN, this.rampT);
+          this.sfSub = 1;
+        } else this.sfSub = 2;
+        return false;
       }
-      S.settled = 0; // scratch
+      case 1: {
+        if (this.runB.run(pieceUnits(TC.rdNodeB, 1, WARM))) this.sfSub = 2;
+        return false;
+      }
+      default: {
+        let tot = 0;
+        if (this.sfSearched) {
+          const S = this.SB, done = S.done;
+          for (let f = 0; f < this.fN; f++) {
+            for (let e = this.fEntS[f], e1 = e + this.fEntC[f]; e < e1; e++) if (done[this.ent[e]] === 1) { tot += this.fTrucks[f]; break; }
+          }
+          S.settled = 0; // scratch
+        }
+        const id = this.sinkIds[this.sfPick];
+        if (id < this.sinkTrucksById.length) this.sinkTrucksById[id] = tot;
+        this.sinkLast = id;
+        this.sinksDone = true;
+        this.sfSub = 0;
+        this.sfCur = 0;
+        return true;
+      }
     }
-    const id = this.sinkIds[pick];
-    if (id < this.sinkTrucksById.length) this.sinkTrucksById[id] = tot;
-    this.sinkLast = id;
-    this.sinksDone = true;
   }
 
   // ------------------------------------------------------------------------------------------ PARKING (WP7-7)
   /** parking raster from this cycle's car arrivals (job sites, shops) vs supply (zones, streets, civic lots, garages) */
   private parkingRaster(sim: Simulation): void {
+    this.pkSub = 0;
+    while (!this.parkingPiece(sim)) { /* next piece */ }
+  }
+
+  /**
+   * one PH_PARKING piece; true when done. The demand footprints by job-site / shop ranges and the box filters work on a
+   * back set of the arrays garageInfo's relief reads (parkD, parkBoxD, parkBoxS, garageFree): K1 demand, K2 base supply
+   * by rows, K3 the plain garages' supply, K4 box(D) (rows, then the vertical pass resumed by rows), K5 the park & ride
+   * reserves (box of the supply without them, then the reserve loop), K6 box(S), K7 the blend into a back raster by
+   * cell ranges (the summary's sums in fields), K8 PUBLISH: st.parking, the back set swapped in, the summary, the event.
+   * The same operations in the same order as the pre-B2 parkingRaster.
+   */
+  private parkingPiece(sim: Simulation): boolean {
+    switch (this.pkSub) {
+      case 0: return this.parkingPiece0(sim);
+      case 1: return this.parkingPiece1(sim);
+      case 2: return this.parkingPiece2(sim);
+      case 3: return this.parkingPiece3(sim);
+      case 4: return this.parkingPiece4(sim);
+      case 5: return this.parkingPiece5(sim);
+      case 6: return this.parkingPiece6(sim);
+      case 7: return this.parkingPiece7(sim);
+      case 8: return this.parkingPiece8(sim);
+      default: return this.parkingPieceEnd(sim);
+    }
+  }
+
+  /** parkingPiece, sub-state 0 (B2 R10: one small method per piece kind) */
+  private parkingPiece0(sim: Simulation): boolean {
     const st = sim.state, N = st.size, C = st.cells;
     if (this.parkD.length !== C) {
       this.parkD = new Float32Array(C); this.parkS = new Float32Array(C);
       this.parkTmpA = new Float32Array(C); this.parkTmpB = new Float32Array(C);
       this.parkBoxD = new Float32Array(C); this.parkBoxS = new Float32Array(C);
     }
-    const D = this.parkD, S = this.parkS;
-    D.fill(0);
-    const inv = 1 / CAR_OCCUPANCY;
-    for (let j = 0; j < this.jB; j++) { const b = this.jObj[j]; if (b) addFootprint(N, b, this.jCar[j] * inv, D); }
-    for (let s = 0; s < this.sN; s++) { const b = this.sObj[s]; if (b) addFootprint(N, b, PARKING_SHOP_W * this.sCar[s] * inv, D); }
-    baseSupply(st, S);
+    if (this.parkDB.length !== C) { this.parkDB = new Float32Array(C); this.parkBoxDB = new Float32Array(C); this.parkBoxSB = new Float32Array(C); }
+    this.parkDB.fill(0);
+    this.pkCur = 0;
+    this.pkSub = 1;
+    return false;
+  }
+
+  /** parkingPiece, sub-state 1 (B2 R10: one small method per piece kind) */
+  private parkingPiece1(sim: Simulation): boolean {
+    const st = sim.state, N = st.size, C = st.cells;
+    // demand: job sites, then shops
+    const D = this.parkDB, inv = 1 / CAR_OCCUPANCY, jB = this.jB, sN = this.sN;
+    const u0 = this.pkCur, u1 = Math.min(jB + sN, u0 + coldUnits(TC.parkDemand));
+    for (let u = u0; u < u1; u++) {
+      if (u < jB) { const b = this.jObj[u]; if (b) addFootprint(N, b, this.jCar[u] * inv, D); }
+      else { const s = u - jB, b = this.sObj[s]; if (b) addFootprint(N, b, PARKING_SHOP_W * this.sCar[s] * inv, D); }
+    }
+    this.pkCur = u1;
+    if (u1 >= jB + sN) { this.pkSub = 2; this.pkCur = 0; }
+    return false;
+  }
+
+  /** parkingPiece, sub-state 2 (B2 R10: one small method per piece kind) */
+  private parkingPiece2(sim: Simulation): boolean {
+    const st = sim.state, N = st.size, C = st.cells;
+    const i0 = this.pkCur, i1 = Math.min(C, i0 + coldUnits(TC.parkSupply));
+    baseSupplyRange(st, this.parkS, i0, i1);
+    this.pkCur = i1;
+    if (i1 >= C) this.pkSub = 3;
+    return false;
+  }
+
+  /** parkingPiece, sub-state 3 (B2 R10: one small method per piece kind) */
+  private parkingPiece3(sim: Simulation): boolean {
+    const st = sim.state, N = st.size, C = st.cells;
     // garages: their free spaces ease the blocks around them; one without a road beside it gives none (drivers can't
     // reach it — what its report says). Parking-only garages (no park & ride) free all their spaces. Every park & ride
     // garage keeps spaces for the businesses around it: spaces x min(1, the pressure they feel without the park & ride
     // garages / PR_RESERVE_FULL), at most PR_RESERVE_SPREAD x the cars they lack (garageShortage: a small strip of shops
     // does not take a whole garage; PR_RESERVE_SMOOTH-blended, persisted: park & ride gets spaces - reserve from the
     // next assignment on — local parkers first), and frees its spaces minus this assignment's park & ride cars
-    const prB: Building[] = [], prQ: number[] = [];
-    this.garageFree.clear();
+    const S = this.parkS, prB = this.pkPrB, prQ = this.pkPrQ;
+    prB.length = 0; prQ.length = 0;
+    this.garageFreeB.clear();
     for (let q = 0; q < this.gN; q++) {
       const id = this.gBid[q], pr = this.gState[q] === GARAGE_PR;
       if (!pr) this.garageReserve.delete(id);
@@ -4433,34 +6346,113 @@ export class TrafficSystem implements SimSystem {
       if (!b) continue;
       if (pr) { prB.push(b); prQ.push(q); continue; }
       addGarageSupply(N, b, this.gSpaces[q], S);
-      this.garageFree.set(id, this.gSpaces[q]);
+      this.garageFreeB.set(id, this.gSpaces[q]);
     }
-    parkingBox(N, D, this.parkBoxD, this.parkTmpA);
-    if (prB.length > 0) {
-      parkingBox(N, S, this.parkTmpB, this.parkTmpA);
-      for (let k = 0; k < prB.length; k++) {
-        const q = prQ[k], id = this.gBid[q], spaces = this.gSpaces[q];
-        const sh = garageShortage(N, prB[k], D, this.parkBoxD, this.parkTmpB);
-        const raw = Math.min(spaces * Math.min(1, sh.p / PR_RESERVE_FULL), PR_RESERVE_SPREAD * sh.unmet);
-        const old = this.garageReserve.get(id);
-        const res = old === undefined ? raw : old + PR_RESERVE_SMOOTH * (raw - old);
-        if (res >= 0.5) this.garageReserve.set(id, res); else this.garageReserve.delete(id);
-        const free = spaces - Math.min(spaces, this.gCars[q]);
-        addGarageSupply(N, prB[k], free, S);
-        this.garageFree.set(id, free);
-      }
+    this.boxBegin(this.parkDB, this.parkBoxDB);
+    this.pkSub = 4;
+    return false;
+  }
+
+  /** parkingPiece, sub-state 4 (B2 R10: one small method per piece kind) */
+  private parkingPiece4(sim: Simulation): boolean {
+    const st = sim.state, N = st.size, C = st.cells;
+    if (!this.boxPiece(N)) return false;
+    if (this.pkPrB.length > 0) { this.boxBegin(this.parkS, this.parkTmpB); this.pkSub = 5; }
+    else { this.boxBegin(this.parkS, this.parkBoxSB); this.pkSub = 7; }
+    return false;
+  }
+
+  /** parkingPiece, sub-state 5 (B2 R10: one small method per piece kind) */
+  private parkingPiece5(sim: Simulation): boolean {
+    const st = sim.state, N = st.size, C = st.cells;
+    if (this.boxPiece(N)) this.pkSub = 6;
+    return false;
+  }
+
+  /** parkingPiece, sub-state 6 (B2 R10: one small method per piece kind) */
+  private parkingPiece6(sim: Simulation): boolean {
+    const st = sim.state, N = st.size, C = st.cells;
+    const D = this.parkDB, S = this.parkS, prB = this.pkPrB, prQ = this.pkPrQ;
+    for (let k = 0; k < prB.length; k++) {
+      const q = prQ[k], id = this.gBid[q], spaces = this.gSpaces[q];
+      const sh = garageShortage(N, prB[k], D, this.parkBoxDB, this.parkTmpB);
+      const raw = Math.min(spaces * Math.min(1, sh.p / PR_RESERVE_FULL), PR_RESERVE_SPREAD * sh.unmet);
+      const old = this.garageReserve.get(id);
+      const res = old === undefined ? raw : old + PR_RESERVE_SMOOTH * (raw - old);
+      if (res >= 0.5) this.garageReserve.set(id, res); else this.garageReserve.delete(id);
+      const free = spaces - Math.min(spaces, this.gCars[q]);
+      addGarageSupply(N, prB[k], free, S);
+      this.garageFreeB.set(id, free);
     }
-    parkingBox(N, S, this.parkBoxS, this.parkTmpA);
+    this.boxBegin(this.parkS, this.parkBoxSB);
+    this.pkSub = 7;
+    return false;
+  }
+
+  /** parkingPiece, sub-state 7 (B2 R10: one small method per piece kind) */
+  private parkingPiece7(sim: Simulation): boolean {
+    const st = sim.state, N = st.size, C = st.cells;
+    if (!this.boxPiece(N)) return false;
     // blended with the previous raster (one assignment's arrivals are noisy); a fresh city / old save starts unblended
-    let prev: Float32Array | null = null;
     if (this.parkHas) {
       if (this.parkPrev.length !== C) this.parkPrev = new Float32Array(C);
       this.parkPrev.set(st.parking);
-      prev = this.parkPrev;
     }
-    this.parkingSummary = parkingFromBoxes(N, D, S, this.parkBoxD, this.parkBoxS, st.parking, prev, PARKING_BLEND);
+    if (this.parkNext.length !== C) this.parkNext = new Float32Array(C);
+    const a = this.pkSums;
+    a.wSum = 0; a.pSum = 0; a.dCells = 0; a.high = 0; a.sTot = 0; a.dTot = 0;
+    this.pkCur = 0;
+    this.pkSub = 8;
+    return false;
+  }
+
+  /** parkingPiece, sub-state 8 (B2 R10: one small method per piece kind) */
+  private parkingPiece8(sim: Simulation): boolean {
+    const st = sim.state, N = st.size, C = st.cells;
+    const prev = this.parkHas ? this.parkPrev : null;
+    const i0 = this.pkCur, i1 = Math.min(C, i0 + coldUnits(TC.parkBlend));
+    parkingFromBoxesRange(N, this.parkDB, this.parkS, this.parkBoxDB, this.parkBoxSB, this.parkNext, prev, PARKING_BLEND, i0, i1, this.pkSums);
+    this.pkCur = i1;
+    if (i1 >= C) this.pkSub = 9;
+    return false;
+  }
+
+  /** parkingPiece, sub-state default (B2 R10: one small method per piece kind) */
+  private parkingPieceEnd(sim: Simulation): boolean {
+    const st = sim.state, N = st.size, C = st.cells;
+    st.parking.set(this.parkNext);
+    let t = this.parkD; this.parkD = this.parkDB; this.parkDB = t;
+    t = this.parkBoxD; this.parkBoxD = this.parkBoxDB; this.parkBoxDB = t;
+    t = this.parkBoxS; this.parkBoxS = this.parkBoxSB; this.parkBoxSB = t;
+    const m = this.garageFree; this.garageFree = this.garageFreeB; this.garageFreeB = m;
+    this.parkingSummary = parkingSummaryOf(this.pkSums);
     this.parkHas = true;
+    this.pkSub = 0;
+    this.pkCur = 0;
     sim.events.emit('layerUpdated', 'parking');
+    return true;
+  }
+
+  /** parkingBox(N, src, dst, parkTmpA) in pieces: boxH by row ranges, then boxV resumed by rows (BoxVRun) */
+  private boxBegin(src: Float32Array, dst: Float32Array): void {
+    this.bxSrc = src;
+    this.bxDst = dst;
+    this.bxStage = 0;
+    this.bxRow = 0;
+  }
+
+  private boxPiece(N: number): boolean {
+    const rows = Math.max(1, Math.floor(coldUnits(TC.parkBox) / Math.max(1, N)));
+    if (this.bxStage === 0) {
+      const z0 = this.bxRow, z1 = Math.min(N, z0 + rows);
+      boxHRows(this.bxSrc, this.parkTmpA, N, PARKING_BOX_R, z0, z1);
+      this.bxRow = z1;
+      if (z1 < N) return false;
+      this.boxV.begin(this.parkTmpA, this.bxDst, N, PARKING_BOX_R);
+      this.bxStage = 1;
+      return false;
+    }
+    return this.boxV.run(rows);
   }
 
   // ------------------------------------------------------------------------------------------ ATTACHMENT (WP7-6)
@@ -4631,35 +6623,89 @@ export class TrafficSystem implements SimSystem {
     if (typeof d.iter === 'number' && isFinite(d.iter) && d.iter > 0) this.iterLoad = Math.floor(d.iter);
   }
 
+  /** the transport save of the assignment (whole state: the precompute pieces + the assembly) */
   private saveTransport(st: CityState): void {
+    this.f2Sub = 6;
+    this.f2Cur = 0;
+    while (this.f2Sub < 9) this.savePrecomputePiece(st);
+    this.saveAssemble(st);
+  }
+
+  /**
+   * the save precompute in pieces (GS1, before the assembly): the ramp cells by road-node ranges, the parking raster
+   * quantised into a NEW buffer by cell ranges on the cycles that recompute it (R4 b: pre-B2 re-quantised the previous
+   * save's array in place — the live save would hold the new raster before its new transport state), the sinks and the
+   * job-matching prices; f2Sub 6 -> 9
+   */
+  private savePrecomputePiece(st: CityState): void {
+    const g = this.road;
+    switch (this.f2Sub) {
+      case 6: {
+        if (this.f2Cur === 0) { this.svRc = []; this.svRv = []; }
+        // ramp flows live on road cells only: scan the road nodes, not the map
+        const rc = this.svRc, rv = this.svRv, rvc = this.rampVolCell;
+        if (g.N === st.size) {
+          const v0 = this.f2Cur, v1 = Math.min(g.n, v0 + coldUnits(TC.saveRamp));
+          for (let v = v0; v < v1; v++) { const c = g.cellOf[v]; if (rvc[c] > 0.5) { rc.push(c); rv.push(rvc[c]); } }
+          this.f2Cur = v1;
+          if (v1 < g.n) return;
+        }
+        const prev = st.systemData.infraTransport as TransportSave | undefined;
+        const pq = prev?.parkingQ;
+        // the parking raster changes on the cycles that recompute it (every 2nd): re-quantise then only
+        this.svPq = !(pq instanceof Uint8Array) || pq.length !== st.cells || this.sfRecompute ? new Uint8Array(st.cells) : null;
+        this.f2Sub = 7;
+        this.f2Cur = 0;
+        return;
+      }
+      case 7: {
+        const pq = this.svPq;
+        if (pq) {
+          const P = st.parking, C = st.cells;
+          const i0 = this.f2Cur, i1 = Math.min(C, i0 + coldUnits(TC.saveParking));
+          for (let i = i0; i < i1; i++) pq[i] = Math.round(Math.max(0, Math.min(1, P[i])) * 255);
+          this.f2Cur = i1;
+          if (i1 < C) return;
+        }
+        this.f2Sub = 8;
+        return;
+      }
+      default: {
+        const f = Math.fround;
+        const sinks: [number, number][] = [];
+        for (const id of this.sinkIds) if (id < this.sinkTrucksById.length && this.sinkTrucksById[id] >= 0) sinks.push([id, f(this.sinkTrucksById[id])]);
+        this.svSinks = sinks;
+        // job-matching prices of this assignment's job sites (exact Float32: the prices converge over many assignments, and
+        // a load without them re-matches the city from zero prices)
+        let nj = 0, nc = 0;
+        for (let j = 0; j < this.jN; j++) {
+          if (this.jBid[j] >= 0) { if (this.priceById[this.jBid[j]] !== 0) nj++; } else if (this.connPrice[this.jCell[j]] !== 0) nc++;
+        }
+        const jobIds = new Int32Array(nj), jobPrice = new Float32Array(nj), connCells = new Int32Array(nc), connPrice = new Float32Array(nc);
+        nj = nc = 0;
+        for (let j = 0; j < this.jN; j++) {
+          const id = this.jBid[j];
+          if (id >= 0) { const p = this.priceById[id]; if (p !== 0) { jobIds[nj] = id; jobPrice[nj++] = p; } }
+          else { const c = this.jCell[j], p = this.connPrice[c]; if (p !== 0) { connCells[nc] = c; connPrice[nc++] = p; } }
+        }
+        this.svJobIds = jobIds; this.svJobPrice = jobPrice; this.svConnCells = connCells; this.svConnPrice = connPrice;
+        this.f2Sub = 9;
+        return;
+      }
+    }
+  }
+
+  /** the transport save assembled from the precompute (the cycle's last write: one piece, R4) */
+  private saveAssemble(st: CityState): void {
+    this.svSave = this.saveBuild(st);
+    this.saveInstall(st);
+  }
+
+  /** the transport save object of the assignment (private until saveInstall; the precompute pieces filled sv*) */
+  private saveBuild(st: CityState): TransportSave {
     const f = Math.fround;
-    const rc: number[] = [], rv: number[] = [];
-    const rvc = this.rampVolCell, g = this.road;
-    // ramp flows live on road cells only: scan the road nodes, not the map
-    if (g.N === st.size) for (let v = 0; v < g.n; v++) { const c = g.cellOf[v]; if (rvc[c] > 0.5) { rc.push(c); rv.push(rvc[c]); } }
     const prev = st.systemData.infraTransport as TransportSave | undefined;
-    let pq = prev?.parkingQ;
-    // the parking raster changes on the cycles that recompute it (every 2nd): re-quantise then only
-    if (!(pq instanceof Uint8Array) || pq.length !== st.cells || this.sfRecompute) {
-      if (!(pq instanceof Uint8Array) || pq.length !== st.cells) pq = new Uint8Array(st.cells);
-      const P = st.parking;
-      for (let i = 0; i < st.cells; i++) pq[i] = Math.round(Math.max(0, Math.min(1, P[i])) * 255);
-    }
-    const sinks: [number, number][] = [];
-    for (const id of this.sinkIds) if (id < this.sinkTrucksById.length && this.sinkTrucksById[id] >= 0) sinks.push([id, f(this.sinkTrucksById[id])]);
-    // job-matching prices of this assignment's job sites (exact Float32: the prices converge over many assignments, and
-    // a load without them re-matches the city from zero prices)
-    let nj = 0, nc = 0;
-    for (let j = 0; j < this.jN; j++) {
-      if (this.jBid[j] >= 0) { if (this.priceById[this.jBid[j]] !== 0) nj++; } else if (this.connPrice[this.jCell[j]] !== 0) nc++;
-    }
-    const jobIds = new Int32Array(nj), jobPrice = new Float32Array(nj), connCells = new Int32Array(nc), connPrice = new Float32Array(nc);
-    nj = nc = 0;
-    for (let j = 0; j < this.jN; j++) {
-      const id = this.jBid[j];
-      if (id >= 0) { const p = this.priceById[id]; if (p !== 0) { jobIds[nj] = id; jobPrice[nj++] = p; } }
-      else { const c = this.jCell[j], p = this.connPrice[c]; if (p !== 0) { connCells[nc] = c; connPrice[nc++] = p; } }
-    }
+    const pq = this.svPq ?? (prev?.parkingQ as Uint8Array);
     const save: TransportSave = {
       v: 1,
       busNeed: [...this.busNeed].map(([k, v]) => [k, f(v)]),
@@ -4672,110 +6718,244 @@ export class TrafficSystem implements SimSystem {
       garageRank: [...this.garageRank],
       stopLoad: [...this.stLoadPrev].map(([k, v]) => [k, f(v)]),
       stopPr: [...this.stPrPrev].map(([k, v]) => [k, f(v)]),
-      sinkTrucks: sinks,
+      sinkTrucks: this.svSinks,
       sinkLast: this.sinkLast,
-      rampCells: Int32Array.from(rc),
-      rampVol: Float32Array.from(rv),
+      rampCells: Int32Array.from(this.svRc),
+      rampVol: Float32Array.from(this.svRv),
       parkingQ: pq,
-      jobIds, jobPrice, connCells, connPrice,
+      jobIds: this.svJobIds, jobPrice: this.svJobPrice, connCells: this.svConnCells, connPrice: this.svConnPrice,
       rng: this.rngState,
       cycles: this.cycles,
       iter: this.iter,
     };
+    this.svPq = null;
+    this.svRc = this.svRv = EMPTY_NUMS;
+    this.svSinks = [];
+    return save;
+  }
+
+  /** install the built transport save: the cycle's last write (R9); the RNG state, cycle count and MSA iteration are
+   *  taken now, as pre-B2 took them in the same step */
+  private saveInstall(st: CityState): void {
+    const save = this.svSave!;
+    save.rng = this.rngState;
+    save.cycles = this.cycles;
+    save.iter = this.iter;
     st.systemData.infraTransport = save;
+    this.svSave = null;
   }
 
   // ------------------------------------------------------------------------------------------ FINAL
   private finalize(sim: Simulation): void {
+    this.fiSub = 0;
+    while (!this.finalPiece(sim)) { /* next piece */ }
+  }
+
+  /**
+   * one PH_FINAL piece (B2 §3 "Final", review R1); true when done. F1: alpha, iter++ and the ramp alpha (1 / the
+   * incremented iter) exactly where pre-B2 computed them, then the road blend, the rail blend (both from the old
+   * st.traffic) and the ramp MSA (into a copy of rampVolCell) by node ranges; F2 the traffic / congestion values and the
+   * rail riders into back rasters (sums as doubles in fields), the subway riders into a back raster; F4 the smoothed
+   * stop loads and the stop reports into back maps by stop ranges; then ONE publish piece: st.traffic / st.congestion
+   * (.set: saved, the MSA state a load continues), rampVolCell, subwayRiders and the six stop maps swapped in, and the
+   * stats (also saved) — everything pre-B2's finalize changed in one step, changed in one piece.
+   */
+  private finalPiece(sim: Simulation): boolean {
+    if (this.fiSub === 0) {
+      // MSA blend with previous volumes (per cell)
+      this.fiAlpha = Math.max(MSA_MIN_ALPHA, 1 / (this.iter + 1));
+      this.iter++;
+      // (interchange flows: the floor RAMP_MSA_MIN, 1 / the iteration after the increment — as pre-B2)
+      this.fiRa = Math.max(RAMP_MSA_MIN, 1 / this.iter);
+      this.fiCur = 0;
+      this.fiSub = 1;
+    }
+    switch (this.fiSub) {
+      case 1: return this.finalPiece1(sim);
+      case 2: return this.finalPiece2(sim);
+      case 3: return this.finalPiece3(sim);
+      case 4: return this.finalPiece4(sim);
+      case 5: return this.finalPiece5(sim);
+      case 6: return this.finalPiece6(sim);
+      default: return this.finalPieceEnd(sim);
+    }
+  }
+
+  /** finalPiece, sub-state 1 (B2 R10: one small method per piece kind) */
+  private finalPiece1(sim: Simulation): boolean {
+    const st = sim.state;
+    const g = this.road;
+    const n = g.n;
+    const traffic = st.traffic;
+    const alpha = this.fiAlpha, blended = this.acc, cellOf = g.cellOf, volNew = this.volNew; // (acc reused)
+    const v0 = this.fiCur, v1 = Math.min(n, v0 + coldUnits(TC.finBlend));
+    for (let v = v0; v < v1; v++) {
+      const c = cellOf[v];
+      blended[v] = traffic[c] * (1 - alpha) + volNew[v] * alpha;
+    }
+    this.fiCur = v1;
+    if (v1 >= n) { this.fiSub = 2; this.fiCur = 0; }
+    return false;
+  }
+
+  /** finalPiece, sub-state 2 (B2 R10: one small method per piece kind) */
+  private finalPiece2(sim: Simulation): boolean {
+    const st = sim.state;
+    const traffic = st.traffic;
+    const alpha = this.fiAlpha, railN = this.rail.n, rcell = this.rail.cellOf, railNew = this.railNew;
+    const v0 = this.fiCur, v1 = Math.min(railN, v0 + coldUnits(TC.finBlend));
+    for (let v = v0; v < v1; v++) railNew[v] = traffic[rcell[v]] * (1 - alpha) + railNew[v] * alpha;
+    this.fiCur = v1;
+    if (v1 >= railN) {
+      // interchange (ramp) flows: MSA per cell like the volumes (WP7-10), with a lower floor (RAMP_MSA_MIN): each
+      // commuter picks one ramp, so two interchanges would otherwise trade the load every cycle (into a copy:
+      // rampLoad / the save read rampVolCell, published below)
+      if (this.rampVolB.length !== this.rampVolCell.length) this.rampVolB = new Float32Array(this.rampVolCell.length);
+      this.rampVolB.set(this.rampVolCell);
+      this.fiSub = 3;
+      this.fiCur = 0;
+    }
+    return false;
+  }
+
+  /** finalPiece, sub-state 3 (B2 R10: one small method per piece kind) */
+  private finalPiece3(sim: Simulation): boolean {
     const st = sim.state;
     const g = this.road;
     const n = g.n;
     const C = st.cells;
+    const rv = this.rampVolB, rn = this.rampNew, cellOf = g.cellOf, type = g.type, ra = this.fiRa;
+    const v0 = this.fiCur, v1 = Math.min(n, v0 + coldUnits(TC.finRamp));
+    for (let v = v0; v < v1; v++) {
+      if (type[v] === Network.Highway) continue;
+      const c = cellOf[v];
+      const x = rv[c] * (1 - ra) + rn[v] * ra;
+      rv[c] = x > 1e-3 ? x : 0;
+    }
+    this.fiCur = v1;
+    if (v1 < n) return false;
+    if (this.trafficB.length !== C) { this.trafficB = new Float32Array(C); this.congestionB = new Float32Array(C); }
+    this.trafficB.fill(0);
+    this.congestionB.fill(0);
+    this.fiCongSum = 0;
+    this.fiCongN = 0;
+    this.fiSub = 4;
+    this.fiCur = 0;
+    return false;
+  }
+
+  /** finalPiece, sub-state 4 (B2 R10: one small method per piece kind) */
+  private finalPiece4(sim: Simulation): boolean {
+    const st = sim.state;
+    const g = this.road;
+    const n = g.n;
     const net = st.network;
-    const traffic = st.traffic, congestion = st.congestion;
-    // MSA blend with previous volumes (per cell)
-    const alpha = Math.max(MSA_MIN_ALPHA, 1 / (this.iter + 1));
-    this.iter++;
-    const blended = this.acc; // reuse
-    for (let v = 0; v < n; v++) {
-      const c = g.cellOf[v];
-      blended[v] = traffic[c] * (1 - alpha) + this.volNew[v] * alpha;
-    }
-    const railN = this.rail.n;
-    for (let v = 0; v < railN; v++) this.railNew[v] = traffic[this.rail.cellOf[v]] * (1 - alpha) + this.railNew[v] * alpha;
-    // interchange (ramp) flows: MSA per cell like the volumes (WP7-10), with a lower floor (RAMP_MSA_MIN): each commuter
-    // picks one ramp, so two interchanges would otherwise trade the load every cycle
-    {
-      const rv = this.rampVolCell, rn = this.rampNew, cellOf = g.cellOf, type = g.type;
-      const ra = Math.max(RAMP_MSA_MIN, 1 / this.iter);
-      for (let v = 0; v < n; v++) {
-        if (type[v] === Network.Highway) continue;
-        const c = cellOf[v];
-        const x = rv[c] * (1 - ra) + rn[v] * ra;
-        rv[c] = x > 1e-3 ? x : 0;
-      }
-    }
-    traffic.fill(0);
-    congestion.fill(0);
-    let congSum = 0, congN = 0;
-    for (let v = 0; v < n; v++) {
-      const c = g.cellOf[v];
+    const blended = this.acc, cellOf = g.cellOf, cap = g.cap, tB = this.trafficB, cB = this.congestionB;
+    let congSum = this.fiCongSum, congN = this.fiCongN;
+    const v0 = this.fiCur, v1 = Math.min(n, v0 + coldUnits(TC.finWrite));
+    for (let v = v0; v < v1; v++) {
+      const c = cellOf[v];
       if (!(net[c] >= Network.Street && net[c] <= Network.Highway)) continue;
       const vol = blended[v];
-      traffic[c] = vol;
-      const r = vol / g.cap[v];
-      congestion[c] = r;
+      tB[c] = vol;
+      const r = vol / cap[v];
+      cB[c] = r;
       if (vol > 1) { congSum += r > 1 ? 1 : r; congN++; }
     }
+    this.fiCongSum = congSum;
+    this.fiCongN = congN;
+    this.fiCur = v1;
+    if (v1 >= n) { this.fiSub = 5; this.fiCur = 0; }
+    return false;
+  }
+
+  /** finalPiece, sub-state 5 (B2 R10: one small method per piece kind) */
+  private finalPiece5(sim: Simulation): boolean {
+    const st = sim.state;
+    const C = st.cells;
+    const net = st.network;
     // rail riders
-    for (let v = 0; v < this.rail.n; v++) {
-      const c = this.rail.cellOf[v];
+    const tB = this.trafficB, cB = this.congestionB, railNew = this.railNew, rcell = this.rail.cellOf, railN = this.rail.n;
+    const v0 = this.fiCur, v1 = Math.min(railN, v0 + coldUnits(TC.finWrite));
+    for (let v = v0; v < v1; v++) {
+      const c = rcell[v];
       if (net[c] !== Network.Rail) continue;
-      traffic[c] = this.railNew[v];
-      congestion[c] = traffic[c] / NET_CAPACITY[Network.Rail];
+      tB[c] = railNew[v];
+      cB[c] = tB[c] / NET_CAPACITY[Network.Rail];
     }
-    if (this.subwayRiders.length !== C) this.subwayRiders = new Float32Array(C);
-    this.subwayRiders.fill(0);
-    for (let v = 0; v < this.subway.n; v++) this.subwayRiders[this.subway.cellOf[v]] = this.subNew[v];
-    // stop loads for crowding / bus need: smoothed across assignments (STOP_LOAD_SMOOTH; a new stop starts at its load)
-    // — the next assignment's crowding wait reads them, and an undamped load would alternate full / empty; walkers and
-    // whether a path from the stop rides (reports, garage preview) of this assignment
-    {
-      const old = this.stLoadPrev, oldPr = this.stPrPrev;
-      const next = new Map<number, number>(), nextPr = new Map<number, number>();
-      this.stopWalkers.clear();
-      this.stopNear.clear();
-      this.stopRide.clear();
-      this.stopReach.clear();
-      const doneT = this.ST.done;
-      const sN = this.stops.n, hasN = this.stNearW.length > sN;
-      for (let s = 0; s < this.stops.n; s++) {
-        const bid = this.stops.bid[s];
-        const key = bid >= 0 ? bid : -1 - this.stops.cell[s];
-        const o = old.get(key);
-        next.set(key, o === undefined ? this.stLoad[s] : o + STOP_LOAD_SMOOTH * (this.stLoad[s] - o));
-        const op = oldPr.get(key), np = op === undefined ? this.stPr[s] : op + STOP_LOAD_SMOOTH * (this.stPr[s] - op);
-        if (np > 0.5) nextPr.set(key, np);
-        if (bid < 0) continue;
-        if (this.stWalk[s] > 0) this.stopWalkers.set(bid, this.stWalk[s]);
-        if (hasN && (this.stNearW[s] > 0 || this.stElseW[s] > 0)) {
-          const bw = this.stBoardW[s];
-          this.stopNear.set(bid, { near: this.stNearW[s], board: bw, boardMin: bw > 0 ? this.stBoardT[s] / bw : 0, other: this.stElseW[s] });
-        }
-        let ride = false, reach = false;
-        for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1 && !ride; a++) {
-          const v = this.stAtt[a];
-          if (doneT[v] !== 1) continue;
-          reach = true;
-          if (this.rides(v)) ride = true;
-        }
-        this.stopRide.set(bid, ride);
-        this.stopReach.set(bid, reach);
+    this.fiCur = v1;
+    if (v1 < railN) return false;
+    if (this.subwayRidersB.length !== C) this.subwayRidersB = new Float32Array(C);
+    const sr = this.subwayRidersB;
+    sr.fill(0);
+    for (let v = 0; v < this.subway.n; v++) sr[this.subway.cellOf[v]] = this.subNew[v];
+    // stop loads for crowding / bus need: smoothed across assignments (STOP_LOAD_SMOOTH; a new stop starts at its
+    // load) — the next assignment's crowding wait reads them, and an undamped load would alternate full / empty;
+    // walkers and whether a path from the stop rides (reports, garage preview) of this assignment (back maps)
+    this.stLoadPrevB.clear(); this.stPrPrevB.clear();
+    this.stopWalkersB.clear(); this.stopNearB.clear(); this.stopRideB.clear(); this.stopReachB.clear();
+    this.fiSub = 6;
+    this.fiCur = 0;
+    return false;
+  }
+
+  /** finalPiece, sub-state 6 (B2 R10: one small method per piece kind) */
+  private finalPiece6(sim: Simulation): boolean {
+    const old = this.stLoadPrev, oldPr = this.stPrPrev, next = this.stLoadPrevB, nextPr = this.stPrPrevB;
+    const doneT = this.ST.done;
+    const sN = this.stops.n, hasN = this.stNearW.length > sN;
+    const s0 = this.fiCur, s1 = Math.min(sN, s0 + coldUnits(TC.finStop));
+    for (let s = s0; s < s1; s++) {
+      const bid = this.stops.bid[s];
+      const key = bid >= 0 ? bid : -1 - this.stops.cell[s];
+      const o = old.get(key);
+      next.set(key, o === undefined ? this.stLoad[s] : o + STOP_LOAD_SMOOTH * (this.stLoad[s] - o));
+      const op = oldPr.get(key), np = op === undefined ? this.stPr[s] : op + STOP_LOAD_SMOOTH * (this.stPr[s] - op);
+      if (np > 0.5) nextPr.set(key, np);
+      if (bid < 0) continue;
+      if (this.stWalk[s] > 0) this.stopWalkersB.set(bid, this.stWalk[s]);
+      if (hasN && (this.stNearW[s] > 0 || this.stElseW[s] > 0)) {
+        const bw = this.stBoardW[s];
+        this.stopNearB.set(bid, { near: this.stNearW[s], board: bw, boardMin: bw > 0 ? this.stBoardT[s] / bw : 0, other: this.stElseW[s] });
       }
-      this.stLoadPrev = next;
-      this.stPrPrev = nextPr;
+      let ride = false, reach = false;
+      for (let a = this.stAttS[s], a1 = a + this.stAttC[s]; a < a1 && !ride; a++) {
+        const v = this.stAtt[a];
+        if (doneT[v] !== 1) continue;
+        reach = true;
+        if (this.rides(v)) ride = true;
+      }
+      this.stopRideB.set(bid, ride);
+      this.stopReachB.set(bid, reach);
     }
-    // stats
+    this.fiCur = s1;
+    if (s1 >= sN) this.fiSub = 7;
+    return false;
+  }
+
+  /** finalPiece, sub-state default (B2 R10: one small method per piece kind) */
+  private finalPieceEnd(sim: Simulation): boolean {
+    const st = sim.state;
+    const traffic = st.traffic;
+    // publish
+    traffic.set(this.trafficB);
+    st.congestion.set(this.congestionB);
+    let t = this.rampVolCell; this.rampVolCell = this.rampVolB; this.rampVolB = t;
+    t = this.subwayRiders; this.subwayRiders = this.subwayRidersB; this.subwayRidersB = t;
+    let m: Map<number, number> = this.stLoadPrev; this.stLoadPrev = this.stLoadPrevB; this.stLoadPrevB = m;
+    m = this.stPrPrev; this.stPrPrev = this.stPrPrevB; this.stPrPrevB = m;
+    m = this.stopWalkers; this.stopWalkers = this.stopWalkersB; this.stopWalkersB = m;
+    const nb = this.stopNear; this.stopNear = this.stopNearB; this.stopNearB = nb;
+    let mb = this.stopRide; this.stopRide = this.stopRideB; this.stopRideB = mb;
+    mb = this.stopReach; this.stopReach = this.stopReachB; this.stopReachB = mb;
+    this.finalStats(st);
+    this.fiSub = 0;
+    this.fiCur = 0;
+    return true;
+  }
+
+  /** finalize's stats (published with the layers) */
+  private finalStats(st: CityState): void {
     const stats = st.stats;
     stats.tripsCar = Math.round(this.tripsCar);
     stats.tripsTransit = Math.round(this.tripsTransit);
@@ -4785,7 +6965,7 @@ export class TrafficSystem implements SimSystem {
       const r1 = (v: number) => Math.round(v * 10) / 10, bm = this.byMode;
       stats.commuteByMode = { car: r1(bm.car), transit: r1(bm.transit), walk: r1(bm.walk), transitSaved: r1(bm.transitSaved) };
     }
-    stats.avgTraffic = congN > 0 ? congSum / congN : 0;
+    stats.avgTraffic = this.fiCongN > 0 ? this.fiCongSum / this.fiCongN : 0;
     // WP7b fleet / park & ride / ferries: only fleets that serve stops count (a depot out of range of every stop runs
     // no route), and busesShort sums the shortfall per pool so one depot's spare buses do not hide another's stops
     const tf = stats.transitFleet as TransitFleetStatsX;
@@ -4810,17 +6990,75 @@ export class TrafficSystem implements SimSystem {
     tf.ferryLinks = this.ferryNet.links.length;
   }
 
-  /** per-building outputs, flags, commute layer, sample routes */
+  /** per-building outputs, flags, commute layer, sample routes (whole state) */
   private finalize2(sim: Simulation): void {
+    this.f2Sub = 0;
+    while (!this.final2Piece(sim)) { /* next piece */ }
+  }
+
+  /**
+   * one PH_FINAL2 piece (B2 §3 "Final2"); true when done. G0 the per-id arrays it writes copied into back buffers (one
+   * builtin copy each); G1 origins by ranges — smoothing reads the front and writes the back (each id is written once
+   * per cycle: origins and job sites are disjoint buildings), the commute footprint into a back raster, the buildings
+   * whose NoJobs / Congested flag flips listed with their new bits; GJ the job sites likewise; customers + the
+   * connection report; GP PUBLISH: the per-id buffers, st.commute, cutIds and connLast swapped in, the flags applied in
+   * the pre-B2 order (origins, then job sites: the same `changed` list), then their buildingChanged events in the same
+   * piece (only for buildings still in the city — interrupted mode; a flag must never be visible between pieces without
+   * its event, or the worker's replica (W1.1, EXACT_FIELDS) would miss it at a packet boundary); GS1 the save precompute; GR the sample routes; GS2 cycles++
+   * and the transport save (the cycle's last write).
+   */
+  private final2Piece(sim: Simulation): boolean {
+    switch (this.f2Sub) {
+      case 0: return this.final2Piece0(sim);
+      case 1: return this.final2Piece1(sim);
+      case 2: return this.final2Piece2(sim);
+      case 3: return this.final2Piece3(sim);
+      case 4: return this.final2Piece4(sim);
+      case 6: case 7: case 8: return this.final2Piece6(sim);
+      case 9: return this.final2Piece9(sim);
+      case 10: return this.final2Piece10(sim);
+      case 11: return this.final2Piece11(sim);
+      default: return this.final2PieceEnd(sim);
+    }
+  }
+
+  /** final2Piece, sub-state 0 (B2 R10: one small method per piece kind) */
+  private final2Piece0(sim: Simulation): boolean {
+    const st = sim.state;
+    const C = st.cells;
+    if (this.commuteB.length !== C) this.commuteB = new Float32Array(C);
+    this.commuteB.fill(0);
+    this.cutIdsB.clear();
+    const cp = (a: Float32Array<ArrayBuffer>, b: Float32Array<ArrayBuffer>): Float32Array<ArrayBuffer> => {
+      if (b.length !== a.length) b = new Float32Array(a.length);
+      b.set(a);
+      return b;
+    };
+    this.accessB = cp(this.accessById, this.accessB);
+    this.commuteIdB = cp(this.commuteById, this.commuteIdB);
+    this.reachedB = cp(this.reachedById, this.reachedB);
+    this.carlessB = cp(this.carlessById, this.carlessB);
+    this.carlessMinB = cp(this.carlessMinById, this.carlessMinB);
+    this.jobFillB = cp(this.jobFillById, this.jobFillB);
+    this.carsB = cp(this.carsById, this.carsB);
+    if (this.sfRecompute) this.customersB = cp(this.customersById, this.customersB);
+    if (this.modeB.length !== this.modeById.length) this.modeB = new Uint8Array(this.modeById.length);
+    this.modeB.set(this.modeById);
+    this.f2OFlag.length = 0;
+    this.f2JFlag.length = 0;
+    this.f2Cur = 0;
+    this.f2Sub = 1;
+    return false;
+  }
+
+  /** final2Piece, sub-state 1 (B2 R10: one small method per piece kind) */
+  private final2Piece1(sim: Simulation): boolean {
     const st = sim.state;
     const g = this.road;
-    const n = g.n;
-    const congestion = st.congestion;
-    const commute = st.commute;
-    commute.fill(0);
-    const changed: Building[] = [];
-    this.cutIds.clear();
-    for (let o = 0; o < this.oN; o++) {
+    const n = g.n, N = st.size, congestion = st.congestion, commute = this.commuteB;
+    const accessB = this.accessB, commuteB = this.commuteIdB, reachedB = this.reachedB, carlessB = this.carlessB, carlessMinB = this.carlessMinB, modeB = this.modeB;
+    const o0 = this.f2Cur, o1 = Math.min(this.oN, o0 + coldUnits(TC.f2Origin));
+    for (let o = o0; o < o1; o++) {
       const bid = this.oBid[o];
       const b = st.buildings.get(bid);
       if (!b) continue;
@@ -4829,33 +7067,43 @@ export class TrafficSystem implements SimSystem {
       const emp = prevA >= 0 && this.cycles > 0 ? prevA + (this.oEmp[o] - prevA) * RESULT_SMOOTH : this.oEmp[o];
       const prevT = this.commuteById[bid];
       const t = prevT > 0 && this.oTime[o] > 0 ? prevT + (this.oTime[o] - prevT) * RESULT_SMOOTH : this.oTime[o];
-      this.accessById[bid] = emp;
-      this.commuteById[bid] = t;
-      this.reachedById[bid] = this.oW[o] * emp;
+      accessB[bid] = emp;
+      commuteB[bid] = t;
+      reachedB[bid] = this.oW[o] * emp;
       // car-less workers: share and their mean extra minutes (taxi / lift) vs car owners (routeInfo, WP5's inspector)
       {
         const cl = this.oCl[o], a = this.oAsg[o];
         const x = a > 0 && cl > 0 ? Math.max(0, this.oClX[o] / (a * cl)) : 0;
         const px = this.carlessMinById[bid];
-        this.carlessById[bid] = cl;
-        this.carlessMinById[bid] = px > 0 && this.cycles > 0 ? px + (x - px) * RESULT_SMOOTH : x;
+        carlessB[bid] = cl;
+        carlessMinB[bid] = px > 0 && this.cycles > 0 ? px + (x - px) * RESULT_SMOOTH : x;
       }
       const sc = this.oShC[o], stt = this.oShT[o], sw = this.oShW[o];
-      this.modeById[bid] = sc + stt + sw <= 0 ? 0 : sc >= stt && sc >= sw ? 1 : stt >= sw ? 2 : 3;
+      modeB[bid] = sc + stt + sw <= 0 ? 0 : sc >= stt && sc >= sw ? 1 : stt >= sw ? 2 : 3;
       // (routed 43: no road to the city's jobs — no commute, routeInfo says so)
-      if (o < this.oCut.length && this.oCut[o] === 1) { this.cutIds.add(bid); this.modeById[bid] = 0; }
+      if (o < this.oCut.length && this.oCut[o] === 1) { this.cutIdsB.add(bid); modeB[bid] = 0; }
       for (let z: number = b.z; z < b.z + b.d; z++) for (let x: number = b.x; x < b.x + b.w; x++) {
-        const i = z * st.size + x;
+        const i = z * N + x;
         if (st.building[i] === bid) commute[i] = t;
       }
       const noJobs = b.pop > 0 && emp < 0.35;
-      let f = setFlagQuiet(b, BF.NoJobs, noJobs);
       const cn = this.oCarNode[o];
-      const cong = cn >= 0 && cn < n ? congestion[g.cellOf[cn]] : 0;
-      f = setFlagQuiet(b, BF.Congested, cong > 1) || f;
-      if (f) changed.push(b);
+      const cong = (cn >= 0 && cn < n ? congestion[g.cellOf[cn]] : 0) > 1;
+      // (the flags flip in the publish piece: listed here with their new bits)
+      if (((b.flags & BF.NoJobs) !== 0) !== noJobs || ((b.flags & BF.Congested) !== 0) !== cong) this.f2OFlag.push(o, (noJobs ? 1 : 0) | (cong ? 2 : 0));
     }
-    for (let j = 0; j < this.jB; j++) {
+    this.f2Cur = o1;
+    if (o1 >= this.oN) { this.f2Sub = 2; this.f2Cur = 0; }
+    return false;
+  }
+
+  /** final2Piece, sub-state 2 (B2 R10: one small method per piece kind) */
+  private final2Piece2(sim: Simulation): boolean {
+    const st = sim.state;
+    const g = this.road;
+    const congestion = st.congestion, jobFillB = this.jobFillB, reachedB = this.reachedB, carsB = this.carsB, commuteB = this.commuteIdB, modeB = this.modeB;
+    const j0 = this.f2Cur, j1 = Math.min(this.jB, j0 + coldUnits(TC.f2Site));
+    for (let j = j0; j < j1; j++) {
       const bid = this.jBid[j];
       const b = st.buildings.get(bid);
       if (!b) continue;
@@ -4864,19 +7112,26 @@ export class TrafficSystem implements SimSystem {
       const arriving = local + this.jInbound[j];
       const fill = Math.min(1, arriving / Math.max(1, slots));
       const prevF = this.jobFillById[bid];
-      this.jobFillById[bid] = prevF >= 0 && this.cycles > 0 ? prevF + (fill - prevF) * RESULT_SMOOTH : fill;
-      this.reachedById[bid] = arriving;
-      this.carsById[bid] = this.jCar[j];
-      this.commuteById[bid] = this.jAsg[j] > 0 ? this.jTimeSum[j] / this.jAsg[j] : this.jInbound[j] > 0 ? REGIONAL_TIME + 10 : 0;
-      this.modeById[bid] = arriving > 0 ? 1 : 0;
+      jobFillB[bid] = prevF >= 0 && this.cycles > 0 ? prevF + (fill - prevF) * RESULT_SMOOTH : fill;
+      reachedB[bid] = arriving;
+      carsB[bid] = this.jCar[j];
+      commuteB[bid] = this.jAsg[j] > 0 ? this.jTimeSum[j] / this.jAsg[j] : this.jInbound[j] > 0 ? REGIONAL_TIME + 10 : 0;
+      modeB[bid] = arriving > 0 ? 1 : 0;
       let cong = 0;
       for (let e = this.jEntS[j], e1 = e + this.jEntC[j]; e < e1; e++) {
         const c = congestion[g.cellOf[this.ent[e]]];
         if (c > cong) cong = c;
       }
-      if (setFlagQuiet(b, BF.Congested, cong > 1.1)) changed.push(b);
+      if (((b.flags & BF.Congested) !== 0) !== (cong > 1.1)) this.f2JFlag.push(j, cong > 1.1 ? 2 : 0);
     }
-    if (this.sfRecompute) for (let s = 0; s < this.sN; s++) this.customersById[this.sBid[s]] = this.sLoad[s];
+    this.f2Cur = j1;
+    if (j1 >= this.jB) this.f2Sub = 3;
+    return false;
+  }
+
+  /** final2Piece, sub-state 3 (B2 R10: one small method per piece kind) */
+  private final2Piece3(sim: Simulation): boolean {
+    if (this.sfRecompute) for (let s = 0; s < this.sN; s++) this.customersB[this.sBid[s]] = this.sLoad[s];
     // (the neighbour connections of this assignment: connectionReport)
     const cr: ConnectionReport[] = [];
     for (let j = this.jB; j < this.jN; j++) {
@@ -4887,14 +7142,97 @@ export class TrafficSystem implements SimSystem {
         workerCap: this.jEntC[j] > 0 ? this.jConnW[j] : 0, inbound: this.connInbound.get(c.cell) ?? 0,
       });
     }
-    this.connLast = cr;
-    for (const b of changed) sim.events.emit('buildingChanged', b);
-    // sample routes
-    this.buildSampleRoutes(st);
+    this.f2Cr = cr;
+    this.f2Sub = 4;
+    return false;
+  }
+
+  /** final2Piece, sub-state 4 (B2 R10: one small method per piece kind) */
+  private final2Piece4(sim: Simulation): boolean {
+    const st = sim.state;
+    // publish: the per-id results, the commute layer, the cut-off ids, the connection report, the flags
+    let t = this.accessById; this.accessById = this.accessB; this.accessB = t;
+    t = this.commuteById; this.commuteById = this.commuteIdB; this.commuteIdB = t;
+    t = this.reachedById; this.reachedById = this.reachedB; this.reachedB = t;
+    t = this.carlessById; this.carlessById = this.carlessB; this.carlessB = t;
+    t = this.carlessMinById; this.carlessMinById = this.carlessMinB; this.carlessMinB = t;
+    t = this.jobFillById; this.jobFillById = this.jobFillB; this.jobFillB = t;
+    t = this.carsById; this.carsById = this.carsB; this.carsB = t;
+    if (this.sfRecompute) { t = this.customersById; this.customersById = this.customersB; this.customersB = t; }
+    const mo = this.modeById; this.modeById = this.modeB; this.modeB = mo;
+    st.commute.set(this.commuteB);
+    const ci = this.cutIds; this.cutIds = this.cutIdsB; this.cutIdsB = ci;
+    this.connLast = this.f2Cr;
+    this.f2Cr = [];
+    const changed = this.f2Changed;
+    changed.length = 0;
+    const OF = this.f2OFlag, JF = this.f2JFlag;
+    for (let k = 0; k < OF.length; k += 2) {
+      const b = st.buildings.get(this.oBid[OF[k]]);
+      if (!b) continue;
+      const bits = OF[k + 1];
+      let f = setFlagQuiet(b, BF.NoJobs, (bits & 1) !== 0);
+      f = setFlagQuiet(b, BF.Congested, (bits & 2) !== 0) || f;
+      if (f) changed.push(b);
+    }
+    for (let k = 0; k < JF.length; k += 2) {
+      const b = st.buildings.get(this.jBid[JF[k]]);
+      if (!b) continue;
+      if (setFlagQuiet(b, BF.Congested, (JF[k + 1] & 2) !== 0)) changed.push(b);
+    }
+    // the events, after every flag they announce (sub-state 5 is gone: see final2Piece)
+    for (let k = 0; k < changed.length; k++) {
+      const b = changed[k];
+      // (a building removed since the snapshot gets no event — interrupted mode only)
+      if (st.buildings.get(b.id) === b) sim.events.emit('buildingChanged', b);
+    }
+    changed.length = 0;
+    this.f2Cur = 0;
+    this.f2Sub = 6;
+    return false;
+  }
+
+  /** final2Piece, sub-state 6, 7, 8 (B2 R10: one small method per piece kind) */
+  private final2Piece6(sim: Simulation): boolean {
+    const st = sim.state;
+    this.savePrecomputePiece(st);
+    return false;
+  }
+
+  /** final2Piece, sub-state 9 (B2 R10: one small method per piece kind) */
+  private final2Piece9(sim: Simulation): boolean {
+    // sample routes (cars, trucks, transit)
+    this.sampleRoutesA();
+    this.f2Sub = 10;
+    return false;
+  }
+
+  /** final2Piece, sub-state 10 (B2 R10: one small method per piece kind) */
+  private final2Piece10(sim: Simulation): boolean {
+    const st = sim.state;
+    // (freight trains, patrols; published)
+    this.sampleRoutesB(st);
     this.serviceRoutes = this.serviceRoutes.filter((s) => s.until >= st.day);
+    this.f2Sub = 11;
+    return false;
+  }
+
+  /** final2Piece, sub-state 11: the transport save object, built privately (its arrays from the maps: the O(stops) part) */
+  private final2Piece11(sim: Simulation): boolean {
+    this.svSave = this.saveBuild(sim.state);
+    this.f2Sub = 12;
+    return false;
+  }
+
+  /** final2Piece, sub-state default (B2 R10: one small method per piece kind) */
+  private final2PieceEnd(sim: Simulation): boolean {
+    const st = sim.state;
     this.cycles++;
-    this.saveTransport(st);
+    this.saveInstall(st);
+    this.f2Sub = 0;
+    this.f2Cur = 0;
     sim.events.emit('layerUpdated', 'traffic');
+    return true;
   }
 
   private tracePath(S: Search, start: number, cellOf: (v: number) => number, reverse: boolean, stopAt?: (v: number) => boolean): Uint32Array {
@@ -4911,8 +7249,15 @@ export class TrafficSystem implements SimSystem {
   }
 
   private buildSampleRoutes(st: CityState): void {
+    this.sampleRoutesA();
+    this.sampleRoutesB(st);
+  }
+
+  /** B2: the sample routes in two pieces — the cars / trucks and the transit samples (rand() in order), then the
+   *  freight trains and the patrols (rand()); `routes` (getSampleRoutes) changes in the second */
+  private sampleRoutesA(): void {
     const g = this.road;
-    const routes: SampleRoute[] = [];
+    const routes: SampleRoute[] = (this.srNext = []);
     // cars (sampled per matching round + inbound) and trucks (from the last freight pass)
     for (const r of this.pendingRoutes) routes.push(r);
     for (const r of this.truckRoutes) routes.push(r);
@@ -4947,12 +7292,17 @@ export class TrafficSystem implements SimSystem {
         flush();
       }
     }
+  }
+
+  private sampleRoutesB(st: CityState): void {
+    const routes = this.srNext;
     // freight trains: freight stations to rail connections (BFS on rail graph)
     this.freightTrainRoutes(st, routes);
     // service patrols (police / garbage) as short random walks from service buildings
     this.patrolRoutes(st, routes);
     this.routes = routes;
     this.pendingRoutes = [];
+    this.srNext = [];
   }
 
   private freightTrainRoutes(st: CityState, routes: SampleRoute[]): void {
