@@ -10,7 +10,7 @@ import { money, moneySigned, signClass, titleCase } from '../format';
 import { isOneOff, sumOneOff, sumRecurring } from '../TopBar';
 import { watchFor, type WatchHandle } from '../../worker/SimHost';
 import { taxFactor } from '../../sim/economy/demand';
-import { APPROVAL, TAX_NEUTRAL } from '../../sim/economy/tuning';
+import { APPROVAL, TAX_GROWTH_WARNING_RATE, TAX_NEUTRAL } from '../../sim/economy/tuning';
 import { DEV_GLOSSARY, glossaryOf } from '../glossary';
 import '../guide/advice.css';
 
@@ -228,7 +228,7 @@ export class BudgetPanel extends Panel {
       if (g.devs[0] === DevType.R1) box.appendChild(h('div', { class: 'dim', style: 'font-size:11.5px;line-height:1.4;margin-top:4px' }, `Residential rows share the citywide tax effect vs ${TAX_NEUTRAL}%, weighted by residents. Other approval factors still apply.`));
       cols.appendChild(box);
     });
-    const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + `<span>${TAX_NEUTRAL}% is neutral. Each residential point above costs approval (−${-APPROVAL.taxPerPoint} a point); above 13% demand collapses. Each point below wins approval (+${APPROVAL.taxLowPerPoint}) but less income. Click a slider, then use the arrow keys (or − / +) for 0.5% steps.</span>` });
+    const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + `<span>${TAX_NEUTRAL}% is neutral. Higher taxes gradually slow growth. Each residential point above neutral costs approval (−${-APPROVAL.taxPerPoint} a point). Each point below wins approval (+${APPROVAL.taxLowPerPoint}) but less income. Use the arrow keys on a selected slider, or the − / + buttons beside it.</span>` });
     this.content.append(cols, hint);
   }
 
@@ -535,8 +535,8 @@ function serviceCost(expense: Record<string, number>, s: ServiceKind): number {
 type Forecast = { income: Record<string, number>; expense: Record<string, number>; totalIncome: number; totalExpense: number };
 
 function taxColor(sl: HTMLInputElement, rate: number): void {
-  toggleClass(sl, 'warn', rate > 9.5 && rate < 13.5);
-  toggleClass(sl, 'bad', rate >= 13.5);
+  toggleClass(sl, 'warn', rate > 9.5 && rate < TAX_GROWTH_WARNING_RATE);
+  toggleClass(sl, 'bad', rate >= TAX_GROWTH_WARNING_RATE);
 }
 
 /** The sim applies the tax slope to the resident-weighted average, not separately to each wealth tier. */
