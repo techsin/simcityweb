@@ -102,7 +102,13 @@ added the check, after which it fails too. Logs: w13work/mutate-final.log, w13wo
 ### Resumed run (Nov 9, after the Nov 4 usage-limit stop)
 
 The Nov 4 run was stopped at the shared usage limit with its gates queued (the full vitest on `984ec54` had passed; the
-bot, the second browser run and the save-cost measurement had not started) and this report uncommitted. This run:
+bot, the second browser run and the save-cost measurement had not started) and this report uncommitted.
+
+**Gap list at this resume** (G1-G17's code and tests were done; what the task still required): (a) the branch on the
+current dev; (b) tsc, the full vitest and the bot, identical to dev, on the final code; (c) the browser recovery check
+on the final code (it had passed once, at `79268af`); (d) the 1M save-cost numbers (G16; the log was empty); (e) this
+report's *Gates* and *Browser evidence*; (f) the done marker. All are done below except (c), which NOTE-061 moved to the
+desktop (decision 18). This run:
 - read the lead's handoff (docs/dev/handoff/2026-11-04/README.md): `bundles/cloud_w13.bundle` holds `984ec54`, an
   ancestor of this branch, and `wip/co_w13.uncommitted.patch` is a strict subset of the report changes still in the
   worktree, so nothing was lost; they are committed as `d5fec16`;
@@ -110,14 +116,25 @@ bot, the second browser run and the save-cost measurement had not started) and t
   ones, **NOTE-057** (the merge order: W1.3 interleaves with the desktop lanes; merge dev into a later lane the day a
   conflicting one lands) and **NOTE-059** (browser checks move to the desktop; item 3: "Cloud lanes already in flight
   (B2, W1.3, …) keep the browser checks they have planned", and the report lists real-GPU-only items for a post-merge
-  Desktop QA run). Hence the kill-the-tab check runs here again, and the *Desktop QA* list below is new;
-- merged dev `87c7c9c` (`d04432b`: T053, NOTE-059; no conflict, CityScene.ts auto-merged; T053 touches no W1.3 file);
+  Desktop QA run). Then, during this run, **NOTE-060** and **NOTE-061** (Nov 9): every browser and real-GPU check
+  moves to the desktop, the cloud's lock refuses them, and the desktop runs `cloud/w13`'s checklist on the branch
+  before the merge. Hence the *Desktop QA* list below, and the browser gate is deferred to it (*Browser evidence*).
+  NOTE-064 (the desktop merges its own lanes) keeps W1.3's merge with the cloud; NOTE-062 and NOTE-063 do not concern it;
+- merged dev `87c7c9c` (`d04432b`: T053, NOTE-059; no conflict, CityScene.ts auto-merged; T053 touches no W1.3 file),
+  then dev `1c2019c` (`cd2ab47`: T058, NOTE-060, NOTE-061) with **one conflict, src/main.ts `playCity`**: T058 moved
+  `const t0 = performance.now()` after the recovery gate (FH-21 bug 4) where W1.3 had added the `replay` parameter.
+  Both kept: W1.3's signature, T058's `t0`. T058's source check (tests/game/playLoadTime.test.ts) expected an
+  `enterCity(…, t0)` call ending in `t0`; W1.3's local path passes `t0, undefined, replay`, so the check now accepts
+  `t0` as any argument (still failing when `t0` is not passed, or is taken before the gate; decision 12);
 - reviewed the lane's diff against dev on the merged tree (src/worker, src/save, main.ts, dialogs.ts, CityScene.ts),
   with attention to T034b's WorkerSimHost speed override and T053's replicaSafe entry beside W1.3's code: no defect
   found, no code change;
 - re-ran the 23 fix reversions on the merged tree, in a throwaway export so the queued gates never saw a reverted file
-  (w13work/mutate2.py; log w13work/mutate-merged.log): **23 of 23 fail their test** (M1-M19, M3b, M6b, M11b, M12b);
-- ran every gate on `d04432b` (below). Only this report and the done marker change after it.
+  (w13work/mutate2.py; log w13work/mutate-merged.log): **23 of 23 fail their test** (M1-M19, M3b, M6b, M11b, M12b).
+  They ran on `d04432b`; the later merge of `1c2019c` changes none of the reverted files (it touches main.ts,
+  CityScene.ts, dialogs.ts, Notifications.ts and T058's tests), so they stand for `cd2ab47`;
+- ran the gates (below): the first queue on `d04432b` was cancelled unrun when dev moved to `1c2019c`; every gate in
+  the table ran on `cd2ab47`. Only this report and the done marker change after it.
 
 ### NOTE-051 (T037a's two save-path entries)
 
@@ -131,15 +148,57 @@ in this lane needs to change for it; no conflict is expected beyond the import l
 
 ### Gates
 
-GATES_TABLE
+All on `cd2ab47` (dev `1c2019c` plus W1.3) unless stated. Logs in /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/w13work/.
+
+| Gate | Result |
+|---|---|
+| tsc (sem) | clean (`cd2ab47`; also clean on `d04432b`, tsc2.log) |
+| The lane's tests (sem, `--maxWorkers=2`) | workerRecovery, recovery, hosts, recoveryIdb, hygiene and T058's five game tests: 10 files, 109 passed (lane-tests3.log). On `d04432b`: 7 files, 71 passed (lane-tests2.log) |
+| Full vitest (lock) | **242 files passed, 3 skipped; 2,425 tests passed, 8 skipped; 0 failed** (457 s; vitest-full3.log). Dev `1c2019c` at its merge (the carry-over log, T058): 241 / 2 skipped files, 2,410 / 7 skipped tests; the difference is workerRecovery.test.ts (11 cases), the new cases in recovery.test.ts and hosts.test.ts, and saveCost.test.ts (skipped unless `SIM_SAVE_COST=1`). Earlier: `984ec54`, 225 files / 2,241 tests passed (Nov 4, vitest-full.log) |
+| Bot (lock), identical to dev | lane `cd2ab47`: `residents [ 61124, 93804, 37971 ]` = 192,899 (bot-lane3.log); dev `1c2019c` from a clean export in co/w13-devbase: the same (bot-dev3.log); **all 15 year rows identical apart from the two timing columns**. Dev `87c7c9c` gave the same residents (bot-dev2.log). No behaviour change by design |
+| Each new test fails with its fix reverted | 23 of 23 reversions fail their test on the merged tree (mutate-merged.log; *Resumed run (Nov 9)*) |
+| Row W1.3: `recovery.test.ts` | passes: T033's 25 loopback cases plus 2 new; the same row through the real worker is workerRecovery.test.ts, 11 cases, all pass |
+| Row W1.3: S2 (save in one host, load in the other) | hosts.test *W1.3 (S2): with the worker's own IndexedDB, a save in one host loads in the other and continues identically* passes (Worker → Local and Worker, Local → Worker) |
+| Row W1.3: the Playwright kill-the-tab test restores with the journal (= the task's §5 recovery check) | **deferred to Desktop QA D1 (NOTE-061)**; passed on the cloud on Nov 3 at `79268af` (*Browser evidence*) |
+| Row W1.3: at 1M a save blocks the worker ≤ 60 ms and the main thread ≤ 2 ms | measured in node, not gated (decision 14); savecost4.log, dense1m (population 1,118,755, 17,154 buildings, 256²), 7 saves, load average 2.0-4.0 on the shared 4-core container. **Worker:** the save:copy unit median 50.1 ms, max 62.0 ms (copySave 49.8 / 61.4, its boundary flush 0.42 / 0.67); the save:put unit (the put's structured clone) median 13.3 ms, max 19.0 ms; the two as one task would be 58.4 / 79.6 ms, which §4.2's two units avoid. **Main thread:** the `saved` reply's settlement median 0.17 ms, max 0.70 ms; the whole packet that carries it median 0.75 ms, max 1.0 ms. The worker's median is within 60 ms and its worst run 2 ms over, in node under load; Chromium on the real GPU is D7 |
+| Task: old saves load and continue | hosts.test *W1.3: an old save (the grown fixture, bot256_s7_y60) loads through the worker's IndexedDB and continues as LocalSimHost does* passes (in the full vitest, with `SIM_FIXTURES`) |
+| Task: `auto` stays `'main'` until W1.4 | unchanged: src/worker/policy.ts has no diff against dev; main.ts's `useWorker()` is as T034 left it |
+| Newer dev, landed during the gates: `146c885` (T057, T060 FEEL-01, T048, NOTE-062 to NOTE-064), then `cb6ca4c` (T036s5, which touches SimCore.ts, simWorker.ts, loopbackCore.ts, protocol.ts and SimHost.ts beside W1.3) | both trial merges (`git merge-tree`) are clean. On each merged tree, in a throwaway export: tsc clean; with `146c885`, the lane's tests plus T057's loadContinuity and serialize tests, 8 files, 85 passed (trial-146c885-tests.log); with `cb6ca4c`, the lane's tests plus loadContinuity, emergencyReads, simCore, loopbackHost and protocol, 11 files, 105 passed, and T036s5's emergencyTeachingHost / emergencyTeachingWorker with replicaSafe and workerSpeed, 4 files, 17 passed (trial-cb6ca4c-tests.log, -tests2.log). T057's combination fix (055baad, systemData key order) keeps W1.3's S2 hash checks green. Not merged here: no conflict (NOTE-057), and the merge step reruns the full vitest and the bot |
 
 ### Browser evidence
 
-BROWSER_EVIDENCE
+**The browser gate on the final code is deferred to Desktop QA (NOTE-061).** On Nov 9 the lead moved every browser
+check to the desktop's real GPU (NOTE-061, 1c2019c) and made the cloud's lock refuse them. This run queued
+tools/qa-journal.mjs on `d04432b` before that note landed; its waiter was terminated while still waiting for the lock,
+by another process as NOTE-061 took effect, and never ran (w13work/browser3.cancelled.log: `Terminated`, exit 143). It
+was not retried. Item D1 of the *Desktop QA* list is that
+check on the final commit.
 
-### Desktop QA (NOTE-059: after the merge, on dev at the merge commit, on the real GPU)
+**The cloud's last run of the check passed, on Nov 3** (`79268af`: W1.3's code as it stands, before dev's T034b,
+T040, T052, T053 and T058 merged in; production build, `?quickstart=1&size=small&seed=7&simworker=1&simdev=1`, Chromium
+on SwiftShader; 13 min under the lock). Log: /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/w13work/browser1.log and /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/w13work/browser1/out/log.txt. Every CHECK line passed:
 
-The production build (`npm run build`, `vite preview`), Chromium. Report pass or fail per item, with screenshot paths.
+| Check | Result | Screenshot (looked at) |
+|---|---|---|
+| 1. the city runs on a worker with its own IndexedDB | PASS: `kind 'worker'`, `persistence 'worker-idb'`, the mirror bound | /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/w13work/browser1/out/11-journal-before-close.png (the zone edit is still pending when the tab closes: `pending 1, zoned 0`) |
+| 1. the title offers the journal alone | PASS: "A record of your edits since the last save was kept on this device"; the IndexedDB journal holds setTax, setFunding and the zone, with its `info` | /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/w13work/browser1/out/12-journal-offered.png |
+| 1. the worker replays it: the edit made as the tab closed is back | PASS: tax 13, fire funding 130, the 24-cell zone | /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/w13work/browser1/out/13-journal-restored.png (the zone patch, the pill reads Saved) |
+| 1. and saves before its Ready | PASS: a new record (`savedAt` …118377) holds the edits, the journal is gone, changes 0 | (same) |
+| 2. the worker stored its own snapshot | PASS: IndexedDB snapshot written by the worker, 20,696 bytes, the localStorage journal rebound to it | |
+| 2. the snapshot is offered | PASS: "A recovery snapshot of your last session…" (a snapshot of the city wins over a save-bound journal, decision 7) | /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/w13work/browser1/out/22-snapshot-offered.png |
+| 2. the snapshot restores and its re-bound journal replays in the worker | PASS: tax 15, police 120, both zones | /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/w13work/browser1/out/23-snapshot-recovered-journal-replayed.png (both zone patches) |
+| 3. the first save holds the edits and leaves no recovery record | PASS: the record has tax 15; no IndexedDB journal or snapshot; no localStorage slot | /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/w13work/browser1/out/31-saved.png (the city runs at speed after that save, Apr 4 to Apr 8, so its pill reads unsaved again; the check reads the stored record) |
+| 4. no page or console errors | PASS: none | |
+
+The Nov 3 run logged `closed false` right after `page.close()`; `984ec54` then made the kill step wait for the tab's
+`close` event and fail when the tab stays open. That stricter script has not run on the cloud (D1 runs it).
+
+### Desktop QA (NOTE-061: on `cloud/w13` at its head, on the real GPU, before the merge)
+
+NOTE-061 has the desktop run each cloud lane's checklist on its `cloud/*` branch; the cloud merges once it passes. The
+code is as of `cd2ab47` (later commits on the branch are this report and the done marker). The
+production build (`npm run build`, `vite preview`), Chromium. Push the result into this report on `local/qa-w13` and
+message the lead "QA w13: PASS" or "QA w13: FAIL" with the findings: pass or fail per item, with screenshot paths.
 
 | # | Page and flags | Steps | Expected |
 |---|---|---|---|
@@ -193,7 +252,8 @@ The production build (`npm run build`, `vite preview`), Chromium. Report pass or
     journal, which would make its save contain the edit); T033's *moves the unload journal into IndexedDB at title time*
     now expects the journal alone to be offered (its own comment said "W1.3 adds that offer"); T034's hosts.test cases
     for persistence 'main' now expect no mirror with MemoryKV, and the mirror's snapshot plus journal with a persistent
-    store.
+    store; T058's *takes t0 after the recovery gate and passes that t0 to enterCity* (a source check) accepts `t0` followed
+    by W1.3's `replay` argument (Nov 9 merge).
 13. **The region tile's summary is not refreshed by the boot save** (it has no `saved` reply); the next save refreshes it.
 14. **The 1M save cost is measured in node, not gated.** Row W1.3's "a save blocks the worker ≤ 60 ms and the main
     thread ≤ 2 ms" is a browser number on a quiet machine; here it is node on a 4-core container shared with other
@@ -210,16 +270,23 @@ The production build (`npm run build`, `vite preview`), Chromium. Report pass or
     asynchronous, so each host reads it first (the worker in its boot phase `'journal'`, LocalSimHost alongside its
     module loads, the loopback in `start()`) and replays it before anything ticks. That is the row's ordering, and one
     replay path for every host.
-17. **The crash dialog's Recover with a journal is checked by host tests, not in a browser here** (Nov 9). NOTE-059
-    moves browser checks to the desktop; W1.3 keeps the one it planned, the task's kill-the-tab check. The main.ts wiring
-    (`playCity(…, choice === 'recover')`) and the worker-idb paths under qa-worker.mjs's crash, recover and watchdog steps
-    are in the *Desktop QA* list, to run on the real GPU after the merge.
+17. **The crash dialog's Recover with a journal is checked by host tests, not in a browser here** (Nov 9). The main.ts
+    wiring (`playCity(…, choice === 'recover')`) and the worker-idb paths under qa-worker.mjs's crash, recover and
+    watchdog steps are items D2-D5 of the *Desktop QA* list.
+18. **The task's browser gate (§5's recovery check) is deferred to Desktop QA** (NOTE-061, Nov 9: "The cloud stops
+    running browser checks on SwiftShader"; the lock now refuses them and says not to retry). It passed on the cloud on
+    Nov 3 at `79268af` (*Browser evidence*), with W1.3's code as it stands; since then only dev's lanes merged in, and the
+    lane's tests and the 23 reversions pass on the merged tree. D1 reruns it on the final commit; the lane is reported
+    `partial` until the desktop passes it.
 
 ### Left for others
 
 - T061 (NOTE-049): the `speedChanged` order in PacketSimHost (G17 b), the dispatch provenance, the clock cap. A trial
   merge of `cloud/t061` (`825d1df`, Nov 9) with `cloud/w13` (`d04432b`) is clean (`git merge-tree`, no worktree
   touched); either can land first.
-- T028 / qa-worker.mjs: fold tools/qa-journal.mjs in as its W1.3 step, if wanted.
+- T028 / qa-worker.mjs: fold tools/qa-journal.mjs in as its W1.3 step, if wanted (R14 moved "the journal check of
+  qa-worker.mjs" to W1.3; it lives in qa-journal.mjs for now, decision 10).
+- The merge step: dev has moved to `cb6ca4c` (T057, T060 FEEL-01, T048, T036s5); the trial merges are clean and the
+  lane's tests pass on them (*Gates*, last row).
 - Real-GPU and Chromium numbers for the save costs (decision 14).
-- The desktop: the *Desktop QA* list below, after the merge (NOTE-059 item 3).
+- The desktop: the *Desktop QA* list above, on `cloud/w13` before the merge (NOTE-061).
