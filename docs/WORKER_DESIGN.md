@@ -720,15 +720,27 @@ Two budgets:
 
 ### 3.5 The sim clock on the main thread
 
-`EmergencyVehicles` needs a smooth `simTime()` every frame. `Replica.clock` predicts it from the last packet:
+`EmergencyVehicles` needs a smooth `simTime()` every frame. `PacketSimHost.simTime()`, which the loopback and worker hosts share, predicts it from the last packet's clock (`Replica.clock`: `day`, `frac`, received at `recvTime`):
 
 ```
-t(now) = max(t_last, clock.day + min(0.999, clock.frac + (speed > 0 ? (now − recvTime) / 1000 / spd : 0)))
+rate   = speed > 0 ? 1 / (1000 · spd) : 0                              (sim days per ms)
+lead   = frac ≥ 1 ? 0 : min(held ? 1 − frac : 1, CLOCK_LEAD_MS · rate)
+target = day + frac + min(lead, (now − recvTime) · rate)
+shown  = t_last + (now − t_shown) · rate, nudged towards target
+t(now) = max(t_last, min(shown, day + frac + lead))
 ```
 
-- The clock never goes backwards. It is reset on `'reset'` or when the day decreases.
-- It never passes the next day boundary the worker has not simulated, so vehicles never run ahead of their incident state.
-- At ultra a packet arrives every 1–3 frames, one per simulated day. At 1× a day is 0.5 s and idle heartbeats come every 250 ms, so the predictor extrapolates over up to 0.25–0.5 s; the 0.999 cap keeps that harmless (O13).
+**T061 item 2 supersedes the first version of this section.** That version capped the prediction at `day + min(0.999, …)` until the next day's packet arrived, so the clock never passed a day boundary the worker had not simulated. But a day's packet comes late by the day's own work: on the worker's thread, or on the loopback's microtask after the frame was drawn. So every vehicle stopped at each day boundary and then leapt (T047's QA: about 4.7 m every 1.5 s at LIVE). Now:
+
+- **The prediction runs on past the day's end.** It is capped at `CLOCK_LEAD_MS` (500 ms) of sim time past the last packet's time, and at most one day: a day at 1×, a third of a day at LIVE's default 3× slowdown, one day at 2× and 3×.
+  - It does not run past a day's end the authority holds at (`frac` 1: the New Year hold, maxDaysPerFrame).
+  - It does not run past the end of its day while the page holds the calendar (`holdCalendar(true)` until `holdCalendar(false)`, NOTE-041), so the countdown keeps its midnight.
+  - Vehicles may run up to the lead ahead of the incident state the page has. The lead is one constant if it must be tighter.
+- **What is shown** advances at the real rate and is nudged towards the prediction over about `CLOCK_BLEND_MS` (250 ms). The nudge never changes one frame's step by more than `CLOCK_NUDGE` (a quarter). A gap larger than the lead is taken at once.
+- **It never goes backwards.** It restarts from the adopted clock on `'reset'` (a resync) or when a packet's day decreases. The facade's `dayFraction` is clamped to 0..1.
+- **Speed changes.** When LIVE engages, the authority's day fraction drops to a third (`dayFraction = acc / secondsPerDay`, and `spd` triples). The shown clock does not go back: it holds for at most the lead, then runs at 0.75× until it meets the authority. The local host's clock does jump back there (POLISH_BACKLOG, the sim clock).
+- **Timing.** At ultra a packet arrives every 1–3 frames, one per simulated day. At 1× a day is 0.5 s and idle heartbeats come every 250 ms; a day's packet can then arrive its day's work late (O13). While the authority keeps up, the shown clock trails it slightly, since it predicts from the receipt time. The lead matters only when the authority stops or falls behind.
+- **Test:** `tests/worker/packetClock.test.ts`. With the day's packet 40 ms late (about a 1M city's day), an ambulance's per-frame step at LIVE across 4 day boundaries stays within 1.12× and 0.75× of the median (the first version: 4.0× and 0).
 
 ### 3.6 New Year fireworks
 
