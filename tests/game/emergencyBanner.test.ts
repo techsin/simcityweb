@@ -17,9 +17,10 @@
  * Final-fix round 4:
  *  U1   the stack ends above an open toolbar flyout (watched: class and size) and does not re-dock while one of its
  *       banners is pressed (the press may close the flyout: the click must still land).
- * Close-out c1:
- *  a press that lands just after the stack moved under the pointer (opening a flyout re-docked it to compact rows) is
- *  ignored instead of reaching the banner that moved there (SETTLE_MS from the move's first frame on screen); the
+ * Close-out c1, NOTE-081:
+ *  a press that began before the stack moved under the pointer (opening a flyout re-docked it to compact rows) is
+ *  ignored instead of reaching the banner that moved there; one that begins after the move counts at once (it was
+ *  ignored for 350 ms from the move's first frame on screen — the click rule itself: emergencyBannerClick.test.ts); the
  *  tallest tab seen since the flyout opened bounds the stack (no re-dock with every tab switch).
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -35,7 +36,7 @@ import { emergencyOf } from '../../src/sim/infra/emergency';
 import { getFire, infraSystems, triggerDisaster } from '../../src/sim/systems/infra';
 import { deserializeCity, serializeCity, type SerializedCity } from '../../src/save/serialize';
 import {
-  BANNER_MIN_W, BANNER_W, EmergencyBanner, KIND_COOLDOWN, MAX_BANNERS, PANEL_HEAD_H, SETTLE_MS, STACK_TOP, TOOLBAR_GAP, dockBanners, fitRows, stateText,
+  BANNER_MIN_W, BANNER_W, EmergencyBanner, KIND_COOLDOWN, MAX_BANNERS, PANEL_HEAD_H, STACK_TOP, TOOLBAR_GAP, dockBanners, fitRows, stateText,
   supportText,
   type DockPlace,
 } from '../../src/ui/EmergencyBanner';
@@ -1045,13 +1046,14 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     };
   }
   /** a pointer press and release on a control of the stack as the browser delivers them: the stack's capture listeners
-   *  first (they may stop the event), the window's pointerup, then — unless stopped — the control's own click */
-  function press(t: ReturnType<typeof quakeTown>, winL: Map<string, ((e: unknown) => void)[]>, ctl: FakeEl): boolean {
+   *  first (they may stop the event), the window's pointerup, then — unless stopped — the control's own click. NOTE-081:
+   *  `began` is the pointerdown's own time (real ms) when the press began before it is handled — a long task ran */
+  function press(t: ReturnType<typeof quakeTown>, winL: Map<string, ((e: unknown) => void)[]>, ctl: FakeEl, began?: number): boolean {
     const stack = t.h.banner.el as unknown as FakeEl;
     const L = (el: FakeEl, k: string) => (el as unknown as { listeners: Map<string, ((e: unknown) => void)[]> }).listeners.get(k) ?? [];
     let stopped = false;
     const ev = () => ({ target: ctl, preventDefault() {}, stopPropagation() { stopped = true; } });
-    for (const f of L(stack, 'pointerdown')) f(ev());
+    for (const f of L(stack, 'pointerdown')) f({ ...ev(), timeStamp: began });
     const downStopped = stopped;
     stopped = false;
     for (const f of winL.get('pointerup') ?? []) f({});
@@ -1066,7 +1068,7 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
     return b!;
   };
 
-  it('c1: a press that lands just after a flyout re-docked the stack is ignored — not sent to the banner that moved under the pointer', () => {
+  it('c1 / NOTE-081: a press that began before a flyout re-docked the stack is ignored — not sent to the banner that moved under the pointer; one that begins after the move sends at once', () => {
     const w = fakeWindowAndFrames();
     const now = vi.spyOn(performance, 'now');
     try {
@@ -1093,33 +1095,27 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
       expect(parts(t.h, s1.shown[0]).el.classList.contains('compact')).toBe(true);
       const victim = s1.shown[1];
       const send = button(t.h, victim, /^Send nearest/);
-      // the press lands before the move is on screen, then within SETTLE_MS of its first frame: ignored, nothing sent
-      expect(press(t, w.winL, send)).toBe(false);
-      w.frame();
-      now.mockReturnValue(1e6 + 2200);
-      expect(press(t, w.winL, send)).toBe(false);
-      w.frame(); // (the second frame: the move has been on screen since the first one)
-      now.mockReturnValue(1e6 + 2200 + SETTLE_MS - 1);
-      expect(press(t, w.winL, send)).toBe(false);
+      // the press began before the move — its pointerdown is handled after the tick that re-docked: ignored, nothing sent
+      now.mockReturnValue(1e6 + 2110);
+      expect(press(t, w.winL, send, 1e6 + 2090)).toBe(false);
       expect(em.incident(victim)!.state).toBe('uncovered');
       // an ignored press holds no docking (nothing waits for its release)
       expect((t.h.banner as unknown as { pressAt: number }).pressAt).toBe(0);
-      // aimed again once the stack has settled: it sends
-      now.mockReturnValue(1e6 + 2200 + SETTLE_MS + 1);
-      expect(press(t, w.winL, send)).toBe(true);
+      // NOTE-081: a press that begins once the banner is in place sends at once, however soon after the move (it was
+      // ignored until 350 ms after the move's first frame on screen)
+      expect(press(t, w.winL, send, 1e6 + 2101)).toBe(true);
       expect(em.incident(victim)!.state).toBe('dispatched');
-      // (the pill too: a press on it just after a move opens nothing)
+      // (the pill too: a press on it that began before a move opens nothing; one that begins after the move does)
       const opened: string[] = [];
       (t.h.banner as unknown as { ctx: { panels: { open: (id: string) => void } } }).ctx.panels.open = (id) => opened.push(id);
       fly.className = 'flyout mp-glass';
       now.mockReturnValue(1e6 + 4000);
       t.h.tick(); // (closed: the stack moves back down)
       const more = (t.h.banner as unknown as { more: FakeEl }).more;
-      expect(press(t, w.winL, more)).toBe(false);
+      now.mockReturnValue(1e6 + 4010);
+      expect(press(t, w.winL, more, 1e6 + 3990)).toBe(false);
       expect(opened).toEqual([]);
-      w.frame(); w.frame();
-      now.mockReturnValue(1e6 + 4000 + SETTLE_MS + 1);
-      expect(press(t, w.winL, more)).toBe(true);
+      expect(press(t, w.winL, more, 1e6 + 4001)).toBe(true);
       expect(opened).toEqual(['emergencies']);
     } finally {
       now.mockRestore();
@@ -1251,20 +1247,20 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
       const before = reads;
       for (let k = 0; k < 3; k++) t.h.tick();
       expect(reads).toBe(before);
-      const banners = (t.h.banner as unknown as { banners: Map<number, { settleGen: number }> }).banners;
-      const gens = [above, upper, lower].map((id) => banners.get(id)!.settleGen);
+      const banners = (t.h.banner as unknown as { banners: Map<number, { movedAt: number }> }).banners;
+      const moved = [above, upper, lower].map((id) => banners.get(id)!.movedAt);
       measured = height;
       changed[0](); // a note / ETA wraps or shrinks; no full / compact switch or reordering
       t.h.tick();
       expect(reads).toBe(before + 1);
-      expect([above, upper].map((id) => banners.get(id)!.settleGen)).toEqual(gens.slice(0, 2));
-      expect(banners.get(lower)!.settleGen).toBeGreaterThan(gens[2]);
+      expect([above, upper].map((id) => banners.get(id)!.movedAt)).toEqual(moved.slice(0, 2));
+      expect(banners.get(lower)!.movedAt).toBeGreaterThan(moved[2]);
       expect(fullShown(t)).toEqual([above, upper, lower]);
-      expect(press(t, w.winL, button(t.h, lower, /^Jump$/))).toBe(false);
-      expect(press(t, w.winL, button(t.h, upper, /^Jump$/))).toBe(true);
-      w.frame(); w.frame();
-      now.mockReturnValue(1e6 + 2000 + SETTLE_MS + 1);
-      expect(press(t, w.winL, button(t.h, lower, /^Jump$/))).toBe(true);
+      // (NOTE-081: presses that began before the resize, handled after it; then one that begins after it — at once)
+      now.mockReturnValue(1e6 + 2010);
+      expect(press(t, w.winL, button(t.h, lower, /^Jump$/), 1e6 + 1990)).toBe(false);
+      expect(press(t, w.winL, button(t.h, upper, /^Jump$/), 1e6 + 1990)).toBe(true);
+      expect(press(t, w.winL, button(t.h, lower, /^Jump$/), 1e6 + 2001)).toBe(true);
     } finally {
       now.mockRestore();
       w.restore();
@@ -1399,20 +1395,20 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
       const s1 = stackBottom(t.h).shown;
       expect(s1.slice(0, 2)).toEqual(s0.slice(0, 2));
       expect(s1[2]).toBe(s0[3]);
-      // a press on the banner that moved up into the dismissed one's row: ignored — it flashes, its click sounds denied
+      // a press on the banner that moved up into the dismissed one's row, begun before it moved (NOTE-081): ignored — it
+      // flashes, its click sounds denied
       sounds.length = 0;
       const movedUp = button(t.h, s0[3], /^Send nearest/);
-      expect(press(t, w.winL, movedUp)).toBe(false);
+      now.mockReturnValue(1e6 + 2110);
+      expect(press(t, w.winL, movedUp, 1e6 + 2090)).toBe(false);
       expect(parts(t.h, s0[3]).el.classList.contains('settling')).toBe(true);
       expect(sounds).toEqual(['error']);
       expect(em.incident(s0[3])!.state).toBe('uncovered');
-      // a press on a banner above the change (it never moved): sent at once (c1's guard dropped it)
-      expect(press(t, w.winL, button(t.h, s0[1], /^Send nearest/))).toBe(true);
+      // a press begun then on a banner above the change (it never moved): sent at once (c1's guard dropped it)
+      expect(press(t, w.winL, button(t.h, s0[1], /^Send nearest/), 1e6 + 2090)).toBe(true);
       expect(em.incident(s0[1])!.state).toBe('dispatched');
-      // the moved banner, once settled: sent
-      w.frame(); w.frame();
-      now.mockReturnValue(1e6 + 2100 + SETTLE_MS + 1);
-      expect(press(t, w.winL, movedUp)).toBe(true);
+      // the moved banner, by a press that begins after its move: sent at once (NOTE-081: no 350 ms to wait out)
+      expect(press(t, w.winL, movedUp, 1e6 + 2101)).toBe(true);
       expect(em.incident(s0[3])!.state).toBe('dispatched');
     } finally {
       now.mockRestore();
@@ -1487,7 +1483,7 @@ describe('EmergencyBanner: final-fix round 3 — the stack never runs into the t
       expect(em.incident(a)!.state).toBe('dispatched');
       t.h.tick();
       w.frame(); w.frame();
-      now.mockReturnValue(1e6 + 2000 + SETTLE_MS + 1000);
+      now.mockReturnValue(1e6 + 3000);
       // the next banner's button moved up a row during the press, the pointer stayed: sent
       box = { left: 100, right: 220, top: 100, bottom: 128 };
       const sendB = boxed(button(t.h, b, /^Send nearest/));

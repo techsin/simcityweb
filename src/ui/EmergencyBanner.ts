@@ -90,15 +90,20 @@ const BOTTOM_KEEP = 84;
 /** room kept free between the stack and the bottom toolbar block (final fixes r3) */
 export const TOOLBAR_GAP = 12;
 /**
- * Close-out c1: a press on a banner's button or the pill is ignored while that banner (or the pill) has just moved under
- * the pointer — from the change (re-docked: a toolbar flyout opened, a panel moved; banners above it re-ordered, added,
- * removed or switched between full and compact; it was itself added or switched) until this long (real ms) after it was
- * first on screen: it was aimed at what sat there before (opening the Civic flyout re-docked the stack to compact rows,
- * and a press meant for one banner's Jump landed on the next banner's — Send nearest is on the same row). Close-out c2:
- * only the banners that moved (a press on one above the change, or on one that stayed, clicks at once), and an ignored
- * press says so: the banner flashes (SETTLE_FLASH_MS) and its click plays the denied sound.
+ * Close-out c1, NOTE-081: a press on a banner's button or the pill is ignored when it began before that banner (or the
+ * pill) appeared or moved under the pointer (re-docked: a toolbar flyout opened, a panel moved; banners above it
+ * re-ordered, added, removed or switched between full and compact; it was itself added or switched, or FH-08's card or
+ * failure note appeared in it): it was aimed at what sat there before (opening the Civic flyout re-docked the stack to
+ * compact rows, and a press meant for one banner's Jump landed on the next banner's — Send nearest is on the same row).
+ * A press that begins once the banner is in place counts at once, however soon: NOTE-081 — every press within 350 ms of
+ * the move was ignored, and the first click on a new banner's Send nearest, right after the game had paused for it, was
+ * lost three times in five. A press began at its pointerdown's own time (the pointerdown of a press made while a long
+ * task ran is handled after the banner that task added) unless that lies after the time it is handled or this long (real
+ * ms) before it: not this clock's (older browsers), and the time it is handled counts. Close-out c2: only the banners
+ * that moved (a press on one above the change, or on one that stayed, clicks at once), and an ignored press says so: the
+ * banner flashes (SETTLE_FLASH_MS) and its click plays the denied sound.
  */
-export const SETTLE_MS = 350;
+export const PRESS_LAG_MAX = 1000;
 /** close-out c2: how long a banner (or the pill) flashes when a press on it was ignored (real ms) */
 export const SETTLE_FLASH_MS = 260;
 /** a banner's height as a full / compact one when it was never measured at the stack's width (layout px) */
@@ -445,10 +450,10 @@ interface BannerEl {
    */
   hts?: Map<number, { full?: number; comp?: number }>;
   /** close-out c2: its slot at the last layout (the shown banners above it, its own full / compact and shown / folded
-   *  state); once it moved, presses on it are ignored until settleUntil (real ms; markMoved) */
+   *  state); NOTE-081: real ms it last appeared or moved under the pointer (markMoved) — a press that began before is
+   *  ignored */
   slot?: string;
-  settleUntil: number;
-  settleGen: number;
+  movedAt: number;
 }
 
 /** a banner's height as a full / compact one in a stack `w` layout px wide: as measured there, else the default */
@@ -465,6 +470,12 @@ function boxOf(e: Element): DOMRect | null {
 /** the pointer of mouse event e lies in box r */
 function inBox(e: MouseEvent, r: DOMRect | null): boolean {
   return !!r && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+}
+/** NOTE-081: when the press of pointerdown e began (real ms on performance.now's clock; `now`: when it is handled): the
+ *  event's own time, unless that is not this clock's (PRESS_LAG_MAX) */
+function pressTime(e: { timeStamp?: number } | undefined, now: number): number {
+  const ts = e?.timeStamp;
+  return typeof ts === 'number' && ts > 0 && ts <= now && now - ts < PRESS_LAG_MAX ? ts : now;
 }
 
 export class EmergencyBanner {
@@ -509,15 +520,20 @@ export class EmergencyBanner {
    *  pointercancel / lostpointercapture, or the window's blur) however long the press — a 1.5 s cap re-docked under a
    *  long press and lost its click — and the pressed control captures the pointer, so its release still clicks it */
   private pressAt = 0;
-  /** close-out c1 / c2: real ms until which a press on the pill is ignored — it just moved under the pointer (Infinity
-   *  while the move is not on screen yet; markMoved, SETTLE_MS); its slot at the last layout (the shown banners) */
-  private moreSettleUntil = 0;
-  private moreSettleGen = 0;
+  /** close-out c1 / c2, NOTE-081: real ms the pill last moved under the pointer — a press on it that began before is
+   *  ignored (markMoved); its slot at the last layout (the shown banners) */
+  private moreMovedAt = 0;
   private moreSlot = '';
   /** the pill is shown (set with its display in tick) */
   private moreShown = false;
-  /** the control a press was ignored on: its click is dropped too */
+  /** the control a press was ignored on: its click is dropped too, whenever it comes (NOTE-081: a touch's click follows
+   *  its release in a later task, and went through — the press was forgotten at the release) */
   private ignored: Element | null = null;
+  /** NOTE-081: the press in flight, until its click or the next press — the stack control it began on (null: none, or
+   *  off the stack) and when (real ms, pressTime). Its click on another control is dropped when that control's banner
+   *  appeared or moved under the pointer since: a banner sliding in under a held finger (a touch's click goes to what
+   *  lies under the finger when it lifts), or a reflow under a pressed pointer */
+  private began: { ctl: Element | null; at: number } | null = null;
   /** close-out c2: the control the current press captured, and its box then. The capture sends the release's click to
    *  it wherever the pointer is: a release off it — off where it was pressed and off where it is now — is a cancelled
    *  press, as without the capture, and its click is dropped */
@@ -552,16 +568,18 @@ export class EmergencyBanner {
     win?.addEventListener('resize', resized);
     // (a press anywhere on the stack holds the docking until it is released — the layout it measured then applies; the
     // pressed control captures the pointer, so its release clicks it whatever moved meanwhile, and a release off it
-    // still cancels — close-out c2. A press on a button or the pill of a banner that has just moved under the pointer is
-    // ignored, and its click: it was aimed at what sat there before — close-out c1, SETTLE_MS; c2: it flashes, and the
-    // click plays the denied sound)
+    // still cancels — close-out c2. A press on a button or the pill that began before its banner (or the pill) appeared
+    // or moved under the pointer is ignored, and its click: it was aimed at what sat there before — close-out c1;
+    // NOTE-081: by when the press began, no longer for 350 ms after the move; c2: it flashes, and the click plays the
+    // denied sound)
     this.el.addEventListener('pointerdown', (e) => {
-      const now = performance.now();
+      const now = performance.now(), at = pressTime(e as Event | undefined, now);
       this.ignored = null;
       this.pressed = null;
       const t = (e as Event | undefined)?.target as Element | null | undefined;
       const ctl = t && typeof t.closest === 'function' ? t.closest('button, .emg-more') : null;
-      if (ctl && this.unsettled(ctl, now)) {
+      this.began = { ctl, at };
+      if (ctl && this.movedSince(ctl, at)) {
         this.ignored = ctl;
         this.flashSettling(ctl);
         e.preventDefault();
@@ -581,19 +599,25 @@ export class EmergencyBanner {
       }
     }, { capture: true, signal: ctx.signal });
     this.el.addEventListener('click', (e) => {
-      const pr = this.pressed;
+      // (NOTE-081: the keyboard's click — Enter / Space on the focused control, detail 0 — follows no press: at once)
+      if (e.detail === 0) return;
+      const pr = this.pressed, bg = this.began;
       this.pressed = null;
-      const t = e.target as Node | null;
+      this.began = null;
+      const t = e.target as Element | null;
       const ig = this.ignored;
-      if (ig) {
-        this.ignored = null;
-        if (t && ig.contains(t)) {
-          e.preventDefault();
-          e.stopPropagation();
-          // (within the click: the UI's generic click sound is left out — uiSounds)
-          this.ctx.sound('error');
-          return;
-        }
+      this.ignored = null;
+      // NOTE-081: the click of a press that began off this control (a touch's goes to what lies under the finger when
+      // it lifts), before the control's banner (or the pill) appeared or moved under the pointer: ignored as well
+      const ctl = bg && t && typeof t.closest === 'function' ? t.closest('button, .emg-more') : null;
+      const late = !!bg && !!ctl && bg.ctl !== ctl && this.movedSince(ctl, bg.at);
+      if (late && ctl) this.flashSettling(ctl);
+      if (late || (ig && t && ig.contains(t))) {
+        e.preventDefault();
+        e.stopPropagation();
+        // (within the click: the UI's generic click sound is left out — uiSounds)
+        this.ctx.sound('error');
+        return;
       }
       // (a pointer's click — not the keyboard's — released off the captured control: a cancelled press)
       if (pr?.box && t && pr.ctl.contains(t) && e.detail > 0 && !inBox(e, pr.box) && !inBox(e, boxOf(pr.ctl))) {
@@ -601,9 +625,15 @@ export class EmergencyBanner {
         e.stopPropagation();
       }
     }, { capture: true, signal: ctx.signal });
+    // NOTE-081: a press that begins off the stack is noted too (the window hears every press first; one on the stack is
+    // noted again above, with its control)
+    const pressBegan = (e: Event) => {
+      this.ignored = null;
+      this.pressed = null;
+      this.began = { ctl: null, at: pressTime(e, performance.now()) };
+    };
+    win?.addEventListener('pointerdown', pressBegan, true);
     const release = () => {
-      // (an ignored press's click follows its release in the same input task: forgotten after it)
-      if (this.ignored) setTimeout(() => { this.ignored = null; }, 0);
       if (!this.pressAt) return;
       this.pressAt = 0;
       this.dockDirty = true;
@@ -632,6 +662,7 @@ export class EmergencyBanner {
       this.ro?.disconnect();
       this.mo?.disconnect();
       win?.removeEventListener('resize', resized);
+      win?.removeEventListener('pointerdown', pressBegan, true);
       win?.removeEventListener('pointerup', release, true);
       win?.removeEventListener('pointercancel', release, true);
       win?.removeEventListener('blur', release);
@@ -644,41 +675,21 @@ export class EmergencyBanner {
 
   /**
    * close-out c1 / c2: these banners (and the pill) moved under the pointer — the stack re-docked, they were added,
-   * switched between full and compact or folded, or a banner above them went, moved or changed its size: presses on them
-   * are ignored until SETTLE_MS after the move is on screen — stamped at the start of the second frame from now (the
-   * first one paints it; a later move starts over). The banners that did not move take presses at once. No layout read.
+   * switched between full and compact or folded, or a banner above them went, moved or changed its size: a press on them
+   * that began before now is ignored (movedSince). NOTE-081: one that begins from now on counts at once (they were
+   * ignored until 350 ms after the move was on screen). The banners that did not move take every press. No layout read.
    */
   private markMoved(list: Iterable<BannerEl>, pill: boolean): void {
-    const stamps: (() => void)[] = [];
-    for (const b of list) {
-      b.settleUntil = Infinity;
-      const gen = ++b.settleGen;
-      stamps.push(() => {
-        if (gen === b.settleGen) b.settleUntil = performance.now() + SETTLE_MS;
-      });
-    }
-    if (pill) {
-      this.moreSettleUntil = Infinity;
-      const gen = ++this.moreSettleGen;
-      stamps.push(() => {
-        if (gen === this.moreSettleGen) this.moreSettleUntil = performance.now() + SETTLE_MS;
-      });
-    }
-    if (!stamps.length) return;
-    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null;
-    if (!raf) {
-      for (const f of stamps) f();
-      return;
-    }
-    raf(() => raf(() => {
-      for (const f of stamps) f();
-    }));
+    const now = performance.now();
+    for (const b of list) b.movedAt = now;
+    if (pill) this.moreMovedAt = now;
   }
 
-  /** a press on control `ctl` lands on a banner (or the pill) that has just moved under the pointer */
-  private unsettled(ctl: Element, now: number): boolean {
-    if (this.more.contains(ctl)) return now < this.moreSettleUntil;
-    for (const b of this.banners.values()) if (b.el.contains(ctl)) return now < b.settleUntil;
+  /** the banner (or the pill) of control `ctl` appeared or moved under the pointer after real ms `at`: a press that
+   *  began then was aimed at what sat there before */
+  private movedSince(ctl: Element, at: number): boolean {
+    if (this.more.contains(ctl)) return at < this.moreMovedAt;
+    for (const b of this.banners.values()) if (b.el.contains(ctl)) return at < b.movedAt;
     return false;
   }
 
@@ -887,6 +898,8 @@ export class EmergencyBanner {
       toggleClass(b.el, 'teaching', true);
       b.hts?.clear();
       this.dockDirty = true;
+      // (NOTE-081: its buttons appear under the pointer in a banner that may not move itself)
+      this.markMoved([b], false);
       this.layout();
     }
     const card = this.teaching;
@@ -930,6 +943,7 @@ export class EmergencyBanner {
     b.body.appendChild(b.teachingReason);
     b.hts?.clear();
     this.dockDirty = true;
+    this.markMoved([b], false); // (NOTE-081: its button appears under the pointer)
   }
 
   /** Keep the first failure readable after its short-lived outcome banner leaves the stack. */
@@ -1012,7 +1026,7 @@ export class EmergencyBanner {
       this.ctx.host.act('dismissAlert', [inc.id], { tag: this });
     }, { signal: this.ctx.signal });
     this.el.insertBefore(el, this.more);
-    const b: BannerEl = { id: inc.id, inc, el, body, title, place, note, sub, time, send, sendLbl, sendEta, choose, optsVersion: -1, settleUntil: 0, settleGen: 0 };
+    const b: BannerEl = { id: inc.id, inc, el, body, title, place, note, sub, time, send, sendLbl, sendEta, choose, optsVersion: -1, movedAt: 0 };
     this.banners.set(inc.id, b);
     this.ro?.observe(el);
     this.dockDirty = true;
@@ -1237,8 +1251,8 @@ export class EmergencyBanner {
    * changed (ResizeObserver: banners, panels, the pill, the toolbar block and its flyout; MutationObserver: panels
    * opened / closed / moved, the flyout opened / closed; a window resize). Final fixes r4 U1: an open toolbar flyout is
    * the bottom bound (stackBottom), and nothing re-docks while a banner is pressed (pressAt): a press whose pointerdown
-   * closes the flyout still clicks (EM-4). Close-out c1: a press that lands just after the stack moved is ignored, not
-   * sent to the banner that moved under the pointer (markMoved, SETTLE_MS), and the tallest tab seen since the flyout
+   * closes the flyout still clicks (EM-4). Close-out c1, NOTE-081: a press that began before the stack moved is ignored,
+   * not sent to the banner that moved under the pointer (markMoved), and the tallest tab seen since the flyout
    * opened bounds the stack (flyoutTop: no re-dock with every tab).
    */
   private dock(): void {
