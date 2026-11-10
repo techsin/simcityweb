@@ -9,12 +9,15 @@ import { drawRegionMap } from '../mapPreview';
 import { randomRegionName } from '../names';
 import { Modal, segmented, slider, toggle, confirmDialog, toast } from './modal';
 import { button, formatMoney, formatPop, h, icon, timeAgo } from './dom';
-import { deleteRegion, downloadBlob, exportRegion, importRegion, listRegions, safeFileName, type RecoveryMarker } from '../../save';
+import { importRegion, listRegions, type RecoveryMarker } from '../../save';
+import { deleteStorageRegion, exportStorageRegion, regionTakenOver } from '../../ui/StorageDialog';
 import { EMBLEM_SVG } from './emblem';
+import { detectQuality } from '../../render/world/quality';
 
 // ------------------------------------------------------------------ settings
 export function openSettings(onChange?: (s: AppSettings) => void): Modal {
   const s = loadSettings();
+  const recommended = detectQuality();
   const vol = (label: string, kind: 'master' | 'music' | 'sfx' | 'ambience', ic: string) =>
     slider({ label, icon: ic, value: audio.getVolume(kind), onInput: (v) => audio.setVolume(kind, v) }).el;
   const commit = () => {
@@ -45,12 +48,12 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
       { class: 'field' },
       h('label', {}, 'Default quality'),
       segmented({
-        items: [
+        items: ([
           { value: 'low', title: 'Low', sub: 'Laptops' },
           { value: 'medium', title: 'Medium', sub: 'Balanced' },
-          { value: 'high', title: 'High', sub: 'Recommended' },
+          { value: 'high', title: 'High', sub: 'Detailed' },
           { value: 'ultra', title: 'Ultra', sub: 'Fast GPUs' },
-        ],
+        ] as const).map((it) => ({ ...it, sub: it.value === recommended ? 'Recommended' : it.sub })),
         value: s.quality,
         cols: 4,
         onChange: (v) => {
@@ -65,7 +68,7 @@ export function openSettings(onChange?: (s: AppSettings) => void): Modal {
     h(
       'div',
       { class: 'field' },
-      h('label', {}, 'Autosave · game time'),
+      h('label', {}, 'Autosave · Every N game months, at most once a minute'),
       segmented({
         chips: true,
         items: [
@@ -387,7 +390,7 @@ export function openLoadRegion(onOpen: (r: RegionData) => void): Modal {
               title: 'Export .metropolis file',
               onClick: async () => {
                 try {
-                  downloadBlob(await exportRegion(r.id), safeFileName(r.name));
+                  await exportStorageRegion(r);
                   toast('Region exported', 'good');
                 } catch (e) {
                   toast(`Export failed: ${(e as Error).message}`, 'bad');
@@ -400,7 +403,7 @@ export function openLoadRegion(onOpen: (r: RegionData) => void): Modal {
               title: 'Delete region',
               onClick: async () => {
                 if (await confirmDialog({ title: 'Delete region?', message: `“${r.name}” and all of its cities will be permanently deleted.`, confirm: 'Delete', danger: true })) {
-                  await deleteRegion(r.id);
+                  if (!(await deleteStorageRegion(r.id))) { toast('This region is open in another tab. Close it there before deleting it.', 'bad'); return; }
                   audio.play('bulldoze');
                   render();
                 }
@@ -458,9 +461,11 @@ export function openRecoverDialog(m: RecoveryMarker): Promise<'recover' | 'disca
     const body = h(
       'div',
       { class: 'recover-body' },
-      m.why === 'exit'
-        ? h('p', {}, 'Saving ', h('b', {}, m.cityName), ' failed when you left it. A recovery snapshot of your progress was kept on this device.')
-        : h('p', {}, 'Metropolis closed before ', h('b', {}, m.cityName), ' was saved. A recovery snapshot of your last session was kept on this device.'),
+      regionTakenOver(m.regionId, m.at)
+        ? h('p', {}, 'This region was opened in another tab. Unsaved progress for ', h('b', {}, m.cityName), ' was kept in a recovery snapshot on this device.')
+        : m.why === 'exit'
+          ? h('p', {}, 'Saving ', h('b', {}, m.cityName), ' failed when you left it. A recovery snapshot of your progress was kept on this device.')
+          : h('p', {}, 'Metropolis closed before ', h('b', {}, m.cityName), ' was saved. A recovery snapshot of your last session was kept on this device.'),
       h(
         'div',
         { class: 'rv-grid' },

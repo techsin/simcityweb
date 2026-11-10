@@ -1,6 +1,7 @@
 /** Clone-only worker messages and lossless replica codecs (WORKER_DESIGN §2). */
 import type { CellRect } from '../core/events';
 import type { Overlay } from '../core/types';
+import type { EmergencyTeaching } from '../game/emergencyPolicy';
 import type { RegionContext } from '../region/regionEffects';
 import type { RegionCitySummary } from '../region/types';
 import type { CityRecord } from '../save/cities';
@@ -29,6 +30,10 @@ export interface SimSettings {
   emergencyUncovered: 'live' | 'pause' | 'ignore';
   emergencyLiveSlowmo: number;
   emergencyAlerts: 'major' | 'all';
+  /** FH-08 profile firsts; omitted flags are off, acknowledgement uses setSettings. */
+  teachFirst?: boolean;
+  teachTooFar?: boolean;
+  teachingAck?: number;
 }
 export interface ViewState { overlay: Overlay; variant: number; panels: string[]; focus: number[] }
 export type CitySource = { kind: 'idb'; regionId: string; tileKey: string }
@@ -84,6 +89,7 @@ export interface PolicyState {
   live: boolean;
   toast?: { text: string; kind: 'info' | 'good' | 'bad' | 'warning' };
   warn?: true;
+  teaching?: EmergencyTeaching;
 }
 export type StationRow = ReturnType<EmergencySystem['stationList']>[number];
 export type IncidentRecord = Incident;

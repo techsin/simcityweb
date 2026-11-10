@@ -12,7 +12,7 @@ import { runQuery, watchSignature, type QueryName, type QueryArgs, type QueryRes
 import { plainEqual } from './protocol';
 // W0.4: headless policy and its read-only host view.
 import { Emitter } from '../core/events';
-import { AlertQueue, LIVE_COOLDOWN_MS, LIVE_IDLE, followingDispatch, pendingCount, sendDays, speedPolicy, unbanneredPrompt, urgentSeconds, type LiveState, type PolicyAlert } from '../game/emergencyPolicy';
+import { AlertQueue, EmergencyTeachingPolicy, LIVE_COOLDOWN_MS, LIVE_IDLE, followingDispatch, pendingCount, sendDays, speedPolicy, unbanneredPrompt, urgentSeconds, type LiveState, type PolicyAlert } from '../game/emergencyPolicy';
 import type { EmergencyEvent } from '../sim/Simulation';
 import type { Incident } from '../sim/infra/emergency';
 import type { PolicySnapshot, PolicyView, SimSettings } from './SimHost';
@@ -296,6 +296,7 @@ export class LivePolicy {
   private changes = new Emitter<{ change: PolicySnapshot }>();
   private settings: SimSettings = { emergencyUncovered: 'live', emergencyLiveSlowmo: 3, emergencyAlerts: 'major' };
   private queue = new AlertQueue();
+  private teacher = new EmergencyTeachingPolicy();
   private alerts = new Map<number, LiveAlert>();
   private dismissed = new Set<number>();
   private incoming = new Set<number>();
@@ -314,6 +315,7 @@ export class LivePolicy {
     this.view = {
       get alerts() { return self.snapshot.alerts; },
       get live() { return self.snapshot.live; },
+      get teaching() { return self.snapshot.teaching; },
       get toast() { return self.snapshot.toast; },
       get warn() { return self.snapshot.warn; },
       subscribe(listener, signal) {
@@ -340,6 +342,7 @@ export class LivePolicy {
       this.incoming.clear();
       this.dismissed.clear();
       this.queue.clear();
+      this.teacher.reset();
       this.snapshot = { alerts: [], live: false };
     }, { once: true });
     this.boot();
@@ -353,6 +356,7 @@ export class LivePolicy {
     this.dismissed.clear();
     this.incoming.clear();
     this.live = { ...LIVE_IDLE };
+    this.teacher.reset();
     this.cooldownLeft = 0;
     this.cooldownAt = this.clock();
     this.cooldownRunning = this.sim.speed > 0;
@@ -476,7 +480,8 @@ export class LivePolicy {
     const pending = pendingCount(policy, this.alerts, incidents, this.dismissed, now, send);
     this.episodeBad ||= pending.bad;
     const was = this.live.active;
-    const step = speedPolicy(policy, this.live, sim.speed, this.trigger && this.cooldownLeft === 0, pending.count, slowmo, this.episodeBad, policy === 'live' ? urgentSeconds(this.alerts, incidents, this.dismissed, now, slowmo, send) : Infinity);
+    const teaching = this.teacher.update(this.settings, this.alerts, incidents);
+    const step = speedPolicy(policy, this.live, sim.speed, this.trigger && this.cooldownLeft === 0, pending.count, slowmo, this.episodeBad, policy === 'live' ? urgentSeconds(this.alerts, incidents, this.dismissed, now, slowmo, send) : Infinity, teaching);
     this.trigger = false;
     this.live = step.state;
     if (was !== this.live.active || step.toast) this.episodeBad = false;
@@ -489,9 +494,10 @@ export class LivePolicy {
   private publish(toast?: string, warn = false): void {
     const live = this.live.active && this.live.policy === 'live';
     const alerts = [...this.alerts.values()].map(({ id, wasPossible }) => ({ id, wasPossible }));
+    const teaching = this.teacher.episode;
     const before = this.snapshot;
-    if (!toast && !warn && before.live === live && before.alerts.length === alerts.length && alerts.every((a, k) => a.id === before.alerts[k].id && a.wasPossible === before.alerts[k].wasPossible)) return;
-    this.snapshot = { alerts, live, ...(toast ? { toast: { text: toast, kind: toast.startsWith('Emergencies handled') ? 'good' as const : 'info' as const } } : {}), ...(warn ? { warn: true as const } : {}) };
+    if (!toast && !warn && before.live === live && before.teaching?.id === teaching?.id && before.teaching?.variant === teaching?.variant && before.alerts.length === alerts.length && alerts.every((a, k) => a.id === before.alerts[k].id && a.wasPossible === before.alerts[k].wasPossible)) return;
+    this.snapshot = { alerts, live, ...(teaching ? { teaching: { ...teaching } } : {}), ...(toast ? { toast: { text: toast, kind: toast.startsWith('Emergencies handled') ? 'good' as const : 'info' as const } } : {}), ...(warn ? { warn: true as const } : {}) };
     this.changes.emit('change', this.snapshot);
   }
 }
