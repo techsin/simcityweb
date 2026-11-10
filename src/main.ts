@@ -75,7 +75,7 @@ import { NeighborLabels } from './region/NeighborLabels';
 import type { Camera } from 'three';
 import { regionSaveAccess, requestPersistentStorage, requireRegionSaveAccess, withRegionSaveAccess } from './save/db';
 import { RegionStorage } from './region/regionLock';
-import { handleRecoveryStorageError, isStorageError, recoveryStorageGate, showStorageError, storageRecoveryChoice, withRecoveryStorage } from './ui/StorageDialog';
+import { handleRecoveryStorageError, isStorageError, RECOVERY_UNDECIDED_MESSAGE, recoveryStorageGate, showStorageError, storageRecoveryChoice, withRecoveryStorage } from './ui/StorageDialog';
 
 // ---------------------------------------------------------------------------------------------------------------
 // CityScene contract (owned by ui-game; loaded lazily so the app works before it exists)
@@ -1023,15 +1023,29 @@ class App {
     for (let i = 0; this.busy && i < 600; i++) await new Promise((r) => setTimeout(r, 50));
     await this.closeCity(c);
     if (choice === 'local') this.workerOff = true;
+    let replay = false;
     if (choice === 'recover') {
       // a snapshot that cannot be restored is reported and deleted: the last save is what remains
       const pending = await findRecoverySnapshot(city).catch(() => null);
-      if (pending) await this.restoreRecovery(pending);
+      const restored: RecoverChoice = pending ? await this.restoreRecovery(pending) : 'none';
+      // T089 (W1.3 decision 20): only a restore that succeeded is followed by a replay. One that left the recovery copy
+      // stored (a full store, a region now open in another tab, a copy that could not be read) opens no city over it,
+      // as the recovery gate opens none: that city's own snapshots and journal would replace the copy
+      replay = restored === 'recovered';
+      if (!replay && (await hasRecoverySnapshot(city).catch(() => false))) {
+        if (restored === 'none') toast(RECOVERY_UNDECIDED_MESSAGE, 'bad', 6000);
+        ld.set('Returning to the region…', 0.7);
+        return this.showRegion(model, ld, c.tile.key);
+      }
+    } else {
+      // T089 (NOTE-080, the owner's choice): Restart and Continue on the main thread discard the crashed session's
+      // recovery copy (the worker's snapshot, the journal, the localStorage slot), as the dialog says: no later crash
+      // or start can bring that session back
+      await discardRecoverySnapshot(city);
     }
     // the player has chosen: no second recovery offer (a loading screen handed over skips it). W1.3: only Recover
-    // replays the journal; Restart and Continue on the main thread load the save as it is, and the journal stays as
-    // the snapshot does, until the next save or recovery write replaces it
-    await this.playCity(c.tile, ld, choice === 'recover');
+    // replays the journal; Restart and Continue on the main thread load the save as it is
+    await this.playCity(c.tile, ld, replay);
   }
 
   /** stand-in when src/game/CityScene.ts is not available yet */

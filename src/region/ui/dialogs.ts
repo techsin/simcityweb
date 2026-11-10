@@ -520,11 +520,12 @@ export function openSimCrashDialog(o: { cityName: string; message: string; recov
     const body = h(
       'div',
       { class: 'recover-body' },
+      // T089 (NOTE-080): Restart and Continue on the main thread discard the recovery copy (main.ts onWorkerCrash)
       h('p', {}, 'The simulation of ', h('b', {}, o.cityName), o.recoverable
-        ? ' stopped. Progress since the last save is not in it, but a recovery copy was kept on this device.'
-        : ' stopped. Progress since the last save is not in it.'),
+        ? ' stopped. Unsaved progress since the last save is lost unless you choose Recover: a recovery copy of it was kept on this device.'
+        : ' stopped. Unsaved progress since the last save is lost: no recovery copy of it was kept on this device.'),
       h('p', { class: 'rv-note' }, o.recoverable
-        ? 'Restart reloads the last save. Recover brings back the unsaved progress first. Continue on the main thread reloads the last save without the simulation worker, for the rest of this visit.'
+        ? 'Recover brings back the unsaved progress. Restart reloads the last save and deletes the recovery copy. Continue on the main thread does that too, and runs without the simulation worker for the rest of this visit.'
         : 'Restart reloads the last save. Continue on the main thread reloads it without the simulation worker, for the rest of this visit.'),
       h('details', {}, h('summary', {}, 'Details'), h('pre', { class: 'rv-note' }, o.message)),
     );
