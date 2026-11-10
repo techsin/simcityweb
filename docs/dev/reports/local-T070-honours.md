@@ -1,6 +1,6 @@
 # T070: honours and the young-town approval reward
 
-Worktree `local/T070-honours`, based on `1c2019c`. Round 1 is committed as `b7d40a7`; the Round 2 changes below are uncommitted.
+Worktree `local/T070-honours`, based on `1c2019c`. Round 1 is committed as `b7d40a7`, Round 2 as `1c7d58f`, the acceptance amendment as `93f635c`; the QA round 2 changes (last section) are uncommitted.
 
 ## LG-20 — Honours
 
@@ -249,3 +249,226 @@ Why the lead kept the literal rule: it gives the same answer on two seeds; optio
 only, inside the bot's fork noise (NOTE-053); 55 % and "ten points up from your lowest" are numbers a player can read;
 and the years 4-6 window was the plan's estimate, not a design requirement. The options stay recorded here so the
 owner can overrule the choice later. FH-26's designed bot change stands: 192,647 on 128x15 s7.
+
+
+## QA round 2 — the real-GPU QA's list (B1-B8)
+
+Base `93f635c`, uncommitted. Source: the browser QA on the real GPU (`scratchpad/qa/T070/qa.md`: both items pass on all
+three hosts; one visual defect, six small ones, one cost to look at). Scratch for this round:
+`scratchpad/lanes/T070/fix2/` (probes, logs, comparisons).
+
+### What changed, by item
+
+| # | Fix | Where |
+|---|---|---|
+| B1 | The progress bar has a floor of 96 px. `.reward-prog` wraps, and the bar is `flex: 1 1 96px; min-width: 96px`: a requirement that leaves the bar less than that moves under it and wraps over the row's full width; a row whose text fits beside a 96 px bar lays out as before (the bar takes what is left, same 8 px gap). | `src/ui/hud.css` (the two `.reward-prog` rules) |
+| B2 | An honour's plaque or garden is in the build menu only once the honour is earned, and then after the tab's own tiles. With no honour earned the "Rewards & business deals" tab is the five tiles it was. Unearned ones stay reachable through `findToolSpec` (the Honours row's Place path) and show their goal in Rewards > Honours. | `src/game/toolCatalog.ts` `plopGroup` |
+| B3 | `defIcon` answers `reward` (the trophy) for `rw_honour_*` before the name rules run; the airports' rule is untouched. | `src/game/toolCatalog.ts` `defIcon` |
+| B4 | The honour's fanfare waits out `MILESTONE_GAP` (180 ms) after an ordinary reward's chime, as the milestone cues do; alone it plays at once. Its six-second budget is taken at the request, the news budget when it plays; a reset or dispose drops a waiting one. | `src/game/GameSounds.ts` `honour()` + new `fanfare()` / `clearHonour()` |
+| B5 | At the boundary that closes an old save's first partial month the four `*Interrupted` flags are cleared, as `updateApprovalReward` does for the Statue. | `src/sim/economy/rewards.ts` `updateHonours` |
+| B6 | The tabs sit in a sticky strip at the top of the scrolling body (`.reward-tabs`, the Settings nav's pattern: flush under the panel head, opaque). They stay inside the body, so the panel's markup for the tabs is unchanged apart from the wrapper. | `src/ui/panels/ListPanels.ts` (one line), `src/ui/rewards.css` (one rule) |
+| B7 | No power chip on a building with neither a `powerUse` nor jobs. The grid gives such a building 0 MW (`utilities.ts` `fullUse`), and the facility report already warns only for an explicit `powerUse`. | `src/ui/panels/InfoPanel.ts` (the `usesPower` condition) |
+| B8 | The monthly survey walks the buildings once and keeps the Large Parks' reach between months (below). | `src/sim/economy/rewards.ts` (the survey block) |
+
+Outside the lane's named files, each a minimal hunk the fix list names: `src/ui/hud.css` (B1), `src/ui/rewards.css` (B6),
+`src/game/toolCatalog.ts` (B2, B3), `src/ui/panels/InfoPanel.ts` (B7, one condition and its comment). `GameSounds.ts` is a
+shared file: the hunks are the lane's own `honour()`, two new methods beside it, one field, and one line each in the
+reset handler and `dispose()`. No `src/sim/infra` hunk, no catalog change, no cloud-held file, nothing new in the save
+(the kept reach is runtime state of the rewards system). **Cloud-held-file requests: none.**
+
+### B5 and the bot
+
+The branch is reached only when a monthly check finds the survey data created in the same calendar month: a save without
+`honours` data loaded mid-month (its first boundary), or a check repeated on one boundary day. A city founded on day 0
+(or the newcomer profile's day 90) starts its data on a boundary and never enters it, so B5 cannot move a fresh city or
+the bot. It does change an old save, as intended: on `dense1m_s7` (loaded on day 10,921, with a failed emergency in
+that partial month) the Safe City count on day 10,980 reads 1 where `93f635c` reads 0; every survey number is the same.
+
+### B8: the monthly survey
+
+**What it walked.** Not per honour: one survey feeds all twelve (occupied homes, the noisy share, the share within reach
+of a Large Park). But each month, and at load, it (1) walked every building to find the Large Parks and searched the
+walking reach of each one afresh (18 searches on `dense1m_s7`), into a new cells-sized mask; (2) walked every building
+again with a catalog lookup by def id for each one.
+
+**What it does now.** One walk: the first survey's conditions with the cheap ones first, so only finished, standing,
+occupied buildings get a def lookup (`rt.defOf`, the runtime's per-building cache). The parks' reach is kept between
+surveys, with copies of the two layers a search reads (`network`, `water`; `catchments.ts` `reachRoad` / `nearField`
+read nothing else). Before the walk the layers are compared with the copies; a park is searched again only when a cell
+changed inside the box of the cells it marks or within two cells of it (the rule `services.ts` `invalidateReach` uses
+for its own kept reaches), together with any park whose marks the cleared box held. The walk collects the standing
+parks; when one came or went they are all searched and the homes counted again. Nothing is kept once Green Belt is
+earned or while no Large Park stands.
+
+**Why not daily slices**, as the other monthly growable passes do it: a sliced survey reads each building on a different
+day, so its three numbers differ from the survey at the boundary, and an honour could be earned in another month. The
+walk at the boundary is the only exact form short of an event for every `pop` / flag write, which the sim does not have.
+The comparison of the layers is a scan (two layers, four cells a step) rather than `networkChanged` /
+`terrainChanged` listeners, for the reason `services.ts` `checkNetwork` hashes them: edits that bypass the events.
+
+**The same answers.** Proof, in order of strength:
+- `tests/sim/honoursSurvey.test.ts` keeps the `93f635c` survey as an oracle (every park searched afresh, every building
+  looked up) and compares the three saved numbers with it, exactly, after every month: 24 named changes written
+  straight into the state with no event (homes, roads, a highway, a rail crossing, water, a moat that cuts one home off,
+  parks opened, burnt, abandoned, bulldozed, replaced in one month), three seeds x 60 months of random edits on a town,
+  three seeds x 90 months of single-cell edits at every distance from a park with a home on every free cell (a cell
+  that enters or leaves the reach is a home counted or not), the far ends of a one-street reach cut and rebuilt along
+  both axes, Green Belt earned, a second city loaded into the same simulation. The file was run against 23 deliberate
+  breaks of the shipped code (`fix2/mutate.sh`: a layer not compared, the park list compared by count only, the box or
+  the cleared area one cell short on each side, neighbours not searched again, the copies not refreshed, a condition
+  of the walk dropped, ...): 21 fail it. The other two (a park flagged without the two-cell margin; a changed word
+  flagging its first cell only) cannot change an answer with the kernel as it is, where that margin is spare.
+- The lane's own tests pass unedited (`honours` 84, `approvalReward` 20, `approvalRecovery` 13, the panels, sounds,
+  perks and assets).
+- The 128x15 s7 bot, before (clean `93f635c`) and after, same commands: the canonical stdout with `SIMBOT_LOG=1`
+  (1,182 lines: table, residents, budget, the 1,103-entry action log, news) has **0 differing lines** apart from the
+  wall-clock columns; a read-only trace beside it has the same 39 unlocks on the same days (Statue day 2,610, Safe City
+  day 5,400), the same saved honours and Statue data at all 180 month ends (the survey's numbers move in every one of
+  them; the park share is live for all fifteen years, Green Belt is not earned), and the same sha256 of the whole
+  serialized city (`fe841faa5f72b5af…`).
+- `dense1m_s7` headless, 17 month ends, six of them after an edit made through `CityActions` (a road cell beside a
+  Large Park bulldozed, rebuilt, a new Large Park, a park bulldozed, water dug in a park's near field, a street stub):
+  the saved survey equals the `93f635c` survey run on the same state in every surveyed month, and equals the clean
+  tree's own run row for row.
+
+**The cost.** `dense1m_s7.region.metropolis` loaded headless (node 22.12; 1,118,755 residents, 17,154 buildings, about
+12,300 occupied homes, 18 Large Parks, Green Belt not earned), `economy.rewards` `monthly()` timed with
+`performance.now()`. The machine was shared with other agents' browser runs throughout (16 threads at 100 % for most of
+it), so read the ratios, not the last digit; the lead's clean-slot `qa/T070/timing.mjs` is the measurement of record.
+
+| | `93f635c` | this round |
+|---|---|---|
+| One survey in isolation, first call in a fresh process (cold code); scratch copies of the two surveys, the new one being the steady month's work: the walk on the kept reach and the comparison of the two layers | 5.7 / 6.3 ms (2 processes) | 1.9 - 3.9 ms (7 processes) |
+| The same, repeated back to back (warm) | 0.75 - 0.95 ms | 0.21 - 0.32 ms |
+| `monthly()` in the running sim, clean tree, 9 full-survey months | median 2.07, mean 4.53, max 18.5 ms | |
+| `monthly()` in the running sim, the shipped code, 8 runs: the eight months without a change after the first; median per run | 1.3 - 2.0 ms (the old survey run in place right after it, same months) | 0.94 - 1.6 ms |
+| The survey repeated nine times on the month's state, best of nine, median per run (7 runs) | 1.00 - 1.11 ms | 0.52 - 0.57 ms |
+| The first full survey after the load | 5.9 ms (the clean tree's run) | 4.9 - 7.4 ms in seven runs, 17.9 in one |
+| A month after a road cell beside a Large Park was removed or rebuilt, twelve in a row, 3 runs (`probe-edits.mts`): the first three months; then the other nine, median per run | in place: 1.4 - 14.7 ms; then 1.21 - 1.27 ms | 1.3 - 3.1 ms; then 0.77 - 0.99 ms |
+| A month in which a Large Park was built, or one bulldozed (once each per run, so the path's first run), 8 runs | in place: 1.2 - 2.7 ms | 2.2 - 4.5 ms (14.0 and 6.5 once each) |
+| Work in a month in which a road or water cell changed beside a park | every park searched, as every month | only the parks near it |
+| Work in a month in which a Large Park came or went | as every month | all parks searched and a second walk |
+| Mask allocated | 64 KB every survey | once, while a Large Park stands |
+
+Reading it:
+- A month in which nothing changed near a park, which is most months, costs about two thirds of the old survey run in
+  place under this load (0.52 - 0.96 across the eight runs), half of it back to back on the same state, and a third to
+  a quarter of it in isolation.
+- A month after a road change beside a park is on par for the path's first runs and about a third cheaper after them.
+- Two cases are **not cheaper**. A month in which a Large Park came or went costs a second walk and every park
+  searched, on a path that runs rarely and therefore cold: about 3 ms here against 1.5 ms for the old survey, which did
+  that work every month and so kept it warm. And the first full survey after a load (the comparison's first run plus a
+  cold walk) measured about what the old one did. `timing.mjs` starts from a load, so its max is that month; its mean
+  should show the gain.
+- In the running sim a monthly hook is often cold (the engine drops optimized code between calls a month apart: the
+  walk alone alternates between about 0.7 and about 4 ms under this load, whatever its shape). The isolated cold row
+  is the nearest to what the QA's 6.7 ms in Chromium was: about 6 ms before, 2 to 4 ms now.
+
+What is left is one pass over 17,000 building objects, which only an event for every `pop` and flag write could
+replace; `daily()` stays about 0.01 ms. For scale, on the same city in the same runs `economy.budget`'s monthly is
+1.4 ms median / 4.2 mean and `emergency`'s 0.5 / 0.8.
+
+### Known behaviour, not changed: silent grants
+
+An honour whose condition already holds when an older save loads is granted without a toast, a fanfare or a badge
+(the QA's O2: Quiet City on `vet21`, Tourist Capital on `vet43`, Transit Capital and Megacity on `dense1m`). Reason:
+`rewardsSystem.init` runs `check(sim, true)`, the silent pass every reward uses on load, so that loading never replays
+announcements; it also marks the honour announced, so it will not be announced later. For an old save there is no moment
+in play at which the honour was earned, several can arrive at once, and at `init` no UI listener is attached yet (the
+scene subscribes after the simulation exists), so a visible grant would need a deferred "since you were away" path in
+Notifications and GameSounds: a design decision, not a fix. The player finds them under Rewards > Honours ("Earned", the
+plaque placeable from the row and, since B2, in the build menu).
+
+### Tests
+
+New (50 cases, all pass; each file also fails on the unfixed code):
+- `tests/sim/honoursSurvey.test.ts` (25): B8 `surveys the town at load as the first survey did`, `follows every kind of
+  change between two monthly checks, with no event to announce it`, `searches the parks again only when a park, the
+  network or the water changed`, `searches only the parks whose surroundings changed`, `follows the far ends of a reach
+  when its one street (along x | z) is cut, shortened and rebuilt`, `keeps a fresh search's cells when single cells
+  change at any distance from a park (every free cell a home, seed 5 | 17 | 41)`, `agrees with the first survey through
+  sixty months of random edits (seed 3 | 11 | 29)`, `stops surveying the park share, and lets the reach go, once Green
+  Belt is earned`, `searches a city loaded into the same simulation afresh`, `draws no random number and leaves the
+  layers it compares alone`; B5 `<streak>: a setback inside it does not cost the next full month` (x4), `<streak>: a
+  setback in the first full month still costs that month` (x4), `a setback on the day the partial month closes belongs
+  to it`, `a check repeated inside a month keeps that month's setbacks`.
+- `tests/game/honourToolCatalog.test.ts` (9): B2 `names every honour building by its requirement, and nothing else`,
+  `keeps the Rewards tab to its own tiles, in their order, while no honour is earned`, `adds an earned honour's plaque
+  and garden after them, unlocked`, `shows all fourteen once every honour is earned`, `waits for the honour in a sandbox
+  city too`, `leaves the other groups as the catalog lists them`, `still finds a plaque's tool by its id, in the
+  toolbar's category only once it is in the menu`; B3 `is the reward icon for all twelve, whatever the honour is
+  called`, `leaves the airports their plane and the deals their icons`.
+- `tests/game/rewardRowLayout.test.ts` (6): B1 `the bar has a floor it starts from, and the row wraps instead of
+  squeezing it`, `the text keeps its own width: a short requirement stays on the bar's line`, `the rows these rules
+  style: the bar, then the requirement, in one .reward-prog`; B6 `the tabs sit in a strip of their own, the first thing
+  in the scrolling body, before the list`, `the strip is sticky at the top of the body, above the rows and opaque`,
+  `the strip covers the body's top and side padding, so it is flush under the panel head and no row shows beside it`.
+  These pin the CSS rules and the markup; the layout itself is a browser check.
+- `tests/game/honourRewardSounds.test.ts` (6): B4 `plays the chime at once and the fanfare 180 ms after it`, `waits only
+  for what is left of the gap`, `does not wait when the chime is further back than the gap, or was never played`,
+  `several rewards and several honours at one check: one chime, one fanfare`, `the waiting fanfare keeps the month's
+  other sounds out: a good-news chime of the same burst, the budget tick`, `a new city, or leaving the city, drops a
+  fanfare that is still waiting`.
+- `tests/game/honourInspector.test.ts` (4): B7 `the fixtures are what the rule is about`, `none on a plaque, a memorial
+  garden or a statue off the grid: they use no power`, `"No power" on what does draw it: the chip for staff alone, the
+  facility's own warning for an explicit use`, `a park without a power use: none, as before`.
+
+Gates run here, each file alone through `quietrun`:
+- `npx tsc --noEmit`: pass. `git diff --check`: pass. Changed and new files UTF-8, LF, no BOM.
+- **66 test files, 909 passed, 4 skipped** (the missing-fixture skips as before): the five new files; the lane's
+  `sim/honours` 84, `sim/approvalReward` 20, `sim/approvalRecovery` 13, `game/honoursPanel` 5, `game/honourSounds` 7,
+  `game/approvalRewardPanel` 4, `game/approvalRecoveryPanel` 4, `infra/honourPerks` 5, `assets/honours` 5, none of them
+  edited; and every test that imports a touched file or runs the economy systems (`game/` gameSounds, milestoneSounds,
+  rewardToast, ruinState, uiRuins, uiRubble, uiFireHint, uiCardTip, uiPanelReserve, uiStacking, upkeepReads,
+  panelsUpkeep, panelCommands, budgetPreview, queryReads, rankFireworks, guideCopy, cityTeardown, inspectorRetention,
+  thumbsPendingRetention; `sim/` economy, ranks, milestoneNews, monthSpread, growth, tourism, demographics,
+  desirability, approval, catalog, advisorsTexts, balanceOrphans, breakdownRetention, finalFixesEcon, foundingDay,
+  phase0Contract; `infra/` catchments, facilities, feedbackFacilities; `save/` serialize, grownCity; `assets/` manifest;
+  `wasm/` the four files; `worker/` hygiene, commands, localSimHost, milestoneCard, replicaSafe, simwasmFlag).
+  The whole list was run twice, the second time on the final tree. `worker/hygiene` timed out in three of its
+  tree-scanning cases on the first pass and in one on the second (5 s limit, the machine at 100 % CPU); alone it passes
+  18 / 18 each time, with the default limit and with 30 s.
+- The bot, `SIMBOT_LOG=1 npx tsx tools/simbot.ts --size 128 --years 15 --seed 7` through `quietrun`:
+  **`residents [ 61566, 92988, 38093 ]` = 192,647**, `loans 0; unlocked 39; approval 82`, identical to the clean tree
+  as described above.
+
+### Notes for the lead
+
+- B7's condition is the one the list asks for, and it reaches further than the honours: the Statue of the Mayor, the
+  Lighthouse, the Clock Tower, the Obelisk, the Triumphal Arch and the Bus Stop also have neither a power use nor jobs,
+  draw 0 MW, and lose their "Powered" / "No power" chip (69 of 88 ploppables showed one, 49 do). Narrowing it to
+  `requires` starting with `honour_` is a one-token change if that is not wanted.
+- B2 in sandbox: the sim still accepts any `requires` in a sandbox city, so before this round an unearned plaque could
+  be placed from the menu there. It is now hidden until earned, in line with "honours are earned in sandbox too".
+- B2 does not move the catalog block: the tab's order is made in `plopGroup` (the bot and other code walk the catalog).
+- The survey still calls `catchments.reachRaw` from `economy.rewards` (at load, and when a park or its surroundings
+  changed). B2_DESIGN keeps `reachRaw`'s shared engine "inside one call" and gives the resumable searches private
+  buckets, so this stays safe after the step split; it is the one coupling to remember.
+- The QA's O1 and O3-O9 are untouched (observations for the lead).
+
+### Not verified here
+
+The full vitest suite, any browser or real-GPU check, and the clean-slot timing (`qa/T070/timing.mjs`): every cost
+above was measured on a loaded machine. The 256x60 bot was not rerun: the sim-side change is exact, and the 128x15
+trace exercises the kept reach in all 180 months. B1 and B6 are checked only as rules and markup. Plan-versus-code
+differences: none new.
+
+### Browser recheck list
+
+- [ ] B1: Rewards tab at 1280x720 and 1920x1080: the Statue row's bar is at least 96 px wide with its fill drawn and the
+  requirement wraps under it; Honours tab, all twelve rows: no 0 px bar; the short rows (City Hall and the like) look
+  as on the base (`ab-rewards.jpg`).
+- [ ] B6: scroll both lists: the tabs stay under the panel head, rows pass under the strip; a toast's "Place it"
+  centres its row with the tabs in view; switch tabs while scrolled; the strip's look on the glass panel.
+- [ ] B2: build menu > Rewards > "Rewards & business deals" shows five tiles; earn Green Belt (the y2 save and four
+  Large Parks): its plaque appears after the deals, unlocked, and places from the tile and from the row; sandbox: none
+  until earned.
+- [ ] B3: the Clean Air Metropolis row and (once earned) its tile show the trophy.
+- [ ] B4: the Obelisk + Green Belt check on day 780 (`honours2.mjs collide`): two `reward` requests 180 ms apart, both
+  with oscillators; an honour alone sounds at once.
+- [ ] B5: `vet21_mid` with a 9.5 % tax for two days inside the partial month: Balanced Books 0, 1, 2, 3 at the four
+  boundaries.
+- [ ] B7: the inspector of a plaque, the Eco Plaza and the Memorial off the grid: no power chip; a Military Base off the
+  grid still says "No power".
+- [ ] B8: `timing.mjs` in a clean slot; the honours survey on `dense1m` and `b19` reads the same numbers as in the
+  QA's survey json.

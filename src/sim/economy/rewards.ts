@@ -158,43 +158,177 @@ export function honourPerks(st: Pick<CityState, 'unlocked'>): { education: numbe
     ridership: st.unlocked.has('honour_transit_capital') ? 1.05 : 1 };
 }
 
-function surveyHonours(st: CityState, data: HonoursData): void {
-  const parks = new Uint8Array(st.cells);
-  if (!st.unlocked.has('honour_green_belt')) for (const b of st.buildings.values()) {
-    if (b.def !== 'park_large' || b.built < 1 || (b.flags & (BF.Burnt | BF.Abandoned))) continue;
-    const n = reachRaw(st, b.x, b.z, b.w, b.d, getDef('park_large')!.coverage!.radius, 0);
-    const { touched, best } = reachResult();
-    for (let i = 0; i < n; i++) if (best[touched[i]] > 0) parks[touched[i]] = 1;
+/**
+ * The walking reach of the standing Large Parks, kept from one survey to the next (QA round 2, B8: the survey searched
+ * every park and walked the buildings twice each month, 6 ms on a cold run in a city of a million). A park's reach is a
+ * function of its lot and of the network and the water around it (catchments.ts reachRoad / nearField). So each survey
+ * compares the two layers with the copies its mask was searched on, and searches again only the parks near a cell that
+ * differs; a park that came or went searches them all. The mask is, cell for cell, a fresh search's.
+ */
+interface ParkReach {
+  radius: number;
+  /** id, x, z, w, d of every park in the mask, in building order (none: nothing is kept) */
+  parks: number[];
+  /** x0, z0, x1, z1 of the cells each park marks */
+  boxes: number[];
+  network: Uint8Array;
+  water: Uint8Array;
+  mask: Uint8Array;
+}
+
+const NO_CELLS = new Uint8Array(0);
+const noParkReach = (): ParkReach => ({ radius: 0, parks: [], boxes: [], network: NO_CELLS, water: NO_CELLS, mask: NO_CELLS });
+
+/** search park `p` on the layers as they are, mark the cells it reaches and note their box */
+function markParkReach(st: CityState, reach: ParkReach, p: number): void {
+  const N = st.size, parks = reach.parks, boxes = reach.boxes, mask = reach.mask, k = p * 5;
+  const n = reachRaw(st, parks[k + 1], parks[k + 2], parks[k + 3], parks[k + 4], reach.radius, 0);
+  const { touched, best } = reachResult();
+  let x0 = N, z0 = N, x1 = -1, z1 = -1;
+  for (let t = 0; t < n; t++) {
+    const i = touched[t];
+    if (!(best[i] > 0)) continue;
+    mask[i] = 1;
+    const x = i % N, z = (i - x) / N;
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (z < z0) z0 = z;
+    if (z > z1) z1 = z;
   }
+  boxes[p * 4] = x0;
+  boxes[p * 4 + 1] = z0;
+  boxes[p * 4 + 2] = x1;
+  boxes[p * 4 + 3] = z1;
+}
+
+/** search the reach of `parks` afresh, and keep it with the layers it was searched on */
+function searchParkReach(st: CityState, reach: ParkReach, parks: number[], radius: number): Uint8Array {
+  reach.mask = reach.mask.length === st.cells ? reach.mask.fill(0) : new Uint8Array(st.cells);
+  reach.radius = radius;
+  reach.parks = parks;
+  reach.boxes = [];
+  for (let p = 0; p * 5 < parks.length; p++) markParkReach(st, reach, p);
+  reach.network = st.network.slice();
+  reach.water = st.water.slice();
+  return reach.mask;
+}
+
+/**
+ * Bring the kept reach up to the network and the water as they are now. No cell further than one from the cells a
+ * search marks can change its result, so a park is flagged when a cell changed inside its box or within two cells of it
+ * (the services' rule for their own kept reaches, services.ts invalidateReach). The flagged parks' boxes are cleared,
+ * and every park that marks a cleared cell is searched again. False: the layers are of another size (another city),
+ * nothing is kept.
+ */
+function refreshParkReach(st: CityState, reach: ParkReach): boolean {
+  const N = st.size, boxes = reach.boxes, mask = reach.mask, count = boxes.length / 4;
+  const near = new Uint8Array(count);
+  let changed = false, left = count;
+  const flag = (i: number): void => {
+    const x = i % N, z = (i - x) / N;
+    changed = true;
+    for (let p = 0, k = 0; p < count; p++, k += 4) {
+      if (near[p] || x < boxes[k] - 2 || x > boxes[k + 2] + 2 || z < boxes[k + 1] - 2 || z > boxes[k + 3] + 2) continue;
+      near[p] = 1;
+      left--;
+    }
+  };
+  for (const [layer, copy] of [[st.network, reach.network], [st.water, reach.water]]) {
+    const n = layer.length;
+    if (copy.length !== n) return false;
+    let i = 0;
+    // (four cells a step where both allow a 32-bit view; once every park is flagged there is nothing more to learn)
+    if (!((layer.byteOffset | copy.byteOffset) & 3)) {
+      const m = n >> 2, a = new Uint32Array(layer.buffer, layer.byteOffset, m), b = new Uint32Array(copy.buffer, copy.byteOffset, m);
+      for (let k = 0; k < m && left; k++) if (a[k] !== b[k]) for (let j = k << 2; j < (k << 2) + 4; j++) if (layer[j] !== copy[j]) flag(j);
+      i = m << 2;
+    }
+    for (; i < n && left; i++) if (layer[i] !== copy[i]) flag(i);
+  }
+  if (!changed) return true;
+  reach.network.set(st.network);
+  reach.water.set(st.water);
+  if (left === count) return true;
+  const was = boxes.slice();
+  for (let p = 0, k = 0; p < count; p++, k += 4) {
+    if (near[p]) for (let z = was[k + 1]; z <= was[k + 3]; z++) mask.fill(0, z * N + was[k], z * N + was[k + 2] + 1);
+  }
+  for (let p = 0, k = 0; p < count; p++, k += 4) {
+    let again = near[p] === 1;
+    for (let q = 0, j = 0; !again && q < count; q++, j += 4) {
+      again = near[q] === 1 && was[k] <= was[j + 2] && was[j] <= was[k + 2] && was[k + 1] <= was[j + 3] && was[j + 1] <= was[k + 3];
+    }
+    if (again) markParkReach(st, reach, p);
+  }
+  return true;
+}
+
+/**
+ * One walk over the buildings: the occupied homes, the noisy ones and (`onMask`) those with a cell in `mask`, by the
+ * first survey's conditions with the cheap ones first (a def is looked up for occupied buildings only). `parks`
+ * collects the standing Large Parks.
+ */
+function countHomes(st: CityState, rt: EconRuntime, mask: Uint8Array, onMask: boolean, parks: number[] | null): [homes: number, noisy: number, reached: number] {
   let homes = 0, noisy = 0, green = 0;
   for (const b of st.buildings.values()) {
-    const dev = getDef(b.def)?.devType;
-    if (dev === undefined || dev > DevType.R3 || b.pop <= 0 || b.built < 1 || (b.flags & (BF.Burnt | BF.Abandoned))) continue;
+    if (b.built < 1 || (b.flags & (BF.Burnt | BF.Abandoned))) continue;
+    if (parks && b.def === 'park_large') parks.push(b.id, b.x, b.z, b.w, b.d);
+    if (b.pop <= 0) continue;
+    const dev = rt.defOf(b)?.devType;
+    if (dev === undefined || dev > DevType.R3) continue;
     homes++;
     if (b.flags & BF.Noisy) noisy++;
+    if (!onMask) continue;
     let reached = false;
     for (let z = b.z; z < b.z + b.d && !reached; z++) for (let x = b.x; x < b.x + b.w; x++) {
-      if (parks[z * st.size + x]) { reached = true; break; }
+      if (mask[z * st.size + x]) { reached = true; break; }
     }
     if (reached) green++;
   }
-  data.homes = homes;
-  data.noisyShare = homes ? noisy / homes : 1;
-  if (!st.unlocked.has('honour_green_belt')) data.parkShare = homes ? green / homes : 0;
+  return [homes, noisy, green];
 }
 
-function updateHonours(st: CityState, monthly: boolean): void {
+function surveyHonours(st: CityState, data: HonoursData, rt: EconRuntime, reach: ParkReach): void {
+  const greenBelt = !st.unlocked.has('honour_green_belt');
+  // The kept reach is brought up to this month's layers, then used during the walk. Green Belt earned (its share is no
+  // longer surveyed) or layers of another size: it is let go.
+  if (reach.parks.length && !(greenBelt && refreshParkReach(st, reach))) Object.assign(reach, noParkReach());
+  const kept = reach.parks.length > 0, parks: number[] = [];
+  const [homes, noisy, reached] = countHomes(st, rt, reach.mask, kept, greenBelt ? parks : null);
+  data.homes = homes;
+  data.noisyShare = homes ? noisy / homes : 1;
+  if (!greenBelt) return;
+  if (!parks.length) {
+    // no park stands: no home in reach, nothing kept
+    if (kept) Object.assign(reach, noParkReach());
+    data.parkShare = 0;
+    return;
+  }
+  const radius = getDef('park_large')!.coverage!.radius;
+  let same = kept && reach.radius === radius && reach.parks.length === parks.length;
+  for (let k = 0; same && k < parks.length; k++) same = reach.parks[k] === parks[k];
+  // (a park came or went: all of them are searched, and the homes counted against the new reach)
+  const green = same ? reached : countHomes(st, rt, searchParkReach(st, reach, parks, radius), true, null)[2];
+  data.parkShare = homes ? green / homes : 0;
+}
+
+function updateHonours(st: CityState, monthly: boolean, rt: EconRuntime, reach: ParkReach): void {
   // economy is already mirrored by every host; no new worker protocol row is needed.
   const economy = st.systemData.economy as { honours?: HonoursData };
   const data = (economy.honours ??= { month: Math.ceil(st.day / DAYS_PER_MONTH), cleanAir: 0, safeCity: 0, employment: 0, books: 0,
     homes: 0, noisyShare: 1, parkShare: 0 });
   if (!monthly || data.month === st.monthIndex) {
-    if (!monthly) surveyHonours(st, data);
+    if (!monthly) surveyHonours(st, data, rt, reach);
+    // The first partial month earns nothing; its setbacks must not poison the next full month (QA round 2, B5).
+    else if (st.day % DAYS_PER_MONTH === 0) {
+      data.booksInterrupted = false;
+      data.cleanAirInterrupted = data.safeCityInterrupted = data.employmentInterrupted = false;
+    }
     return;
   }
   const consecutive = data.month === st.monthIndex - 1;
   data.month = st.monthIndex;
-  surveyHonours(st, data);
+  surveyHonours(st, data, rt, reach);
   const s = st.stats;
   data.cleanAir = !data.cleanAirInterrupted && s.population >= 250000 && s.avgAir <= 0.10 ? Math.min(12, (consecutive ? data.cleanAir : 0) + 1) : 0;
   data.safeCity = !data.safeCityInterrupted && s.population >= 100000 && !s.emergency.lastMonth.failed && !s.emergency.month.failed
@@ -441,6 +575,7 @@ export function rewardConditionsMet(state: CityState, r: RewardDef): boolean {
 }
 
 export function rewardsSystem(rt: EconRuntime): SimSystem {
+  const parkReach = noParkReach();
   const check = (sim: Simulation, silent: boolean) => {
     const st = sim.state;
     // Reached ranks survive population drops; init fills this optional key silently for old saves.
@@ -469,7 +604,7 @@ export function rewardsSystem(rt: EconRuntime): SimSystem {
     name: 'economy.rewards',
     init(sim) {
       rt.attach(sim);
-      updateHonours(sim.state, false);
+      updateHonours(sim.state, false, rt, parkReach);
       updateApprovalReward(sim.state, false, true);
       check(sim, true);
     },
@@ -494,7 +629,7 @@ export function rewardsSystem(rt: EconRuntime): SimSystem {
       }
     },
     monthly(sim) {
-      updateHonours(sim.state, true);
+      updateHonours(sim.state, true, rt, parkReach);
       updateApprovalReward(sim.state, true);
       check(sim, false);
     },

@@ -79,6 +79,8 @@ export class GameSounds {
   private flushT: ReturnType<typeof setTimeout> | null = null;
   private milestoneT: ReturnType<typeof setTimeout> | null = null;
   private milestoneQueue: number[] = [];
+  /** an honour's fanfare waiting for an ordinary reward's chime to pass (honour()) */
+  private honourT: ReturnType<typeof setTimeout> | null = null;
   private fire: FireProbe | null = null;
   private v = new THREE.Vector3();
 
@@ -102,6 +104,7 @@ export class GameSounds {
       ev.on('reset', () => {
         this.constructing.clear();
         this.clearMilestones();
+        this.clearHonour();
         this.last.delete('honour');
         for (const key of this.last.keys()) if (key.startsWith('milestone:')) this.last.delete(key);
       }),
@@ -114,6 +117,7 @@ export class GameSounds {
     if (this.flushT) clearTimeout(this.flushT);
     this.flushT = null;
     this.clearMilestones();
+    this.clearHonour();
   }
 
   private since(key: string): number {
@@ -291,9 +295,26 @@ export class GameSounds {
     if (this.ready('reward', 6000)) this.play('reward');
   }
 
-  /** A packet can contain both the announcement and unlock event, or several honours at once. */
+  /**
+   * A packet can contain both the announcement and unlock event, or several honours at once. An ordinary reward of the
+   * same monthly check has just chimed with the same voice: the fanfare waits out MILESTONE_GAP after it, as the
+   * milestone cues do (in the same instant AudioEngine's per-sound limiter dropped it, and the honour was silent).
+   */
   private honour(): void {
-    if (this.ready('honour', 6000)) this.play('reward', { pitch: 1.12, volume: 0.9 });
+    if (this.honourT !== null || !this.ready('honour', 6000)) return;
+    const delay = Math.max(0, MILESTONE_GAP - this.since('reward'));
+    if (delay) this.honourT = setTimeout(() => this.fanfare(), delay);
+    else this.fanfare();
+  }
+
+  private fanfare(): void {
+    this.honourT = null;
+    this.play('reward', { pitch: 1.12, volume: 0.9 });
+  }
+
+  private clearHonour(): void {
+    if (this.honourT !== null) clearTimeout(this.honourT);
+    this.honourT = null;
   }
 
   // ------------------------------------------------------------------ budget + construction

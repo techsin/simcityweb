@@ -174,7 +174,8 @@ export class RewardsPanel extends Panel {
       this.update();
     }, this.ctx.signal);
     this.listEl = h('div', { class: 'list' });
-    this.body.append(this.tabs, this.listEl);
+    // (the tabs' strip is sticky, rewards.css: they stay in view while the list scrolls)
+    this.body.append(h('div', { class: 'reward-tabs' }, this.tabs), this.listEl);
   }
 
   private list(): RewardInfo[] {

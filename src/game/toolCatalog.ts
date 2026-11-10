@@ -78,6 +78,8 @@ export function ploppablesOf(cat: BuildingCategory): BuildingDef[] {
 
 /** best-effort icon for a building def (UI metadata only) */
 export function defIcon(d: BuildingDef): string {
+  // (an honour's plaque is a reward whatever its honour is called: "Clean Air" matched the airports' rule)
+  if (d.id.startsWith('rw_honour_')) return 'reward';
   const s = (d.id + ' ' + d.model + ' ' + d.name).toLowerCase();
   const rules: [RegExp, string][] = [
     [/wind/, 'wind'], [/solar/, 'solar'], [/nuclear|coal|oil|gas_plant|gas plant|incinerat/, 'factory'], [/hydro|dam/, 'water'],
@@ -150,9 +152,14 @@ export function plopSpec(ctx: GameContext, d: BuildingDef): ToolSpec {
 }
 
 function plopGroup(ctx: GameContext, label: string, icon: string, cats: BuildingCategory[], extra: ToolSpec[] = []): ToolGroup {
-  const items = [...extra];
-  for (const c of cats) for (const d of ploppablesOf(c)) items.push(plopSpec(ctx, d));
-  return { label, icon, items };
+  const items = [...extra], honours: ToolSpec[] = [];
+  for (const c of cats) for (const d of ploppablesOf(c)) {
+    // An honour's plaque or garden joins the menu when the honour is earned, after the rest of its group: twelve locked
+    // plaques filled the Rewards tab. Until then its goal is in Rewards > Honours (sandbox too: honours are earned).
+    if (!d.requires?.startsWith('honour_')) items.push(plopSpec(ctx, d));
+    else if (ctx.state.unlocked.has(d.requires)) honours.push(plopSpec(ctx, d));
+  }
+  return { label, icon, items: items.concat(honours) };
 }
 
 // ------------------------------------------------------------------------------------------------ static tools

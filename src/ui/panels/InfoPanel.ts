@@ -338,9 +338,11 @@ export class InfoPanel extends Panel {
     const chips: Chip[] = [];
     const powered = !!(b.flags & BF.Powered) || !!st.powered[i];
     const watered = !!(b.flags & BF.Watered) || !!st.watered[i];
-    // every building draws power except power plants and parks without an explicit use (lawns and benches)
+    // every building draws power except power plants, parks without an explicit use (lawns and benches) and what has
+    // neither a power use nor jobs (a plaque, a memorial garden: the grid gives them 0 MW, utilities.ts fullUse)
     const isPlant = !!def && (def.powerOut ?? 0) > 0;
-    const usesPower = !ruin && (growable || (!!def && !isPlant && (def.category !== 'park' || (def.powerUse ?? 0) > 0)));
+    const usesPower = !ruin && (growable || (!!def && !isPlant && (def.category !== 'park' || (def.powerUse ?? 0) > 0)
+      && ((def.powerUse ?? 0) > 0 || (def.jobs ?? 0) > 0)));
     if (usesPower) chips.push({ text: icon('power', 11) + (powered ? 'Powered' : 'No power'), cls: powered ? 'good' : 'bad', topic: 'power' });
     const needW = !ruin && !!report?.waterRequired;
     // (a facility that uses no water — a wind turbine, a plaza — shows no Water chip on a piped cell: routed 15)
