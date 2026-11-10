@@ -89,6 +89,9 @@ interface CitySceneLike {
   worldView?: { camera?: Camera; isNull?: boolean };
   /** optional: resolves once the 3D views are up (used to delay window.__ready) */
   ready?: Promise<unknown>;
+  /** FEEL-27: opening camera landing; older scenes keep the immediate ready chime. */
+  cameraLanded?: Promise<void>;
+  readonly ctx?: { readonly signal: AbortSignal };
   /** FH-21: the measured time from the click to the first interactive frame (the fps readout shows it) */
   reportLoadTime?(ms: number): void;
   whenReady?(): Promise<unknown>;
@@ -654,11 +657,16 @@ class App {
       c.ticker = window.setInterval(() => this.tickSaveState(), 1000);
       this.tickSaveState();
     }
+    const c = this.city, scene = c?.scene;
     await ld.hide();
     // FH-21: the loading screen is gone and the views drew a frame: the city takes input from here
     this.lastLoadMs = performance.now() - t0;
     this.city?.scene?.reportLoadTime?.(this.lastLoadMs);
-    audio.play('cityReady');
+    const cityReady = () => {
+      if (c && this.city === c && c.scene === scene && !scene?.ctx?.signal.aborted && container.isConnected) audio.play('cityReady');
+    };
+    if (scene?.cameraLanded) void scene.cameraLanded.then(cityReady, () => undefined);
+    else cityReady();
     markReady();
     if (this.city) this.city.entered = true;
     // W1.2: the worker crashed while the city was being entered; the dialog opens now

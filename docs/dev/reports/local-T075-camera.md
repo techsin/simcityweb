@@ -8,7 +8,7 @@ Plan/code difference: CONTENT's `systemData.firsts` and first-event refs have no
 
 - CONTENT/SIM: extend `src/sim/CityState.ts::NewsItem.ref` with optional `first?: string`. Record optional `systemData.firsts` keys in `rewardsSystem.init` and completed-building listeners (`built >= 1`), silently initializing existing cities, and emit positioned first news once.
 - SIM/CONTENT: in `src/sim/actions.ts::plop` and `afterNetworkChange`, guard the existing unique-opening / neighbor news with the persistent record and attach the first ref; preserve ordinary news behavior and RNG draws.
-- Cloud: append optional `firsts` to `src/worker/protocol.ts::SYSTEM_KEYS`. Generic news ref transport already works. No cloud-held file edited.
+- Cloud: append optional `firsts` to `src/worker/protocol.ts::SYSTEM_KEYS`. Generic news ref transport already works. No worker file edited.
 
 Tests added: `tests/game/showCamera.test.ts` (29 passing tests: travel, exact return, input/idle/drag, priority/settings/motion gates, abort, ref deduplication, shared-camera ownership and rebound New Year cancellation). `npx tsc --noEmit` passes. Final gate inventory is below.
 
@@ -18,7 +18,7 @@ New cities descend from exactly 3× the landing distance over 2.5 real seconds, 
 
 Tests added: `foundingCamera.test.ts` (7 passing tests: real controller, 3×/2.5 s/exact landing/input/title/save during skip); existing `cameraStart.test.ts` (3 passing) covers stored cameras. TypeScript passes.
 
-Cloud request: `src/main.ts::App` city-open wiring, replace the immediate `audio.play('cityReady')` with a continuation of `scene.cameraLanded`, guarded against scene replacement/disposal. The promise resolves on landing or input skip, and immediately after saved/reduced-motion placement. Remove the original immediate call to avoid a duplicate. App wiring was not edited.
+**NOTE-065 request 1: done in this lane in Round 2.** The minimal `src/main.ts` contract/city-open hunk makes `cameraLanded` optional and plays the chime on landing, with immediate fallback for older scenes and the placeholder. It checks the captured city and scene identities, the existing scene abort signal (optional `ctx` contract), and the container's attachment before playing. City readiness and region entry remain independent of the landing promise. See Round 2 gates below.
 
 ## FEEL-24 — photo mode
 
@@ -34,9 +34,9 @@ Tools, panels, speed/pause/save/help/photo, camera movement and Plop rotation co
 
 Tests added: `keyBindings.test.ts` (8 passing model/editor/profile/conflict tests) and `keyBindingsIntegration.test.ts` (6 passing real routing/camera/Plop/Help tests). TypeScript passes; existing `cameraControls.test.ts` (65) and worker `hygiene.test.ts` (18) pass.
 
-Small outside-named file hunks: `src/game/tools/PlopTool.ts` (rotate matcher and live hints; §7.3's WORLD exception), `src/ui/Modals.ts` (Help key labels/cache, photo/recenter rows). No infra hunks. No cloud-held files edited.
+Small outside-named file hunks in Round 1: `src/game/tools/PlopTool.ts` (rotate matcher and live hints; §7.3's WORLD exception), `src/ui/Modals.ts` (Help key labels/cache, photo/recenter rows). No infra hunks. Round 2 adds only the `src/main.ts` hunk explicitly authorized by NOTE-065.
 
-## Files and final gates
+## Round 1 files and gates
 
 | File | Change |
 | --- | --- |
@@ -102,18 +102,37 @@ node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5
 
 Expected unchanged 2015 residents: **[61,124, 93,804, 37,971] = 192,899**. No 256×60 run is needed by these items. Two-process Medium/Hard hashes were not run.
 
+## Round 2 — NOTE-065 landing chime
+
+Request 1 is complete. `src/main.ts` has two isolated hunks: the optional `CitySceneLike.cameraLanded`/abort-signal contract and the city-open chime continuation. Landing or input skip plays `cityReady` once; scenes without the promise keep the immediate fallback. City/scene replacement, exit, direct disposal and a detached container suppress the stale chime. Readiness, entered flags, load-time reporting and region entry retain their timing. No infra, worker, save or simulation files changed.
+
+New `tests/game/cityReady.test.ts` executes the actual App entry tails, following the existing source-execution test approach because `main.ts` auto-boots and App is private. Its 12 cases cover delayed landing, immediate legacy/placeholder fallback, city/scene replacement, exit, disposal, detachment, replacement while the loader hides, rejected landing and both region-entry paths.
+
+`npx tsc --noEmit` and `git diff --check` pass. **6 focused files / 83 tests pass**, run sequentially through the quiet gate with the native-loader/thread-pool invocation above:
+
+| Test | Passed |
+| --- | ---: |
+| `tests/game/cityReady.test.ts` | 12 |
+| `tests/game/playLoadTime.test.ts` | 1 |
+| `tests/game/graphicsFirstRun.test.ts` | 21 |
+| `tests/game/settingsSchema.test.ts` | 19 |
+| `tests/audio/ambience.test.ts` | 12 |
+| `tests/worker/hygiene.test.ts` | 18 |
+
+Round 2 leaves all changes uncommitted. Request 2 is queued as **T077 after W1.3 and T061 merge**; `NewYear.ts` is unchanged. The full suite, baseline bot command/numbers above and real-GPU/browser checks remain with the lead. Round 2 adds no simulation/RNG changes, so the expected bot residents remain 192,899; this was not rerun here. Browser checks: fresh-city landing/skip gives one chime; exiting/replacing before landing stays silent; saved/legacy/placeholder entry retains its immediate chime; region entry retains `regionEnter`.
+
 ## Pending owner integration and verification limits
 
 - FEEL-07's first-event UI is ready, but normal gameplay cannot trigger it until the CONTENT/SIM first-record/ref hooks above land. Once-only persistence across save/load is therefore **not verified or claimed**. Old cities with no firsts record need an explicit owner initialization policy; demolished historical firsts cannot be inferred from current buildings alone.
-- FEEL-27's sound still plays at the old moment until the cloud changes `src/main.ts::CitySceneLike` (optional `cameraLanded?: Promise<void>`) and the city-open block currently calling `audio.play('cityReady')`. After loading hides, use `(scene.cameraLanded ?? Promise.resolve()).then(...)`, check `this.city?.scene === scene`, and play there. The promise also settles on disposal/startup failure so stale scenes do not leave pending continuations.
-- Pre-existing Worker design mismatch: `docs/WORKER_DESIGN.md` §3.6 specifies the host's `liveYear` flag for New Year batch detection. `src/game/NewYear.ts::onYear` still uses `frames === 0 || day - lastFrameDay > 8`. Request to the W1.2/META owner: wire the host's live-year indication into that trigger as designed. T075 leaves this non-camera trigger unchanged because its NewYear ownership is limited to the show hooks.
+- **NOTE-065 request 1 completed here:** `src/main.ts::CitySceneLike` and the city-open chime continuation are implemented and tested in Round 2. This is no longer a cloud request.
+- **NOTE-065 request 2 queued as T077:** `docs/WORKER_DESIGN.md` §3.6 specifies `host.liveYear` for New Year batch detection; `src/game/NewYear.ts::onYear` still uses `frames === 0 || day - lastFrameDay > 8`. T077 handles this after W1.3 and T061 merge. Round 2 leaves `NewYear.ts` and its batch detection untouched.
 - Capture speed and real HUD layout were not measured. Existing `src/render/world/WorldView.ts::capture` restores postprocessing size/camera aspect/shadow state and disposes its render target only on success. Request to the render owner: wrap the mutated capture/render/readback section in `try/finally` so a failed photo readback restores those values and disposes the target too. That pre-existing failure path was not edited in T075.
 
 ## Browser checklist for the lead
 
 - [ ] FEEL-07, after first hooks land: first stage 6, 7 and 8, each unique opening, and the first neighbor connection each spotlight once; save/reload and repeat without a second show.
 - [ ] FEEL-07: four seconds idle, no held drag/key, no LIVE emergency/New Year/photo/pause/dialog; Camera moments off and reduced motion suppress the spotlight. Arrive by 2.5 s, orbit 25°, return by 9 s within 1 m/1%; Escape, camera input, tool/UI input and touch return control within one frame.
-- [ ] FEEL-27: fresh city starts at least 3× out, title has full founding month/year and mayor, landing in 2.5–3 s; any input skips; reduced motion skips. After App wiring, cityReady plays once at landing/skip.
+- [ ] FEEL-27: fresh city starts at least 3× out, title has full founding month/year and mayor, landing in 2.5–3 s; any input skips; reduced motion skips. Verify cityReady plays once at landing/skip, and a city exited/replaced before landing stays silent. Saved/legacy scenes and the placeholder retain their immediate chime; returning to the region retains regionEnter.
 - [ ] FEEL-27: saved cities open at the stored view. Save during founding/spotlight/New Year and reload to the intended player/landing view, including Ctrl+S during fly-in skip.
 - [ ] FEEL-24: H hides HUD in 200 ms; camera and scrubber work; pause uses the host; Capture downloads a current-view PNG within 1 s, correct city/date filename, neither dimension above 4096. Test narrow/720p screens.
 - [ ] FEEL-24: H/Exit/Escape restore panel positions, tool/overlay selection, keyboard focus, HUD input and auto/fixed clock; graphics reset while photographing reveals the recovery dialog.
