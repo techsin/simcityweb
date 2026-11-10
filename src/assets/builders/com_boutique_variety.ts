@@ -5,12 +5,33 @@ import type { RNG } from '../../core/rng';
 import { Surf } from '../../core/types';
 import * as K from './com_kit';
 import { P, box, up, faceZ } from './com_kit';
+import { isMirrorTwin } from './res_util';
 
 type B = ModelBuilder;
 const STONE = [0xdfd1b7, 0xc5d0c7, 0xe1c3b4, 0xbec9d5, 0xd3c4d7];
 const DARK = [0x3d4649, 0x4f3d4a, 0x3b5150, 0x494255, 0x575149];
 const TRIM = [0x806747, 0x526961, 0x81584d, 0x4a596b, 0x695374];
 const TILE = [0x587b70, 0x596776, 0x8b5d49, 0x62644e, 0x746579];
+/** A terrace look: wall and its material, trim (frames, awnings, cornice), shopfront piers, the roof deck and its material. */
+type TerraceLook = readonly [wall: number, surf: Surf, trim: number, front: number, deck: number, deckSurf: Surf];
+// roof decks, each far from the others: cedar boards, slate pavers, pale stone pavers, sedum. All four are massing
+// surfaces for the LOD proxy (Pavement is not: the deck is the roof); a green flat roof follows the lawns' season in the
+// shader and, unlike Foliage, does not sway against its slab
+const CEDAR = [0xa3683f, Surf.Wood] as const, SLATE = [0x3c4046, Surf.Stone] as const;
+const PAVERS = [0xe2ddd0, Surf.Stone] as const, SEDUM = [0x7c9a4e, Surf.RoofFlat] as const;
+/**
+ * Ten looks for the terrace boutique: five wall families (variants 0-4: charcoal stone, white limestone, red brick,
+ * sandstone, teal render), and for the mirrored twins (5-9) the same walls with another roof deck; walls that come close
+ * never share a deck. QA round 3: its first walls were five shades of one dark stone (within dE 19).
+ */
+const TERRACE: readonly TerraceLook[] = [
+  [0x3d4649, Surf.Stone, 0x8a6a3a, 0x4a5356, ...CEDAR], [0xe9e2d2, Surf.Stone, 0x26282b, 0xe9e2d2, ...SLATE],
+  [0x9c4a36, Surf.Brick, 0x2f4a3f, 0x9c4a36, ...PAVERS], [0xcfa878, Surf.Stone, 0x5a1a24, 0xcfa878, ...SEDUM],
+  [0x3f6b62, Surf.Plain, 0xb08d57, 0x3f6b62, ...SLATE],
+  [0x3d4649, Surf.Stone, 0x8a6a3a, 0x4a5356, ...SEDUM], [0xe9e2d2, Surf.Stone, 0x26282b, 0xe9e2d2, ...CEDAR],
+  [0x9c4a36, Surf.Brick, 0x2f4a3f, 0x9c4a36, ...SLATE], [0xcfa878, Surf.Stone, 0x5a1a24, 0xcfa878, ...PAVERS],
+  [0x3f6b62, Surf.Plain, 0xb08d57, 0x3f6b62, ...PAVERS],
+];
 
 function boutiqueLot(b: B, rng: RNG, trim: number) {
   up(b, -8, -8, 8, 8, 0.03, K.pav(0xc8c1b2));
@@ -70,22 +91,23 @@ const boutiqueGable: ModelBuildFn = (b, v, rng) => {
   faceZ(b, -2.2, 2.2, 5.45, 6.2, z1 + 0.68, K.metal(trim));
 };
 
-const boutiqueTerrace: ModelBuildFn = (b, v, rng) => {
-  const k = (v + 1) % 5, trim = TRIM[k], wall = P(DARK[k], Surf.Stone);
+const boutiqueTerrace: ModelBuildFn = (b, v, rng, e) => {
+  const [wallC, surf, trim, front, deckC, deckSurf] = TERRACE[v + (isMirrorTwin(e.id, v, rng) ? 5 : 0)];
+  const wall = P(wallC, surf);
   const x0 = -6.6, x1 = 6.6, z0 = -6.2, z1 = 2.8, top = 8.4;
   boutiqueLot(b, rng, trim);
-  box(b, x0, 0, z0, x1, top, z1, wall, K.roofP());
-  K.cornice(b, x0, z0, x1, z1, top, 0.35, 0.18, K.metal(trim));
-  boutiqueFront(b, v, rng, z1, trim, P(STONE[k], Surf.Stone));
+  // The cap slab carries the roof deck edge to edge; its fascia takes the trim.
+  box(b, x0, 0, z0, x1, top, z1, wall, null);
+  K.cornice(b, x0, z0, x1, z1, top, 0.35, 0.18, K.metal(trim), P(deckC, deckSurf));
+  boutiqueFront(b, v, rng, z1, trim, P(front, surf));
   K.storefront(b, -5.5, 5.5, z1, { y0: 5.5, y1: 7.65, frame: trim, pitch: 2.2, surround: 0.1 });
   K.onSide(b, 'px', () => K.storefront(b, -1.5, 4.8, x1, { y0: 5.5, y1: 7.65, frame: trim, pitch: 2.1, surround: 0.08 }));
   const deck = top + 0.36;
-  up(b, -6.2, -5.8, 6.2, 2.4, deck, P(0x947b5a, Surf.Wood));
   box(b, -5.6, deck, -5.4, 0.8, deck + 2.0, -1.8, P(0x74949c, Surf.GlassPlain), null);
-  box(b, -5.9, deck + 2.0, -5.7, 1.1, deck + 2.3, -1.5, K.metal(trim), K.roofP(0xa7a18f), { bottom: K.plain(STONE[k]) });
+  box(b, -5.9, deck + 2.0, -5.7, 1.1, deck + 2.3, -1.5, K.metal(trim), K.roofP(0xa7a18f), { bottom: K.plain(front) });
   b.push().translate(0, deck, 0);
   for (const x of [-4.7, 0, 4.7]) K.planter(b, rng, x - 0.65, 1.2, x + 0.65, 2.2, 0.55, trim);
-  K.umbrella(b, 3.7, -3.6, 1.35, STONE[k], 2.3, 0x4a4036);
+  K.umbrella(b, 3.7, -3.6, 1.35, front, 2.3, 0x4a4036);
   b.pop();
   // The open front railing leaves the shop's terrace visible from the street.
   b.paint(trim, Surf.Metal).beam([-6.2, deck + 0.85, 2.4], [6.2, deck + 0.85, 2.4], 0.07);
