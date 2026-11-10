@@ -173,6 +173,15 @@ export class WorldView implements WorldViewApi {
   private height = 1;
   private pixelRatio = 1;
   private nightFill: THREE.HemisphereLight;
+  /**
+   * The direct light is on (Sky.lightRig's intensity above 0.002; off for a minute or two at the sun -> moon handover
+   * after dusk and about twelve before dawn). The light itself is never hidden: three.js keys every program on the light
+   * and shadow counts, so a hidden sun gave every material in view a second program, each linked and waited for in the
+   * same frame (T084: one frame of 3.4-5.3 s at the first dusk after every city entry). Off, the light stays in three's
+   * light state at intensity 0, where it adds nothing, and only its shadow map is left alone (updateShadowPolicy,
+   * capture). castShadow and renderer.shadowMap.enabled do not follow the time of day either.
+   */
+  private sunLit = true;
   private overlay: Overlay = Overlay.None;
   private maxHeight = 100;
   private terrainMin = 0;
@@ -188,7 +197,7 @@ export class WorldView implements WorldViewApi {
   private frameNo = 0;
   private shForce = 2;
   private shDynamic = -1;
-  private shSunVisible = false;
+  private shSunLit = false;
   /** the view camera's pose / projection and target at the previous render, and how many renders it has been unchanged */
   private shView = new Float64Array(20);
   private shTarget = new Float64Array(3);
@@ -497,8 +506,10 @@ export class WorldView implements WorldViewApi {
     this.timeForce = false;
     const L = this.sky.lighting;
     this.sun.color.copy(L.lightColor);
-    this.sun.intensity = L.lightIntensity;
-    this.sun.visible = L.lightIntensity > 0.002;
+    // (never hidden while it is off, see sunLit)
+    const lit = L.lightIntensity > 0.002;
+    this.sunLit = lit;
+    this.sun.intensity = lit ? L.lightIntensity : 0;
     // hemisphere sky fill (Sky.lightRig): kept low at night so night reads as night, not a blue-tinted day, topped up
     // while the direct light is weak (sun-twilight -> moon handover ~19:10-19:35 / moonless pre-dawn) and through the
     // blue hour, so twilight is never darker than the night that follows
@@ -518,8 +529,7 @@ export class WorldView implements WorldViewApi {
     // the horizon (a shadow's length goes with 1 / tan(elevation): at dusk the same step would make long shadows jump).
     // While the view moves the steps are shadowMoveSunStep times coarser: every step re-renders the whole shadow map
     // (a far cascade cannot be held across one), and a moving view hides a shadow direction a fraction of a degree late
-    const vis = this.sun.visible;
-    if (vis !== this.shSunVisible) { this.shSunVisible = vis; this.invalidateShadows(1); }
+    if (lit !== this.shSunLit) { this.shSunLit = lit; this.invalidateShadows(1); }
     const lowSun = THREE.MathUtils.clamp(L.lightDir.y / 0.5, 0.05, 1);
     const sunStep = 0.0014 * lowSun * lowSun * (this.viewStill === 0 ? this.shadowMoveSunStep : 1);
     if (this.shadowDir.angleTo(L.lightDir) > sunStep || !this.shadowCache) this.shadowDir.copy(L.lightDir);
@@ -783,7 +793,9 @@ export class WorldView implements WorldViewApi {
     const sm = this.renderer.shadowMap;
     const sun = this.sun;
     if (!this.shadowCache) {
-      sm.autoUpdate = true;
+      // (three renders the map itself in every frame, but not for a light that is off: it stays in the light state)
+      sm.autoUpdate = this.sunLit;
+      if (!this.sunLit) sm.needsUpdate = false;
       // (every render culls the single map's casters against that frame's receiver)
       if (!sun.cascaded) copyReceiver(sun.dirCull, sun.dirReceiver);
       this.shViewOk = false;
@@ -791,7 +803,7 @@ export class WorldView implements WorldViewApi {
     }
     sm.autoUpdate = false;
     this.frameNo++;
-    if (!sun.visible || !sun.castShadow || !sm.enabled) {
+    if (!this.sunLit || !sun.castShadow || !sm.enabled) {
       sm.needsUpdate = false;
       this.shViewOk = false;
       return;
@@ -1184,7 +1196,8 @@ export class WorldView implements WorldViewApi {
     this.sun.dirReceiverCull = false;
     this.post.setSize(width, height);
     this.renderer.info.reset();
-    this.renderer.shadowMap.needsUpdate = true;
+    // (not while the light is off, see sunLit: the map it would render shades nothing)
+    this.renderer.shadowMap.needsUpdate = this.sunLit;
     // (a full shadow render for this view: no held far cascade, no scissor left from the last frame's render)
     this.sun.cascadeShadow.holdFar = false;
     if (this.sun.shadow.map) this.sun.shadow.map.scissorTest = false;
