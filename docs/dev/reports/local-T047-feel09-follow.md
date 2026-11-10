@@ -133,3 +133,41 @@ New real-GPU clearance and motion, current full-suite results, clock-owner fixes
 - [ ] Both dispatch paths follow only player-sent units; auto-dispatch offers no Follow. Resolution ends Follow/chip immediately; unresolved incidents retain the two-second arrival grace.
 - [ ] Drag, orbit, wheel, keys, Shift+right and touch release immediately. Normal/reduced/system motion, yaw/tilt, old saves, reset/exit and docking remain correct; reduced motion cuts to 260 m.
 - [ ] Keep N6 highway ramps, pause snapping and plain-left-click cancellation listed as unchanged owner items.
+
+## Cloud carry-over (Nov 3)
+
+The cloud takes T047's merge round for the desktop, which is at its 20-agent cap (NOTE-084, Nov 10). Branch
+`cloud/t047`, from `origin/local/T047-feel09-follow` @ `97a84b0`, worktree `scratchpad/co/t047`. Sources read: the
+task file; NOTE-046 Q1/Q3, NOTE-048, NOTE-049, NOTE-053, NOTE-057, NOTE-060, NOTE-061 and NOTE-064 (the ones naming
+T047), NOTE-044, NOTE-083 and NOTE-084 (cloud/lead-notes); POLISH_PLAN FEEL-09 (line 1098) and FEEL-08 (line 2419) in
+full with their Acceptance; this report; the lane's diff against dev. Per NOTE-061 and NOTE-084 the cloud runs no
+browser: the desktop runs the post-merge QA ("QA T047: PASS/FAIL"); the list is at the end of this section.
+
+### Gap list (written first)
+
+What FEEL-09 and the task file require, against what `97a84b0` holds:
+
+| Requirement | State at `97a84b0` |
+|---|---|
+| Follow, with a camera icon, after a player dispatch (DispatchTool or Send nearest), by `host.cause`, never by text | done (`recordDispatch`: `tag === this` or `tag instanceof DispatchTool`); tested |
+| Camera target on the lead vehicle, λ = 6, from the renderer's drawn state (no sim read); yaw and tilt kept; distance eases to 260 m | done (`CameraController.follow`, `EmergencyVehicles.followPosition`); tested |
+| Ends 2 s after on scene, or on any pan, zoom or orbit input | done (2 s real-time timer; every input path calls `stopFollowing`); tested |
+| Chip "Following Fire truck from Fire Station #1 · 1.1 min" | done; tested |
+| Player-dispatched units only; camera only | done; auto units never lead; tested |
+| Reduced motion: no overshoot; say what changes | done: the 260 m distance cuts at once; the target keeps monotone λ = 6 damping (no spring), so there is no overshoot |
+| Unit tests: smoothing (no step over 3 px at 60 fps), end conditions, auto-dispatch no Follow | done (cameraFollow, emergencyDrawnMotion, emergencyFollowBanner, emergencyFollowScene, emergencyFollowDispatch) |
+| Real-GPU browser gates in the Refinery scenario | done on the desktop before the merge (rounds 1-4, table above) |
+
+Gaps the cloud found at the start of this round:
+1. **Dev moved 414 commits** since the lane's last merge (`50a6b29`): B2 (`2dd0fe5`), T048 (FEEL-10), T036s5 (FH-08),
+   T061 and others. `src/ui/EmergencyBanner.ts` conflicts with T048 and T036s5 (known); both sides must be kept.
+2. **The infra hold lifts.** The lane's two `src/sim/infra/emergency.ts` commits held for B2 (NOTE-046 Q1); B2 is in dev,
+   so they merge now. The bot must stay at dev's new reference, 198,115 (NOTE-083), not 192,899.
+3. **The gates on the merged tree:** tsc, the full vitest, the hygiene test, and the bot against a clean dev export.
+4. **The lane's tests against dev's banner:** dev's banner subscribes through `host.events`, gains the LIVE badge, the
+   outcome flash and the teaching cards; the lane's harness and abort path must still hold with them.
+5. **WIP commits** (`1d287f2`, `434e070`, `2397ab6`, `7ccf3ed`, all `wip(...)`): verify line by line.
+6. **N2 (the loopback clock at day boundaries) was owned by T061,** which is now in dev: the desktop's post-merge QA
+   should re-measure the 3 px line on the worker host. B3 (pause snap-back) and B5 (a plain Query click ends Follow)
+   stay open with their owners; dev has not changed either (`Simulation.ts:157-161`, `QueryTool.ts:111-114`).
+7. **The .done line** names the old bot reference (192,899) and "holds for B2"; it needs this lane's cloud line.
