@@ -80,6 +80,9 @@ export interface CommitFeedback {
   fail?(r: ActionResult): void;
   /** Brush totals and panel closure use the authoritative result, even after exact feedback. */
   ack?(r: ActionResult): void;
+  /** FEEL-03: the monthly upkeep the tool's tip quoted for this commit (a plop's "Upkeep here ≈§A/mo now"); the cost
+   *  float shows it. Without it a plop's float shows only an exact upkeep (plopUpkeep). */
+  upkeep?: number;
 }
 
 /** Shared with the inspector's one-commit demolition gesture. */
@@ -115,7 +118,7 @@ export function commitAction<K extends ActionOp>(ctx: GameContext, owner: object
     }
   }
   if (!ctx.signal.aborted && ticket.exact && predicted) {
-    if (predicted.ok) { g.recordFeedback(); feedback.ok(predicted); costFloat(ctx, op, args, predicted, g); }
+    if (predicted.ok) { g.recordFeedback(); feedback.ok(predicted); costFloat(ctx, op, args, predicted, g, feedback.upkeep); }
     else g.fail(() => fail(predicted));
   }
   const delivered = ticket.done.then((r: ActionResult) => {
@@ -123,7 +126,7 @@ export function commitAction<K extends ActionOp>(ctx: GameContext, owner: object
     if (ctx.signal.aborted) return;
     g.recordAck(r.ok);
     if (!ticket.exact || !predicted) {
-      if (r.ok) { feedback.ok(r); costFloat(ctx, op, args, r, g); }
+      if (r.ok) { feedback.ok(r); costFloat(ctx, op, args, r, g, feedback.upkeep); }
       else g.fail(() => fail(r));
     } else if (predicted.ok && !r.ok) g.fail(() => fail(r));
     feedback.ack?.(r);
@@ -147,23 +150,29 @@ export function commitAction<K extends ActionOp>(ctx: GameContext, owner: object
 
 /**
  * FEEL-03 (a): the commit's cost float at the cursor (src/ui/FloatText.ts), called once per commit beside
- * `feedback.ok` (the exact prediction or the acknowledgement; never on failure). A plop adds its monthly upkeep. None
- * in a sandbox, for a free commit, or in a context without CityScene's float layer. The gesture merges a held brush's
- * commits into one float.
+ * `feedback.ok` (the exact prediction or the acknowledgement; never on failure). A plop adds its monthly upkeep
+ * (`quoted`: the figure the tool's tip showed, CommitFeedback.upkeep). None in a sandbox, for a free commit, or in a
+ * context without CityScene's float layer. The gesture merges a held brush's commits into one float.
  */
-function costFloat(ctx: GameContext, op: CommandOp, args: unknown, r: ActionResult, gesture: object): void {
+function costFloat(ctx: GameContext, op: CommandOp, args: unknown, r: ActionResult, gesture: object, quoted?: number): void {
   const ft = floatTextOf(ctx);
   if (!ft || !r.ok || !r.cost || (ctx.sandbox?.() ?? !!ctx.state.config.sandbox)) return;
-  safe(() => ft.cost(r.cost, op === 'plop' ? plopUpkeep(ctx.state, (args as [string])[0]) : 0, gesture), false);
+  safe(() => ft.cost(r.cost, op === 'plop' ? plopUpkeep(ctx.state, (args as [string])[0], quoted) : 0, gesture), false);
 }
 
-/** FEEL-03 (a): the monthly upkeep a placed building adds, as PlopTool quotes it before the spot's own figure arrives
- *  (upkeepModel's estimate for a running-cost facility, else the catalog's flat upkeep) */
-export function plopUpkeep(st: CityState, defId: string): number {
+/**
+ * FEEL-03 (a): the monthly upkeep a plop's float shows: the figure the tool's tip quoted when it passes one, else the
+ * catalog's upkeep where that is exact (a flat-upkeep building, or any building in a city without running costs). A
+ * running-cost facility (school, clinic, library, museum, police / fire station, park) gets 0 (no line) without a
+ * quote: what it costs depends on the spot and the people it serves, and upkeepModel's city-wide typical figure was
+ * often several times the tip's "Upkeep here" in the review's probe (an elementary school §702 against §134-284, a
+ * library §799 against §81-124).
+ */
+export function plopUpkeep(st: CityState, defId: string, quoted?: number): number {
+  if (quoted !== undefined && Number.isFinite(quoted)) return Math.max(0, quoted);
   const def = getDef(defId);
-  if (!def) return 0;
-  const est = safe(() => upkeepEstimate(st, def), null);
-  return Math.max(0, est ? est.now : def.upkeep ?? 0);
+  if (!def || safe(() => upkeepEstimate(st, def), null)) return 0;
+  return Math.max(0, def.upkeep ?? 0);
 }
 
 /** Tooltip html for an action preview (`more`: html lines under the sub line, above the reason — FH-05's budget line). */

@@ -98,9 +98,15 @@ export class FloatText {
     Object.assign(s, { t0: now, key, sum: cost, upkeep });
     const gen = ++s.gen, { x, y } = p;
     this.later(() => {
-      // a newer float took this element since, or the frame came too late (a hidden tab): nothing to draw
-      if (s.gen !== gen || performance.now() - now >= FLOAT_MS) return;
+      // a newer float took this element since: its own draw sees to it
+      if (s.gen !== gen) return;
       this.stop(s);
+      // the frame came too late (a hidden tab, a long task): nothing to draw, and nothing an older float left may stay
+      // up (reduced motion: its hide was queued under the older generation, which this float ended)
+      if (performance.now() - now >= FLOAT_MS) {
+        if (s.el.className !== 'ft') s.el.className = 'ft';
+        return;
+      }
       this.render(s);
       this.play(s, x, y);
     });

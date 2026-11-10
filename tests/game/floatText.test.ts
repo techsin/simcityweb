@@ -13,10 +13,16 @@ import type { CityState } from '../../src/sim/CityState';
 import { Gesture, type ActOptions } from '../../src/worker/SimHost';
 import { FLOAT_MERGE_MS, FLOAT_MS, FLOAT_POOL, FLOAT_RISE, attachFloatText, costText, floatTextOf, upkeepText } from '../../src/ui/FloatText';
 import { COUNT_MS, FLASH_MS, FundsSegment, MONTH_CHIP_MS, showMonthChip } from '../../src/ui/topbar/fundsSegment';
-import { APPROVAL_CHIP_MS, ApprovalSegment, biggestTermChange } from '../../src/ui/topbar/approvalSegment';
+import { APPROVAL_CAUSE_MIN, APPROVAL_CHIP_MS, ApprovalCauses, ApprovalSegment } from '../../src/ui/topbar/approvalSegment';
+import { APPROVAL_LABELS } from '../../src/sim/economy/approval';
+import { opexActive } from '../../src/sim/economy/opex';
+import { APPROVAL } from '../../src/sim/economy/tuning';
+import { Simulation } from '../../src/sim/Simulation';
+import { economySystems } from '../../src/sim/systems/economy';
+import { upkeepEstimate } from '../../src/ui/upkeepModel';
 import { BudgetPanel } from '../../src/ui/panels/BudgetPanel';
 import { moneySigned } from '../../src/ui/format';
-import { newSim, newState } from '../infra/cityGen';
+import { newSim, newState, stressCity } from '../infra/cityGen';
 import { FEl, installFakeDom, textOf } from './fakeDom';
 
 installFakeDom();
@@ -163,6 +169,33 @@ describe('FEEL-03 (a) cost floats', () => {
     expect(anims).toHaveLength(1);
   });
 
+  it('a running-cost facility floats the upkeep its tip quoted, and no city-wide guess without one', () => {
+    const f = city();
+    const school = getDef('civ_elementary_school')!;
+    // a city that charges running costs: a school costs what the people it serves cost, spot by spot
+    expect(opexActive(f.st)).toBe(true);
+    expect(upkeepEstimate(f.st, school)).not.toBeNull();
+    expect(plopUpkeep(f.st, school.id)).toBe(0);
+    commitAction(f.ctx, {}, 'plop', [school.id, 10, 10, 0], { ok: vi.fn() });
+    draw();
+    expect(anims).toHaveLength(1);
+    expect(textOf(anims[0].el.querySelector('.ft-cost')!)).toMatch(/^−§/);
+    expect(textOf(anims[0].el.querySelector('.ft-sub')!)).toBe('');
+    // the figure the tool's tip showed ("Upkeep here ≈§134/mo now"), passed with the commit
+    now += 2000;
+    commitAction(f.ctx, {}, 'plop', [school.id, 20, 20, 0], { ok: vi.fn(), upkeep: 134 });
+    draw();
+    expect(anims).toHaveLength(2);
+    expect(textOf(anims[1].el.querySelector('.ft-sub')!)).toBe('+§134/mo');
+    expect(plopUpkeep(f.st, school.id, 134)).toBe(134);
+    // the catalog's upkeep where it is exact: a flat-upkeep plant, or any building in a city without running costs
+    expect(plopUpkeep(f.st, 'util_coal_plant')).toBe(700);
+    const eco = newState(16);
+    expect(opexActive(eco)).toBe(false);
+    expect(plopUpkeep(eco, school.id)).toBe(school.upkeep);
+    expect(plopUpkeep(eco, 'no_such_def')).toBe(0);
+  });
+
   it('a failed placement shows no float', () => {
     const f = city();
     plop(f.ctx);
@@ -295,6 +328,25 @@ describe('FEEL-03 (a) cost floats', () => {
     expect(el.className).toBe('ft on');
     draw();
     expect(el.className).toBe('ft');
+  });
+
+  it('reduced motion: a float whose element is retaken before its hide, with the next frame late, does not stay up', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const f = city({ motion: 'reduced' });
+    f.ft.cost(500);
+    draw();
+    const el = f.floats()[0];
+    expect(el.className).toBe('ft on');
+    // its life ends: the hide waits for the next frame...
+    now += FLOAT_MS;
+    vi.advanceTimersByTime(FLOAT_MS);
+    // ...a new commit takes the now idle element before that frame, and the frame comes a second late (a long task)
+    expect(f.ft.cost(700)).toBe(true);
+    now += 1000;
+    draw();
+    expect(f.floats()).toHaveLength(1);
+    expect(el.className).toBe('ft');
+    expect(anims).toHaveLength(0);
   });
 
   it('no float in a sandbox, for a free commit, without a pointer yet, or after the city closes', () => {
@@ -567,31 +619,47 @@ describe('FEEL-03 (c) the month chip', () => {
 
 // ---- (d) the approval chip
 
-const T0 = { base: 61, tax: -7, services: -5, pollution: -3, crime: -12, parks: 1.5, unemployment: -1, clamp: 0 };
+/** steady terms: their sum (raw) is the shown approval, 60 */
+const T0 = { base: 61, tax: -7, services: 5, pollution: -3, crime: -2, parks: 1.5, unemployment: 4.5, clamp: 0 };
 
-function approvalFixture(opts: { pop?: number } = {}) {
+function approvalFixture(opts: { pop?: number; ap?: number } = {}) {
   const st = newState(16);
   const abort = new AbortController();
   st.day = 462;
   st.stats.population = opts.pop ?? 20000;
-  st.stats.approval = 60;
-  st.systemData.economy = { approvalTerms: { ...T0 }, approvalRaw: 58 };
+  st.stats.approval = opts.ap ?? 60;
+  st.systemData.economy = { approvalTerms: { ...T0 }, approvalRaw: 60 };
   const ctx = { state: st, signal: abort.signal, panels: { toggle: vi.fn(), open: vi.fn() }, overlay: 0, settings: { motion: 'full' } } as unknown as GameContext;
   const seg = new ApprovalSegment(ctx);
   const el = seg.el as unknown as FEl;
   const chip = el.querySelector('.hud-chip')!;
-  return { st, ctx, seg, el, chip, terms: () => (st.systemData.economy as { approvalTerms: Record<string, number> }).approvalTerms };
+  const eco = () => st.systemData.economy as { approvalTerms: Record<string, number>; approvalRaw: number };
+  /** a month tick as the sim makes one (src/sim/economy/approval.ts): the terms change, raw is their sum (0-100, `clamp`
+   *  the rest), and the shown approval moves APPROVAL.ema of its gap to raw; `inPlace`: a replica fills one terms object */
+  const month = (change: Record<string, number> = {}, inPlace = false) => {
+    const e = eco();
+    const T = inPlace ? e.approvalTerms : { ...e.approvalTerms };
+    Object.assign(T, change);
+    let raw = 0;
+    for (const k in T) if (k !== 'clamp') raw += T[k];
+    T.clamp = Math.min(100, Math.max(0, raw)) - raw;
+    e.approvalTerms = T;
+    e.approvalRaw = raw + T.clamp;
+    st.stats.approval += (e.approvalRaw - st.stats.approval) * APPROVAL.ema;
+    st.day += 30;
+    seg.update();
+  };
+  return { st, ctx, seg, el, chip, eco, month, on: () => chip.classList.contains('on') };
 }
 
 describe('FEEL-03 (d) the approval chip', () => {
-  it('when monthly approval moves by a point or more: "−2 · <the term that changed most>" for 3 s', () => {
+  it('when monthly approval moves by a point or more: "−2 · <the term that moved it most>" for 3 s', () => {
     const f = approvalFixture();
     f.seg.update();
     expect(f.chip.className).toBe('hud-chip appr');
-    f.st.day = 480;
-    f.st.stats.approval = 58;
-    f.st.systemData.economy = { approvalTerms: { ...T0, tax: -10, crime: -11, services: -6 }, approvalRaw: 55 };
-    f.seg.update();
+    // taxes up 2 points (the term −7 → −14), services a little worse: approval 60 → 57.6
+    f.month({ tax: -14, services: 4 });
+    expect(f.st.stats.approval).toBeCloseTo(57.6, 9);
     expect(textOf(f.chip)).toBe('−2 · Residential taxes');
     expect(f.chip.className).toBe('hud-chip appr neg on');
     now += APPROVAL_CHIP_MS - 1;
@@ -605,53 +673,139 @@ describe('FEEL-03 (d) the approval chip', () => {
   it('reads the term values even when a replica fills the same terms object in place (NOTE-092)', () => {
     const f = approvalFixture();
     f.seg.update();
-    const T = f.terms();
-    f.st.day = 480;
-    f.st.stats.approval = 63.4;
-    T.crime = -8; T.parks = 2;
-    f.seg.update();
-    expect(f.terms()).toBe(T);
+    const T = f.eco().approvalTerms;
+    f.month({ crime: 8, parks: 2 }, true);
+    expect(f.eco().approvalTerms).toBe(T);
     expect(textOf(f.chip)).toBe('+3 · Crime at homes');
     expect(f.chip.className).toBe('hud-chip appr pos on');
   });
 
-  it('names a term that moved the way approval did, not a bigger one that moved against it', () => {
-    expect(biggestTermChange({ tax: -7, parks: 0, services: -5 }, { tax: -10, parks: 4, services: -7 }, -1)).toBe('Residential taxes');
-    expect(biggestTermChange({ tax: -7, parks: 0 }, { tax: -10, parks: 4 }, 1)).toBe('Parks near homes');
-    // nothing moved that way: the biggest move; a term that appears counts from zero; clamp never
-    expect(biggestTermChange({ tax: -7 }, { tax: -6 }, -1)).toBe('Residential taxes');
-    expect(biggestTermChange({ tax: -7, clamp: 0 }, { tax: -7, clamp: -9, deficit: -2 }, -1)).toBe('City in debt');
-    expect(biggestTermChange(null, { tax: -6 }, 1)).toBeNull();
-    expect(biggestTermChange({ tax: -6 }, { tax: -6 }, 1)).toBeNull();
+  it('names the term that pushed approval its way, not a bigger move the other way', () => {
+    const f = approvalFixture();
+    f.seg.update();
+    // parks +8 (the biggest move) while taxes −6 and services −5 pull approval down by a point
+    f.month({ parks: 9.5, tax: -13, services: 0 });
+    expect(textOf(f.chip)).toBe('−1 · Residential taxes');
+  });
+
+  it('the months approval takes to catch up with a tax raise name the tax, not a term that improved meanwhile', () => {
+    const f = approvalFixture();
+    f.seg.update();
+    // taxes up 3 points: the tax term −7 → −17.5; approval falls 3.15 of its 10.5-point gap the first month
+    f.month({ tax: -17.5 });
+    expect(textOf(f.chip)).toBe('−3 · Residential taxes');
+    // it keeps falling toward raw for months, while unemployment improves (that pushes approval up)
+    const texts: string[] = [];
+    for (const unemployment of [5.5, 6.5, 6.5]) {
+      now += APPROVAL_CHIP_MS;
+      f.month({ unemployment });
+      texts.push(f.on() ? textOf(f.chip) : '');
+    }
+    expect(texts).toEqual(['−2 · Residential taxes', '−1 · Residential taxes', '−1 · Residential taxes']);
+  });
+
+  it('the number alone for a rounding step with no real cause, and for a fall the terms do not explain', () => {
+    // approval 60.45 over terms worth 60: parks +0.7 moves it 0.075, across the rounding line (60 → 61 shown)
+    const f = approvalFixture({ ap: 60.45 });
+    f.seg.update();
+    f.month({ parks: 2.2 });
+    expect(textOf(f.chip)).toBe('+1');
+    // a city loaded while approval was still falling from an earlier tax raise (approval 60 over terms worth 50): a
+    // small real fall (unemployment, −0.3) inside a large one from before the load (−3)
+    const g = approvalFixture();
+    g.eco().approvalTerms.tax = -17;
+    g.seg.update();
+    g.month({ unemployment: 3.5 });
+    expect(textOf(g.chip)).toBe('−3');
+  });
+
+  it('ApprovalCauses: never the 0-100 limit or the baseline; nothing to start from; months the HUD missed', () => {
+    const c = new ApprovalCauses();
+    // nothing to start from: it starts here
+    expect(c.step({ base: 61, tax: -7 }, 54, 1, -1)).toBeNull();
+    // the limit (or the baseline) took the fall: not named
+    expect(c.step({ base: 58, tax: -7, clamp: -9 }, 54 - APPROVAL.ema * 12, 1, -1)).toBeNull();
+    // two months at once: the share moved 1 − (1 − ema)² of the tax step, as approval did
+    const f2 = 1 - (1 - APPROVAL.ema) ** 2;
+    c.reset({ base: 61, tax: -7 }, 54);
+    expect(c.step({ base: 61, tax: -17.5 }, 54 - f2 * 10.5, 2, -3)).toBe('tax');
+    // a push under APPROVAL_CAUSE_MIN is no cause
+    c.reset({ tax: -7 }, 54);
+    const small = APPROVAL_CAUSE_MIN * 0.9;
+    expect(c.step({ tax: -7 - small / APPROVAL.ema }, 54 - small, 1, -1)).toBeNull();
+    expect(c.step({ tax: -7 - 2 * small / APPROVAL.ema }, 54 - small - 0.3 * (small / APPROVAL.ema + small), 1, -1)).toBe('tax');
+    // the terms went away: start over
+    expect(c.step(null, 50, 1, -1)).toBeNull();
+    expect(c.step({ tax: -20 }, 46, 1, -1)).toBeNull();
+  });
+
+  it.each<[string, number]>([['+3', 3], ['+5', 5], ['−3', -3]])('a real city, residential taxes %s points: every chip after the step names a term that moved approval its way, and the months of catching up name the tax', (_, points) => {
+    const { st } = stressCity(64, 7);
+    const sim = new Simulation(st, economySystems());
+    sim.runDays(30 * 8);
+    const abort = new AbortController();
+    const ctx = { state: st, signal: abort.signal, panels: { toggle: vi.fn(), open: vi.fn() }, overlay: 0, settings: { motion: 'full' } } as unknown as GameContext;
+    const seg = new ApprovalSegment(ctx);
+    const chips: { month: number; text: string }[] = [];
+    let month = 0;
+    const show = seg.chip.show.bind(seg.chip);
+    seg.chip.show = (text: string, tone: string, ms: number) => { chips.push({ month, text }); show(text, tone, ms); };
+    const terms = () => ({ ...(st.systemData.economy as { approvalTerms: Record<string, number> }).approvalTerms });
+    const runMonth = () => { sim.runDays(30); seg.update(); };
+    seg.update();
+    for (let i = 0; i < 4; i++) runMonth();
+    chips.length = 0;
+    const before = terms();
+    for (let i = 0; i < 3; i++) st.budget.taxRates[i] += points;
+    const after: Record<string, number>[] = [];
+    for (month = 1; month <= 8; month++) {
+      runMonth();
+      after[month] = terms();
+    }
+    abort.abort();
+    const ids = Object.fromEntries(Object.entries(APPROVAL_LABELS).map(([id, label]) => [label, id]));
+    const named = chips.map(({ month: m, text }) => {
+      const [, sign, , label] = /^([+−])(\d+)(?: · (.+))?$/.exec(text)!;
+      return { m, dir: sign === '+' ? 1 : -1, id: label ? ids[label] : null, text };
+    });
+    // the first month: the tax, the way the step pushes
+    expect(named[0]).toMatchObject({ m: 1, dir: points > 0 ? -1 : 1, id: 'tax' });
+    for (const c of named) {
+      // never a term that moved against the shown change since the step (unemployment improved through every run)
+      if (c.id) expect((after[c.m][c.id] - before[c.id]) * c.dir, `${c.text} in month ${c.m}`).toBeGreaterThan(0);
+      // the months approval is still catching up with the tax: the tax or nothing
+      if (c.m <= 4) expect([null, 'tax'], `${c.text} in month ${c.m}`).toContain(c.id);
+    }
+    // catching up takes months: at least two more chips in months 2-4, every one of them the tax (the review saw
+    // "Unemployment" there)
+    const lag = named.filter((c) => c.m >= 2 && c.m <= 4);
+    expect(lag.length).toBeGreaterThanOrEqual(points > 0 ? 3 : 2);
+    expect(lag.every((c) => c.id === 'tax' && c.dir === (points > 0 ? -1 : 1))).toBe(true);
   });
 
   it('no chip for a move under a point, before the first residents, in a sandbox, or for the city opening', () => {
-    const f = approvalFixture();
-    f.st.stats.approval = 60.2;
+    // 60.2 → 60.29: still 60
+    const f = approvalFixture({ ap: 60.2 });
     f.seg.update();
-    f.st.day = 480;
-    f.st.stats.approval = 60.4;
-    f.seg.update();
-    expect(f.chip.classList.contains('on')).toBe(false);
+    f.month({ parks: 2 });
+    expect(f.st.stats.approval).toBeCloseTo(60.29, 9);
+    expect(f.on()).toBe(false);
+    // a 9.9-point fall with nobody to feel it, and one in a sandbox
     const p = approvalFixture({ pop: 0 });
     p.seg.update();
-    p.st.day = 480;
-    p.st.stats.approval = 20;
-    p.seg.update();
-    expect(p.chip.classList.contains('on')).toBe(false);
+    p.month({ tax: -40 });
+    expect(p.on()).toBe(false);
     const s = approvalFixture();
     s.st.config.sandbox = true;
     s.seg.update();
-    s.st.day = 480;
-    s.st.stats.approval = 30;
-    s.seg.update();
-    expect(s.chip.classList.contains('on')).toBe(false);
+    s.month({ tax: -40 });
+    expect(s.on()).toBe(false);
     // no chip without a month tick, however far approval moves
     const t = approvalFixture();
     t.seg.update();
     t.st.stats.approval = 10;
     t.seg.update();
-    expect(t.chip.classList.contains('on')).toBe(false);
+    expect(t.on()).toBe(false);
   });
 
   it('an unchanged tick writes nothing to the chips (T030)', () => {

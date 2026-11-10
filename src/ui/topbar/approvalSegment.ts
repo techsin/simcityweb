@@ -9,29 +9,66 @@ import { DAYS_PER_MONTH } from '../../core/constants';
 import { clear, h, setText } from '../dom';
 import { icon } from '../icons';
 import { APPROVAL_LABELS, approvalBreakdown } from '../../sim/economy/approval';
+import { APPROVAL } from '../../sim/economy/tuning';
 import { NO_RESIDENTS_TEXT, approvalFix, approvalFixHint, approvalHud, newTownFooter } from './approvalGuide';
 import { HudChip } from './hudChip';
 
 /** FEEL-03 (d): how long the approval chip shows (ms) */
 export const APPROVAL_CHIP_MS = 3000;
+/** FEEL-03 (d): the least a term must move the shown approval in a month for the chip to name it (points) */
+export const APPROVAL_CAUSE_MIN = 0.25;
 
 /**
- * FEEL-03 (d): the label of the approval term that moved most between two monthly reports (`before` → `after`, term id
- * → value), in the direction approval moved (`dir`); if none moved that way, the biggest move either way. Terms and
- * values only: approvalBreakdown's detail lines differ on a replica (src/worker/replicaSafe.ts). null: no report to
- * compare, or nothing moved.
+ * FEEL-03 (d): which term moved the shown approval this month.
+ * - The sim moves approval each month by APPROVAL.ema of its gap to raw, and raw is the sum of the terms
+ *   (src/sim/economy/approval.ts). That rule is linear, so each term has a share of the shown approval that follows the
+ *   same rule (share += ema × (term − share)), and a month's move of the shown approval is the sum of the shares' moves.
+ * - So after a tax raise approval keeps falling for months, by the tax term's share catching up with the term. A term
+ *   that improved meanwhile pushes approval up, and is never named for the fall.
+ * - A term is named only when its share moved approval by APPROVAL_CAUSE_MIN or more in approval's direction, and by
+ *   more than the part the shares do not explain: approval from before the city was opened, loaded or resynced (its gap
+ *   to the terms' sum then is unknown history, which fades as the sim smooths it away). Else the chip shows the number
+ *   alone. `clamp` (the 0-100 limit) and the constant `base` are never named.
+ * - Terms and values only: approvalBreakdown's detail lines differ on a replica (src/worker/replicaSafe.ts). The values
+ *   are copied, because a replica fills one terms object in place (NOTE-092).
  */
-export function biggestTermChange(before: Readonly<Record<string, number>> | null, after: Readonly<Record<string, number>> | null, dir: number): string | null {
-  if (!before || !after) return null;
-  let best: string | null = null, bestV = 1e-9, any: string | null = null, anyV = 1e-9;
-  for (const id of new Set([...Object.keys(before), ...Object.keys(after)])) {
-    if (id === 'clamp') continue;
-    const d = (after[id] ?? 0) - (before[id] ?? 0);
-    if (d * dir > bestV) { bestV = d * dir; best = id; }
-    if (Math.abs(d) > anyV) { anyV = Math.abs(d); any = id; }
+export class ApprovalCauses {
+  /** each term's share of the shown approval (null: nothing to start from yet) */
+  private shares: Record<string, number> | null = null;
+  /** the shown approval (unrounded) at the last reset or month */
+  private ap = 0;
+
+  /** start over from this month's terms and approval (a city opened, loaded or resynced) */
+  reset(terms: Readonly<Record<string, number>> | null | undefined, ap: number): void {
+    this.shares = terms ? { ...terms } : null;
+    this.ap = ap;
   }
-  const id = best ?? any;
-  return id === null ? null : APPROVAL_LABELS[id] ?? id;
+
+  /**
+   * `months` month ticks after the last call (more than one when the HUD missed a tick), at `terms` and approval `ap`:
+   * the id of the term whose share moved approval most in the direction of `shown` (the shown change; 0: none), or null
+   */
+  step(terms: Readonly<Record<string, number>> | null | undefined, ap: number, months: number, shown: number): string | null {
+    const s = this.shares;
+    if (!s || !terms) {
+      this.reset(terms, ap);
+      return null;
+    }
+    const moved = ap - this.ap, dir = Math.sign(shown);
+    this.ap = ap;
+    const f = 1 - (1 - APPROVAL.ema) ** Math.max(1, months);
+    let best: string | null = null, bestV = 0, explained = 0;
+    for (const id of new Set([...Object.keys(s), ...Object.keys(terms)])) {
+      const d = f * ((terms[id] ?? 0) - (s[id] ?? 0));
+      s[id] = (s[id] ?? 0) + d;
+      explained += d;
+      if (id !== 'clamp' && id !== 'base' && d * dir > bestV) {
+        bestV = d * dir;
+        best = id;
+      }
+    }
+    return best !== null && bestV >= APPROVAL_CAUSE_MIN && bestV > (moved - explained) * dir ? best : null;
+  }
 }
 
 /** FEEL-03 (d): the chip's text, "−2 · Residential taxes" (`d`: the displayed approval's change, whole points) */
@@ -50,14 +87,14 @@ export class ApprovalSegment {
   /** population band the card was built for (FH-06: no residents yet / a new town / from 10,000) */
   private apprBand = -1;
   private apprPop: HTMLElement;
-  /** FEEL-03 (d): the approval chip, the month of the last tick (-1: none yet), and the displayed approval (null: no
-   *  score) and term values at the last month tick (copied: a replica fills one terms object in place, NOTE-092) */
+  /** FEEL-03 (d): the approval chip, the month of the last tick (-1: none yet), the displayed approval at that tick
+   *  (null: no score shown), and where approval's moves come from (the terms' shares) */
   readonly chip: HudChip;
   private chipMonth = -1;
   /** the state the month was read from (a load or a replica's resync replaces it: no chip for that) */
   private chipOf: object | null = null;
   private chipAp: number | null = null;
-  private chipTerms: Record<string, number> | null = null;
+  private readonly causes = new ApprovalCauses();
 
   constructor(private ctx: GameContext) {
     this.apprEl = h('div', { class: 'hud-value' });
@@ -167,19 +204,25 @@ export class ApprovalSegment {
     this.changeChip(st, ap, hud.band);
   }
 
-  /** FEEL-03 (d): at the month tick, when the displayed approval moved by a point or more, the change and its main term
-   *  (none before the first residents, in a sandbox, or right after the city opened) */
+  /** FEEL-03 (d): at the month tick, when the displayed approval moved by a point or more, the change and the term that
+   *  moved it most (ApprovalCauses; none before the first residents, in a sandbox, or right after the city opened) */
   private changeChip(st: CityState, ap: number, band: number): void {
     const m = Math.floor(st.day / DAYS_PER_MONTH);
     if (m !== this.chipMonth || st !== this.chipOf) {
-      const first = this.chipMonth < 0 || st !== this.chipOf, prevAp = this.chipAp, prevTerms = this.chipTerms;
       const T = (st.systemData.economy as { approvalTerms?: Record<string, number> } | undefined)?.approvalTerms;
+      const shown = band > 0 && !st.config.sandbox ? Math.round(ap) : null;
+      if (this.chipMonth < 0 || st !== this.chipOf || m < this.chipMonth) {
+        // the city opened, or a load or a replica's resync replaced the state: a new baseline, no chip
+        this.causes.reset(T, ap);
+      } else {
+        // (the shares follow every month, shown or not, so that the first chip after the first residents is right)
+        const d = shown !== null && this.chipAp !== null ? shown - this.chipAp : 0;
+        const cause = this.causes.step(T, ap, m - this.chipMonth, d);
+        if (Math.abs(d) >= 1) this.chip.show(approvalChipText(d, cause === null ? null : APPROVAL_LABELS[cause] ?? cause), d > 0 ? 'pos' : 'neg', APPROVAL_CHIP_MS);
+      }
       this.chipMonth = m;
       this.chipOf = st;
-      this.chipAp = band > 0 && !st.config.sandbox ? Math.round(ap) : null;
-      this.chipTerms = T ? { ...T } : null;
-      const d = this.chipAp !== null && prevAp !== null ? this.chipAp - prevAp : 0;
-      if (!first && Math.abs(d) >= 1) this.chip.show(approvalChipText(d, biggestTermChange(prevTerms, this.chipTerms, d)), d > 0 ? 'pos' : 'neg', APPROVAL_CHIP_MS);
+      this.chipAp = shown;
     }
     this.chip.tick();
   }
