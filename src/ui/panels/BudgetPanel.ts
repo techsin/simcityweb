@@ -10,7 +10,9 @@ import { money, moneySigned, signClass, titleCase } from '../format';
 import { isOneOff, sumOneOff, sumRecurring } from '../TopBar';
 import { watchFor, type WatchHandle } from '../../worker/SimHost';
 import { taxFactor } from '../../sim/economy/demand';
-import { APPROVAL, TAX_NEUTRAL } from '../../sim/economy/tuning';
+import { APPROVAL, TAX_GROWTH_WARNING_RATE, TAX_NEUTRAL } from '../../sim/economy/tuning';
+import { DEV_GLOSSARY, glossaryOf } from '../glossary';
+import '../guide/advice.css';
 
 const TAX_GROUPS: { label: string; color: string; devs: DevType[] }[] = [
   { label: 'Residential', color: 'var(--res)', devs: [DevType.R1, DevType.R2, DevType.R3] },
@@ -218,12 +220,15 @@ export class BudgetPanel extends Panel {
           },
         });
         this.taxSliders.set(d, { s, v, m, effect });
-        box.appendChild(h('div', { class: 'tax-row', title: `Last month: ${money(lookup(b.lastIncome, taxKeys(d)))}` }, h('span', { class: 'tr-l' }, DEV_TYPE_LABELS[d]), s, stepper(s, v, `the ${DEV_TYPE_LABELS[d]} tax`, this.ctx.signal), m, effect));
+        // (FH-16: the plain name on its own dim line under the code, spanning the row, so the slider keeps its width; the
+        // tooltip says what the type wants and last month's amount)
+        const gl = DEV_GLOSSARY[d];
+        box.appendChild(h('div', { class: 'tax-row', title: `${gl.tip}\nLast month: ${money(lookup(b.lastIncome, taxKeys(d)))}` }, h('span', { class: 'tr-l' }, DEV_TYPE_LABELS[d]), s, stepper(s, v, `the ${DEV_TYPE_LABELS[d]} tax`, this.ctx.signal), m, h('div', { class: 'dim tr-name' }, gl.name), effect));
       }
       if (g.devs[0] === DevType.R1) box.appendChild(h('div', { class: 'dim', style: 'font-size:11.5px;line-height:1.4;margin-top:4px' }, `Residential rows share the citywide tax effect vs ${TAX_NEUTRAL}%, weighted by residents. Other approval factors still apply.`));
       cols.appendChild(box);
     });
-    const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + `<span>${TAX_NEUTRAL}% is neutral. Each residential point above costs approval (−${-APPROVAL.taxPerPoint} a point); above 13% demand collapses. Each point below wins approval (+${APPROVAL.taxLowPerPoint}) but less income. Click a slider, then use the arrow keys (or − / +) for 0.5% steps.</span>` });
+    const hint = h('div', { class: 'dim', style: 'font-size:11.5px;margin-top:10px;display:flex;gap:8px;align-items:center', html: icon('info', 14) + `<span>${TAX_NEUTRAL}% is neutral. Higher taxes gradually slow growth. Each residential point above neutral costs approval (−${-APPROVAL.taxPerPoint} a point). Each point below wins approval (+${APPROVAL.taxLowPerPoint}) but less income. Use the arrow keys on a selected slider, or the − / + buttons beside it.</span>` });
     this.content.append(cols, hint);
   }
 
@@ -289,7 +294,11 @@ export class BudgetPanel extends Panel {
       t.appendChild(h('tr', { class: 'grp', title: cls === 'neg' ? GROUP_HINTS[g] ?? '' : '' }, h('td', null, GROUP_LABELS[g] ?? titleCase(g)), h('td', { class: cls }, money(e.total))));
       // (a group's only line is listed when its name says more than the group's: "Utilities → Plants & facilities")
       if (e.items.length > 1 || (e.items.length === 1 && e.items[0][0] !== g) || (e.items.length === 1 && ITEM_LABELS[g]?.[e.items[0][0]]))
-        for (const [it, v] of e.items.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))) t.appendChild(h('tr', { class: 'item' }, h('td', null, this.itemLabel(g, it)), h('td', null, money(v))));
+        for (const [it, v] of e.items.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))) {
+          // (FH-16: a tax line's plain name on a second dim line, its glossary entry on hover)
+          const gl = g === 'tax' ? glossaryOf(it) : undefined;
+          t.appendChild(h('tr', { class: 'item', title: gl?.tip }, h('td', null, this.itemLabel(g, it), gl ? h('div', { class: 'dim lg-name' }, gl.name) : null), h('td', null, money(v))));
+        }
     }
     t.appendChild(h('tr', { class: 'total' }, h('td', null, 'Total'), h('td', { class: cls }, money(sumRecurring(rec)))));
     return h('div', null, h('div', { class: 'sec-title' }, title), t);
@@ -526,8 +535,8 @@ function serviceCost(expense: Record<string, number>, s: ServiceKind): number {
 type Forecast = { income: Record<string, number>; expense: Record<string, number>; totalIncome: number; totalExpense: number };
 
 function taxColor(sl: HTMLInputElement, rate: number): void {
-  toggleClass(sl, 'warn', rate > 9.5 && rate < 13.5);
-  toggleClass(sl, 'bad', rate >= 13.5);
+  toggleClass(sl, 'warn', rate > 9.5 && rate < TAX_GROWTH_WARNING_RATE);
+  toggleClass(sl, 'bad', rate >= TAX_GROWTH_WARNING_RATE);
 }
 
 /** The sim applies the tax slope to the resident-weighted average, not separately to each wealth tier. */

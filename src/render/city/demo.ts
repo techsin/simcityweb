@@ -125,6 +125,7 @@ world.update(0);
 const t1 = performance.now();
 const view = new CityObjectsView(st, events, {
   scene: world.scene, camera: world.camera, renderer: world.renderer, canvas, quality,
+  getPlantLoad: () => 0.8,
 });
 const tView = performance.now() - t1;
 (window as any).__city = { view, st, world, events };

@@ -3,7 +3,8 @@
  * CityState.notify keeps the last 200 items, and the ticker rebuilt only when news.length changed (Sunside showed
  * Dec 2017 – Apr 2018 items until 2030). newsMark (src/ui/newsLog.ts) is the identity of the newest item; the ticker and
  * the Advisors & news panel refresh on it. Also A1: the ticker measures its view width on rebuilds / resizes, not on
- * every frame.
+ * every frame. FEEL-01 (T060) made the ticker show one item at a time (tests/game/newsTicker.test.ts): these tests keep
+ * their intent for it.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { CityState } from '../../src/sim/CityState';
@@ -131,18 +132,30 @@ describe('news ticker (final fixes N2)', () => {
     }
     const { t, track } = ticker(st);
     expect(track.textContent).toContain('Old news 199');
+    // (each item fits the 600 px view: it holds instead of scrolling)
+    track.scrollWidth = 300;
     for (let k = 200; k < 205; k++) {
       st.day = k * 30;
       st.notify(`Fresh news ${k}`, 'warning');
       expect(st.news.length).toBe(200);
       t.frame(1 / 60);
     }
-    const text = track.textContent;
-    expect(text).toContain('Fresh news 204');
-    expect(text).toContain('Fresh news 200');
-    expect(text).not.toContain('Old news 196');
-    // newest first
-    expect(text.indexOf('Fresh news 204')).toBeLessThan(text.indexOf('Fresh news 203'));
+    // the five new items show one after another, the first at once (FEEL-01: one item at a time)
+    expect(track.textContent).toContain('Fresh news 200');
+    const shown: string[] = [];
+    for (let f = 0; f < 60 * 40; f++) {
+      t.frame(1 / 60);
+      const now = track.textContent;
+      if (shown[shown.length - 1] !== now) shown.push(now);
+    }
+    // all five before any old item (warnings that waited give way to the newer ones; the rotation shows them next)
+    expect(shown.slice(0, 5).map((s) => /Fresh news (\d+)/.exec(s)?.[1]).sort()).toEqual(['200', '201', '202', '203', '204']);
+    expect(shown[0]).toContain('Fresh news 200');
+    // then the rotation, newest first: the newest 8 of the full log, never the items of when it filled up
+    const rotation = shown.slice(5);
+    expect(rotation[0]).toContain('Old news 199');
+    expect(rotation.join('|')).not.toContain('Old news 196');
+    expect(rotation.join('|')).toContain('Fresh news 204');
   });
 
   it('a log replaced by another city (a load) rebuilds the ticker', () => {
@@ -188,11 +201,15 @@ describe('news ticker layout reads (final fixes A1)', () => {
         st.notify(`News ${k}`, 'info');
         t.frame(1 / 60);
       }
-      expect(track.textContent).toContain('News 4');
-      // 30 frames + 5 rebuilds: not one layout read
+      // the first new item shows at once, the other four wait (FEEL-01)
+      expect(track.textContent).toContain('News 0');
+      expect(t.waiting).toBe(4);
+      // 30 frames + a swap: not one layout read
       expect(reads()).toBe(r0);
-      // the track scrolls with the reported widths (2400 px track in a 600 px view)
+      // past its entry and rest, the track scrolls with the reported widths (2400 px track in a 600 px view)
+      for (let k = 0; k < 120; k++) t.frame(1 / 60);
       expect(track.style.transform).toMatch(/^translateX\(-/);
+      expect(reads()).toBe(r0);
       // a resize report: measured again
       view.clientWidth = 900;
       observers[0].cb();
@@ -212,6 +229,10 @@ describe('news ticker layout reads (final fixes A1)', () => {
     expect(reads()).toBe(r0);
     st.notify('Second', 'info');
     t.frame(1 / 60);
+    // the swap to the new item: one read each
+    expect(track.textContent).toContain('Second');
+    expect(reads()).toBe(r0 + 2);
+    for (let k = 0; k < 60; k++) t.frame(1 / 60);
     expect(reads()).toBe(r0 + 2);
   });
 });

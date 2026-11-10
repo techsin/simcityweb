@@ -1,6 +1,7 @@
 /** The page's synchronous recovery slot. Never imported by SimCore. */
 import { JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, packBytes, unpackBytes, type RecoveryCity, type RecoveryMarker, type RecoveryJournal } from './recoveryCodec';
 import type { Journal } from '../worker/protocol';
+import { regionSaveAccess } from './db';
 
 const LS_MARKER = 'metropolis.recovery';
 const LS_DATA = 'metropolis.recovery.data';
@@ -14,6 +15,7 @@ function removeLs(key: string): void {
 
 /** Store already encoded bytes; local hosts have no journal yet. */
 export function storeRecoveryLs(marker: RecoveryMarker, payload: Uint8Array | null, journal?: Journal): boolean {
+  if (!regionSaveAccess(marker.regionId)) return false;
   let ls = false;
   if (payload && payload.length <= LS_BUDGET_BYTES - (journal ? JOURNAL_RESERVE_BYTES : 0)) {
     try { localStorage.setItem(LS_DATA, packBytes(payload)); ls = true; }
@@ -69,6 +71,7 @@ export function readLsJournal(): RecoveryJournal | null {
 
 export function discardRecoverySnapshot(city?: RecoveryCity): void {
   const m = peekRecoveryMarker();
+  if (!regionSaveAccess(m?.regionId ?? city?.regionId)) return;
   if (!city || !m || sameCity(m, city)) {
     removeLs(LS_MARKER);
     removeLs(LS_DATA);
@@ -77,6 +80,7 @@ export function discardRecoverySnapshot(city?: RecoveryCity): void {
 }
 
 export function clearRecoveryAfterSave(regionId: string, tileKey: string, savedAt: number): boolean {
+  if (!regionSaveAccess(regionId)) return false;
   const city = { regionId, tileKey }, m = peekRecoveryMarker();
   // IDB cleanup can take time; a snapshot already built against this save is still restorable.
   if (m && sameCity(m, city) && m.baseSavedAt === savedAt && m.at > savedAt) return false;

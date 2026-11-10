@@ -14,7 +14,7 @@ import {
 } from '../../src/sim/infra/emergency';
 import { CATALOG, getDef, rebuildCatalogIndex } from '../../src/sim/catalog';
 import type { BuildingDef } from '../../src/sim/catalogTypes';
-import { RoadGraph } from '../../src/sim/infra/graph';
+import { GraphBuildRun, GridGraph, RoadGraph } from '../../src/sim/infra/graph';
 import { MinHeap } from '../../src/sim/infra/heap';
 import { Search, Seeds, roadSearch } from '../../src/sim/infra/search';
 import { getFire, getTraffic, triggerDisaster } from '../../src/sim/systems/infra';
@@ -599,13 +599,18 @@ describe('emergency dispatch: coverage promise, search budget, road graph, persi
     getFire(sim)!.riskBoost = 0;
     const em = emergencyOf(sim)!;
     const tr = getTraffic(sim)!;
-    // every RoadGraph build from here on: whose graph, and inside the emergency system's daily work / a UI call?
+    // every RoadGraph build from here on: whose graph, and inside the emergency system's daily work / a UI call? (B2:
+    // traffic's own rebuild runs in pieces and publishes into its graph: GraphBuildRun.publish counts as its build)
     const builds: { traffic: boolean; inEm: boolean }[] = [];
     let inEm = false;
-    const ob = RoadGraph.prototype.build;
+    const ob = RoadGraph.prototype.build, op = GraphBuildRun.prototype.publish;
     RoadGraph.prototype.build = function (this: RoadGraph, s: CityState): void {
       builds.push({ traffic: this === tr.road, inEm });
       ob.call(this, s);
+    };
+    GraphBuildRun.prototype.publish = function (this: GraphBuildRun, road: RoadGraph, rail: GridGraph, subway: GridGraph): void {
+      builds.push({ traffic: road === tr.road, inEm });
+      op.call(this, road, rail, subway);
     };
     const od = em.dailyWork.bind(em);
     em.dailyWork = (s: Simulation) => { inEm = true; try { od(s); } finally { inEm = false; } };
@@ -639,6 +644,7 @@ describe('emergency dispatch: coverage promise, search budget, road graph, persi
       expect(builds.every((q) => q.traffic && !q.inEm), JSON.stringify(builds)).toBe(true);
     } finally {
       RoadGraph.prototype.build = ob;
+      GraphBuildRun.prototype.publish = op;
     }
   });
 
@@ -839,11 +845,17 @@ describe('emergency perf', () => {
     wrap('monthly');
     // road edits (a player / the bot laying roads) every 20 days: traffic rebuilds its graph in its own scheduled
     // step; the emergency system must never build one in its daily work (a 256² build is ~10 ms)
-    const ob = RoadGraph.prototype.build;
+    const ob = RoadGraph.prototype.build, op = GraphBuildRun.prototype.publish;
     RoadGraph.prototype.build = function (this: RoadGraph, s2: CityState): void {
       builds++;
       if (inEm) emBuilds++;
       ob.call(this, s2);
+    };
+    // (B2: traffic's piecewise rebuild publishes into its graphs)
+    GraphBuildRun.prototype.publish = function (this: GraphBuildRun, road: RoadGraph, rail: GridGraph, subway: GridGraph): void {
+      builds++;
+      if (inEm) emBuilds++;
+      op.call(this, road, rail, subway);
     };
     let edit = -1;
     for (let i = st.size * 2; i < st.cells && edit < 0; i++) if (st.network[i] === 0 && st.building[i] < 0 && st.network[i - 1] !== 0) edit = i;
@@ -862,6 +874,7 @@ describe('emergency perf', () => {
       }
     } finally {
       RoadGraph.prototype.build = ob;
+      GraphBuildRun.prototype.publish = op;
     }
     expect(builds).toBeGreaterThan(10); // traffic did rebuild after the edits
     expect(emBuilds).toBe(0);
@@ -881,12 +894,17 @@ describe('emergency perf', () => {
       tot += b - a - ov;
     }
     const max = dayNet.reduce((m, v) => Math.max(m, v), 0);
-    // estimated cost of every response-layer step (deterministic)
-    const pr = em as unknown as { respStep: number; respCost(): number };
-    const saved = pr.respStep;
+    // estimated cost of every response-layer step (deterministic). B2 (docs/dev/B2_DESIGN.md §8, §11.5): every piece kind
+    // of every state — the start's (stations, scan, siren times), each search's (start, settle chunks, slack), the land
+    // fill's rows, the building fill's chunks — at its cursor's start (full chunks: the largest)
+    const pr = em as unknown as { respStep: number; respSub: number; respCur: number; respBCur: number; respCost(): number };
+    const saved = [pr.respStep, pr.respSub, pr.respCur, pr.respBCur];
     let maxEst = 0;
-    for (let k = 0; k < 5; k++) { pr.respStep = k; maxEst = Math.max(maxEst, pr.respCost()); } // full chunks: the largest
-    pr.respStep = saved;
+    for (let k = -1; k < 5; k++) for (let sub = 0; sub < 4; sub++) {
+      pr.respStep = k; pr.respSub = sub; pr.respCur = 0; pr.respBCur = 0;
+      maxEst = Math.max(maxEst, pr.respCost());
+    }
+    [pr.respStep, pr.respSub, pr.respCur, pr.respBCur] = saved;
     const s = st.stats.emergency.year;
     const total = Object.values(s.count).reduce((a, b) => a + b, 0);
     const est = [...sch.estMs].find(([k]) => k === 'emergency.response')?.[1] ?? 0;
@@ -894,6 +912,9 @@ describe('emergency perf', () => {
     expect(total).toBeGreaterThan(20);
     expect(s.auto / Math.max(1, total)).toBeGreaterThan(0.5);
     expect(maxEst).toBeLessThanOrEqual(3);
+    // (B2: every response piece at about a quarter of INFRA_PIECE_COLD_MS; the largest is the station scan's snapshot,
+    // one copy of the building list, when the stations are dirty at a sequence start)
+    expect(maxEst).toBeLessThanOrEqual(0.5);
     if (process.env.PERF_STRICT) {
       // quiet machine: WP8-13 targets (dispatch + generation ~0.3 ms/day on this ~470 incidents/yr city, max day 3 ms)
       expect(tot / days).toBeLessThan(0.35);
