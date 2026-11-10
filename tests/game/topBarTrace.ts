@@ -328,6 +328,10 @@ export async function traceTopBar(): Promise<TraceStep[]> {
       for (const f of docListeners.get('pointerdown') ?? []) f({ target: q('.rci-grid') });
     });
     await step('pointerdown elsewhere closes it', () => { for (const f of docListeners.get('pointerdown') ?? []) f({ target: new FEl('div') }); });
+    await step('reopen, then pointerdown on the funds segment closes it', () => {
+      q('.rci-seg').fire('click', { target: q('.rci') });
+      for (const f of docListeners.get('pointerdown') ?? []) f({ target: el.children[1].children[0].lastElementChild });
+    });
     await step('closePopover while closed, then open, then closePopover', () => {
       calls.push(`closePopover → ${bar.closePopover()}`);
       q('.rci-seg').fire('click', { target: q('.rci') });

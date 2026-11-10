@@ -1747,6 +1747,28 @@
   ]
  },
  {
+  "name": "homes: reopen, then pointerdown on the funds segment closes it",
+  "calls": [
+   "sound(\"flyout\")",
+   "sound(\"flyoutClose\")"
+  ],
+  "writes": {
+   "0.1.2.3 div.rci-pop": "class×2",
+   "0.1.2.3.1.0.1 div.rci-bar": "title",
+   "0.1.2.3.1.1.1 div.rci-bar": "title",
+   "0.1.2.3.1.10.1 div.rci-bar": "title",
+   "0.1.2.3.1.11.1 div.rci-bar": "title",
+   "0.1.2.3.1.2.1 div.rci-bar": "title",
+   "0.1.2.3.1.3.1 div.rci-bar": "title",
+   "0.1.2.3.1.4.1 div.rci-bar": "title",
+   "0.1.2.3.1.5.1 div.rci-bar": "title",
+   "0.1.2.3.1.6.1 div.rci-bar": "title",
+   "0.1.2.3.1.7.1 div.rci-bar": "title",
+   "0.1.2.3.1.8.1 div.rci-bar": "title",
+   "0.1.2.3.1.9.1 div.rci-bar": "title"
+  }
+ },
+ {
   "name": "homes: closePopover while closed, then open, then closePopover",
   "calls": [
    "closePopover → false",
