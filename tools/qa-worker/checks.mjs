@@ -1,18 +1,81 @@
-import { assert, COMMANDS, PANELS, CHECKS, commandCheck, poll, recoveryMirrorSkip, withCleanup, validateSession } from './harness.mjs';
+import { assert, COMMANDS, PANELS, CHECKS, commandCheck, poll, sleep, Skipped, withCleanup, validateSession } from './harness.mjs';
 import { Driver } from './driver.mjs';
 import { pointer, savedMarkers } from './page.mjs';
-import { verifyReplica } from './w1.mjs';
+import { protectorRows, verifyReplica } from './w1.mjs';
 import { assertNoCrashOverlay, freeze } from './freeze.mjs';
+import { journalSkip, journalVerdict, readRecoveryIdb, recoveryMode, writeAtPagehide } from './journal.mjs';
+import { pageRenderer, realGpuProblem } from './launch.mjs';
 
 const W1 = 'local host: use --w1 to include the shared digest and protector gates';
 export const BROWSER_CHECKS = [
   'host ready', ...COMMANDS.map(commandCheck),
   'fixture / grow a neighbourhood', 'save / reload / Continue', 'freeze 15 s / resume 1 s',
   ...PANELS.map((id) => `Appendix A / ${id} panel`), 'recovery journal', CHECKS.ghosts, CHECKS.packets, CHECKS.recovery,
-  'protector at boot', 'protector after freeze', 'replica verify', 'protector at end', 'all command acknowledgements', 'no crash overlay',
+  ...protectorRows('at boot'), ...protectorRows('after freeze'), 'replica verify', ...protectorRows('at end'), 'all command acknowledgements', 'no crash overlay',
   'other command acknowledgements',
   CHECKS.onboarding, CHECKS['speed-keys'], CHECKS['info-demolish'], CHECKS.exit, CHECKS['data-view'], 'Appendix A / error overlay Pause',
 ];
+
+/**
+ * The protector gate at one point of the run ('at boot', 'at end', 'after freeze'): one row for the main isolate and
+ * one for the sim worker, from a single reading of both, so one isolate's failure never hides the other's state. On a
+ * host that runs the simulation in the main isolate, the sim worker row is SKIPPED with that reason.
+ */
+export async function protectorCheck(report, options, protectors, when) {
+  const rows = protectorRows(when);
+  if (!options.w1) { for (const name of rows) report.add(name, 'SKIPPED', W1); return; }
+  let reading;
+  for (const [i, isolate] of ['main', 'sim'].entries()) await report.check(rows[i], async () => {
+    const verdict = (await (reading ??= protectors.read(options.host === 'worker')))[isolate];
+    (report.details.protectors ??= {})[rows[i]] = verdict;
+    if (verdict.status === 'SKIPPED') return new Skipped(verdict.reason);
+    assert(verdict.status === 'PASS', verdict.reason);
+    return verdict.reason;
+  });
+}
+
+/** Cells for the recovery row's UI edit; the second is used only when a save or snapshot landed inside the first try. */
+const RECOVERY_CELLS = [[146, 154], [148, 154]];
+
+/**
+ * The recovery-mirror row (journal.mjs): a real UI edit, the App's own pagehide, then what W1.3 stored for this host
+ * and persistence mode, in localStorage and in IndexedDB. LocalSimHost and a store that does not persist have no
+ * journal by design: the row is SKIPPED with that reason. A packet host that should journal and does not is a FAIL.
+ */
+export async function recoveryMirror(d, report) {
+  const { page, options } = d;
+  if (options.host === 'local') { report.add(CHECKS.recovery, 'SKIPPED', journalSkip('local')); return; }
+  await report.check(CHECKS.recovery, async () => {
+    const mode = await page.evaluate(recoveryMode);
+    report.details.recoveryMode = mode;
+    const skip = journalSkip(options.host, mode);
+    if (skip) return new Skipped(skip);
+    let first;
+    for (const cell of RECOVERY_CELLS) {
+      const rows = await d.draw('zone', 'zone:1', cell), edit = { seq: rows[0].seq, op: 'zone' };
+      const ls = await page.evaluate(writeAtPagehide);
+      // The IndexedDB put was issued inside pagehide and completes with its own transaction: wait for a record at
+      // least as new as the localStorage copy, then read it with its base records in one transaction.
+      let idb = await page.evaluate(readRecoveryIdb, mode);
+      for (const end = performance.now() + options.ackTimeout; ls.journal && !idb.error && !(idb.journal?.at >= ls.journal.at) && performance.now() < end;) {
+        await sleep(100);
+        idb = await page.evaluate(readRecoveryIdb, mode);
+      }
+      if (!idb.error) idb = await page.evaluate(readRecoveryIdb, { ...mode, base: true });
+      report.details.recoveryJournal = ls.journal;
+      report.details.recoveryStores = { marker: ls.marker, idb };
+      try { return journalVerdict({ host: options.host, mode, edit, ls, idb }); }
+      catch (e) {
+        if (!e.rebased) throw e;
+        // One save or snapshot may land between an edit and its reads (a periodic snapshot comes at most every 30 s
+        // while the city is paused); a second disagreement cannot be that.
+        if (first) throw new Error(`${e.message}; a first edit read the same way (${first}), so no save or snapshot explains it`);
+        first = report.details.recoveryRebased = e.message;
+      }
+    }
+    throw new Error('no edit reached a verdict'); // not reached: the second edit returns or throws. Never a silent PASS
+  }, ['zone']);
+}
 
 export async function runChecks(page, options, report, protectors, signal) {
   const d = new Driver(page, options);
@@ -24,23 +87,21 @@ export async function runChecks(page, options, report, protectors, signal) {
     await d.ready();
     const state = await page.evaluate(() => {
       const s = window.__metropolis.city.scene;
-      const gl = s.ctx.world.renderer.getContext();
-      const ext = gl.getExtension('WEBGL_debug_renderer_info');
-      return { kind: s.host.kind, size: s.host.state.size, renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER) };
+      return { kind: s.host.kind, size: s.host.state.size };
     });
+    Object.assign(state, await page.evaluate(pageRenderer));
     report.details.graphics = state;
     assert(state.size === 256, `expected 256 cells, got ${state.size}`);
-    if (!options.swiftshader) assert(!/swiftshader|llvmpipe|software|Microsoft Basic Render Driver|\bWARP\b/i.test(state.renderer), `real-GPU run got software renderer: ${state.renderer}`);
-    return `__ready, ${state.kind}, 256 cells, real actions/views; ${state.renderer}`;
+    // --gpu (the default): only an unmasked renderer that is not a software one stands for the real GPU
+    const problem = options.swiftshader ? null : realGpuProblem(state);
+    assert(!problem, problem);
+    return `__ready, ${state.kind}, 256 cells, real actions/views; ${options.swiftshader ? 'SwiftShader requested' : 'real GPU'}: ${state.renderer}`;
   });
   if (!report.passed('host ready')) {
     return;
   }
-  const protector = async (name) => {
-    if (!options.w1) report.add(name, 'SKIPPED', W1);
-    else await report.check(name, () => protectors.check(options.host === 'worker'));
-  };
-  await protector('protector at boot');
+  const protector = (when) => protectorCheck(report, options, protectors, when);
+  await protector('at boot');
   await report.check(CHECKS.onboarding, async () => {
     const rows = await d.onboardingPlay();
     assert(rows.some((r) => r.args[0] === 1 && r.args[1] === 'onboarding'), 'Onboarding Play lost its speed/source');
@@ -232,28 +293,7 @@ export async function runChecks(page, options, report, protectors, signal) {
     return 'QueryTool → InfoPanel → idempotent setHistoric acknowledged';
   }, ['fixture / grow a neighbourhood']);
 
-  let journalMirror = null;
-  // A failed read leaves the decision to the check itself, which then reports the page's actual error.
-  if (options.host === 'worker') journalMirror = await page.evaluate(() => window.__metropolis.city.scene.host.mirror != null).catch(() => null);
-  const recoverySkip = recoveryMirrorSkip(options.host, journalMirror);
-  if (recoverySkip) report.add(CHECKS.recovery, 'SKIPPED', recoverySkip);
-  else await report.check(CHECKS.recovery, async () => {
-    const rows = await d.draw('zone', 'zone:1', [146, 154]);
-    const journal = await page.evaluate(() => {
-      const h = window.__metropolis.city.scene.host;
-      if (!h.recovery) throw new Error('packet host RecoveryMirror is unavailable');
-      // The real App lifecycle handler writes the encoded mirror; no city serialization or command bypass.
-      try {
-        window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
-        return JSON.parse(localStorage.getItem('metropolis.recovery.journal'));
-      } finally { window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })); }
-    });
-    assert(journal?.v === 1 && journal.ops.some((op) => op.seq === rows[0].seq && op.op === 'zone'), 'pagehide did not journal the UI edit');
-    assert(journal.ops.every((op, i) => op.seq > journal.fromCmd && (!i || op.seq > journal.ops[i - 1].seq)), 'journal suffix has invalid watermarks/order');
-    assert(!journal.ops.some((op) => ['setCamera', 'setSpeed', 'setSettings', 'triggerDisaster', 'dispatch'].includes(op.op)), 'journal retained an excluded command');
-    report.details.recoveryJournal = journal;
-    return `App pagehide wrote ${journal.ops.length} whitelisted edits bound to ${journal.base.kind}; UI zone seq ${rows[0].seq} retained`;
-  }, ['zone']);
+  await recoveryMirror(d, report);
 
   await report.check('setCamera / Ctrl+S save', async () => {
     await d.clean(); await d.speed(0);
@@ -288,7 +328,8 @@ export async function runChecks(page, options, report, protectors, signal) {
       window.__qaWorker.dispose();
     });
     await d.archive();
-    if (protectors) await protectors.beforeReload(options.host === 'worker');
+    // The reload replaces the page's isolate and ends this city's worker: keep what either shows for the later rows.
+    if (protectors) await protectors.checkpoint('before reload', options.host === 'worker');
     await page.reload({ waitUntil: 'load', timeout: options.bootTimeout });
     await page.waitForFunction(() => window.__ready === true, null, { timeout: options.bootTimeout });
     await page.evaluate(() => { window.__ready = false; });
@@ -311,6 +352,8 @@ export async function runChecks(page, options, report, protectors, signal) {
   }, ['setCamera / Ctrl+S save']);
 
   await report.check(CHECKS.exit, async () => {
+    // Exit ends this city's worker, and the city entered next runs on a new one: its protector is read while it lives.
+    if (protectors && options.host === 'worker') await protectors.checkpoint('before exit to region', true, ['sim']);
     await d.clean(); await d.speed(0); await page.keyboard.press('Escape');
     await page.evaluate(() => { window.__ready = false; });
     const rows = await d.command('setSpeed', () => page.locator('.pause-menu button').filter({ hasText: 'Save & exit to region' }).click());
@@ -416,8 +459,8 @@ export async function runChecks(page, options, report, protectors, signal) {
     return 'Data toolbar → Power view → None; overlay state and selected view verified';
   });
   report.add('Appendix A / error overlay Pause', 'SKIPPED', 'healthy production fixture has no error card; injecting an app error would violate the zero-console-errors gate; exercise this path in a separate error fixture');
-  report.add('recovery journal', 'SKIPPED', 'close-page worker journal restore is the W1.3/T039 browser gate; current loopback mirror write is checked separately');
-  await protector('protector at end');
+  report.add('recovery journal', 'SKIPPED', 'the close-page restore (the tab is closed mid-edit, the title offers the journal, the next boot replays it) is W1.3\'s own scenario, tools/qa-journal.mjs; what pagehide stores for it is the recovery mirror row');
+  await protector('at end');
   await report.check('all command acknowledgements', async () => {
     await drain(page, options.ackTimeout);
     const current = await page.evaluate(() => window.__qaWorker.commands);
@@ -446,8 +489,9 @@ export async function runChecks(page, options, report, protectors, signal) {
   else report.add('other command acknowledgements', 'SKIPPED', 'separate isolation check used only by --break-ack; full runs use all command acknowledgements');
   // Freeze is the last behavioural check; a failed thaw cannot cascade into unrelated UI gates.
   await report.check(CHECKS.freeze, () => freeze(d, report, signal));
-  if (options.w1 && !report.passed(CHECKS.freeze)) report.add('protector after freeze', 'SKIPPED', 'freeze did not pass or was not selected');
-  else await protector('protector after freeze');
+  if (options.w1 && !report.passed(CHECKS.freeze)) {
+    for (const name of protectorRows('after freeze')) report.add(name, 'SKIPPED', 'freeze did not pass or was not selected');
+  } else await protector('after freeze');
   // Preserve diagnostics even when an acknowledgement gate failed.
   report.details.commands = [...d.sessions.flat(), ...await page.evaluate(() => window.__qaWorker?.commands ?? [])];
   report.details.sessions = d.archives;

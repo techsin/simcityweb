@@ -3,8 +3,16 @@
  * W1.2's browser acceptance (docs/WORKER_DESIGN.md §5.4 and §6 row W1.2): a real simulation worker in Playwright's
  * Chromium, against the production build by default. One browser and one server, both stopped on any exit.
  *
- *   node tools/qa-worker.mjs [--dev] [--port 5535] [--out <dir>] [--size 256] [--quality low] [--freeze-ms 15000]
- *                            [--soak-min 0] [--simwasm <flag>]
+ *   node tools/qa-worker.mjs [--dev] [--gpu] [--port 5535] [--out <dir>] [--size 256] [--quality low]
+ *                            [--freeze-ms 15000] [--soak-min 0] [--simwasm <flag>] [--help]
+ *   node tools/qa-worker.mjs --host worker|loopback|local [...]
+ *
+ * --host hands the whole run to the host-generic acceptance harness (tools/qa-worker/cli.mjs, T028: WORKER_DESIGN §5.4
+ * on a local, loopback or worker host, with --gpu, --port and its own --help); it reads the same arguments. Without
+ * --host, the steps below run: they are W1.2's own and need the real worker.
+ * --gpu launches Chromium on the machine's real GPU (--enable-gpu --ignore-gpu-blocklist --use-angle=default) and
+ * checks after boot that WEBGL_debug_renderer_info names a GPU that is not SwiftShader or another software renderer;
+ * without it the run is on SwiftShader, as the cloud ran it. The build served on --port is of the tree this file is in.
  *
  * Chromium runs with --js-flags=--allow-natives-syntax and every page with &simdev=1, so the worker isolate makes its
  * protector probe first thing (src/worker/protectorProbe.ts) and host.debugVerify() reads it. --simwasm wasm
@@ -45,7 +53,7 @@
  *   console   no console errors outside the steps that crash on purpose
  * Measured, not gated: boot time, action latency (post to ack applied, p50 / p95 / p99), and the page's own protector
  * probe (lodBuilder's transfer list, one Float32Array view per buffer, invalidates it on a V8 that invalidates on any
- * detach; Chromium 153's keeps it). Not covered: W1.3's journal check. WebGL runs on
+ * detach; Chromium 153's keeps it). Not covered: W1.3's journal check. Without --gpu WebGL runs on
  * SwiftShader: function, not GPU timings.
  */
 import { createRequire } from 'node:module';
@@ -54,13 +62,43 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { controlChecks } from './qa-worker-control.mjs';
+import { GPU as GPU_FLAGS, pageRenderer, realGpuProblem } from './qa-worker/launch.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(path.join(root, 'package.json'));
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);
 const opt = (name, dflt) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : dflt; };
+/** --host: the acceptance harness takes the run, with these same arguments (see the header) */
+const HARNESS = flag('host');
+/** this file's own options, and whether each takes a value. One it does not know stops the run: a mistyped --gpu must
+ *  not measure SwiftShader unnoticed. */
+const OPTIONS = { dev: false, gpu: false, help: false, port: true, out: true, size: true, quality: true, 'freeze-ms': true, 'soak-min': true, simwasm: true };
+function argumentError() {
+  for (let i = 0; i < args.length; i++) {
+    const name = args[i].startsWith('--') ? args[i].slice(2) : '';
+    if (!Object.hasOwn(OPTIONS, name)) return `unknown option ${args[i]}`;
+    if (OPTIONS[name] && (args[++i] === undefined || args[i].startsWith('--'))) return `--${name} needs a value`;
+  }
+  return null;
+}
+const USAGE = `W1.2's browser QA of the real simulation worker (crash, recover, watchdog, fallback, region pre-spawn)
+
+  node tools/qa-worker.mjs [--dev] [--gpu] [--port 5535] [--out <dir>] [--size 256] [--quality low]
+                           [--freeze-ms 15000] [--soak-min 0] [--simwasm <flag>]
+
+  --gpu       the real GPU (--enable-gpu --ignore-gpu-blocklist --use-angle=default); the run stops unless
+              WEBGL_debug_renderer_info names a GPU that is not SwiftShader. Default: SwiftShader, at quality low
+  --port N    serve this tree's build (or its dev server, with --dev) on 127.0.0.1:N (default 5535)
+  --out DIR   log.txt and screenshots (default: the system temp folder's qa-worker)
+
+  node tools/qa-worker.mjs --host worker|loopback|local [...]
+              the host-generic acceptance harness instead (WORKER_DESIGN §5.4), with the same arguments:
+              node tools/qa-worker/cli.mjs --help`;
 const DEV = flag('dev');
+/** the real GPU and a check of the renderer, or SwiftShader as the cloud ran this script */
+const GPU = flag('gpu');
+const RENDERER = GPU ? 'real GPU' : 'SwiftShader';
 const PORT = Number(opt('port', 5535));
 const OUT = path.resolve(opt('out', path.join(os.tmpdir(), 'qa-worker')));
 const SIZE = opt('size', '256');
@@ -73,9 +111,8 @@ const SOAK_MIN = Number(opt('soak-min', 0));
 const QUALITY = opt('quality', 'low');
 const READY_MS = 300000;
 
-fs.mkdirSync(OUT, { recursive: true });
+// Nothing runs before the end of the file: with --host these steps never start (no folder, log, handler or timer).
 const logFile = path.join(OUT, 'log.txt');
-fs.writeFileSync(logFile, '');
 const log = (...a) => {
   const s = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
   console.log(s); fs.appendFileSync(logFile, s + '\n');
@@ -88,9 +125,6 @@ const cleanup = async () => {
   try { await browser?.close(); } catch { /* closed */ }
   try { await server?.close?.(); } catch { /* closed */ }
 };
-process.on('SIGINT', async () => { await cleanup(); process.exit(130); });
-process.on('SIGTERM', async () => { await cleanup(); process.exit(143); });
-const timer = setTimeout(async () => { log('QA TIMEOUT'); await cleanup(); process.exit(124); }, Number(process.env.QA_TIMEOUT_MS ?? (90 + SOAK_MIN) * 60000));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function shot(page, name) {
@@ -432,8 +466,8 @@ async function main() {
   // natives syntax: the protector probes (the worker's src/worker/protectorProbe.ts, the page's below); V8 flags reach
   // every isolate of the renderer, the worker's included
   // --trace-protector-invalidation: V8 records each protector it invalidates (the control's Chrome trace reads them)
-  browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--allow-natives-syntax --trace-protector-invalidation'] });
-  log('browser', browser.version());
+  browser = await chromium.launch({ args: [...(GPU ? GPU_FLAGS : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader']), '--js-flags=--allow-natives-syntax --trace-protector-invalidation'] });
+  log('browser', browser.version(), `(${RENDERER} requested)`);
   control = await protectorControl().catch((e) => ({ observable: false, error: String(e).slice(0, 200) }));
   // T061 F3: a control that is not observable fails the run (the worker's protector steps would prove nothing)
   const [technique, observable] = controlChecks(control);
@@ -503,6 +537,14 @@ async function main() {
   const bootMs = await enterCity(page, `${base}/?quickstart=1&size=${SIZE}&seed=7&simworker=1${Q}`, 'quickstart');
   let info = await hostInfo(page);
   check('boot: a worker host', info?.kind === 'worker' && workers.some((u) => /simWorker/.test(u)), JSON.stringify({ info, workers: workers.length, bootMs }));
+  // --gpu: the city's own WebGL context names the GPU. On a software renderer the rest would not be a real-GPU run
+  const graphics = await page.evaluate(pageRenderer).catch((e) => ({ renderer: null, unmasked: false, error: String(e).slice(0, 200) }));
+  log('renderer', graphics);
+  if (GPU) {
+    const problem = realGpuProblem(graphics);
+    check('gpu: WEBGL_debug_renderer_info names a real GPU, not SwiftShader or another software renderer', !problem, problem ?? graphics.renderer);
+    if (problem) throw new Error(`--gpu: ${problem}`);
+  }
   check('boot: a new city starts paused (the scene\'s rule, applied to the booted host)', info?.speed === 0, `speed ${info?.speed}`);
   const booted = await protector(page, 'after boot');
   if (SIMWASM) check('boot: the kernels on wasm in the worker, its memory never grown (WASM_PLAN §7.8)', booted.wasm?.state === 'ready' && booted.wasm.blur === true && booted.wasm.grows === 0, JSON.stringify(booted.wasm));
@@ -532,7 +574,7 @@ async function main() {
     const q = (p) => out[Math.min(out.length - 1, Math.floor(p * out.length))];
     return { n: out.length, p50: q(0.5), p95: q(0.95), p99: q(0.99), max: out.at(-1) };
   });
-  log('latency (post to ack applied, ms, SwiftShader, not gated)', lat);
+  log(`latency (post to ack applied, ms, ${RENDERER}, not gated)`, lat);
 
   // ---- verify on a paused city
   await setSpeed(page, 1); await page.keyboard.press('Space');
@@ -612,7 +654,7 @@ async function main() {
   log('long tasks so far', await page.evaluate(() => window.__qaLong));
   const freezeInfo = JSON.stringify({ frozenAt, ...resumed, crashDialog: crashedAfterFreeze });
   check('freeze: frozen 15 s, then no crash path and the days resume', !crashedAfterFreeze && !resumed.disposed && resumed.d1 > resumed.d0, freezeInfo);
-  log(resumed.ms <= 1000 ? 'PASS' : 'NOTE', 'freeze: the first day within 1 s of resume (wall time, SwiftShader; not gated here)', freezeInfo);
+  log(resumed.ms <= 1000 ? 'PASS' : 'NOTE', `freeze: the first day within 1 s of resume (wall time, ${RENDERER}; not gated here)`, freezeInfo);
   await protector(page, 'after the freeze');
   await shot(page, '05-after-freeze');
   if (SOAK_MIN > 0) {
@@ -763,15 +805,28 @@ async function main() {
   await pctx.close();
 }
 
-try {
-  await main();
-} catch (e) {
-  log('QA FAILED', String(e?.stack ?? e));
-  results.push({ step: 'harness', ok: false });
-} finally {
-  clearTimeout(timer);
-  await cleanup();
-  const failed = results.filter((r) => !r.ok);
-  log(`${results.length - failed.length} of ${results.length} passed${failed.length ? `; failed: ${failed.map((r) => r.step).join(', ')}` : ''}`);
-  process.exitCode = failed.length ? 1 : 0;
+// ---- the run
+if (HARNESS) await import('./qa-worker/cli.mjs'); // it reads process.argv and sets the exit code itself
+else if (flag('help')) console.log(USAGE);
+else if (argumentError()) {
+  console.error(`FAIL arguments: ${argumentError()}; use --help`);
+  process.exitCode = 2;
+} else {
+  fs.mkdirSync(OUT, { recursive: true });
+  fs.writeFileSync(logFile, '');
+  process.on('SIGINT', async () => { await cleanup(); process.exit(130); });
+  process.on('SIGTERM', async () => { await cleanup(); process.exit(143); });
+  const timer = setTimeout(async () => { log('QA TIMEOUT'); await cleanup(); process.exit(124); }, Number(process.env.QA_TIMEOUT_MS ?? (90 + SOAK_MIN) * 60000));
+  try {
+    await main();
+  } catch (e) {
+    log('QA FAILED', String(e?.stack ?? e));
+    results.push({ step: 'harness', ok: false });
+  } finally {
+    clearTimeout(timer);
+    await cleanup();
+    const failed = results.filter((r) => !r.ok);
+    log(`${results.length - failed.length} of ${results.length} passed${failed.length ? `; failed: ${failed.map((r) => r.step).join(', ')}` : ''}`);
+    process.exitCode = failed.length ? 1 : 0;
+  }
 }

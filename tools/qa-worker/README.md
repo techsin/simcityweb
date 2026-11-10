@@ -1,53 +1,65 @@
-# Worker acceptance harness (T028r)
+# Worker acceptance harness (T028, T028b)
 
-Review round 3 at **f22933f**, branch `local/T028-qa-worker`. Implements WORKER_DESIGN §5.4 and R16 against
-production assets. **Loopback runs now and is the default.** `--host` selects local, loopback or worker;
-the URL uses `simworker=0`, `simworker=loopback` or `simworker=1` respectively. A requested host must actually
-boot; local fallback cannot pass a loopback/worker gate. No files under `src/` are modified.
+Implements WORKER_DESIGN §5.4 and R16 against production assets. **Loopback is the default.** `--host` selects
+local, loopback or worker; the URL uses `simworker=0`, `simworker=loopback` or `simworker=1` respectively. A requested
+host must actually boot; local fallback cannot pass a loopback/worker gate. No files under `src/` are modified.
 
-**Launcher: `tools/qa-worker/cli.mjs`** (moved there in the cloud carry-over, Nov 10). `tools/qa-worker.mjs` is a
-different tool: T034's W1.2 browser QA (boot, tools, crash/recover/watchdog/fallback, region pre-spawn on
-`?simworker=1`), which T034's and T061's gates use. Both run; consolidating them is a backlog item after W1.4.
+**Launcher: `tools/qa-worker/cli.mjs`.** `tools/qa-worker.mjs` is a different tool: T034's W1.2 browser QA (boot,
+tools, crash/recover/watchdog/fallback, region pre-spawn on `?simworker=1`), which T034's and T061's gates use. Since
+T028b, `node tools/qa-worker.mjs --host worker|loopback|local ...` starts **this** harness with the same arguments
+(the command line WORKER_DESIGN §5.4 and the W1.3 QA list name); without `--host` that file runs its own W1.2 steps,
+on SwiftShader unless `--gpu` is given. Consolidating the two is a backlog item after W1.4.
+
+T028b (after W1.3 and T059) changed three things here:
+- **Protectors: one row per isolate**, `protector <when> / main isolate` and `protector <when> / sim worker`, at boot,
+  at end and after freeze. Neither isolate's failure ends the other's read.
+- **`recovery mirror` asserts what W1.3 stores** for the host's persistence mode, in localStorage and in IndexedDB.
+  It no longer skips a worker host that has no journal mirror while its store persists: that is a FAIL.
+- **`--gpu`** (the default, now with a name) and **`--port N`**.
 
 ## Desktop commands
 
-Run sequentially from this worktree. Each browser command creates one disposable Chromium context, builds
-production assets in an owned temporary directory and serves them on its own Vite preview port.
+Run sequentially from the worktree. Each browser command creates one disposable Chromium context, builds the tree
+this harness lives in into an owned temporary directory, and serves it with its own Vite preview on 127.0.0.1, on
+`--port N` or on a free port.
 
 ```powershell
-$root = 'C:/Users/techsin/Desktop/projects/simcityweb-T028'
-$scratch = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T028r/scratch'
-Set-Location $root
-node "$root/tools/qa-worker/cli.mjs" --help
-node "$root/tools/qa-worker/cli.mjs" --host loopback --out "$scratch/loopback.json"
-node "$root/tools/qa-worker/cli.mjs" --host local --out "$scratch/local.json"
-node "$root/tools/qa-worker/cli.mjs" --host worker --out "$scratch/worker.json"
+# from the root of the tree to gate: the harness builds and serves the tree it lives in
+$scratch = "$env:TEMP/qa-worker"; New-Item -ItemType Directory -Force $scratch | Out-Null
+node tools/qa-worker/cli.mjs --help
+node tools/qa-worker/cli.mjs --host worker --gpu --port 5692 --out "$scratch/worker.json"
+node tools/qa-worker/cli.mjs --host loopback --gpu --port 5692 --out "$scratch/loopback.json"
+node tools/qa-worker/cli.mjs --host local --w1 --gpu --port 5692 --out "$scratch/local-w1.json"
+node tools/qa-worker/cli.mjs --host local --gpu --port 5692 --out "$scratch/local.json"
+# the same harness through the name the design uses:
+node tools/qa-worker.mjs --host worker --gpu --port 5692 --out "$scratch/worker.json"
 ```
 
 On a tree without `src/worker/WorkerSimHost.ts`, worker prints **`worker host not in this build; requires T034 /
-W1.2 WorkerSimHost`** for every check and exits **3**, before importing Vite/Playwright or opening a browser.
-T034 (W1.2) is in dev since 5c40d77, so on dev the same command runs the real gate; its real-GPU run is a Desktop
-QA item. If its App selection is missing or falls back to local, it fails.
+W1.2 WorkerSimHost`** for every check and exits **3**, before importing Vite/Playwright or opening a browser. If the
+App's host selection is missing or falls back to local, the run fails.
 
 Loopback automatically enables the shared `src/worker/queries.ts` exact digest and the main-isolate protector.
 Worker adds the protector in the dedicated worker named `sim`. `--w1` remains an optional local-mode switch
-for these checks; `--digest-module PATH` can override the shared export if its owning lane moves it.
+for these checks (plain `--host local` skips them, with that reason); `--digest-module PATH` can override the shared
+export if its owning lane moves it.
 
 Focused diagnostics and controls:
 
 ```powershell
-node "$root/tools/qa-worker/cli.mjs" --host loopback --only ghosts --out "$scratch/ghosts.json"
-node "$root/tools/qa-worker/cli.mjs" --host loopback --only freeze --out "$scratch/freeze.json"
-node "$root/tools/qa-worker/cli.mjs" --host loopback --only freeze --headed --out "$scratch/freeze-headed.json"
-node "$root/tools/qa-worker/cli.mjs" --host loopback --break-ack zone --out "$scratch/broken-zone.json"
-node "$root/tools/qa-worker/cli.mjs" --host local --break-ack zone --out "$scratch/broken-local-zone.json"
-node "$root/tools/qa-worker/cli.mjs" --host loopback --drop-ack dispatch --out "$scratch/probe-control.json"
-node "$root/tools/qa-worker/cli.mjs" --host local --w1 --out "$scratch/local-verify.json"
+node tools/qa-worker/cli.mjs --host worker --only recovery --out "$scratch/recovery.json"
+node tools/qa-worker/cli.mjs --host loopback --only ghosts --out "$scratch/ghosts.json"
+node tools/qa-worker/cli.mjs --host loopback --only freeze --out "$scratch/freeze.json"
+node tools/qa-worker/cli.mjs --host loopback --only freeze --headed --out "$scratch/freeze-headed.json"
+node tools/qa-worker/cli.mjs --host loopback --break-ack zone --out "$scratch/broken-zone.json"
+node tools/qa-worker/cli.mjs --host local --break-ack zone --out "$scratch/broken-local-zone.json"
+node tools/qa-worker/cli.mjs --host loopback --drop-ack dispatch --out "$scratch/probe-control.json"
 ```
 
 The positive full run must exit **0** with every applicable check PASS. `--only` runs a named check plus
-prerequisites and cannot establish full acceptance. Other aliases include command names, `save`, `exit`,
-`onboarding`, `speed-keys`, `info-demolish`, `data-view`, `packets`, `recovery` and `panel:NAME` (see `--help`).
+prerequisites and cannot establish full acceptance (the protector rows are not selectable: they read SKIPPED, "not
+selected", in such a run). Other aliases include command names, `save`, `exit`, `onboarding`, `speed-keys`,
+`info-demolish`, `data-view`, `packets`, `recovery` and `panel:NAME` (see `--help`).
 
 `--break-ack OP` transforms the **actual host** in the temporary build. Local mode replaces its resolved
 `done` initializer; packet modes withhold the selected command's ticket resolution in `PacketSimHost.ack`.
@@ -61,8 +73,14 @@ fault across city sessions. Predictions and unposted refusals cannot consume it.
 
 ## GPU, lifecycle and cleanup
 
-Default Chromium requests the real GPU and rejects SwiftShader, llvmpipe, WARP and Microsoft Basic Render Driver.
-`--executable PATH` selects Chromium; `--headed` shows it. For the cloud only:
+`--gpu` is the default: Chromium is launched with `--enable-gpu --ignore-gpu-blocklist --use-angle=default`
+(`launch.mjs`, shared with `tools/qa-worker.mjs --gpu`; recorded in JSON `details.gpuFlags`), and `host ready` reads
+the city's own WebGL context. It fails unless `WEBGL_debug_renderer_info` is available and names a renderer that is
+not SwiftShader, llvmpipe, WARP or Microsoft Basic Render Driver; a masked renderer string names no GPU and fails
+too. `--gpu` and `--swiftshader` together are refused (exit 2). `--port N` serves the build on 127.0.0.1:N; a port
+that is taken fails `production build` before the build starts (never a neighbouring port, and no browser opens).
+Without it the system picks a free port. The URL is in JSON `details.url`. `--executable PATH` selects Chromium;
+`--headed` shows it. For the cloud only:
 
 ```sh
 PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tools/qa-worker/cli.mjs --host loopback --swiftshader --out /tmp/qa-worker-loopback.json
@@ -81,7 +99,20 @@ above. These flags keep `%OptimizeFunctionOnNextCall` on TurboFan. The probe req
 `%ActiveTierIsTurbofan` after synchronous pre-import warm-up; numeric optimization status is diagnostic only.
 It never accepts a Maglev status or a changed optimization tier as an intact baseline. Unsupported intrinsics
 or failure to establish TurboFan fail closed. One browser runs at a time. No normal browser profile is used.
-Before reload, the gate retains any invalidation from the departing isolate so a fresh global cannot erase it.
+
+**Two protector rows at each point** (at boot, at end, after freeze), from one reading of both isolates
+(`w1.mjs` `read`, `checks.mjs` `protectorCheck`; JSON `details.protectors` holds each row's probe):
+- `protector <when> / main isolate`: the page's probe, installed before application code.
+- `protector <when> / sim worker`: the probe of the one dedicated worker named `sim`, installed while the worker is
+  paused at birth. On `--host worker` exactly one such worker must exist. On loopback and local the simulation runs in
+  the main isolate, so this row is SKIPPED with that reason (plain `--host local` without `--w1` skips both rows).
+- Neither isolate's failure, nor a read that fails, ends the other's read: each row has its own verdict.
+- Isolates are replaced during the run: the reload gives the page a fresh isolate, and each city session a fresh
+  worker (three workers in a worker run: the first city, the city after Continue, the city re-entered from the
+  region). Before the reload (both isolates) and before exit to region (the city's worker) the gate reads what is
+  about to go away and keeps any failure for that isolate's later rows, so a fresh isolate cannot erase it. Such a row
+  FAILs and also says what the current isolate reads. A worker that could not be probed at birth fails the sim rows
+  on every host, since it cannot be ruled out as the sim worker.
 
 Freeze runs last. Playwright 1.56.1 keeps pages visible through focus emulation on its owning CDP session; a separate
 session cannot release that handle. `lifecycle.mjs` uses the installed in-process bridge to disable focus emulation
@@ -124,7 +155,8 @@ No test calls tool methods, mutates city state, patches a picker or uses host co
 | Replies/verify | Query replies ride in observed packets with cmd <= applied; cause clears outside replay; **0** unexpected resyncs; numeric authoritative digest equals replica digest while paused/drained |
 | Save/Continue | Ctrl+S's own camera ticket precedes host.save(manual)'s reply; save cmd includes camera; day/funds/next id/layer hashes/policies/buildings/camera preserved on reload/Continue; sim days advance afterwards |
 | Teardown | PauseMenu save/exit aborts the city with reason dispose; **0** pending edits and ghost meshes; return through region city list reaches fresh playable views |
-| RecoveryMirror | App pagehide writes a base-bound ordered whitelisted journal containing a real UI edit; excluded commands absent. SKIPPED on local (snapshots) and on a worker host without a journal mirror (W1.2: journal off, `SnapshotMirror`; W1.3: off where the store does not persist); worker close-page replay remains W1.3/T039 |
+| RecoveryMirror | After a real UI edit, the App's own pagehide leaves an ordered whitelisted journal with that edit and no excluded command in **localStorage** (with a marker that describes it) and in **IndexedDB** `recovery/<region>:<tile>#journal`; both copies are bound to the same base, and IndexedDB holds that base: the save (`cities/<key>.savedAt`), and the snapshot record when the journal extends one. The row's text names the mode: `loopback`, `worker, persistence 'worker-idb'` (the worker wrote the base and replays the journal) or `worker, persistence 'main'` (main stored it and passes the journal at init). SKIPPED only where there is no journal by design: local (snapshots), and a store that does not persist. A packet host whose store persists and that has no journal mirror is a **FAIL** |
+| Protectors | **6** rows: main isolate and sim worker, each at boot, at end and after freeze (see above) |
 | Consumers | Onboarding Play, keys 1/2/3, Space, PauseMenu resume, InfoPanel Historic/Demolish; graphs, stats, advisors, data views, demographics, emergencies, rewards; Power view then None |
 | Freeze/errors | >= **15000 ms** frozen, <= **1000 ms** visible resume, **0** frozen frames, **0** overlays/console errors/page exceptions/crashes |
 
@@ -138,15 +170,46 @@ It records predictions separately from acknowledgements, observes real pending m
 replayed causes, save replies and gesture settlement. It attaches after real views replace loading views;
 subscriptions end with `ctx.signal`, patches restore on abort/dispose, and archives hold plain diagnostics only.
 
+### The recovery mirror row (`journal.mjs`)
+
+What W1.3 stores when the page goes away (WORKER_DESIGN §4.3, docs/dev/reports/cloud-W1.3.md), and what the row reads:
+
+| Host, mode | Journal at pagehide | The base it is bound to | Row |
+| --- | --- | --- | --- |
+| local | none: LocalSimHost recovers from snapshots | | SKIPPED |
+| loopback, store persists | the page's mirror: localStorage + IndexedDB `#journal` | the loopback core's save and snapshot records | runs |
+| worker, `'worker-idb'` | the same page mirror; the worker's boot replay reads the IndexedDB record | the worker's own save and snapshot records, on its connection to the same database | runs |
+| worker, `'main'`, store persists (the worker's IndexedDB fell back to memory) | the same page mirror; main reads the record and passes it in `init.journal` | main stores the worker's save and snapshot records | runs |
+| any packet host, store in memory | none: the App writes no recovery data, and the worker host has no mirror (W1.3 decision 6) | | SKIPPED, after checking the mode is consistent |
+
+The row reads the mode from the page (`host.kind`, `WorkerSimHost.persistence`, `App.persistent`, `host.recovery`),
+makes a real zone stroke, dispatches the App's own `pagehide` (then `pageshow`), and reads localStorage and, through a
+connection of its own, IndexedDB. A save or snapshot that lands between the stroke and the reads moves the journal's
+base, so the copies disagree once, legitimately; the row then repeats the stroke on the next cell, once (JSON
+`details.recoveryRebased`). A second disagreement fails. The mode, the journal and the stores read are in JSON
+`details.recoveryMode`, `recoveryJournal` and `recoveryStores`.
+
+The close-page restore itself (kill the tab mid-edit, the title offers the journal, the next boot replays it) is
+W1.3's own scenario, `tools/qa-journal.mjs`; the `recovery journal` row stays SKIPPED and says so.
+
 ## Non-browser checks and limits
 
 ```powershell
-node "$root/tools/qa-worker/selftest.mjs"
-node --allow-natives-syntax --no-maglev --no-optimize-on-next-call-optimizes-to-maglev "$root/tools/qa-worker/protector-selftest.mjs"
-node --no-maglev --no-optimize-on-next-call-optimizes-to-maglev "$root/tools/qa-worker/protector-selftest.mjs"
-node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tools/qa-worker/fixture.test.ts --maxWorkers=1
+node tools/qa-worker/selftest.mjs
+node --allow-natives-syntax --no-maglev --no-optimize-on-next-call-optimizes-to-maglev tools/qa-worker/protector-selftest.mjs
+node --no-maglev --no-optimize-on-next-call-optimizes-to-maglev tools/qa-worker/protector-selftest.mjs
+npx vitest run tests/worker/qaWorkerJournal.test.ts tests/worker/qaWorkerSelftest.test.ts tests/worker/qaWorkerControl.test.ts tools/qa-worker/fixture.test.ts --maxWorkers=1
 npx tsc --noEmit
 ```
+
+`tests/worker/qaWorkerJournal.test.ts` runs the recovery mirror row without a browser on what the hosts really store:
+the loopback host and the real worker (node `worker_threads`, with persistence `'worker-idb'`, `'main'`, and a store
+in memory), with the App stood in for by the one call its pagehide handler makes.
+`tests/worker/qaWorkerSelftest.test.ts` runs the Node selftest as a child process, so the vitest suite sees a harness
+that a source change broke (neither vitest nor tsc loads these `.mjs` files). The Node selftest covers the rest
+of T028b: the options, the GPU check, the two-row protector gate against a CDP double, the row's verdicts and page
+reads, and `tools/qa-worker.mjs`'s `--host`, `--gpu` and `--help` (it starts that script, which ends before any
+build or browser).
 
 The Node selftest tests the oracle/control/probe without Vite or a browser. It covers the pending-ticket polling
 deadline, real UI action preparation, packet-watch camera race, required sim-only protector gate, and actual-freeze
@@ -162,32 +225,16 @@ query read-after-write, correction deduplication and abort cleanup. It uses dete
 the node fixture; the browser uses live frames. Current results are in the [report](../../docs/dev/reports/local-T028-qa-worker.md).
 
 Error-overlay Pause remains explicitly SKIPPED in the healthy fixture and needs a separate error fixture.
-Close-page worker journal restoration is explicitly SKIPPED until W1.3/T039. `holdCalendar` is an additional
+The close-page journal restore is `tools/qa-journal.mjs`'s (above). `holdCalendar` is an additional
 automatic New Year op: any observed ticket must settle, but this short command fixture does not force midnight.
 Full visual parity of every overlay variant, New Year and other Appendix A consumers remains manual QA.
-Round 3 Node results: **43 passed, 0 failed**, plus both native-probe commands passed (clean/clone accepted;
-unrelated transfer changed status 81 to 129 and failed persistently). The supplied RTX 5070 Ti logs at f22933f establish the
-remaining protector initialization failure, not results for this tier fix. No browser/build/perf/Vitest/bot was
-launched during review round 3. No balance, simulation or RNG code changes;
-the supplied seed-7 reference remains residents **[61124, 93804, 37971] = 192899** in 2015, unverified here.
 
-`tools/bench/browser-check.mjs` already supports production assets and is unchanged. No source/infra/cloud-held
-files were edited; no commit, push or DONE marker was made.
+The protector's positive evidence is Chromium 141 (Playwright 1.56.1, which `lifecycle.mjs` requires): there a
+main-thread transfer invalidates the probe (dev before T059 failed these rows, T059 passes them). A V8 that tracks
+array buffer views (Chromium 153) keeps the protector through a no-view or one-view transfer, so if Playwright's
+Chromium moves, add a page-side positive control before trusting "intact" (`tools/qa-worker.mjs` has one for the
+worker isolate).
 
-## Round 3 classification and rerun
-
-The lead's f22933f rerun passed local **47/0**, the >=15000 ms freeze/resume gate, both real broken-zone controls,
-and the dispatch observer control. Worker still exits **3** until T034. The remaining three protector failures
-occurred on both dev and a temporary T059 merge: numeric status **41** failed the old bit-16 initialization test.
-This was a harness tier-detection failure and did not establish the state of the detachment protector.
-
-Rerun the same loopback and local `--w1` commands against both builds prepared by the lead. On dev,
-`src/render/city/buildings/lodBuilder.ts:138` transfers geometry buffers from main; the protector must fail after
-LOD activity. On the T059 clone-only merge, clean main must remain intact at boot, end and after freeze, with
-every other applicable gate passing. No render, worker or other `src/` file is changed by this harness fix.
-
-The native unrelated-buffer transfer is the deliberate negative control: it must detach its buffer and invalidate
-the probe while clean polls and clones pass. The browser rerun must confirm the same distinction on Chromium 141;
-Node success alone cannot establish it. Retain both exact broken-zone controls and `--drop-ack dispatch` in the
-rerun: only their selected pending acknowledgement may fail, with **PASS broken-build control** for each real
-broken build. Their earlier successful results and historical findings are preserved in the report.
+`tools/bench/browser-check.mjs` already supports production assets and is unchanged. The harness changes no file
+under `src/`. Results and history: [T028](../../docs/dev/reports/local-T028-qa-worker.md),
+[T028b](../../docs/dev/reports/local-T028b-harness.md).

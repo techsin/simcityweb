@@ -6,11 +6,12 @@ import { fileURLToPath } from 'node:url';
 import { assert, deadline } from './harness.mjs';
 import { BROWSER_CHECKS, runChecks } from './checks.mjs';
 import { PROTECTOR_V8_FLAGS, watchProtectors } from './w1.mjs';
-import { breakAckPlugin, ownTemp, removeTemp, sweepTemps } from './build.mjs';
+import { assertPortFree, breakAckPlugin, ownTemp, removeTemp, sweepTemps } from './build.mjs';
+import { GPU, SWIFTSHADER } from './launch.mjs';
 
+/** The tree this harness lives in: what it builds and serves. */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-export const GPU = ['--enable-gpu', '--ignore-gpu-blocklist', '--use-angle=default'];
-export const SWIFTSHADER = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-webgl', '--use-gl=angle'];
+export { GPU, SWIFTSHADER };
 
 export async function run(options, report, signal) {
   report.signal = signal;
@@ -35,6 +36,7 @@ export async function run(options, report, signal) {
       return `removed ${swept.removed.length} stale builds; retained ${swept.kept.length} live/recent builds`;
     });
     await report.check('production build', async () => {
+      if (options.port) await assertPortFree(options.port);
       const vite = await import('vite');
       dir = await mkdtemp(join(await realpath(tmpdir()), 'metropolis-qa-worker-'));
       await ownTemp(dir);
@@ -58,19 +60,22 @@ export async function run(options, report, signal) {
         assert(chunk, 'build did not emit the requested exactDigest module');
         options.digestAsset = chunk.fileName;
       }
-      server = await vite.preview({ root: ROOT, logLevel: 'error', build: { outDir }, preview: { port: 0, host: '127.0.0.1', strictPort: true, open: false } });
+      // --port N: that port or a failure (strictPort), never a neighbouring one; 0 lets the system pick a free port
+      server = await vite.preview({ root: ROOT, logLevel: 'error', build: { outDir }, preview: { port: options.port ?? 0, host: '127.0.0.1', strictPort: true, open: false } });
       const addr = server.httpServer.address();
       assert(addr && typeof addr !== 'string', 'vite preview has no TCP address');
+      assert(!options.port || addr.port === options.port, `vite preview listens on ${addr.port}, not on --port ${options.port}`);
       options.url = `http://127.0.0.1:${addr.port}/`;
       report.details.url = options.url;
-      return 'vite build + owned vite preview on an ephemeral loopback port';
+      return `vite build of this tree + owned vite preview on 127.0.0.1:${addr.port} (${options.port ? '--port' : 'a free port'})`;
     });
     await report.check('Chromium', async () => {
       const { chromium } = await import('playwright');
       report.details.v8Flags = [...PROTECTOR_V8_FLAGS];
+      report.details.gpuFlags = [...(options.swiftshader ? SWIFTSHADER : GPU)];
       browser = await chromium.launch({ headless: !options.headed, executablePath: options.executable,
         handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
-        args: [...(options.swiftshader ? SWIFTSHADER : GPU), `--js-flags=${PROTECTOR_V8_FLAGS.join(' ')}`] });
+        args: [...report.details.gpuFlags, `--js-flags=${PROTECTOR_V8_FLAGS.join(' ')}`] });
       assert(!signal?.aborted, 'run interrupted during browser launch');
       const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
       page = await context.newPage();
@@ -86,7 +91,7 @@ export async function run(options, report, signal) {
       page.on('crash', () => errors.push({ type: 'crash', text: 'Chromium page crashed' }));
       if (options.w1 || options.host !== 'local') protectors = await watchProtectors(page);
       report.details.browser = browser.version();
-      return `${browser.version()}; ${options.swiftshader ? 'SwiftShader (not a real-GPU acceptance run)' : 'real GPU requested'}`;
+      return `${browser.version()}; ${options.swiftshader ? 'SwiftShader (not a real-GPU acceptance run)' : `real GPU requested (${GPU.join(' ')}); host ready checks the renderer`}`;
     }, ['production build']);
     if (report.passed('Chromium')) {
       try { await runChecks(page, options, report, protectors, signal); }

@@ -1,4 +1,5 @@
 import { readdir, readFile, writeFile, lstat, realpath, rm } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname, basename } from 'node:path';
 import { assert } from './harness.mjs';
@@ -29,6 +30,15 @@ export function breakAckPlugin(op, evidence, host = 'local') {
     },
     generateBundle() { assert(evidence.rewrites === 1, `break-ack: the production build did not include the expected ${local ? 'LocalSimHost' : 'PacketSimHost'}`); },
   };
+}
+
+/** `--port`: a taken port fails here, before the build, with the bind the preview will make (it is strict too). */
+export function assertPortFree(port) {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once('error', (e) => reject(new Error(e.code === 'EADDRINUSE' ? `--port ${port} is already in use on 127.0.0.1` : `--port ${port}: ${e.message}`)));
+    probe.listen(port, '127.0.0.1', () => probe.close(() => resolve()));
+  });
 }
 
 export async function ownTemp(dir) {

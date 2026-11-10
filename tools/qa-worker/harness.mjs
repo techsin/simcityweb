@@ -22,17 +22,6 @@ export const DEPENDENCIES = {
   [CHECKS.save]: [CHECKS.setCamera], triggerDisaster: [CHECKS.fixture], dispatch: ['triggerDisaster'], dispatchBest: ['dispatch'],
   dismissAlert: ['triggerDisaster'], [CHECKS.packets]: ['dispatch'], [CHECKS.recovery]: ['zone'],
 };
-/**
- * The recovery-mirror check reads the packet journal that the App's pagehide writes. `journalMirror` is whether the
- * page's packet host holds one (PacketSimHost.mirror). WORKER_DESIGN §6 W1.2: WorkerSimHost runs with the journal off
- * and a SnapshotMirror, so pagehide writes no journal; W1.3 turns it on where the page's store persists. Loopback
- * always has to journal, so it never skips.
- */
-export function recoveryMirrorSkip(host, journalMirror) {
-  if (host === 'local') return 'LocalSimHost uses snapshot recovery; the command journal belongs to packet hosts';
-  if (host === 'worker' && journalMirror === false) return 'this WorkerSimHost has no journal mirror (W1.2: snapshot recovery only; W1.3: only where the store persists); the worker journal is the W1.3/T039 gate';
-  return null;
-}
 export function selectedChecks(only) {
   if (!only) return null;
   const selected = new Set(['host ready', 'no crash overlay']);
@@ -46,7 +35,10 @@ export const help = `Worker acceptance harness (T028, base ${BASE})
 
   --help                     Print this help; no Vite or Playwright import
   --host local|loopback|worker  Host to require (default loopback)
-  --swiftshader              Cloud GPU flags; default is the real GPU
+  --gpu                      The real GPU (the default): --enable-gpu --ignore-gpu-blocklist --use-angle=default;
+                             host ready fails unless WEBGL_debug_renderer_info names a GPU that is not SwiftShader
+  --swiftshader              Cloud GPU flags instead; never a real-GPU acceptance run
+  --port N                   Serve this tree's build on 127.0.0.1:N (default 0: a free port)
   --headed                   Show Chromium (default headless)
   --executable PATH          Chromium executable (otherwise Playwright's)
   --ack-timeout MS           Command/gesture deadline (default 8000)
@@ -58,10 +50,12 @@ export const help = `Worker acceptance harness (T028, base ${BASE})
   --w1                       Also enable verify/protector gates for the local host
   --digest-module PATH       Override shared exactDigest module (default src/worker/queries.ts)
 
-Always builds production assets into a temporary directory and starts its own vite preview.
+Always builds the tree this file lives in into a temporary directory and starts its own vite preview.
 One fresh browser/context, 256-cell sandbox, synthetic pointer input through the real tools.
 Freeze duration is always 15 s; resume deadline is always 1 s.
 Loopback runs now, including verify/protectors. Worker skips if its host is not in this build.
+Protectors: one row per isolate (main isolate, sim worker) at boot, at end and after freeze.
+node tools/qa-worker.mjs --host ... starts this harness too (without --host that file is T034's W1.2 QA).
 Cloud: PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tools/qa-worker/cli.mjs --swiftshader
 Checks: ${Object.keys(CHECKS).join(', ')}
 Exit: 0 = no failures, 1 = failed check (also a verified broken-build control),
@@ -69,9 +63,9 @@ Exit: 0 = no failures, 1 = failed check (also a verified broken-build control),
 For --break-ack, require PASS broken-build control; exit 1 alone proves nothing.`;
 
 export function parseArgs(argv) {
-  const o = { host: 'loopback', swiftshader: false, headed: false, w1: false, ackTimeout: 8000, bootTimeout: 180000 };
-  const flags = { '--help': 'help', '--swiftshader': 'swiftshader', '--headed': 'headed', '--w1': 'w1' };
-  const values = { '--host': 'host', '--executable': 'executable', '--out': 'out', '--drop-ack': 'dropAck',
+  const o = { host: 'loopback', gpu: true, swiftshader: false, headed: false, w1: false, ackTimeout: 8000, bootTimeout: 180000, port: 0 };
+  const flags = { '--help': 'help', '--gpu': 'gpu', '--swiftshader': 'swiftshader', '--headed': 'headed', '--w1': 'w1' };
+  const values = { '--host': 'host', '--executable': 'executable', '--out': 'out', '--drop-ack': 'dropAck', '--port': 'port',
     '--ack-timeout': 'ackTimeout', '--boot-timeout': 'bootTimeout', '--digest-module': 'digestModule', '--only': 'only', '--break-ack': 'breakAck' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -83,6 +77,11 @@ export function parseArgs(argv) {
     } else throw new Error(`unknown option ${a}; use --help`);
   }
   if (!['local', 'loopback', 'worker'].includes(o.host)) throw new Error('host must be local, loopback or worker');
+  // The real GPU is the default; --gpu states it, and the run records which renderer it asked for.
+  if (o.swiftshader && argv.includes('--gpu')) throw new Error('--gpu and --swiftshader ask for opposite renderers');
+  o.gpu = !o.swiftshader;
+  o.port = Number(o.port);
+  if (!Number.isInteger(o.port) || o.port < 0 || o.port > 65535) throw new Error('port must be an integer from 0 (a free port) to 65535');
   for (const k of ['ackTimeout', 'bootTimeout']) {
     o[k] = Number(o[k]);
     if (!Number.isSafeInteger(o[k]) || o[k] < 1) throw new Error(`${k} must be a positive integer`);
@@ -100,6 +99,9 @@ export function parseArgs(argv) {
 }
 
 export function assert(ok, reason) { if (!ok) throw new Error(reason); }
+/** A check's own finding that it does not apply to this host or mode. Returned from its body, it makes the row
+ *  SKIPPED with this reason: a check that tested nothing never reads PASS. */
+export class Skipped { constructor(reason) { this.reason = reason; } }
 export const sleep = (ms, signal) => new Promise((resolve, reject) => {
   const done = () => { signal?.removeEventListener('abort', abort); resolve(); };
   const timer = setTimeout(done, ms);
@@ -209,8 +211,11 @@ export class Report {
     }
     const missing = dependencies.filter((n) => !this.passed(n));
     if (missing.length) { this.add(name, 'SKIPPED', `prerequisite did not pass: ${missing.join(', ')}`); return; }
-    try { this.add(name, 'PASS', (await fn()) ?? 'verified'); }
-    catch (e) { this.add(name, 'FAIL', e.message ?? String(e), e.failure); }
+    try {
+      const verdict = await fn();
+      if (verdict instanceof Skipped) this.add(name, 'SKIPPED', verdict.reason);
+      else this.add(name, 'PASS', verdict ?? 'verified');
+    } catch (e) { this.add(name, 'FAIL', e.message ?? String(e), e.failure); }
   }
   configure(options) {
     this.only = options.only; this.selection = selectedChecks(options.only);
