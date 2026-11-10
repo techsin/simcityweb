@@ -2,8 +2,9 @@
 
 Task: docs/dev/queue/T064-guide-r2-cloud.md, section "t064-feel03". Plan item: docs/POLISH_PLAN.md "#### FEEL-03 · Money
 you can feel: cost floats, animated funds, monthly and approval deltas". Branch `cloud/t064-feel03`, from dev 8450a9c
-(FH-08-LIVE, the chain's lane 1, is in dev as 0b60f30), with dev merged in twice since (e58f8ac: FH-16; 41ebcfb:
-FEEL-19; no shared file). Gated at 672f529.
+(FH-08-LIVE, the chain's lane 1, is in dev as 0b60f30), with dev merged in three times since: e58f8ac (FH-16) and
+41ebcfb (FEEL-19), no shared file; a7a4ef4 (T065), which also edits src/ui/topbar/approvalSegment.ts, merged without
+a conflict. Gated at 4687e29 (the last merge).
 
 ## Cloud carry-over (Nov 3)
 
@@ -141,11 +142,12 @@ against dev's fixture (calls, DOM writes and trees compared after unpacking):
 
 ### Requests to other chains or the lead
 
-- **T065 (chain fix1), approvalSegment.ts.** FEEL-03's hunks there are the imports, the chip as a third child of the
-  hud-stack in the constructor's `h(...)` line, four fields, `this.changeChip(...)` as the last line of `update()` and
-  the new `changeChip` method. T065 edits the identity check in `update()`'s terms block (NOTE-092). The hunks touch
-  different lines; whichever merges second resolves (T064's rule). The chip copies the term values each month and never
-  compares identities, so it already works on replica hosts.
+- **T065 (chain fix1), approvalSegment.ts: done.** T065 merged first (66ad8a3); this lane merged it in (4687e29)
+  without a conflict. T065 changed `update()`'s terms block (a content key built once per sim day); FEEL-03 adds the
+  imports, the chip as a third child of the hud-stack in the constructor's `h(...)` line, its fields,
+  `this.changeChip(...)` as the last line of `update()` and the `changeChip` method. Both T065's
+  approvalCardReplica.test.ts and this lane's tests pass on the merged file. The chip copies the term values each month
+  and never compares identities, so it needs nothing from T065 on replica hosts.
 - **FH-23 (this chain's next lane):** text size should also scale `.hud-chip` (11.5 px, hud.css) and the floats
   (`.ft-in` 16 px, `.ft-sub` 12 px, src/ui/floatText.css).
 - **T078 (FEEL-21, desktop):** nothing to change. FEEL-03 reads `resolveMotion(ctx.settings.motion)` as MilestoneCard
@@ -175,7 +177,8 @@ left for the desktop except the browser checks (Desktop QA, last).
 
 ### Gates (numbers)
 
-1. **tsc** (`npx tsc --noEmit`, under sem.sh): clean at 0bc37a6, at 09a7ad2 and on the merged tree 672f529.
+1. **tsc** (`npx tsc --noEmit`, under sem.sh): clean at 0bc37a6, at 09a7ad2, at 672f529 and on the final merged tree
+   4687e29.
 2. **Revert check** on tests/game/floatText.test.ts (29 cases), each revert applied alone and undone after:
    - the whole src change reverted (dev's five files back, the three new src files removed): the file fails to load
      ("Cannot find module '../../src/ui/FloatText'"), 0 of 29 run;
@@ -183,15 +186,19 @@ left for the desktop except the browser checks (Desktop QA, last).
    - fundsSegment.ts without the count-up, the month chip and the sandbox net rule: 11 of 29 fail;
    - approvalSegment.ts without the chip: 2 of 29 fail;
    - FloatText.ts without the pool cap, the Web Animation, the merge and the frame-batched writes: 9 of 29 fail.
-3. **Full vitest** under the lock, at 672f529 (07:40:55-07:47:19 UTC): 312 files passed, 4 skipped (316); 3,174 tests
-   passed, 32 skipped (3,206); 0 failed; 384 s. It includes the Worker hygiene test (tests/worker/hygiene.test.ts: no
-   `.speed =`, `emergencyOf(` or `getSystem(` added), replicaSafe, topBarSplit (the trace) and topBarFrame.
+3. **Full vitest** under the lock, on the final tree 4687e29 (08:09:18-08:15:32 UTC): 313 files passed, 4 skipped
+   (317); 3,178 tests passed, 32 skipped (3,210); 0 failed; 373 s. It includes the Worker hygiene test
+   (tests/worker/hygiene.test.ts: no `.speed =`, `emergencyOf(` or `getSystem(` added), replicaSafe, topBarSplit (the
+   trace), topBarFrame and T065's approvalCardReplica. The run before the T065 merge (672f529, 07:40:55-07:47:19) was
+   green too: 312 files passed, 4 skipped; 3,174 tests passed, 32 skipped; 0 failed; 384 s.
 4. **The bot** (`npx tsx tools/simbot.ts --size 128 --years 15 --seed 7`, under the lock), because Tool.ts and
    CityScene.ts are src/game:
-   - lane 672f529: `residents [ 61828, 95515, 40772 ]` = 198,115 in 2015;
-   - dev 41ebcfb, from a clean `git archive` export in co/t064-feel03-devbase: `residents [ 61828, 95515, 40772 ]` =
+   - lane 4687e29: `residents [ 61828, 95515, 40772 ]` = 198,115 in 2015;
+   - dev a7a4ef4, from a clean `git archive` export in co/t064-feel03-devbase: `residents [ 61828, 95515, 40772 ]` =
      198,115;
-   - every line of the two outputs is identical except the two timing columns (econms, totalms). No change by design.
+   - the two outputs match line for line except wall time ("done in 37.6s" against 38.9 s), the per-year timing
+     columns (econms, totalms) and the ms/day line. No change by design. (The earlier pair, lane 672f529 against dev
+     41ebcfb, matched the same way.)
 5. **The lane's acceptance list:** all 8 met, table above.
 6. **HUD trace:** re-recorded; the diff is the chip nodes and the sandbox net line, step by step above.
 
