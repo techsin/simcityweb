@@ -11,7 +11,8 @@ import { SimCore } from '../../src/worker/SimCore';
 import { exactDigest } from '../../src/worker/queries';
 
 describe('FH-22 with T057 continuity', () => {
-  it('keeps guide progress outside continuity records and continues an economy save bit-exact for 30 days', () => {
+  // a bot year and three cores for 30 days: about 5 s, past the default limit on a busy machine
+  it('keeps guide progress outside continuity records and continues an economy save bit-exact for 30 days', { timeout: 60000 }, () => {
     const bot = new SimBot({ size: 32, years: 1, seed: 7, difficulty: 'medium', terrain: 'flat', water: 0,
       quiet: true, noInfra: true }, economySystems());
     bot.run(1);

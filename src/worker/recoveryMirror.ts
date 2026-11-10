@@ -35,6 +35,9 @@ export interface RecoveryMirrorOptions extends RecoveryCity {
   requestSnapshot?: () => void | Promise<unknown>;
   /** A boot whose post-replay save did not happen: the replayed edits, renumbered with seqs ≤ 0 (§4.3). */
   journal?: RecoveryJournal;
+  /** FH-22 (NOTE-079): the guide's record in the city at `cmd` (the Ready's systemData.onboarding), when the host has
+   *  it: that record sent again is not journaled either */
+  onboarding?: unknown;
 }
 
 export class RecoveryMirror implements RecoveryWriter {
@@ -54,6 +57,9 @@ export class RecoveryMirror implements RecoveryWriter {
   private requested = false;
   /** something changed since the last write: a periodic write without a change is skipped */
   private dirty = false;
+  /** FH-22 (NOTE-079): setOnboarding sets the guide's whole record, so the last write wins. This is the record of the
+   *  newest one posted (at first the city's own): commands apply in order, so the same record again changes nothing. */
+  private guide: unknown;
   private disposed = false;
   private signal: AbortSignal;
 
@@ -67,6 +73,8 @@ export class RecoveryMirror implements RecoveryWriter {
     this.now = opts.now ?? Date.now;
     this.requestSnapshot = opts.requestSnapshot ?? null;
     this.signal = opts.signal;
+    // a copy: the replica merges later records into its own object in place
+    this.guide = structuredClone(opts.onboarding);
     if (opts.journal && journalMatches(opts.journal, { ...this.city, savedAt: this.savedAt })) {
       this.fromCmd = opts.journal.fromCmd;
       this.savedCmd = this.fromCmd;
@@ -95,9 +103,12 @@ export class RecoveryMirror implements RecoveryWriter {
   onCommand(seq: number, op: string, args: unknown[]): void {
     if (this.disposed || !isJournalOp(op)) return;
     if (!Number.isSafeInteger(seq) || seq <= this.fromCmd || seq <= (this.ops.at(-1)?.seq ?? -Infinity)) return;
+    // FH-22: the guide's record as the city already holds it adds no entry and marks nothing
+    if (op === 'setOnboarding' && this.guide !== undefined && sameRecord(this.guide, args[0])) return;
     const copy = structuredClone(args);
     // toggles are stored as sets (R7); ordinance replays never stop at a confirmation
     if (op === 'setOrdinance') copy[2] = { confirm: true };
+    if (op === 'setOnboarding') this.guide = copy[0];
     const entry: Entry = { seq, op, args: copy };
     this.ops.push(entry);
     this.opBytes += bytesOf(entry);
@@ -118,6 +129,15 @@ export class RecoveryMirror implements RecoveryWriter {
       return;
     }
     const entry = this.ops[index];
+    // FH-22: an applied guide record replaces the earlier ones still in the journal (those in flight after it stay, in
+    // order), so the guide's timers never grow it: one record, with no charge
+    if (entry.op === 'setOnboarding') {
+      this.ops = this.ops.filter((old) => {
+        if (old.op !== 'setOnboarding' || old.seq >= seq) return true;
+        this.opBytes -= bytesOf(old);
+        return false;
+      });
+    }
     if (entry.op === 'bulldoze' && r?.ok === true && Number.isFinite(r.cost)) {
       this.opBytes -= bytesOf(entry);
       entry.cost = r.cost;
@@ -220,6 +240,7 @@ export class RecoveryMirror implements RecoveryWriter {
     this.snapshot = null;
     this.ops = [];
     this.opBytes = 0;
+    this.guide = undefined;
     this.saves = [];
     this.kv = null;
     this.now = Date.now;
@@ -230,3 +251,13 @@ export class RecoveryMirror implements RecoveryWriter {
 
 /** UTF-16 bytes of one entry plus its separator, as JSON.stringify(journal) would hold it */
 function bytesOf(entry: Entry): number { return (JSON.stringify(entry).length + 1) * 2; }
+
+/** FH-22: two guide records as the city compares them (protocol.ts's plainEqual, for plain data: key order aside).
+ *  Kept here: main.ts imports this file statically, and protocol.ts is not in the page's entry graph. A record is a
+ *  flat object of values and id lists; the arguments are not validated yet, and anything deeper is not the same. */
+function sameRecord(a: unknown, b: unknown, depth = 0): boolean {
+  if (Object.is(a, b)) return true;
+  if (depth > 2 || a === null || b === null || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  const ak = Object.keys(a), ar = a as Record<string, unknown>, br = b as Record<string, unknown>;
+  return ak.length === Object.keys(b).length && ak.every((k) => Object.hasOwn(br, k) && sameRecord(ar[k], br[k], depth + 1));
+}

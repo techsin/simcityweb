@@ -243,6 +243,7 @@ export class PacketSimHost implements SimHost {
     this.mirror = new JournalMirror({
       regionId: p.regionId, tileKey: p.tileKey, savedAt: ready.savedAt, cmd: ready.cmd, journal: ready.journal,
       signal: this.mirrorLife.signal, info: () => this.describe(), requestSnapshot: () => this.snapshot('journal'),
+      onboarding: this.state.systemData.onboarding, // FH-22: the Ready's guide record, so sending it again adds no entry
     });
     for (const m of this.early.splice(0)) if (m.seq > ready.cmd) this.mirror.onCommand(m.seq, m.op, m.args);
   }

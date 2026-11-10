@@ -1,4 +1,143 @@
-# T037ar — onboarding round 6
+# T037ar — onboarding round 7
+
+## Round 7: the worker journal carries setOnboarding (NOTE-079)
+
+Base: **f662e2a8** on `local/R1-guide-a-journal`, the lane's head 9ff8bae plus a clean merge of dev **8c08b6a** (W1.3: persistence in the worker, its own IndexedDB, the journal and its boot replay). Read rules3.md, docs/dev/reports/cloud-W1.3.md (the journal, the whitelist, recoveryMirror.ts, the boot replay, its *NOTE-051* paragraph and decision 11) and this report before editing. Changes are uncommitted: no commit, push, merge or .done file. No AGENTS.md or CLAUDE.md in the worktree.
+
+**Result.** A guide change made after the last snapshot survives a closed tab on both packet hosts, the loopback and the real worker on its own IndexedDB, and the restore replays it after the snapshot. The same record sent again adds no journal entry, and the guide's timers cannot grow the journal: it keeps one applied guide record. tsc is clean, 64 single-file runs pass, and the bot is unchanged. The browser recheck on `?simworker=1` is left for the lead (list at the end of this section).
+
+### What was already there, and what was not
+
+- **The whitelist entry exists since round 4** (NOTE-051). `'setOnboarding'` is in `JournalOp` (src/worker/protocol.ts:41-42) and in `JOURNAL_OPS` (src/save/recoveryCodec.ts:17-21, which `isJournalOp` reads). Nothing was added there. The replay path is W1.3's generic one: `SimCore.replayBootJournal` → `replayRecoveryJournal` → `applyCommand`, where the command's `true` counts as applied and `false` as failed. The worker then saves before its Ready.
+- **QA 1.6 lost the change because W1.2's worker host kept no journal** (`journal: false`; its SnapshotMirror wrote only the last worker snapshot). W1.3's `WorkerSimHost` binds T033's mirror whenever the page's store persists. So on f662e2a8 the worker journal already carried the command: with this round's two source hunks reverted (M0 below), the three restore cases pass (loopback, real worker, LocalSimHost) and the other ten fail.
+- **Not there, and added now:** an identical record was journaled again (the city answers `true` without an event, but the mirror kept the entry it had added on posting), and nothing bounded the guide's records between two bases.
+
+### The two rules (src/worker/recoveryMirror.ts)
+
+1. **The record the city already holds adds no entry.** The mirror remembers the record of the newest `setOnboarding` posted. It starts from the record in the Ready: `PacketSimHost.bindRecovery` passes the replica's `systemData.onboarding`, and the mirror keeps a copy. A command with the same record is not journaled and does not set the mirror's dirty flag, so it forces no periodic write. Records are compared as the city compares them (protocol.ts's `plainEqual`: key order aside, every value and the order of the ids count; case 3 checks the two against each other). No ack is needed for this: commands apply in order, so when the next command arrives the city either holds the newest record posted, or has rejected it and rejects the same one again. The city's side is as round 4 left it: `true`, no `savedDataChanged`, no change count, the same fingerprint.
+2. **Last write wins.** The command sets the whole record. When a guide record's ack says it was applied, the mirror drops the earlier guide records still in the journal. Records in flight after it stay, in order. A rejected one is removed as before and replaces nothing. This happens at the ack, not on posting: a record the city then rejects must not have removed the valid one before it (reversion M8 is that variant, and it loses a change). For any base, the newest applied record replays to the same guide record as the whole sequence, and the simulation never reads the record.
+
+The entry is the command alone, `{seq, op, args}`: costs and refunds stay a bulldoze's (`journalMatches` rejects them on any other op). The record stays outside T057's `CONTINUITY_RECORDS`, `cityFingerprint` and every digest: none of those files changed.
+
+### The reserve and coalescing
+
+- **Entry size**, with the mirror's own count ((JSON length + 1) × 2 bytes of UTF-16): 568 B for a new record, 696 B for the G4 record of the tests, 840 B with every step and goal set, and 978 B at most for any record the city accepts. The strict v1 shape caps a record at 443 characters, so `ONBOARDING_MAX_BYTES` (2,048) is never reached.
+- **The reserve** is `JOURNAL_RESERVE_BYTES`, 128 KiB of the 2.15 MB localStorage budget. Past half of it (65,536 B) the mirror asks for a snapshot (`why: 'journal'`), whose reply trims the journal. A journal over the reserve goes to IndexedDB only at unload.
+- **W1.3 has no coalescing rule in the journal.** WORKER_DESIGN §4.3: "Every posted whitelisted command is appended to the journal; a failed ack removes it." The only coalescing in the packet hosts is `PacketSimHost.post`'s slider merge for `setTax` and `setFunding` (T032), before a command is sent. It works within one frame, so it would not bound a record that changes once a month, and it is not used here. Rule 2 is therefore new, and it applies to this op only.
+- **What sends updates** (src/ui/Onboarding.ts, src/ui/guide/goals.ts): `trackBudget` changes `lastBudgetMonth` every game month for as long as the city is enrolled, with the guide finished or hidden too; `trackPower` when the power margin crosses 1.25× while G10 is open, once a day at worst; the 15 steps and goals and their starts; minimise, hide, and the first Budget and Why opens.
+- **Worst case with rule 2:** one applied record plus those in flight, under 1 KB, whatever the number of updates. Guide updates alone never reach the half reserve: 400 acknowledged updates leave one entry and no snapshot request (case 6). Unacknowledged records stay, as for every op: 400 of them pass the half reserve, and the request fires once.
+- **Worst case without rule 2**, if the lead prefers W1.3's plain append (rule 2 is a separate 9-line hunk in `onAck`): the journal grows by 0.6 to 0.85 KB per update until the next save or snapshot. Between two worker snapshots (min(30 s, 90 game days) while dirty) that is 2 or 3 monthly records, about 2.5 KB, and up to 90 more with a power margin that flaps every day: about 78 KB, over the half reserve, so one extra `journal` snapshot in that window. 78 to 115 updates fill the half reserve, 156 to 230 the reserve.
+
+### Change per file
+
+| File | Change |
+|---|---|
+| src/worker/recoveryMirror.ts (**cloud-held, assigned by NOTE-079**) | +31 lines. The option `onboarding` (the Ready's record); the field `guide`, copied in the constructor and cleared at dispose; `onCommand` skips the same record and remembers the newest one posted; `onAck` drops the earlier guide records when one is applied; a local `sameRecord` (9 lines). The comparison is local on purpose: main.ts imports this file statically (`periodicSnapshotDue`), and importing `plainEqual` would have added protocol.ts to the page's entry graph, where it is not today (88 modules, checked with the hygiene test's `staticImportGraph`). |
+| src/worker/LoopbackSimHost.ts (**cloud-held, not named by the task: one line**) | `PacketSimHost.bindRecovery` passes `this.state.systemData.onboarding` to the mirror, for the loopback and the worker host alike. Without it the first update of a session is journaled even when it repeats the loaded record (reversion M3). |
+| tests/worker/onboardingJournal.test.ts (new) | 13 cases: the mirror, the loopback host, LocalSimHost, and the real worker on its own IndexedDB with W1.3's harness (`bootIdb`, `send`, nodeWorker.ts's KV bridge). |
+| tests/save/guideContinuity.test.ts (**not named for editing: one line**) | The lane's round-5 case gets its own timeout (`{ timeout: 60000 }`) and a one-line comment. No assertion changed. See *Runs*. |
+| docs/dev/reports/local-R1-guide-a.md | This section. Round 6 became historical. |
+
+Not changed: src/worker/protocol.ts and src/save/recoveryCodec.ts (the entries exist), SimCore.ts, journal.ts, simWorker.ts, WorkerSimHost.ts, every src/save, src/sim and src/ui file. **No src/sim/infra hunk.** No balance, RNG or digest change.
+
+### Tests, by name
+
+tests/worker/onboardingJournal.test.ts: **13 passed**. "M0" is the result with this round's two source hunks reverted, that is, f662e2a8 with the new test file.
+
+| # | Where | Case | M0 |
+|---|---|---|---|
+| 1 | mirror | journals a changed record once, with no charge; the same record again adds no entry and marks nothing | fails |
+| 2 | mirror | does not journal the record the city held at the Ready, and journals a changed one | fails |
+| 3 | mirror and a loopback core | compares records as the city does: an update is journaled exactly when the city changes | fails |
+| 4 | mirror | last write wins: an applied record replaces the earlier ones, those in flight stay in order, a rejected one is dropped | fails |
+| 5 | mirror and a loopback core | replays the one record it keeps onto the save: the same city and RNG as the session | fails |
+| 6 | mirror | many small guide updates never grow the journal or ask for a snapshot; unacknowledged ones stay, within the reserve's request | fails |
+| 7 | mirror | a fuzz of guide updates, acks (some lost in a resync), saves and snapshots: the journal replayed onto its base always gives the last record posted | fails |
+| 8 | LoopbackSimHost | a guide change after the last snapshot, then the tab closes without a final snapshot: the restore keeps the change | passes |
+| 9 | LoopbackSimHost | an identical update adds no journal entry: after a change, after a save, and for the loaded record in a new session | fails |
+| 10 | LocalSimHost | LocalSimHost replays a guide record that a packet session journaled, and its first save deletes the journal | passes |
+| 11 | real worker | a guide change after the last worker snapshot, then the tab closes without a final snapshot: the restore keeps the change | passes |
+| 12 | real worker | a save, two guide changes, the tab closes: the journal alone holds one record, and the next worker replays it and saves before its Ready | fails |
+| 13 | real worker | an identical update adds no journal entry: after a change, after a save, and for the loaded record in a new session | fails |
+
+Cases 8 and 11 are NOTE-079's test, and cases 9 and 13 its "an identical update adds no journal entry". The tab closes as main.ts closes it for a packet host: `host.recovery.writeNow('pagehide')`, then dispose, with no snapshot and no save. Each of 8 and 11 asserts that the snapshot alone holds the earlier record, that the journal bound to it holds the change, and that the next boot has the change. On the worker the boot also saves before its Ready and the city reads as saved. On the loopback it reads as unsaved until the first save: the loopback's Ready is synchronous, so no save can precede it (cloud-W1.3.md, G7).
+
+Case 3 runs the mirror beside a real SimCore: for seven variants of a record, the journal gains an entry exactly when the city counts a change. Case 7 runs 300 seeds of 80 steps. After every step it checks the property that matters for recovery: the base's record plus the journal's guide records, in order, equal the record of the last command posted. With the two new rules' assertions removed it also passes on f662e2a8's own mirror, so the model matches W1.3's rules.
+
+**Each case fails with its fix reverted** (one reversion at a time; the sources are restored byte for byte after each):
+
+| Reversion | Cases that fail |
+|---|---|
+| M1: the same record is journaled again (rule 1 off) | 1, 2, 3, 5, 7, 9, 13 |
+| M2: no last write wins (rule 2 off) | 3, 4, 5, 6, 7, 12 |
+| M3: the host does not pass the Ready's record | 9, 13 |
+| M4: the mirror keeps the host's object, not a copy | 2 |
+| M5: `setOnboarding` off the journal whitelist | all 13 |
+| M6: the mirror remembers only the Ready's record | 1, 3, 5, 7, 9, 13 |
+| M7: an applied record drops the newer ones instead of the older | 3, 4, 5, 6, 7, 12 |
+| M8: last write wins on posting, before the ack | 1, 4, 5, 6, 7 |
+| M9: the comparison ignores what two id lists of one length hold | 3 |
+| M10: the comparison is by JSON text, so key order counts | 1, 3, 5, 9, 13 |
+
+In case 7, M7 and M8 fail on "no guide change is lost"; M1, M2 and M6 fail on the two new rules' assertions. An earlier 12-case version of the file passed 8 runs in a row.
+
+### Runs
+
+**PASS, all on the final sources:** `npx tsc --noEmit`; `git diff --check`; the changed files are UTF-8 without a BOM, with LF line ends. **64 single-file runs through the quiet gate, one process at a time: 64 files passed, 641 tests passed, 7 skipped, 0 failed.** The default runner works here, without the native-loader options of rounds 3 to 6:
+
+~~~text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run <single-file> --maxWorkers=1
+~~~
+
+| Group | Files | Passed | Skipped |
+|---|---:|---:|---:|
+| This round's file, hygiene, and W1.3's journal and recovery tests: tests/worker/{onboardingJournal, hygiene, recovery, workerRecovery, hosts, workerStorage, workerTransport, workerSpeed, loopbackHost, protocol, saveErrorName}; tests/save/{recovery, recoveryCodec, recoveryIdb, recoveryLs, recoveryStorageLock, recoveryGateScope}; tests/game/{storageCopy, playLoadTime}; tests/storageDb | 20 | 195 | 1 |
+| The lane's onboarding and guide tests: tests/game/{onboarding, guideCopy, guideNewYear, guidePowerUi, guideResume, guideTips, guideToolbarCoach, guideWhy, rciGuide}; tests/worker/{onboardingPersistence, guideFacts}; tests/sim/approvalGuide; tests/save/guideContinuity | 13 | 245 | 0 |
+| The other 29 files of tests/worker, with tests/game/approvalHud and tests/render/terrainReplica (every other user of a packet host) | 31 | 201 | 6 |
+
+Per file: onboardingJournal 13, hygiene 18, recovery 31, workerRecovery 12, hosts 6 (1 skipped), onboardingPersistence 10, onboarding 52, guideContinuity 1. The 7 skips are the existing fixture-gated cases (the grown fixture, `SIM_FIXTURES`): hosts 1, lag 1, querySideEffects 1, replica 1, replicaLive 2, replicaSafe 1. No skip was added.
+
+**tests/save/guideContinuity.test.ts and the default timeout.** In a first group run it passed with Vitest's default 5,000 ms limit, at about 5.0 s. Later, with the machine at 100 % CPU from other lanes, it timed out in all three further default runs (5.6 s and more, "Test timed out in 5000ms"), and passed in both runs with `--testTimeout 30000` (8.4 and 9.3 s). This is round 6's caveat again; the case uses SimCore, the bot and the codec, none of which this round changed. It now carries its own 60 s timeout, and passed all five runs since (4.7 s to about 8.6 s). The assertions are untouched.
+
+Scratch evidence, in C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T037aj/scratch: results-final-journal.json, results-final-guide.json and results-final-worker-rest.json with their logs-final-* folders; mutate-M0.log to mutate-M10.log and mutate-M0-safety.log; the guideContinuity-*.log runs; bot-128x15-s7.log and bot-128x15-s7-final.log.
+
+### Bot
+
+**PASS, identical:** `residents [ 61124, 93804, 37971 ]` = **192,899** in 2015 (line 20 of both bot logs). It ran twice, before and after the last source edit: all 15 year rows and the whole action log are the same in both, the two timing columns aside (done in 12.0 s, then 30.4 s on the busy machine). The round changes no simulation code, balance or RNG draw.
+
+~~~text
+SIMBOT_LOG=1 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
+~~~
+
+### Plan versus code, and requests
+
+1. **The whitelist needed no edit** (first bullet of this section). `isJournalOp` and `JOURNAL_OPS` are in src/save/recoveryCodec.ts; protocol.ts:41 holds the `JournalOp` type.
+2. **Rule 2 is not W1.3's.** W1.3 has no last-write-wins rule to use, so this round adds one for this op. It can be dropped on its own; the worst case without it is under *The reserve and coalescing*.
+3. **Request, docs/WORKER_DESIGN.md §4.3 (not edited):** its `JournalOp` type lacks `'setOnboarding'`, and "What it holds" does not know the two rules. Proposed text: add `| 'setOnboarding'` to the type, and to "What it holds": "FH-22's `setOnboarding` sets the guide's whole record: the record the city already holds is not appended, and an applied one replaces the earlier ones (last write wins)."
+4. **Request, tools/qa-journal.mjs:108 (W1.3's Desktop QA item D1; not edited, not run):** the check "1 the title offers the journal" requires `j1?.ops?.length === 3`. With this lane in dev, a fresh `?quickstart=1` city enrols in the guide and posts its record at entry. That journal then holds four ops (the guide's record, setTax, setFunding, zone), and the check fails on its count alone. Proposed: `j1?.ops?.filter(([, op]) => op !== 'setOnboarding').length === 3`. By reading, the script's other checks compare values, not counts.
+5. **T083's queue item (d)** ("the worker journal carrying `setOnboarding` waits for my T037a lane") is this round. T083 needs no placeholder for it.
+6. **Two known limits, both on the safe side** (an extra entry, never a lost change). After a record the city rejected, the valid record sent again is journaled once although the city answers that nothing changed (the mirror remembers the newest record posted, valid or not); the guide never sends an invalid record. And when the guide returns to the record its base holds (A, B, A), the journal keeps A instead of nothing: its replay changes nothing, the worker's boot saves an identical city, and the loopback reads as unsaved until its first save (W1.3 counts carried edits as changes).
+
+### Not verified here
+
+- Any browser or real-GPU run on `?simworker=1`, and the full vitest: not run, by the lane rules. The list below is for the lead.
+- The seven fixture-gated cases above (skipped, as before).
+- Item 4's effect on tools/qa-journal.mjs is from reading the script and Onboarding's constructor, not from a run.
+- W1.3's persistence `'main'` fallback and a real resync through the host carry the guide record through their generic paths; no separate case was added (W1.3's own cases cover the paths with `setTax`, and case 7 covers lost acks at the mirror).
+
+### Browser recheck (for the lead, real GPU, production build)
+
+- [ ] Before W1.3's D1 (`node tools/qa-journal.mjs`): apply request 4, or expect its check 1 to fail on the op count.
+- [ ] `/?quickstart=1&size=128&simworker=1&simdev=1`: `__metropolis.city.host.kind === 'worker'` and `.persistence === 'worker-idb'`.
+- [ ] **NOTE-079's case.** Save. Minimise the guide. Take the worker snapshot (`__metropolis.snapshotNow('hidden')`, or wait 30 s), then hold later ones as qa-journal does: `__metropolis.city.host.snapshot = () => new Promise(() => {})`. Expand the guide and open the Budget panel once. Close the tab. Reopen `/?simworker=1&simdev=1` (not quickstart, which resets the region): the title offers the recovery snapshot. Recover. Expected: the guide is expanded, `host.state.systemData.onboarding` has `minimised: false` and `budgetOpened: true`, and no second offer follows. While the city is still paused in its founding phase the save pill reads Saved (the worker saved before its Ready); a running city reads unsaved again after its next day.
+- [ ] **The journal alone.** Save, minimise the guide, close the tab within 30 s (snapshots held). Reopen: "A record of your edits since the last save was kept on this device". Recover: the guide is minimised, and the pill reads Saved while the city is paused. The offer for a guide-only change is expected, as on the default host (QA 1.6).
+- [ ] **The same record.** On a saved, paused city: `h = __metropolis.city.host; await h.act('setOnboarding', [structuredClone(h.state.systemData.onboarding)]).done` gives `true`, and the pill stays Saved. Switch to another tab and back: `localStorage.getItem('metropolis.recovery.journal')` gained no entry (it is `null` after a save).
+- [ ] **Many updates.** With autosave off, run two game years at ultra, then switch to another tab and back: `JSON.parse(localStorage.getItem('metropolis.recovery.journal') ?? '{"ops":[]}').ops.filter((o) => o.op === 'setOnboarding').length` is at most 1 (2 with one in flight).
+- [ ] Repeat NOTE-079's case on `?simworker=loopback`: the same, except that the city reads Unsaved after Recover until its first save.
+
+---
+
+## Round-6 report (historical)
 
 Base: **656ac4d**, with dev **d83f0d0** merged after the committed round-5 work. Read the complete assigned gate_failure_r5.txt before editing. This round is **one test-setup correction**, plus this report; changes remain uncommitted.
 
