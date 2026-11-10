@@ -1,5 +1,5 @@
 /**
- * The RCI segment's guide (POLISH_PLAN FH-03, LG-05), headless (src/ui/TopBar.ts draws it):
+ * The RCI segment's guide (POLISH_PLAN FH-03, LG-05), headless (src/ui/topbar/rciSegment.ts draws it):
  * - FH-03's "+ zone" badge: a family whose demand is above ZONE_BADGE_DEMAND with fewer than ZONE_BADGE_LOTS empty
  *   road-facing lots (zoneRoom, src/ui/adviceActions.ts) — "zone more", where the tall bar used to offer no action. A
  *   click runs that family's zoning action (the toast's "Zone homes / shops / industry").
