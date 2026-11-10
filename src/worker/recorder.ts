@@ -9,6 +9,7 @@ import { buildingList } from '../sim/infra/common';
 import type { DisastersSystem } from '../sim/infra/disasters';
 import type { EmergencySystem, Incident } from '../sim/infra/emergency';
 import { attachOverlays, overlayDeps, overlayLayer, resolveVariant } from '../sim/infra/overlays';
+import { schedulerOf } from '../sim/infra/scheduler';
 import type { SampleRoute, TrafficSystem } from '../sim/infra/traffic';
 import type { UtilitiesSystem } from '../sim/infra/utilities';
 import {
@@ -108,6 +109,9 @@ export class ChangeRecorder {
   private rasterDirty = false;
   private rasterAt = -Infinity;
   private disposed = false;
+  /** T077 (§3.6): a day captured for the open packet ran with the host's explicit live flag off (O7: a headless
+   *  debug.runDays day). Its clock is then not `live`, even when the packet is flushed after the run has ended. */
+  private batchDays = false;
   /** Set by the command lane around a command; never contains a main-side tag object. */
   cause: number | undefined;
   private readonly now: () => number;
@@ -189,6 +193,7 @@ export class ChangeRecorder {
     this.viewDirty = this.view.overlay !== Overlay.None; this.rasterDirty = workerRaster(this.view); this.rasterAt = -Infinity;
     this.focusDirty = false; this.streamsDirty = false;
     this.hadDisasters = false;
+    this.batchDays = false;
   }
   setView(view: ViewState): void {
     if (view.focus.length > 8) throw new Error('At most eight focus buildings');
@@ -202,6 +207,8 @@ export class ChangeRecorder {
   private capture<K extends EventName>(name: K, value: CityEvents[K]): void {
     const st = this.state;
     let arg: Entry[2] = value as Entry[2];
+    // T077: the host's live flag (the scheduler's, O7) as it stands at the day itself, not at the flush that carries it
+    if (name === 'day' && schedulerOf(this.sim).live === false) this.batchDays = true;
     if (name === 'buildingAdded' || name === 'buildingChanged' || name === 'buildingRemoved') {
       const b = value as Building;
       arg = this.records.add(b, this.defs, this.opts.dev);
@@ -397,7 +404,8 @@ export class ChangeRecorder {
     const rasterReady = this.rasterDirty && workerRaster(this.view) && now - this.rasterAt >= 500;
     if (!opts.force && !this.replies.length && !this.watches.length && this.pong === undefined && !logReady && ![...this.dirty].some(due) && !this.viewDirty && !this.focusDirty && !this.streamsDirty && !rasterReady && !dayPassed
       && plainEqual(this.policy, policy) && now - this.lastFlush < 250) return null;
-    const p: Packet = { seq: ++this.seq, cmd: opts.cmd ?? this.command, clock: this.clock(opts.live ?? false), log: [] };
+    const p: Packet = { seq: ++this.seq, cmd: opts.cmd ?? this.command, clock: this.clock((opts.live ?? false) && !this.batchDays), log: [] };
+    this.batchDays = false;
     if (this.acks.length) { p.acks = this.acks; this.acks = []; }
     if (this.replies.length) { p.replies = this.replies; this.replies = []; }
     if (this.watches.length) { p.watch = this.watches; this.watches = []; }

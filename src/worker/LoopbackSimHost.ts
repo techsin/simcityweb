@@ -258,6 +258,8 @@ export class PacketSimHost implements SimHost {
   get speed(): number { return this.speedMirror; }
   get liveSlowdown(): number { return this.replica.clock.slow; }
   get cause(): Cause | null { return this.replica.cause; }
+  /** T077 (§3.6): the replayed packet's `live` flag, for the loopback and the worker host alike */
+  get liveYear(): boolean | undefined { return this.replica.liveYear; }
   get emergency() { return this.replica.emergency; }
   get traffic() { return this.replica.traffic; }
   get newsSeq(): number { return this.replica.newsSeq; }

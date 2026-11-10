@@ -53,6 +53,9 @@ export interface NewYearDeps {
   overlayRoot?: HTMLElement;
   /** hold or release the calendar through the host (NOTE-041's holdCalendar command); without it the date runs on */
   holdCalendar?: (on: boolean) => void;
+  /** the host's liveYear (WORKER_DESIGN §3.6), read as the year turns: true when its day was frame-paced, false for a
+   *  batch of days; without it, or when the host cannot tell (undefined), the days since the last frame decide */
+  liveYear?: () => boolean | undefined;
   /** real time in ms for the pacing (default performance.now; tests and the pacing probe pass their own clock) */
   now?: () => number;
 }
@@ -291,8 +294,11 @@ export class NewYearCelebration {
   private onYear(year: number): void {
     const st = this.deps.sim.state;
     const popNow = st.stats.population;
-    // a brand-new city (day 0) or years simulated in a batch (headless runDays / loading) don't get a party
-    const batch = this.frames === 0 || st.day - this.lastFrameDay > 8;
+    // a brand-new city (day 0) or years simulated in a batch (headless runDays / loading) don't get a party. The host
+    // says whether the year's day was frame-paced (a worker's backlog after a stall or a hidden tab is no batch); where
+    // it cannot tell, a year with no frame yet or more than 8 days after the last one counts as a batch, as before
+    const live = this.deps.liveYear?.();
+    const batch = live === undefined ? this.frames === 0 || st.day - this.lastFrameDay > 8 : !live;
     if (st.day > 0 && !batch && (popNow > 0 || st.buildings.size > 0)) {
       if (this.deps.settings().newYearPacing === 'everyYear') {
         // today's pacing: a show that is still running is never cut short, this year only gets its toast

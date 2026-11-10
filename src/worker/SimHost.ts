@@ -314,6 +314,15 @@ export interface SimHost {
   readonly pending: PendingView;
 }
 
+/** T077 (WORKER_DESIGN §3.6): New Year's batch test, read inside a 'year' listener. */
+export interface SimHost {
+  /** Whether the days whose events are being emitted came from frame-paced ticks. True in a tick's days, however late
+   *  or bunched their packets reach the page. False for a batch of days (runDays, a deterministic run; on the local
+   *  host, any day outside its own tick). Undefined when the host cannot tell (no packet is being replayed, or the
+   *  packet carries no `live` flag): New Year then keeps its frame-gap rule. */
+  readonly liveYear: boolean | undefined;
+}
+
 export interface LocalSimHostOptions {
   rctx?: RegionContext | null;
   initialSpeed?: number;
@@ -389,6 +398,10 @@ export class LocalSimHost implements SimHost {
   get policy(): PolicyView { return this.core.livePolicy.view; }
   simTime(): number { return this.sim.simTime(); }
   secondsPerDay(): number { return this.sim.secondsPerDay(); }
+
+  // T077 (§3.6): only the days of this host's own tick are frame-paced; a batch (sim.runDays) runs outside frame().
+  private ticking = false;
+  get liveYear(): boolean { return this.ticking; }
 
   // W0.5: stable readers follow lazy system boot and state replacement.
   get emergency(): EmergencyView { return this.views.emergency; }
@@ -544,7 +557,9 @@ export class LocalSimHost implements SimHost {
   }
 
   frame(dt: number): void {
-    this.core.frame(dt);
+    const nested = this.ticking;
+    this.ticking = true;
+    try { this.core.frame(dt); } finally { this.ticking = nested; }
     for (const w of this.watches) w.refresh();
   }
 

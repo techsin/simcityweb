@@ -100,6 +100,9 @@ export class Replica {
   diverged = false;
   newsSeq = 0;
   cause: ReplicaCause | null = null;
+  /** T077 (WORKER_DESIGN §3.6): the `live` flag of the packet being replayed, for the listeners of its log (New Year's
+   *  batch test). Undefined outside a replay, and for a packet without the flag. */
+  liveYear: boolean | undefined;
   clock!: Clock;
   policy: PolicyState = { alerts: [], live: false };
   disasters: NonNullable<Streams['disasters']> = [];
@@ -176,6 +179,7 @@ export class Replica {
       if (p.plain) { this.applyPlain(p.plain); this.hooks.plain?.(this.state, p.cmd); }
       this.applyStreams(p);
       if (p.policy) { mergePlain(this.policy, p.policy); this.hooks.policy?.(this.policy, p.cmd); }
+      this.liveYear = typeof p.clock.live === 'boolean' ? p.clock.live : undefined;
       for (const entry of p.log) this.replay(entry, p);
       if (p.blds) for (let k = 0; k < p.blds.length / REC; k++) {
         const id = p.blds[k * REC], b = this.state.buildings.get(id);
@@ -202,7 +206,7 @@ export class Replica {
       this.report('replica', error);
       try { this.hooks.requestResync?.(error); } catch (e) { this.report('replica:resync', e); }
       return false;
-    } finally { this.cause = null; }
+    } finally { this.cause = null; this.liveYear = undefined; }
   }
   private applyPlain(p: PlainPatch): void {
     const st = this.state;
