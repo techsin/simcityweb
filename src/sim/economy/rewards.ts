@@ -255,7 +255,13 @@ export function rewardsSystem(rt: EconRuntime): SimSystem {
     name: 'economy.rewards',
     init(sim) {
       rt.attach(sim);
-      check(sim, true);
+      // T093: a city this system has checked before carries its rank record (cityRanks, written by its first init) and
+      // loads its rewards state exactly as saved: unlocked, announced and the ranks. Whatever it earned since its last
+      // month tick comes at the next one, with its news, as in a game that was never saved; the check that ran here
+      // on every load unlocked it silently, and the announcement never came. Only a city without the record is checked
+      // here, silently: a new city (its first rank; sandbox unlocks everything at once), and a save from before LG-01
+      // or a city put together by a tool, where nothing says what a month tick has already seen.
+      if (!sim.state.systemData.cityRanks) check(sim, true);
     },
     monthly(sim) {
       check(sim, false);
