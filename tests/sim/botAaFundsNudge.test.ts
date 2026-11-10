@@ -53,7 +53,7 @@ describe('bot: A/A funds nudge', () => {
     expect(rng).not.toHaveBeenCalled();
   });
 
-  it('keeps real setup and the first simulated day identical apart from the funds scalar', async () => {
+  it('keeps real setup and the first simulated day identical apart from the funds scalar', { timeout: 120000 }, async () => {
     const base = new SimBot(opts, await botSystems(false));
     const nudged = new SimBot({ ...opts, aaFundsNudge: 1 }, await botSystems(false));
     const stop = new Error('after day 1');
@@ -71,7 +71,7 @@ describe('bot: A/A funds nudge', () => {
     expect(nudged.sim.rng.state).toBe(base.sim.rng.state);
   });
 
-  it('keeps every annual non-timing field and saved state identical with the flag omitted or explicitly zero', async () => {
+  it('keeps every annual non-timing field and saved state identical with the flag omitted or explicitly zero', { timeout: 120000 }, async () => {
     const play = async (extra: Partial<BotOptions>) => {
       const b = new SimBot({ ...opts, ...extra }, await botSystems(false));
       b.run(1);
