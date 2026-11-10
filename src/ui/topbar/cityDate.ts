@@ -7,6 +7,16 @@ import { h, setText, toggleClass } from '../dom';
 import { icon } from '../icons';
 import { dayLabel, hourLabel } from '../format';
 
+/**
+ * FH-08 (META's hunk): the LIVE pill's hover title states T029's rule and the restore (emergencyPolicy.ts). An
+ * emergency inside a station's range never slows the game: only 'uncovered' sites that are not 'busy' raise an alert.
+ * Outside every range LIVE holds the game at slowed 1x while the player sends help; the player's speed comes back once
+ * the help sent is on scene (FOLLOW_GRACE; at once for a drive over FOLLOW_MAX_MIN) or the call is over, unless the
+ * player changed it meanwhile. The pill shows only while that slow-down runs, so the 30 s cooldown (LIVE_COOLDOWN_MS)
+ * needs no words here.
+ */
+const LIVE_TITLE = 'Within station range never slows. Outside it, LIVE slows your dispatch; your speed returns when help arrives. Settings → Gameplay.';
+
 export class CityDateGroup {
   readonly el: HTMLElement;
   private cityName: HTMLElement;
@@ -22,7 +32,7 @@ export class CityDateGroup {
     city.addEventListener('click', () => this.ctx.openPauseMenu(), { signal: this.ctx.signal });
     this.dateEl = h('div', { class: 'hud-value' });
     this.todEl = h('div', { class: 'tod hide-sm' });
-    const date = h('div', { class: 'hud-seg' }, h('div', { class: 'hud-stack' }, h('div', { class: 'hud-label' }, 'Date', h('span', { class: 'paused-pill' }, 'PAUSED'), h('span', { class: 'live-pill', title: 'An emergency needs you: the game runs at live speed until the help you send arrives (Settings → Gameplay)' }, 'LIVE')), this.dateEl));
+    const date = h('div', { class: 'hud-seg' }, h('div', { class: 'hud-stack' }, h('div', { class: 'hud-label' }, 'Date', h('span', { class: 'paused-pill' }, 'PAUSED'), h('span', { class: 'live-pill', title: LIVE_TITLE }, 'LIVE')), this.dateEl));
     const speeds: [number, string, string][] = [[0, 'pause', 'Pause (Space)'], [1, 'play', 'Normal speed (1)'], [2, 'fast', 'Fast (2)'], [3, 'ultra', 'Ultra (3)']];
     const sp = h('div', { class: 'speed' });
     for (const [s, ic, t] of speeds) {
