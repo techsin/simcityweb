@@ -19,10 +19,27 @@ export function setSaveHook(state: object, key: string, fn: (() => void) | null)
   m.set(key, fn);
 }
 
-/** run every save hook of a state (serializeCity, before it reads the state) */
+/** run every save hook of a state (serializeCity, before it reads the state), then put the continuity records last */
 export function runSaveHooks(state: object): void {
   const m = hooks.get(state);
   if (m) for (const fn of m.values()) fn();
+  recordsLast((state as { systemData?: Record<string, unknown> }).systemData);
+}
+
+/**
+ * Move the continuity records to the end of systemData, in CONTINUITY_RECORDS order (the same values, in place). A hook
+ * adds its record at the city's first save, so the records' place among the other keys, and with it the save's bytes,
+ * would otherwise depend on when the city was first saved (the worker host saves at boot, a local game at its first
+ * save): two equal cities must save to the same bytes.
+ */
+function recordsLast(sd: Record<string, unknown> | undefined): void {
+  if (!sd || typeof sd !== 'object') return;
+  const present = CONTINUITY_RECORDS.filter((k) => Object.hasOwn(sd, k));
+  if (present.length === 0) return;
+  const keys = Object.keys(sd);
+  const tail = keys.slice(keys.length - present.length);
+  if (tail.every((k, i) => k === present[i])) return;
+  for (const k of present) { const v = sd[k]; delete sd[k]; sd[k] = v; }
 }
 
 /**

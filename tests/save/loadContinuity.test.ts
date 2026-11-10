@@ -169,4 +169,21 @@ describe('T057: save / load continuity', () => {
     // (the save itself is not changed)
     for (const k of CONTINUITY_RECORDS) expect(sd(cur)[k], k).toBeDefined();
   });
+
+  it('a city saves to the same bytes whenever it was first saved (the records go last in systemData)', { timeout: 120_000 }, () => {
+    // The worker host saves at boot and a local game at its first save, so a hook adds its record at different times;
+    // a systemData key a system adds after that (here `lateKey`) must not change the save's bytes (tests/worker/hosts).
+    const bot = new SimBot({ size: 32, years: 1, seed: 3, difficulty: 'medium', terrain: 'flat', water: 0, quiet: true, noInfra: true }, economySystems());
+    bot.run(1);
+    const base = serializeCity(bot.st, { copy: true });
+    for (const k of CONTINUITY_RECORDS) delete (base.data.systemData as Record<string, unknown>)[k];
+    const games = [0, 1].map(() => { const st = deserializeCity(base); return { st, sim: new Simulation(st, economySystems()) }; });
+    for (const g of games) g.sim.runDays(1);
+    serializeCity(games[0].st, { copy: true }); // (only the first game saves early)
+    for (const g of games) { g.st.systemData.lateKey = { v: 1 }; g.sim.runDays(2); }
+    const bytes = games.map((g) => createHash('sha256').update(encodeBundle({ ...serializeCity(g.st, { copy: true }), savedAt: 0 })).digest('hex'));
+    expect(bytes[0]).toBe(bytes[1]);
+    const keys = Object.keys(serializeCity(games[1].st).data.systemData as object);
+    expect(keys.slice(-CONTINUITY_RECORDS.length)).toEqual([...CONTINUITY_RECORDS]);
+  });
 });
