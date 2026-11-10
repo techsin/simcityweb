@@ -1,5 +1,166 @@
 # T028 report: the worker-mode acceptance harness (desktop, real GPU)
 
+## Cloud carry-over (Nov 3)
+
+Run on the cloud on Nov 10 by the desk3 chain's lane finisher (NOTE-044), after T059. Branch **`cloud/t028`**, from
+`local/T028-qa-worker` @ `26fe7fb` with dev `d8ac140` merged in (`da85326`). This is a verification lane: no browser
+runs on the cloud any more (NOTE-061; `lock.sh` refuses them), so every browser gate is in the Desktop QA list below.
+
+**The launcher moved:** T028's 28-line launcher is now **`tools/qa-worker/cli.mjs`**. `tools/qa-worker.mjs` is
+T034's W1.2 browser QA, merged into dev with T034 (`5c40d77`). The two files were an add/add conflict. The older
+sections below keep `tools/qa-worker.mjs` where they record what was run on the desktop at the time.
+
+### Gap list (required against done; written before the work, G13 and G14 added when the static check found them)
+
+Sources: the task file, NOTE-024/035/037/038/044-048/057/059-061/064, WORKER_DESIGN §5.4, Appendix A, R16 and the
+§6 W1.2 and W1.4 rows, the handoff of Nov 4 (`docs/dev/handoff/2026-11-04/README.md`, which lists T028 as desktop
+DONE), the desk3 brief, this report and the diff against dev.
+
+| # | Required | State at `26fe7fb` | Cloud action |
+|---|---|---|---|
+| G1 | Merge dev (NOTE-047 "then merge dev"; the brief) | base 821a8d6, about 280 commits behind; `tools/qa-worker.mjs` added on both sides | merged; launcher moved to `tools/qa-worker/cli.mjs` (imports made relative to its folder); T034's file kept at its path |
+| G2 | `tools/qa-worker/fixture.test.ts` runs in the full vitest | **never executed**: on the desktop vitest stopped before discovery (`spawn EPERM`, Windows) | run alone and in the full suite here (it is in vitest's default include; tsconfig covers `tools`) |
+| G3 | Node selftests and the native protector selftests | 43/0 and both native commands passed on Node 22.12 (desktop) | rerun on the merged tree, Node 22.22 |
+| G4 | tsc on the merged tree | passed on the desktop's old base | rerun |
+| G5 | Bot identical to dev | not run (no src change) | run on both trees, though no src file differs |
+| G6 | Gates: passes against LocalSimHost; broken build fails; nothing under `src/**` changes | local `--w1` 51/0/5 and loopback 53/0/3 with T059 on the real GPU (`abb8ed1`); both broken-zone controls PASS; no src hunk | verified that the merged tree's diff against dev has no `src/**` path; the browser reruns on the merged dev go to the Desktop QA list |
+| G7 | Worker mode (`?simworker=1`, the protector in the `sim` isolate, `host.query('verify')`) once T034 is in dev (NOTE-047, 059, 060, 061) | skipped with exit 3: T034 was not in its tree | T034 is in dev (`5c40d77`), so `--host worker` now runs the real gate. Not run here (NOTE-061): **Desktop QA item 1** |
+| G8 | The close-page journal restore (§5.4 "From W1.3") | SKIPPED until T039 | still waits: `cloud/w13` is not in dev. Remaining |
+| G9 | Desktop work saved mid-edit | `local/T028-qa-worker-snap` (`4625a55`, 19:34 UTC Nov 3) holds uncommitted work; `8ef8f7c`, `f22933f`, `abb8ed1` are `wip` commits | checked below |
+| G10 | Docs: README, help text, report name the launcher; README said worker "currently" skips; the report said the protector passes only after T059 merges | stale after the merge | updated (T059 is in dev, `b99636f`) |
+| G11 | POLISH_BACKLOG line: consolidate the two harnesses after W1.4 (the brief) | none | added under the tooling lines |
+| G12 | `.done` line for the cloud lane | the desktop's line only | appended |
+| G13 | §5.4 "no crash overlay may appear" (the freeze and the final check), with the real worker host | both checks looked for `.err-card, vite-error-overlay, [data-sim-crash]`; `[data-sim-crash]` was a placeholder that never landed, and W1.2's crash path (in dev since T034) is the "The simulation stopped" modal plus `city.crashed` | found by the static check below; fixed in `7f2ec5d` with a selftest |
+| G14 | Worker mode must not fail on a check its host does not have yet (§6 W1.2: "qa-worker green without the journal check") | `recovery mirror` ran for every packet host and requires the localStorage journal the App's pagehide writes. W1.2's WorkerSimHost runs with `journal: false` and a `SnapshotMirror` (`WorkerSimHost.ts:206`, `:358`), so pagehide writes no journal: a certain FAIL on `--host worker` | found by the static check; fixed in `65e1fc7`: the check SKIPS on the worker host with its reason, plus a selftest with a source tripwire |
+
+### What was done
+
+- **The merge (`da85326`).** One conflict, `tools/qa-worker.mjs` (add/add). Dev's file (T034, 773 lines) is kept at
+  its path. T028's launcher is now `tools/qa-worker/cli.mjs`; its only change is `./qa-worker/harness.mjs` →
+  `./harness.mjs` and `./qa-worker/run.mjs` → `./run.mjs`. The README's commands and `--help` name the new path. No
+  package script names either file. Every other dev change merged cleanly.
+- **Both tools start.**
+  - `node tools/qa-worker/cli.mjs --help`: exit 0, prints the help without importing Vite or Playwright.
+  - `node tools/qa-worker/cli.mjs --bogus`: `FAIL arguments: unknown option --bogus`, exit 2.
+  - `import('./tools/qa-worker/run.mjs')`: the whole module graph resolves (`GPU`, `SWIFTSHADER`, `run`).
+  - `node --check` passes on both launchers.
+  - T034's `tools/qa-worker.mjs` has no help or dry-run mode; after reading its arguments it starts Vite and Chromium.
+    So only its syntax and dependency resolution were checked: `vite` and `playwright` resolve through its own
+    `createRequire(package.json)`. Its root is `..` of its own folder, unchanged because the file did not move.
+- **The mid-edit work (G9), checked against the commits:**
+  - The snapshot `4625a55` is a stash taken 7 minutes before `8ef8f7c` (14:34 against 14:41 -0500), on the same
+    parent `28a4862`.
+  - The diff from the snapshot to `8ef8f7c` only carries that work further: dismissAlert moves before dispatch on its
+    own fire; the recovery mirror's `pagehide` is paired with a `pageshow`; `page.mjs` keeps the world reference for
+    the teardown counts; new selftests; the README is rewritten. Nothing from the snapshot is lost.
+  - `abb8ed1` is the tree of the desktop's final real-GPU runs (53/0/3 loopback, 51/0/5 local `--w1`). `26fe7fb`
+    changes only this report and the `.done`. So the code on this branch is the code those runs measured, plus the
+    two import paths above.
+- **Static check of the harness against the merged dev.** No browser could run, so the harness's seams in the app were
+  checked against the merged source:
+  - `--break-ack`'s three source anchors are each still unique: `SimHost.ts:433` and `LoopbackSimHost.ts:325` and
+    `:331`. `WorkerSimHost` extends `PacketSimHost` from `LoopbackSimHost.ts`, so the packet transform also covers
+    worker builds.
+  - The sim worker is still created with `name: 'sim'` (`WorkerSimHost.ts:48`), the name `w1.mjs` requires.
+  - `?simworker=0|loopback|1` still select local, loopback and worker (`CityScene.ts:211`, `main.ts:158`).
+  - The command set is unchanged since the lane's base: the 23 UI ops plus `holdCalendar`.
+  - The TopBar speed titles still exist, and so do the selectors the driver uses: `.tb-btn`, `.tb-l`, the flyout
+    classes, `.mp-canvas`, `.onboard`, `.ob-step`, `data-panel`, `.info-actions` and `.emg-x`. EmergencyBanner still
+    has `banners`, `settleUntil`, `send` and `choose`.
+  - The checks' UI strings and classes still exist: "Make historic", "Save & exit to region", "Emergency alerts",
+    "Loans", "Services", "Resume", `.dv-btn`, `.fund-row`, `.loan-row`, `.loan-actions`, `.pause-menu`, `.menu-item`,
+    `.rc-item`, `.set-row`, `.sr-l`, `.tax-row`, `.tool-opts`, `.save-pill` and `.err-card`.
+  - Two misses. `[data-sim-crash]` in the crash-overlay selector is rendered by nothing (G13). The recovery-mirror
+    check expects a journal that W1.2's worker host does not write (G14).
+- **The crash-overlay fix (G13, `7f2ec5d`).** `page.mjs` gains `crashOverlays()`, a page-side read of error cards,
+  Vite's overlay, the crash dialog by its title (`src/region/ui/dialogs.ts` `openSimCrashDialog`) and the App's
+  `city.crashed`, which `main.ts` `onWorkerCrash` sets. `freeze.mjs` gains `assertNoCrashOverlay(page, where)`, used by
+  the freeze check and by `no crash overlay`. Check names and counts are unchanged.
+  - Before the fix, a worker crash in a run still failed it, through `console errors` (onWorkerCrash logs an error) and
+    usually through the freeze's day-advance check. But the two checks named for the crash overlay were blind to it.
+  - New selftest "crash overlay: the W1.2 crash dialog and a crashed city fail the gate; a healthy page passes".
+    With the old selector restored in the helper it fails: 43 passed, 1 failed (`not ok 20`). With the fix: 44/0.
+- **The worker host's recovery-mirror check (G14).** `harness.mjs` gains `recoveryMirrorSkip(host)`. It returns the
+  skip reason for local (unchanged) and for worker, and `null` for loopback, which still runs the journal check.
+  `checks.mjs` uses it.
+  - New selftest "recovery mirror: local and the W1.2 worker host skip the journal check; loopback runs it". It also
+    asserts that `WorkerSimHost.ts` still has `journal: false` and the `SnapshotMirror`. So when W1.3 turns the worker
+    journal on, the test fails and names the skip to replace.
+  - With the worker skip removed it fails: 44 passed, 1 failed (`not ok 20`). With it: 45/0.
+- **Docs.** README: the launcher, a pointer to T034's tool, the worker-mode paragraph, the crash-overlay definition
+  and the recovery-mirror row. This report: the invocation block and a note under the old "Remaining" list.
+  POLISH_BACKLOG: the consolidation line. The `.done`: the cloud line.
+
+### Gates
+
+GATES_PLACEHOLDER
+
+### Desktop QA list (NOTE-059, NOTE-061)
+
+Branch `cloud/t028` at the commit named in the `.done` line, or dev once it is merged. Use Playwright's Chromium 141
+(Playwright 1.56.1, as in this report's runs) on the real GPU, one browser at a time, from the worktree root.
+`$s` is a scratch folder.
+
+0. **Before the browser:** `node tools/qa-worker/selftest.mjs` must give 45 passed, 0 failed (the cloud's count on
+   Node 22.22).
+1. **Worker mode, the open acceptance item (G7):** `node tools/qa-worker/cli.mjs --host worker --out $s/worker.json`.
+   - Expected: exit 0, and `host ready` reports kind `worker` (a fallback to local fails).
+   - Protectors: `main intact; sim worker intact`, with exactly one dedicated worker named `sim`, at boot, at the end
+     and after the freeze.
+   - `replica verify`: the worker's exact digest equals the replica's.
+   - Freeze: at least 15,000 ms frozen, resume within 1,000 ms, 0 frames while frozen, 0 crash overlays.
+   - `no crash overlay` PASS. Since `7f2ec5d` this check also reads W1.2's crash dialog and `city.crashed`.
+   - 0 console errors.
+   - `recovery journal` SKIPPED (W1.3), and `recovery mirror` SKIPPED (G14: W1.2's snapshot recovery has no journal).
+     Every other applicable check PASS.
+2. **Loopback and local on the merged dev:** `--host loopback --out $s/loopback.json` (expected 53/0/3, as at
+   `abb8ed1` with T059) and `--host local --w1 --out $s/local-verify.json` (expected 51/0/5).
+   - Since the desktop's run, dev gained FH-08 (`707a19f`). Tips are on in a fresh profile. So the first alerted fire
+     that is major and can be saved by hand (the harness's first fire is uncovered with manual dispatch possible) can
+     now open the E1a teaching card. The card takes a teaching pause, adds 210 px to its banner, and sends `setSettings`
+     from the banner. In the harness, that first fire is `triggerDisaster`'s, and the `dispatch` / `dispatchBest` /
+     `dismissAlert` checks follow it.
+   - If one of those checks fails at the card, it is the fixture, not a host bug. Pre-seed the profile pref
+     `emergencyTeaching` as seen (or press "Got it" first), rerun, and report which you did.
+   - Dev also gained NEW-04's per-region lock (`308ade3`) and LG-21's year review (`6406a0f`). The harness reloads in
+     one tab and never reaches a New Year, so neither should show up.
+3. **The controls:**
+   - `--host loopback --break-ack zone` and `--host local --break-ack zone`: exit 1 with **PASS broken-build
+     control**, and only the zone ack pending.
+   - New, never run: `--host worker --break-ack zone`, with the same expectation.
+   - `--host loopback --drop-ack dispatch`: only the dispatch ack fails.
+4. **T034's tool at its path:** `node tools/qa-worker.mjs --out $s/w12`. Expected: the PASS set T034's report records
+   (`docs/dev/reports/local-W1.2-worker.md`). This checks that both tools still run side by side.
+5. **Only if Playwright's Chromium moves past 141:** a V8 that tracks array buffer views (Chromium 153) does not
+   invalidate the detach protector for a no-view or one-view transfer. Add T059's page-side positive control (a
+   two-view and a DataView detach) before trusting "intact" (`docs/dev/reports/local-T059-s0-lod-transfer.md`, its
+   Desktop QA item 2).
+
+### Decisions (conservative readings, with the evidence)
+
+- **The launcher's new path is `tools/qa-worker/cli.mjs`** (the desk3 brief). §5.4 names `tools/qa-worker.mjs`, which
+  is now T034's tool. Choosing one CLI at that path is the backlog line, after W1.4. The task file still says T028
+  owns `tools/qa-worker.mjs`; the task file is the lead's, so it was not edited.
+- **"Check both still start" without a browser.** The lock refuses browser runs on the cloud (NOTE-061). So this
+  check is limited to the launcher's argument handling and module graph, and to T034's syntax and dependency
+  resolution. Their browser runs are Desktop QA items 1-4.
+- **FH-08 is not worked around in advance.** Without a browser run, a pre-seeded pref would remove real app flow
+  from the acceptance run on a guess. Desktop QA item 2 says how to tell a fixture failure from a host failure.
+- **The protector's positive evidence stays the desktop's Chromium 141 A/B** (dev without J0 failed, T059 passed).
+  The harness pins Chromium 141 through Playwright 1.56.1. A page-side positive control is needed only if that
+  changes (Desktop QA item 5).
+- **The bot ran although no `src/**` file differs from dev.** The brief asks for it, and it is cheap.
+- **Status partial:** the gates are green and the merge is safe. The worker-mode acceptance run (G7, real GPU) and the
+  W1.3 journal check (G8) remain.
+
+### Remaining
+
+- `--host worker` on the real GPU, now that T034 is in dev (Desktop QA item 1), plus the loopback/local reruns and
+  controls on the merged dev (items 2-4).
+- The close-page journal restore, after W1.3 (T039, `cloud/w13`) merges.
+- Consolidating `tools/qa-worker.mjs` and `tools/qa-worker/cli.mjs` after W1.4 (POLISH_BACKLOG).
+
+
 ## Final results (NOTE-047 item 1)
 
 **Verdict: done for loopback mode.**
@@ -69,6 +230,8 @@ the first LOD job detached ArrayBuffers there and invalidated the main isolate's
   today.
 - The close-page journal restore, once T039 (W1.3) lands.
 - The protector check passes on dev only after T059 merges. Until then, a dev run reports the J0 bug, correctly.
+- *(Cloud, Nov 10: T034 is in dev at `5c40d77` and T059 at `b99636f`. The worker run is Desktop QA item 1 of the carry-over
+  section above.)*
 
 Logs and JSON outputs are in the worker's scratch (`t028/r3/`, plus `t028/` for round 2 and `t028/round1/`).
 
@@ -422,9 +585,9 @@ for local, loopback, worker, isolated ghosts/freeze, controls and SwiftShader. M
 
 ```powershell
 Set-Location 'C:/Users/techsin/Desktop/projects/simcityweb-T028'
-node C:/Users/techsin/Desktop/projects/simcityweb-T028/tools/qa-worker.mjs --host loopback --out C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T028r/scratch/loopback.json
-node C:/Users/techsin/Desktop/projects/simcityweb-T028/tools/qa-worker.mjs --host loopback --break-ack zone --out C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T028r/scratch/broken-zone.json
-node C:/Users/techsin/Desktop/projects/simcityweb-T028/tools/qa-worker.mjs --host worker --out C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T028r/scratch/worker.json
+node C:/Users/techsin/Desktop/projects/simcityweb-T028/tools/qa-worker/cli.mjs --host loopback --out C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T028r/scratch/loopback.json
+node C:/Users/techsin/Desktop/projects/simcityweb-T028/tools/qa-worker/cli.mjs --host loopback --break-ack zone --out C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T028r/scratch/broken-zone.json
+node C:/Users/techsin/Desktop/projects/simcityweb-T028/tools/qa-worker/cli.mjs --host worker --out C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T028r/scratch/worker.json
 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tools/qa-worker/fixture.test.ts --maxWorkers=1
 ```
 

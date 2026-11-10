@@ -62,6 +62,12 @@ Report: docs/dev/reports/local-T003-gpu-smoke.md. 60 Hz held everywhere (0 frame
   `heapanalyze.mjs` build a wrong default source-map path on Windows (`C:\C:\…`; `--map` works around it); the
   `captures` target fails under `core.autocrlf=true` ("anchor … not found" in `populationAggregateProbe.bench.mjs`): add a
   `.gitattributes` with `* text=auto eol=lf` or normalise CRLF in the bench's anchor search.
+- [tooling] Two worker acceptance harnesses (T028's cloud carry-over, Nov 10): consolidate them after W1.4.
+  `tools/qa-worker.mjs` is T034's W1.2 browser QA (boot, tools, save/load, freeze, crash/recover/watchdog/fallback,
+  region pre-spawn, soak), used by T034's and T061's gates. `tools/qa-worker/cli.mjs` is T028's §5.4 harness (every
+  Appendix A command through the real tools with ack, ghost and packet oracles, the held brush, the exact digest, the
+  TurboFan protector probe in main and `sim`, the broken-ack controls, local/loopback/worker hosts). Keep one CLI
+  at the path §5.4 names, with T028's oracles and T034's crash/recover/watchdog/fallback/region/soak steps.
 
 - **Tornado tree damage shows live (WORLD, render-only; from R1's writer audit, Oct 27).** Today the tornado lowers trees every step, but the renderer hears about it only at the tornado's end (one `treesChanged` over its whole path), so the 3D trees and the forest tint vanish in one block afterwards. A render-side hook on the `disaster` tornado events (they carry x, z and `active`) can mark the funnel's disc dirty for `TerrainRenderer.markCells` and `TreeRenderer.onCellsChanged` on every frame while a tornado is active. No sim change: `pollution.ts` listens to `treesChanged`, so a per-step sim event would move the bot.
 - **Render, one building model takes about 27 ms to build (T040 real-GPU run):** on the 652k bot256 city at ultra, the worst BuildingRenderer frame in both dev and T040 is a single indivisible build (`bmax` 26-29 ms, around sim days 22,500-23,100). T040's queue moves it off the event frame but cannot split it. Find which model it is (the harness records the frame in qa/T040perf), then cache or prebuild its geometry, or build that model in a worker.
