@@ -187,7 +187,7 @@ export class Driver {
   async banner(id, action) {
     const point = await poll(() => this.page.evaluate(({ id, action }) => {
       const b = window.__metropolis.city.scene.emgBanner.banners.get(id);
-      if (!b || performance.now() <= b.settleUntil) return null;
+      if (!b) return null; // (T085 retired the banner settle window: a press is judged by the stack)
       const button = action === 'dismiss' ? b.el.querySelector('.emg-x') : b[action], rect = button.getBoundingClientRect();
       if (button.disabled || rect.width === 0 || rect.height === 0) return null;
       return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
