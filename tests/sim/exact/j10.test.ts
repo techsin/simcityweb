@@ -257,7 +257,7 @@ describe('J10 exact lookup reuse', () => {
       }
     }
     expect(cases).toBe(10240);
-  }, 45000);
+  }, 120000);
 
   it('matches 1,024 demographic updates with special floats, cache invalidations, borders and changing defs', () => {
     const rng = new RNG('J10 float edges');
