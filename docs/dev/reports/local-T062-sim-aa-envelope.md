@@ -1,6 +1,6 @@
 # T062 — shared SIM A/A envelope
 
-Current final-gate workflow: [NOTE-053 / Round 4](sim-aa-envelope.md#note-053-sim-ensembles-round-4). Earlier rounds below retain historical measurements; their old margin recommendations are superseded by ensemble medians and bands.
+Current final-gate workflow: [NOTE-062 runner and observers](sim-aa-envelope.md#note-062-final-gate-runner-and-observers), amending NOTE-053. Earlier rounds below retain historical measurements and interim verdicts; final gates use the lead's current rules on dev including B2 and T041.
 
 Implemented on `local/T062-sim-aa-envelope`, HEAD `0df76bce1a663ee44957cf47cfecdb8b18eed187`,
 whose parent/base is dev `9fcc2ec`. The task file's `683d02b` base is stale; this measures the worktree supplied
@@ -125,3 +125,19 @@ Protocol details: year-5 pulse day1441; systematic endpoints15/60/60; literal in
 Left for final lane gates: named nine-member stages and actual variants; full-suite/GPU and old-save checks. NOTE-050’s large-effect sweep checks were not rerun. Browser Acceptance checklist: N/A. All changes uncommitted; no commit, push, merge or `.done` file.
 
 Round 5 (NOTE-055): the interim T043/T044/T045 campaign on the original dev simulation is complete, including every required nine-member stage. Paste-ready lane reports, target margins, exact commands and independent verification are in `scratch/note053-lanes/{T043,T044,T045}.md` and `SUMMARY.md`, under the full scratch root linked in the main report’s Round 5 note. The original 15 dev members were reused; 170 new members ran, with a verified maximum of four concurrent bots. Only short report-location notes changed in this worktree; no source, fixture or measurement-tree edits. Post-T041 final gates and the lanes’ own spatial/monthly/browser/timing probes remain separate.
+
+## Round 5 desktop follow-up — NOTE-062
+
+The [current report section](sim-aa-envelope.md#note-062-final-gate-runner-and-observers) documents the new final-gate rules, observer definitions, exact commands and proof paths. Changes are uncommitted on HEAD `818a040`; no commit, push, merge or `.done` file.
+
+- `tools/simEnsemble.mts`: nine directly for bases/long variants, five plus stage two for short variants, explicit roles, no third stage, known-compatible cached-member reuse, parent provenance, optional-observation bands and long-row member/stall tables.
+- `tools/simEnsembleStats.ts`: disjoint-band streaks, nine-member zero-I-HT exemption/activation, optional metrics including net approval, and strict under-100k stall diagnostics.
+- `tools/simEnsembleCompare.mts`: new verdict/report fields, actual matching raw-member projection for five-member short variants, strict raw origin checks, both sides' endpoints/stall counts and origin tables.
+- `tools/simBotObservations.ts` (new) and `tools/simAaForkEnvelope.mts` (observation-hook hunk): monthly commute EMA/net approval, resident commute, industry demand/job/retool readings, dated reward/ordinance logs and selected-tree bundling. Original `YearRow`, actions and decision logs stay unchanged.
+- Tests: existing stats/runner tests updated; new `botEnsembleNote062.test.ts` and `botObservations.test.ts`. Both reports updated. No `src/**`, `simbot.ts`, infra, cloud-held or baseline-fixture edits; no cloud requests or out-of-scope hunks.
+
+Checks: TypeScript passed; **56 tests** passed in six sequential quiet-gated single files: stats 15, NOTE-062 8, runner 9, observations 6, fork envelope 7, funds nudge 11. Native-loader/thread mode was used as in prior rounds. The actual native CLI was also exercised, catching and correcting source-extension loading before the smoke.
+
+Exactly one two-member 128×15 s7 smoke ran, jobs=2. Both members retained all 15 annual original rows/digests and full command/decision logs. The control remains **192,899**, residents **[61124,93804,37971]**; +§100/day1 remains **190,132**. New approval-action logs contain 24/25 entries. Report-only checks reused 27 nine-member dev base records with unchanged raw bytes/mtimes, generated member columns and reproduced T043 seed 11's 44-year disjoint shift; no 256×60 bot ran. Proofs and generated tables are in `scratch/note062`, under the full scratch root in the main report.
+
+Differences/limits: stored data and pure industrialStrategy reads avoid initializing getters; old trees/caches lack retool/commute observations and are explicitly unavailable. Five-member short variants project actual matched first-stage base/dev members from nine-member caches. The named commute term is smoothed independently with the same monthly EMA; approval's separate clamp term remains included. No fresh long-run calibration or verdict was inferred from the short smoke. Final measurements after B2/T041, lane diagnosis, monthly/spatial probes, full-suite/save checks and controlled timing remain outstanding. Browser Acceptance checklist for this runner-only follow-up: **N/A**.

@@ -11,6 +11,8 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { YearRow } from './simbot';
+import type { ApprovalAction, BotObservationInputs, BotObservations } from './simBotObservations';
+const { attachBotObservations } = await import('./simBotObservations.ts' as string) as typeof import('./simBotObservations');
 
 export interface Row { size: number; years: number; seed: number }
 interface Options extends Row {
@@ -26,7 +28,7 @@ interface Spec extends Row, Source {
 export interface AnnualMetrics {
   yearIndex: number; year: number; population: number; air: number; approval: number; ihtShare: number;
 }
-interface Annual extends AnnualMetrics {
+interface Annual extends AnnualMetrics, BotObservations {
   funds: number; residents: number[]; jobsByDev: number[];
   botRow: Omit<YearRow, 'econMsPerDay' | 'totalMsPerDay'>; stateHash: string;
 }
@@ -34,6 +36,7 @@ interface Action { day: number; date: string; method: string; args: unknown[]; c
 interface Log { day: number; date: string; year: number; text: string }
 interface Completed {
   complete: true; spec: Spec; rows: Annual[]; actions: Action[]; log: Log[]; seconds: number; node: string;
+  approvalActions?: ApprovalAction[];
 }
 interface Evidence { path: string; run: Completed }
 interface Difference<T> { index: number; control: T | null; nudge: T | null }
@@ -130,14 +133,16 @@ function cliArgs(row: Row, nudge: number, day: number): string[] {
 
 /** Bundled into a fresh child with the selected tree's modules; observation matches the Round-2 sweep. */
 export async function runChild(
-  botModule: typeof import('./simbot'), dev: { ID: number; IM: number; IHT: number },
+  botModule: typeof import('./simbot'), dev: { IA?: number; ID: number; IM: number; IHT: number },
   serializeCity: typeof import('../src/save/serialize').serializeCity, specPath: string,
+  observationInputs?: BotObservationInputs,
 ): Promise<void> {
   const spec = JSON.parse(readFileSync(specPath, 'utf8')) as Spec;
   const opts = botModule.parseArgs([...cliArgs(spec, spec.nudge, spec.day), ...(spec.botArgs ?? [])]);
   if (spec.day === 1 && spec.nudge && opts.aaFundsNudge !== spec.nudge) throw new Error('selected tree lacks --aa-funds-nudge support');
   if (!spec.botArgs?.length && (opts.difficulty !== CONFIGURATION.difficulty || opts.terrain !== CONFIGURATION.terrain || opts.water !== CONFIGURATION.water || opts.noInfra || opts.profile && opts.profile !== 'default')) throw new Error('selected tree changed the default bot configuration');
   const bot: any = new botModule.SimBot(opts, await botModule.botSystems(opts.noInfra));
+  const observations = observationInputs ? attachBotObservations(bot, dev, observationInputs) : undefined;
   const rows: Annual[] = [], actions: Action[] = [], log: Log[] = [];
   const start = performance.now();
   let actionFlush = 0, logFlush = 0, injected = spec.day === 1;
@@ -182,7 +187,7 @@ export async function runChild(
     state.savedAt = 0;
     const annual: Annual = { yearIndex: rows.length + 1, year: r.year, population: r.pop, air: s.avgAir ?? 0,
       approval: r.approval, ihtShare: industry ? s.jobsByDev[dev.IHT] / industry : 0, funds: bot.st.funds,
-      residents: [...s.residents], jobsByDev: [...s.jobsByDev], botRow, stateHash: hash(state) };
+      residents: [...s.residents], jobsByDev: [...s.jobsByDev], botRow, stateHash: hash(state), ...observations?.annual() };
     rows.push(annual);
     appendFileSync(spec.annualPath, `${JSON.stringify(annual)}\n`, 'utf8');
     appendFileSync(spec.actionPath, `${actions.slice(actionFlush).map((value) => JSON.stringify(value)).join('\n')}\n`, 'utf8');
@@ -191,7 +196,9 @@ export async function runChild(
     console.error(`[${spec.id}] year ${annual.yearIndex}/${spec.years}: pop=${annual.population} air=${annual.air} approval=${annual.approval} IHT=${annual.ihtShare}`);
   });
   if (!injected) throw new Error('later-day injection was not reached');
-  json(spec.jsonPath, { complete: true, spec, rows, log, actions, seconds: (performance.now() - start) / 1000, node: process.version });
+  json(spec.jsonPath, { complete: true, spec, rows, log, actions,
+    ...(observations ? { approvalActions: observations.approvalActions } : {}),
+    seconds: (performance.now() - start) / 1000, node: process.version });
 }
 
 export async function bundleChild(opts: Pick<Options, 'tree' | 'outDir'>): Promise<string> {
@@ -201,7 +208,10 @@ export async function bundleChild(opts: Pick<Options, 'tree' | 'outDir'>): Promi
     `import * as botModule from ${JSON.stringify(join(opts.tree, 'tools/simbot.ts'))};`,
     `import { DevType } from ${JSON.stringify(join(opts.tree, 'src/core/types.ts'))};`,
     `import { serializeCity } from ${JSON.stringify(join(opts.tree, 'src/save/serialize.ts'))};`,
-    'await runChild(botModule, DevType, serializeCity, process.argv[3]);', '',
+    `import { APPROVAL } from ${JSON.stringify(join(opts.tree, 'src/sim/economy/tuning.ts'))};`,
+    `import { REWARDS } from ${JSON.stringify(join(opts.tree, 'src/sim/economy/rewards.ts'))};`,
+    `import * as demandModule from ${JSON.stringify(join(opts.tree, 'src/sim/economy/demand.ts'))};`,
+    'await runChild(botModule, DevType, serializeCity, process.argv[3], { approvalEma: APPROVAL.ema, rewards: REWARDS, industrialStrategy: ({ ...demandModule } as any).industrialStrategy });', '',
   ].join('\n'), 'utf8');
   const require = createRequire(join(opts.tree, 'package.json'));
   const { rolldown } = await import(pathToFileURL(require.resolve('rolldown')).href) as typeof import('rolldown');
