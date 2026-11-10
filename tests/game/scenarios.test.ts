@@ -2,8 +2,8 @@
  * LG-14: the scenarios' objectives and medals (src/game/scenarios.ts).
  * - Boomtown: 50k / 100k / 150k residents by the end of year 10, decided on the monthly history samples of the window.
  * - Lights Out: back to 70,000 residents and 60% approval within 12 / 9 / 6 months; gold also needs no new loan.
- * - Smog City: the 12-month average air pollution at homes 40% below the year before, with 180,000 residents, within
- *   10 / 6 / 3 years.
+ * - Smog City: the 12-month average air pollution at homes 40% below the year before, with 180,000 residents in the month
+ *   the air goal is met, within 10 / 5 / 2 years (the lead's tiers and reading, NOTE-104).
  * - Evaluation is a pure function of mirrored state: it changes nothing, needs no simulation and no random number.
  * - The profile keeps the best medal per scenario and each scenario city's outcome (medals persist across reloads).
  * - The Mayor's challenges as the dialog and the card show them.
@@ -232,14 +232,21 @@ describe('LG-14 Smog City', () => {
     expect(evaluateScenario(tenth, city(tenth, repeat(11, { pop: 190_000, air: 0.06 }), { before: repeat(12, { pop: 190_000, air: 0.1 }) })).phase).toBe('active');
   });
 
-  it('gold within 3 years, silver within 6, bronze within 10; ten years without it: lost', () => {
+  it('gold within 2 years, silver within 5, bronze within 10; ten years without it: lost', () => {
+    expect(SMOG_CITY.months).toEqual({ bronze: 120, silver: 60, gold: 24 });
+    // (ten clean months after the dirty ones bring the 12-month average 40% down: the goal falls in month dirty + 10)
     const at = (m: number) => run([...repeat(m - 12, dirty), ...repeat(12, clean)]);
-    expect(at(36).result).toEqual({ medal: 'gold', month: 34 });
-    expect(run([...repeat(26, dirty), ...repeat(12, clean)]).result).toEqual({ medal: 'gold', month: 36 });
-    expect(run([...repeat(27, dirty), ...repeat(12, clean)]).result).toEqual({ medal: 'silver', month: 37 });
-    expect(run([...repeat(62, dirty), ...repeat(12, clean)]).result).toEqual({ medal: 'silver', month: 72 });
-    expect(run([...repeat(63, dirty), ...repeat(12, clean)]).result).toEqual({ medal: 'bronze', month: 73 });
+    expect(at(24).result).toEqual({ medal: 'gold', month: 22 });
+    expect(run([...repeat(14, dirty), ...repeat(12, clean)]).result).toEqual({ medal: 'gold', month: 24 });
+    expect(run([...repeat(15, dirty), ...repeat(12, clean)]).result).toEqual({ medal: 'silver', month: 25 });
+    expect(run([...repeat(50, dirty), ...repeat(12, clean)]).result).toEqual({ medal: 'silver', month: 60 });
+    expect(run([...repeat(51, dirty), ...repeat(12, clean)]).result).toEqual({ medal: 'bronze', month: 61 });
     expect(run([...repeat(110, dirty), ...repeat(10, clean)]).result).toEqual({ medal: 'bronze', month: 120 });
+    // the card's best medal still in reach: the next month's sample decides
+    expect(run(repeat(23, dirty))).toMatchObject({ phase: 'active', reach: 'gold', clock: 'Year 2 of 10' });
+    expect(run(repeat(24, dirty))).toMatchObject({ phase: 'active', reach: 'silver', clock: 'Year 3 of 10' });
+    expect(run(repeat(59, dirty))).toMatchObject({ phase: 'active', reach: 'silver' });
+    expect(run(repeat(60, dirty))).toMatchObject({ phase: 'active', reach: 'bronze' });
     expect(run(repeat(119, dirty))).toMatchObject({ phase: 'active', reach: 'bronze', clock: 'Year 10 of 10' });
     expect(run(repeat(120, dirty))).toMatchObject({ phase: 'lost', result: { medal: null, month: 120 } });
     expect(run([...repeat(111, dirty), ...repeat(12, clean)])).toMatchObject({ phase: 'lost', result: { medal: null, month: 120 } });
@@ -291,8 +298,9 @@ describe('LG-14 evaluation', () => {
     expect(lights_out.brief).toContain('70,000 residents and 60% approval');
     expect(lights_out.goals).toEqual({ bronze: 'Within 12 months', silver: 'Within 9 months', gold: 'Within 6 months, without a new loan' });
     expect(smog_city.brief).toContain('by 40%');
-    expect(smog_city.brief).toContain('180,000 residents');
-    expect(smog_city.goals).toEqual({ bronze: 'Within 10 years', silver: 'Within 6 years', gold: 'Within 3 years' });
+    // (the lead's reading: the floor holds in the month the air goal is met, not at every moment)
+    expect(smog_city.brief).toContain('180,000 residents in the month the air goal is met');
+    expect(smog_city.goals).toEqual({ bronze: 'Within 10 years', silver: 'Within 5 years', gold: 'Within 2 years' });
     for (const s of SCENARIO_LIST) for (const m of MEDALS) expect(s.goals[m].length).toBeGreaterThan(5);
   });
 
@@ -345,8 +353,8 @@ describe('LG-14 medals in the profile', () => {
     expect(recordScenarioRun('c', 'smog_city', { result: { medal: 'silver', month: 38 } }, 3)).toBe(true);
     expect(recordScenarioRun('d', 'smog_city', { result: { medal: 'silver', month: 39 } }, 4)).toBe(false);
     expect(loadMedals().smog_city).toMatchObject({ medal: 'silver', month: 38 });
-    expect(recordScenarioRun('e', 'smog_city', { result: { medal: 'gold', month: 30 } }, 5)).toBe(true);
-    expect(loadMedals().smog_city).toEqual({ medal: 'gold', month: 30, at: 5 });
+    expect(recordScenarioRun('e', 'smog_city', { result: { medal: 'gold', month: 20 } }, 5)).toBe(true);
+    expect(loadMedals().smog_city).toEqual({ medal: 'gold', month: 20, at: 5 });
     // a lost run is remembered as that city's outcome, and takes no medal away
     expect(recordScenarioRun('f', 'smog_city', { result: { medal: null, month: 120 } }, 6)).toBe(false);
     expect(loadScenarioRun('f')).toEqual({ result: { medal: null, month: 120 } });
@@ -412,7 +420,9 @@ describe('LG-14 Mayor\'s challenges in the game', () => {
     expect(CHALLENGE_INFO.noLoans.name).toBe('No loans');
     expect(CHALLENGE_INFO.noDirtyIndustry.rule).toContain('I-D');
     expect(CHALLENGE_INFO.frequentDisasters.rule).toBe(`Tornadoes, quakes and meteors strike ${FREQUENT_DISASTERS === 2 ? 'twice' : `${FREQUENT_DISASTERS} times`} as often.`);
-    expect(CHALLENGE_INFO.hardMoney.rule).toBe(`Hard's money on any difficulty: §40k to start and ${Math.round((1 - difficultyRules('hard').income) * 100)}% less tax income.`);
+    // Hard money is all of Hard's money rules (NOTE-104): the funds, the tax income, the running costs and the removal
+    expect(CHALLENGE_INFO.hardMoney.rule).toBe('Hard\'s money on any difficulty: §40k to start, 15% less tax income, services cost 15% more to run, and the council removes you after 12 months in debt.');
+    expect(difficultyRules('hard')).toMatchObject({ income: 0.85, opexMultiplier: 1.15, bankruptRemovalMonths: 12 });
     expect(DIFFICULTY_FUNDS.hard).toBe(40_000);
     expect(CHALLENGE_BADGE_NOTE).toBe(`Each challenge earns its badge on the region card once the city reaches ${CHALLENGE_BADGE_POP.toLocaleString('en-US')} residents.`);
   });

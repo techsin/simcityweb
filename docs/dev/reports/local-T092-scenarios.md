@@ -478,3 +478,237 @@ With the main.ts hunk applied, on the worker host and on `?simworker=loopback`:
 - [ ] Minimise to the pill, remembered across cities. Reduced motion stops the card's animation.
 - [ ] A plain city: no card, and the HUD is as before.
 - [ ] A production build serves both bundles and starts both scenarios.
+
+## Round 2 (NOTE-104)
+
+**Verdict: done.** The lead's four answers are in the tree.
+
+1. Hard money is now all of Hard's money rules on any difficulty: Hard's start funds, income ×0.85, running costs ×1.15
+   and the 12-month bankruptcy removal.
+2. Smog City's medal tiers are 10 / 5 / 2 years.
+3. Smog City's briefing says "180,000 residents in the month the air goal is met".
+4. The reference runs were re-run on T041's balance. No medal and no month moved.
+
+Gates:
+- tsc is clean.
+- Every gate file passes, run one process at a time through quietrun.
+- **128x15 s7 bot: identical to dev with T041.** Residents [ 61580, 93090, 37566 ] = 192,236. Every annual row and the
+  whole action log match `gates/base_bot15_t041.out`, compared the gate's way (timing columns dropped).
+- The bundles are unchanged. `--verify` did not need new ones.
+
+Base `06b22e5a` (round 1 plus dev `d2ab0c1` merged, which brings T041 and T042). Everything is uncommitted: no commit,
+push, merge or `.done` file.
+
+### 1. Hard money: all of Hard's money rules
+
+Each money rule now reads `difficultyRules(moneyDifficulty(config))`. `moneyDifficulty` returns `'hard'` under the
+challenge, else `config.difficulty`. Without the challenge every branch is the one it was, so a plain city is
+bit-identical.
+
+**Every money read, and what it reads now:**
+
+| Rule | Where | Reads |
+|---|---|---|
+| Start funds | `applyChallenges` (`src/game/scenarios.ts`) writes `DIFFICULTY_FUNDS.hard` (§40k) into `config.startFunds` at founding | Set once at founding; nothing reads it monthly. Unchanged since round 1. T042 only added Expert's §40k entry (`config.ts`, and `main.ts`'s `?difficulty=` quickstart map). Neither path carries challenges. |
+| Tax income ×0.85 | `budget.ts` `computeMonthlyBudget` | **already** `moneyDifficulty` (round 1) |
+| Running costs ×1.15 | `opex.ts` `tierOperatingCosts`, `expectedUpkeep`, `opexRateOf`, `facilityOpex` | **now** `moneyDifficulty`, guards included |
+| Running costs ×1.15, a fire station at full use | `src/sim/infra/facilities.ts` `fullUseUpkeep` (the branch for a def without a capacity) | **now** `moneyDifficulty`. This is the one T042 money read the task did not list. Without it, a fire station's "up to §X at full use" on the upkeep card would stay at Medium's rate while its "typical" figure took Hard's. Infra hunk, below. |
+| 12-month removal | `budget.ts` `budgetSystem` (`bankruptRemovalMonths`) | **now** `moneyDifficulty`. The news text "after 12 months" is fixed, and is right for Hard and Expert alike. |
+
+**Left with `config.difficulty`, because they are not money (NOTE-104):**
+- `taxPerPoint`: `approval.ts` 323 (the term) and 513 (its detail).
+- `disasterMultiplier`: `disasters.ts` 184-185.
+- `manualDispatchWindowMultiplier`: `emergency.ts` 1611. Hard's value is 1, the same as Medium's, so Hard money could not
+  change dispatch either way.
+- `loanCutoffYears`: `loans.ts` 38. Expert only; Hard's value is null.
+- Easy's grace rules (`fadeCrime`, `fadeMonthlyEmergencies`) and `defaultDisasters`.
+
+**Expert with Hard money.** Expert's money rules equal Hard's (§40k, ×0.85, ×1.15, 12 months), so the chip changes
+nothing there, and Expert keeps its loan cutoff. The New City dialog does not offer Expert anyway: it offers Easy,
+Medium, Hard and Sandbox, and Sandbox takes no challenges.
+
+**The chip's rule text** (`CHALLENGE_INFO.hardMoney`, shown in the New City dialog and as the objectives card's tooltip)
+now says all of it. The numbers come from `difficultyRules('hard')`:
+> Hard's money on any difficulty: §40k to start, 15% less tax income, services cost 15% more to run, and the council
+> removes you after 12 months in debt.
+
+**A finding outside the task (not changed): the plop tool's "Upkeep here" figure.** `upkeepHere`
+(`src/game/tools/placement.ts:209`, read through the worker query in `src/worker/queries.ts:37`) calls
+`opexRateOf(def)` without the city. So on Hard and Expert, and now under Hard money, the per-spot figure uses the
+catalog rate, 15% under what the budget charges. The upkeep card, build menu, facility facts, inspector and Budget panel
+all use the city and agree.
+- This gap came with T042, and a plain Hard city has it too.
+- The fix is one line: `opexRateOf(def, st)`. It changes a UI figure on Hard and Expert, and no simulation number.
+- I left it for the lead, since it sits outside this task's files and changes Hard's UI.
+
+### 2. Smog City's tiers: 10 / 5 / 2 years
+
+`SMOG_CITY.months = { bronze: 120, silver: 60, gold: 24 }`. The goal texts come from it: "Within 10 years", "Within
+5 years", "Within 2 years".
+
+- The reference runs needed no change. None of their expectations depends on Smog City's silver or gold limit.
+- The clean-up run still lands gold, in month 10, inside the new 24-month limit.
+- The bundle's news ("the new mayor has ten years") is still right.
+
+### 3. Smog City's briefing
+
+The briefing now ends: "… against the year before you took office, with 180,000 residents in the month the air goal is
+met." That is the lead's reading 4, which the judging already used (`smogCity()` tests the residents in the sample of
+the month the cut is reached).
+
+### 4. Re-runs on T041's balance
+
+`npx tsx tools/scenarios.ts --verify` plays every reference run on the bundles on disk. **9 / 9 ok.** Compared with
+round 1 (pre-T041), no medal and no month moved. Only the figures shifted a little.
+
+```
+ok   boomtown   bot       bronze after 120 months    expected: bronze or better Residents 99,455 / 100,000            (r1: 99,729)
+ok   boomtown   nothing   lost after 120 months      expected: fails            Residents 0 / 50,000
+ok   lights_out nothing   lost after 12 months       expected: fails            Residents 218 / 70,000; Approval 52% / 60%   (r1: 419; 54%)
+ok   lights_out loan      silver after 1 month       expected: bronze or better Residents 72,489 / 70,000; Approval 64%; a loan was taken
+ok   lights_out one plant lost after 12 months       expected: bronze at most   Residents 218 / 70,000; Approval 52% / 60%
+ok   lights_out no limit  gold after 1 month         expected: gold             Residents 72,489 / 70,000; Approval 64%
+ok   lights_out squeeze   gold after 5 months        expected: gold             Residents 74,591 / 70,000; Approval 61%; no loan   (r1: 74,525)
+ok   smog_city  nothing   lost after 120 months      expected: fails            Air +75% / −40%; Residents 306,454      (r1: +79%; 303,845)
+ok   smog_city  clean-up  gold after 10 months       expected: bronze or better Air −42% / −40%; Residents 189,173      (r1: 189,188)
+```
+
+- **The squeeze run**, the most balance-sensitive check, is still gold after 5 months, within 6, with no loan.
+- `SCENARIOS=1` `tests/sim/scenarioRuns.test.ts`: **14 / 14 passed** (39.8 s), the three ten-year runs included.
+
+**The bundles.** They were not regenerated: `--verify` did not need it. They are byte-identical to round 1:
+- `lights_out` sha256 `97ef59be…60fb95`;
+- `smog_city` sha256 `2d513e17…f6e6ea`.
+
+They load and play at HEAD (`scenarioBundles.test.ts`, `challengesDialog.test.ts`). For the record, a dry
+`npx tsx tools/scenarios.ts` (nothing written) shows what T041's tree would write now:
+- **lights_out:** 70,764 residents (shipped: 71,043), approval 63.0, power 18 / 189 MW; sha256 `f4fd579f…`.
+- **smog_city:** 192,236 residents (shipped: 192,899), air baseline 0.0783 (shipped: 0.0826); sha256 `1dee6ced…`.
+
+If the bundles are ever regenerated, the Smog City tagline "a city of 193,000" must become 192,000.
+`scenarioBundles.test.ts`'s text check would fail until it does. Lights Out's "71,000" still fits.
+
+### Changes per file (round 2)
+
+- `src/sim/economy/opex.ts` (+10 / −4): imports `moneyDifficulty`. The four `opexMultiplier` reads and their
+  `'hard' || 'expert'` guards read the city's money difficulty (`tierOperatingCosts`, `expectedUpkeep`, `opexRateOf`,
+  `facilityOpex`).
+- `src/sim/economy/budget.ts` (+2 / −1): `bankruptRemovalMonths` reads `difficultyRules(moneyDifficulty(st.config))`.
+- **Infra hunk (B2), outside the files the task names:** `src/sim/infra/facilities.ts` (+3 / −1). The import of
+  `moneyDifficulty` sits on its own line after the tuning import. `fullUseUpkeep`'s one multiplier line became two that
+  read `moneyDifficulty`. Self-contained, so it can be committed and rebased on its own.
+- `src/sim/economy/challenges.ts` (+7 / −5): comments only. The module header lists Hard money's rules and what stays
+  with the difficulty; `moneyDifficulty`'s doc names the money fields.
+- `src/game/scenarios.ts` (+8 / −5): `SMOG_CITY.months`; the Smog City briefing; the Hard money rule text.
+- Tests: the four files under Tests below. No new test file.
+
+### Tests (round 2)
+
+**New, in `tests/sim/challengeRules.test.ts` (4):**
+- *"a Medium city under Hard money pays Hard's running costs (×1.15), and the budget and the UI estimates agree;
+  without it, Medium's"*. Two schools, 600 pupils served, education at 75%. Ten figures are compared:
+  - the tier's running costs, the Budget panel's forecast, and what the budget system then charges for the month;
+  - the rate, and each school's share (inspector);
+  - the upkeep card (`upkeepEstimate`: typical and full use), and the build menu's facts line and hint;
+  - a fire station's full use.
+
+  Every figure equals a Hard city's. The charged line equals the forecast. The plain Medium city stays at Medium's rate
+  (§0.60, "≈§702/mo typical · up to §972"). Another challenge (No loans) changes nothing.
+- *"a Medium city under Hard money is removed after 12 months in debt, as a Hard city is; without the challenge it
+  never is"*:
+  - Under the challenge: no removal after 11 negative months; removal on day 360, with one news item.
+  - Without it: the same debt and the bankruptcy, no removal after 24 months, and no `mayorRemovalStreak` key, so a
+    Medium city's economy data is as before.
+- *"is money only: Hard's tax-approval cost stays with the difficulty"*. Taxes at 11%: Medium with Hard money pays −7,
+  like Medium; Hard pays −9.
+- *"Hard money leaves a Medium city's disaster odds alone"*. Draws of 0.0144 and 0.0146 keep Medium's meteor threshold.
+  Hard's ×1.5 would make 0.0146 a meteor.
+
+**Updated:**
+- `tests/game/scenarios.test.ts`:
+  - The tiers test is now "gold within 2 years, silver within 5, bronze within 10". Its boundaries are 24 / 25, 60 / 61
+    and 120, and the card's "reach" turns at months 23 / 24 and 59 / 60.
+  - The goals and the briefing phrase.
+  - The Hard money rule text, and `difficultyRules('hard')`'s three money fields.
+  - The profile test's Smog gold run: month 30 became month 20, so the record stays a possible gold.
+- `tests/game/challengesDialog.test.ts` and `tests/game/objectivesCard.test.ts`: the Hard money rule text, one line
+  each.
+
+**Mutation checks** (`scratch/r3/mut.sh`; each copies the file aside, applies one sed, runs one test file, and restores
+the copy; a sha256 check after all ten found every file back as it was). Each mutation failed only the test it aims at:
+- m1-m4: each of opex.ts's four reads put back on `config.difficulty`. Each fails the running-costs test.
+- m5: facilities.ts's read put back. Fails the running-costs test (the fire station's full use).
+- m6: budget.ts's removal read put back. Fails the removal test.
+- m7: approval's `taxPerPoint` switched to the money difficulty. Fails the "money only" test.
+- m8: the disaster thresholds switched to the money difficulty. Fails the disaster-odds test.
+- m9: Smog City's old tiers (72 / 36). Fails the tiers test and the goals test.
+- m10: the old briefing. Fails the goals test.
+
+### Gates (round 2)
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| Lane test files (6) | **118 passed, 4 skipped**: scenarios 33; objectivesCard 26; challengesDialog 22 + 1 skipped (the main.ts wiring test, until the hunk lands); challengeRules 18; scenarioBundles 8; scenarioRuns 11 + 3 skipped |
+| `SCENARIOS=1` scenarioRuns | **14 / 14 passed** |
+| `npx tsx tools/scenarios.ts --verify` | **9 / 9 ok** (table above) |
+| `tests/sim/difficultyRules.test.ts` | 32 passed |
+| `tests/sim/lg09*.test.ts` (7 files) | 83 passed: BotDifficulty 2, CostReview 14, DispatchUi 3, EconomyDifficulty 24, InfraDifficulty 28, LoanReplica 4, RemovalMigration 8 |
+| Budget and opex tests | 75 passed: `sim/economy` 12, `sim/balanceEconomy` 10, `game/budgetTaxes` 13, `game/panelsUpkeep` 6, `infra/facilities` 15, `infra/feedbackFacilities` 19 |
+| `tests/save/loadContinuity.test.ts` | 4 passed |
+| `tests/sim/exact/*` (6 files) | 38 passed: advisorsScan 3, blur 10, fireList 7, j10 4, nimby 5, traffic 9 |
+| Also run (the other callers of the changed functions) | 212 passed, 2 skipped: `game/toolsPlacement` 8, `game/guideCopy` 137, `sim/balanceOrphans` 2, `sim/monthSpread` 12, `sim/tourism` 14, `worker/queries` 14, `worker/querySideEffects` 2 + 1 skipped, `worker/lag` 5 + 1 skipped, `worker/hygiene` 18 |
+| 128x15 s7 bot | **identical to dev with T041:** residents [ 61580, 93090, 37566 ] = 192,236. All 15 annual rows and the action log match `base_bot15_t041.out` (1,268 lines each), timing columns dropped |
+| `git diff --check`; BOM / CR scan of the changed files | clean |
+
+Commands (one process at a time; outputs in `scratch/r3/`):
+
+```
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/sim/challengeRules.test.ts --maxWorkers=1
+SCENARIOS=1 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/sim/scenarioRuns.test.ts --maxWorkers=1
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/scenarios.ts --verify
+SIMBOT_LOG=1 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
+```
+
+### Not verified in round 2
+
+- **The browser** (checklist delta below), and the full vitest suite. Left to the lead.
+- **A Hard money bot run.** simbot has no flag for challenges. Hard money's simulation effect is tested at the
+  rule level instead: the running-costs, removal, tax and disaster tests above, plus round 1's tax-income test.
+- **A plain Hard bot run before and after.** A Hard city without the challenge takes the same branches as before
+  (`moneyDifficulty` returns its own difficulty), and the lg09 Hard tests pass unchanged.
+- **The plop tool's "Upkeep here" figure** on Hard money: it keeps T042's catalog rate (the finding in 1).
+
+### Readings settled by NOTE-104
+
+These supersede round 1's open points:
+- Reading 1 (Smog City's tiers): settled as 10 / 5 / 2 years.
+- Reading 4 ("keeping 180k"): settled as the month the goal is met, now said in the briefing.
+- The "Hooks for the lanes" choice on Hard money: settled as all four money rules, removal included. Approval,
+  disasters and dispatch stay with the difficulty.
+
+The main.ts request for the Challenges entry is unchanged. Nothing else here needs a cloud-held file.
+
+### Browser checklist delta (round 2)
+
+- [ ] **New City dialog, Hard money chip:** the note under the chips and the chip's tooltip read "Hard's money on any
+  difficulty: §40k to start, 15% less tax income, services cost 15% more to run, and the council removes you after 12
+  months in debt."
+- [ ] **A Medium city founded with Hard money:**
+  - [ ] §40k at the start.
+  - [ ] The build menu and plop card for a school quote "§0.69 per pupil served", against §0.60 in a plain Medium city.
+  - [ ] The Budget panel's education line after a month matches what was charged.
+  - [ ] The inspector's running-cost share uses §0.69.
+  - [ ] A fire station's "up to §… at full use" is 15% above a plain Medium city's running part.
+- [ ] **That city, 12 months in debt:** the news "The council has removed you after 12 months in debt." arrives once.
+  A plain Medium city in the same debt gets the debt warnings and BANKRUPT, and no removal.
+- [ ] **That city's tax approval:** at 11% residential tax, the approval breakdown says "each point above 9% costs 3.5
+  approval" (Medium's), not 4.5.
+- [ ] **Smog City in the Challenges dialog:**
+  - [ ] The goals read "Within 10 years / Within 5 years / Within 2 years".
+  - [ ] The briefing ends "… with 180,000 residents in the month the air goal is met."
+  - [ ] The same text appears on the city's briefing card.
+  - [ ] The medal chips' tooltips on the objectives card show the new goals.
+  - [ ] "Year n of 10" is unchanged.
+- [ ] **Known gap, not a regression:** on Hard, and under Hard money, the plop tool's "Upkeep here ≈§…/mo now" uses the
+  catalog rate (`placement.ts:209`).

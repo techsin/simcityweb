@@ -56,9 +56,9 @@ export const BOOMTOWN = { months: 120, funds: 100_000, residents: { bronze: 50_0
 /** Lights Out: back to `residents` and `approval` within `months`; gold also needs no new loan. `funds`: what is left in
  *  the bank, less than one replacement plant costs (tools/scenarios.ts checks it against the catalog) */
 export const LIGHTS_OUT = { months: { bronze: 12, silver: 9, gold: 6 }, residents: 70_000, approval: 60, funds: 15_000 } as const;
-/** Smog City: the 12-month average air pollution at homes `cut` below the year before the start, with `residents` still
- *  in the city, within `months` */
-export const SMOG_CITY = { months: { bronze: 120, silver: 72, gold: 36 }, cut: 0.4, residents: 180_000, window: 12 } as const;
+/** Smog City: the 12-month average air pollution at homes `cut` below the year before the start, with `residents` in the
+ *  city in the month that is met, within `months` (10 / 5 / 2 years: the lead, NOTE-104) */
+export const SMOG_CITY = { months: { bronze: 120, silver: 60, gold: 24 }, cut: 0.4, residents: 180_000, window: 12 } as const;
 
 export interface ScenarioDef {
   id: ScenarioId;
@@ -107,7 +107,7 @@ export const SCENARIOS: Readonly<Record<ScenarioId, ScenarioDef>> = {
   smog_city: {
     id: 'smog_city', title: 'Smog City', start: 'bundle', city: 'Coalbrook', months: SMOG_CITY.months.bronze,
     tagline: 'Clean the air of a city of 193,000',
-    brief: `January 2015. Coalbrook grew up on smokestack industry and fossil power, and its residents breathe it. Cut the air pollution at homes by ${pctText(SMOG_CITY.cut)}, measured as the average of the last 12 months against the year before you took office, while the city still has ${n(SMOG_CITY.residents)} residents.`,
+    brief: `January 2015. Coalbrook grew up on smokestack industry and fossil power, and its residents breathe it. Cut the air pollution at homes by ${pctText(SMOG_CITY.cut)}, measured as the average of the last 12 months against the year before you took office, with ${n(SMOG_CITY.residents)} residents in the month the air goal is met.`,
     goals: {
       bronze: `Within ${years(SMOG_CITY.months.bronze)}`,
       silver: `Within ${years(SMOG_CITY.months.silver)}`,
@@ -445,7 +445,10 @@ export const CHALLENGE_INFO: Readonly<Record<MayorChallenge, { name: string; rul
   frequentDisasters: { name: 'Frequent disasters', rule: `Tornadoes, quakes and meteors strike ${FREQUENT_DISASTERS === 2 ? 'twice' : `${FREQUENT_DISASTERS} times`} as often.` },
   hardMoney: {
     name: 'Hard money',
-    rule: `Hard's money on any difficulty: ${moneyShort(DIFFICULTY_FUNDS.hard)} to start and ${Math.round((1 - difficultyRules('hard').income) * 100)}% less tax income.`,
+    // (all of Hard's money rules, NOTE-104: src/sim/economy/challenges.ts moneyDifficulty)
+    rule: `Hard's money on any difficulty: ${moneyShort(DIFFICULTY_FUNDS.hard)} to start, ${Math.round((1 - difficultyRules('hard').income) * 100)}% less tax income, `
+      + `services cost ${Math.round((difficultyRules('hard').opexMultiplier - 1) * 100)}% more to run, and the council removes you after `
+      + `${difficultyRules('hard').bankruptRemovalMonths} months in debt.`,
   },
 };
 /** how a challenge earns its badge (the dialog's note and the objectives card) */

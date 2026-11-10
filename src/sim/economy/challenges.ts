@@ -9,10 +9,11 @@
  *                      farms, manufacturing and high-tech grow as usual
  *   frequentDisasters  the monthly disaster draw is FREQUENT_DISASTERS times as likely (disasters.ts). This is LG-15's
  *                      "Frequent ×2": its per-city `disasterRate` takes disasterRate() over when it lands
- *   hardMoney          Hard's money rules on any difficulty: Hard's starting funds (set by the dialog) and its tax income
- *                      multiplier (budget.ts reads difficultyRules(moneyDifficulty(config))). LG-09 (T042) adds Hard's
- *                      service costs: its money lines read moneyDifficulty(config) in place of config.difficulty, and
- *                      nothing else changes
+ *   hardMoney          ALL of Hard's money rules on any difficulty (the lead, NOTE-104): Hard's starting funds (set by the
+ *                      dialog), its tax income ×0.85 and its 12-month bankruptcy removal (budget.ts), and LG-09's
+ *                      running costs ×1.15 (opex.ts, and fullUseUpkeep in infra/facilities.ts). Each reads
+ *                      difficultyRules(moneyDifficulty(config)). Hard's tax-approval cost, disasters and dispatch are
+ *                      not money: they stay with config.difficulty (and so does Expert's loan cutoff)
  *
  * A challenge earns its badge on the region card once the city has reached the CHALLENGE_BADGE_RANK rank (rewards.ts
  * keeps the reached ranks in systemData.cityRanks; src/region/citySummary.ts writes the badges into the tile summary).
@@ -44,7 +45,8 @@ export function disasterRate(config: ChallengeConfig): number {
   return hasChallenge(config, 'frequentDisasters') ? FREQUENT_DISASTERS : 1;
 }
 
-/** the difficulty whose MONEY rules a city follows (difficultyRules): Hard under "Hard money", else its own */
+/** the difficulty whose MONEY rules a city follows (difficultyRules: income, opexMultiplier, bankruptRemovalMonths):
+ *  Hard under "Hard money", else its own */
 export function moneyDifficulty(config: ChallengeConfig & { difficulty: string }): string {
   return hasChallenge(config, 'hardMoney') ? 'hard' : config.difficulty;
 }

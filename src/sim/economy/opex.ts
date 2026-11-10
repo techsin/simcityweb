@@ -21,6 +21,7 @@ import type { BuildingDef, ServiceKind, ServiceTier } from '../catalogTypes';
 import { getDef } from '../catalog';
 import { difficultyRules, OPEX_BUILDING_SHARE, OPEX_PER_SERVED, OPEX_TYPICAL_COVERED, OPEX_TYPICAL_LOAD } from './tuning';
 import { infraFlags } from './runtime';
+import { moneyDifficulty } from './challenges';
 import { facilityLoad } from '../infra/catchments';
 
 /** need tier of each catchment tier (catchments.TIER_NEED, repeated here: economy must not depend on its import order) */
@@ -67,12 +68,14 @@ export function tierOperatingCosts(st: CityState, tiers?: ReadonlySet<NeedTier>)
   if (!opexActive(st)) return out;
   const needs = st.stats.needs as Partial<Record<NeedTier, { served?: number }>> | undefined;
   if (!needs) return out;
+  // (LG-09's Hard / Expert rate goes by the city's money difficulty: Hard's under LG-14's "Hard money" challenge)
+  const money = moneyDifficulty(st.config);
   for (const t of Object.keys(OPEX_PER_SERVED) as NeedTier[]) {
     if (tiers && !tiers.has(t)) continue;
     const served = needs[t]?.served ?? 0;
     if (served > 0) {
       out[t] = served * OPEX_PER_SERVED[t];
-      if (st.config.difficulty === 'hard' || st.config.difficulty === 'expert') out[t] *= difficultyRules(st.config.difficulty).opexMultiplier;
+      if (money === 'hard' || money === 'expert') out[t] *= difficultyRules(money).opexMultiplier;
     }
   }
   return out;
@@ -98,7 +101,8 @@ export function expectedUpkeep(st: CityState | null, def: BuildingDef, people?: 
     if (ns && (ns.need ?? 0) > 0) n = Math.min(typical, Math.max(0.25 * typical, (ns.need ?? 0) - (ns.served ?? 0)));
   }
   let running = n * OPEX_PER_SERVED[tier];
-  if (st && (st.config.difficulty === 'hard' || st.config.difficulty === 'expert')) running *= difficultyRules(st.config.difficulty).opexMultiplier;
+  const money = st && moneyDifficulty(st.config);
+  if (money === 'hard' || money === 'expert') running *= difficultyRules(money).opexMultiplier;
   return (def.upkeep ?? 0) * OPEX_BUILDING_SHARE + running;
 }
 
@@ -107,7 +111,8 @@ export function opexRateOf(def: BuildingDef | undefined, st: CityState | null = 
   const tier = opexTierOf(def);
   if (!tier) return null;
   let rate = OPEX_PER_SERVED[tier];
-  if (st && (st.config.difficulty === 'hard' || st.config.difficulty === 'expert')) rate *= difficultyRules(st.config.difficulty).opexMultiplier;
+  const money = st && moneyDifficulty(st.config);
+  if (money === 'hard' || money === 'expert') rate *= difficultyRules(money).opexMultiplier;
   return { tier, rate, unit: OPEX_UNIT[tier][0] };
 }
 
@@ -139,7 +144,8 @@ export function facilityOpex(sim: Simulation, b: Building): FacilityOpex | null 
   const f = svc ? (st.budget.funding[svc] ?? 100) / 100 : 1;
   const building = (def.upkeep ?? 0) * OPEX_BUILDING_SHARE * f;
   let rate = OPEX_PER_SERVED[tier];
-  if (st.config.difficulty === 'hard' || st.config.difficulty === 'expert') rate *= difficultyRules(st.config.difficulty).opexMultiplier;
+  const money = moneyDifficulty(st.config);
+  if (money === 'hard' || money === 'expert') rate *= difficultyRules(money).opexMultiplier;
   const own = facilityLoad(sim, b.id);
   const served = (st.stats.needs as Partial<Record<NeedTier, { served?: number }>> | undefined)?.[tier]?.served ?? 0;
   if (!own || !(own.served > 0) || !(served > 0) || (b.flags & BF.Burnt)) return { tier, building, running: 0, people: 0, total: served, rate };

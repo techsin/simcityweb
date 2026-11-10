@@ -57,6 +57,7 @@ import { onStrike, venueIncomeFactor } from '../economy/budget';
 import { OPEX_UNIT, buildingUpkeep, expectedUpkeep, facilityOpex, opexRateOf } from '../economy/opex';
 import { getOrdinance, ordinanceEffect } from '../economy/ordinances';
 import { difficultyRules, OPEX_TYPICAL_LOAD, RECYCLING_INCOME_PER_T } from '../economy/tuning';
+import { moneyDifficulty } from '../economy/challenges';
 
 export interface FacilityLine {
   /** stable id ('patrolLoad', 'beds', 'riders', ...) */
@@ -1637,7 +1638,8 @@ export function fullUseUpkeep(def: BuildingDef, st: CityState | null = null): nu
   const building = buildingUpkeep(null, def);
   if (cap !== undefined && cap > 0) return building + cap * r.rate;
   let running = (expectedUpkeep(null, def) - building) / OPEX_TYPICAL_LOAD;
-  if (st && (st.config.difficulty === 'hard' || st.config.difficulty === 'expert')) running *= difficultyRules(st.config.difficulty).opexMultiplier;
+  const money = st && moneyDifficulty(st.config);
+  if (money === 'hard' || money === 'expert') running *= difficultyRules(money).opexMultiplier;
   return building + running;
 }
 

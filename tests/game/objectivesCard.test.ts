@@ -529,7 +529,7 @@ describe('LG-14 objectives card: Mayor\'s challenges', () => {
     expect(textOf(t.el!.querySelector('.obj-sub')!)).toBe(`Badges at ${CHALLENGE_BADGE_POP.toLocaleString('en-US')} residents`);
     expect(t.el!.querySelectorAll('.obj-ch-chip').map((c) => [textOf(c), c.title])).toEqual([
       ['No loans', 'The bank lends nothing: the city lives on what it earns.'],
-      ['Hard money', 'Hard\'s money on any difficulty: §40k to start and 15% less tax income.'],
+      ['Hard money', 'Hard\'s money on any difficulty: §40k to start, 15% less tax income, services cost 15% more to run, and the council removes you after 12 months in debt.'],
     ]);
     expect(t.lines()).toEqual(['Badges12,340 / 25,000 residents']);
     expect(t.el!.querySelector('.fill')!.style.width).toBe('49%');

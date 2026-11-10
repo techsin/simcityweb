@@ -278,7 +278,8 @@ export function budgetSystem(rt: EconRuntime): SimSystem {
       data.monthsNegative = 0;
       data.bankrupt = false;
     }
-    const removalMonths = difficultyRules(st.config.difficulty).bankruptRemovalMonths;
+    // (a money rule: Hard's 12 months under LG-14's "Hard money" challenge, else the city's own difficulty's)
+    const removalMonths = difficultyRules(moneyDifficulty(st.config)).bankruptRemovalMonths;
     if (removalMonths !== null) {
       if (!sandbox && st.funds < 0) {
         const streak = (data.mayorRemovalStreak ?? 0) + 1;

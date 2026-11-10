@@ -369,7 +369,7 @@ describe('LG-14: Mayor\'s challenges in the New City dialog', () => {
     expect(d.chip('Hard money').getAttribute('aria-pressed')).toBe('true');
     expect(d.note()).toEqual([
       'No loans: The bank lends nothing: the city lives on what it earns.',
-      'Hard money: Hard\'s money on any difficulty: §40k to start and 15% less tax income.',
+      'Hard money: Hard\'s money on any difficulty: §40k to start, 15% less tax income, services cost 15% more to run, and the council removes you after 12 months in debt.',
       'Each challenge earns its badge on the region card once the city reaches 25,000 residents.',
     ]);
     d.found();
