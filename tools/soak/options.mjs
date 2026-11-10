@@ -9,8 +9,8 @@ export const help = `Metropolis production soak (run between timing runs)
   --sample-seconds N        Telemetry interval (default 15)
   --heap-mib-per-hour N     Strict post-exit heap growth limit (default 16)
   --late-heap-mib-per-hour N  Heap growth limit over the run's second half (default 8; runs of 1 hour or more)
-  --min-days-per-sec N      Simulation rate floor in the city (default 0, off; NOTE-026: 15 for dense1m at ULTRA)
-  --fixture PATH            City/region file; required for vet, optional for dense1m
+  --min-days-per-sec N      Floor for the sim's days per running second (default 0, off; NOTE-026: 15 for dense1m at ULTRA)
+  --fixture PATH            City/region file; required for vet, optional for dense1m (its default is generated: npm run fixtures)
   --port N                  Vite preview loopback port (default 5199, strict)
   --exit-settle-seconds N   Region settle before three GCs (default 20; minimum 16)
   --help                    Print this help without building or opening a browser
@@ -18,7 +18,13 @@ export const help = `Metropolis production soak (run between timing runs)
 Outputs: tools/soak/.runs/<timestamp>-<city>-<pid>/
 Exit codes: 0 all gates pass; 1 failed/incomplete run; 2 invalid arguments.
 The duration excludes build/setup and includes cycles; the final exit adds settle time.
+A cycle still running when the next one is due stops the run: give the soak the machine to itself.
 `;
+
+/** dense1m's default fixture, under the gitignored folder that `npm run fixtures` fills (docs/dev/TEST_CITIES.md) */
+const DEFAULT_FIXTURES = 'tools/bench/.fixtures/fixtures';
+const DEFAULT_FIXTURE = 'dense1m_s7.metropolis';
+const BUILD_VET = 'The shared vet_s7_y43 save comes from `npm run fixtures -- --only cities --cities DIR` (two bot runs, several minutes): pass DIR/vet_s7_y43.region.metropolis or its .city.metropolis.';
 
 export function parseOptions(argv, root, env = process.env) {
   const allowed = new Set(['city', 'hours', 'minutes', 'cycle-minutes', 'sample-seconds', 'heap-mib-per-hour', 'late-heap-mib-per-hour', 'min-days-per-sec', 'fixture', 'port', 'exit-settle-seconds']);
@@ -39,7 +45,7 @@ export function parseOptions(argv, root, env = process.env) {
   if ('minutes' in values && 'hours' in values) throw new Error('Choose --minutes or --hours');
   const city = values.city;
   if (!['dense1m', 'vet', 'small'].includes(city)) throw new Error('--city must be dense1m, vet, or small');
-  if (city === 'vet' && !values.fixture) throw new Error('--city vet requires --fixture PATH (vet_s7_y43)');
+  if (city === 'vet' && !values.fixture) throw new Error(`--city vet requires --fixture PATH (vet_s7_y43). ${BUILD_VET}`);
   if (city === 'small' && values.fixture) throw new Error('--city small is newly founded and takes no fixture');
   const durationMs = 'minutes' in values ? number('minutes') * 60_000 : number('hours', 4) * 3_600_000;
   const cycleMs = number('cycle-minutes', 5) * 60_000;
@@ -54,8 +60,18 @@ export function parseOptions(argv, root, env = process.env) {
     lateHeapMiBPerHour: number('late-heap-mib-per-hour', 8, 0),
     minDaysPerSec: number('min-days-per-sec', 0, 0),
     exitSettleMs: number('exit-settle-seconds', 20, 16) * 1000,
-    fixture: city === 'small' ? null : resolve(root, values.fixture ?? resolve(env.SIM_FIXTURES ?? resolve(root, 'tools/bench/.fixtures/fixtures'), 'dense1m_s7.metropolis')),
+    fixture: city === 'small' ? null : resolve(root, values.fixture ?? resolve(env.SIM_FIXTURES ?? resolve(root, DEFAULT_FIXTURES), DEFAULT_FIXTURE)),
+    // where that path came from, for the message when no file is there (missingFixture)
+    fixtureFrom: city === 'small' ? null : values.fixture ? '--fixture' : env.SIM_FIXTURES ? 'SIM_FIXTURES' : 'default',
   };
+}
+
+/** What to say when the fixture file is not there: how to build the default one, or how to point at one that exists. */
+export function missingFixture(options) {
+  const from = { '--fixture': 'given with --fixture', SIM_FIXTURES: `SIM_FIXTURES holds no ${DEFAULT_FIXTURE}`, default: 'the default path' }[options.fixtureFrom] ?? 'the fixture path';
+  const how = options.city === 'vet' ? BUILD_VET
+    : `The dense1m fixture is generated and gitignored, so a fresh worktree has none. Build it in this tree, in under a minute, at ${DEFAULT_FIXTURES}/${DEFAULT_FIXTURE}: npm run fixtures -- --only snap,dense1m (from Windows PowerShell: cmd.exe /d /s /c "npm run fixtures -- --only snap,dense1m"). Or point at one that exists: --fixture PATH, or SIM_FIXTURES=<the folder that holds ${DEFAULT_FIXTURE}>, for example another worktree's ${DEFAULT_FIXTURES}.`;
+  return `Fixture missing: ${options.fixture} (${from}). ${how} A fixture is a .metropolis city file or one-city region file with at least 900,000 residents, and it is never generated implicitly. See tools/soak/README.md.`;
 }
 
 export function timeout(promise, ms, label) {

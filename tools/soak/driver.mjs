@@ -2,6 +2,8 @@ import { timeout, sleep } from './options.mjs';
 
 export const PANEL_IDS = ['advisors', 'budget', 'dataviews', 'demographics', 'emergencies', 'graphs', 'help', 'info', 'ordinances', 'rewards', 'settings', 'stats'];
 export const CYCLE_STEPS = ['inspect-growable', 'inspect-service', 'panels-and-data', 'zone-road-bulldoze', 'save', 'exit', 'retention', 'reenter', 'quality-low-high-ultra'];
+/** SimHost.kind of the host the soak measures: LocalSimHost, the simulation on the page's own thread (readyCity) */
+export const SIM_HOST = 'local';
 
 // Everything returned by this evaluator is JSON data. No locator, JSHandle,
 // ElementHandle, programmatic click, dispatched DOM event, or app mutator is used.
@@ -38,29 +40,32 @@ export function targetPoint(spec) {
   return null;
 }
 
+/** real time; the selftest's clock jumps instead of sleeping, so a step's waits cost it nothing */
+const WALL_CLOCK = { now: () => performance.now(), sleep };
+
 export class Driver {
-  constructor(page, { catalog, cellSize, pulse, checkStop, event }) {
-    Object.assign(this, { page, catalog, cellSize, pulse, checkStop, event });
+  constructor(page, { catalog, cellSize, pulse, checkStop, event, clock = WALL_CLOCK }) {
+    Object.assign(this, { page, catalog, cellSize, pulse, checkStop, event, clock });
   }
   async read(fn, arg) {
     this.checkStop();
     return timeout(this.page.evaluate(fn, arg), 45_000, 'plain-value page.evaluate');
   }
   async delay(ms) {
-    const end = performance.now() + ms;
-    do { this.checkStop(); await this.pulse(); await sleep(Math.min(250, Math.max(1, end - performance.now()))); } while (performance.now() < end);
+    const end = this.clock.now() + ms;
+    do { this.checkStop(); await this.pulse(); await this.clock.sleep(Math.min(250, Math.max(1, end - this.clock.now()))); } while (this.clock.now() < end);
   }
   async wait(label, fn, arg, limit = 30_000) {
-    const end = performance.now() + limit;
+    const end = this.clock.now() + limit;
     do {
       const value = await this.read(fn, arg);
       if (value) return value;
       await this.delay(250);
-    } while (performance.now() < end);
+    } while (this.clock.now() < end);
     throw new Error(`Timed out: ${label}`);
   }
   async click(spec) {
-    const end = performance.now() + 30_000;
+    const end = this.clock.now() + 30_000;
     do {
       const p = await this.read(targetPoint, spec);
       if (p?.visible) {
@@ -73,7 +78,7 @@ export class Driver {
         await this.page.mouse.wheel(0, p.scroll.dy);
       }
       await this.delay(250);
-    } while (performance.now() < end);
+    } while (this.clock.now() < end);
     throw new Error(`No unobscured click target: ${JSON.stringify(spec)}`);
   }
   async clear() {
@@ -95,8 +100,11 @@ export class Driver {
     }, null, 240_000);
     const state = await this.read(() => {
       const s = window.__metropolis.city.scene, st = s.sim.state;
-      return { size: st.size, population: st.stats.population, buildings: st.buildings.size, day: st.day, quality: s.settings.quality, degraded: Object.entries(s.degraded).filter(([, v]) => v).map(([k]) => k), panels: [...s.panels.panels.keys()].sort(), tileKey: window.__metropolis.city.tile.key };
+      return { size: st.size, population: st.stats.population, buildings: st.buildings.size, day: st.day, quality: s.settings.quality, host: s.host?.kind ?? null, degraded: Object.entries(s.degraded).filter(([, v]) => v).map(([k]) => k), panels: [...s.panels.panels.keys()].sort(), tileKey: window.__metropolis.city.tile.key };
     });
+    // A worker or loopback host gives the page a `sim` too (a facade over its replica), so the reads below would go on.
+    // But the heap samples and the zero-city counts read the page's thread only: a worker's simulation would go unmeasured.
+    if (state.host !== SIM_HOST) throw new Error(`The soak supports the main-thread simulation host only ('${SIM_HOST}'), and this page runs '${state.host}' (?simworker in the URL, or the worker became the app's default). Its heap slope and zero-city counts read the page's thread, so a simulation in a Web Worker would pass unmeasured. See "Simulation host" in tools/soak/README.md.`);
     if (state.degraded.length) throw new Error(`Fallback modules active: ${state.degraded.join(', ')}`);
     if (JSON.stringify(state.panels) !== JSON.stringify(PANEL_IDS)) throw new Error(`Panel inventory changed: ${state.panels.join(', ')}`);
     return state;
@@ -359,9 +367,10 @@ export class Driver {
       const c = window.__metropolis.city;
       return c.lastSave > before && c.saving === 0 && !c.saveFailed && c.scene.saving === null;
     }, before, 120_000);
+    // (the App's city record holds no state of its own since W0.6: the scene's sim has it)
     return this.read(() => {
-      const c = window.__metropolis.city;
-      return { lastSave: c.lastSave, day: c.state.day, buildings: c.state.buildings.size, tileKey: c.tile.key };
+      const c = window.__metropolis.city, st = c.scene.sim.state;
+      return { lastSave: c.lastSave, day: st.day, buildings: st.buildings.size, tileKey: c.tile.key };
     });
   }
   async exit() {

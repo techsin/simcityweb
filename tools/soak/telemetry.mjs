@@ -4,7 +4,9 @@ import { timeout, sleep } from './options.mjs';
 // fixed-size histograms, or weak collections. Never retain a scene, event or node.
 export function installTelemetry() {
   localStorage.setItem('metropolis.settings', JSON.stringify({ quality: 'ultra', edgeScroll: false, autosaveMonths: 3, v: 2 }));
-  localStorage.setItem('metropolis.settings.v1', JSON.stringify({ quality: 'ultra', emergencyUncovered: 'ignore', edgeScroll: false, newYearCamera: false }));
+  // tips off: with them on, the first emergency that no station covers pauses the game for its lesson (FH-08), whatever
+  // emergencyUncovered says. cameraMoments off: no camera move the driver did not make (FEEL-07's key, as newYearCamera).
+  localStorage.setItem('metropolis.settings.v1', JSON.stringify({ quality: 'ultra', emergencyUncovered: 'ignore', edgeScroll: false, newYearCamera: false, tips: false, cameraMoments: false }));
   localStorage.setItem('metropolis.ui.onboarding', JSON.stringify({ dismissed: true }));
 
   // Playwright's server caches console argument handles even when the caller
@@ -131,7 +133,9 @@ export function installTelemetry() {
         fromPageMs: since, toPageMs: now, longTaskSupported,
         frames: { city: drainBucket(frames.city), region: drainBucket(frames.region) },
         longTasks, losses, lossOverflow, unexpectedLosses,
-        sim: { days: simDays, citySeconds: cityMs / 1000, runningSeconds: runningMs / 1000, daysPerSecond: cityMs ? simDays / (cityMs / 1000) : null },
+        // running seconds: in the city with the sim's speed above 0, so a cycle's pauses are out (the NOTE-026 floor reads
+        // days per running second); city seconds have those pauses in. Neither has the region screen.
+        sim: { days: simDays, citySeconds: cityMs / 1000, runningSeconds: runningMs / 1000, daysPerRunningSecond: runningMs ? simDays / (runningMs / 1000) : null, daysPerCitySecond: cityMs ? simDays / (cityMs / 1000) : null },
         state: st ? { day: st.day, population: st.stats.population, buildings: st.buildings.size, speed: sc.sim.speed, quality: sc.settings.quality } : null,
       };
       since = now; longTasks = { count: 0, totalMs: 0, maxMs: 0 };
@@ -140,6 +144,16 @@ export function installTelemetry() {
       return result;
     },
   };
+}
+
+// Serialized into the page by Probe.capturePrototypes. A function rather than a string, so the selftest reads and runs
+// it like the driver's page reads. It keeps prototypes only, never an instance.
+export function pagePrototypes() {
+  const s = window.__metropolis.city.scene;
+  const p = { CityScene: Object.getPrototypeOf(s), CityState: Object.getPrototypeOf(s.sim.state), WebGLRenderer: Object.getPrototypeOf(s.worldView.renderer) };
+  if (window.__soakPrototypes && Object.keys(p).some(k => p[k] !== window.__soakPrototypes[k])) throw new Error('Prototype identity changed across visits');
+  window.__soakPrototypes = p;
+  return true;
 }
 
 export class Probe {
@@ -158,16 +172,7 @@ export class Probe {
   }
   async capturePrototypes() {
     await this.grouped(async objectGroup => {
-      const { result } = await this.send('Runtime.evaluate', {
-        objectGroup, returnByValue: true,
-        expression: `(() => {
-          const s = window.__metropolis.city.scene;
-          const p = { CityScene: Object.getPrototypeOf(s), CityState: Object.getPrototypeOf(s.sim.state), WebGLRenderer: Object.getPrototypeOf(s.worldView.renderer) };
-          if (window.__soakPrototypes && Object.keys(p).some(k => p[k] !== window.__soakPrototypes[k])) throw new Error('Prototype identity changed across visits');
-          window.__soakPrototypes = p;
-          return true;
-        })()`,
-      });
+      const { result } = await this.send('Runtime.evaluate', { objectGroup, returnByValue: true, expression: `(${pagePrototypes})()` });
       if (result.value !== true) throw new Error('Could not capture production prototypes');
     });
   }

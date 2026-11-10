@@ -4,10 +4,10 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import os from 'node:os';
-import { parseOptions, help, timeout } from './options.mjs';
+import { parseOptions, help, missingFixture, timeout } from './options.mjs';
 import { Driver } from './driver.mjs';
 import { Probe, hardwareRenderer, installTelemetry } from './telemetry.mjs';
-import { assess, markdown } from './report.mjs';
+import { assess, cadenceOverrun, markdown } from './report.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
@@ -25,9 +25,10 @@ export async function run(options) {
   mkdirSync(out, { recursive: true });
   const git = (...args) => { try { return execFileSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true }).trim(); } catch { return 'unavailable'; } };
   const log = {
-    schemaVersion: 1, startedAt: new Date().toISOString(), options, out,
+    // 2 (T088): a sample's sim.daysPerSecond became daysPerRunningSecond and daysPerCitySecond, initialCity has the host kind
+    schemaVersion: 2, startedAt: new Date().toISOString(), options, out,
     provenance: { head: git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'), namedBase: git('rev-parse', 'claude/beautiful-johnson-u2jqoz'), status: git('status', '--short'), node: process.version, platform: process.platform, release: os.release() },
-    settings: { headless: true, viewport: { width: 1920, height: 1080 }, quality: 'ultra', speed: 3, emergencyUncovered: 'ignore', newYearCamera: false, autosaveMonths: 3, input: 'mouse/keyboard only after fixture seeding', consoleObjects: 'converted to text before native console to prevent Playwright retention' },
+    settings: { headless: true, viewport: { width: 1920, height: 1080 }, quality: 'ultra', speed: 3, emergencyUncovered: 'ignore', tips: false, newYearCamera: false, cameraMoments: false, autosaveMonths: 3, input: 'mouse/keyboard only after fixture seeding', consoleObjects: 'converted to text before native console to prevent Playwright retention' },
     build: { ok: false }, priority: [], samples: [], exits: [], cycles: [], errors: [],
     errorCounts: { console: 0, page: 0, harness: 0 }, crashes: 0, disconnects: 0,
     completed: false, observedMs: 0, finalExit: false,
@@ -115,7 +116,7 @@ export async function run(options) {
     priority(process.pid, 'harness and in-process Vite preview');
     event('start', { provenance: log.provenance, options });
     checkpoint();
-    if (options.fixture && !existsSync(options.fixture)) throw new Error(`Fixture missing: ${options.fixture}. See tools/soak/README.md; fixtures are never generated implicitly.`);
+    if (options.fixture && !existsSync(options.fixture)) throw new Error(missingFixture(options));
     console.log(`Soak output: ${out}\nBuild/setup begins; schedule this browser run between timing runs.`);
 
     // Generated output stays below tools/soak. This is the normal production
@@ -220,6 +221,7 @@ export async function run(options) {
           try { row.detail = await fn(); row.ok = true; }
           finally { row.endedMs = elapsed(); event('step-end', { cycle: cycle.number, ...row }); checkpoint(); }
         };
+        phase = 'cycle-pause'; // 'playing-ultra' labels only samples of a city left to play at speed 3
         await driver.pause();
         await step('inspect-growable', () => driver.inspect('growable'));
         await step('inspect-service', () => driver.inspect('service'));
@@ -240,7 +242,8 @@ export async function run(options) {
         cycle.completed = true; cycle.endedMs = elapsed();
         event('cycle-complete', { number: cycle.number, elapsedMs: cycle.endedMs });
         due += options.cycleMs;
-        if (elapsed() >= due && due < options.durationMs) throw new Error('Action cycle exceeded its cadence; increase --cycle-minutes and rerun');
+        const overrun = cadenceOverrun(cycle, elapsed(), due, options);
+        if (overrun) throw new Error(overrun);
         checkpoint();
       }
       phase = 'playing-ultra';
