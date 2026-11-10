@@ -38,6 +38,7 @@ import { randomCityName, randomMayorName } from './region/names';
 import { applyFirstRunQuality, cityOverrides, loadSettings, saveSettings, takeCityChanges, type AppSettings } from './region/settings';
 import { TitleScreen } from './region/ui/TitleScreen';
 import { LoadingScreen } from './region/ui/LoadingScreen';
+import { createFirstCity, firstCityTips, hasSavedRegion, lastCityTileKey } from './region/firstCity';
 import { openCredits, openLoadRegion, openNewRegion, openRecoverDialog, openSettings, openSimCrashDialog } from './region/ui/dialogs';
 import { SaveStatus } from './region/ui/SaveStatus';
 import { setUiRoot, toast } from './region/ui/modal';
@@ -369,10 +370,14 @@ class App {
         continueInfo = { title: lastTile.city.name, sub: `${last.name} · ${formatPop(lastTile.city.population)} residents · ${timeAgo(lastTile.city.lastPlayed)}` };
       else if (last) continueInfo = { title: last.name, sub: `${formatPop(last.totals?.population ?? 0)} residents · ${timeAgo(last.lastPlayed)}` };
     }
+    // FH-12: with no region saved, the title leads with "Start your first city"
+    const firstRun = !last && !(await hasSavedRegion().catch(() => true));
     this.title = new TitleScreen(this.root, {
       continueInfo,
       quality: this.settings.quality,
-      onContinue: last ? () => void (lastTile ? this.continueInCity(last!, lastTile.key) : this.openRegion(last!)) : undefined,
+      // a region left from its region screen opens with its last-played city selected (FH-12: Continue returns to it)
+      onContinue: last ? () => void (lastTile ? this.continueInCity(last!, lastTile.key) : this.openRegion(last!, lastCityTileKey(last!))) : undefined,
+      onFirstCity: firstRun ? () => void this.startFirstCity() : undefined,
       onNewRegion: () => void this.newRegionFlow(),
       onLoadRegion: () => openLoadRegion((r) => void this.openRegion(r)),
       onSettings: () => openSettings((s) => (this.settings = s)),
@@ -380,6 +385,26 @@ class App {
     });
     await this.title.ready;
     markReady();
+  }
+
+  /** FH-12: "Start your first city": a new region and its first city (src/region/firstCity.ts), founded and opened paused
+   *  behind one loading screen with the first-city tips */
+  private async startFirstCity(): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    const t0 = performance.now();
+    const ld = new LoadingScreen(this.root, undefined, firstCityTips());
+    ld.set('Shaping the landscape…', 0.05);
+    await paint();
+    const first = await createFirstCity(drawPreview).catch((e: Error) => {
+      console.error('[main] failed to create the first city', e);
+      toast(`Could not start your first city: ${e.message}`, 'bad', 6000);
+      return null;
+    });
+    this.busy = false;
+    if (!first) return ld.remove();
+    this.region = first.model;
+    await this.startNewCity(first.model, first.tile, first.cfg, t0, ld);
   }
 
   private async newRegionFlow(): Promise<void> {
@@ -486,10 +511,11 @@ class App {
     await this.startNewCity(this.region, tile, cfg);
   }
 
-  /** `t0`: when the player asked for the city (performance.now(); FH-21 measures the load from it) */
-  private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData, t0 = performance.now()): Promise<void> {
+  /** `t0`: when the player asked for the city (performance.now(); FH-21 measures the load from it); `existing`: a loading
+   *  screen already up (FH-12's first city keeps its one screen) */
+  private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData, t0 = performance.now(), existing?: LoadingScreen): Promise<void> {
     this.busy = true;
-    const ld = new LoadingScreen(this.root);
+    const ld = existing ?? new LoadingScreen(this.root);
     try {
       ld.set('Generating terrain…', 0.1);
       await paint();
