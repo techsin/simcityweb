@@ -538,7 +538,7 @@ export class CityScene {
     if (hasScene && this.mods.CityObjectsView && force !== 'objects' && force !== 'all') {
       try {
         const getEmergency = { vehicles: () => this.host.emergency.vehicles(), incidents: () => this.host.emergency.incidents(), time: () => this.host.simTime() };
-        const octx = { scene: world.scene, camera: world.camera, renderer: world.renderer, canvas: this.canvas, getTrafficRoutes, getState: () => this.sim.state, quality: this.settings.quality, getEmergency };
+        const octx = { scene: world.scene, camera: world.camera, renderer: world.renderer, canvas: this.canvas, getTrafficRoutes, getState: () => this.sim.state, quality: this.settings.quality, getEmergency, getPlantLoad: (id: number) => { const u = this.host.utilities; return 'plantLoad' in u ? u.plantLoad?.(id) ?? null : null; } };
         objects = new this.mods.CityObjectsView(state, events, octx);
       } catch (e) {
         this.errors.report('City objects view failed to start — using simplified buildings', e);
