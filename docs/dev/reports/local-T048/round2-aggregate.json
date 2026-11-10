@@ -1,0 +1,30 @@
+{
+ "frames": 130297,
+ "vignettePillMismatches": 0,
+ "stings": 61,
+ "unseenStings": 0,
+ "minGapS": 10.086,
+ "restoreToasts": 32,
+ "restoreSilent": 30,
+ "restoreGoodChimes": 0,
+ "restoreNotifyChimes": 2,
+ "flashes": 161,
+ "flashStats": [
+  {
+   "kind": "saved",
+   "n": 30,
+   "min": 566.8,
+   "median": 597,
+   "max": 607
+  },
+  {
+   "kind": "lost",
+   "n": 131,
+   "min": 567.8,
+   "median": 597.2,
+   "max": 683.5
+  }
+ ],
+ "flashesWithStaleText": 0,
+ "badFlash": []
+}

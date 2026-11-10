@@ -347,6 +347,8 @@ function unmetShare(r: AccessRec, k0: number, k1: number, k4: number): number {
 const C_STRIDE = 16;
 const C_VER = 0, C_RAW = 1, C_UNMET = 2, C_NOISE = 3, C_LASTDAY = 4, C_LASTPOP = 5, C_HIRE = 6, C_FAM = 7, C_STUD = 8,
   C_SEN = 9, C_EDUT = 10, C_COL = 11, C_SEEN = 12, C_NEXT = 13;
+/** the words of a record a save keeps (T057: the rest are unused) */
+export const C_SAVED = C_NEXT + 1;
 /** record fields the population system reads after DemographicsCache.refresh (offset + REC_*): the raw needs penalty
  *  (folded with the cohort shares; × needsExpectation, capped), the unmet-needs share (BF.NeedsUnmet when
  *  pop × share >= NEEDS_UNMET_PEOPLE) and the night noise at the home */
@@ -373,6 +375,37 @@ export class DemographicsCache {
   /** the coverage layers changed: every access record is refilled on its next use */
   invalidate(): void {
     this.version++;
+  }
+  /**
+   * T057: the records of the given buildings (their C_SAVED words, bit-exact; the access record's version as fresh 1 /
+   * stale 0) and their wf mirror, for the save (null when the cache holds none of them)
+   */
+  saveRecords(ids: Int32Array): { ids: Int32Array; rec: Int32Array; wf: Float32Array } | null {
+    const out = new Int32Array(ids.length * C_SAVED), wf = new Float32Array(ids.length);
+    const i32 = this.i32, n = this.wf.length;
+    let k = 0;
+    const kept = new Int32Array(ids.length);
+    for (const id of ids) {
+      if (id < 0 || id >= n || i32[id * C_STRIDE + C_SEEN] === 0) continue;
+      const o = id * C_STRIDE, q = k * C_SAVED;
+      for (let j = 0; j < C_SAVED; j++) out[q + j] = i32[o + j];
+      out[q + C_VER] = i32[o + C_VER] === this.version ? 1 : 0;
+      wf[k] = this.wf[id];
+      kept[k++] = id;
+    }
+    return k ? { ids: kept.slice(0, k), rec: out.slice(0, k * C_SAVED), wf: wf.slice(0, k) } : null;
+  }
+  /** T057: the saved records back (a loaded city; after sync() of every building): the fresh ones current */
+  restoreRecords(r: { ids: Int32Array; rec: Int32Array; wf: Float32Array }): void {
+    for (let k = 0; k < r.ids.length; k++) {
+      const id = r.ids[k];
+      if (id < 0) continue;
+      this.ensure(id);
+      const o = id * C_STRIDE, q = k * C_SAVED;
+      for (let j = 0; j < C_SAVED; j++) this.i32[o + j] = r.rec[q + j];
+      this.i32[o + C_VER] = r.rec[q + C_VER] === 1 ? this.version : 0;
+      this.wf[id] = r.wf[k];
+    }
   }
   ensure(id: number): void {
     const n0 = this.wf.length;

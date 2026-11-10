@@ -25,20 +25,145 @@ const TOAST_SOUND: Record<string, string | null> = {
   info: 'notify', good: 'good', bad: 'bad', warning: 'warning', disaster: 'alarm', reward: 'reward', advisor: 'advisor', error: 'error', saved: null, music: null,
 };
 
+/** an item the ticker shows: a news item, or one the UI pushes (FEEL-22's resident quotes, `NewsTicker.push`) */
+export interface TickerItem {
+  text: string;
+  kind: string;
+  /** absolute day (the date label); none for an undated item */
+  day?: number;
+  /** a click focuses this cell */
+  x?: number;
+  z?: number;
+  advisor?: string;
+}
+
+/** FEEL-01: the ticker shows at most this many characters of an item's first clause (then an ellipsis) */
+export const TICKER_CLAUSE_MAX = 90;
+/** a ". " after one of these is not a sentence end */
+const NOT_A_STOP = /(?:^|[\s(])(?:e\.g|i\.e|vs|St|Dr|Mr|Mrs|Ms|No)$/;
+
+/**
+ * FEEL-01: the one clause the ticker shows: the text up to its first " — " or its first sentence end (". "), at most
+ * `max` characters (cut at a word, plus "…"). The tooltip and the news feed keep the full text.
+ */
+export function tickerClause(text: string, max = TICKER_CLAUSE_MAX): string {
+  const t = text.trim();
+  let cut = t.length;
+  const dash = t.indexOf(' — ');
+  if (dash > 0) cut = dash;
+  for (const m of t.matchAll(/\.\s/g)) {
+    if (m.index >= cut) break;
+    if (m.index > 0 && !NOT_A_STOP.test(t.slice(0, m.index))) {
+      cut = m.index + 1;
+      break;
+    }
+  }
+  let c = t.slice(0, cut).trimEnd();
+  if (c.length > max) {
+    const sp = c.lastIndexOf(' ', max);
+    c = c.slice(0, sp >= max * 0.6 ? sp : max).replace(/[\s,;:—–-]+$/u, '') + '…';
+  }
+  return c;
+}
+
+/** a flavour headline (advisors.ts posts them as 'info' news from the 'news' desk): the ticker labels it "Gazette" */
+export function isGazette(n: TickerItem): boolean {
+  return n.kind === 'info' && n.advisor === 'news';
+}
+
+/**
+ * News the ticker may let go when it falls behind (NewsTicker.STALE_S): the kinds that show elsewhere too (advisor tips
+ * and warnings in the Advisors panel; bad news and disasters as toasts that always show, and in the emergency banner).
+ * Flavour headlines (the ticker is the only place that shows them), good news and rewards always wait their turn
+ */
+export function tickerRoutine(n: TickerItem): boolean {
+  return !isGazette(n) && n.kind !== 'good' && n.kind !== 'reward';
+}
+
+/** an item waiting to show: from the news log, or pushed (a pushed one survives a replaced log) */
+interface TickerQueued {
+  item: TickerItem;
+  news: boolean;
+  /** the ticker's clock when it arrived (s) */
+  at: number;
+}
+
+/** what the ticker shows now */
+interface TickerShown {
+  item: TickerItem;
+  el: HTMLElement;
+  /** seconds it has shown (hover pauses it) */
+  t: number;
+  /** how long it holds when it fits: HOLD_S, or BURST_S for a queued one after another new item */
+  slot: number;
+  /** a new item (it arrived or was pushed); the others come from the idle rotation */
+  fresh: boolean;
+}
+
+/**
+ * The news ticker (FEEL-01): one item at a time, the newest first.
+ * - A new item enters from the right at once (a short ease-out slide; a rotation item gives way). It holds HOLD_S if it
+ *   fits; otherwise it rests LEAD_S, scrolls through once at SCROLL_PX_S until its end is in view, and rests TAIL_S.
+ * - Bursts queue: HOLD_S for the first, then BURST_S each (a long item's rests halve). At most QUEUE_MAX wait; past that
+ *   the oldest waiting one gives way, and so does routine news (`tickerRoutine`) that waited STALE_S with more behind
+ *   it. Everything stays in the news feed.
+ * - Idle, it rotates through the newest 8 items (`tickerItems`), newest first, skipping each one it just showed as new.
+ * - Each item is one clause (`tickerClause`) and its tooltip has the full text. Flavour headlines carry a "Gazette" label.
+ * - Hover pauses all of it. Its clock is real time (CityScene clamps the frame dt at 0.1 s; a slow frame must not slow
+ *   the holds down).
+ * - Widths (PB-PANELS, A1): a ResizeObserver reports the track's and the view's after layout. A frame reads no layout,
+ *   and writes the transform only when it changes.
+ */
 export class NewsTicker {
+  /** seconds a new item (and a rotation item) that fits holds */
+  static HOLD_S = 5;
+  /** seconds each queued item of a burst holds after the first */
+  static BURST_S = 3;
+  /** seconds an item takes to enter from the right, and how far right of its place it starts (css px; at most the
+   *  view's width). Not from beyond the view's edge: its first frame would show an empty ticker, for a whole second on
+   *  a slow machine */
+  static ENTER_S = 0.5;
+  static ENTER_PX = 120;
+  /** a long item rests this long at its start before it scrolls, and this long at its end (half that in a burst) */
+  static LEAD_S = 1;
+  static TAIL_S = 1;
+  /** the scroll speed of an item longer than the view */
+  static SCROLL_PX_S = 60;
+  /** new items waiting, at most */
+  static QUEUE_MAX = 8;
+  /** a routine item (`tickerRoutine`) that has waited this long gives way to the items behind it: a busy city at 2x
+   *  posts more news than one line can show, and the headlines must not wait behind it */
+  static STALE_S = 6;
+  /** the view's right fade (hud.css `.tk-view` mask): an item fits when it ends before it */
+  static FADE_R = 24;
+  /** the longest real-time step one frame takes (a hidden tab resumes where it was) */
+  static MAX_STEP_S = 1;
   readonly el: HTMLDivElement;
   private track: HTMLDivElement;
   private view: HTMLDivElement;
-  private x = 0;
   private hover = false;
-  /** the news sequence at the last rebuild; newsMark also detects a cleared / replaced log */
+  /** the news sequence at the last sync; newsMark also detects a cleared / replaced log */
   private shownMark = -1;
   private shownNews = -1;
+  /** the newest news item at the last sync: the new items are the ones after it */
+  private lastSeen: NewsItem | null = null;
+  /** the idle rotation: the newest items, newest first (the welcome items for an empty log) */
+  private list: TickerItem[] = [];
+  private rot = 0;
+  /** items shown as new: the rotation skips each one once */
+  private recent = new WeakSet<TickerItem>();
+  private queue: TickerQueued[] = [];
+  private cur: TickerShown | null = null;
+  /** the track's width (its one item, with the padding), reported after layout */
   private width = 0;
-  /** the view's width, measured on rebuilds and resizes only (A1: frame() read clientWidth every frame) */
+  /** the view's width, reported on resizes only (A1: frame() read clientWidth every frame) */
   private viewW = 0;
-  /** reports the track's and the view's sizes after layout: a rebuild then reads no layout (it forced one, of whatever
-   *  the frame had changed so far, on every news item) */
+  /** the transform written last (px) */
+  private x = NaN;
+  private lastNow = -1;
+  /** the ticker's clock (s, real time; hover pauses it) */
+  private clock = 0;
+  /** reports the track's and the view's sizes after layout: a swap then reads no layout either */
   private ro: ResizeObserver | null = null;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
@@ -57,8 +182,8 @@ export class NewsTicker {
       (ctx.panels as any).get?.('advisors')?.showTab?.('news');
     }, { signal: this.ctx.signal });
     parent.appendChild(this.el);
-    // the view's width changes with the window (and the UI zoom) only, the track's with its items: measure them when
-    // they change (after layout), not every frame nor on every rebuild
+    // the view's width changes with the window (and the UI zoom) only, the track's with its item: measure them when
+    // they change (after layout), not every frame nor on every swap
     if (typeof ResizeObserver !== 'undefined') {
       const ro = (this.ro = new ResizeObserver(() => this.measure()));
       ro.observe(this.view);
@@ -69,39 +194,142 @@ export class NewsTicker {
       window.addEventListener('resize', onResize, { signal: this.ctx.signal });
       ctx.signal?.addEventListener('abort', () => window.removeEventListener('resize', onResize), { once: true });
     }
-    this.rebuild();
+    // the log the city starts with is old news: the rotation shows it, newest first
+    this.sync(true);
+    this.next(false);
+    this.place();
   }
 
-  /** the track must be rebuilt: a news item was added (also to a full log), or the log was cleared / replaced */
+  /** FEEL-22: show a UI-made item next, after the news that came before it. It is not in the news log, so it shows
+   *  once; a click on it focuses its x, z */
+  push(item: TickerItem): void {
+    if (this.stale()) this.sync();
+    this.enqueue(item, false);
+  }
+
+  /** the item showing now (tests, tools) */
+  get current(): TickerItem | null {
+    return this.cur?.item ?? null;
+  }
+
+  /** the number of new items waiting (tests, tools) */
+  get waiting(): number {
+    return this.queue.length;
+  }
+
+  private enqueue(item: TickerItem, news: boolean): void {
+    const q = this.queue;
+    q.push({ item, news, at: this.clock });
+    // full: the oldest routine news item gives way, else the oldest
+    while (q.length > NewsTicker.QUEUE_MAX) {
+      const k = q.findIndex((e) => e.news && tickerRoutine(e.item));
+      q.splice(Math.max(0, k), 1);
+    }
+  }
+
+  /** the news log changed: a news item was added (also to a full log), or the log was cleared / replaced */
   private stale(): boolean {
-    const news = this.ctx.state.news;
-    return this.ctx.host.newsSeq !== this.shownNews || newsMark(news) !== this.shownMark;
+    return this.ctx.host.newsSeq !== this.shownNews || newsMark(this.ctx.state.news) !== this.shownMark;
   }
 
-  private rebuild(): void {
+  /**
+   * Queue the log's new items, the oldest first (past QUEUE_MAX the oldest give way). A replaced log (a load, another
+   * city; for an empty one, more items than the queue holds) or a revision without a new item (W0.5: the sequence alone
+   * invalidates) start over at the newest item instead. `init`: the ticker is new and the log is old news.
+   */
+  private sync(init = false): void {
     const st = this.ctx.state;
-    const items = tickerItems(st.news);
+    const news = st.news;
     this.shownNews = this.ctx.host.newsSeq;
-    this.shownMark = newsMark(st.news);
-    this.track.innerHTML = '';
-    if (!items.length) {
-      const welcome: NewsItem[] = [
+    this.shownMark = newsMark(news);
+    let fresh: NewsItem[] = [];
+    if (!this.lastSeen) fresh = news.length <= NewsTicker.QUEUE_MAX ? news.slice() : [];
+    else {
+      const at = news.lastIndexOf(this.lastSeen);
+      if (at >= 0) fresh = news.slice(at + 1);
+    }
+    this.lastSeen = news[news.length - 1] ?? null;
+    const list: TickerItem[] = tickerItems(news);
+    if (!list.length) {
+      list.push(
         { day: st.day, text: `Welcome to ${st.config.name}! Zone some land and connect it with roads to get started.`, kind: 'info' },
-        { day: st.day, text: 'Tip: residents need power — build a power plant and connect it with power lines.', kind: 'advisor' },
-      ];
-      items.push(...welcome);
+        { day: st.day, text: 'Tip: roads and power lines carry electricity from your plant to your zones.', kind: 'advisor' },
+      );
     }
-    for (const n of items) {
-      const el = h('span', { class: `tk-item ${n.kind}` }, h('span', { class: 'tk-dot' }), h('span', { class: 'd' }, dayLabel(n.day, st.config.startYear)), h('span', { html: escapeHtml(n.text) }));
-      if (n.x !== undefined && n.z !== undefined) {
-        el.dataset.x = String(n.x);
-        el.dataset.z = String(n.z);
-        el.style.cursor = 'pointer';
-      }
-      this.track.appendChild(el);
+    this.list = list;
+    this.rot = 0;
+    if (init) return;
+    if (fresh.length) {
+      for (const n of fresh) this.enqueue(n, true);
+      return;
     }
-    // (without a ResizeObserver: one layout read per rebuild)
+    // start over at the newest item; the news that waited belonged to the old log (pushed items stay)
+    this.queue = this.queue.filter((q) => !q.news);
+    this.recent = new WeakSet();
+    this.cur = null;
+  }
+
+  /** show the next item: a waiting new one, else the rotation's next. `afterFresh`: a new item has just had its time,
+   *  so a queued one holds BURST_S */
+  private next(afterFresh: boolean): void {
+    // routine news that waited STALE_S gives way to the items behind it (it stays in the news feed)
+    while (this.queue.length > 1 && this.queue[0].news && tickerRoutine(this.queue[0].item) && this.clock - this.queue[0].at >= NewsTicker.STALE_S) this.queue.shift();
+    const q = this.queue.shift();
+    if (q) {
+      if (q.news) this.recent.add(q.item);
+      this.show(q.item, true, afterFresh ? NewsTicker.BURST_S : NewsTicker.HOLD_S);
+      return;
+    }
+    // the rotation's next item: each one just shown as new is skipped once, and the one showing now does not follow
+    // itself (unless it is the only one)
+    const list = this.list;
+    let item: TickerItem | null = null;
+    for (let k = 0; k < 2 * list.length && !item; k++) {
+      const it = list[this.rot];
+      this.rot = (this.rot + 1) % list.length;
+      if (this.recent.has(it)) this.recent.delete(it);
+      else if (it !== this.cur?.item || list.length === 1) item = it;
+    }
+    this.show(item ?? list[0], false, NewsTicker.HOLD_S);
+  }
+
+  private show(item: TickerItem, fresh: boolean, slot: number): void {
+    const c = this.cur;
+    if (c && c.item === item) {
+      // the same item again (a rotation of one): it stays, and its time starts over at rest
+      c.t = NewsTicker.ENTER_S;
+      c.slot = slot;
+      c.fresh = fresh;
+      return;
+    }
+    const el = this.render(item);
+    this.track.innerHTML = '';
+    this.track.appendChild(el);
+    this.cur = { item, el, t: 0, slot, fresh };
+    // (without a ResizeObserver: one layout read per swap)
     if (!this.ro) this.measure();
+  }
+
+  private render(n: TickerItem): HTMLElement {
+    const gazette = isGazette(n);
+    const el = h('span', { class: `tk-item ${n.kind}${gazette ? ' gazette' : ''}`, title: n.text },
+      h('span', { class: 'tk-dot' }),
+      n.day !== undefined ? this.date(n.day) : null,
+      gazette ? h('span', { class: 'tk-tag' }, 'Gazette') : null,
+      h('span', { class: 'tk-text' }, tickerClause(n.text)),
+    );
+    if (n.x !== undefined && n.z !== undefined) {
+      el.dataset.x = String(n.x);
+      el.dataset.z = String(n.z);
+      el.style.cursor = 'pointer';
+    }
+    return el;
+  }
+
+  /** the date label: the month and day ("Mar 4"), the full date in its tooltip (the year takes room the clause needs) */
+  private date(day: number): HTMLElement {
+    const full = dayLabel(day, this.ctx.state.config.startYear);
+    return h('span', { class: 'd', title: full }, full.replace(/, \d+$/, ''));
   }
 
   /** the track's and the view's widths (a ResizeObserver calls this after layout: no forced layout then) */
@@ -110,17 +338,61 @@ export class NewsTicker {
     this.viewW = this.view.clientWidth;
   }
 
-  frame(dt: number): void {
-    if (this.stale()) this.rebuild();
-    const vw = this.viewW;
-    if (this.width <= vw - 20) {
-      this.x = 0;
-      this.track.style.transform = 'translateX(0)';
-      return;
+  /** how far the item runs past the view's opaque part (px); <= 0: it fits (also while nothing is measured) */
+  private overflow(): number {
+    return this.viewW > 0 ? this.width - (this.viewW - NewsTicker.FADE_R) : 0;
+  }
+
+  /** a long item's rests: LEAD_S and TAIL_S, halved for a queued item of a burst */
+  private rest(c: TickerShown): number {
+    return c.slot < NewsTicker.HOLD_S ? 0.5 : 1;
+  }
+
+  /** how long the item shows: its slot, or for a long item the time to enter, rest, scroll through once and rest */
+  private duration(c: TickerShown): number {
+    const S = NewsTicker;
+    const over = this.overflow();
+    const k = this.rest(c);
+    return over > 0 ? Math.max(c.slot, S.ENTER_S + k * S.LEAD_S + over / S.SCROLL_PX_S + k * S.TAIL_S) : c.slot;
+  }
+
+  /** where the item is now: entering from the right, at rest, or scrolling (ease-out entry; translateX only) */
+  private place(): void {
+    const c = this.cur;
+    if (!c) return;
+    const S = NewsTicker;
+    let x = 0;
+    if (c.t < S.ENTER_S) {
+      const k = 1 - c.t / S.ENTER_S;
+      x = Math.min(this.viewW, S.ENTER_PX) * k * k * k;
+    } else {
+      const over = this.overflow();
+      if (over > 0) x = -Math.min(over, Math.max(0, c.t - S.ENTER_S - this.rest(c) * S.LEAD_S) * S.SCROLL_PX_S);
     }
-    if (!this.hover) this.x -= dt * 38;
-    if (this.x < -this.width) this.x = vw;
-    this.track.style.transform = `translateX(${this.x.toFixed(1)}px)`;
+    x = Math.round(x * 10) / 10 || 0;
+    if (x !== this.x) {
+      this.x = x;
+      this.track.style.transform = `translateX(${x}px)`;
+    }
+  }
+
+  frame(dt: number): void {
+    // real time (dt is clamped by the scene), at most MAX_STEP_S a frame; a caller's larger dt wins (tests, tools)
+    const now = performance.now();
+    const real = this.lastNow < 0 ? 0 : Math.min(NewsTicker.MAX_STEP_S, Math.max(0, (now - this.lastNow) / 1000));
+    this.lastNow = now;
+    const step = Math.max(dt, real);
+    if (this.stale()) this.sync();
+    const c = this.cur;
+    if (!c) this.next(false);
+    else if (!this.hover) {
+      this.clock += step;
+      c.t += step;
+      // a new item: a rotation item gives way at once; a new one first has its time
+      if (this.queue.length && !c.fresh) this.next(false);
+      else if (c.t >= this.duration(c)) this.next(c.fresh);
+    }
+    this.place();
   }
 }
 
@@ -143,6 +415,16 @@ export interface ToastOptions {
   ttl?: number;
   action?: ToastAction;
   buttons?: ToastButton[];
+  /** FH-08: wait in the shared queue while a New Year show is busy, even past QUEUE_MAX_MS. */
+  deferWhile?: () => boolean;
+  /** called when the toast actually appears (including a merge), never when it only enters the queue */
+  onShow?: () => void;
+  /** checked when a deferred or budgeted toast can appear; obsolete lessons do not consume their one-shot */
+  isRelevant?: () => boolean;
+  /** called instead of onShow when isRelevant rejects a toast at display time */
+  onDrop?: () => void;
+  /** its existing toast hides with the teaching cards if a New Year starts while it is still visible */
+  teaching?: boolean;
   /**
    * FEEL-02a: the toast is news that shares the budget (Toasts.BUDGET_GAP_MS, BUDGET_PER_MIN). Over budget, one with an
    * action waits in a queue and shows when the budget allows (or in spaced releases after QUEUE_MAX_MS); one without
@@ -151,7 +433,7 @@ export interface ToastOptions {
   budget?: boolean;
 }
 
-/** a toast that waits for the budget (it carries an action) */
+/** a toast that waits for the budget (it carries an action), or for a deferral to end */
 interface QueuedToast {
   text: string;
   kind: string;
@@ -247,13 +529,19 @@ export class Toasts {
     return t;
   }
 
-  /** show queued toasts oldest first; capped releases bypass the budget, at most one per half budget gap */
+  /**
+   * the oldest eligible toast goes first (a deferred lesson never holds up ordinary news); capped releases bypass the
+   * budget, at most one per half budget gap
+   */
   private drain(): void {
     const now = performance.now();
     while (this.queue.length) {
-      const allowed = this.allows(now);
-      if (!allowed && (now - this.queue[0].at < Toasts.QUEUE_MAX_MS || now - this.lastCappedAt < Toasts.BUDGET_GAP_MS / 2)) break;
-      const q = this.queue.shift()!;
+      const i = this.queue.findIndex((q) => !q.opts.deferWhile?.());
+      if (i < 0) break;
+      const q = this.queue[i];
+      const allowed = !q.opts.budget || this.allows(now);
+      if (!allowed && (now - q.at < Toasts.QUEUE_MAX_MS || now - this.lastCappedAt < Toasts.BUDGET_GAP_MS / 2)) break;
+      this.queue.splice(i, 1);
       this.show(q.text, q.kind, q.cell, q.title, { ...q.opts, budget: false });
       if (!allowed) {
         this.lastCappedAt = now;
@@ -263,14 +551,19 @@ export class Toasts {
     this.schedule(now);
   }
 
-  /** wake up when the head of the queue may show */
+  /** wake up when the oldest eligible toast may show; poll a show-bound lesson until the show ends */
   private schedule(now: number): void {
     clearTimeout(this.queueTimer);
     this.timers.delete(this.queueTimer);
     this.queueTimer = 0;
     if (!this.queue.length || this.ctx.signal?.aborted) return;
-    const capAt = Math.max(this.queue[0].at + Toasts.QUEUE_MAX_MS, this.lastCappedAt + Toasts.BUDGET_GAP_MS / 2);
-    const at = Math.min(this.nextAllowed(now), capAt);
+    let at = Infinity;
+    for (const q of this.queue) {
+      if (q.opts.deferWhile?.()) { at = Math.min(at, now + 100); continue; }
+      const capAt = Math.max(q.at + Toasts.QUEUE_MAX_MS, this.lastCappedAt + Toasts.BUDGET_GAP_MS / 2);
+      at = Math.min(at, q.opts.budget ? Math.min(this.nextAllowed(now), capAt) : now);
+      break;
+    }
     this.queueTimer = this.arm(() => {
       this.queueTimer = 0;
       this.drain();
@@ -287,6 +580,17 @@ export class Toasts {
     return id;
   }
 
+  /** keep shown questions in place: new and promoted toasts go below them */
+  private insertToast(t: HTMLElement): void {
+    if (!this.el.firstElementChild?.classList.contains('question')) {
+      this.el.prepend(t);
+      return;
+    }
+    if (t.classList.contains('question') && t.parentElement === this.el) return;
+    const next = Array.from(this.el.children).find((c) => !c.classList.contains('question')) ?? null;
+    if (next !== t) this.el.insertBefore(t, next);
+  }
+
   /**
    * show a toast; plays the kind's sound (TOAST_SOUND) unless opts.silent or it merges into an identical live toast.
    * opts.action: a click runs it (instead of jumping to `cell`), with a small hint line under the text.
@@ -298,9 +602,11 @@ export class Toasts {
     const key = kind + ':' + text;
     const meta = NEWS_META[kind] ?? NEWS_META.info;
     const ttl = (opts.ttl ?? (kind === 'error' ? 2600 : kind === 'disaster' ? 12000 : kind === 'music' ? 4200 : 7000)) * Toasts.ttlScale;
+    const deferred = !!opts.deferWhile?.();
     // identical message within the de-dup window: bump the counter on the existing toast instead of stacking
     const live = this.live.get(key);
-    if (live && live.el.isConnected && now - live.at < Toasts.DEDUP_MS) {
+    if (!deferred && live && live.el.isConnected && now - live.at < Toasts.DEDUP_MS) {
+      if (opts.isRelevant?.() === false) { opts.onDrop?.(); return; }
       live.count++;
       live.at = now;
       live.badge.textContent = `×${live.count}`;
@@ -308,17 +614,20 @@ export class Toasts {
       live.badge.animate([{ transform: 'scale(1.35)' }, { transform: 'scale(1)' }], { duration: 220, easing: 'ease-out' });
       if (cell) live.cell = cell;
       live.restart(ttl);
-      if (this.el.firstElementChild !== live.el) this.el.prepend(live.el);
+      if (this.el.firstElementChild !== live.el) this.insertToast(live.el);
+      if (opts.teaching) live.el.classList.add('emg-teaching-toast');
+      opts.onShow?.();
       return;
     }
     // FEEL-02a: over budget, news with an action waits (the queue goes first), other news stays in the ticker only
-    if (opts.budget && (this.queue.length || !this.allows(now))) {
-      if (opts.action && !this.queue.some((q) => q.key === key)) {
+    if (deferred || (opts.budget && (this.queue.some((q) => !q.opts.deferWhile?.()) || !this.allows(now)))) {
+      if ((deferred || opts.action) && !this.queue.some((q) => q.key === key)) {
         this.queue.push({ text, kind, cell, title, opts, key, at: now });
         this.drain();
       } else if (this.queue.length) this.drain();
       return;
     }
+    if (opts.isRelevant?.() === false) { opts.onDrop?.(); return; }
     this.shownAt.push(now);
     // no toast sound when the action that raised it just played its own (error buzz, reward fanfare...)
     const recent = (this.ctx.mods.audio as { sinceLastPlay?: () => number } | undefined)?.sinceLastPlay?.() ?? 1e9;
@@ -393,7 +702,8 @@ export class Toasts {
     if (!sticky) timer = arm(kill, ttl);
     this.live.set(key, entry);
     if (answers) t.classList.add('question');
-    this.el.prepend(t);
+    if (opts.teaching) t.classList.add('emg-teaching-toast');
+    this.insertToast(t);
     // at most 4 visible (3 on short screens, e.g. 1280×720: CityScene sets .short on the UI root); the oldest goes first,
     // but a question waits for its answer (or its own expiry): news must not push it out before it can be read
     const max = this.ctx.root.classList.contains('short') ? Math.min(3, Toasts.MAX) : Toasts.MAX;
@@ -405,5 +715,6 @@ export class Toasts {
       for (const [k, v] of this.live) if (v.el === last) this.live.delete(k);
       last.remove();
     }
+    opts.onShow?.();
   }
 }
