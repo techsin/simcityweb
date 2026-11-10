@@ -14,6 +14,7 @@
  */
 import { CityState, HISTORY_KEYS, defaultStats, type Building, type CityStats, type HistorySeries } from '../sim/CityState';
 import type { CityConfigData } from '../sim/config';
+import { runSaveHooks } from '../sim/persist';
 import { assertSavableCity, type SavableCityState } from './state';
 
 export const CITY_SAVE_FORMAT = 'metropolis-city';
@@ -220,6 +221,8 @@ export function deserializeBuildings(sb: SerializedBuildings, copyExtra = true):
 
 export function serializeCity(state: SavableCityState, opts: SerializeOptions = {}): SerializedCity {
   assertSavableCity(state);
+  // (the systems' save hooks first: their runtime state into systemData records, T057)
+  runSaveHooks(state);
   const copy = !!opts.copy;
   const out: SerializedCity = {
     format: CITY_SAVE_FORMAT,
