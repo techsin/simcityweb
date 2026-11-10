@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GameContext } from '../../src/game/context';
 import { DEFAULT_SETTINGS, loadSettings } from '../../src/game/settings';
-import { loadGuideProfile, saveGuideProfile } from '../../src/ui/guide/progress';
+import { loadGuideProfile, markEmergencyTeachingSeen, saveGuideProfile } from '../../src/ui/guide/progress';
 import { getGuideTips, setGuideTips, watchGuideTips } from '../../src/ui/guide/tips';
 import { SettingsPanel } from '../../src/ui/panels/SettingsPanel';
 import { FEl, installFakeDom, textOf } from './fakeDom';
@@ -50,6 +50,40 @@ describe('guide tips profile API', () => {
     saveGuideProfile(newer);
     setGuideTips(true);
     expect(loadGuideProfile()).toEqual({ ...newer, tips: true });
+  });
+
+  it('loads profiles without emergency flags safely and accepts only exact true flags', () => {
+    const unseen = { E1a: false, E1b: false, E2: false, E3: false };
+    expect(loadGuideProfile().emergencyTeaching).toEqual(unseen);
+    expect(stored.has('metropolis.ui.onboarding')).toBe(false);
+    stored.set('metropolis.ui.onboarding', JSON.stringify({ emergencyTeaching: { E1a: 'true', E1b: 1, E2: [], E3: true } }));
+    expect(loadGuideProfile().emergencyTeaching).toEqual({ ...unseen, E3: true });
+  });
+
+  it('migrates the retired emergency preference once without losing guide fields', () => {
+    const guide = { version: 1, veteran: true, tips: false, min: true, dismissedAll: true, seenExplainers: ['E11'] };
+    stored.set('metropolis.ui.onboarding', JSON.stringify(guide));
+    const legacy = JSON.stringify({ E1a: true, E1b: 'true', E2: true, E3: false });
+    stored.set('metropolis.ui.emergencyTeaching', legacy);
+    const profile = loadGuideProfile();
+    expect(profile).toEqual({ ...guide, emergencyTeaching: { E1a: true, E1b: false, E2: true, E3: false } });
+    expect(JSON.parse(stored.get('metropolis.ui.onboarding')!)).toEqual(profile);
+    expect(stored.get('metropolis.ui.emergencyTeaching')).toBe(legacy);
+    stored.set('metropolis.ui.emergencyTeaching', JSON.stringify({ E1b: true, E3: true }));
+    expect(loadGuideProfile()).toEqual(profile);
+  });
+
+  it('preserves lessons across stale guide saves and guide fields across emergency writes', () => {
+    const retained = loadGuideProfile();
+    markEmergencyTeachingSeen('E1a');
+    retained.min = true;
+    retained.seenExplainers.push('E11');
+    saveGuideProfile(retained);
+    expect(loadGuideProfile()).toMatchObject({ min: true, seenExplainers: ['E11'], emergencyTeaching: { E1a: true } });
+    setGuideTips(false);
+    markEmergencyTeachingSeen('E2');
+    expect(loadGuideProfile()).toMatchObject({ tips: false, min: true, seenExplainers: ['E11'], emergencyTeaching: { E1a: true, E2: true } });
+    expect(stored.has('metropolis.ui.emergencyTeaching')).toBe(false);
   });
 
   it('notifies active subscribers only on a change and releases each subscription independently', () => {

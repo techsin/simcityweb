@@ -24,6 +24,8 @@ export function accessibleZones(st: CityState): ZoneTargets & { roadless: number
     if (!isGrowZone(st.zone[i]) || st.water[i]) continue;
     const family = zoneFamily(st.zone[i] as Zone);
     if (family !== 'R' && family !== 'C' && family !== 'I') continue;
+    const b = st.building[i] < 0 ? undefined : st.buildings.get(st.building[i]);
+    if (b && getDef(b.def)?.category === 'growable') { counts[family]++; continue; }
     const access = lotAccess(st, i % st.size, Math.floor(i / st.size));
     if (access === 'front' || access === 'yard') counts[family]++;
     else if (access === 'none') counts.roadless++;

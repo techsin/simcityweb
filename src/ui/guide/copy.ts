@@ -178,7 +178,7 @@ export const guideCopy = {
     // §4.5 G7 · FH-02: data-view goal title.
     G7Title: () => 'See your city',
     // §4.5 G7 · FH-02: data views.
-    G7: () => 'Data views colour your map by power, water, crime, pollution and more.',
+    G7: () => 'Data views colour your map by crime, pollution, power, water and more.',
     // §4.5 G8 · FH-02: inspector goal title.
     G8Title: () => 'Ask why',
     // §4.5 G8 · FH-02: Why? is a control label, not a third sentence.

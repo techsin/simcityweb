@@ -44,6 +44,7 @@ import { ErrorOverlay, HelpPanel, PauseMenu, SavePill, confirmOpen } from '../ui
 import { CameraMemory, applyCamera, readCamera, validCamera } from './cameraStart';
 import { NewsTicker, Toasts } from '../ui/Notifications';
 import { Onboarding } from '../ui/Onboarding';
+import { readProgress } from '../ui/guide/progress';
 import { PanelManager } from '../ui/Panel';
 import { AdvisorsPanel } from '../ui/panels/AdvisorsPanel';
 import { BudgetPanel } from '../ui/panels/BudgetPanel';
@@ -204,11 +205,13 @@ export class CityScene {
     this.errors = new ErrorOverlay(this.uiRoot, { pause: () => this.host.setSpeed(0, 'error'), signal: this.abort.signal });
 
     // ---- simulation: the local host attaches guarded systems and actions once their modules load
-    // a brand-new city starts PAUSED (build first, then press play); saved cities keep running at normal speed. (Not
-    // keyed on day 0: the calendar may open later in the year.)
+    // A new city or an unfinished founding save starts PAUSED (build first, then press play). Not keyed on day 0:
+    // the calendar may open later in the year, and founding saves can already have utilities and a saved camera.
     this.newCity = !validCamera(state.systemData.camera, state) && state.buildings.size === 0;
     const Host = new URLSearchParams(typeof location === 'undefined' ? '' : location.search).get('simworker') === 'loopback' ? LoopbackSimHost : LocalSimHost;
-    const initialSpeed = opts.initialSpeed ?? (this.newCity ? 0 : undefined);
+    const guide = readProgress(state.systemData.onboarding, state.day);
+    const founding = guide?.phase === 'founding' && !guide.completed.includes('play');
+    const initialSpeed = opts.initialSpeed ?? (this.newCity || founding ? 0 : undefined);
     if (opts.host) {
       // booted paused, since only its Ready said whether the city is new: the local host's initial speed, as a command
       this.host = opts.host;

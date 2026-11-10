@@ -10,7 +10,15 @@ export interface GuideProfile {
   min: boolean;
   dismissedAll: boolean;
   seenExplainers: string[];
+  emergencyTeaching: EmergencyTeachingSeen;
 }
+
+export interface EmergencyTeachingSeen { E1a: boolean; E1b: boolean; E2: boolean; E3: boolean }
+const TEACHING_IDS = ['E1a', 'E1b', 'E2', 'E3'] as const;
+const teachingSeen = (value: unknown): EmergencyTeachingSeen => {
+  const v = record(value);
+  return { E1a: v.E1a === true, E1b: v.E1b === true, E2: v.E2 === true, E3: v.E3 === true };
+};
 
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const day = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
@@ -37,12 +45,27 @@ export function readProgress(value: unknown, now: number): GuideProgress | null 
 
 export function loadGuideProfile(): GuideProfile {
   const v = record(loadPref<unknown>('onboarding', {}));
-  return { version: 1, veteran: v.veteran === true, tips: v.tips !== false, min: v.min === true,
+  const legacy = Object.hasOwn(v, 'emergencyTeaching') ? null : loadPref<unknown>('emergencyTeaching', null);
+  const profile: GuideProfile = { version: 1, veteran: v.veteran === true, tips: v.tips !== false, min: v.min === true,
     // The old global dismissal stays global for existing profiles.
     dismissedAll: v.dismissedAll === true || (v.version !== 1 && v.dismissed === true),
-    seenExplainers: [...new Set(Array.isArray(v.seenExplainers) ? v.seenExplainers.filter((id): id is string => typeof id === 'string') : [])] };
+    seenExplainers: [...new Set(Array.isArray(v.seenExplainers) ? v.seenExplainers.filter((id): id is string => typeof id === 'string') : [])],
+    emergencyTeaching: teachingSeen(legacy ?? v.emergencyTeaching) };
+  // The nested field also marks migration complete; the retired pref is never consulted again.
+  if (legacy !== null) savePref('onboarding', profile);
+  return profile;
 }
 
 export function saveGuideProfile(profile: GuideProfile): void {
+  // The guide retains its snapshot while emergency lessons can be remembered independently.
+  const current = loadGuideProfile().emergencyTeaching;
+  for (const id of TEACHING_IDS) profile.emergencyTeaching[id] ||= current[id];
   savePref('onboarding', profile);
+}
+
+export function markEmergencyTeachingSeen(id: keyof EmergencyTeachingSeen): EmergencyTeachingSeen {
+  const profile = loadGuideProfile();
+  profile.emergencyTeaching[id] = true;
+  saveGuideProfile(profile);
+  return profile.emergencyTeaching;
 }
