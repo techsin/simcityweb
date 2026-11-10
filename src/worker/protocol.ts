@@ -119,7 +119,7 @@ export interface UtilitiesStream { plantLoads: { ids: Uint32Array; loads: Float3
 export interface Streams { emergency?: EmergencyStream; traffic?: TrafficStream; utilities?: UtilitiesStream; disasters?: ActiveDisaster[] }
 export interface WorkerStats { busy: number; msPerDay: number; units: Record<string, number>; queue: number }
 export const PLAIN_KEYS = ['funds', 'nextBuildingId', 'stats', 'budget', 'milestones', 'neighborConnections'] as const;
-export const SYSTEM_KEYS = ['economy', 'infraVersion', 'infraLayers', 'advisors', 'regionJobs', 'regionWorkers', 'foundedDay'] as const;
+export const SYSTEM_KEYS = ['economy', 'infraVersion', 'infraLayers', 'advisors', 'regionJobs', 'regionWorkers', 'foundedDay', 'firsts'] as const;
 export type PlainPatch = Partial<Pick<CityState, typeof PLAIN_KEYS[number]>> & {
   unlocked?: string[]; announced?: string[];
   historyTail?: Partial<HistorySeries>;
