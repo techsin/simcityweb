@@ -3,6 +3,10 @@
 **Verdict: done; holds for B2.** Every FEEL-09 Acceptance line passes on the real GPU after the review rounds below.
 The lane's two `src/sim/infra/emergency.ts` commits hold for B2's merge (NOTE-046 Q1); everything else is ready.
 
+**Cloud carry-over (Nov 10):** merged with dev after B2 on `cloud/t047`. The banner conflict with T048 and FH-08 is
+resolved, keeping both sides. Gates are green: vitest 3,106 passed, 0 failed, and the bot is identical to dev at
+198,115. The post-merge browser QA is the desktop's. See "Cloud carry-over (Nov 3)" at the end.
+
 Branch `local/T047-feel09-follow`:
 - base dev `fb1531f`; dev `50a6b29` merged in as `733c5d7` (clean, CityScene.ts auto-merged);
 - `1d287f2` the lane, with `aece5b4` (infra, holds for B2);
@@ -171,3 +175,129 @@ Gaps the cloud found at the start of this round:
    should re-measure the 3 px line on the worker host. B3 (pause snap-back) and B5 (a plain Query click ends Follow)
    stay open with their owners; dev has not changed either (`Simulation.ts:157-161`, `QueryTool.ts:111-114`).
 7. **The .done line** names the old bot reference (192,899) and "holds for B2"; it needs this lane's cloud line.
+
+### What the cloud did
+
+1. **Merged dev three times:** `1d47cd4` onto `573b49e`; `78b416d` onto `9ae7b28` (T028: tools and docs only); and
+   `5152b27` onto `43679b3` (the TopBar split: `src/ui/TopBar.ts`, `src/ui/topbar/**` and tests, none of them T047's files).
+   `src/ui/EmergencyBanner.ts` had 9 conflict hunks against T048 (FEEL-10) and T036s5 (FH-08); every side is kept:
+   - the Follow button joins dev's separate `body` block (`jump, send, choose, follow`), so FH-08's teaching cards,
+     appended to `body`, still sit below the button row;
+   - the banner record keeps dev's `body` and the lane's `follow`;
+   - the constructor takes the optional `EmergencyFollow` and keeps dev's cached `this.policy`;
+   - reset and dispose stop Follow, then run dev's flash, episode, teaching and LIVE-badge clean-up;
+   - Dismiss forgets the follow candidate and acknowledges FH-08's teaching;
+   - Send nearest keeps dev's gesture, with the same `tag: this` that Follow recognises;
+   - tick refreshes the chip and prunes candidates, then runs dev's `renderPolicy(this.policy)` and its pending failure
+     lesson.
+   `CityScene.ts`, `emergency.ts` and `POLISH_BACKLOG.md` merged cleanly.
+2. **Fixed one merge interaction** (`be35c05`). On the merged tree, dev's `tests/game/emergencyLive.test.ts` ("keeps one
+   renewal loop ... removes listeners and timers on abort") failed: the lane's abort path ran `refreshFollow()` first,
+   which read `host.simTime()` even with nothing followed; dev's harness host has no clock, so the throw skipped
+   dev's clean-up and left `emg-live` on. Now `refreshFollow` reads the clock only for a followed unit, and the abort
+   handler runs dev's clean-up first, then stops Follow. The real host always has a clock, so this was a robustness gap
+   rather than a visible bug; the dev test is the regression test (it fails without the change).
+3. **Updated the lane's banner harness** (`be35c05`): dev's banner subscribes through `host.events` and reads
+   `host.speed` and `host.liveSlowdown`; all 20 Follow banner tests had failed on "Cannot read properties of undefined
+   (reading 'on')". No assertion changed.
+4. **Two new tests** in `tests/game/emergencyFollowBanner.test.ts`, each shown to fail with its code removed:
+   - `e710220`: sent ids under another cause, or none, offer no Follow. Removing the banner's cause check
+     (`tag === this || tag instanceof DispatchTool`) failed no test before, because `sent` comes only from dispatch
+     commands today; this pins the "recognised by host.cause" rule.
+   - `d8a83ae` (merge coverage): a resolved or failed incident ends Follow (camera, chip and button) and still gets
+     FEEL-10's `emg-saved` / `emg-lost` flash and outcome line. It fails with either side's code removed.
+5. **Checked the WIP commits line by line** (`1d287f2`, `434e070`, `2397ab6`, `7ccf3ed`; the `wip(...)` prefix marks the
+   Codex lane's commits, which the desktop then QA'd):
+   - `CameraController.ts`: every pan, zoom, orbit, key, touch, edge-scroll, `focusOn`, `setView`, `rotateStep` and
+     dispose path calls `stopFollowing()`. The keyboard stops it only for camera keys, so Space or the tool keys keep
+     Follow. Follow damps the target and the distance with λ = 6. The 2 s grace is real time (`performance.now()`).
+     The minimum-tilt push is off while following, so the player's tilt is kept. Reduced motion sets the distance at
+     once.
+   - `EmergencyVehicles.ts`: `drawnVehiclePosition` is render-only. The sim route, `vehiclePosition` and the event
+     timing are untouched. Route geometry is cached per path array, model bounds per model, with no per-frame
+     allocation. `followPosition` reads the renderer's feed (`feed.vehicles()`, `feed.time()`), never the sim.
+   - `netinfo.ts` / `mesher.ts`: `junctionFillet` is the mesher's old expression moved into one place
+     (`Math.min(2.5, HALF - b - 0.05)`), so road meshes are unchanged.
+   - `emergency.ts`: only the `dispatched` event's optional `sent` ids. It also emits `dispatched` when a manual
+     command sends only a supporting responder. Every consumer was checked: SimCore ignores `dispatched`;
+     DispatchTool ends only when no unit is missing; GameSounds records a player dispatch the way it already does.
+     No route, RNG, balance, save or state change.
+   - `CityScene.ts`: the Follow source converts the look-ahead through `host.secondsPerDay()` and `host.speed` (host
+     reads, not sim reads), and reduced motion goes through `resolveMotion`. The hygiene test passes.
+6. **Mutation spot checks on the lane's tests** (on a copy; the worktree was untouched): λ 6→30 fails
+   `cameraFollow` "damps the rendered position with lambda 6"; no 2 s grace fails 2 cameraFollow cases; a wheel that
+   keeps Follow fails "wheel returns camera control immediately"; dropping the support-only `dispatched` event fails
+   2 `emergencyFollowDispatch` cases.
+
+### Gates
+
+| Gate | Tree | Result |
+|---|---|---|
+| tsc (`sem`) | `78b416d`, `d8a83ae`, `5152b27` | clean each time |
+| Full vitest (lock), `npx vitest run --configLoader runner` | `d8a83ae` (dev `9ae7b28` + the lane + the fixes) | **306 files passed, 4 skipped; 3,106 tests passed, 32 skipped; 0 failed** (356 s) |
+| Hygiene test (`tests/worker/hygiene.test.ts`) | `d8a83ae`, `5152b27` | passes (in the full run and the targeted runs) |
+| After the TopBar merge: TopBar, banner and hygiene files (`sem`, 2 workers) | `5152b27` | 11 files, 185 tests passed |
+| Lane targeted files (`sem`, 2 workers): the 13 files of the N5 round plus dev's banner, LIVE, outcome and teaching files | `be35c05` | 20 files, 346 tests passed; `emergencyTurnClearance` 24 passed |
+| Bot 128×15 seed 7 (lock), lane | `d8a83ae` | residents [ 61828, 95515, 40772 ] = **198,115** |
+| Bot 128×15 seed 7 (lock), clean dev export | `9ae7b28` (`scratchpad/co/t047-devbase`) | residents [ 61828, 95515, 40772 ] = **198,115** |
+| Bot comparison | | every year row 2001-2015 identical, apart from the two timing columns (econms, totalms) and the run time |
+| Real-GPU browser gates (FEEL-09 Acceptance) | `7ccf3ed` / `7111b02` | PASS on the desktop before the merge (table above). The post-merge recheck is the desktop's (NOTE-084), see the Desktop QA list |
+
+The bot does not change: the lane's only sim hunk adds optional `sent` ids to an event payload, and the TopBar commits
+that came in after the bot runs are UI-only.
+
+### Decisions
+
+1. **The bot reference is 198,115, not the task file's 192,899.** NOTE-083: every tree containing B2 (`2dd0fe5`)
+   expects 198,115. The lane equals dev's own run on the same tree.
+2. **No browser on the cloud.** NOTE-061 and NOTE-084 give the post-merge QA to the desktop. The desktop's real-GPU
+   rounds 1-4 stand for the lane's code. The merge-only states are in the Desktop QA list (line 5).
+3. **The infra hunks merge now.** NOTE-046 Q1 held them for B2, and B2 is in dev. They change no sim state, and the bot
+   is identical.
+4. **The 3 px and central-30 % lines are read from the settled camera**, not during the first 0.7-0.9 s acquisition
+   flight after the click. This is the desktop's reading in rounds 3-4. It is the conservative way to read "for the
+   whole drive" for a camera that starts away from the truck, and the lead may tighten it. The Desktop QA list keeps
+   the same reading so the numbers compare.
+5. **Merge layout:** the Follow button is the last button in the row (`jump, send, choose, follow`), inside dev's
+   `body` block. FH-08's teaching cards stay below the row. On abort, dev's clean-up runs before Follow's, so a
+   failure in one cannot skip the other.
+6. **Open items keep their owners** (they predate this round, and no lane hunk touches their files): B3 pause
+   snap-back (sim clock, `Simulation.ts:157-161`), B5 a plain Query left click ends Follow (tools, `QueryTool.ts:111-114`),
+   N6 highway overpass turns (road render / transport), N7 avenue lane offset (`POLISH_BACKLOG.md`). N2 moves from
+   "open" to "re-measure" because T061 item 2 is in dev (Desktop QA line 2).
+
+### Browser evidence
+
+None from the cloud. NOTE-061 moved all browser and real-GPU checks to the desktop, and NOTE-084 asks it for the
+post-merge QA. The desktop's pre-merge real-GPU results (rounds 1-4, tables above) stand for the lane's own code. The
+merge changed only the banner wiring (the Follow button's place in dev's `body` block, and the clean-up order), so the
+list below covers the merged states and the re-measures.
+
+### Desktop QA list (post-merge, "QA T047: PASS/FAIL")
+
+Test `cloud/t047` at the head named in the `.done` line, or dev once it is merged. Default (local) host unless a line
+says otherwise.
+1. **Refinery scenario at LIVE** (an industrial fire, then Send nearest): a Follow button with the camera icon appears;
+   click it. Expected: the truck stays in the central 30 % for the whole drive, 0 frames over 3 px at 60 fps from the
+   settled camera, at 720p and 1080p, and control returns 2 s after the unit is on scene.
+2. **N2 re-measure** (T061 item 2 is now in dev): repeat line 1 across at least two sim-day boundaries with
+   `?simworker=loopback` and with `?simworker=1`. Before T061, the steps were 5.2-9.0 px. Report the
+   max step. If it is still over 3 px, it belongs to T061's follow-up (T087), not T047 (NOTE-049).
+3. **Both dispatch paths:** Send nearest and Choose station… (DispatchTool) follow only the player's unit. An
+   auto-dispatched incident never shows Follow, including the industrial ambulance case.
+4. **Release:** middle drag, Shift+right drag, right-drag orbit, wheel, W/A/S/D, Q/E rotate, touch, a minimap click and
+   the banner's Jump each end Follow and hide the chip in the same frame. Space (pause) and tool hotkeys do not.
+5. **Merged banner states (new in this merge):**
+   - a. Resolve or fail the incident while following. Expected: Follow ends, the chip hides, and the banner flashes
+     green or red (FEEL-10), then lingers with its outcome line and no Follow button.
+   - b. FH-08's first-emergency teaching card on a fresh profile (tips on), together with the Follow button. Expected:
+     the card sits below the button row, nothing overlaps, and the stack docks above the toolbar with the chip shown
+     (the chip's 34 px + 8 px reserve).
+   - c. LIVE badge (`emg-live`) and the chip shown together. Exit to the region while following. Expected: no chip
+     left, the camera released, `emg-live` cleared, no console errors.
+6. **Reduced motion** (Settings → motion reduced, and system with the OS setting): the distance cuts to 260 m, the
+   target glides with no overshoot, and yaw and tilt are kept.
+7. **Pause while following** (B3, known): note what the truck and the camera do with `?simworker=loopback` (T061's paused
+   clock) against the default local host (`Simulation.dayFraction` is 0 while paused). This is information for the clock owner, not a T047 gate.
+8. **Edge scrolling on** (Settings): clicking Follow on a banner keeps following; moving the pointer to the screen edge
+   ends it (a pan input).
