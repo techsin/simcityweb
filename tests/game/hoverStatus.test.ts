@@ -358,6 +358,25 @@ describe('the Query hover shows the line (default host)', () => {
       expect(shown, name).toContainEqual({ cls: `chip ${tone}`, text: line.text });
     }
   });
+
+  it('both read the one table: a row\'s words changed in FLAG_CHIPS change the inspector\'s chip and the hover alike', async () => {
+    const { sim, by } = town();
+    const b = by.get('troubled courtyard')!;
+    b.flags |= BF.Watered; // (so its first problem is the garbage chip)
+    const row = FLAG_CHIPS.find((c) => c.key === 'garbage')! as { text: string };
+    const words = row.text;
+    try {
+      row.text = 'No garbage pickup';
+      const h = hoverTool(() => sim.state, queryHost(sim));
+      h.tool.move(h.at(b));
+      await settle();
+      expect(statusLine(h.tips.at(-1))).toEqual({ cls: 'tip-warn', text: 'No garbage pickup' });
+      expect(inspector(sim, b).chips.map((c) => c.text)).toContain('No garbage pickup');
+    } finally {
+      row.text = words;
+    }
+    expect(inspector(sim, b).chips.map((c) => c.text)).toContain('Garbage piling up');
+  });
 });
 
 describe('the line is cached per building per sim day', () => {
