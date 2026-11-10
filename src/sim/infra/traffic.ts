@@ -259,8 +259,8 @@ const PHASE_COST = [1.9, 0.9, 2.3, 1.2, 1.2, 1.5, 2.4, 2.8, 2.4, 0.4, 1.6, 0.6, 
 /** car-less share: the car / park & ride utility x exp(-MODE_BETA x CARLESS_EXTRA_MIN) */
 const CARLESS_K = Math.exp(-MODE_BETA * CARLESS_EXTRA_MIN);
 /** transport defs of the WP7b fleet / parking models (per-def data keyed by def id; catalogTypes is read-only) */
-const DEPOT_DEFS: Readonly<Record<string, number>> = { civ_bus_depot: DEPOT_BUSES };
-const GARAGE_DEFS: Readonly<Record<string, number>> = { tr_parking_garage: GARAGE_SPACES };
+const DEPOT_DEFS: Readonly<Record<string, number>> = { civ_bus_depot: DEPOT_BUSES, lm_grand_central: DEPOT_BUSES };
+const GARAGE_DEFS: Readonly<Record<string, number>> = { tr_parking_garage: GARAGE_SPACES, lm_grand_central: 2000 };
 /** estimated ms of a road / rail / subway graph rebuild on a 256² map */
 const REBUILD_COST = 2.5;
 /** P&R two-label search: states settled per scheduler step, and the estimated ms of such a step (calibrated like
@@ -600,6 +600,8 @@ export class TrafficSystem implements SimSystem {
   private attach = new Map<number, number>();
   /** subway / train station id -> stations of its mode on its line(s), line reaches the map edge */
   private lineInfo = new Map<number, { stations: number; edge: boolean }>();
+  /** Grand Central keeps one stop/load key, with a separate attachment verdict for each mode. */
+  private hubModes = new Map<number, number>();
   private freightLink = new Map<number, number>();
   private attachDirty = true;
   private attachSubwayComp: Int32Array<ArrayBuffer> = new Int32Array(0);
@@ -922,7 +924,7 @@ export class TrafficSystem implements SimSystem {
     const ev = sim.events;
     // WP7b: stop attachment / freight rail links / ferry links depend on transport buildings, roads, tunnels, water
     const markT = (b: Building) => {
-      if (getDef(b.def)?.category !== 'transport') return;
+      if (getDef(b.def)?.category !== 'transport' && b.def !== 'lm_grand_central') return;
       this.attachDirty = true;
       this.transportB.set(b.id, b);
     };
@@ -1186,6 +1188,12 @@ export class TrafficSystem implements SimSystem {
     const st = this.lastState;
     if (st) this.refreshAttach(st);
     return (this.attach.get(id) ?? 0) === 1;
+  }
+  /** Grand Central's connected modes; a road does not activate its lone rail or subway line. */
+  hubModeAttached(id: number, mode: Transit): boolean {
+    const st = this.lastState;
+    if (st) this.refreshAttach(st);
+    return ((this.hubModes.get(id) ?? 0) & (1 << mode)) !== 0;
   }
   /**
    * riders (boardings + alightings / day, smoothed across assignments), current wait (min), the depot (building id, -1 =
@@ -1833,7 +1841,7 @@ export class TrafficSystem implements SimSystem {
       if (inf.transit !== Transit.None) this.transportB.set(b.id, b);
       if (inf.fam === Fam.Plop && isFunctional(b)) {
         if (inf.cov === 0 || inf.cov === 2 || inf.garbageCap > 0) this.patrolIds.push(b.id);
-        if (inf.transit === Transit.Freight || inf.transit === Transit.Train) this.stationIds.push(b.id);
+        if (inf.transit === Transit.Freight || inf.transit === Transit.Train || inf.transit === Transit.Hub) this.stationIds.push(b.id);
       }
       if (inf.fam === Fam.R) {
         if (b.pop <= 0 || (b.flags & BF.Burnt) !== 0) continue;
@@ -1891,9 +1899,9 @@ export class TrafficSystem implements SimSystem {
         if (inf.transit !== Transit.Airport) { this.sinkIds.push(b.id); this.sinkK.push(kN); }
         kN++;
       }
-      if (DEPOT_DEFS[b.def] !== undefined && isFunctional(b)) this.depotB.push(b);
+      if (DEPOT_DEFS[b.def] !== undefined && isFunctional(b) && (inf.transit !== Transit.Hub || ((this.hubModes.get(b.id) ?? 0) & (1 << Transit.Bus)) !== 0)) this.depotB.push(b);
       // parking garages (WP7-7 / WP7-8)
-      if (GARAGE_DEFS[b.def] !== undefined && isFunctional(b)) {
+      if (GARAGE_DEFS[b.def] !== undefined && isFunctional(b) && (inf.transit !== Transit.Hub || this.attach.get(b.id) === 1)) {
         if (gN >= this.gBid.length) { this.gBid = growI32(this.gBid, gN * 2); this.gEntS = growI32(this.gEntS, gN * 2); this.gEntC = growU8(this.gEntC, gN * 2); }
         this.gBid[gN] = b.id;
         this.gEntS[gN] = this.entN;
@@ -2091,7 +2099,7 @@ export class TrafficSystem implements SimSystem {
     // attach nodes per stop (combined ids)
     this.stAttS = growI32(this.stAttS, stops.n + 1);
     this.stAttC = growU8(this.stAttC, stops.n + 1);
-    this.stAtt = growI32(this.stAtt, stops.n * 6 + 8);
+    this.stAtt = growI32(this.stAtt, stops.n * 10 + 8);
     this.stWait = growF32(this.stWait, stops.n + 1);
     this.stLoad = growF32(this.stLoad, stops.n + 1);
     this.stLoad.fill(0, 0, stops.n);
@@ -2106,7 +2114,7 @@ export class TrafficSystem implements SimSystem {
     this.nodeStop = growI32(this.nodeStop, total + 1);
     this.nodeStop.fill(-1, 0, total);
     let an = 0;
-    const tmp = new Int32Array(6);
+    const tmp = new Int32Array(10);
     const nD = this.depots.length;
     const dRiders = new Float64Array(nD + 1), dStops = new Int32Array(nD + 1);
     for (let s = 0; s < stops.n; s++) {
@@ -2136,13 +2144,26 @@ export class TrafficSystem implements SimSystem {
         } else if (mode === Transit.Ferry && b) {
           const k = this.ferryNodeOf.get(bid);
           if (k !== undefined) tmp[c++] = nGrid + k;
+        } else if (mode === Transit.Hub && b) {
+          const modes = this.hubModes.get(bid) ?? 0;
+          if (modes & (1 << Transit.Bus)) c = perimeterNodes(g.nodeOfCell, N, b, tmp, 0, 2);
+          if (modes & (1 << Transit.Train)) {
+            const first = c;
+            c += perimeterNodes(rail.nodeOfCell, N, b, tmp, c, 4);
+            for (let q = first; q < c; q++) tmp[q] += nR;
+          }
+          if (modes & (1 << Transit.Subway)) {
+            const first = c;
+            c += sub.perimeterNodes(b, tmp, c, 4, true);
+            for (let q = first; q < c; q++) tmp[q] += nR + nRail;
+          }
         }
       }
       for (let q = 0; q < c; q++) { this.stAtt[an++] = tmp[q]; this.nodeStop[tmp[q]] = s; }
       this.stAttC[s] = c;
       // bus fleet: building bus stops belong to the depot that reaches them first (else the minibus pool)
       let d = -1;
-      if (mode === Transit.Bus && b && c > 0) {
+      if ((mode === Transit.Bus || (mode === Transit.Hub && tmp[0] < nR)) && b && c > 0) {
         const o = this.depotOwner.length > 0 && tmp[0] < this.depotOwner.length ? this.depotOwner[tmp[0]] : -1;
         d = o >= 0 && o < nD ? o : nD; // nD = minibus pool
         dRiders[d] += this.stLoadPrev.get(key) ?? 0;
@@ -2177,7 +2198,8 @@ export class TrafficSystem implements SimSystem {
       // wait with crowding from the previous cycle (buses: the base wait shrinks / grows with the fleet)
       const prev = this.stLoadPrev.get(this.stKey[s]) ?? 0;
       const capS = mode === Transit.Bus ? STOP_CAP_BUS : mode === Transit.Subway ? STOP_CAP_SUBWAY : mode === Transit.Ferry ? STOP_CAP_FERRY : STOP_CAP_TRAIN;
-      const base = mode === Transit.Bus ? WAIT_BUS / this.stRho[s] : mode === Transit.Subway ? WAIT_SUBWAY : mode === Transit.Ferry ? WAIT_FERRY : WAIT_TRAIN;
+      const base = mode === Transit.Bus ? WAIT_BUS / this.stRho[s] : mode === Transit.Subway ? WAIT_SUBWAY : mode === Transit.Ferry ? WAIT_FERRY
+        : mode === Transit.Hub ? this.hubWait(s) : WAIT_TRAIN;
       const r = prev / capS;
       this.stWait[s] = base * Math.min(4, 1 + r * r);
       const rx = Math.max(0, prev - (this.stPrPrev.get(this.stKey[s]) ?? 0)) / capS;
@@ -2207,6 +2229,16 @@ export class TrafficSystem implements SimSystem {
     }
     // transfers between stops of different modes within walking distance
     const trFrom: number[] = [], trTo: number[] = [], trCost: number[] = [];
+    // Transfers inside Grand Central join its connected bus, rail and subway nodes.
+    for (let s = 0; s < stops.n; s++) if (stops.mode[s] === Transit.Hub) {
+      const first = this.stAttS[s], end = first + this.stAttC[s];
+      const modeOf = (v: number) => v < nR ? Transit.Bus : v < nR + nRail ? Transit.Train : Transit.Subway;
+      for (let a = first; a < end; a++) for (let b = a + 1; b < end; b++) {
+        const u = this.stAtt[a], v = this.stAtt[b];
+        if (modeOf(u) === modeOf(v)) continue;
+        trFrom.push(u, v); trTo.push(v, u); trCost.push(this.stWait[s], this.stWait[s]);
+      }
+    }
     for (let s = 0; s < stops.n; s++) {
       if (this.stAttC[s] === 0) continue;
       const x = this.stX[s], z = this.stZ[s];
@@ -2356,7 +2388,14 @@ export class TrafficSystem implements SimSystem {
   /** wait (minutes) at stop s without crowding: the mode's wait, buses / the service ratio of the stop's bus pool */
   private baseWait(s: number): number {
     const m = this.stops.mode[s];
-    return m === Transit.Bus ? WAIT_BUS / (this.stRho[s] > 0 ? this.stRho[s] : 1) : m === Transit.Subway ? WAIT_SUBWAY : m === Transit.Ferry ? WAIT_FERRY : WAIT_TRAIN;
+    return m === Transit.Bus ? WAIT_BUS / (this.stRho[s] > 0 ? this.stRho[s] : 1) : m === Transit.Subway ? WAIT_SUBWAY : m === Transit.Ferry ? WAIT_FERRY
+      : m === Transit.Hub ? this.hubWait(s) : WAIT_TRAIN;
+  }
+
+  private hubWait(s: number): number {
+    const modes = this.hubModes.get(this.stops.bid[s]) ?? 0;
+    return Math.min(modes & (1 << Transit.Bus) ? WAIT_BUS / (this.stRho[s] > 0 ? this.stRho[s] : 1) : Infinity,
+      modes & (1 << Transit.Subway) ? WAIT_SUBWAY : Infinity, modes & (1 << Transit.Train) ? WAIT_TRAIN : Infinity);
   }
 
   /** stops within radius R of (x,z) -> this.nsIdx / this.nsDist (returns count; no allocation) */
@@ -4479,6 +4518,7 @@ export class TrafficSystem implements SimSystem {
     this.attachFor = st;
     const N = st.size, C = st.cells, net = st.network, flags = st.netFlags, sub = st.subway;
     this.attach.clear();
+    this.hubModes.clear();
     this.lineInfo.clear();
     this.freightLink.clear();
     this.freightPaths.clear();
@@ -4491,18 +4531,28 @@ export class TrafficSystem implements SimSystem {
     }
     for (const b of this.transportB.values()) {
       if (st.buildings.get(b.id) !== b) continue; // removed / replaced since
-      const t = infoOf(st, b).transit;
+      const inf = infoOf(st, b), t = inf.transit;
       if (t === Transit.None) continue;
       if (!isFunctional(b)) { if (isStopMode(t)) this.attach.set(b.id, 0); continue; }
-      if (t === Transit.Bus) bus.push(b);
+      if (t === Transit.Hub) {
+        this.attach.set(b.id, 0);
+        this.hubModes.set(b.id, 0);
+        if ((inf.usesPower && (b.flags & BF.Powered) === 0) || (inf.usesWater && (b.flags & BF.Watered) === 0)) continue;
+        bus.push(b); subs.push(b); trains.push(b);
+      } else if (t === Transit.Bus) bus.push(b);
       else if (t === Transit.Subway) subs.push(b);
       else if (t === Transit.Train) trains.push(b);
       else if (t === Transit.Freight) freights.push(b);
       else if (t === Transit.Seaport) ports.push(b);
       else if (t === Transit.Ferry) ferries.push(b);
     }
+    const attachMode = (b: Building, mode: Transit, ok: boolean) => {
+      if (this.hubModes.has(b.id)) {
+        if (ok) { this.hubModes.set(b.id, this.hubModes.get(b.id)! | (1 << mode)); this.attach.set(b.id, 1); }
+      } else this.attach.set(b.id, ok ? 1 : 0);
+    };
     const isRoad = (i: number) => net[i] >= Network.Street && net[i] <= Network.Highway;
-    for (const b of bus) this.attach.set(b.id, touches(N, b, isRoad, false) >= 0 ? 1 : 0);
+    for (const b of bus) attachMode(b, Transit.Bus, touches(N, b, isRoad, false) >= 0);
     // subway lines
     if (subs.length > 0) {
       if (this.attachSubVer !== this.subVer || this.attachSubwayComp.length !== C) {
@@ -4515,7 +4565,7 @@ export class TrafficSystem implements SimSystem {
       for (const cs of compsOf) for (const c of cs) cnt.set(c, (cnt.get(c) ?? 0) + 1);
       subs.forEach((b, k) => {
         const n = compsOf[k].reduce((m, c) => Math.max(m, cnt.get(c) ?? 0), 0);
-        this.attach.set(b.id, n >= 2 ? 1 : 0);
+        attachMode(b, Transit.Subway, n >= 2);
         this.lineInfo.set(b.id, { stations: n, edge: false });
       });
     }
@@ -4543,7 +4593,7 @@ export class TrafficSystem implements SimSystem {
       trains.forEach((b, k) => {
         const n = compsOf[k].reduce((m, c) => Math.max(m, cnt.get(c) ?? 0), 0);
         const edge = compsOf[k].some((c) => border.has(c));
-        this.attach.set(b.id, n >= 2 || edge ? 1 : 0);
+        attachMode(b, Transit.Train, n >= 2 || edge);
         this.lineInfo.set(b.id, { stations: n, edge });
       });
       const cells = new Set<number>();
@@ -4967,7 +5017,7 @@ export class TrafficSystem implements SimSystem {
       if (count >= 4) break;
       if (!b) continue;
       const inf = infoOf(st, b);
-      if (inf.transit !== Transit.Freight && inf.transit !== Transit.Train) continue;
+      if (inf.transit !== Transit.Freight && inf.transit !== Transit.Train && inf.transit !== Transit.Hub) continue;
       if (!isFunctional(b)) continue;
       if (inf.transit === Transit.Freight) {
         // WP7-10: freight trains only run from rail-linked stations, along their cached route (freightRailCells)
@@ -4976,6 +5026,7 @@ export class TrafficSystem implements SimSystem {
         continue;
       }
       if (this.attach.get(id) !== 1) continue;
+      if (inf.transit === Transit.Hub && !this.hubModeAttached(id, Transit.Train)) continue;
       const c = perimeterNodes(rail.nodeOfCell, st.size, b, tmp, 0, 4);
       if (c === 0) continue;
       const path = this.railBfs(tmp[0], targets, inf.transit === Transit.Train);

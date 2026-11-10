@@ -417,6 +417,15 @@ export function populationSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime
     }
     for (const b of rt.plopped) {
       if (b.flags & BF.Burnt) continue;
+      // Job-bearing landmarks retain their commercial type in demand and tax totals.
+      const dev = rt.defOf(b)?.devType;
+      if (dev !== undefined && dev >= DevType.CS1 && dev <= DevType.IHT) {
+        if (b.flags & BF.Abandoned) continue;
+        t.jobs[dev] += b.jobs;
+        t.jobCapAll[dev] += b.capacity;
+        if (!(b.flags & BF.Constructing)) t.jobCapBuilt[dev] += b.capacity;
+        continue;
+      }
       t.civicJobCap += b.capacity;
       t.civicJobs += b.jobs;
     }

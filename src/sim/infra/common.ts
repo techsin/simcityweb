@@ -39,6 +39,7 @@ export enum Transit {
   Seaport = 5,
   Airport = 6,
   Ferry = 7,
+  Hub = 8,
 }
 
 export const COV_KINDS = ['police', 'fire', 'health', 'education', 'park', 'transit', 'garbage'] as const;
@@ -160,6 +161,7 @@ const TRANSIT_BY_MODEL: Record<string, Transit> = {
   tr_airport_small: Transit.Airport,
   tr_airport_large: Transit.Airport,
   tr_ferry_terminal: Transit.Ferry,
+  lm_grand_central: Transit.Hub,
 };
 
 function transitRole(def: BuildingDef): Transit {

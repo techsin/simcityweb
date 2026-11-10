@@ -53,7 +53,7 @@ export interface TransportFacilityPart {
 }
 
 /** the 7 transit defs of WP7b (by def id; a mod def with one of these models counts too) */
-const TRANSPORT_DEFS = ['tr_bus_stop', 'civ_bus_depot', 'tr_subway_station', 'tr_train_station', 'tr_freight_station', 'tr_parking_garage', 'tr_ferry_terminal'] as const;
+const TRANSPORT_DEFS = ['tr_bus_stop', 'civ_bus_depot', 'tr_subway_station', 'tr_train_station', 'tr_freight_station', 'tr_parking_garage', 'tr_ferry_terminal', 'lm_grand_central'] as const;
 type TransportDef = (typeof TRANSPORT_DEFS)[number];
 function kindOf(defId: string): TransportDef | null {
   if ((TRANSPORT_DEFS as readonly string[]).includes(defId)) return defId as TransportDef;
@@ -328,6 +328,18 @@ export function transportFacilityReport(sim: Simulation, b: Building): Transport
   const load = tr.stopLoad(b.id);
   const riders = load?.riders ?? 0;
   switch (kind) {
+    case 'lm_grand_central': {
+      const modes = [[Transit.Train, 'Train'], [Transit.Subway, 'Subway'], [Transit.Bus, 'Bus']] as const;
+      lines.push({ key: 'connections', label: 'Connections', value: modes.filter(([mode]) => tr.hubModeAttached(b.id, mode)).map(([, name]) => name).join(' · ') || 'none' });
+      if (!tr.stopAttached(b.id)) warnings.push('Not running — connect power and a road, a tunnel to another station, or rails to another station or the map edge');
+      lines.push({ key: 'riders', label: 'Riders', value: `${fmt(riders)}/day` });
+      const depot = tr.depotInfo(b.id);
+      lines.push({ key: 'buses', label: 'Bus fleet', value: `${fmt(depot?.fleet ?? 0)} buses` });
+      const garage = tr.garageInfo(b.id);
+      lines.push({ key: 'parkRide', label: 'Park & ride', value: `${fmt(garage?.parkRide ?? 0)} / 2,000 cars`,
+        hint: garage && garage.state !== 'parkRide' ? 'Its connected transit must reach jobs beyond walking distance' : undefined });
+      break;
+    }
     case 'tr_bus_stop': {
       if (!tr.stopAttached(b.id)) {
         warnings.push('Not next to a road — buses can\'t stop here');
@@ -518,6 +530,7 @@ const ROLE: Record<TransportDef, string> = {
   tr_freight_station: 'Freight station: ships the goods of nearby industry by rail',
   tr_parking_garage: `Parking garage: ${GARAGE_SPACES} spaces, park & ride next to a stop`,
   tr_ferry_terminal: 'Ferry terminal: commuters and visitors cross the water',
+  lm_grand_central: 'Grand Central: train and subway station, bus hub and 2,000 park & ride spaces',
 };
 
 /** a road cell 4-adjacent to the footprint */
@@ -567,6 +580,12 @@ function parkingNear(st: CityState, b: Building, r: number): number {
 /** static tooltip facts of a transit def (buses, spaces, routes ...), appended by WP7a's facilityDefFacts */
 export function transportDefFacts(defId: string): FacilityLine[] {
   switch (kindOf(defId)) {
+    case 'lm_grand_central': return [
+      { key: 'modes', label: 'Connections', value: 'train, subway and bus hub' },
+      { key: 'coverage', label: 'Transit coverage', value: '18 tiles' },
+      { key: 'spaces', label: 'Park & ride spaces', value: '2,000' },
+      { key: 'buses', label: 'Bus fleet', value: `${DEPOT_BUSES} buses (x funding)` },
+    ];
     case 'tr_bus_stop': return [
       { key: 'walk', label: 'Walk radius', value: `${STOP_WALK_RADIUS} tiles` },
       { key: 'wait', label: 'Wait', value: `${WAIT_BUS} min with enough buses` },
@@ -632,8 +651,12 @@ export function transportUseFactor(st: CityState, b: Building): number {
   if (!isFunctional(b)) return 0;
   const tr = trafficOfSt(st);
   if (!tr) return 1;
+  if (kind === 'lm_grand_central') {
+    const inf = infoOf(st, b);
+    if ((inf.usesPower && (b.flags & BF.Powered) === 0) || (inf.usesWater && (b.flags & BF.Watered) === 0)) return 0;
+  }
   switch (kind) {
-    case 'tr_bus_stop': case 'tr_subway_station': case 'tr_train_station': case 'tr_ferry_terminal':
+    case 'tr_bus_stop': case 'tr_subway_station': case 'tr_train_station': case 'tr_ferry_terminal': case 'lm_grand_central':
       return tr.stopAttached(b.id) ? 1 : 0;
     case 'tr_freight_station': return tr.freightLinked(b.id) ? 1 : 0;
     case 'civ_bus_depot': { const d = tr.depotInfo(b.id); return d === null ? 1 : d.stops > 0 ? 1 : 0; }
@@ -742,4 +765,5 @@ export const TRANSPORT_EFFECT_METRICS: Readonly<Record<string, (sim: Simulation)
   tr_freight_station: (sim) => trafficOf(sim)?.freightRailCells().length ?? 0,
   tr_parking_garage: (sim) => trafficOf(sim)?.parkingSummary.supply ?? 0,
   tr_ferry_terminal: (sim) => sim.state.stats.transitFleet.ferryLinks,
+  lm_grand_central: (sim) => transitCovSum(sim),
 };

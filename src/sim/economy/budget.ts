@@ -25,7 +25,7 @@
  */
 import type { SimSystem, Simulation } from '../Simulation';
 import { BF, type CityState, type NeedTier } from '../CityState';
-import { DEV_TYPE_LABELS, Network, Zone } from '../../core/types';
+import { DEV_TYPE_LABELS, DevType, Network, Zone } from '../../core/types';
 import type { ServiceKind } from '../catalogTypes';
 import { getDef } from '../catalog';
 import {
@@ -37,7 +37,7 @@ import { OPEX_SERVICE, opexActive, opexTierOf, tierOperatingCosts } from './opex
 import { type EconRuntime, econData, infraFlags } from './runtime';
 import { ORDINANCES, ordinanceEffect, ordinanceMonthly } from './ordinances';
 import { payLoansMonthly } from './loans';
-import { ATTRACTIONS, venueVisits } from './tourism';
+import { ATTRACTIONS, venueOp, venueVisits } from './tourism';
 import { facilityUseFactor } from '../infra/facilities';
 
 const NET_KEY: Record<number, string> = {
@@ -142,10 +142,12 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
   // costs per person their tier serves (charged per tier below, for the tiers the city runs such a facility of)
   const opexOn = opexActive(st);
   const opexTiers = new Set<NeedTier>();
+  let officeTaxBonus = false;
   for (const b of plopped) {
     if (!st.buildings.has(b.id)) continue;
     const def = getDef(b.def);
     if (!def) continue;
+    if (b.def === 'lm_stock_exchange' && venueOp(st, b, def) > 0) officeTaxBonus = true;
     let up = def.upkeep ?? 0;
     const ot = opexOn ? opexTierOf(def) : null;
     if (ot) { up *= OPEX_BUILDING_SHARE; if (!(b.flags & BF.Burnt)) opexTiers.add(ot); }
@@ -160,6 +162,12 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
     if (def.income && !(b.flags & BF.Burnt)) {
       const deal = def.category === 'reward';
       add(income, (deal ? 'deal:' : 'facility:') + def.id, def.income * (deal ? 1 : venueIncomeFactor(st, b.id, def.id)) * facilityUseFactor(st, b));
+    }
+  }
+  if (officeTaxBonus) {
+    for (const d of [DevType.CO2, DevType.CO3]) {
+      const key = 'tax:' + DEV_TYPE_LABELS[d];
+      if (income[key]) income[key] *= 1.05;
     }
   }
   // running costs of the service facilities: § per person served (stats.needs: funding, strikes, power and staffing are

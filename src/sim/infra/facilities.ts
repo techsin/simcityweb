@@ -192,7 +192,7 @@ function defFacts(defId: string): DefFacts {
 export function justiceFactsOf(defId: string): { beds: number; holding: number; court: boolean } {
   return defFacts(defId);
 }
-const TRANSIT_USE_DEFS = new Set(['tr_bus_stop', 'civ_bus_depot', 'tr_subway_station', 'tr_train_station', 'tr_freight_station', 'tr_parking_garage', 'tr_ferry_terminal']);
+const TRANSIT_USE_DEFS = new Set(['tr_bus_stop', 'civ_bus_depot', 'tr_subway_station', 'tr_train_station', 'tr_freight_station', 'tr_parking_garage', 'tr_ferry_terminal', 'lm_grand_central']);
 /** the prisons, police stations and courthouses standing now (justice.ts' daily refresh; compacts removed ones) */
 export function justiceSites(st: CityState): Building[] {
   const c = cacheOf(st);
@@ -1362,7 +1362,7 @@ const CATEGORY_ROLE: Partial<Record<BuildingCategory, string>> = {
   civic: 'Civic building', park: 'Park', transport: 'Transport facility',
 };
 
-const APPROVAL_CIVIC: Readonly<Record<string, number>> = { civ_mayor_house: 2, civ_statue: 3, civ_city_hall: 2 };
+const APPROVAL_CIVIC: Readonly<Record<string, number>> = { civ_mayor_house: 2, civ_statue: 3, civ_city_hall: 2, lm_metropolis_crown: 3 };
 
 /** airport / seaport use lines: passengers or trucks against the rating, and the share of the benefit delivered now */
 function useLines(c: Ctx): void {

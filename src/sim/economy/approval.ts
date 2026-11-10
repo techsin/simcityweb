@@ -302,6 +302,13 @@ export function toxicDumpOperating(rt: EconRuntime): boolean {
 interface EmergencyApi { active?: boolean }
 interface DisastersApi { active?: readonly unknown[] }
 
+function lateLandmarkApproval(rt: EconRuntime): number {
+  for (const b of rt.plopped) {
+    if (b.def === 'lm_metropolis_crown' && b.built >= 1 && !(b.flags & (BF.Burnt | BF.Abandoned | BF.Constructing))) return 3;
+  }
+  return 0;
+}
+
 export function approvalSystem(rt: EconRuntime): SimSystem {
   let firesMonth = 0;
   let disasterMonth = false;
@@ -367,6 +374,7 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
     T.ordinances = ordinanceEffect(st, 'add.approval');
     T.civic = ((st.milestones.civ_mayor_house ?? 0) > 0 ? 2 : 0) + ((st.milestones.civ_statue ?? 0) > 0 ? 3 : 0)
       + ((st.milestones.civ_city_hall ?? 0) > 0 ? 2 : 0);
+    T.civic += lateLandmarkApproval(rt);
     // WP4 resident-weighted terms. Outages / poor HQ fade in over the first residents (a hamlet's first homes wait for
     // the first power plant and clinic without the mayor being blamed); garbage fades in more slowly and unmet needs
     // follow WP1's expectation curve (tuning APPROVAL_TERMS / NEEDS_POP_*).

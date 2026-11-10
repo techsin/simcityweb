@@ -30,7 +30,7 @@ export interface StopList {
 
 /** transit roles that are stops (riders board there) */
 export function isStopMode(t: Transit): boolean {
-  return t === Transit.Bus || t === Transit.Subway || t === Transit.Train || t === Transit.Ferry;
+  return t === Transit.Bus || t === Transit.Subway || t === Transit.Train || t === Transit.Ferry || t === Transit.Hub;
 }
 
 /** defs whose catalog coverage (if a mod / old def still declares one) is not a walking coverage (WP7-13, F2) */
@@ -102,7 +102,8 @@ export function computeTransitCoverage(state: CityState, stops: StopList, out: F
     }
     if (active && !active(s)) continue;
     const mode = stops.mode[s];
-    const R = mode === Transit.Bus ? TRANSIT_COV_RADIUS.bus : mode === Transit.Subway ? TRANSIT_COV_RADIUS.subway
+    const hub = mode === Transit.Hub ? state.buildings.get(stops.bid[s]) : undefined;
+    const R = hub ? infoOf(state, hub).covRadius : mode === Transit.Bus ? TRANSIT_COV_RADIUS.bus : mode === Transit.Subway ? TRANSIT_COV_RADIUS.subway
       : mode === Transit.Ferry ? FERRY_COV_RADIUS : TRANSIT_COV_RADIUS.train;
     const c = stops.cell[s];
     const cx = c % N, cz = (c - cx) / N;

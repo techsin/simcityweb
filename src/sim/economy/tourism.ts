@@ -38,6 +38,7 @@ import { onStrike, serviceEffectiveness } from './budget';
 import { residentSurvey, toxicDumpOperating, type ResidentSurvey } from './approval';
 import { lotTouchesRoad } from './buildings';
 import { shoreCells } from '../infra/terrainMasks';
+import { Transit } from '../infra/common';
 import {
   APPROVAL_TERMS, ATTRACT_CITY_WEIGHTS, ATTRACT_CONNECT, ATTRACT_SCALES, ATTRACT_WEIGHTS, COARSE, COVERAGE_FALLBACK, CS_JOBS_PER_VISITOR, MIG_GAIN,
   MIG_BIG_POP, MIG_MAX, MIG_MIN, MIG_NEUTRAL, MIG_NEUTRAL_BIG, MIG_POP, MIG_SCHOOL, MIG_SPAN, MIG_UNEMP_SPAN, RETIREE_SPLIT, RETIREES,
@@ -66,6 +67,14 @@ export const ATTRACTIONS: Readonly<Record<string, AttractionDef>> = {
   lm_opera_house: { kind: 'culture', draw: 2500, capacity: 8000 },
   lm_spire_tower: { kind: 'landmark', draw: 3500, capacity: 12000 },
   lm_twin_spires: { kind: 'landmark', draw: 5000, capacity: 20000 },
+  // LG-02: reference shop jobs (draw × 0.5) track the legacy C-relief points (C × 0.05).
+  lm_central_library: { kind: 'culture', draw: 1000, capacity: 5000 },
+  lm_grand_central: { kind: 'transport', draw: 2400, capacity: 12000 },
+  lm_stock_exchange: { kind: 'business', draw: 1200, capacity: 6000 },
+  lm_botanical_dome: { kind: 'culture', draw: 3500, capacity: 14000 },
+  lm_world_trade_center: { kind: 'business', draw: 5000, capacity: 24000 },
+  lm_millennium_tower: { kind: 'landmark', draw: 7000, capacity: 28000 },
+  lm_metropolis_crown: { kind: 'landmark', draw: 6500, capacity: 32000 },
   civ_museum: { kind: 'culture', draw: 900, capacity: 4000 },
   civ_convention_center: { kind: 'business', draw: 2500, capacity: 6000 },
   civ_city_hall: { kind: 'landmark', draw: 200, capacity: 1000 },
@@ -175,11 +184,11 @@ function passOf(st: CityState): TourismPass | null {
 }
 /** TourismPass.conn index of a connection venue (the attractiveness 'connect' score; airports: the overnight share), −1 */
 function connIndex(def: string): number {
-  return def === 'tr_airport_large' ? 0 : def === 'tr_airport_small' ? 1 : def === 'tr_train_station' ? 2 : def === 'tr_seaport' ? 3 : -1;
+  return def === 'tr_airport_large' ? 0 : def === 'tr_airport_small' ? 1 : def === 'tr_train_station' || def === 'lm_grand_central' ? 2 : def === 'tr_seaport' ? 3 : -1;
 }
 
 /** duck-typed optional traffic API (WP7-6: stations / ferries that are not connected give no service) */
-interface TrafficApi { stopAttached?: (id: number) => boolean }
+interface TrafficApi { stopAttached?: (id: number) => boolean; hubModeAttached?: (id: number, mode: Transit) => boolean }
 
 function isOpen(b: Building): boolean {
   return b.built >= 1 && (b.flags & (BF.Burnt | BF.Abandoned | BF.Constructing)) === 0;
@@ -417,10 +426,10 @@ function venueLoop(st: CityState, rt: EconRuntime, inf: InfraFlags, traffic: Tra
     const a = ATTRACTIONS[b.def];
     if (!a) continue;
     let op = venueOp(st, b, def, inf, TOURISM.opFundingMax);
-    if (op > 0 && (b.def === 'tr_train_station' || b.def === 'tr_ferry_terminal') && traffic?.stopAttached && !traffic.stopAttached(b.id)) op = 0;
+    if (op > 0 && (b.def === 'tr_train_station' || b.def === 'tr_ferry_terminal' || b.def === 'lm_grand_central') && traffic?.stopAttached && !traffic.stopAttached(b.id)) op = 0;
     if (op > 0) {
       const ci = connIndex(b.def);
-      if (ci >= 0) conn[ci]++;
+      if (ci >= 0 && (b.def !== 'lm_grand_central' || !traffic?.hubModeAttached || traffic.hubModeAttached(b.id, Transit.Train))) conn[ci]++;
     }
     const c = centre(st, b);
     const blk = ((((c / N) | 0) / COARSE) | 0) * cw + (((c % N) / COARSE) | 0);
@@ -722,7 +731,11 @@ export function tourismSystem(rt: EconRuntime): SimSystem & { rt: EconRuntime; r
       p.tc = Math.max(0, p.tc - r.gross);
     }
     const ci = connIndex(r.def);
-    if (ci >= 0 && r.op > 0) p.conn[ci] = Math.max(0, p.conn[ci] - 1);
+    if (r.def === 'lm_grand_central') {
+      // A bus-only hub never contributed a train connection; retain the other stations' saved contributions.
+      p.conn[2] = 0;
+      for (const v of ts.venues.values()) if (v.def === 'tr_train_station' && v.op > 0) p.conn[2]++;
+    } else if (ci >= 0 && r.op > 0) p.conn[ci] = Math.max(0, p.conn[ci] - 1);
   };
   let subscribedTo: Simulation | null = null;
   let unsub: (() => void) | null = null;

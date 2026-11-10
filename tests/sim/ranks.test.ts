@@ -190,6 +190,8 @@ describe('rank persistence', () => {
 
   it('round-trips reached ranks through a save/load and retains them after a population drop', () => {
     const st = state(750000);
+    // Keep rank persistence independent of population rewards added after LG-01.
+    for (const r of REWARDS) st.unlocked.add(r.id);
     const sim = new Simulation(st, [rewardsSystem(new EconRuntime())]);
     const ranks = {
       settlement: true, village: true, town: true, small_city: true, city: true,

@@ -2298,6 +2298,8 @@ export class SimBot {
         if (this.st.stats.population >= VENUE_POP && isVenue(def)) continue;
         if (!this.canSpend((def.cost ?? 0) * 1.5)) continue;
         if (def.placement === 'shore') { this.placeShore(defId); continue; }
+        // LG-02: the transport landmark needs the full venue lot search in built-up park blocks.
+        if (defId === 'lm_grand_central') { this.placeVenue(defId); continue; }
         // (on a lot that touches a road: a landmark without one draws nobody and gives no cap relief — 256x60 s7 put its
         // Obelisk in the middle of a park block in 2002, where it stood for 58 years with 0 visitors; WP6b round 3)
         this.placeNear(defId, center.x, center.z, ['P'], true, Infinity, true);

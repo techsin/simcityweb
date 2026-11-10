@@ -81,6 +81,10 @@ function lm(id: string, need: number): RewardDef {
   };
 }
 
+function lateLandmark(id: string, need: number, description: string): RewardDef {
+  return { ...lm(id, need), description };
+}
+
 export const REWARDS: RewardDef[] = [
   // ---------------- infrastructure unlocks
   { id: 'water_treatment', name: 'Water Treatment Plant', kind: 'unlock', defIds: ['util_water_treatment'], conds: [pop(6000)], description: 'Large clean water supply.' },
@@ -129,6 +133,14 @@ export const REWARDS: RewardDef[] = [
   lm('lm_lighthouse', 3000), lm('lm_clock_tower', 5000), lm('lm_obelisk', 10000), lm('lm_arch', 15000), lm('lm_observatory', 25000),
   lm('lm_cathedral', 35000), lm('lm_castle', 50000), lm('lm_pyramid', 70000), lm('lm_ferris_wheel', 90000), lm('lm_opera_house', 150000),
   lm('lm_spire_tower', 250000), lm('lm_twin_spires', 500000),
+  // ---------------- LG-02 late-game landmarks
+  lateLandmark('lm_central_library', 200000, 'Lifelong learning for 20,000 students, culture and tourism.'),
+  lateLandmark('lm_grand_central', 300000, 'Rail, subway and bus hub: 18-tile transit coverage, 2,000 park-and-ride spaces and +30,000 R and C caps.'),
+  lateLandmark('lm_stock_exchange', 400000, 'Raises the CO$$$ cap by 40,000, adds prestige within 18 tiles and earns 5% more office tax.'),
+  lateLandmark('lm_botanical_dome', 650000, 'A green-space destination drawing 3,500 visitors a day at reference conditions.'),
+  lateLandmark('lm_world_trade_center', 800000, '8,000 high-end office jobs and +60,000 commercial cap.'),
+  lateLandmark('lm_millennium_tower', 1000000, 'Prestige within 26 tiles, 7,000 reference visitors a day and paid observation decks.'),
+  lateLandmark('lm_metropolis_crown', 1500000, 'The crowning landmark of a Megalopolis: +3 approval while it stands.'),
 ];
 
 const hasWaterCache = new WeakMap<CityState, boolean>();
