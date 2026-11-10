@@ -415,6 +415,16 @@ export interface ToastOptions {
   ttl?: number;
   action?: ToastAction;
   buttons?: ToastButton[];
+  /** FH-08: wait in the shared queue while a New Year show is busy, even past QUEUE_MAX_MS. */
+  deferWhile?: () => boolean;
+  /** called when the toast actually appears (including a merge), never when it only enters the queue */
+  onShow?: () => void;
+  /** checked when a deferred or budgeted toast can appear; obsolete lessons do not consume their one-shot */
+  isRelevant?: () => boolean;
+  /** called instead of onShow when isRelevant rejects a toast at display time */
+  onDrop?: () => void;
+  /** its existing toast hides with the teaching cards if a New Year starts while it is still visible */
+  teaching?: boolean;
   /**
    * FEEL-02a: the toast is news that shares the budget (Toasts.BUDGET_GAP_MS, BUDGET_PER_MIN). Over budget, one with an
    * action waits in a queue and shows when the budget allows (or in spaced releases after QUEUE_MAX_MS); one without
@@ -423,7 +433,7 @@ export interface ToastOptions {
   budget?: boolean;
 }
 
-/** a toast that waits for the budget (it carries an action) */
+/** a toast that waits for the budget (it carries an action), or for a deferral to end */
 interface QueuedToast {
   text: string;
   kind: string;
@@ -519,13 +529,19 @@ export class Toasts {
     return t;
   }
 
-  /** show queued toasts oldest first; capped releases bypass the budget, at most one per half budget gap */
+  /**
+   * the oldest eligible toast goes first (a deferred lesson never holds up ordinary news); capped releases bypass the
+   * budget, at most one per half budget gap
+   */
   private drain(): void {
     const now = performance.now();
     while (this.queue.length) {
-      const allowed = this.allows(now);
-      if (!allowed && (now - this.queue[0].at < Toasts.QUEUE_MAX_MS || now - this.lastCappedAt < Toasts.BUDGET_GAP_MS / 2)) break;
-      const q = this.queue.shift()!;
+      const i = this.queue.findIndex((q) => !q.opts.deferWhile?.());
+      if (i < 0) break;
+      const q = this.queue[i];
+      const allowed = !q.opts.budget || this.allows(now);
+      if (!allowed && (now - q.at < Toasts.QUEUE_MAX_MS || now - this.lastCappedAt < Toasts.BUDGET_GAP_MS / 2)) break;
+      this.queue.splice(i, 1);
       this.show(q.text, q.kind, q.cell, q.title, { ...q.opts, budget: false });
       if (!allowed) {
         this.lastCappedAt = now;
@@ -535,14 +551,19 @@ export class Toasts {
     this.schedule(now);
   }
 
-  /** wake up when the head of the queue may show */
+  /** wake up when the oldest eligible toast may show; poll a show-bound lesson until the show ends */
   private schedule(now: number): void {
     clearTimeout(this.queueTimer);
     this.timers.delete(this.queueTimer);
     this.queueTimer = 0;
     if (!this.queue.length || this.ctx.signal?.aborted) return;
-    const capAt = Math.max(this.queue[0].at + Toasts.QUEUE_MAX_MS, this.lastCappedAt + Toasts.BUDGET_GAP_MS / 2);
-    const at = Math.min(this.nextAllowed(now), capAt);
+    let at = Infinity;
+    for (const q of this.queue) {
+      if (q.opts.deferWhile?.()) { at = Math.min(at, now + 100); continue; }
+      const capAt = Math.max(q.at + Toasts.QUEUE_MAX_MS, this.lastCappedAt + Toasts.BUDGET_GAP_MS / 2);
+      at = Math.min(at, q.opts.budget ? Math.min(this.nextAllowed(now), capAt) : now);
+      break;
+    }
     this.queueTimer = this.arm(() => {
       this.queueTimer = 0;
       this.drain();
@@ -581,9 +602,11 @@ export class Toasts {
     const key = kind + ':' + text;
     const meta = NEWS_META[kind] ?? NEWS_META.info;
     const ttl = (opts.ttl ?? (kind === 'error' ? 2600 : kind === 'disaster' ? 12000 : kind === 'music' ? 4200 : 7000)) * Toasts.ttlScale;
+    const deferred = !!opts.deferWhile?.();
     // identical message within the de-dup window: bump the counter on the existing toast instead of stacking
     const live = this.live.get(key);
-    if (live && live.el.isConnected && now - live.at < Toasts.DEDUP_MS) {
+    if (!deferred && live && live.el.isConnected && now - live.at < Toasts.DEDUP_MS) {
+      if (opts.isRelevant?.() === false) { opts.onDrop?.(); return; }
       live.count++;
       live.at = now;
       live.badge.textContent = `×${live.count}`;
@@ -592,16 +615,19 @@ export class Toasts {
       if (cell) live.cell = cell;
       live.restart(ttl);
       if (this.el.firstElementChild !== live.el) this.insertToast(live.el);
+      if (opts.teaching) live.el.classList.add('emg-teaching-toast');
+      opts.onShow?.();
       return;
     }
     // FEEL-02a: over budget, news with an action waits (the queue goes first), other news stays in the ticker only
-    if (opts.budget && (this.queue.length || !this.allows(now))) {
-      if (opts.action && !this.queue.some((q) => q.key === key)) {
+    if (deferred || (opts.budget && (this.queue.some((q) => !q.opts.deferWhile?.()) || !this.allows(now)))) {
+      if ((deferred || opts.action) && !this.queue.some((q) => q.key === key)) {
         this.queue.push({ text, kind, cell, title, opts, key, at: now });
         this.drain();
       } else if (this.queue.length) this.drain();
       return;
     }
+    if (opts.isRelevant?.() === false) { opts.onDrop?.(); return; }
     this.shownAt.push(now);
     // no toast sound when the action that raised it just played its own (error buzz, reward fanfare...)
     const recent = (this.ctx.mods.audio as { sinceLastPlay?: () => number } | undefined)?.sinceLastPlay?.() ?? 1e9;
@@ -676,6 +702,7 @@ export class Toasts {
     if (!sticky) timer = arm(kill, ttl);
     this.live.set(key, entry);
     if (answers) t.classList.add('question');
+    if (opts.teaching) t.classList.add('emg-teaching-toast');
     this.insertToast(t);
     // at most 4 visible (3 on short screens, e.g. 1280×720: CityScene sets .short on the UI root); the oldest goes first,
     // but a question waits for its answer (or its own expiry): news must not push it out before it can be read
@@ -688,5 +715,6 @@ export class Toasts {
       for (const [k, v] of this.live) if (v.el === last) this.live.delete(k);
       last.remove();
     }
+    opts.onShow?.();
   }
 }

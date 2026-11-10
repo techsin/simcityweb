@@ -150,6 +150,7 @@ export type { SimSettings } from './protocol';
 export interface PolicySnapshot {
   readonly alerts: readonly Readonly<PolicyState['alerts'][number]>[];
   readonly live: boolean;
+  readonly teaching?: Readonly<NonNullable<PolicyState['teaching']>>;
   readonly toast?: Readonly<NonNullable<PolicyState['toast']>>;
   readonly warn?: true;
 }

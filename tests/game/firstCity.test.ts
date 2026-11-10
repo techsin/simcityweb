@@ -284,9 +284,14 @@ describe('FH-12: main.ts wiring (source)', () => {
     // a second click (Enter on the focused button under the loading screen) makes no second region
     expect(first.indexOf('if (this.busy) return;')).toBeGreaterThan(-1);
     expect(first.indexOf('if (this.busy) return;')).toBeLessThan(first.indexOf('new LoadingScreen('));
-    // startNewCity keeps a loading screen it is handed (no second one), and founds on day 90 (FEEL-05)
+    // NEW-04: founding the first city asks for persistent storage inside the click, before anything is awaited
+    expect(first.indexOf('void requestPersistentStorage();')).toBeGreaterThan(-1);
+    expect(first.indexOf('void requestPersistentStorage();')).toBeLessThan(first.indexOf('await '));
+    // startNewCity keeps a loading screen it is handed (no second one; removed when NEW-04's region lock is refused),
+    // and founds on day 90 (FEEL-05)
     const found = method('  private async startNewCity(');
     expect(found).toMatch(/existing\?: LoadingScreen/);
+    expect(found).toMatch(/if \(!\(await this\.storage\.hold\(model\.data\)\)\) return void existing\?\.remove\(\);/);
     expect(found).toMatch(/const ld = existing \?\? new LoadingScreen\(this\.root\)/);
     expect(found).toMatch(/st\.day = FOUNDING_DAY;/);
   });

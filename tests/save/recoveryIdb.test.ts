@@ -73,4 +73,44 @@ describe('recovery IDB records', () => {
     expect(commit).toHaveBeenCalledOnce(); tx.oncomplete!(); await journal;
     vi.clearAllTimers();
   });
+
+  it('refuses a revoked tab\'s IndexedDB put and delete before opening a transaction (NEW-04)', async () => {
+    vi.resetModules(); vi.useFakeTimers();
+    const put = vi.fn(), remove = vi.fn();
+    const tx = { objectStore: () => ({ keyPath: null, put, delete: remove }), commit: vi.fn(), oncomplete: null as null | (() => void), onerror: null, onabort: null };
+    const transaction = vi.fn(() => tx);
+    const request = { result: { transaction }, onsuccess: null as null | (() => void) };
+    vi.stubGlobal('indexedDB', { open: () => request });
+    // a Web Lock that another tab steals: its request promise rejects with AbortError
+    let steal!: () => void;
+    vi.stubGlobal('navigator', { locks: { request: (_name: string, _options: unknown, granted: (lock: unknown) => Promise<unknown>) => new Promise((resolve, reject) => {
+      steal = () => reject(new DOMException('Stolen', 'AbortError'));
+      void granted({}).then(resolve, reject);
+    }) } });
+    const db = await import('../../src/save/db');
+    const opening = db.openKV(); request.onsuccess!();
+    const kv = await opening, f = recoveryFixture();
+    const lock = new db.RegionSaveLock('rtest');
+    try {
+      expect(await lock.acquire()).toBe(true);
+      steal();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lock.lost).toBe(true);
+      const refused = [
+        kv.put('recovery', { marker: f.marker, payload: f.payload }, 'rtest:0_0'), kv.put('cities', f.record, f.record.key),
+        kv.put('regions', { id: 'rtest' }), kv.delete('recovery', 'rtest:0_0'),
+      ];
+      expect(transaction).not.toHaveBeenCalled();
+      for (const write of refused) await expect(write).rejects.toMatchObject({ name: 'NotAllowedError' });
+      expect(put).not.toHaveBeenCalled();
+      expect(remove).not.toHaveBeenCalled();
+      // other regions stay writable
+      const other = kv.put('recovery', { marker: { ...f.marker, regionId: 'other' }, payload: f.payload }, 'other:0_0');
+      expect(transaction).toHaveBeenCalledExactlyOnceWith('recovery', 'readwrite');
+      tx.oncomplete!(); await other;
+    } finally {
+      lock.dispose();
+      vi.clearAllTimers();
+    }
+  });
 });

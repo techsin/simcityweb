@@ -22,6 +22,14 @@ import { receiverSweepBox, type ShadowReceiver } from './Shadows';
 
 export const TERRAIN_CHUNK = 32;
 
+/** an edge cell's network type continues off the map when its inward neighbour joins it (TerrainRenderer.updateExits) */
+function exitConnects(a: number, b: number): boolean {
+  if (a === Network.Rail || b === Network.Rail) return a === b;
+  if (!(a >= Network.Street && a <= Network.Highway) || !(b >= Network.Street && b <= Network.Highway)) return false;
+  if (a === Network.Highway || b === Network.Highway) return (a === Network.Highway ? b : a) !== Network.Street;
+  return true;
+}
+
 interface Chunk {
   mesh: THREE.Mesh;
   cx: number;
@@ -56,8 +64,11 @@ export class TerrainRenderer {
   private dirtyChunks = new Set<number>();
   private heightDirty = false;
   private outerDirty = false;
-  private zoneDirty = false;
-  private treeDirty = false;
+  private zoneDirty: CellRect | null = null;
+  private treeDirty: CellRect | null = null;
+  /** uploads not yet consumed by three; null means a full upload must not be narrowed */
+  private cellUploads = new Map<THREE.Texture, CellRect | null>();
+  private canvases = new Set<HTMLCanvasElement>();
   private overlayDirty = false;
   private overlay: Overlay = Overlay.None;
   /** data-view variant (src/sim/infra/overlays.ts OVERLAY_VARIANTS; -1 = the overlay's default) */
@@ -138,6 +149,10 @@ export class TerrainRenderer {
     this.exitTex = new THREE.DataTexture(this.exitData, N, 4, THREE.RedFormat, THREE.UnsignedByteType);
     this.exitTex.magFilter = this.exitTex.minFilter = THREE.NearestFilter;
     this.exitTex.generateMipmaps = false;
+    for (const tex of [this.zoneTex, this.lightTexture, this.treeTex]) {
+      tex.onUpdate = (t) => { this.cellUploads.delete(t); };
+      tex.addEventListener('dispose', this.onTextureDispose);
+    }
     this.month = ((Math.floor(state.month ?? 5) % 12) + 12) % 12;
 
     const zoneCols: THREE.Color[] = [];
@@ -208,6 +223,7 @@ export class TerrainRenderer {
     const u = this.uniforms;
     const detail = this.detail;
     for (const [m, part] of [[this.material, 1], [this.outerMaterial, 2]] as [THREE.MeshStandardMaterial, number][]) {
+      m.onBeforeRender = this.watchContext;
       m.onBeforeCompile = (shader) => {
         Object.assign(shader.uniforms, u);
         shader.defines = { ...(shader.defines ?? {}), TERRAIN_DETAIL: detail, TERRAIN_PART: part };
@@ -233,6 +249,7 @@ export class TerrainRenderer {
     }
     this.castShadows = castShadows;
     for (const c of this.chunks) c.mesh.castShadow = castShadows;
+    this.rebuildCells();
   }
 
   private applyClimate() {
@@ -241,6 +258,7 @@ export class TerrainRenderer {
     this.uniforms.uPal.value = pal.map((h) => new THREE.Color(h));
     this.uniforms.uDesert.value = cfg.climate === 'desert' ? 1 : 0;
     this.applySnowLine();
+    this.rebuildCells();
   }
 
   /**
@@ -522,11 +540,54 @@ export class TerrainRenderer {
     for (const c of this.chunks) this.buildChunk(c);
     this.buildOuter();
     this.uploadHeights();
-    this.updateZones(0, 0, this.N, this.N);
-    this.updateTrees(0, 0, this.N, this.N);
-    this.zoneTex.needsUpdate = true;
-    this.treeTex.needsUpdate = true;
+    this.rebuildCells();
   }
+
+  private rebuildCells() {
+    this.zoneDirty = this.treeDirty = null;
+    this.updateZones();
+    this.updateTrees();
+  }
+
+  private unionRect(a: CellRect | null, b: CellRect): CellRect {
+    if (!a) return { ...b };
+    a.x0 = Math.min(a.x0, b.x0); a.z0 = Math.min(a.z0, b.z0);
+    a.x1 = Math.max(a.x1, b.x1); a.z1 = Math.max(a.z1, b.z1);
+    return a;
+  }
+
+  private uploadCells(tex: THREE.DataTexture, r: CellRect | null) {
+    const pending = this.cellUploads.get(tex);
+    let rect = r && pending !== null ? this.unionRect(pending ?? null, r) : null;
+    if (rect && rect.z1 - rect.z0 > this.N / 2) rect = null;
+    this.cellUploads.set(tex, rect);
+    tex.clearUpdateRanges();
+    if (rect) {
+      // r186 decodes ranges with componentStride = 4, even for RedFormat. Each range must stay in one row.
+      for (let z = rect.z0; z < rect.z1; z++) tex.addUpdateRange((z * this.N + rect.x0) * 4, (rect.x1 - rect.x0) * 4);
+    }
+    tex.needsUpdate = true;
+  }
+
+  private onTextureDispose = (e: { target: THREE.Texture }) => {
+    this.uploadCells(e.target as THREE.DataTexture, null);
+  };
+
+  private restoreTextures = () => {
+    for (const tex of [this.zoneTex, this.lightTexture, this.treeTex]) this.uploadCells(tex, null);
+    this.exitTex.clearUpdateRanges();
+    this.exitTex.needsUpdate = true;
+  };
+
+  private watchContext = (renderer: THREE.WebGLRenderer) => {
+    const canvas = renderer.domElement;
+    if (this.canvases.has(canvas)) return;
+    this.canvases.add(canvas);
+    // three applies ranges even to freshly allocated storage, including after context restoration.
+    canvas.addEventListener('webglcontextlost', this.restoreTextures);
+    canvas.addEventListener('webglcontextrestored', this.restoreTextures);
+    this.restoreTextures();
+  };
 
   // ------------------------------------------------------------------ events
   onTerrainChanged(r: CellRect) {
@@ -543,9 +604,12 @@ export class TerrainRenderer {
   }
 
   /** zones / buildings / network / trees changed in rect -> refresh the tint & forest textures */
-  markCells(_r: CellRect) {
-    this.zoneDirty = true;
-    this.treeDirty = true;
+  markCells(r: CellRect) {
+    if (r.x1 <= r.x0 || r.z1 <= r.z0) return;
+    const rect = { x0: Math.max(0, r.x0 - 1), z0: Math.max(0, r.z0 - 1), x1: Math.min(this.N, r.x1 + 1), z1: Math.min(this.N, r.z1 + 1) };
+    if (rect.x1 <= rect.x0 || rect.z1 <= rect.z0) return;
+    this.zoneDirty = this.unionRect(this.zoneDirty, rect);
+    this.treeDirty = this.unionRect(this.treeDirty, rect);
     if (this.overlay === Overlay.Power || this.overlay === Overlay.Water) this.overlayDirty = true;
   }
 
@@ -555,8 +619,9 @@ export class TerrainRenderer {
     if (!def.layers.length || def.layers.includes(name)) this.overlayDirty = true;
   }
 
-  private updateZones(x0: number, z0: number, x1: number, z1: number) {
+  private updateZones(r: CellRect | null = null) {
     const st = this.state, N = this.N, D = this.zoneData;
+    const { x0, z0, x1, z1 } = r ?? { x0: 0, z0: 0, x1: N, z1: N };
     for (let z = z0; z < z1; z++)
       for (let x = x0; x < x1; x++) {
         const i = z * N + x;
@@ -564,34 +629,31 @@ export class TerrainRenderer {
         D[i * 4 + 1] = st.building[i] >= 0 || st.network[i] !== 0 ? 1 : 0;
         this.lightData[i] = st.building[i] >= 0 ? 255 : st.network[i] !== 0 ? 90 : 0;
       }
-    this.zoneTex.needsUpdate = true;
-    this.lightTexture.needsUpdate = true;
-    this.updateExits();
+    this.uploadCells(this.zoneTex, r);
+    this.uploadCells(this.lightTexture, r);
+    if (x0 < 2 || z0 < 2 || x1 > N - 2 || z1 > N - 2) this.updateExits(r);
   }
 
-  /** edge cells whose road / highway / rail line runs off the map (continued as ribbons in the landscape shader) */
-  private updateExits() {
-    const st = this.state, N = this.N, E = this.exitData, net = st.network;
-    const isRoad = (t: number) => t >= Network.Street && t <= Network.Highway;
-    const connects = (a: number, b: number) => {
-      if (a === Network.Rail || b === Network.Rail) return a === b;
-      if (!isRoad(a) || !isRoad(b)) return false;
-      if (a === Network.Highway || b === Network.Highway) return (a === Network.Highway ? b : a) !== Network.Street;
-      return true;
-    };
+  /**
+   * Edge cells whose road / highway / rail line runs off the map (continued as ribbons in the landscape shader).
+   * `r`: recompute only the edge rows whose two outer rings it touches (null: all four). The texture is N x 4, so
+   * it is always uploaded whole.
+   */
+  private updateExits(r: CellRect | null = null) {
+    const st = this.state, N = this.N, E = this.exitData, net = st.network, flags = st.netFlags;
     const TUNNEL = 2;
-    E.fill(0);
-    for (let k = 1; k < N - 1; k++) {
-      // [edge row, cell, inward neighbour]
-      const cells: [number, number, number][] = [
-        [0, k * N, k * N + 1], [1, k * N + N - 1, k * N + N - 2], [2, k, N + k], [3, (N - 1) * N + k, (N - 2) * N + k],
-      ];
-      for (const [row, i, j] of cells) {
-        const t = net[i];
-        if (!t || st.netFlags[i] & TUNNEL || !connects(t, net[j])) continue;
-        E[row * N + k] = t;
+    for (let row = 0; row < 4; row++) {
+      if (r && !(row === 0 ? r.x0 < 2 : row === 1 ? r.x1 > N - 2 : row === 2 ? r.z0 < 2 : r.z1 > N - 2)) continue;
+      // rows -x, +x, -z, +z: edge cell i = base + k * step, its inward neighbour i + inward (the corners stay 0)
+      const base = row === 1 ? N - 1 : row === 3 ? (N - 1) * N : 0;
+      const step = row < 2 ? N : 1;
+      const inward = row === 0 ? 1 : row === 1 ? -1 : row === 2 ? N : -N;
+      for (let k = 1; k < N - 1; k++) {
+        const i = base + k * step, t = net[i];
+        E[row * N + k] = t && !(flags[i] & TUNNEL) && exitConnects(t, net[i + inward]) ? t : 0;
       }
     }
+    this.exitTex.clearUpdateRanges();
     this.exitTex.needsUpdate = true;
   }
 
@@ -600,14 +662,15 @@ export class TerrainRenderer {
     return st.water[i] === 1 || st.network[i] !== 0 || st.building[i] >= 0 || st.zone[i] !== 0 || st.powerLines[i] !== 0;
   }
 
-  private updateTrees(x0: number, z0: number, x1: number, z1: number) {
+  private updateTrees(r: CellRect | null = null) {
     const st = this.state, N = this.N, D = this.treeData;
+    const { x0, z0, x1, z1 } = r ?? { x0: 0, z0: 0, x1: N, z1: N };
     for (let z = z0; z < z1; z++)
       for (let x = x0; x < x1; x++) {
         const i = z * N + x;
         D[i] = TerrainRenderer.cellBlocked(st, i) ? 0 : Math.round((st.trees[i] / 4) * 255);
       }
-    this.treeTex.needsUpdate = true;
+    this.uploadCells(this.treeTex, r);
   }
 
   // ------------------------------------------------------------------ overlays & tools
@@ -702,12 +765,14 @@ export class TerrainRenderer {
       this.buildOuter();
     }
     if (this.zoneDirty) {
-      this.zoneDirty = false;
-      this.updateZones(0, 0, this.N, this.N);
+      const r = this.zoneDirty;
+      this.zoneDirty = null;
+      this.updateZones(r);
     }
     if (this.treeDirty) {
-      this.treeDirty = false;
-      this.updateTrees(0, 0, this.N, this.N);
+      const r = this.treeDirty;
+      this.treeDirty = null;
+      this.updateTrees(r);
     }
     // O9: no tint before subscribed data arrives; polling also catches first delivery while paused.
     const on = this.overlay !== Overlay.None && this.overlay !== Overlay.Zones && overlayReady(this.state, this.overlay, this.overlayVariant);
@@ -751,6 +816,16 @@ export class TerrainRenderer {
   private heightVersion = 0;
 
   dispose() {
+    for (const canvas of this.canvases) {
+      canvas.removeEventListener('webglcontextlost', this.restoreTextures);
+      canvas.removeEventListener('webglcontextrestored', this.restoreTextures);
+    }
+    this.canvases.clear();
+    for (const tex of [this.zoneTex, this.lightTexture, this.treeTex]) {
+      tex.onUpdate = null;
+      tex.removeEventListener('dispose', this.onTextureDispose);
+    }
+    this.cellUploads.clear();
     for (const c of this.chunks) c.mesh.geometry.dispose();
     this.outer?.geometry.dispose();
     this.material.dispose();
