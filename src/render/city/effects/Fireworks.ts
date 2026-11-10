@@ -157,6 +157,8 @@ const HUSH = 3.4;
 const SMOKE_CAP = 512, SMOKE_STRIDE = 12;
 /** ground light pools (PG x PG vertices each, conformed to the terrain) and their peak brightness */
 const NPOOL = 6, PG = 9, POOL_PEAK = 0.17;
+/** FEEL-21: one shared flash onset per 400 ms (at most three in any second), with no pulse over 160 ms. */
+const REDUCED_FLASH_INTERVAL = 0.4, REDUCED_FLASH_DURATION = 0.16;
 
 // ------------------------------------------------------------------------------------------------ shaders
 const VERT = /* glsl */ `
@@ -401,6 +403,24 @@ void main() {
   gl_FragColor = vec4(vCol * ((core + halo) * br), 1.0);
 }`;
 
+// Full keeps the original shader programs verbatim. Reduced changes existing particles at render time only.
+const REDUCED_VERT = VERT
+  .replace('float f = age / life;', `
+  if (kind >= 4.0) {
+    age = uTime - ceil(aP0.w / ${REDUCED_FLASH_INTERVAL}) * ${REDUCED_FLASH_INTERVAL};
+    if (age < 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  }
+  float f = age / life;`)
+  .replace('fwHash(floor(uTime * 21.0) + aK.y * 4099.0)', '0.5')
+  .replace('if (!snap) {', '{')
+  .replace('I = 0.8 + 0.35 * rnd;', 'I = (0.8 + 0.35 * rnd) * smoothstep(0.0, min(0.15, life * 0.5), age);')
+  .replace('I = (1.0 - f) * (1.0 - f) * (0.25 + 0.95 * rnd);',
+    'I = (1.0 - f) * (1.0 - f) * (0.25 + 0.95 * rnd) * smoothstep(0.0, min(0.15, life * 0.5), age);')
+  .replace('step(fract(uTime * aK.w + aK.y * 7.0), 0.3)', '0.3');
+const REDUCED_FRAG = FRAG
+  .replace('if (vG.x > 0.0) {', 'if (false) {')
+  .replace('br *= step(0.5, band) * 1.6;', 'br *= 0.8;');
+
 /** drifting smoke puffs (premultiplied alpha): lit by the sky / city glow, their own burst and nearby flashes */
 const SMOKE_VERT = /* glsl */ `
 attribute vec4 aA;  // position, birth time
@@ -534,6 +554,7 @@ export class Fireworks {
   shells = 0;
 
   private ctx: FireworksContext;
+  private flashStrength = 1;
   // ---- spark ring buffer
   private data: Float32Array;
   private buf: THREE.InstancedInterleavedBuffer;
@@ -854,6 +875,23 @@ export class Fireworks {
     return (this.mesh.visible ? 1 : 0) + (this.reflection.visible ? 1 : 0) + (this.smoke.visible ? 1 : 0) + (this.pools.visible ? 1 : 0);
   }
 
+  /** FEEL-21: live render-only preference; reduced flashes share a slow clock, never the director's schedule. */
+  setFlashStrength(strength: number): void {
+    const next = strength < 1 ? 0.5 : 1;
+    if (next === this.flashStrength) return;
+    this.flashStrength = next;
+    for (const mesh of [this.mesh, this.reflection]) {
+      const material = mesh.material as THREE.ShaderMaterial;
+      material.vertexShader = next < 1 ? REDUCED_VERT : VERT;
+      material.fragmentShader = next < 1 ? REDUCED_FRAG : FRAG;
+      material.needsUpdate = true;
+    }
+    const night = sharedUniforms.uNight.value;
+    this.uniforms.uGain.value = lerp(2.2, 1.0, night) * next;
+    this.smokeU.uGlow.value = lerp(0.1, 0.22, night) * next;
+    this.updateLights();
+  }
+
   setQuality(q: QualityLevel): void {
     this.quality = q;
     this.maxLive = MAX_LIVE[q] ?? 30000;
@@ -982,6 +1020,10 @@ export class Fireworks {
     // smoke light: faint sky / city glow at night, daylight grey by day
     this.smokeU.uAmb.value.set(lerp(0.62, 0.03, night), lerp(0.62, 0.027, night), lerp(0.66, 0.031, night));
     this.smokeU.uGlow.value = lerp(0.1, 0.22, night);
+    if (this.flashStrength < 1) {
+      u.uGain.value *= this.flashStrength;
+      this.smokeU.uGlow.value *= this.flashStrength;
+    }
     const vis = this.clock < this.lastDeath;
     this.mesh.visible = vis;
     this.reflection.visible = vis && this.reflectOn && this.hasWater;
@@ -2307,6 +2349,13 @@ export class Fireworks {
     return Math.min(1, dt * 30) * Math.exp(-dt * 4.2) * strength;
   }
 
+  /** Intersect the original lifetime with a shared flash tick; short pops that miss their tick stay dark. */
+  private reducedFlashEnvelope(time: number, strength: number): number {
+    const age = this.clock - Math.ceil(time / REDUCED_FLASH_INTERVAL) * REDUCED_FLASH_INTERVAL;
+    if (age < 0 || age >= REDUCED_FLASH_DURATION) return 0;
+    return Fireworks.env(age, strength) * (1 - smoothstep(0.1, REDUCED_FLASH_DURATION, age));
+  }
+
   /** burst light: ground pools under fresh bursts, water shimmer + smoke light (strongest 4), fill-light tint */
   private updateLights(): void {
     const now = this.clock;
@@ -2322,7 +2371,7 @@ export class Fireworks {
       const dt = now - this.flT[i];
       if (dt < 0 || dt > 1.6) continue;
       const o = i * FLS;
-      const env = Fireworks.env(dt, p[o + 6]);
+      const env = this.flashStrength < 1 ? this.reducedFlashEnvelope(this.flT[i], p[o + 6]) : Fireworks.env(dt, p[o + 6]);
       const d = Math.hypot(p[o] - cam.x, p[o + 1] - cam.y, p[o + 2] - cam.z);
       const e2 = env / (1 + (d / 2500) ** 2);
       sum += e2;
@@ -2355,8 +2404,10 @@ export class Fireworks {
         }
       }
       this.poolE[j] = e;
-      const kk = e * POOL_PEAK * nk * this.poolK[j];
+      // Pool ownership/selection keeps its original envelope, even while its rendered light is reduced.
+      let kk = (this.flashStrength < 1 && i >= 0 ? this.reducedFlashEnvelope(this.flT[i], p[i * FLS + 6]) : e) * POOL_PEAK * nk * this.poolK[j];
       if (i >= 0 && kk > 1e-4) {
+        if (this.flashStrength < 1) kk *= this.flashStrength;
         const o = i * FLS;
         this.poolC[j].set(p[o + 3] * kk, p[o + 4] * kk, p[o + 5] * kk);
         anyPool = true;
@@ -2374,18 +2425,20 @@ export class Fireworks {
       }
       const o = i * FLS;
       WP[s].set(p[o], p[o + 1], p[o + 2], Math.max(20, p[o + 7]));
-      const kk = topE[s] * 0.8 * nk;
+      let kk = topE[s] * 0.8 * nk;
+      if (this.flashStrength < 1) kk *= this.flashStrength;
       WC[s].set(p[o + 3] * kk, p[o + 4] * kk, p[o + 5] * kk);
     }
     // soft tint of the scene's fill light: the city flickers with the bursts but never lights up like day
     const h = this.fillLight;
     if (!h) return;
     const base = this.fillBaseIntensity(h);
-    const amt = (1 - Math.exp(-sum * 1.1)) * 0.28 * night * Math.max(0.3, Math.min(1, base / 0.5));
+    let amt = (1 - Math.exp(-sum * 1.1)) * 0.28 * night * Math.max(0.3, Math.min(1, base / 0.5));
     if (amt < 1e-3) {
       this.restoreFill();
       return;
     }
+    if (this.flashStrength < 1) amt *= this.flashStrength;
     const tot = base + amt;
     const inv = 1 / Math.max(sum, 1e-5);
     const w0 = base / tot, w1 = amt / tot;

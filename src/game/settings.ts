@@ -1,6 +1,6 @@
 /** Player settings (persisted in localStorage). */
 import type { QualityLevel } from '../render/contracts';
-import { ACCESSIBILITY_CHECKS, DEFAULT_SETTINGS as APP_DEFAULTS, type ColourVision, type MotionPref, type SettingCheck, type TextSize } from '../region/settings';
+import { ACCESSIBILITY_CHECKS, DEFAULT_SETTINGS as APP_DEFAULTS, resolveMotion, type ColourVision, type MotionPref, type SettingCheck, type TextSize } from '../region/settings';
 
 export { UI_SCALE, resolveMotion, type ColourVision, type MotionPref, type TextSize } from '../region/settings';
 
@@ -160,6 +160,11 @@ export function saveSettings(s: GameSettings): void {
   } catch {
     /* storage unavailable */
   }
+}
+
+/** Shared live flashing preference for fireworks and weather; 'system' follows later device changes. */
+export function reducedFlashing(settings: Pick<GameSettings, 'motion'>): boolean {
+  return resolveMotion(settings.motion) === 'reduced';
 }
 
 /** Follow device changes while a city is open; an explicit motion preference still wins at the consumer. */

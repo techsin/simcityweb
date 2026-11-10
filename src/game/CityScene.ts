@@ -30,7 +30,7 @@ import { FallbackObjectsView } from './fallback/FallbackObjectsView';
 import { FallbackWorldView } from './fallback/FallbackWorldView';
 import { NullObjectsView, NullWorldView } from './fallback/NullViews';
 import { loadGameModules, type GameModules } from './modules';
-import { loadPref, loadSettings, resolveMotion, savePref, saveSettings, watchMotionPreference, type GameSettings } from './settings';
+import { loadPref, loadSettings, reducedFlashing, savePref, saveSettings, watchMotionPreference, type GameSettings } from './settings';
 import { NewYearCelebration, type CelebrateOptions } from './NewYear';
 import { GameSounds } from './GameSounds';
 import { HOTKEY_CYCLES, PANEL_HOTKEYS } from './toolCatalog';
@@ -1279,7 +1279,7 @@ export class CityScene {
 
   /** FEEL-21: render-only, shared by local, loopback and worker hosts; device changes need no settings write. */
   private applyMotion(): void {
-    const reduced = resolveMotion(this.settings.motion) === 'reduced';
+    const reduced = reducedFlashing(this.settings);
     const wasReduced = this.uiRoot.classList.contains('reduced-motion');
     this.uiRoot.classList.toggle('reduced-motion', reduced);
     this.uiRoot.classList.toggle('full-motion', !reduced);
@@ -1288,7 +1288,7 @@ export class CityScene {
     }
     const c = this.world.controls as unknown as { reducedMotion?: boolean };
     if (c) c.reducedMotion = reduced;
-    // The effects owner supplies this hook; it changes light output only, never the show schedule or its RNG.
+    // Render-only: the show's schedule and RNG stay intact, including shells already in flight.
     (this.objects as { fireworks?: { setFlashStrength?: (strength: number) => void } }).fireworks?.setFlashStrength?.(reduced ? 0.5 : 1);
     this.newYear?.applyMotion();
   }
