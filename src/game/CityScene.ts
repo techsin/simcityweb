@@ -333,6 +333,8 @@ export class CityScene {
       audio: () => this.mods.audio,
       overlayRoot: this.uiRoot,
       signal: this.abort.signal,
+      // T077 (WORKER_DESIGN §3.6): the host says whether the year's day was frame-paced; a late packet backlog is no batch
+      liveYear: () => this.host.liveYear,
       // NOTE-041: a command, so a worker's clock holds too (the host is already gone when the scene disposes)
       holdCalendar: (on) => { if (!this.disposed) this.host.act('holdCalendar', [on], { tag: this.newYear }); },
     });

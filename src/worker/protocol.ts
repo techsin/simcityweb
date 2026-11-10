@@ -99,7 +99,10 @@ export class CommandOutcomeLost extends Error {
   constructor(readonly seq: number) { super('Command applied; its outcome was lost in a resync'); this.name = 'CommandOutcomeLost'; }
 }
 
-export interface Clock { day: number; frac: number; speed: number; slow: number; spd: number; live: boolean }
+/** `live` (T077, WORKER_DESIGN §3.6): the days this packet carries came from frame-paced ticks, not from a batch of days
+ *  (debug.runDays, deterministic mode). Optional on the wire and never saved: a packet without it reads as unknown, and
+ *  New Year then decides by its frame-gap rule, as it did before the flag was read. */
+export interface Clock { day: number; frac: number; speed: number; slow: number; spd: number; live?: boolean }
 export interface PolicyState {
   alerts: { id: number; wasPossible: boolean }[];
   live: boolean;
