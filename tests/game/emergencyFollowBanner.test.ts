@@ -52,7 +52,7 @@ function harness(initial = [incident()], fleet: EmergencyVehicle[] = []) {
     return { done: Promise.resolve({ ok: true, responder: 'fire', sent: 1, etaMin: 1.1 }) };
   });
   const ctx = {
-    sim: { events }, root, signal: abort.signal, ui,
+    sim: { events }, state: { get day() { return now; } }, root, signal: abort.signal, ui,
     host: {
       events, speed: 1, liveSlowdown: 1, get cause() { return cause; }, policy, act, simTime: () => now,
       emergency: {
