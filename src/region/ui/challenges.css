@@ -1,0 +1,38 @@
+/* LG-14: scenario and Mayor's-challenge badges (region screen, New City dialog) and the Challenges dialog */
+
+/* ---- badges */
+.ch-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.ch-badge {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.5;
+  background: rgba(255, 255, 255, 0.07); color: var(--text-dim); border: 1px solid transparent;
+}
+.ch-badge.scenario { background: rgba(63, 167, 255, 0.16); color: #aad6ff; }
+/* a challenge whose badge is not earned yet: outlined only */
+.ch-badge.open { background: transparent; border-color: rgba(255, 255, 255, 0.16); }
+.ch-badge.earned { background: rgba(255, 212, 107, 0.16); color: #ffdf94; border-color: rgba(255, 212, 107, 0.3); }
+.ch-badge.medal.bronze { background: rgba(205, 127, 50, 0.2); color: #f0b488; border-color: rgba(205, 127, 50, 0.4); }
+.ch-badge.medal.silver { background: rgba(207, 216, 227, 0.16); color: #dfe7f0; border-color: rgba(207, 216, 227, 0.35); }
+.ch-badge.medal.gold { background: rgba(255, 212, 107, 0.2); color: #ffdf94; border-color: rgba(255, 212, 107, 0.45); }
+.ch-badge.none { background: transparent; border-color: rgba(255, 255, 255, 0.1); color: var(--text-faint); }
+
+/* ---- the Challenges dialog: scenario list beside the chosen scenario's briefing */
+.ch-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 22px; align-items: start; }
+/* (one column, whatever the segmented control's own column count) */
+.ch-grid .seg.ch-list { grid-template-columns: minmax(0, 1fr); }
+/* the scenario's medal sits at the right end of its title row */
+.ch-list .seg-item .si-t { align-self: stretch; justify-content: space-between; }
+.ch-detail h3 { margin: 2px 0 8px; font-size: 17px; font-weight: 800; }
+.ch-brief { color: var(--text-dim); font-size: 13.5px; line-height: 1.55; margin: 0 0 14px; }
+.ch-goals { display: grid; gap: 7px; margin-bottom: 14px; }
+.ch-goal { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; align-items: center; font-size: 13px; }
+.ch-goal .ch-badge { justify-content: center; }
+.ch-best { font-size: 12.5px; color: var(--text-dim); display: flex; align-items: center; gap: 8px; }
+@media (max-width: 720px) {
+  .ch-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---- New City dialog: the Mayor's challenges (chips that switch on and off independently) */
+.ch-picker { margin-top: 12px; margin-bottom: 0; }
+.ch-picker .nc-note { min-height: 1.4em; }
+.ch-picker .nc-note div + div { margin-top: 2px; }

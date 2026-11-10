@@ -1,0 +1,75 @@
+/* LG-14: the objectives card (top of the top-left HUD column), its pill, and the briefing / result cards */
+
+/* ---- the pinned card */
+.objectives { padding: 11px 12px 10px; pointer-events: auto; animation: rise 0.3s var(--ease); }
+.objectives.reduced-motion { animation: none; }
+.objectives.won { border-color: rgba(255, 212, 107, 0.45); }
+.objectives .obj-head { display: flex; align-items: center; gap: 10px; }
+.objectives .obj-heading { flex: 1; min-width: 0; }
+.obj-badge {
+  width: 30px; height: 30px; border-radius: 9px; flex: none; display: flex; align-items: center; justify-content: center;
+  color: #2a1c05; background: linear-gradient(145deg, #ffd98a, #e2a23a); box-shadow: 0 2px 8px rgba(226, 162, 58, 0.4);
+}
+.objectives .obj-title { font-size: 14px; font-weight: 800; letter-spacing: -0.01em; }
+.objectives .obj-sub { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.objectives .icon-btn { width: 26px; height: 26px; }
+
+.obj-lines { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
+.obj-line .obj-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 12px; margin-bottom: 4px; }
+.obj-line .obj-l { color: var(--text-dim); white-space: nowrap; }
+.obj-line .obj-v { font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+.obj-line .bar { height: 4px; }
+.obj-line.done .obj-v { color: var(--good); }
+.obj-line.done .bar > .fill { background: var(--good); }
+
+/* the three medals: lit once won or secured, struck out once out of reach */
+.obj-medals { display: flex; gap: 6px; margin-top: 10px; }
+.obj-medal {
+  flex: 1; text-align: center; padding: 3px 6px; border-radius: 6px; font-size: 10.5px; font-weight: 800; letter-spacing: 0.06em;
+  text-transform: uppercase; white-space: nowrap; color: var(--text-dim); border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.obj-medal.have.bronze { background: rgba(205, 127, 50, 0.24); color: #f0b488; border-color: rgba(205, 127, 50, 0.5); }
+.obj-medal.have.silver { background: rgba(207, 216, 227, 0.18); color: #e6edf5; border-color: rgba(207, 216, 227, 0.45); }
+.obj-medal.have.gold { background: rgba(255, 212, 107, 0.22); color: #ffdf94; border-color: rgba(255, 212, 107, 0.55); }
+.obj-medal.out { opacity: 0.4; text-decoration: line-through; }
+
+/* Mayor's challenges: their names and the badge's bar */
+.obj-ch { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--hair); }
+.obj-ch.solo { border-top: 0; padding-top: 0; }
+.obj-ch-title { font-size: 11px; font-weight: 700; color: var(--text-dim); margin-bottom: 6px; }
+.obj-ch-list { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.obj-ch-chip { padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: rgba(255, 255, 255, 0.07); color: var(--text-dim); cursor: help; }
+.obj-ch.earned .obj-ch-chip { background: rgba(255, 212, 107, 0.16); color: #ffdf94; }
+.obj-ch.earned .obj-v { color: var(--good); }
+.obj-ch.earned .bar > .fill { background: var(--good); }
+
+/* ---- minimised: a pill, like the guide's */
+.objectives .obj-pill { display: none; }
+.objectives.min { padding: 0; border-radius: 17px; width: max-content; max-width: 100%; }
+.objectives.min > :not(.obj-pill) { display: none; }
+.objectives.min .obj-pill {
+  display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px 0 4px; border: 0; background: transparent; color: var(--text);
+  font: 700 12px/1 var(--font); font-variant-numeric: tabular-nums; cursor: pointer; border-radius: 17px; white-space: nowrap; max-width: 100%;
+}
+.objectives.min .obj-pill:hover { background: var(--hover); }
+.objectives.min .obj-pill .obj-badge { width: 26px; height: 26px; border-radius: 13px; box-shadow: none; }
+.objectives.min .obj-pill .obj-pt { overflow: hidden; text-overflow: ellipsis; }
+.objectives.min .obj-pill .ico-wrap { color: var(--text-dim); }
+
+/* ---- briefing and result cards (a HUD modal over the paused city) */
+.obj-card { width: min(460px, calc(100% - 32px)); box-sizing: border-box; }
+.obj-card-head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+.obj-card-head h2 { margin: 0; font-size: 21px; font-weight: 800; letter-spacing: -0.02em; }
+.obj-eyebrow { font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 2px; }
+.obj-badge.big { width: 46px; height: 46px; border-radius: 13px; }
+.obj-badge.silver { color: #1c232c; background: linear-gradient(145deg, #f1f4f8, #a9b5c3); box-shadow: 0 2px 8px rgba(169, 181, 195, 0.4); }
+.obj-badge.bronze { color: #2a1405; background: linear-gradient(145deg, #eba972, #b76a2d); box-shadow: 0 2px 8px rgba(183, 106, 45, 0.4); }
+.obj-badge.lost { color: var(--text-dim); background: rgba(255, 255, 255, 0.1); box-shadow: none; }
+.obj-result.gold { border-color: rgba(255, 212, 107, 0.5); }
+.obj-text { margin: 0 0 12px; font-size: 13.5px; line-height: 1.55; }
+.obj-goals { display: grid; gap: 7px; margin: 2px 0 18px; }
+.obj-goal { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 10px; align-items: center; font-size: 13px; }
+.obj-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+
+.mp-ui.short .objectives { padding: 9px 10px 8px; }
+.mp-ui.short .obj-lines { gap: 5px; margin-top: 8px; }

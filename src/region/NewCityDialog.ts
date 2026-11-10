@@ -6,11 +6,18 @@
  * FH-11: each difficulty card carries its FH-04 blurb (difficultyRules); a profile's first city preselects Easy and
  * Guided start, later dialogs the last choice (newCityPrefs.ts); Disasters follows the difficulty's default until the
  * player sets it, with a note on when disasters start.
+ * LG-14: the Mayor's challenges (challengePicker: chips under the options, saved as config.challenges through
+ * applyChallenges), and the title screen's Challenges dialog (openChallengesDialog: the scenario choice).
  */
+import './ui/challenges.css';
 import type { Climate, Difficulty, TerrainPreset } from '../core/types';
 import { REGION_UNIT_CELLS } from '../core/constants';
 import { DIFFICULTY_FUNDS, defaultCityConfig, type CityConfigData } from '../sim/config';
 import { DISASTER_MIN_POP, difficultyRules } from '../sim/economy/tuning';
+import { MAYOR_CHALLENGES, type MayorChallenge } from '../sim/economy/challenges';
+import {
+  CHALLENGE_BADGE_NOTE, CHALLENGE_INFO, MEDALS, MEDAL_NAMES, SCENARIOS, SCENARIO_LIST, applyChallenges, loadMedals, type ScenarioId,
+} from '../game/scenarios';
 import { guideCopy } from '../ui/guide/copy';
 import { newCityDefaults, rememberNewCity } from './newCityPrefs';
 import { CityState } from '../sim/CityState';
@@ -125,12 +132,15 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
         cfg.sandbox = v === 'sandbox';
         // Easy unticks Disasters; the others tick it again, until the player sets the toggle themselves
         if (!disastersTouched) disasters.set((cfg.disasters = difficultyRules(v).defaultDisasters));
+        challenges.setSandbox(cfg.sandbox);
       },
     });
     diff.el.classList.add('nc-diff');
     const disasters = toggleControl('Disasters', cfg.disasters, (v) => {
       disastersTouched = true;
       cfg.disasters = v;
+      // (LG-14: "Frequent disasters" needs disasters)
+      if (!v) challenges.set('frequentDisasters', false);
     });
     let guided = pick.guided, veteran = pick.veteran;
     const guide = toggleControl('Guided start', guided, (v) => {
@@ -140,6 +150,10 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
     const veteranSw = toggleControl('I\u2019ve played city builders before', veteran, (v) => {
       veteran = v;
       if (v && guided) guide.set((guided = false));
+    });
+    // LG-14: the Mayor's challenges; "Frequent disasters" switches Disasters on with it
+    const challenges = challengePicker(!!cfg.sandbox, (id, on) => {
+      if (id === 'frequentDisasters' && on) disasters.set((cfg.disasters = true));
     });
 
     const hill = slider({ label: 'Hilliness', icon: 'mountain', value: cfg.hilliness, onInput: (v) => ((cfg.hilliness = v), redraw()) });
@@ -216,6 +230,7 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
         h('div', { class: 'nc-opt' }, disasters.el, h('div', { class: 'nc-note' }, guideCopy.phaseA.A3Disasters(DISASTER_MIN_POP))),
         h('div', { class: 'nc-opt' }, guide.el, veteranSw.el, h('div', { class: 'field nc-year' }, h('label', {}, 'Starting year'), yearInput)),
       ),
+      challenges.el,
     );
     const body = h(
       'div',
@@ -240,7 +255,7 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
         // city founded: short celebratory fanfare (plays over the loading screen)
         audio.play('found');
         rememberNewCity({ difficulty: cfg.difficulty, guided, veteran });
-        result = { ...cfg, size };
+        result = applyChallenges({ ...cfg, size }, challenges.picks());
         m.close(true);
       },
     });
@@ -255,5 +270,135 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
       onClose: () => resolve(result),
     });
     setSource(cfg.terrain === 'region' ? 'region' : 'custom');
+  });
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// LG-14: Mayor's challenges and the Challenges dialog
+// ---------------------------------------------------------------------------------------------------------------
+/**
+ * The Mayor's challenges of the New City dialog: one chip per challenge, each switched on and off on its own, with the
+ * rules of the chosen ones underneath (none chosen: how a challenge earns its badge). Sandbox has none.
+ * `onPick`: the player switched a chip, or (on = true) a chosen challenge still holds after the difficulty changed.
+ */
+function challengePicker(sandbox: boolean, onPick: (id: MayorChallenge, on: boolean) => void): {
+  el: HTMLElement;
+  /** the chosen challenges, in MAYOR_CHALLENGES order */
+  picks(): MayorChallenge[];
+  set(id: MayorChallenge, on: boolean): void;
+  /** the dialog's difficulty changed: Sandbox clears and disables the chips */
+  setSandbox(on: boolean): void;
+} {
+  const picked = new Set<MayorChallenge>();
+  const chips = new Map<MayorChallenge, HTMLButtonElement>();
+  const note = h('div', { class: 'nc-note' });
+  const picks = () => MAYOR_CHALLENGES.filter((id) => picked.has(id));
+  const paintNote = () => {
+    note.textContent = '';
+    if (sandbox) note.append('Not in Sandbox: unlimited money leaves nothing to challenge.');
+    else {
+      for (const id of picks()) note.append(h('div', {}, h('b', {}, `${CHALLENGE_INFO[id].name}: `), CHALLENGE_INFO[id].rule));
+      note.append(h('div', {}, CHALLENGE_BADGE_NOTE));
+    }
+  };
+  const set = (id: MayorChallenge, on: boolean) => {
+    if (on) picked.add(id);
+    else picked.delete(id);
+    const chip = chips.get(id)!;
+    chip.classList.toggle('on', on);
+    chip.setAttribute('aria-pressed', String(on));
+    paintNote();
+  };
+  const row = h('div', { class: 'chips' });
+  for (const id of MAYOR_CHALLENGES) {
+    const chip = h('button', { class: 'chip', type: 'button', title: CHALLENGE_INFO[id].rule, 'aria-pressed': 'false', 'data-sfx': 'none' }, CHALLENGE_INFO[id].name) as HTMLButtonElement;
+    chip.addEventListener('click', () => {
+      const on = !picked.has(id);
+      audio.play(on ? 'toggleOn' : 'toggleOff');
+      set(id, on);
+      onPick(id, on);
+    });
+    chips.set(id, chip);
+    row.appendChild(chip);
+  }
+  const setSandbox = (on: boolean) => {
+    sandbox = on;
+    for (const [id, chip] of chips) {
+      chip.disabled = on;
+      if (on && picked.has(id)) set(id, false);
+    }
+    paintNote();
+    // the difficulty just changed, and with it the dialog's switches: a chosen challenge states its needs again
+    for (const id of picks()) onPick(id, true);
+  };
+  setSandbox(sandbox);
+  return { el: h('div', { class: 'field ch-picker' }, h('label', {}, 'Mayor’s challenges · optional'), row, note), picks, set, setSandbox };
+}
+
+/** a medal as a small badge (the same look as on the region screen: ui/challenges.css) */
+function medalChip(medal: (typeof MEDALS)[number]): HTMLElement {
+  return h('span', { class: `ch-badge medal ${medal}` }, MEDAL_NAMES[medal]);
+}
+
+/**
+ * The title screen's Challenges dialog: the scenarios with what each medal takes and the medal this profile holds.
+ * Resolves the scenario to start, or null when the dialog was closed.
+ */
+export function openChallengesDialog(): Promise<ScenarioId | null> {
+  return new Promise((resolve) => {
+    const medals = loadMedals();
+    // opens on the first scenario without a medal
+    let pick: ScenarioId = (SCENARIO_LIST.find((s) => !medals[s.id]) ?? SCENARIO_LIST[0]).id;
+    let result: ScenarioId | null = null;
+    const detail = h('div', { class: 'ch-detail' });
+    const show = (id: ScenarioId) => {
+      pick = id;
+      const s = SCENARIOS[id], best = medals[id];
+      detail.textContent = '';
+      detail.append(
+        h('h3', {}, s.title),
+        h('p', { class: 'ch-brief' }, s.brief),
+        h('div', { class: 'ch-goals' }, ...MEDALS.map((m) => h('div', { class: 'ch-goal' }, medalChip(m), h('span', {}, s.goals[m])))),
+        h('div', { class: 'ch-best' }, 'Your best:', best ? medalChip(best.medal) : h('span', { class: 'ch-badge none' }, 'No medal yet')),
+      );
+    };
+    const list = segmented<ScenarioId>({
+      items: SCENARIO_LIST.map((s) => ({ value: s.id, title: s.title, sub: s.tagline })),
+      value: pick,
+      onChange: show,
+    });
+    list.el.classList.add('ch-list');
+    // each scenario's medal beside its title
+    list.el.querySelectorAll('.seg-item').forEach((item, k) => {
+      const best = medals[SCENARIO_LIST[k].id];
+      if (best) item.querySelector('.si-t')?.append(medalChip(best.medal));
+    });
+    show(pick);
+    const start = button('Start scenario', {
+      icon: 'play',
+      cls: 'lg warm',
+      sound: 'none',
+      onClick: () => {
+        if (result) return;
+        audio.play('found');
+        result = pick;
+        m.close(true);
+      },
+    });
+    const m: Modal = new Modal({
+      title: 'Challenges',
+      subtitle: 'Scenarios with a goal and three medals. Your medals are kept with your profile.',
+      icon: 'star',
+      size: 'mid',
+      body: h('div', { class: 'ch-grid' }, list.el, detail),
+      footer: [
+        h('span', { class: 'kbd-hint' }, 'Rules of your own? Found any city with Mayor’s challenges.'),
+        h('div', { class: 'grow' }),
+        button('Cancel', { cls: 'lg ghost', onClick: () => m.close() }),
+        start,
+      ],
+      onEnter: () => start.click(),
+      onClose: () => resolve(result),
+    });
   });
 }

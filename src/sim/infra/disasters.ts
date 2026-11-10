@@ -33,6 +33,7 @@ import { getDef } from '../catalog';
 import type { BuildingDef } from '../catalogTypes';
 import { ATTRACTIONS } from '../economy/tourism';
 import { DISASTER_MIN_POP, TOURISM_INCOME_PER_VISITOR } from '../economy/tuning';
+import { disasterRate } from '../economy/challenges';
 import type { FireSystem } from './fire';
 import { emergencyOf } from './emergency';
 
@@ -176,7 +177,8 @@ export class DisastersSystem implements SimSystem {
   monthly(sim: Simulation): void {
     const st = sim.state;
     if (!st.config.disasters || st.stats.population < DISASTER_MIN_POP) return;
-    const r = this.rng.next();
+    // (LG-14 "Frequent disasters", a Mayor's challenge: the same single draw, disasterRate times as likely; ÷ 1 otherwise)
+    const r = this.rng.next() / disasterRate(st.config);
     const N = st.size;
     const x = this.rng.int(8, N - 9), z = this.rng.int(8, N - 9);
     if (r < 0.008) this.trigger(sim, 'tornado', x, z);

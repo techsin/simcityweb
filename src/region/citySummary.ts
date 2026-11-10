@@ -1,6 +1,7 @@
 /** Summaries of a city for the region view (headless-safe). */
 import type { CityState } from '../sim/CityState';
 import { DevType } from '../core/types';
+import { cityChallenges, earnedChallenges } from '../sim/economy/challenges';
 import type { RegionCitySummary } from './types';
 
 /** approximate building height (m) from its capacity density (models are owned by render-city) */
@@ -62,5 +63,18 @@ export function summarizeCity(st: CityState, prev?: Partial<RegionCitySummary>):
     difficulty: st.config.difficulty,
     year: st.year,
     skyline: encodeBytes(skylineGrid(st)),
+    ...challengeSummary(st),
   };
+}
+
+/** LG-14: a city's scenario, its Mayor's challenges and the badges they have earned (no key for a city with neither) */
+function challengeSummary(st: CityState): Pick<RegionCitySummary, 'scenario' | 'challenges' | 'badges'> {
+  const out: Pick<RegionCitySummary, 'scenario' | 'challenges' | 'badges'> = {};
+  if (st.config.scenario?.id) out.scenario = st.config.scenario.id;
+  const challenges = cityChallenges(st.config);
+  if (challenges.length) {
+    out.challenges = challenges;
+    out.badges = earnedChallenges(st);
+  }
+  return out;
 }

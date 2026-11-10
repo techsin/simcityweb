@@ -37,6 +37,7 @@ import { OPEX_SERVICE, opexActive, opexTierOf, tierOperatingCosts } from './opex
 import { type EconRuntime, econData, infraFlags } from './runtime';
 import { ORDINANCES, ordinanceEffect, ordinanceMonthly } from './ordinances';
 import { payLoansMonthly } from './loans';
+import { moneyDifficulty } from './challenges';
 import { ATTRACTIONS, venueVisits } from './tourism';
 import { facilityUseFactor } from '../infra/facilities';
 
@@ -128,7 +129,8 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
   const expense: Record<string, number> = {};
   const add = (o: Record<string, number>, k: string, v: number) => { if (v) o[k] = (o[k] ?? 0) + v; };
   const rates = st.budget.taxRates;
-  const mul = difficultyRules(st.config.difficulty).income;
+  // (LG-14: Hard's money rules under the "Hard money" Mayor's challenge; else the city's own difficulty, as before)
+  const mul = difficultyRules(moneyDifficulty(st.config)).income;
   const s = st.stats;
   // ---- taxes
   for (let w = 0; w < 3; w++) add(income, 'tax:' + DEV_TYPE_LABELS[w], s.residents[w] * TAX_PER_RES[w] * rates[w] * mul);

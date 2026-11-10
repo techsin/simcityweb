@@ -1,0 +1,25 @@
+diff --git a/src/main.ts b/src/main.ts
+index f15b264d..2782bf13 100644
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -39,6 +39,7 @@ import { applyFirstRunQuality, cityOverrides, loadSettings, saveSettings, takeCi
+ import { TitleScreen } from './region/ui/TitleScreen';
+ import { LoadingScreen } from './region/ui/LoadingScreen';
+ import { createFirstCity, firstCityTips, hasSavedRegion, lastCityTileKey } from './region/firstCity';
++import { runChallenges } from './region/challenges';
+ import { openCredits, openLoadRegion, openNewRegion, openRecoverDialog, openSettings, openSimCrashDialog } from './region/ui/dialogs';
+ import { SaveStatus } from './region/ui/SaveStatus';
+ import { setUiRoot, toast } from './region/ui/modal';
+@@ -401,6 +402,12 @@ class App {
+       onFirstCity: firstRun ? () => void this.startFirstCity() : undefined,
+       onNewRegion: () => void this.newRegionFlow(),
+       onLoadRegion: () => openLoadRegion((r) => void this.openRegion(r)),
++      // LG-14: the Challenges menu (src/region/challenges.ts): Boomtown is founded like any new city, a bundled scenario
++      // is imported as a region of its own and its city entered like a saved one
++      onChallenges: () => void runChallenges({
++        found: (model, tile, cfg, ld, t0) => { this.region = model; return this.startNewCity(model, tile, cfg, t0, ld); },
++        open: (region, tileKey) => this.continueInCity(region, tileKey, false),
++      }),
+       onSettings: () => openSettings((s) => (this.settings = s)),
+       onCredits: () => openCredits(),
+     });

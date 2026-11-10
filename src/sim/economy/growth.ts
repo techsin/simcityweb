@@ -35,6 +35,7 @@ import {
   ZONE_MAX_STAGE, isGrowZone,
 } from './tuning';
 import { type EconRuntime, econData, infraFlags } from './runtime';
+import { hasChallenge } from './challenges';
 import { levelLot, lotAverageHeight, lotSlope, placeBuilding, removeBuilding } from './buildings';
 import { HOTEL_ROOMS_PER_JOB } from './tourism';
 import { lotCell } from './factors';
@@ -356,6 +357,8 @@ export function growthSystem(rt: EconRuntime): SimSystem {
       const max = GROWTH_MAX_BASE[fam] + (GROWTH_MAX_FRAC * c) / Math.sqrt(1 + c / GROWTH_MAX_SCALE);
       if (famSum[fam] > max) allow[d] *= max / famSum[fam];
     }
+    // LG-14 "No dirty industry" (a Mayor's challenge, config.challenges): I-D gets no allowance, so none ever opens
+    if (hasChallenge(st.config, 'noDirtyIndustry')) allow[DevType.ID] = 0;
     // bank the daily allowance (so big buildings become possible when throughput is capped); building size is
     // limited by the absolute demand, and a building may start once the bank covers GROWTH_BANK_MIN_FRAC of it
     const bank = data.carry;

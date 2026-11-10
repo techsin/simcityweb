@@ -6,6 +6,7 @@ import { h, icon, withSounds } from './dom';
 import { MusicPlayer } from '../../ui/MusicPlayer';
 import { EMBLEM_SVG } from './emblem';
 import { guideCopy } from '../../ui/guide/copy';
+import { challengesSummary } from '../../game/scenarios';
 import { FIRST_ROAD_MINUTES } from '../firstCity';
 
 export interface TitleScreenOptions {
@@ -16,6 +17,9 @@ export interface TitleScreenOptions {
   onFirstCity?: () => void;
   onNewRegion: () => void;
   onLoadRegion: () => void;
+  /** LG-14: the Challenges menu (scenarios with medals). Its entry shows when the app provides it, after "Load Region"
+   *  and before Settings, on a fresh profile as on one with regions. */
+  onChallenges?: () => void;
   onSettings: () => void;
   onCredits: () => void;
   quality?: QualityLevel;
@@ -71,14 +75,18 @@ export class TitleScreen {
           item('Continue', 'play', ci ? o.onContinue : undefined, { sub: ci ? `${ci.title} · ${ci.sub}` : 'No saved region yet', primary: !!ci, delay: 0.35, sound: ci ? 'confirm' : undefined }),
           item('New Region', 'sparkles', o.onNewRegion, { primary: !ci, delay: 0.43 }),
         ];
+    // LG-14: Challenges, with the profile's medal count as its sub-line; the entries after it arrive one beat later
+    const challenges = o.onChallenges ? [item('Challenges', 'star', o.onChallenges, { sub: challengesSummary(), delay: 0.59 })] : [];
+    const late = challenges.length ? 0.08 : 0;
     const menu = h(
       'nav',
       { class: 'menu-list' },
       ...lead,
       item('Load Region', 'folder', o.onLoadRegion, { delay: 0.51 }),
-      h('div', { class: 'menu-sep', style: 'animation: fadein 1s .6s both' }),
-      item('Settings', 'settings', o.onSettings, { delay: 0.59 }),
-      item('Credits', 'info', o.onCredits, { delay: 0.67 }),
+      ...challenges,
+      h('div', { class: 'menu-sep', style: `animation: fadein 1s ${late ? '.68s' : '.6s'} both` }),
+      item('Settings', 'settings', o.onSettings, { delay: 0.59 + late }),
+      item('Credits', 'info', o.onCredits, { delay: 0.67 + late }),
     );
     const logo = h(
       'div',

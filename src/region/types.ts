@@ -34,6 +34,11 @@ export interface RegionCitySummary {
    * per 8x8-cell block. Drives the extruded "skyline hints" in the region view.
    */
   skyline?: string;
+  /** LG-14: the scenario the city is (config.scenario.id), when it is one */
+  scenario?: string;
+  /** LG-14: the Mayor's challenges the city is played under (config.challenges), and those whose badge it has earned */
+  challenges?: string[];
+  badges?: string[];
 }
 
 export interface RegionTile {

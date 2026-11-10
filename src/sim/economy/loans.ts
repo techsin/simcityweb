@@ -8,6 +8,7 @@ import {
   LOAN_RATE_PER_LOAN, LOAN_TERM_MONTHS,
 } from './tuning';
 import { formatMoney } from './format';
+import { NO_LOANS_REASON, hasChallenge } from './challenges';
 
 export interface LoanOffer {
   ok: boolean;
@@ -33,6 +34,8 @@ export function loanRate(st: CityState): number {
 }
 
 export function maxLoanAmount(st: CityState): number {
+  // LG-14 "No loans" (a Mayor's challenge, config.challenges): the bank lends nothing
+  if (hasChallenge(st.config, 'noLoans')) return 0;
   if (st.budget.loans.length >= LOAN_MAX_COUNT) return 0;
   const cap = LOAN_MAX_BASE + LOAN_MAX_PER_CAPITA * st.stats.population;
   return Math.max(0, Math.floor((cap - outstandingDebt(st)) / 1000) * 1000);
@@ -50,6 +53,7 @@ export function loanOffer(st: CityState, amount: number): LoanOffer {
   const maxAmount = maxLoanAmount(st);
   const monthlyPayment = amortizedPayment(Math.max(0, amount), rate, LOAN_TERM_MONTHS);
   const base = { rate, monthlyPayment, termMonths: LOAN_TERM_MONTHS, maxAmount };
+  if (hasChallenge(st.config, 'noLoans')) return { ok: false, reason: NO_LOANS_REASON, ...base };
   if (st.budget.loans.length >= LOAN_MAX_COUNT) return { ok: false, reason: `At most ${LOAN_MAX_COUNT} loans at a time`, ...base };
   if (!(amount >= LOAN_MIN)) return { ok: false, reason: `Minimum loan is ${formatMoney(LOAN_MIN)}`, ...base };
   if (amount > maxAmount) return { ok: false, reason: `The bank will lend at most ${formatMoney(maxAmount)}`, ...base };

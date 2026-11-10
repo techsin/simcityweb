@@ -40,6 +40,7 @@ import { CursorTip } from '../ui/CursorTip';
 import { h, isTyping } from '../ui/dom';
 import { MiniMap } from '../ui/MiniMap';
 import { MilestoneCard } from '../ui/MilestoneCard';
+import { ObjectivesCard } from '../ui/ObjectivesCard';
 import { RankFireworks } from '../ui/rankFireworks';
 import { ErrorOverlay, HelpPanel, PauseMenu, SavePill, confirmOpen } from '../ui/Modals';
 import { CameraMemory, applyCamera, readCamera, validCamera } from './cameraStart';
@@ -360,6 +361,9 @@ export class CityScene {
     this.offs.push(attachOverlays(this.host.sim));
     this.emgBanner = new EmergencyBanner(ctx, this.uiRoot);
     this.pause = new PauseMenu(ctx, this.uiRoot, { onSettings: () => this.panels.open('settings'), onHelp: () => this.panels.open('help') });
+    // ---- META (LG-14): the objectives of a scenario or Mayor's-challenge city, above the guide in the top-left column
+    // (any other city gets no card and no listener)
+    new ObjectivesCard(ctx, tl);
 
     // ---- events
     const on = <K extends keyof WindowEventMap>(t: Window | Document, k: K, f: (e: WindowEventMap[K]) => void) => {

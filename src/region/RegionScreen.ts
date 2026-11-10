@@ -17,6 +17,7 @@ import { MusicPlayer } from '../ui/MusicPlayer';
 import { guideCopy } from '../ui/guide/copy';
 import { dismissRegionBackup, regionSaveAccess, storageNeedsBackup, watchRegionSaveAccess } from '../save/db';
 import { exportStorageRegion, openManageStorage, showStorageError } from '../ui/StorageDialog';
+import { cityBadges, regionBadges } from './challenges';
 
 export interface RegionScreenCallbacks {
   onPlay(tile: RegionTile): void;
@@ -170,6 +171,8 @@ export class RegionScreen {
         h('div', {}, h('i', { style: `background: var(--ind); width:${Math.max(6, (t.i / total) * 100)}%` }), h('b', {}, formatPop(t.i)), 'Industrial'),
       ),
       h('div', { class: 'rh-tags', style: 'margin-top:12px' }, icon('building', 13), `${t.cities} of ${d.tiles.length} tiles founded`),
+      // LG-14: the Mayor's-challenge badges the region's cities have earned (no row while there is none)
+      ...regionBadges(d),
     );
   }
 
@@ -261,6 +264,8 @@ export class RegionScreen {
         { style: 'min-width:0' },
         h('div', { class: 'tc-title' }, h('h3', {}, c ? c.name : 'Unfounded land'), h('span', { class: `size-badge s${tile.size}` }, TILE_SIZE_LABEL[tile.size])),
         h('div', { class: 'tc-sub' }, c ? `Mayor ${c.mayor} · ${c.difficulty} difficulty` : tile === this.view.recommendedTile ? `${guideCopy.phaseA.A3Tile()}: mostly flat land with a little water.` : 'Found a city here — its terrain will match the neighbouring tiles.'),
+        // LG-14: its scenario and medal, and its Mayor's challenges
+        cityBadges(this.model.data.id, tile),
         h('div', { class: 'tc-stats' }, ...stats),
         actions,
       ),
