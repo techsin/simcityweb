@@ -29,7 +29,8 @@ describe('NEW-01 rowhouse and boutique continuity', () => {
     expect(family[0]).toBe(base);
     expect(family.slice(1).map((d) => d.model)).toEqual(FACADE_MODELS[base.model]);
     for (const d of family) {
-      expect({ ...d, id: base.id, model: base.model, household: base.household })
+      // (round 3: a facade may carry a display name of its own; every other field is the original's)
+      expect({ ...d, id: base.id, model: base.model, name: base.name, household: base.household })
         .toEqual({ ...base, household: base.household });
       expect(householdForm(d)).toBe(householdForm(base));
       expect(growthDefId(d.id)).toBe(id);

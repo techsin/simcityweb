@@ -104,6 +104,8 @@ const GROW_NAMES: Record<string, string> = {
   ind_farm_field: 'Farm Field', ind_farm_barn: 'Farmstead', ind_greenhouse: 'Greenhouses', ind_workshop: 'Workshop', ind_scrapyard: 'Scrapyard',
   ind_smokestack_factory: 'Factory', ind_refinery: 'Refinery', ind_warehouse: 'Warehouse', ind_assembly_plant: 'Assembly Plant',
   ind_depot: 'Logistics Depot', ind_tech_campus: 'Tech Campus', ind_lab: 'Research Lab', ind_datacenter: 'Data Center',
+  // NEW-01 facades that are no brownstones (every other facade model keeps the name of its original)
+  res_rowhouses_hip: 'Terraced Houses', res_rowhouses_gables: 'Gabled Rowhouses', res_rowhouses_mansard: 'Mansard Rowhouses',
 };
 
 interface GrowOpts {
@@ -490,7 +492,8 @@ const PLOPPABLES: BuildingDef[] = [
     description: 'Reward: rated for 3,000 trucks a day of freight from industry within reach by road. Massive industrial demand-cap boost, freight access and income that grow with use: 60 % while idle, full from 1,500 trucks a day. Front faces water.' }),
 ];
 
-// NEW-01: facade-only defs share every simulation stat, and never enter the weighted growable pools.
+// NEW-01: facade-only defs share every simulation stat (a display name of their own where the original's does not fit),
+// and never enter the weighted growable pools.
 const facadeBase = new Map<string, string>();
 const facades = new Map<string, BuildingDef[]>();
 const FACADE_GROWABLES: BuildingDef[] = [];
@@ -499,7 +502,7 @@ for (const base of GROWABLES) {
   if (!models) continue;
   const family = [base];
   for (const model of models) {
-    const def: BuildingDef = { ...base, id: model + base.id.slice(base.model.length), model };
+    const def: BuildingDef = { ...base, id: model + base.id.slice(base.model.length), model, name: GROW_NAMES[model] ?? base.name };
     // The original walk-up resolves by model name, even at stage 3 (whose generic fallback is a house).
     if (base.model === 'res_walkup') def.household = 'apartment';
     facadeBase.set(def.id, base.id);

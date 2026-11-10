@@ -242,7 +242,15 @@ function bestVariant(k: number, v0: number, variants: number): number {
   return best;
 }
 
-/** Choose a stat-identical facade after growth's def and raw variant are fixed (no rng draw). */
+/**
+ * Choose a stat-identical facade after growth's def and raw variant are fixed (no rng draw): of the family's facades the
+ * one whose nearest twin of the very def (this variant, within VARIANT_SPREAD; none is best) is farthest; ties go to the
+ * farther same-model twin, then to the farther building showing the model in ANY variant, then to the farther
+ * same-looking variant (this one or its mirrored twin), then to the lot's hashed stepping order. QA round 3: the two twin
+ * keys alone kept the hashed start for 201 of 207 lots (neighbours seldom share a variant index), so three lots in a row
+ * took one model by chance. The twin keys stay first: replayed over the 256x20 s7 run without them, 2.18 % of the
+ * growables have a same-def twin, over the 2 % line (1.13 % with them).
+ */
 export function spreadFacade(st: CityState, defId: string, x0: number, z0: number, w: number, d: number, variant: number, buildingId: number): BuildingDef {
   const defs = facadeDefs(defId);
   if (!defs.length) return getDef(defId)!;
@@ -252,12 +260,19 @@ export function spreadFacade(st: CityState, defId: string, x0: number, z0: numbe
   }
   variantScan(st, n, x0, z0, w, d, false);
   const start = Math.floor(hash2(x0, z0, buildingId) * n);
-  let best = start, bDef = -1, bMod = -1;
+  let best = start, bDef = -1, bMod = -1, bAny = -1, bLook = -1;
   for (let j = 0; j < n; j++) {
-    const k = (start + j) % n, q = k * 32 + variant;
-    const dMod = VNEAR[q], dDef = VNEAR_DEF[q];
-    if (dMod === Infinity) return defs[k];
-    if (dDef > bDef || (dDef === bDef && dMod > bMod)) { best = k; bDef = dDef; bMod = dMod; }
+    const k = (start + j) % n, o = k * 32;
+    const dDef = VNEAR_DEF[o + variant], dMod = VNEAR[o + variant];
+    let dAny = Infinity;
+    for (let v = 0; v < 32; v++) if (VNEAR[o + v] < dAny) dAny = VNEAR[o + v];
+    // (a mirrored twin repeats its variant's palette unless the builder gives twins their own)
+    const e = MANIFEST_BY_ID[defs[k].model], bv = e?.mirror ? e.buildVariants ?? 0 : 0;
+    const twin = variant < bv ? variant + bv : variant - bv;
+    const dLook = bv > 0 && twin >= 0 && twin < 32 && VNEAR[o + twin] < dMod ? VNEAR[o + twin] : dMod;
+    if (dDef > bDef || (dDef === bDef && (dMod > bMod || (dMod === bMod && (dAny > bAny || (dAny === bAny && dLook > bLook)))))) {
+      best = k; bDef = dDef; bMod = dMod; bAny = dAny; bLook = dLook;
+    }
   }
   return defs[best];
 }
