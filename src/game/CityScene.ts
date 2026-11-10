@@ -30,7 +30,7 @@ import { FallbackObjectsView } from './fallback/FallbackObjectsView';
 import { FallbackWorldView } from './fallback/FallbackWorldView';
 import { NullObjectsView, NullWorldView } from './fallback/NullViews';
 import { loadGameModules, type GameModules } from './modules';
-import { loadPref, loadSettings, savePref, saveSettings, type GameSettings } from './settings';
+import { loadPref, loadSettings, resolveMotion, savePref, saveSettings, watchMotionPreference, type GameSettings } from './settings';
 import { NewYearCelebration, type CelebrateOptions } from './NewYear';
 import { GameSounds } from './GameSounds';
 import { HOTKEY_CYCLES, PANEL_HOTKEYS } from './toolCatalog';
@@ -388,6 +388,11 @@ export class CityScene {
     } else on(window, 'resize', () => this.resize());
     this.resize();
     this.applySettings({});
+    watchMotionPreference(this.abort.signal, () => {
+      if (this.settings.motion !== 'system') return;
+      this.applyMotion();
+      this.uiEvents.emit('settings', this.settings);
+    });
   }
 
   // ------------------------------------------------------------------------------------------------ lifecycle
@@ -1272,6 +1277,22 @@ export class CityScene {
     }
   }
 
+  /** FEEL-21: render-only, shared by local, loopback and worker hosts; device changes need no settings write. */
+  private applyMotion(): void {
+    const reduced = resolveMotion(this.settings.motion) === 'reduced';
+    const wasReduced = this.uiRoot.classList.contains('reduced-motion');
+    this.uiRoot.classList.toggle('reduced-motion', reduced);
+    this.uiRoot.classList.toggle('full-motion', !reduced);
+    if (reduced && !wasReduced) {
+      for (const animation of this.uiRoot.getAnimations?.({ subtree: true }) ?? []) animation.cancel();
+    }
+    const c = this.world.controls as unknown as { reducedMotion?: boolean };
+    if (c) c.reducedMotion = reduced;
+    // The effects owner supplies this hook; it changes light output only, never the show schedule or its RNG.
+    (this.objects as { fireworks?: { setFlashStrength?: (strength: number) => void } }).fireworks?.setFlashStrength?.(reduced ? 0.5 : 1);
+    this.newYear?.applyMotion();
+  }
+
   applySettings(patch: Partial<GameSettings>): void {
     const prev = { ...this.settings };
     Object.assign(this.settings, patch);
@@ -1304,6 +1325,7 @@ export class CityScene {
     }
     if (patch.uiScale !== undefined) this.resize();
     this.fpsEl.style.display = s.showFps ? 'block' : 'none';
+    this.applyMotion();
     this.applyAudio(patch);
     this.uiEvents.emit('settings', s);
   }

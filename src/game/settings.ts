@@ -162,6 +162,18 @@ export function saveSettings(s: GameSettings): void {
   }
 }
 
+/** Follow device changes while a city is open; an explicit motion preference still wins at the consumer. */
+export function watchMotionPreference(signal: AbortSignal, onChange: () => void): void {
+  if (signal.aborted) return;
+  try {
+    const media = matchMedia('(prefers-reduced-motion: reduce)');
+    media.addEventListener('change', onChange, { signal });
+    signal.addEventListener('abort', () => media.removeEventListener('change', onChange), { once: true });
+  } catch {
+    /* matchMedia unavailable */
+  }
+}
+
 /** tiny per-viewer UI prefs (panel positions etc.) */
 export function loadPref<T>(key: string, fallback: T): T {
   try {

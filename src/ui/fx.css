@@ -10,3 +10,15 @@
 /* A single, steady outcome flash also works with reduced motion. */
 .emg-banner.emg-saved { border-color: var(--good); box-shadow: inset 0 0 0 1px var(--good), 0 0 18px color-mix(in srgb, var(--good) 35%, transparent); }
 .emg-banner.emg-lost { border-color: var(--bad); box-shadow: inset 0 0 0 1px var(--bad), 0 0 18px color-mix(in srgb, var(--bad) 35%, transparent); }
+
+/* FEEL-21: outcome text carries the result; the incident's border and shadow stay steady through the 600 ms cue. */
+.mp-ui.reduced-motion .emg-banner.emg-saved, .mp-ui.reduced-motion .emg-banner.emg-lost {
+  border-color: var(--hair); border-left-color: var(--kc);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--kc) 35%, transparent), 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mp-ui:not(.full-motion) .emg-banner.emg-saved, .mp-ui:not(.full-motion) .emg-banner.emg-lost {
+    border-color: var(--hair); border-left-color: var(--kc);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--kc) 35%, transparent), 0 12px 32px rgba(0, 0, 0, 0.35);
+  }
+}

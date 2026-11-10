@@ -1,6 +1,7 @@
 /** Bottom-center toolbar: categories → flyout menus of tools (data-driven from the catalog), rich tooltips, tool chip. */
 import { Network, Zone } from '../core/types';
 import type { GameContext } from '../game/context';
+import { resolveMotion } from '../game/settings';
 import { CATEGORIES, CATEGORY_COLORS, categoryOfTool, findToolSpec, type ToolCategory, type ToolSpec } from '../game/toolCatalog';
 import { budgetEffect } from '../game/tools/Tool';
 import type { BuildingDef } from '../sim/catalogTypes';
@@ -292,7 +293,7 @@ export class Toolbar {
     el.addEventListener('click', () => {
       if (s.locked || s.disabled) {
         this.ctx.sound('error');
-        el.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-4px)' }, { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 220 });
+        if (resolveMotion(this.ctx.settings?.motion ?? 'system') !== 'reduced') el.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-4px)' }, { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 220 });
         return;
       }
       // ToolController.select plays the (category-pitched) tool sound

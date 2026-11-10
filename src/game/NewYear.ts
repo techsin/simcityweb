@@ -34,7 +34,7 @@ import type { CityObjectsViewApi, WorldViewApi } from '../render/contracts';
 import { DAYS_PER_MONTH, MONTHS_PER_YEAR } from '../core/constants';
 import type { Fireworks, FireworksSoundKind } from '../render/city/effects/Fireworks';
 import type { FireworksAudio, FireworksAudioOut, FireworksListener, FireworksSpatial } from '../audio/fireworks';
-import type { GameSettings, NewYearMode } from './settings';
+import { resolveMotion, type GameSettings, type NewYearMode } from './settings';
 import { CITY_RANKS } from '../sim/economy/rewards';
 
 export interface NewYearDeps {
@@ -386,10 +386,11 @@ export class NewYearCelebration {
   /** start the celebration now (also the dev hook behind scene.celebrateNewYear(); restarts a running one) */
   celebrate(opts: CelebrateOptions = {}): boolean {
     const s = this.deps.settings();
+    const reduced = resolveMotion(s.motion ?? 'system') === 'reduced';
     let mode: NewYearMode = opts.mode ?? s.newYear ?? 'cinematic';
     if (mode === 'off') return false;
     const burst = !!opts.burst;
-    if (burst) mode = 'fireworks';
+    if (burst || reduced) mode = 'fireworks';
     this.cancel(true);
     this.burstOn = burst;
     const st = this.deps.sim.state;
@@ -407,7 +408,7 @@ export class NewYearCelebration {
     // show runs in 'fireworks' mode, and very short years skip the countdown (a burst is short at every speed)
     const yearSec = this.yearSeconds();
     const fast = !dev && !burst && opts.duration === undefined && Number.isFinite(yearSec);
-    let countdown = !opts.fastForward && !burst;
+    let countdown = !opts.fastForward && !burst && !reduced;
     if (fast && mode === 'cinematic') {
       const budget = yearSec / 2 - (3.2 + COUNTDOWN + 10);
       if (budget >= 20) duration = Math.min(duration, budget);
@@ -417,7 +418,7 @@ export class NewYearCelebration {
     this.countdownOn = countdown;
     this.timeControlled = mode === 'cinematic' && this.hasClock(world);
     // show camera (cinematic only; dev shows keep the camera unless asked)
-    const wantCam = this.timeControlled && (opts.camera ?? (!dev && s.newYearCamera !== false));
+    const wantCam = !reduced && this.timeControlled && (opts.camera ?? (!dev && s.newYearCamera !== false));
     this.lapseDur = 0;
     let delay = countdown ? COUNTDOWN : burst ? NEW_YEAR_PACING.burstDelay : 2.8;
     this.startHour = this.hasClock(world) ? world.timeOfDay : 12;
@@ -475,8 +476,25 @@ export class NewYearCelebration {
       world.timeOfDay = this.targetHour(this.t) % 24;
     }
     if (wantCam && this.fw) this.camStart(!!opts.instant || !!opts.fastForward);
+    this.applyMotion();
     this.loadAudio();
     return true;
+  }
+
+  /** FEEL-21: release an active cinematic at once, keeping its scheduled fireworks and the displayed camera view. */
+  applyMotion(): void {
+    if (resolveMotion(this.deps.settings().motion ?? 'system') !== 'reduced') return;
+    this.camStop(false);
+    this.releaseDate();
+    this.releaseTime(true);
+    this.countdownOn = false;
+    this.hideOverlay();
+    if (this.phase !== 'idle') {
+      this.lapseDur = 0;
+      // Only the cinematic's bookkeeping changes: the renderer keeps the original launch delay and show clock.
+      this.midnightAt = Math.min(this.midnightAt, this.t);
+      this.phase = 'show';
+    }
   }
 
   /** end the celebration now and give the clock (and the camera) back; hard = clear the sky at once */
@@ -527,6 +545,7 @@ export class NewYearCelebration {
     // a burst's last embers never outlast burstMaxS, also after the celebration settled (only a show seen from far away
     // gets there). Its show clock: the fireworks advance at most 0.1 s a frame
     if (this.burstOn) this.capBurst();
+    this.applyMotion();
     if (this.phase === 'idle' && this.camPhase === 'off') {
       this.releaseDate();
       return;

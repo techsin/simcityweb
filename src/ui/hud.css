@@ -805,3 +805,25 @@
 .confirm-dialog .cf-list li .ico { color: var(--warn); margin-top: 1px; }
 .confirm-dialog .cf-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .confirm-dialog .btn.danger { color: #fff; background: linear-gradient(180deg, #ff6b6b, #d94848); border-color: rgba(255, 120, 120, 0.6); }
+
+/* FEEL-21: steady controls and status cues; only toast opacity fades remain. Full explicitly overrides the OS. */
+.mp-ui.reduced-motion, .mp-ui.reduced-motion *, .mp-ui.reduced-motion::before, .mp-ui.reduced-motion::after,
+.mp-ui.reduced-motion *::before, .mp-ui.reduced-motion *::after,
+.mp-scene:has(.mp-ui.reduced-motion) .loading-veil, .mp-scene:has(.mp-ui.reduced-motion) .loading-veil * {
+  animation: none !important; transition: none !important; scroll-behavior: auto !important;
+}
+.mp-ui.reduced-motion .toast { transform: none !important; transition: opacity 0.15s ease-out !important; }
+.mp-ui.reduced-motion .toast:not(.out) { animation: fadeIn 0.15s ease-out !important; }
+.mp-ui.reduced-motion .toast .t-timer { display: none !important; }
+.mp-ui.reduced-motion .tk-track { transform: translateX(0) !important; will-change: auto; }
+@media (prefers-reduced-motion: reduce) {
+  .mp-ui:not(.full-motion), .mp-ui:not(.full-motion) *, .mp-ui:not(.full-motion)::before, .mp-ui:not(.full-motion)::after,
+  .mp-ui:not(.full-motion) *::before, .mp-ui:not(.full-motion) *::after,
+  .mp-scene:has(.mp-ui:not(.full-motion)) .loading-veil, .mp-scene:has(.mp-ui:not(.full-motion)) .loading-veil * {
+    animation: none !important; transition: none !important; scroll-behavior: auto !important;
+  }
+  .mp-ui:not(.full-motion) .toast { transform: none !important; transition: opacity 0.15s ease-out !important; }
+  .mp-ui:not(.full-motion) .toast:not(.out) { animation: fadeIn 0.15s ease-out !important; }
+  .mp-ui:not(.full-motion) .toast .t-timer { display: none !important; }
+  .mp-ui:not(.full-motion) .tk-track { transform: translateX(0) !important; will-change: auto; }
+}

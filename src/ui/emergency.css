@@ -113,3 +113,9 @@
 @media (max-width: 720px) {
   .emg-banners { top: 64px; width: calc(100vw - 32px); }
 }
+
+/* FEEL-21: the persistent incident colour carries urgency without the ignored-press flash. */
+.mp-ui.reduced-motion .settling::after { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .mp-ui:not(.full-motion) .settling::after { display: none; }
+}

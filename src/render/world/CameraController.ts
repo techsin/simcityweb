@@ -71,6 +71,7 @@ export class CameraController implements CameraControllerApi {
   private goalTilt = 52 * DEG;
   private groundY = 0;
   private flight: { start: THREE.Vector3; distance: number; peak: number; elapsed: number; duration: number } | null = null;
+  private _reducedMotion = false;
 
   // interaction
   private panning = false;
@@ -140,12 +141,30 @@ export class CameraController implements CameraControllerApi {
     return this.tilt;
   }
 
+  /** FEEL-21: stop automatic camera motion immediately when the preference changes. */
+  get reducedMotion(): boolean {
+    return this._reducedMotion;
+  }
+  set reducedMotion(on: boolean) {
+    if (on === this._reducedMotion) return;
+    this._reducedMotion = on;
+    if (!on) return;
+    this.cancelFlight();
+    this.shakeLeft = this.shakeDur = this.shakeAmp = this.shakeTime = 0;
+    this.apply();
+  }
+
   focusOn(worldX: number, worldZ: number, distance?: number, opts?: { fly?: boolean }): void {
     this.cancelFlight();
     this.goalTarget.set(worldX, 0, worldZ);
     this.clampGoal();
     if (distance !== undefined) this.goalDistance = THREE.MathUtils.clamp(distance, this.opts.minDistance, this.opts.maxDistance);
     this.panVel.set(0, 0, 0);
+    if (opts?.fly && this._reducedMotion) {
+      this.zoomAnchorActive = false;
+      this.setView(this.goalTarget.x, this.goalTarget.z, this.goalDistance);
+      return;
+    }
     const trip = Math.hypot(this.goalTarget.x - this._target.x, this.goalTarget.z - this._target.z);
     if (opts?.fly && trip > 500) {
       this.zoomAnchorActive = false;
@@ -591,6 +610,7 @@ export class CameraController implements CameraControllerApi {
   private shakeTime = 0;
   /** camera shake (e.g. earthquakes): intensity ~0.3 (subtle) .. 2 (strong), duration in real seconds */
   shake(intensity = 1, seconds = 2.5): void {
+    if (this._reducedMotion) return;
     this.shakeAmp = Math.max(this.shakeLeft > 0 ? this.shakeAmp : 0, intensity);
     this.shakeLeft = Math.max(this.shakeLeft, seconds);
     this.shakeDur = Math.max(this.shakeDur, seconds);

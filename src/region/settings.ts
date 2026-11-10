@@ -28,7 +28,7 @@ export const UI_SCALE = { min: 0.7, max: 1.5, step: 0.05 } as const;
  * motion (which also labels 'system' with the device's value), FH-20 colour vision (with T038's palette). Until then the
  * key keeps its stored value and its default.
  */
-export const A11Y_WIRED: Record<'textSize' | 'motion' | 'colourVision', boolean> = { textSize: false, motion: false, colourVision: false };
+export const A11Y_WIRED: Record<'textSize' | 'motion' | 'colourVision', boolean> = { textSize: false, motion: true, colourVision: false };
 
 export interface AppSettings {
   /** default graphics quality */

@@ -17,8 +17,10 @@ let store: Map<string, string>;
 let root: FEl;
 let reduce = false;
 let dialog: Modal | null = null;
+const wired = { ...A11Y_WIRED };
 
 beforeEach(() => {
+  Object.assign(A11Y_WIRED, { textSize: false, motion: false, colourVision: false });
   store = new Map();
   reduce = false;
   vi.stubGlobal('localStorage', {
@@ -33,6 +35,7 @@ beforeEach(() => {
   setUiRoot(root as unknown as HTMLElement);
 });
 afterEach(() => {
+  Object.assign(A11Y_WIRED, wired);
   dialog?.close(true);
   dialog = null;
   vi.unstubAllGlobals();

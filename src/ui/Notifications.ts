@@ -1,6 +1,7 @@
 /** News ticker (bottom-left marquee) and toast notifications (top-right). */
 import type { NewsItem } from '../sim/CityState';
 import type { GameContext } from '../game/context';
+import { resolveMotion } from '../game/settings';
 import { escapeHtml, h } from './dom';
 import { icon } from './icons';
 import { dayLabel } from './format';
@@ -350,6 +351,7 @@ export class NewsTicker {
 
   /** how long the item shows: its slot, or for a long item the time to enter, rest, scroll through once and rest */
   private duration(c: TickerShown): number {
+    if (resolveMotion(this.ctx.settings?.motion ?? 'system') === 'reduced') return c.slot;
     const S = NewsTicker;
     const over = this.overflow();
     const k = this.rest(c);
@@ -362,7 +364,10 @@ export class NewsTicker {
     if (!c) return;
     const S = NewsTicker;
     let x = 0;
-    if (c.t < S.ENTER_S) {
+    if (resolveMotion(this.ctx.settings?.motion ?? 'system') === 'reduced') {
+      // FEEL-21: items still rotate, with their full text in the tooltip, but never slide or scroll.
+      x = 0;
+    } else if (c.t < S.ENTER_S) {
       const k = 1 - c.t / S.ENTER_S;
       x = Math.min(this.viewW, S.ENTER_PX) * k * k * k;
     } else {
@@ -588,7 +593,7 @@ export class Toasts {
       live.at = now;
       live.badge.textContent = `×${live.count}`;
       live.badge.style.display = '';
-      live.badge.animate([{ transform: 'scale(1.35)' }, { transform: 'scale(1)' }], { duration: 220, easing: 'ease-out' });
+      if (resolveMotion(this.ctx.settings.motion) !== 'reduced') live.badge.animate([{ transform: 'scale(1.35)' }, { transform: 'scale(1)' }], { duration: 220, easing: 'ease-out' });
       if (cell) live.cell = cell;
       live.restart(ttl);
       if (this.el.firstElementChild !== live.el) this.insertToast(live.el);

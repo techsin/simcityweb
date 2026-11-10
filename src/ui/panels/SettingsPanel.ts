@@ -1,7 +1,7 @@
 /** Settings: graphics quality, time of day, camera, interface, audio, gameplay. Persisted via ctx.applySettings. */
 import type { QualityLevel } from '../../render/contracts';
 import type { GameContext } from '../../game/context';
-import { UI_SCALE, type EmergencyPolicy, type GameSettings, type NewYearMode, type NewYearPacing } from '../../game/settings';
+import { UI_SCALE, resolveMotion, watchMotionPreference, type EmergencyPolicy, type GameSettings, type MotionPref, type NewYearMode, type NewYearPacing } from '../../game/settings';
 import { Panel } from '../Panel';
 import { h, segmented, setSlider, setText, setToggle, slider, toggle } from '../dom';
 import { asMusicAudio, MusicPlayer } from '../MusicPlayer';
@@ -17,6 +17,7 @@ export class SettingsPanel extends Panel {
   private hourSlider!: HTMLInputElement;
   private hourVal!: HTMLElement;
   private autoSw!: HTMLElement;
+  private motionStatus!: HTMLElement;
   /** music player + sound toggles (filled once the optional audio module has loaded) */
   private musicHost!: HTMLElement;
   private player: MusicPlayer | null = null;
@@ -62,11 +63,18 @@ export class SettingsPanel extends Panel {
     // FEEL-02a, D17: "Milestones" paces the full show in real time; "Every year" keeps it every January 1st
     const pacing = segmented<NewYearPacing>([{ value: 'milestones', label: 'Milestones' }, { value: 'everyYear', label: 'Every year' }], s.newYearPacing ?? 'milestones', (v) => this.ctx.applySettings({ newYearPacing: v }), this.ctx.signal);
     const autosave = segmented<number>([{ value: 0, label: 'Off' }, { value: 3, label: '3 mo' }, { value: 6, label: '6 mo' }, { value: 12, label: '1 yr' }], s.autosaveMonths, (v) => this.ctx.applySettings({ autosaveMonths: v }), this.ctx.signal);
+    const motion = segmented<MotionPref>([{ value: 'system', label: 'System' }, { value: 'full', label: 'Full' }, { value: 'reduced', label: 'Reduced' }], s.motion, (v) => {
+      this.ctx.applySettings({ motion: v });
+      this.updateMotion();
+    }, this.ctx.signal);
+    this.motionStatus = h('div', { class: 'sr-d', role: 'status' });
+    this.updateMotion();
+    watchMotionPreference(this.ctx.signal, () => this.updateMotion());
     // sections (Gameplay — autosave / New Year — sits right under Graphics so it is reachable without scrolling far;
     // the long music player stays last). A sticky nav jumps to each section (the body scrolls at 720p).
     const sec = (id: string, title: string) => h('div', { class: 'sec-title', dataset: { sec: id } }, title);
     const nav = h('div', { class: 'set-nav' });
-    for (const [id, label] of [['graphics', 'Graphics'], ['gameplay', 'Gameplay'], ['controls', 'Controls'], ['interface', 'Interface'], ['audio', 'Audio & music']]) {
+    for (const [id, label] of [['graphics', 'Graphics'], ['gameplay', 'Gameplay'], ['accessibility', 'Accessibility'], ['controls', 'Controls'], ['interface', 'Interface'], ['audio', 'Audio & music']]) {
       const b = h('button', { type: 'button' }, label);
       b.addEventListener('click', () => {
         this.showSection(id);
@@ -92,6 +100,8 @@ export class SettingsPanel extends Panel {
       this.row('Uncovered emergencies', 'When no station can answer an emergency: slow down to live speed, pause, or keep going', segmented<EmergencyPolicy>([{ value: 'live', label: 'Live speed' }, { value: 'pause', label: 'Pause' }, { value: 'ignore', label: 'Keep going' }], s.emergencyUncovered ?? 'live', (v) => this.ctx.applySettings({ emergencyUncovered: v }), this.ctx.signal)),
       this.row('Emergency alerts', 'Banners for major incidents only, or for every incident that needs you', segmented<'major' | 'all'>([{ value: 'major', label: 'Major' }, { value: 'all', label: 'All' }], s.emergencyAlerts ?? 'major', (v) => this.ctx.applySettings({ emergencyAlerts: v }), this.ctx.signal)),
       this.row('Live speed', 'How much 1x slows down while you handle an emergency', this.range('emergencyLiveSlowmo', 1, 5, 0.5, (v) => (v <= 1 ? 'Normal 1x' : `${v}x slower`))),
+      sec('accessibility', 'Accessibility · motion & flashing'),
+      this.row('Motion', 'Reduced: no camera shake or show camera, steady alerts, static news and fading toasts', h('div', null, motion, this.motionStatus)),
       sec('controls', 'Camera & controls'),
       this.row('Edge scrolling', 'Move the camera when the mouse touches the screen edge', this.sw('edgeScroll')),
       this.row('Show grid while building', null, this.sw('showGrid')),
@@ -114,6 +124,12 @@ export class SettingsPanel extends Panel {
       })),
       (this.musicHost = h('div', { class: 'set-music' })),
     );
+  }
+
+  private updateMotion(): void {
+    const s = this.ctx.settings;
+    const label = resolveMotion(s.motion) === 'reduced' ? 'Reduced' : 'Full';
+    setText(this.motionStatus, `${label}${s.motion === 'system' ? ' (your device)' : ''}`);
   }
 
   /** scroll the body to a section ('graphics' | 'gameplay' | 'controls' | 'interface' | 'audio' | 'music') */
@@ -158,6 +174,7 @@ export class SettingsPanel extends Panel {
   override update(): void {
     this.buildAudioExtras();
     const s = this.ctx.settings;
+    this.updateMotion();
     setToggle(this.autoSw, s.autoTime);
     this.hourRow.style.opacity = s.autoTime ? '0.55' : '1';
     let hr = s.fixedHour;
