@@ -59,6 +59,14 @@ describe('storage dialog copy', () => {
     expect(text).not.toContain('failed when you left');
   });
 
+  it('W1.3: describes a journal alone as a record of edits after a takeover too', async () => {
+    storage.regionTakenOver.mockReturnValue(true);
+    const text = await recoveryText({ ...marker, kind: 'journal' });
+    expect(text).toContain('This region was opened in another tab. A record of your edits to Port City since the last save was kept on this device.');
+    expect(text).not.toContain('recovery snapshot');
+    expect(text).toContain('Recover makes those edits again on the last save');
+  });
+
   it('keeps the closed-session explanation for recovery without takeover', async () => {
     expect(await recoveryText(marker)).toContain('Metropolis closed before Port City was saved.');
   });
