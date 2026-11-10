@@ -39,9 +39,11 @@ export function firstCityTips(): string[] {
 /** a fresh region id that none of `taken` is: a new region never replaces a stored one */
 export function uniqueRegionId(taken: Iterable<string>, make: () => string = newRegionId): string {
   const used = new Set(taken);
-  let id = make();
   // newRegionId is time + random, so a clash is all but impossible; a generator that keeps clashing gets a suffix
-  for (let n = 1; used.has(id); n++) id = n < 8 ? make() : `${id}-${n}`;
+  let id = make();
+  for (let n = 1; n < 8 && used.has(id); n++) id = make();
+  const base = id;
+  for (let n = 2; used.has(id); n++) id = `${base}-${n}`;
   return id;
 }
 
