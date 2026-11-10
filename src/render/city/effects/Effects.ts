@@ -259,10 +259,11 @@ export class Effects {
       if (this.emitters.delete(id)) this.dirty = true;
       return;
     }
+    const smoky = v.model in SMOKY || hasExported(v.model);
     const operating = !v.constructing && !v.abandoned && !v.burnt;
-    const step = operating && Number.isFinite(v.activity) ? Math.ceil(Math.max(0, Math.min(1, v.activity)) * 4) : 0;
-    const key = `${v.model}|${v.variant}|${v.cx},${v.cz},${v.baseY},${v.yaw},${v.sw},${v.sd}|${v.burning}|${v.burnt}|${v.constructing}|${v.abandoned}`;
-    const previous = this.plumes.get(id);
+    const step = smoky && operating && Number.isFinite(v.activity) ? Math.ceil(Math.max(0, Math.min(1, v.activity)) * 4) : 0;
+    const key = smoky ? `${v.model}|${v.variant}|${v.cx},${v.cz},${v.baseY},${v.yaw},${v.sw},${v.sd}|${v.burning}|${v.burnt}|${v.constructing}|${v.abandoned}` : null;
+    const previous = smoky ? this.plumes.get(id) : undefined;
     if (previous?.key === key) {
       if (previous.step === step) return;
       if (step === 0) {
@@ -304,7 +305,8 @@ export class Effects {
     }
     const plumeCount = list.length;
     for (const e of list) e.count = Math.round(e.count * step / 4);
-    this.plumes.set(id, { key, step, month: plumeCount ? v.activityMonth : previous?.month ?? -1, count: plumeCount });
+    if (key !== null) this.plumes.set(id, { key, step, month: plumeCount ? v.activityMonth : previous?.month ?? -1, count: plumeCount });
+    else this.plumes.delete(id);
     if (v.burning) {
       const bb = v.bounds;
       const top = Math.max(2, bb.max.y);
@@ -330,11 +332,15 @@ export class Effects {
     else if (had) { this.emitters.delete(id); this.dirty = true; }
   }
 
-  clear(): void {
+  clearBuildings(): void {
     this.emitters.clear();
     this.plumes.clear();
-    this.extras.clear();
     this.dirty = true;
+  }
+
+  clear(): void {
+    this.clearBuildings();
+    this.extras.clear();
   }
 
   /** add / replace a transient emitter group (null / empty list removes). ttl in seconds (Infinity = until removed) */

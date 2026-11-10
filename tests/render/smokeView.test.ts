@@ -78,6 +78,22 @@ describe('CityObjectsView output plume wiring', () => {
     expect(view.effects.smoke.visible).toBe(false);
   });
 
+  it.each(['fire', 'riot', 'meteor'])('preserves %s particles while a resync rebuilds building plumes', (kind) => {
+    const state = town(), b = building(state, 1, 'ind_refinery.id.4', 8, 85);
+    const { sim, view } = rig(state);
+    sim.events.emit('disaster', { kind, x: 24, z: 24, active: true });
+    if (kind === 'meteor') view.disasters.update(2.2);
+    view.effects.update(3);
+    const disasterParticles = kind === 'meteor' ? 74 : 18;
+    expect(view.effects.particleCount).toBe(particles(view, b.id) + disasterParticles);
+    const next = town();
+    building(next, b.id, b.def, b.x, b.capacity);
+    sim.replaceState(next);
+    expect(view.state).toBe(next);
+    expect(view.buildings.getVisual(b.id)!.activity).toBe(1);
+    expect(view.effects.particleCount).toBe(particles(view, b.id) + disasterParticles);
+  });
+
   it.each(['replaceState', 'reset'] as const)('initializes fresh positive plume strength after %s in the same month', (reset) => {
     const state = town(), b = building(state, 1, 'ind_refinery.id.4', 8, 85);
     expect(b.capacity).toBe(340);

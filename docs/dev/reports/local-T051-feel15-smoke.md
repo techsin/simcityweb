@@ -1,8 +1,66 @@
 # T051: smoke that reads output
 
-Round 1 is committed as `745fa6e`; round 2 as `51a04e0`. Round 3 starts at `d8e007c`, containing T040's test
-fix and dev `759bbd4`. The worker reports that merged base passed 225 files / 2,268 tests and the identical bot.
-Round-3 changes are uncommitted; no push or `.done` file. Read NOTE-054 and NOTE-048's standing worker rule.
+**Closing status:** round 1 is committed as `745fa6e`, round 2 as `51a04e0`, and round 3 as `142c612` and
+`97691ad`; the QA documentation is committed as `5fe3ac2`. Round 3 is committed and pushed. The final code gate
+on **`97691ad`** passed, and the real-GPU QA below passes every FEEL-15 acceptance line. REVIEW-T051 / NOTE-064
+accept the lane with the five minor findings recorded in the new review round below.
+
+| Gate on 97691ad | Command | Result |
+|---|---|---|
+| TypeScript | `npx tsc --noEmit` | Clean |
+| Full Vitest | `npx vitest run` | 243 files / 2,443 tests passed |
+| 128x15 seed-7 bot | `SIMBOT_LOG=1 npx tsx tools/simbot.ts --size 128 --years 15 --seed 7` | 2015 residents **[61124, 93804, 37971] = 192,899**, identical to dev |
+
+These are the completed gates on the QA'd code tree, not new runs of the review fixes. The review fixes passed
+TypeScript and all 29 focused tests below. The earlier quiet-gate blockage is retained only as historical context.
+
+## Review round: NOTE-064 minor fixes
+
+1. **Plume-cache scope (`src/render/city/effects/Effects.ts`).** Keep `PlumeState` and its key only for models in
+   `SMOKY` or the exported emitter maps. Homes, shops and offices retain the direct fire/construction path without
+   a plume-cache entry. The lead measured about 9.8 MB of unnecessary heap and 25-39 ms per rebuild on the
+   11,495-building QA city before this fix; no new after-fix timing is claimed.
+2. **Disaster extras across rebuild/resync (`Effects.ts`, `src/render/city/CityObjectsView.ts`).** Add
+   `Effects.clearBuildings()` to clear building emitters and plume history while preserving transient extras;
+   `CityObjectsView.rebuildAll()` uses it. `Effects.clear()` retains the full-clear behavior. This prevents a
+   resync from ending meteor or fire/riot smoke that is installed only once.
+3. **Demo smoke (`src/render/city/demoCity.ts`, `src/render/city/demo.ts`).** Staff the demo's industrial and power
+   buildings to capacity, and supply the demo view with a fixed `getPlantLoad: () => 0.8`, restoring smoke in
+   `demo-city.html` and `tools/shoot-city.mjs`. These are demo-fixture changes, not simulation balance changes.
+4. **Zero-output plants: no code change this round.** Follow up with **T061**: when
+   `UtilitiesSystem.producerInfo(id)?.output <= 0`, return null from `localViews().utilities.plantLoad` and use -1
+   in `recorder.utilitiesStream`. This will distinguish a powered but non-producing plant from the literal
+   `max(0.25, load)` floor retained here. The lead accepts the current behavior as a minor.
+5. **Report record (this file).** Record the commits, completed gate commands/results and QA coverage at the top;
+   mark the earlier blocked narrative as historical and point the round-3 checklist to the evidence below.
+
+**Review-round verification: passed.** TypeScript passed through the quiet gate:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsc --noEmit
+```
+
+The standard gated `npx vitest run tests/render/smokePlumes.test.ts --maxWorkers=1` launch failed before tests
+with `spawn EPERM` while bundling Vite's config. The established native-config/thread-pool workaround passed;
+each file below ran separately and sequentially through the quiet gate, without repository config changes:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types node_modules/vitest/vitest.mjs run <file> --maxWorkers=1 --configLoader native --pool threads
+```
+
+| Review-round test file | Result |
+|---|---|
+| `tests/render/smokePlumes.test.ts` | 21 passed |
+| `tests/render/smokeView.test.ts` | 7 passed |
+| `tests/render/demoCity.test.ts` | 1 passed |
+
+Total: **29 passed**, including eight new cases. The plume cases verify no cache entry for a home, shop or
+office, including switching from a smoky model and retaining fire/dust. They also verify that building-only clear
+preserves transient particles and their original expiry while full clear removes them. The view cases drive real
+meteor, fire and riot effects through a state-replacement/reset rebuild. The demo case verifies full industrial/
+power staffing and unchanged staffing for other demo models. `git diff --check` passes; changed files are valid
+UTF-8 without a BOM. No full suite, bot, browser or timing run was repeated for these small review fixes; their
+completed `97691ad` gates and QA evidence remain above/below. All review fixes are uncommitted; no `.done` edit.
 
 ## Round 3: approved plant-load input, split for separate commits
 
@@ -42,42 +100,17 @@ two render-owned files. **No infra hunks, host-forwarding edits, save changes or
 all existing smoke files remain untouched. T061 owns (d); LoopbackSimHost.ts, WorkerSimHost.ts, protocolInbox.ts,
 simWorker and WorkerLink were not edited.
 
-### Round-3 verification
+### Round-3 verification (completed; earlier quiet-gate attempt is historical)
 
-**Runtime verification is blocked by the quiet gate.** The gated TypeScript command waited while `QUIET`
-remained present. At 20:22 EST on 2026-11-03 its latest write time was 20:04:31, so it had been refreshed during
-the wait. I canceled only my own queued command before TypeScript started (exit 1 from cancellation); the flag
-and timing processes were untouched. No round-3 TypeScript, test or bot result is claimed. The attempted command:
+The final commands and results on `97691ad` are recorded in the closing status above. The full suite included
+the new local-reader, packet-stream and view integration tests. There is no standalone `recorder.test.ts`;
+`plantLoadStream.test.ts` exercises the real recorder through clone-only packets. The real-GPU QA below records
+the subsequent browser checks on that same code tree.
 
-```text
-node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsc --noEmit
-```
-
-Pending test command, retaining the established sandbox workaround:
-
-```text
-node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types node_modules/vitest/vitest.mjs run <file> --maxWorkers=1 --configLoader native --pool threads
-```
-
-All these files remain **unrun this round**, to run separately after TypeScript:
-
-- `tests/worker/plantLoadLocal.test.ts`, `tests/worker/plantLoadStream.test.ts`;
-- `tests/render/smokeLocalHost.test.ts`, `tests/render/smokeActivity.test.ts`,
-  `tests/render/smokePlumes.test.ts`, `tests/render/smokeView.test.ts`;
-- `tests/worker/protocol.test.ts`, `tests/worker/replica.test.ts`, `tests/worker/replicaLive.test.ts`,
-  `tests/worker/views.test.ts`, `tests/worker/hygiene.test.ts`.
-
-There is no standalone `recorder.test.ts` in this checkout; the new plantLoadStream cases exercise the real
-recorder through clone-only packets. No full suite, browser, benchmark or other bot variant was run.
-The unchanged 128x15 seed-7 bot command to rerun is:
-
-```text
-node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --no-warnings --experimental-transform-types --experimental-loader file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T051/scratch/resolve-ts.mjs tools/simbot.ts --size 128 --years 15 --seed 7
-```
-
-Expected baseline: 2015 residents **[61124, 93804, 37971] = 192,899**; the worker verified that on this round's
-merged base. `git diff --check` passes; all three round-2 render files and all five forbidden worker forwarding/
-inbox/link files are unchanged from HEAD.
+The earlier attempt was blocked by the quiet gate on 2026-11-03. At 20:22 EST, `QUIET` had been refreshed at
+20:04:31. Only the lane's queued TypeScript command was canceled before it started; the flag and timing
+processes were untouched. No gate result was claimed at that point. That temporary blockage and its pending-test
+list are superseded by the completed `97691ad` gates above.
 
 ### Round-3 compatibility difference and cloud handoff
 
@@ -89,14 +122,18 @@ from the signature/caller shown in the task. The Local reader itself is present 
 file was edited. After T061 provides the reader on both packet hosts, the optional marker/guard may be tightened
 if the lead wants a required interface; forwarding remains cloud-owned.
 
-Round-3 browser checklist:
+Round-3 browser checklist and coverage:
 
-- [ ] Local host: inspect 15% and full coal grids; expect activity 0.25/1 and <=40% of full particles.
-- [ ] Change one grid's load and advance a month: its plume follows its own grid. Check zero staffing/power stops it.
-- [ ] After T061 forwarding lands, repeat on loopback and real worker; verify unavailable before the first stream.
-- [ ] Confirm unchanged months send no utilities stream, and significant load/add/remove changes send one after
-  completion; load/resync and explicit empty snapshots leave no stale producer data.
-- [ ] Full Vitest and real-GPU smoke/frame checks remain with the lead.
+- [x] Local 15% and full coal load: **QA rows 3 and 3a**, activity floor 0.25 and <=40% of full particles.
+  Distinct disconnected grids are covered by `smokeLocalHost.test.ts`; that specific browser check remains open.
+- [x] Monthly activity refresh and zero staffing/power shutdown: **QA rows 2, 4a and 10**. Independent grid-load
+  changes are covered by `smokeLocalHost.test.ts`; the browser cities each had one grid.
+- [ ] After T061 forwarding lands, repeat plant-load visuals on loopback and the real worker. **QA rows 6, 7 and 8**
+  cover their currently expected unavailable behavior and ready/resync snapshots; they do not verify T061.
+- [x] Unchanged months and significant-change stream publication: **QA rows 6 and 7**; load/resync cleanup:
+  **QA row 8**. Explicit empty snapshots are covered by `plantLoadStream.test.ts`, not by the browser QA.
+- [x] Full Vitest: **243 files / 2,443 tests on 97691ad**. Real-GPU smoke checks: **QA rows 1-11**; row 10's
+  frame measurements are indicative. Formal shared-hook timing and other lanes' interactions remain lead-owned.
 
 ## Round 2: shared budget hook (historical; committed 51a04e0)
 
@@ -310,11 +347,12 @@ two-process yearly hashes were needed/run for this renderer-only change. The ful
    powered and >=10% staffed. The task does not distinguish a generator shut down by policy but powered by another
    plant; no unmirrored policy/output factor was invented.
 
-## Remaining lead/browser gates
+## Round-1 lead/browser checklist (historical)
 
-No browser/GPU measurement, full Vitest run or old-save playthrough was performed. The two fireworks fixture cases
-need the optional `SIM_FIXTURES` files; the hygiene skip is pre-existing. Plant-grid correctness in the running
-game cannot be verified until the view/transport/caller request above lands.
+This was the original handoff before the approved round-3 input work and the real-GPU QA below. At that point no
+browser/GPU measurement, full Vitest run or old-save playthrough had been performed. The completed gates and QA
+rows now supersede the covered items; the QA's own coverage notes identify checks that remain open. The two
+fireworks fixture cases needed optional `SIM_FIXTURES` files, and the hygiene skip was pre-existing.
 
 - [ ] Complete the UtilitiesView transport/caller request; verify distinct disconnected grids use their own loads.
 - [ ] Inspect a real **0/340 refinery**: no operational smoke; fill >=10% jobs and advance a month to see smoke return.

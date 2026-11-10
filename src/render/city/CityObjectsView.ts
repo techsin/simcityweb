@@ -250,7 +250,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.subwayDirty = true;
     this.flushPower();
     this.launchSiteIndex = null;
-    this.effects.clear();
+    this.effects.clearBuildings();
     this.buildings.rebuildAll();
     this.launchSiteIndex = new LaunchSiteIndex(this.launchSiteSource());
     this.props.resetGarbage(this.state.buildings.values(), this.state.day, this.state);

@@ -8,7 +8,7 @@ import { Effects, type Emit } from '../../src/render/city/effects/Effects';
 
 const effects: Effects[] = [];
 const geometries: THREE.BufferGeometry[] = [];
-const inside = (fx: Effects) => fx as unknown as { emitters: Map<number, Emit[]> };
+const inside = (fx: Effects) => fx as unknown as { emitters: Map<number, Emit[]>; plumes: Map<number, unknown> };
 const group = (fx: Effects, id = 1) => inside(fx).emitters.get(id)!;
 const count = (list: Emit[]) => list.reduce((sum, e) => sum + e.count, 0);
 const versions = (fx: Effects) => [fx.smoke, fx.flames].flatMap((mesh) =>
@@ -51,6 +51,21 @@ function withoutExports(model: string, run: () => void): void {
 }
 
 describe('output-driven building plumes', () => {
+  it.each(['res_cottage', 'com_corner_store', 'com_office_tower'])('keeps %s off the plume cache while preserving fire and dust', (model) => {
+    const fx = effect(), v = visual({ model, activity: 0 });
+    fx.onBuilding(v, 1); fx.update();
+    expect(inside(fx).plumes.size).toBe(0);
+    expect(fx.particleCount).toBe(0);
+    fx.onBuilding(visual(), 1);
+    expect(inside(fx).plumes.has(1)).toBe(true);
+    fx.onBuilding({ ...v, burning: true }, 1); fx.update();
+    expect(inside(fx).plumes.size).toBe(0);
+    expect(fx.particleCount).toBe(118);
+    fx.onBuilding({ ...v, constructing: true }, 1); fx.update();
+    expect(inside(fx).plumes.size).toBe(0);
+    expect(fx.particleCount).toBe(6);
+  });
+
   it('has exactly four positive strengths, with zero separate and quarter-step boundaries included', () => {
     singleCoalStack();
     const samples = [
@@ -229,6 +244,31 @@ describe('output-driven building plumes', () => {
       expect(full.particleCount).toBe(fullCount);
       expect(low.particleCount).toBe(lowCount);
     });
+  });
+
+  it('clears buildings without losing disaster groups or changing their expiry, and keeps full clear', () => {
+    singleCoalStack();
+    const fx = effect(), v = visual({ activity: 0.25 });
+    fx.onBuilding(v, 1);
+    fx.setExtra('meteor', [
+      { x: 10, y: 2, z: 20, kind: 3, size: 24, count: 7, life: 10 },
+      { x: 10, y: 2, z: 20, kind: 2, size: 9, count: 3, life: 1.4 },
+    ], 40);
+    fx.setExtra('riot', [{ x: 30, y: 2, z: 40, kind: 3, size: 10, count: 5, life: 9 }], 25);
+    fx.update(10);
+    expect(fx.particleCount).toBe(20);
+    fx.clearBuildings(); fx.update();
+    expect(inside(fx).emitters.size).toBe(0);
+    expect(inside(fx).plumes.size).toBe(0);
+    expect(fx.particleCount).toBe(15);
+    fx.onBuilding({ ...v, activity: 1 }, 1); fx.update();
+    expect(count(group(fx))).toBe(18);
+    fx.update(19);
+    expect(fx.particleCount).toBe(28);
+    fx.clear(); fx.update();
+    expect(inside(fx).emitters.size).toBe(0);
+    expect(inside(fx).plumes.size).toBe(0);
+    expect(fx.particleCount).toBe(0);
   });
 
   it('removes plume history so id reuse and clear can emit immediately in the same month', () => {
