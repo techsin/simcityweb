@@ -22,6 +22,8 @@ describe('LG-09 cached dispatch controls', () => {
     const watch = { version: 1, value: [option], setArgs: vi.fn() };
     const ctx = {
       host: { simTime: () => now, emergency: { incident: () => inc, vehicles: () => [] } },
+      // (FH-08's refresh reads the tips setting: unset here, so no teaching memory)
+      settings: {},
       tip: { hide: vi.fn() },
     } as unknown as GameContext;
     const banner = Object.assign(Object.create(EmergencyBanner.prototype), { ctx, options: { get: () => watch } }) as {

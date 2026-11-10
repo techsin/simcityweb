@@ -2,9 +2,15 @@
  * End-to-end: the real simulation (stress city, all systems) with src/sim/infra/search.ts replaced by the wasm
  * bindings (vi.mock — no sim file is edited; traffic's Search objects become resident WasmSearch objects).
  *  1. shadow mode: every roadSearch / transitSearch / accumulate call the live systems make also runs the JS original
- *     (on a separate Search, on a copy of the flows); outputs must be bit-identical, call by call, on live data.
- *  2. determinism: a city simulated with preference 'js' and one simulated with the wasm kernels end up with
- *     bit-identical layers and identical stats (after a JS-vs-JS baseline confirms the sim itself is deterministic).
+ *     (on a separate Search, on a copy of the flows); outputs must be bit-identical, call by call, on live data. B2:
+ *     traffic's own searches are resumable runs (RoadSearchRun / TransitSearchRun, JS, spread over scheduler steps on
+ *     the resident WasmSearch arrays — re-read every piece, as wasm memory may grow between two): each completed run is
+ *     shadowed by the JS original on its start's inputs. The module functions run only where they are still called
+ *     (garageReach's road search; none on this city), so the wasm kernels themselves are no longer exercised by the live
+ *     traffic system (WASM_PLAN: a resumable kernel would bring them back).
+ *  2. determinism: a city simulated with preference 'js' and one simulated with the wasm kernels (resident search arrays)
+ *     end up with bit-identical layers and identical stats (after a JS-vs-JS baseline confirms the sim itself is
+ *     deterministic).
  */
 import { describe, expect, it, vi } from 'vitest';
 import type * as SearchModule from '../../src/sim/infra/search';
@@ -69,7 +75,54 @@ vi.mock('../../src/sim/infra/search', async (importOriginal) => {
     }
     if (sr.length !== sw.length || sr.some((v, i) => !Object.is(v, sw[i]))) shadow.mismatches.push(`accumulate: sink sequence (${sr.length / 3} vs ${sw.length / 3})`);
   };
-  return { ...wasm, roadSearch, transitSearch, accumulate };
+  // B2: the resumable runs, shadowed at completion (the JS original on a copy of the start's inputs)
+  const copySeeds = (seeds: SearchModule.Seeds) => {
+    const c = new orig.Seeds();
+    for (let k = 0; k < seeds.n; k++) c.push(seeds.node[k], seeds.label[k], seeds.id[k]);
+    return c;
+  };
+  class RoadSearchRun extends orig.RoadSearchRun {
+    private shadowArgs: unknown[] | null = null;
+    override start(...a: Parameters<SearchModule.RoadSearchRun['start']>): void {
+      count('RoadSearchRun');
+      const [g, adj, time, S, seeds, limit, ramp] = a;
+      this.shadowArgs = shadow.enabled ? [g, adj, time, S, copySeeds(seeds), limit ?? 400, ramp ?? null] : null;
+      super.start(...a);
+    }
+    override run(maxSettled: number): boolean {
+      const done = super.run(maxSettled);
+      if (done && this.shadowArgs) {
+        const [g, adj, time, S, seeds, limit, ramp] = this.shadowArgs as [Parameters<typeof orig.roadSearch>[0], Int32Array, Float32Array, S, SearchModule.Seeds, number, Float32Array | null];
+        this.shadowArgs = null;
+        (orig.roadSearch as (...x: unknown[]) => void)(g, adj, time, refRoad, null, seeds, limit, ramp);
+        const d = diff(refRoad, S, g.n);
+        if (d || S.graphVersion !== refRoad.graphVersion) shadow.mismatches.push(`RoadSearchRun (limit ${limit}): ${d || 'graphVersion'}`);
+        count('RoadSearchRun done');
+      }
+      return done;
+    }
+  }
+  class TransitSearchRun extends orig.TransitSearchRun {
+    private shadowArgs: unknown[] | null = null;
+    override start(T: SearchModule.TransitNet, S: S, seeds: SearchModule.Seeds, limit?: number): void {
+      count('TransitSearchRun');
+      this.shadowArgs = shadow.enabled ? [T, S, copySeeds(seeds), limit ?? 400] : null;
+      super.start(T, S, seeds, limit);
+    }
+    override run(maxSettled: number): boolean {
+      const done = super.run(maxSettled);
+      if (done && this.shadowArgs) {
+        const [T, S, seeds, limit] = this.shadowArgs as [SearchModule.TransitNet, S, SearchModule.Seeds, number];
+        this.shadowArgs = null;
+        orig.transitSearch(T, refTransit, null as never, seeds, limit);
+        const d = diff(refTransit, S, T.total);
+        if (d) shadow.mismatches.push(`TransitSearchRun: ${d}`);
+        count('TransitSearchRun done');
+      }
+      return done;
+    }
+  }
+  return { ...wasm, roadSearch, transitSearch, accumulate, RoadSearchRun, TransitSearchRun };
 });
 
 // imported after the mock is registered (vitest hoists vi.mock)
@@ -113,34 +166,37 @@ describe('real simulation with the wasm road / transit searches', () => {
     s.enabled = true;
     for (let d = 0; d < 40; d++) sim.advanceDay();
     // a few forced full traffic assignments on top of the scheduled ones
-    const tr = sim.getSystem('traffic') as unknown as { runCycleSync(x: unknown): void; SA: object };
+    const tr = sim.getSystem('traffic') as unknown as { runCycleSync(x: unknown): void; SA: object; ST: object; SB: object };
     for (let k = 0; k < 3; k++) tr.runCycleSync(sim);
     s.enabled = false;
     expect(simWasmStatus().state).toBe('ready');
     expect(s.mismatches.slice(0, 10)).toEqual([]);
-    for (const f of ['roadSearch', 'transitSearch', 'accumulate']) expect(s.calls[f] ?? 0, f).toBeGreaterThan(0);
-    expect(s.wasmCalls).toBeGreaterThan(0);
-    expect(isResidentSearch(tr.SA)).toBe(true);
+    // (B2: traffic's searches are resumable runs; every completed run was shadowed)
+    for (const f of ['RoadSearchRun done', 'TransitSearchRun done']) expect(s.calls[f] ?? 0, f).toBeGreaterThan(0);
+    for (const S of [tr.SA, tr.ST, tr.SB]) expect(isResidentSearch(S)).toBe(true);
     console.log('[roadTransitSearchSim] calls:', JSON.stringify(s.calls), 'wasm:', s.wasmCalls, '0 mismatches');
   });
 
   it('a city simulated on the wasm searches is bit-identical to one simulated on JS', { timeout: 1200000 }, () => {
     const DAYS = 60;
+    let resident = false;
     const run = (pref: 'js' | 'auto') => {
       setSimWasmPreference(pref);
       const city = stressCity(256);
       const sim = newSim(city.st);
       for (let d = 0; d < DAYS; d++) sim.advanceDay();
-      (sim.getSystem('traffic') as unknown as { runCycleSync(x: unknown): void }).runCycleSync(sim);
+      const tr = sim.getSystem('traffic') as unknown as { runCycleSync(x: unknown): void; SA: object; ST: object };
+      tr.runCycleSync(sim);
+      resident = isResidentSearch(tr.SA) && isResidentSearch(tr.ST);
       return city.st;
     };
     const jsA = run('js');
     const jsB = run('js');
     // if the sim itself were not deterministic run-to-run, the comparison below would be meaningless
     expect(diffStates(jsA, jsB), 'JS vs JS baseline').toEqual([]);
-    const before = shadow().wasmCalls;
     const wasm = run('auto');
-    expect(shadow().wasmCalls - before, 'the wasm run used the wasm kernels').toBeGreaterThan(0);
+    // (B2: traffic's resumable searches run in JS on search arrays that live in wasm memory)
+    expect(resident, 'the wasm run kept the traffic searches in wasm memory').toBe(true);
     setSimWasmPreference('auto');
     expect(diffStates(jsA, wasm)).toEqual([]);
   });

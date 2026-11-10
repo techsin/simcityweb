@@ -21,6 +21,8 @@ import type { RegionContext } from '../region/regionEffects';
 import { LocalSimHost, type CityPersistence, type HostState, type SaveReason } from '../worker/SimHost';
 // W1.1b: explicit opt-in; the local host remains the default.
 import { LoopbackSimHost } from '../worker/LoopbackSimHost';
+// W1.2 (?simworker=1): the App boots the worker host before the scene (§4.1); only its type is needed here
+import type { WorkerSimHost } from '../worker/WorkerSimHost';
 import type { ViewState } from '../worker/protocol';
 import { pageSimWasmFlag } from '../wasm/simWasm';
 import type { GameContext, QueryTarget, SoundOpts, UIEvents } from './context';
@@ -30,12 +32,15 @@ import { NullObjectsView, NullWorldView } from './fallback/NullViews';
 import { loadGameModules, type GameModules } from './modules';
 import { loadPref, loadSettings, savePref, saveSettings, type GameSettings } from './settings';
 import { NewYearCelebration, type CelebrateOptions } from './NewYear';
+import { YearReview } from '../ui/YearReview';
 import { GameSounds } from './GameSounds';
 import { HOTKEY_CYCLES, PANEL_HOTKEYS } from './toolCatalog';
 import { ToolController } from './tools/ToolController';
 import { CursorTip } from '../ui/CursorTip';
 import { h, isTyping } from '../ui/dom';
 import { MiniMap } from '../ui/MiniMap';
+import { MilestoneCard } from '../ui/MilestoneCard';
+import { RankFireworks } from '../ui/rankFireworks';
 import { ErrorOverlay, HelpPanel, PauseMenu, SavePill, confirmOpen } from '../ui/Modals';
 import { CameraMemory, applyCamera, readCamera, validCamera } from './cameraStart';
 import { NewsTicker, Toasts } from '../ui/Notifications';
@@ -61,14 +66,22 @@ import type { EmergencyVehicles } from '../render/city/vehicles/EmergencyVehicle
 import { DemographicsPanel } from '../ui/panels/DemographicsPanel';
 import { attachOverlays } from '../sim/infra/overlays';
 import { windVector } from '../sim/infra/wind';
+import { regionSaveAccess } from '../save/db';
+import { showStorageError, storageConditionVersion, storageDialogOpen } from '../ui/StorageDialog';
 
 export type { GameSettings } from './settings';
 
 export interface CitySceneOptions {
   container: HTMLElement;
+  /** the city; with `host`, that host's replica */
   state: CityState;
+  /** W1.2: a worker host the App already booted (§4.1: the scene is built from its Ready). It starts paused; the scene
+   *  then applies its own initial speed. Without it the scene builds a local (or `?simworker=loopback`) host. */
+  host?: WorkerSimHost;
   rctx?: RegionContext;
   persistence?: CityPersistence;
+  /** W1.3: false starts the local or loopback host on the save without its recovery journal (§4.4's crash choices) */
+  replayJournal?: boolean;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
   onSave: (state: HostState, reason?: SaveReason) => Promise<void>;
   /** initial settings (e.g. the app-level settings); keys given here win over the stored in-game prefs */
@@ -97,9 +110,13 @@ const SLOW_WINDOW_S = 20;
 const SLOW_FPS = 25;
 /** the prompt's answer, per profile ('metropolis.ui.slowPrompt': shown, then 'switch' / 'keep') */
 const SLOW_PREF = 'slowPrompt';
+const AUTOSAVE_FLOOR_MS = 60_000;
+const AUTOSAVE_BACKOFF_INITIAL_MS = AUTOSAVE_FLOOR_MS;
+const AUTOSAVE_BACKOFF_MULTIPLIER = 2;
+const AUTOSAVE_BACKOFF_MAX_MS = 15 * 60_000;
 
 export class CityScene {
-  readonly host: LocalSimHost | LoopbackSimHost;
+  readonly host: LocalSimHost | LoopbackSimHost | WorkerSimHost;
   get sim(): Simulation { return this.host.sim; }
   get actions(): CityActionsApi { return this.host.actions; }
   readonly ctx: GameContext;
@@ -120,7 +137,8 @@ export class CityScene {
   private ticker: NewsTicker;
   private toasts: Toasts;
   private onboarding: Onboarding;
-  private errors: ErrorOverlay;
+  /** also the sink of a worker host the App booted before the scene existed */
+  readonly errors: ErrorOverlay;
   private pause: PauseMenu;
   private savePill: SavePill;
   private info: InfoPanel;
@@ -148,6 +166,9 @@ export class CityScene {
   private readyPending = false;
   private offs: (() => void)[] = [];
   private monthsSinceSave = 0;
+  private lastSaveAt = performance.now();
+  private autosaveFailure = { count: 0, retryAt: 0 };
+  private storageCondition = storageConditionVersion();
   private saving: Promise<void> | null = null;
   private hiddenPausedFrom: number | null = null;
   private mouse = { x: -1, y: -1, inside: false };
@@ -190,12 +211,21 @@ export class CityScene {
     // keyed on day 0: the calendar may open later in the year.)
     this.newCity = !validCamera(state.systemData.camera, state) && state.buildings.size === 0;
     const Host = new URLSearchParams(typeof location === 'undefined' ? '' : location.search).get('simworker') === 'loopback' ? LoopbackSimHost : LocalSimHost;
-    this.host = new Host(state, {
-      rctx: opts.rctx, initialSpeed: opts.initialSpeed ?? (this.newCity ? 0 : undefined), errors: this.errors,
-      flags: { simwasm: pageSimWasmFlag() },
-      signal: this.abort.signal,
-      persistence: opts.persistence,
-    });
+    const initialSpeed = opts.initialSpeed ?? (this.newCity ? 0 : undefined);
+    if (opts.host) {
+      // booted paused, since only its Ready said whether the city is new: the local host's initial speed, as a command
+      this.host = opts.host;
+      // (a host that crashed since its Ready is closed: the App's crash dialog follows)
+      if (initialSpeed !== 0 && !opts.host.isDisposed) this.host.setSpeed(initialSpeed ?? 1, 'initial');
+    } else {
+      this.host = new Host(state, {
+        rctx: opts.rctx, initialSpeed, errors: this.errors,
+        flags: { simwasm: pageSimWasmFlag() },
+        signal: this.abort.signal,
+        persistence: opts.persistence,
+        replayJournal: opts.replayJournal,
+      });
+    }
     this.degraded.actions = true;
 
     // ---- context
@@ -258,6 +288,7 @@ export class CityScene {
       showQuery: (t, o) => this.showQuery(t, o),
       applySettings: (p) => this.applySettings(p),
       toast: (text, kind, cell, title, opts) => this.toasts?.show(text, kind, cell, title, opts),
+      newYearBusy: () => this.newYear?.busy ?? false,
       openFlyout: (id, tab) => this.toolbar?.openFlyout(id, tab),
       showOnboarding: () => this.onboarding?.show(),
       save: () => this.save(false),
@@ -305,8 +336,18 @@ export class CityScene {
       // NOTE-041: a command, so a worker's clock holds too (the host is already gone when the scene disposes)
       holdCalendar: (on) => { if (!this.disposed) this.host.act('holdCalendar', [on], { tag: this.newYear }); },
     });
+    // ---- CONTENT: yearly feedback follows the celebration, without changing its timing or camera.
+    new YearReview(ctx, { busy: () => this.newYear.active, regionName: opts.persistence?.regionName });
+    // CONTENT: rank moments share the renderer, with New Year and LIVE taking priority.
+    const rankFireworks = new RankFireworks(ctx, () => this.newYear.busy);
+    new MilestoneCard(ctx, this.uiRoot, (rank, intensity) => rankFireworks.start(rank, intensity), () => this.newYear.busy);
     // event-driven sounds (news, disasters, rewards, budget ticks, construction) + generic control feedback
-    this.gameSounds = new GameSounds({ sim: this.sim, sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox() });
+    this.gameSounds = new GameSounds({
+      sim: this.sim, host: this.host, signal: this.abort.signal,
+      duck: (db, hold, release) => (this.mods.audio as { duck?: import('../audio/AudioEngine').AudioEngine['duck'] } | undefined)?.duck?.(db, hold, release, { renew: true }),
+      releaseDuck: (release) => (this.mods.audio as { releaseDuck?: (release: number) => void } | undefined)?.releaseDuck?.(release),
+      sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox(),
+    });
     this.offUiSounds = installUiSounds(() => this.mods.audio as unknown as UiSoundAudio | undefined);
     this.fpsEl = h('div', { class: 'fps mp-glass', style: 'display:none' });
     this.uiRoot.appendChild(this.fpsEl);
@@ -472,7 +513,8 @@ export class CityScene {
     let world: WorldViewApi | null = null;
     if (this.mods.WorldView && force !== 'world' && force !== 'all') {
       try {
-        world = new this.mods.WorldView(this.canvas, state, events, { quality: this.settings.quality });
+        // a replica host swaps in a fresh state on a resync: the view rebuilds from it (NOTE-041)
+        world = new this.mods.WorldView(this.canvas, state, events, { quality: this.settings.quality, getState: () => this.sim.state });
       } catch (e) {
         this.errors.report('3D world view failed to start — using a simplified view', e);
         this.swapCanvas();
@@ -502,7 +544,7 @@ export class CityScene {
     if (hasScene && this.mods.CityObjectsView && force !== 'objects' && force !== 'all') {
       try {
         const getEmergency = { vehicles: () => this.host.emergency.vehicles(), incidents: () => this.host.emergency.incidents(), time: () => this.host.simTime() };
-        const octx = { scene: world.scene, camera: world.camera, renderer: world.renderer, canvas: this.canvas, getTrafficRoutes, getState: () => this.sim.state, quality: this.settings.quality, getEmergency };
+        const octx = { scene: world.scene, camera: world.camera, renderer: world.renderer, canvas: this.canvas, getTrafficRoutes, getState: () => this.sim.state, quality: this.settings.quality, getEmergency, getPlantLoad: (id: number) => { const u = this.host.utilities; return 'plantLoad' in u ? u.plantLoad?.(id) ?? null : null; } };
         objects = new this.mods.CityObjectsView(state, events, octx);
       } catch (e) {
         this.errors.report('City objects view failed to start — using simplified buildings', e);
@@ -565,7 +607,9 @@ export class CityScene {
     const lost = this.ctxLost;
     if (!lost || lost.restoring || this.disposed) return;
     lost.restoring = true;
+    this.newYear?.cancel();
     const cam = readCamera(this.world.controls) ?? validCamera(this.sim.state.systemData.camera, this.sim.state);
+    const timeOfDay = this.world.timeOfDay;
     // stop watching the old canvas first: disposing its views forces a (second) context loss on it
     this.ctxWatch?.abort();
     for (const v of [this.objects, this.world]) {
@@ -582,6 +626,8 @@ export class CityScene {
     this.createViews();
     this.resize();
     this.applySettings({});
+    this.world.timeOfDay = timeOfDay;
+    this.ctx?.setOverlay(this.ctx.overlay, this.ctx.overlayVariant);
     const c = this.world.controls;
     if (c && cam) applyCamera(c, cam);
     else this.placeInitialCamera();
@@ -674,6 +720,7 @@ export class CityScene {
     this.edgeScroll(dt);
     try {
       this.newYear.frame(dt);
+      this.uiRoot.classList.toggle('newyear-busy', this.newYear.busy);
     } catch (e) {
       this.errors.report('New Year celebration error', e, { key: 'newyear' });
     }
@@ -688,6 +735,8 @@ export class CityScene {
       this.errors.report('Rendering error', e, { key: 'render' });
     }
     if (this.readyPending) {
+      // View building and the first draw are loading time, outside the slow-frame window.
+      this.fps.frames = this.fps.t = this.fps.last = 0;
       this.readyPending = false;
       this.firstFrame = true;
       this.resolveReady();
@@ -883,8 +932,8 @@ export class CityScene {
   // ------------------------------------------------------------------------------------------------ input
   private onKey(e: KeyboardEvent): void {
     if (isTyping(e) || this.disposed) return;
-    // a confirmation dialog handles Enter / Esc itself; no hotkeys underneath it
-    if (confirmOpen()) return;
+    // dialogs handle their keys themselves; no hotkeys underneath them
+    if (confirmOpen() || storageDialogOpen()) return;
     if (this.pause.isOpen) {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -999,26 +1048,48 @@ export class CityScene {
   private onMonth(): void {
     this.monthsSinceSave++;
     const n = this.settings.autosaveMonths;
-    if (n > 0 && this.monthsSinceSave >= n) void this.save(true);
+    if (n > 0 && this.monthsSinceSave >= n && performance.now() - this.lastSaveAt >= AUTOSAVE_FLOOR_MS && regionSaveAccess(this.opts.persistence?.regionId)) void this.save(true);
   }
 
-  async save(auto = false, reason: SaveReason = auto ? 'autosave' : 'manual'): Promise<void> {
-    if (this.disposed) return;
+  /** App saves on tab hide too; every successful host save restarts the real-time autosave floor. */
+  recordSaved(): void {
+    this.monthsSinceSave = 0;
+    this.lastSaveAt = performance.now();
+    this.autosaveFailure = { count: 0, retryAt: 0 };
+  }
+
+  async save(auto = false, reason: SaveReason = auto ? 'autosave' : 'manual', retry = false): Promise<void> {
+    if (this.disposed || !regionSaveAccess(this.opts.persistence?.regionId)) return;
     if (this.saving) return this.saving;
+    const condition = storageConditionVersion();
+    if (condition !== this.storageCondition) {
+      this.storageCondition = condition;
+      this.autosaveFailure = { count: 0, retryAt: 0 };
+    }
+    // App can acknowledge the city before its region write fails; retain the streak until the whole save succeeds.
+    const failure = this.autosaveFailure;
+    if (auto && !retry && (storageDialogOpen() || performance.now() - this.lastSaveAt < AUTOSAVE_FLOOR_MS || performance.now() < failure.retryAt)) return;
     this.savePill.saving(auto);
     this.storeCamera();
     this.saving = (async () => {
       try {
         await this.opts.onSave(this.host.state, reason);
         if (this.disposed) return;
-        this.monthsSinceSave = 0;
+        this.recordSaved();
         this.savePill.done(true, auto ? 'Autosaved' : 'City saved');
-        this.sound(auto ? 'autosave' : 'save', auto ? { volume: 0.8 } : undefined);
+        if (!auto) this.sound('save');
       } catch (e) {
         if (this.disposed) return;
+        if (auto) this.lastSaveAt = performance.now();
+        if (!regionSaveAccess(this.opts.persistence?.regionId)) { this.savePill.cancel(); return; }
+        if (auto) {
+          const count = failure.count + 1;
+          const backoff = Math.min(AUTOSAVE_BACKOFF_MAX_MS, AUTOSAVE_BACKOFF_INITIAL_MS * AUTOSAVE_BACKOFF_MULTIPLIER ** (count - 1));
+          this.autosaveFailure = { count, retryAt: this.lastSaveAt + backoff };
+        } else this.autosaveFailure = failure;
         this.savePill.done(false);
-        this.sound('error');
-        this.errors.report('Saving failed', e, { key: 'save' });
+        if (!auto || this.autosaveFailure.count === 1) this.sound('error');
+        if (reason !== 'exit') void showStorageError(e, { retry: () => this.save(auto, reason, true), signal: this.abort.signal });
       } finally {
         this.saving = null;
       }
