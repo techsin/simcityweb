@@ -282,3 +282,41 @@ at dense1m", and for the merge body).**
 | B2's save / load mid-pass checks | the vitest R9 cases (every task: a save mid-pass holds no pass state, loads idle, loads the same twice; in the full run). **Against dev** (`lc.sh`, new `tools/loadcmp2.ts`): per task, W saved at 7–9 points inside its first pass after 30 warm days (from step 0 to the last piece), dev at every step boundary of the same pass; each save loaded (init) and run 20 days. On `633b917` / `87c7c9c`: **every W cut of every task equals a dev cut, right after the load and 20 days later, on bot256 and dense1m (95 of 95 cuts)**. On `99d19e9` / `51ec328`: 93 of 95; the two exceptions are the same cut on both fixtures, traffic's last piece (after final2's publish, before the cycle's end): right after the load it differs from dev's step-19 save **only in `systemData.lvRun`** (T057's land value record, new in dev `51ec328`), and **20 days later it equals dev's step-19 save exactly**. Cause and follow-up: decision 4 |
 | balance, 256 × 60 seed 7 (lock; B and W side by side; B2's criteria) | **passes**: pop year 15 184,426 (≥ 150k; B 181,278), year 60 1,451,189 (≥ 950k; B 1,513,835); lowest W / B **0.959** (2060; ≥ 0.9); approval ≥ 78.3 from year 30 (≥ 50; B 79.1); EQ 121.9 at year 30, ≥ 100 from 2018 (B 2020); lowest funds 5,957 (≥ 0; B 6,792); tourists W / B per year: geometric mean 1.036, 10 of 55 single years outside ±30 % (2007–09 low, 2015–20 high; the bot's chaos, as at G4: 9 of 55; B1's six-seed check not re-run); `totalMsPerDay` **+1.51** (B 10.29, W 11.80; ≤ +3). B reproduces dev's recorded `b3` rows in all 60 years. `runs/bal/` |
 | 128 × 15 seed 7 balance row (same hold) | 2015 = 198,115, as the bot; the `b2b3` rows are recorded in `tests/sim/fixtures/balance-baseline.json` (`0f0ad56`, `reference` = `b2b3`, older rows untouched; `botRules` and `balance` tests pass) |
+
+**Decisions** (conservative readings, with the evidence):
+1. **Gate 4 is judged under the lead's amendment** (above), recorded here as a plan amendment for WASM_PLAN B2 /
+   WORKER_DESIGN S3. The cold first-run residue goes to S5 (`docs/dev/POLISH_BACKLOG.md`).
+2. **The utilities publish piece's test cap** (`633b917`): R7 exempts the flags' publish from the piece budget (one piece
+   by rule; chunked only past 3 ms cold), so the test caps it like the snapshot take. No code change. The worst case of
+   an unbounded publish is a city-wide flip (a blackout turning every building's Powered bit), which runs in one piece,
+   as pre-B2's step did; the measured bursts stay ≤ 467 events (about 0.5 ms). It is in the S5 line.
+3. **Dev merged twice on the resume, then left for the merge step.** After the gates on `99d19e9` (dev `51ec328`), dev
+   gained `41fcecc` (T048, T036 steps 5 and 4): no `src/sim` file, the bot unchanged at 192,899 in each of their merges.
+   A trial merge of `cloud/b2m` (`0f0ad56`) with dev `41fcecc` is clean and tsc-clean (`9064d1a`, not kept), so the
+   merge step can take it without another hour in the lock queue for this lane.
+4. **The T057 × B2 save at traffic's last piece** (save / load row): T057's land value record `lvRun` keeps a `changed`
+   list of plopped buildings whose flags changed since the last band, fed by `buildingChanged`. B2 runs traffic final2's
+   publish piece (NoJobs / Congested flags with their events, integration item 1) one piece before the cycle's end, so a
+   save in between carries those ids, where dev's step 19 has not emitted them yet. Loaded, it differs from dev's save in
+   that record only, and 20 days later the cities are identical. It is not a B2 regression (R9: no B2 field is saved;
+   the city itself equals dev's), and T057 left the infrastructure's continuity to a follow-up lane on B2's code
+   (T063, queued after B2): T063 should cover this cut. No change here (no new behaviour work in this lane).
+5. **The fixture-gated suites** (`SIM_FIXTURES`: the replica, live replica, lag and query-side-effect cases on the grown
+   bot256 fixture, `replicaSafe`, the wasm fixture sections) ran green at `539b692` (8 files, 101 tests;
+   `scratchpad/b2m/fx_W.log`) and were not re-run: B2's code has not changed since, and dev's later commits touch no
+   file in `src/sim/infra`.
+6. **The balance is one run of 256 × 60 seed 7** (the brief: a single run suffices for B2's coarse criteria); seed 11
+   and B1's six-seed tourism check were not re-run. NOTE-053's ensemble rule is for SIM lanes' balance rows, not for
+   B2's coarse criteria. The 10 single years outside ±30 % in tourists are the bot's chaos, as at G4 (9 of 55); their
+   geometric mean is 1.036.
+7. **The bot reference changes by design** (128 × 15 seed 7: 192,899 → 198,115): the headless schedule follows the new
+   pieces and estimates on top of B3. B2 alone on B1 gave 193,416 (B1 196,101); the direction of the change is the
+   schedule's chaos, not a balance shift (the 256 × 60 gates above).
+
+**Desktop QA** (NOTE-059): this lane has **no browser check** (sim and tests only; no UI, render or save-format change).
+One optional quiet-slot item for the desktop, after the merge (the cloud's timings ran on a shared 4-core box):
+1. **Infra step latency on a quiet machine.** No page: in a checkout of dev at B2's merge commit and at its first parent,
+   `node tools/bench/sim-profile/bundle.mjs profile`, then `node node_modules/.cache/sim-profile/profile.js --fixture
+   tools/bench/.fixtures/fixtures/dense1m_s7.metropolis --mode headless --warm 20 --days 60` (the lead's profile
+   window; the fixture from `tools/makeFixtures.mjs`), three runs each. Expected: `maxStepMsWall` per infra task about
+   5 ms or less at the merge commit (the cloud: 2.8–4.7 ms) against about 31–33 ms at the parent.
