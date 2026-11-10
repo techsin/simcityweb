@@ -16,6 +16,7 @@ import {
 } from './params';
 import { ordinanceEffect } from '../economy/ordinances';
 import { serviceEffectiveness } from '../economy/budget';
+import { honourPerks } from '../economy/rewards';
 import { removeBuilding as coreRemoveBuilding } from '../economy/buildings';
 
 export const DX = [1, 0, -1, 0] as const;
@@ -423,7 +424,7 @@ export function readEffects(state: CityState): OrdEffects {
     crimeRate: eff(state, 'crime.rate'),
     policeEffect: eff(state, 'police.effect'),
     healthEffect: eff(state, 'health.effect'),
-    eduEffect: eff(state, 'edu.effect'),
+    eduEffect: eff(state, 'edu.effect') * honourPerks(state).education,
     air: eff(state, 'pollution.air'),
     airIndustry: eff(state, 'pollution.air.industry'),
     water: eff(state, 'pollution.water'),
@@ -432,7 +433,7 @@ export function readEffects(state: CityState): OrdEffects {
     powerDemand: eff(state, 'power.demand'),
     waterDemand: eff(state, 'water.demand'),
     trafficCar: eff(state, 'traffic.car'),
-    transitRidership: eff(state, 'transit.ridership'),
+    transitRidership: eff(state, 'transit.ridership') * honourPerks(state).ridership,
   };
 }
 

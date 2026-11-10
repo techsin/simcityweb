@@ -6,7 +6,7 @@ import type { BuildingDef } from '../../sim/catalogTypes';
 import type { Building } from '../../sim/CityState';
 import { Panel } from '../Panel';
 import { confirmDialog } from '../Modals';
-import { clear, escapeHtml, h, toggle } from '../dom';
+import { clear, escapeHtml, h, segmented, toggle } from '../dom';
 import { icon } from '../icons';
 import { money, titleCase } from '../format';
 import { upkeepEstimate } from '../upkeepModel';
@@ -164,10 +164,17 @@ export class RewardsPanel extends Panel {
   private listEl!: HTMLDivElement;
   private shownReward = '';
   private rows = new Map<string, HTMLDivElement>();
+  private tab: 'rewards' | 'honours' = 'rewards';
+  private tabs!: HTMLDivElement;
 
   protected build(): void {
+    this.tabs = segmented([{ value: 'rewards', label: 'Rewards' }, { value: 'honours', label: 'Honours' }], this.tab, (tab) => {
+      this.tab = tab;
+      this.resetGate();
+      this.update();
+    }, this.ctx.signal);
     this.listEl = h('div', { class: 'list' });
-    this.body.appendChild(this.listEl);
+    this.body.append(this.tabs, this.listEl);
   }
 
   private list(): RewardInfo[] {
@@ -199,6 +206,8 @@ export class RewardsPanel extends Panel {
   /** A reward toast opens this row, even if its progress changed inside the rebuild gate. */
   showReward(id: string): void {
     this.shownReward = id;
+    this.tab = this.list().find((r) => r.id === id)?.category === 'honour' ? 'honours' : 'rewards';
+    for (const [i, button] of Array.from(this.tabs.children).entries()) button.classList.toggle('on', i === (this.tab === 'honours' ? 1 : 0));
     this.resetGate();
     this.update();
     this.rows.get(id)?.scrollIntoView({ block: 'center', inline: 'nearest' });
@@ -223,21 +232,22 @@ export class RewardsPanel extends Panel {
   }
 
   override update(): void {
-    const items = this.list();
+    const items = this.list().filter((r) => (r.category === 'honour') === (this.tab === 'honours'));
     const rs = this.ruins();
     const ruinOf = (r: RewardInfo) => (r.built ? rewardRuin(r.defIds, rs) : null);
     // (final fixes A1: the progress bars move with every percent of a growing city — a data-only change rebuilds the
     // list at most once per real second, Panel.gate; a reward falling into ruins — or its ruin cleared — rebuilds it too)
-    const sig = items.map((r) => `${r.id}:${r.unlocked}:${r.built}:${ruinOf(r)?.id ?? ''}:${Math.round(r.progress * 100)}:${r.requirement}`).join('|');
+    const sig = this.tab + items.map((r) => `${r.id}:${r.unlocked}:${r.built}:${ruinOf(r)?.id ?? ''}:${Math.round(r.progress * 100)}:${r.requirement}`).join('|');
     if (!this.gate('rewards', sig)) return;
     clear(this.listEl);
     this.rows.clear();
     if (!items.length) {
-      this.listEl.appendChild(h('div', { class: 'empty', html: icon('trophy', 28) + '<div>Rewards unlock as your city reaches milestones.</div>' }));
+      this.listEl.appendChild(h('div', { class: 'empty', html: icon('trophy', 28) + (this.tab === 'honours' ? '<div>Honours celebrate the quality of life in your city.</div>' : '<div>Rewards unlock as your city reaches milestones.</div>') }));
       return;
     }
     const sorted = items.slice().sort((a, b) => Number(b.unlocked) - Number(a.unlocked) || b.progress - a.progress);
     for (const r of sorted) {
+      const honour = r.category === 'honour';
       const defs = r.defIds.map((id) => allDefs().find((d) => d.id === id)).filter((d): d is NonNullable<typeof d> => !!d);
       const def = defs[0];
       const ruin = ruinOf(r);
@@ -262,12 +272,13 @@ export class RewardsPanel extends Panel {
         }
       const status = ruin
         ? h('span', { class: 'chip bad', style: 'max-width:150px;white-space:normal;text-align:right;line-height:1.25', title: 'It lies in ruins: no income and no effects until you bulldoze the rubble and build it again', html: icon('alert', 11) + `<span>${escapeHtml(REWARD_RUIN_TEXT)}</span>` })
-        : r.built ? h('span', { class: 'chip info', html: icon('check', 11) + 'Built' }) : r.unlocked ? h('span', { class: 'chip good', html: icon('check', 11) + 'Unlocked' }) : h('span', { class: 'chip warn', html: icon('lock', 11) + 'Locked' });
+        : honour && r.unlocked ? h('span', { class: 'chip good', html: icon('trophy', 11) + 'Earned' }) : r.built ? h('span', { class: 'chip info', html: icon('check', 11) + 'Built' }) : r.unlocked ? h('span', { class: 'chip good', html: icon('check', 11) + 'Unlocked' }) : h('span', { class: 'chip warn', html: icon('lock', 11) + 'Locked' });
       const row = h('div', { class: 'li' + (r.unlocked ? ' on' : ' locked') + (r.id === this.shownReward ? ' reward-highlight' : ''), dataset: { reward: r.id } },
         h('div', { class: 'li-ico', html: icon(def ? defIcon(def) : 'trophy', 17) }),
         h('div', null,
           h('div', { class: 'li-t' }, r.name),
           r.description ? h('div', { class: 'li-d' }, r.description) : null,
+          honour && r.unlocked ? h('div', { class: 'li-d' }, 'Commemorative plaque awarded') : null,
           !r.unlocked
             ? h('div', { class: 'reward-prog' }, h('div', { class: 'bar warn' }, h('div', { class: 'fill', style: { width: `${Math.round(r.progress * 100)}%` } })), h('span', null, r.requirement || `${Math.round(r.progress * 100)}%`))
             : null,

@@ -89,7 +89,7 @@ export class GameSounds {
       ev.on('disaster', (x) => this.onDisaster(x)),
       // registered before the emergency banner (CityScene order): an unanswered fire's bell wins its alert slot
       ev.on('emergency', (e) => this.onEmergency(e)),
-      ev.on('unlocked', () => this.reward()),
+      ev.on('unlocked', (id) => id.startsWith('honour_') ? this.honour() : this.reward()),
       ev.on('month', () => this.onMonth()),
       ev.on('buildingAdded', (b) => {
         if (b.built < 1) this.constructing.add(b.id);
@@ -102,6 +102,7 @@ export class GameSounds {
       ev.on('reset', () => {
         this.constructing.clear();
         this.clearMilestones();
+        this.last.delete('honour');
         for (const key of this.last.keys()) if (key.startsWith('milestone:')) this.last.delete(key);
       }),
     );
@@ -171,7 +172,8 @@ export class GameSounds {
         this.queueNews(URGENT.test(n.text) ? 'advisor' : 'info', n.text);
         return;
       case 'reward':
-        this.reward();
+        if (n.ref?.reward?.startsWith('honour_')) this.honour();
+        else this.reward();
         return;
       case 'disaster': {
         if (/bankrupt/i.test(n.text)) {
@@ -287,6 +289,11 @@ export class GameSounds {
 
   private reward(): void {
     if (this.ready('reward', 6000)) this.play('reward');
+  }
+
+  /** A packet can contain both the announcement and unlock event, or several honours at once. */
+  private honour(): void {
+    if (this.ready('honour', 6000)) this.play('reward', { pitch: 1.12, volume: 0.9 });
   }
 
   // ------------------------------------------------------------------ budget + construction

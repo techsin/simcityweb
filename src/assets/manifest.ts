@@ -213,6 +213,11 @@ export const MANIFEST: ManifestEntry[] = [
   pending('LG-02', E('lm_millennium_tower', 'landmark', [4, 4], 2, [530, 590], 'Millennium Tower: stepped glass skyscraper with panoramic sky decks, silver needle and reflecting-pool plaza.')),
   pending('LG-02', E('lm_metropolis_crown', 'landmark', [4, 4], 2, [600, 650], 'Metropolis Crown: fluted civic skyscraper with an open bronze coronet, sky hall and formal garden plaza.')),
 
+  // ------------------------------------------------------------------ HONOURS
+  E('rw_honour_completion_plaque', 'reward', [1, 1], 1, [2, 2], 'City honour plaque: a bronze medal and laurel mounted on a stone plinth in a small paved garden.'),
+  E('rw_eco_plaza', 'reward', [2, 2], 1, [5.5, 6], 'Eco Plaza: green planters, a bronze leaf sculpture, a shade tree and a solar canopy.'),
+  E('rw_firefighters_memorial', 'reward', [2, 2], 1, [8, 8.4], "Firefighters' Memorial: a bronze flame on a dark stone stele, a reflecting pool and quiet benches."),
+
   // ------------------------------------------------------------------ REWARDS / BUSINESS DEALS
   E('rw_military_base', 'reward', [8, 8], 1, [5, 25], 'Military base: runway strip, hangars, barracks, radar dish, fences.'),
   E('rw_casino', 'reward', [3, 3], 1, [30, 60], 'Glitzy casino resort, lots of emissive neon signage, fountain.'),

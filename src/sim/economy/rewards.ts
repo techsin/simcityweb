@@ -1,15 +1,17 @@
 /**
  * Rewards, unlocks, landmarks and business deals (SC4 style).
  * When a reward's conditions are met: state.unlocked.add(id), notify(kind 'reward'), emit 'unlocked' (once).
- * Unlocks are permanent. BuildingDef.requires references these ids. Sandbox unlocks everything.
+ * Unlocks are permanent. BuildingDef.requires references these ids. Sandbox unlocks ordinary rewards; honours are earned.
  */
 import type { SimSystem, Simulation } from '../Simulation';
-import type { CityState } from '../CityState';
+import { BF, type CityState } from '../CityState';
 import { DevType } from '../../core/types';
+import { DAYS_PER_MONTH } from '../../core/constants';
 import { getDef } from '../catalog';
+import { reachRaw, reachResult } from '../infra/catchments';
 import type { EconRuntime } from './runtime';
 
-export type RewardKind = 'unlock' | 'reward' | 'landmark' | 'deal';
+export type RewardKind = 'unlock' | 'reward' | 'landmark' | 'deal' | 'honour';
 
 export interface CityRank {
   id: string;
@@ -38,7 +40,9 @@ interface CondInfo {
   label: string;
   need: number;
   /** display format */
-  fmt?: 'int' | 'bool';
+  fmt?: 'int' | 'bool' | 'decimal' | 'percent';
+  atMost?: boolean;
+  below?: boolean;
 }
 
 type Cond = CondInfo & (
@@ -81,6 +85,155 @@ function lm(id: string, need: number): RewardDef {
   };
 }
 
+/** Monthly survey and consecutive qualifying months. Optional in saves made before LG-20. */
+export interface HonoursData {
+  month: number;
+  cleanAir: number;
+  safeCity: number;
+  employment: number;
+  books: number;
+  homes: number;
+  noisyShare: number;
+  parkShare: number;
+  booksInterrupted?: boolean;
+  cleanAirInterrupted?: boolean;
+  safeCityInterrupted?: boolean;
+  employmentInterrupted?: boolean;
+}
+
+function honoursData(st: CityState): HonoursData | undefined {
+  return (st.systemData.economy as { honours?: HonoursData } | undefined)?.honours;
+}
+
+const inhabited: Cond = { label: 'Occupied homes', need: 1, fmt: 'bool', fullState: true, value: (s) => (honoursData(s)?.homes ?? 0) > 0 ? 1 : 0 };
+const streak = (key: 'cleanAir' | 'safeCity' | 'employment' | 'books', label: string, need: number): Cond => ({
+  label, need, fullState: true, value: (s) => honoursData(s)?.[key] ?? 0,
+});
+const transitShare = (st: MilestoneState) => {
+  const s = st.stats, trips = s.tripsCar + s.tripsTransit + s.tripsWalk;
+  return trips > 0 ? s.tripsTransit / trips : 0;
+};
+const highestTax = (st: CityState) => Math.max(0, ...st.budget.taxRates);
+
+function honour(id: string, name: string, conds: Cond[], description: string, extra: string[] = []): RewardDef {
+  return { id: 'honour_' + id, name, kind: 'honour', conds: [inhabited, ...conds],
+    defIds: ['rw_honour_' + id + '_plaque', ...extra], description,
+    announce: `Honour earned: ${name}! Your city has been awarded a commemorative plaque.` };
+}
+
+export const HONOURS: RewardDef[] = [
+  honour('clean_air_metropolis', 'Clean Air Metropolis', [pop(250000),
+    { label: 'Air at homes', need: 0.10, atMost: true, fmt: 'decimal', value: (s) => s.stats.avgAir },
+    streak('cleanAir', 'Clean-air months', 12)], 'Keep air at homes at 0.10 or less for 12 months with 250,000 residents. Unlocks the Eco Plaza.', ['rw_eco_plaza']),
+  honour('transit_capital', 'Transit Capital', [pop(200000),
+    { label: 'Transit trips', need: 0.25, fmt: 'percent', value: transitShare }], 'Carry at least 25% of trips by transit with 200,000 residents. +5% transit ridership.'),
+  honour('scholar_city', 'Scholar City', [eq(130)], 'Reach EQ 130. +5% education effectiveness.'),
+  honour('healthy_city', 'Healthy City', [hq(130)], 'Reach HQ 130.'),
+  honour('safe_city', 'Safe City', [pop(100000),
+    { label: 'Failed emergencies last month', need: 0, atMost: true, value: (s) => s.stats.emergency.lastMonth.failed },
+    streak('safeCity', 'Months without a failed emergency', 60)],
+    "Keep 100,000 residents safe for five years without a failed emergency. Unlocks the Firefighters' Memorial.", ['rw_firefighters_memorial']),
+  honour('tourist_capital', 'Tourist Capital', [{ label: 'Tourists/day', need: 50000, value: (s) => s.stats.tourists }], 'Welcome 50,000 tourists a day.'),
+  honour('full_employment', 'Full Employment', [pop(500000),
+    { label: 'Unemployment', need: 0.03, atMost: true, fmt: 'percent', value: (s) => s.stats.unemployment },
+    streak('employment', 'Full-employment months', 24)], 'Keep unemployment at 3% or less for two years with 500,000 residents.'),
+  honour('green_belt', 'Green Belt', [{ label: 'Homes in reach of a large park', need: 0.30, fmt: 'percent', fullState: true, value: (s) => honoursData(s)?.parkShare ?? 0 }],
+    'Bring at least 30% of occupied homes within walking reach of a Large Park.'),
+  honour('balanced_books', 'Balanced Books', [
+    { label: 'Outstanding loans', need: 0, atMost: true, fullState: true, value: (s) => s.budget.loans.length },
+    { label: 'Highest tax', need: 9, atMost: true, fullState: true, value: highestTax }, streak('books', 'Loan-free months at taxes ≤9%', 120)],
+    'Go ten years without a loan and keep every tax rate at 9% or less.'),
+  honour('quiet_city', 'Quiet City', [pop(250000),
+    { label: 'Noisy homes', need: 0.05, below: true, atMost: true, fmt: 'percent', fullState: true, value: (s) => honoursData(s)?.noisyShare ?? 1 }],
+    'Keep fewer than 5% of occupied homes Noisy with 250,000 residents.'),
+  honour('megacity', 'Megacity', [pop(1000000)], 'Build a city of one million residents.'),
+  honour('megalopolis', 'Megalopolis', [pop(1500000)], 'Build a city of one and a half million residents.'),
+];
+
+/** Small permanent perks; the infrastructure effects reader applies them once per pass. */
+export function honourPerks(st: Pick<CityState, 'unlocked'>): { education: number; ridership: number } {
+  return { education: st.unlocked.has('honour_scholar_city') ? 1.05 : 1,
+    ridership: st.unlocked.has('honour_transit_capital') ? 1.05 : 1 };
+}
+
+function surveyHonours(st: CityState, data: HonoursData): void {
+  const parks = new Uint8Array(st.cells);
+  if (!st.unlocked.has('honour_green_belt')) for (const b of st.buildings.values()) {
+    if (b.def !== 'park_large' || b.built < 1 || (b.flags & (BF.Burnt | BF.Abandoned))) continue;
+    const n = reachRaw(st, b.x, b.z, b.w, b.d, getDef('park_large')!.coverage!.radius, 0);
+    const { touched, best } = reachResult();
+    for (let i = 0; i < n; i++) if (best[touched[i]] > 0) parks[touched[i]] = 1;
+  }
+  let homes = 0, noisy = 0, green = 0;
+  for (const b of st.buildings.values()) {
+    const dev = getDef(b.def)?.devType;
+    if (dev === undefined || dev > DevType.R3 || b.pop <= 0 || b.built < 1 || (b.flags & (BF.Burnt | BF.Abandoned))) continue;
+    homes++;
+    if (b.flags & BF.Noisy) noisy++;
+    let reached = false;
+    for (let z = b.z; z < b.z + b.d && !reached; z++) for (let x = b.x; x < b.x + b.w; x++) {
+      if (parks[z * st.size + x]) { reached = true; break; }
+    }
+    if (reached) green++;
+  }
+  data.homes = homes;
+  data.noisyShare = homes ? noisy / homes : 1;
+  if (!st.unlocked.has('honour_green_belt')) data.parkShare = homes ? green / homes : 0;
+}
+
+function updateHonours(st: CityState, monthly: boolean): void {
+  // economy is already mirrored by every host; no new worker protocol row is needed.
+  const economy = st.systemData.economy as { honours?: HonoursData };
+  const data = (economy.honours ??= { month: Math.ceil(st.day / DAYS_PER_MONTH), cleanAir: 0, safeCity: 0, employment: 0, books: 0,
+    homes: 0, noisyShare: 1, parkShare: 0 });
+  if (!monthly || data.month === st.monthIndex) {
+    if (!monthly) surveyHonours(st, data);
+    return;
+  }
+  const consecutive = data.month === st.monthIndex - 1;
+  data.month = st.monthIndex;
+  surveyHonours(st, data);
+  const s = st.stats;
+  data.cleanAir = !data.cleanAirInterrupted && s.population >= 250000 && s.avgAir <= 0.10 ? Math.min(12, (consecutive ? data.cleanAir : 0) + 1) : 0;
+  data.safeCity = !data.safeCityInterrupted && s.population >= 100000 && !s.emergency.lastMonth.failed && !s.emergency.month.failed
+    ? Math.min(60, (consecutive ? data.safeCity : 0) + 1) : 0;
+  data.employment = !data.employmentInterrupted && s.population >= 500000 && s.unemployment <= 0.03 ? Math.min(24, (consecutive ? data.employment : 0) + 1) : 0;
+  const b = st.budget;
+  const borrowed = (b.lastIncome['oneoff:loan'] ?? 0) > 0 || (b.lastExpense.loan ?? 0) > 0;
+  data.books = !data.booksInterrupted && !borrowed && !b.loans.length && highestTax(st) <= 9
+    ? Math.min(120, (consecutive ? data.books : 0) + 1) : 0;
+  data.booksInterrupted = false;
+  data.cleanAirInterrupted = data.safeCityInterrupted = data.employmentInterrupted = false;
+}
+
+/** FH-26: six complete months at 55% approval, on every difficulty (D7). */
+export interface ApprovalRewardData {
+  month: number;
+  months: number;
+  interrupted?: boolean;
+}
+
+function approvalRewardData(st: CityState): ApprovalRewardData | undefined {
+  return (st.systemData.economy as { approvalReward?: ApprovalRewardData } | undefined)?.approvalReward;
+}
+
+function updateApprovalReward(st: CityState, monthly: boolean): void {
+  const economy = st.systemData.economy as { approvalReward?: ApprovalRewardData };
+  const data = (economy.approvalReward ??= { month: Math.ceil(st.day / DAYS_PER_MONTH), months: 0 });
+  const qualifies = st.stats.population >= 2500 && st.stats.approval >= 55;
+  if (!qualifies) {
+    data.months = 0;
+    data.interrupted = true;
+  }
+  if (!monthly || data.month === st.monthIndex) return;
+  data.months = qualifies && !data.interrupted ? Math.min(6, (data.month === st.monthIndex - 1 ? data.months : 0) + 1) : 0;
+  data.month = st.monthIndex;
+  data.interrupted = false;
+}
+
+const statueApprovalMonths: Cond = { label: 'Months at approval ≥55%', need: 6, fullState: true,
+  value: (s) => approvalRewardData(s)?.months ?? 0 };
+
 export const REWARDS: RewardDef[] = [
   // ---------------- infrastructure unlocks
   { id: 'water_treatment', name: 'Water Treatment Plant', kind: 'unlock', defIds: ['util_water_treatment'], conds: [pop(6000)], description: 'Large clean water supply.' },
@@ -101,8 +254,8 @@ export const REWARDS: RewardDef[] = [
   { id: 'mayor_house', name: "Mayor's House", kind: 'reward', defIds: ['civ_mayor_house'], conds: [pop(1200)], description: 'The town wants a proper home for its mayor.',
     announce: "The citizens have built you a Mayor's House! Place it from Rewards." },
   { id: 'cemetery', name: 'Cemetery', kind: 'reward', defIds: ['civ_cemetery'], conds: [pop(2000)], description: 'A quiet resting place.' },
-  { id: 'statue', name: 'Statue of the Mayor', kind: 'reward', defIds: ['civ_statue'], conds: [pop(2500), { label: 'Approval', value: (s) => s.stats.approval, need: 65 }],
-    description: 'Awarded for high approval.', announce: 'Your approval is sky high — the grateful citizens erect a statue in your honor!' },
+  { id: 'statue', name: 'Statue of the Mayor', kind: 'reward', defIds: ['civ_statue'], conds: [pop(2500), { label: 'Approval', value: (s) => s.stats.approval, need: 55 }, statueApprovalMonths],
+    description: 'Keep 2,500 residents and approval of at least 55% for six months.', announce: 'Six months of popular leadership — the grateful citizens award you a Statue of the Mayor!' },
   { id: 'courthouse', name: 'Courthouse', kind: 'reward', defIds: ['civ_courthouse'], conds: [pop(8000), has('civ_police_station', 'Police station built')], description: 'Justice for all.' },
   { id: 'city_hall', name: 'City Hall', kind: 'reward', defIds: ['civ_city_hall'], conds: [pop(20000)], description: 'A seat of government worthy of the city.' },
   { id: 'country_club', name: 'Country Club', kind: 'reward', defIds: ['park_golf'], conds: [{ label: 'R$$$ residents', value: (s) => s.stats.residents[2], need: 4000 }],
@@ -129,6 +282,8 @@ export const REWARDS: RewardDef[] = [
   lm('lm_lighthouse', 3000), lm('lm_clock_tower', 5000), lm('lm_obelisk', 10000), lm('lm_arch', 15000), lm('lm_observatory', 25000),
   lm('lm_cathedral', 35000), lm('lm_castle', 50000), lm('lm_pyramid', 70000), lm('lm_ferris_wheel', 90000), lm('lm_opera_house', 150000),
   lm('lm_spire_tower', 250000), lm('lm_twin_spires', 500000),
+  // ---------------- quality honours (LG-20; independent of the landmark ladder)
+  ...HONOURS,
 ];
 
 const hasWaterCache = new WeakMap<CityState, boolean>();
@@ -173,6 +328,7 @@ export function listMilestones(st: MilestoneState): MilestoneInfo {
   const rewards: RewardDef[] = [];
   const scores: number[] = [];
   for (const r of REWARDS) {
+    if (r.kind === 'honour') continue;
     if (st.unlocked.has(r.id)) continue;
     let progress = 1;
     for (const c of r.conds) {
@@ -198,7 +354,16 @@ export function listMilestones(st: MilestoneState): MilestoneInfo {
 
 function fmt(c: Cond, v: number): string {
   if (c.fmt === 'bool') return `${c.label}: ${v >= c.need ? 'yes' : 'no'}`;
+  if (c.fmt === 'decimal' || c.fmt === 'percent' || c.atMost) {
+    const show = (n: number) => c.fmt === 'percent' ? `${(n * 100).toFixed(1)}%` : c.fmt === 'decimal' ? n.toFixed(2) : String(n);
+    return `${c.label} ${show(v)}; needs ${c.below ? '< ' : c.atMost ? '≤ ' : ''}${show(c.need)}`;
+  }
   return `${c.label} ${Math.floor(v).toLocaleString('en-US')} / ${c.need.toLocaleString('en-US')}`;
+}
+
+function conditionProgress(c: Cond, v: number): number {
+  if (c.below && v >= c.need) return Math.min(0.99, c.need / v);
+  return Math.max(0, Math.min(1, c.atMost ? (v <= c.need ? 1 : c.need / v) : v / c.need));
 }
 
 /** Reward list for the UI (all rewards, with progress). */
@@ -208,21 +373,24 @@ export function listRewards(state: CityState): RewardInfo[] {
     const parts: string[] = [];
     for (const c of r.conds) {
       const v = c.value(state);
-      progress = Math.min(progress, Math.max(0, Math.min(1, v / c.need)));
-      parts.push(fmt(c, v));
+      progress = Math.min(progress, conditionProgress(c, v));
+      if (c !== inhabited || v < c.need) parts.push(fmt(c, v));
     }
-    const unlocked = state.unlocked.has(r.id) || !!state.config.sandbox;
+    const unlocked = state.unlocked.has(r.id) || (r.kind !== 'honour' && !!state.config.sandbox);
     return {
       id: r.id, name: r.name, description: r.description, kind: r.kind, defIds: r.defIds, unlocked,
       built: r.defIds.some((d) => (state.milestones[d] ?? 0) > 0),
       progress: unlocked ? 1 : progress,
-      progressText: unlocked ? 'Unlocked' : parts.join(' · '),
+      progressText: unlocked ? (r.kind === 'honour' ? 'Earned · Commemorative plaque awarded' : 'Unlocked') : parts.join(' · '),
     };
   });
 }
 
 export function rewardConditionsMet(state: CityState, r: RewardDef): boolean {
-  for (const c of r.conds) if (c.value(state) < c.need) return false;
+  for (const c of r.conds) {
+    const v = c.value(state);
+    if (c.below ? v >= c.need : c.atMost ? v > c.need : v < c.need) return false;
+  }
   return true;
 }
 
@@ -237,7 +405,7 @@ export function rewardsSystem(rt: EconRuntime): SimSystem {
     }
     for (const r of REWARDS) {
       if (st.unlocked.has(r.id)) continue;
-      if (!st.config.sandbox && !rewardConditionsMet(st, r)) continue;
+      if ((r.kind === 'honour' || !st.config.sandbox) && !rewardConditionsMet(st, r)) continue;
       st.unlocked.add(r.id);
       if (!st.announced.has(r.id)) {
         st.announced.add(r.id);
@@ -255,9 +423,33 @@ export function rewardsSystem(rt: EconRuntime): SimSystem {
     name: 'economy.rewards',
     init(sim) {
       rt.attach(sim);
+      updateHonours(sim.state, false);
+      updateApprovalReward(sim.state, false);
       check(sim, true);
     },
+    daily(sim) {
+      const st = sim.state, data = honoursData(st);
+      updateApprovalReward(st, false);
+      if (data && (st.stats.population < 250000 || st.stats.avgAir > 0.10)) {
+        data.cleanAir = 0;
+        data.cleanAirInterrupted = true;
+      }
+      if (data && (st.stats.population < 100000 || st.stats.emergency.month.failed)) {
+        data.safeCity = 0;
+        data.safeCityInterrupted = true;
+      }
+      if (data && (st.stats.population < 500000 || st.stats.unemployment > 0.03)) {
+        data.employment = 0;
+        data.employmentInterrupted = true;
+      }
+      if (data && (st.budget.loans.length || highestTax(st) > 9 || (st.budget.curIncome['oneoff:loan'] ?? 0) > 0)) {
+        data.books = 0;
+        data.booksInterrupted = true;
+      }
+    },
     monthly(sim) {
+      updateHonours(sim.state, true);
+      updateApprovalReward(sim.state, true);
       check(sim, false);
     },
   };
