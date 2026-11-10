@@ -37,6 +37,7 @@ import {
 } from './economy/tuning';
 import { countFront, demolishFee, levelLot, lotSlope, lotTouchesRoad, placeBuilding, removeBuilding } from './economy/buildings';
 import { updateNeighborConnections } from './economy/connections';
+import { claimFirst } from './economy/firsts';
 import { positionVariant, spreadVariant } from './economy/growth';
 import { MANIFEST_BY_ID } from '../assets/manifest';
 import { blockedByOrdinance, getOrdinance, setOrdinanceEnabled } from './economy/ordinances';
@@ -442,7 +443,9 @@ export class CityActions implements CityActionsApi {
   private afterNetworkChange(): void {
     const before = this.st.neighborConnections.length;
     if (updateNeighborConnections(this.st) && this.st.neighborConnections.length > before) {
-      this.sim.notify('New neighbor connection! Trade with the region boosts demand.', 'good', this.st.neighborConnections.at(-1)?.x, this.st.neighborConnections.at(-1)?.z, 'transport');
+      // (T096: the city's first connection carries ref.first, once: economy/firsts.ts)
+      const c = this.st.neighborConnections.at(-1);
+      this.sim.notify('New neighbor connection! Trade with the region boosts demand.', 'good', c?.x, c?.z, 'transport', claimFirst(this.st, 'neighbor', c?.x, c?.z));
     }
   }
 
@@ -691,7 +694,8 @@ export class CityActions implements CityActionsApi {
     if (zoneCleared) this.sim.events.emit('zoneChanged', rect);
     if (treesCleared) this.sim.events.emit('treesChanged', rect);
     if (def.unique && (def.category === 'reward' || def.category === 'landmark' || def.category === 'civic')) {
-      this.sim.notify(`${def.name} opens in ${st.config.name}!`, 'good', x + (w >> 1), z + (d >> 1), 'planning');
+      // (T096: its first opening in this city carries ref.first, once: economy/firsts.ts)
+      this.sim.notify(`${def.name} opens in ${st.config.name}!`, 'good', x + (w >> 1), z + (d >> 1), 'planning', claimFirst(st, `unique:${def.id}`, x + (w >> 1), z + (d >> 1), id));
     }
     return { ok: true, cost, affected: 1, cells, reason: warn };
   }
