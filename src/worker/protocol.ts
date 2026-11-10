@@ -98,7 +98,8 @@ export interface EmergencyStream {
   stVer: number; stations?: StationRow[];
 }
 export interface TrafficStream { routes?: SampleRoute[]; trucks?: { idx: Uint32Array; val: Float32Array } }
-export interface Streams { emergency?: EmergencyStream; traffic?: TrafficStream; disasters?: ActiveDisaster[] }
+export interface UtilitiesStream { plantLoads: { ids: Uint32Array; loads: Float32Array } }
+export interface Streams { emergency?: EmergencyStream; traffic?: TrafficStream; utilities?: UtilitiesStream; disasters?: ActiveDisaster[] }
 export interface WorkerStats { busy: number; msPerDay: number; units: Record<string, number>; queue: number }
 export const PLAIN_KEYS = ['funds', 'nextBuildingId', 'stats', 'budget', 'milestones', 'neighborConnections'] as const;
 export const SYSTEM_KEYS = ['economy', 'infraVersion', 'infraLayers', 'advisors', 'regionJobs', 'regionWorkers', 'onboarding'] as const;

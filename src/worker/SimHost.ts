@@ -217,6 +217,8 @@ export interface TrafficView {
 }
 export interface UtilitiesView {
   waterQualityAt(sim: Pick<Simulation, 'state'>, cell: number): number;
+  /** Optional until T061 adds packet-host forwarding; absent means unavailable. */
+  plantLoad?(id: number): number | null;
 }
 
 /** A pointer stroke (or one off-pointer commit), including acknowledgements arriving after release. */
@@ -574,6 +576,10 @@ function localViews(sim: Simulation): { emergency: EmergencyView; traffic: Traff
     },
     utilities: {
       waterQualityAt: (_source, cell) => sim.getSystem<UtilitiesSystem>('utilities')?.waterQualityAt(sim, cell) ?? sim.state.stats.tapWater ?? 1,
+      plantLoad: (id) => {
+        const load = sim.getSystem<UtilitiesSystem>('utilities')?.plantLoad(id);
+        return load !== undefined && Number.isFinite(load) && load >= 0 ? load : null;
+      },
     },
   };
 }

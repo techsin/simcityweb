@@ -85,6 +85,7 @@ export class Replica {
   private stations: StationRow[] = [];
   private routes: SampleRoute[] = [];
   private trucks: Float32Array | null = null;
+  private plantLoads = new Map<number, number>();
   private rasters = new Map<string, RasterPatch>();
   private loaded = new Set<string>();
   private lastSeq = 0;
@@ -125,6 +126,7 @@ export class Replica {
   get seq(): number { return this.lastSeq; }
   get emergencyActive(): boolean { return this.emergencyData.active; }
   get emergencyLayersReady(): boolean { return this.emergencyData.layersReady; }
+  plantLoad(id: number): number | null { return this.plantLoads.get(id) ?? null; }
   layerReady(name: LayerName): boolean { return this.loaded.has(name); }
   raster(overlay: number, variant: number): RasterPatch | null { return this.rasters.get(`${overlay}:${variant}`) ?? null; }
 
@@ -137,6 +139,7 @@ export class Replica {
     this.lastSeq = 0; this.cmd = ready.cmd; this.applied = ready.cmd; this.diverged = false; this.cause = null;
     this.clock = copyOwned(ready.clock); fresh.day = this.clock.day; this.newsSeq = fresh.news.length;
     this.incidentById.clear(); this.liveIncidents = []; this.stations = []; this.routes = []; this.trucks = null;
+    this.plantLoads.clear();
     this.emergencyData = { incidents: [], vehicles: [], active: false, layersReady: false, stVer: 0 };
     this.rasters.clear(); this.loaded.clear(); this.disasters = [];
     for (const [name, value] of Object.entries(ready.snapshot.layers)) {
@@ -233,6 +236,12 @@ export class Replica {
     if (p.traffic?.trucks) {
       this.trucks ??= new Float32Array(this.state.cells);
       this.trucks.fill(0); applySparse(this.trucks, p.traffic.trucks.idx, p.traffic.trucks.val);
+    }
+    if (p.utilities) {
+      const { ids, loads } = p.utilities.plantLoads;
+      if (ids.length !== loads.length) throw new Error('Invalid plant load snapshot');
+      this.plantLoads.clear();
+      for (let i = 0; i < ids.length; i++) if (Number.isFinite(loads[i]) && loads[i] >= 0) this.plantLoads.set(ids[i], loads[i]);
     }
     if (p.disasters) mergePlain(this.disasters, p.disasters);
   }

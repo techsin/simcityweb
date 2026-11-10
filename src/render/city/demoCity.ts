@@ -7,6 +7,7 @@ import { Network, Zone } from '../../core/types';
 import { RNG } from '../../core/rng';
 import { CELL_SIZE } from '../../core/constants';
 import { defaultCityConfig } from '../../sim/config';
+import { getDef } from '../../sim/catalog';
 import { createCityState, computeWater } from '../../sim/terrainGen';
 import { BF, type Building, type CityState } from '../../sim/CityState';
 import { MANIFEST_BY_ID } from '../../assets/manifest';
@@ -236,6 +237,7 @@ function tryPlace(st: CityState, rng: RNG, id: string, fx: number, fz: number, r
     id: nextId++, def: id, x: x0, z: z0, w, d, rot, variant: rng.int(0, 7), pop: 0, jobs: 0, capacity: 10, wealth: 1,
     built: 1, age: 100, flags: BF.Powered | BF.Watered, baseY, health: 1, unhappy: 0,
   };
+  if (e.group === 'industrial' || getDef(id)?.category === 'power') b.jobs = b.capacity;
   if (plop) b.flags |= BF.Plopped;
   const r = rng.next();
   if (!plop) {
