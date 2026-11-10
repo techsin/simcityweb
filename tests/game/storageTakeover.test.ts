@@ -36,7 +36,8 @@ vi.mock('../../src/region/mapPreview', () => ({
   cityThumbnail: () => 'thumb', drawCityMap: () => undefined, normalizeThumbnail: async (t: string) => t,
   regionPreviewDataUrl: () => 'preview', regionPreviewKey: () => 'key',
 }));
-vi.mock('../../src/region/settings', () => ({
+vi.mock('../../src/region/settings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/region/settings')>()), // the defaults and checks src/game/settings.ts reads
   applyFirstRunQuality: () => false, cityOverrides: () => ({}), loadSettings: () => ({ quality: 'medium' }),
   saveSettings: () => undefined, takeCityChanges: () => undefined,
 }));
