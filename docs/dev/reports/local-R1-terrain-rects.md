@@ -135,7 +135,8 @@ Oct 27, src/worker.
   - a moving tornado's tree damage reaches the texture at its end event (`disasters.ts:336`, a radius-42 square);
   - `treesDamaged` (`disasters.ts:331`) is sim-neutral, and WorldView ignores it by decision;
   - the 3D trees behave the same.
-- **One finding outside R1, for T034 (NOTE-041 item 2): the loopback resync's state handoff is still missing.**
+- **One finding outside R1, for T034 (NOTE-041 item 2): the loopback resync's state handoff is still missing.** (Closed
+  since: T034 landed the suggested fix in dev; see the cloud carry-over, item 5.)
   - `worker/replica.ts:132-135` adopts a fresh state on a later Ready or resync.
   - `reset` reaches WorldView, but `WorldView.ts:388` rebuilds with its old state object.
   - So after a forced resync, every renderer keeps reading the detached old rasters.
@@ -164,7 +165,7 @@ Table (paths under `src/`):
 | `game/fallback/FallbackActions.ts:308` | trees | `treesChanged` 311; refusal (302) and preview (303) before any write | OK (fixed) |
 | `worker/protocol.ts:236` via `worker/replica.ts:161` | primary layer patches | replica re-fires the original rects (`replica.ts:170,267,274`) | OK |
 | `worker/replica.ts:281` | building index replay | `buildingAdded`/`buildingRemoved` 274, whole footprint | OK |
-| `worker/replica.ts:132-135` (a later Ready/resync) | replaces the state | `reset` → `WorldView.ts:388` keeps the old state | MISSING (T034's handoff) |
+| `worker/replica.ts:132-135` (a later Ready/resync) | replaces the state | `reset` → `WorldView.ts:388` keeps the old state | MISSING (T034's handoff); **closed in dev by T034** (`WorldView.ts:393` reads `getState`, cloud item 5) |
 | CityState / terrainGen / serialize / recoveryCodec / bundleCodec / the first replica adoption | all layers | fresh state, then a full construction | INIT-ONLY |
 
 ## Evidence
@@ -318,7 +319,164 @@ has not moved since `255239b`. Dev had moved 93 commits to `87c7c9c` (T052, T034
 | 11 | Gates on the tree that merges: tsc, the full vitest, the bot identical to dev's | green at `90f153f` (dev `50a6b29`); not run on dev `87c7c9c` | rerun all three on `7139bec`, the bot against a clean export of `87c7c9c` |
 | 12 | The writer audit holds on the merged tree | re-swept at `90f153f` | re-sweep dev's new src/sim, src/worker and src/game hunks (T034's real Web Worker host, T053, the disasters `live` mode) |
 | 13 | NOTE-048: the cloud checks the resync rebuild (`WorldView.ts:388` kept the old state) when T034 lands, and fixes it in a follow-up if it is still open | open in the audit table | check dev's T034 merge |
-| 14 | Browser checks | the Nov 3-4 SwiftShader attempts were cut short (below); NOTE-059 then cancelled R1's SwiftShader re-check: desktop lanes verified on the real GPU get no cloud browser check | none here; review the desktop's evidence images and numbers instead (task: "look at the evidence images") |
+| 14 | Browser checks | the Nov 3-4 SwiftShader attempts were partial (item 7); NOTE-059 then cancelled R1's SwiftShader re-check: desktop lanes verified on the real GPU get no cloud browser check | none here; review the desktop's evidence images and numbers instead (task: "look at the evidence images") |
 | 15 | Each new test fails with its fix reverted | done at `90f153f` (mutation table, item 3) | check that nothing the mutants touch changed in the merge |
 | 16 | The real-GPU gate items left open: every frame ≤ 0.15 ms after `888ba62`; a Chrome trace for the uploads (the desktop wrapped `texSubImage2D`); the trees row has 7 reps, not ≥ 8 | open | real GPU only: remaining items, not blockers |
-| 17 | The report's final section and the `.done` line | WIP | finish them |
+| 17 | The report's final section and the `.done` line | WIP | finish them (items 5-12 below; the `.done` line appended) |
+
+### What the cloud did after the resume (Nov 9)
+
+**5. The dev merge and the audit re-sweep (gap items 12, 13, 15).** Dev `87c7c9c` is merged at `7139bec` with no
+conflicts. Dev then moved on to `1c2019c`, merged at `689fa95`, again with no conflicts. That step holds T058's merge,
+NOTE-060 (it lists R1 among the cloud's reviews and asks nothing new of it) and NOTE-061 (every browser check moves to
+the desktop). Its src hunks touch only CityScene's restore and fps sample, Notifications, the region dialogs and
+main.ts, and none of them writes a layer. Between `50a6b29` and `1c2019c`, dev changed none of R1's files:
+`TerrainRenderer.ts`, `FallbackActions.ts`, and the `terrainRects`, `terrainRectsHarness` and `terrainGrowth` tests.
+So the mutation table (item 3) carries over unchanged. Dev's hunks in the audited trees (to `87c7c9c`):
+- **src/sim:** `Simulation.ts`, `scheduler.ts`, `advisors.ts` (T053's stage news), `rewards.ts`, and `disasters.ts`,
+  which adds the host-set `live` flag (O7) at 134-135. That flag picks only whether the daily tick advances a tornado,
+  as `framesActive` did before. None of them writes a layer R1 reads. The two new disasters lines move the audited
+  lines by +2: 321 → 323, 331 → 333, 336 → 338, 407 → 409, 414-416 → 416-418, 435-438 → 437-440. Every other audited
+  file is byte-identical to the desktop's audit tree `af62daf`.
+- **src/worker:** T034's real Web Worker (`simWorker.ts`, `WorkerSimHost.ts`, `workerProtocol.ts`, `protectorProbe.ts`)
+  and small hunks in `LoopbackSimHost.ts`, `protocolInbox.ts` and `replicaSafe.ts`. In the worker, the layers are
+  written by the same sim code under the same `ChangeRecorder` (`simWorker.ts:115`). On main, `WorkerSimHost extends
+  PacketSimHost` (`WorkerSimHost.ts:188`), so its packets go through the same `Replica` that re-fires the recorded
+  rects (`replica.ts`, unchanged). The one new state construction, `simWorker.ts:96` (`deserializeCity` at worker
+  boot), is init-only. A grep of dev's added lines finds no new layer write.
+- **src/game:** `CityScene.ts`, `GameSounds.ts`, `milestones.ts`, `modules.ts`: no layer writes.
+- **The resync handoff (NOTE-048 asked the cloud to check it when T034 landed): closed in dev.**
+  - `WorldView.ts:393` rebuilds from `this.getState?.() ?? this.state` on `reset`.
+  - `CityScene.ts:496` passes `getState: () => this.sim.state`, and `PacketSimHost.state` is the replica's current
+    state (`LoopbackSimHost.ts:243`).
+  - `modules.ts:36` types the option.
+  - `tests/worker/worldResync.test.ts` pins it.
+  - On R1's side, `TerrainRenderer.reset` → `rebuildAll` → `rebuildCells` clears the pending rects before its full
+    refill. The `terrainRects` test "replaces all rasters on a reset with an old rectangle still pending" pins that.
+  - No follow-up is needed.
+
+**6. The code, re-checked once more against three r186 on the merged tree.** `WebGLTextures.updateTexture` (r186,
+lines 797-897) merges two ranges only when both lie in the same texture row (`getRow`, 832-843). It uploads each range
+as one `texSubImage2D` row with `UNPACK_ROW_LENGTH` = the width. `uploadCells` gives one range per union row, in
+texel × 4 units, so no range spans rows. For the R8 textures, three divides by 4 again: the offset and width are in
+texels. `onUpdate` (1399, 1636) fires after each upload and clears the retained rect. The desktop's work was all
+committed (`255239b`, "R1 done"); nothing was saved mid-edit.
+
+**7. The replica path, now pinned by a node test (`fc5b217`, `tests/render/terrainReplica.test.ts`).** The audit
+rows for `replica.ts` were checked by reading only, and no test attached a TerrainRenderer to a replica. Since T034,
+that replica path serves both `?simworker=loopback` and the real worker (`?simworker=1`).
+- **What it runs.** A `LoopbackSimHost` (design cadence) on a 96 map takes these commands through the real
+  command → `ChangeRecorder` → packet → `Replica` path:
+  - every zone type and every network kind;
+  - trees, power lines, a subway, a plop, two bulldozes and a dezone;
+  - terraform lower (water), raise, level and smooth, an edge terraform and an edge road;
+  - 80 randomized multi-command batches;
+  - a meteor triggered in the primary sim, followed for six days.
+- **What it checks.**
+  - After every drained packet, the dirty-rect terrain on `host.events` / `host.state` must equal a full recompute
+    of the replica (`terrainPair`).
+  - At the end, the replica's seven layers must equal the primary's.
+  - Sanity checks: the plop reached the replica, the basin filled with water, the networks were built, and the
+    crater's `terrainChanged` arrived.
+- **Result:** it passes (about 1.5 s of test time).
+- **Mutants** (`r1work/mutate5.mjs`, `mutations5.json`), each applied alone:
+
+| mutant | result |
+|---|---|
+| the replica re-fires a one-cell rect | **fails** (`zone 1: zone byte 1948`) |
+| the replica's rect loses its last two rows and columns | **fails** |
+| the replica drops `treesChanged` | **fails** (`trees: tree byte 5820`) |
+| the replica drops `networkChanged` | passes: equivalent. Each network edit also emits `zoneChanged` and `treesChanged` over the path (`sim/actions.ts` 435-437) |
+| R1 without its one-cell padding | passes: the replica's rects are exact, so the padding only guards future emitters |
+| `TerrainRenderer.ts` reverted to dev | passes, as it must: dev refills the whole map |
+
+- This test pins no fix of its own. It fails when the replica's rects stop covering its patches, which is the risk
+  T021 names ("the full refill hides any write that emits no event, or one whose rect is too small"), here on the
+  bus that worker mode uses.
+
+**8. Browser checks (gap item 14): none run here, by NOTE-059 and NOTE-061.**
+- The lead cancelled R1's SwiftShader re-check: a desktop lane verified on the real GPU gets its evidence reviewed,
+  not re-run. NOTE-061 (Nov 9) moves every browser check to the desktop; cloud chains write a Desktop QA list
+  instead (item 12).
+- Before NOTE-059, this lane's first cloud run had tried SwiftShader:
+  - Nov 3: a base run and a branch run timed out after 600 s waiting for the city (`r1work/browser-devA.log`,
+    `browser-branch.log`).
+  - One base run completed (`r1work/browser-devB.log`, `r1work/shots/devB_*.png`).
+  - Nov 4: one branch LOW run completed (`r1work/b5-branch.log`, `r1work/shots2/`).
+- They are kept only as supplementary evidence:
+  - On SwiftShader, every one of the branch's 11 scripted edits uploaded only the union rows. For example, the plop
+    took 6 rows (109-114) of 6 texels each, the edge raise 9 rows plus the whole N × 4 exit texture, and the dezone
+    4 rows.
+  - After the edits, the GPU readback equals the CPU arrays for all four textures (0 differing texels).
+  - The zone, light and exit textures hash equal to dev's after the same edits: `83bd5ea5`, `d337d2f9`, `cb553ab9`.
+    Dev was read at HIGH and the branch at LOW. These textures hold quality-independent data.
+  - The trees texture cannot be compared across those two runs. Each page load generated a different random map
+    (Larkhollow vs Ravenwick), and dev's planting found no room.
+  - dev's LOW readback in that run read an all-zero zone texture, a harness slip of that first script, so it is not
+    used.
+- Screenshots looked at:
+  - `r1work/shots2/branch_low_sites.png`: the plopped station, the zoned block's tint, the road and the power line
+    in the forest;
+  - `r1work/shots2/branch_low_edge_terrain.png`: the road and rail exit ribbons continuing off the map edge.
+  - Paths are under the scratchpad (`/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/r1work/`).
+
+**9. The desktop's evidence, reviewed (the task: "look at the evidence images").**
+- `local-R1/branch_high_sites.jpg`: the dense year-43 256 city at HIGH after the scripted edits, with no visible tint
+  or forest-texture artefact.
+- `local-R1/branch_low_edge.jpg`: the edited west edge at LOW. The wide road that reaches the edge continues off the
+  map as an exit ribbon into the landscape.
+- `local-R1/diff_aa_low_sites.jpg`: the A/A noise. Scattered red dots sit on animated content (pond water, plazas,
+  traffic on the avenues), denser near the camera, with no block-shaped patch around any edit site. That matches the
+  report's explanation (time-driven animation under a real `performance.now()`).
+- `gpu-texture-readback.json` and `timing-tables.md` agree with the report's tables. The trees row has 7 reps at
+  each quality (the other five rows have 8).
+
+**10. Gates (gap item 11).**
+
+| gate | result |
+|---|---|
+| `npx tsc --noEmit` (sem), `7139bec` and again on `fc5b217` | clean, exit 0 both times |
+| full vitest (lock), `npx vitest run --configLoader runner`, `7139bec` | **239 files passed, 2 skipped; 2,406 tests passed, 7 skipped; 0 failing** (776 s), including `terrainRects` (16) and `terrainGrowth` (1), which have no skip conditions |
+| the bot (lock), `npx tsx tools/simbot.ts --size 128 --years 15 --seed 7`: lane `7139bec` against a clean export of dev `87c7c9c` (`co/r1-devbase`) | **identical: residents [ 61124, 93804, 37971 ] = 192,899** on both; all 101 lines equal once the two timing columns of each year row and the run-timing lines are set aside; `r1work/bot-dev-nov9.txt`, `bot-lane-nov9.txt` |
+| `tests/render/terrainReplica.test.ts` (sem, `--maxWorkers=2`) | 1 passed; the mutants in item 7 |
+| full vitest (lock) on the final head `689fa95` (dev `1c2019c` merged, the replica test included) | **244 files passed, 2 skipped; 2,428 tests passed, 7 skipped; 0 failing** (517 s) |
+| the bot (lock), lane `689fa95` | **residents [ 61124, 93804, 37971 ] = 192,899**, identical to dev `87c7c9c`'s run above (same normalization), and dev `1c2019c` records the same reference (T058's merge line in the carry-over log); `r1work/bot-lane-nov9b.txt` |
+| Task gates: node exactness (`terrainRects` exactness cases, `terrainGrowth` 60 years), range tests (RGBA and Red) | pass in both full runs |
+| Task gates: real-GPU timing ≤ 0.15 ms, Chrome trace, pixel identity | the desktop's results stand (NOTE-059); open items are Q1-Q4 below |
+
+**11. Decisions.**
+- **No browser run on the cloud.** NOTE-059 cancels R1's SwiftShader re-check (a lead decision, after the task file
+  was written). The desktop's real-GPU readback, A/A analysis and timing are the evidence. The earlier SwiftShader
+  runs (item 8) only add support.
+- **Pixel identity is met by "explain each difference".** The plain LOW/HIGH screenshot pairs are not 0 px. The
+  desktop explained every difference as time-driven animation: an A/A pair of the same tree differs as much, one
+  branch/base LOW pair is 0 px, and the GPU texture readback is bit-identical to dev. The conservative reading of the
+  gate's "or explain each difference" accepts that. A frozen page clock (rAF and `performance.now()` both stepped) is
+  what would make a 0-px pair repeatable, on the real GPU.
+- **The edge frame.** NOTE-048 accepts 0.165-0.170 ms as a minor. `888ba62` (item 2) is the optional follow-up, taken
+  because it was contained to the owned file. Its real-GPU confirmation stays a remaining item.
+- **The trees row's 7 reps**, against "≥ 8 reps": every other row has 8, and the 48-frame totals per quality hold.
+  This needs no rerun on its own; the real-GPU rerun below should give the trees row 8 or more.
+- **A node test for the replica path (item 7)** was added, although the task only asks for the direct sim bus. The
+  audit rows for the replica had been checked by reading only, and T034 put that path behind `?simworker=1`. It is a
+  new test file under tests/render (R1's `owns`); no source changed.
+- **T049** (NOTE-057: R1 before T049 on `TerrainRenderer.ts`) is not touched here. Whoever merges T049 after R1
+  merges dev into it.
+
+**12. Remaining, as a Desktop QA list (NOTE-061; real GPU only; none blocks the merge).** Run on dev at R1's merge
+commit, on the RTX 5070 Ti, with the T021 harness from the desktop scratch (`r1browser.mjs`, `r1tables.mjs`,
+`r1run.sh`). Use the same setup as "Real-GPU timing" above: the `vet_s7_y43` save, the sim at speed 0, the art
+harness's manual frame clock, cross-origin isolation, and ABBA order against the commit before the merge.
+
+| # | item | host / flags | expected |
+|---|---|---|---|
+| Q1 | The six scripted events × 8 rounds, LOW and HIGH; cell refills per event frame | default host | every frame ≤ 0.15 ms, including the edge terraforms after `888ba62` (it was 0.165-0.170 ms once in 48 at `255239b`); ≥ 8 ok reps in every row (the trees row had 7: pick a ninth site or retry a refused planting) |
+| Q2 | A Chrome trace (`chrome.tracing` or the Performance panel) of one round, for the uploads | default host | the four cell textures' `texSubImage2D` calls per event frame match the wrapped counts (base 4 calls / 394,240 B; branch 9-28 calls / 144-1,402 B), and no full-texture upload appears on an event frame below half the rows |
+| Q3 | The GPU texture readback after the 48 edits (`gpu-texture-readback.json`'s method) | default host, then `?simworker=1`, then `?simworker=loopback`, if the harness drives the sim through the host | 0 texels differ from the CPU arrays on every host, and each texture's hash is the same on all three hosts and equals the base's |
+| Q4 (optional) | A LOW/HIGH screenshot pair, base vs branch, with `performance.now()` frozen along with rAF | default host | 0 differing pixels, if the lead wants the plain screenshot gate closed as well as the readback |
+
+**Verdict (cloud, Nov 10): ready to merge.**
+- On `cloud/r1` @ `689fa95` (dev `1c2019c` merged), tsc, the full vitest and the bot are green.
+- The bot is identical to dev's.
+- The code and the audit hold on the merged tree, and NOTE-048's resync item is closed in dev.
+- What is left needs the real GPU: Desktop QA Q1-Q4 above.
