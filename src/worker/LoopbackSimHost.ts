@@ -207,6 +207,7 @@ export class PacketSimHost implements SimHost {
     this.policy = {
       get alerts() { return host.replica.policy.alerts; }, get live() { return host.replica.policy.live; },
       get toast() { return host.replica.policy.toast; }, get warn() { return host.replica.policy.warn; },
+      get teaching() { return host.replica.policy.teaching; },
       subscribe(listener, signal) {
         host.policies.get(listener)?.();
         const off = () => { host.policies.delete(listener); signal.removeEventListener('abort', off); };

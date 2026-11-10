@@ -157,8 +157,8 @@ export function installSimWorker(scope: SimWorkerScope, modules: SimModules = { 
     schedulerOf(c.sim).hostDriven = true;
     setLive(!m.deterministic);
     recorder = new ChangeRecorder(c.sim, { dev: m.flags.dev, signal: abort.signal, policy: () => {
-      const { alerts, live, toast, warn } = c.livePolicy.view;
-      return { alerts: alerts.map((a) => ({ ...a })), live, toast, warn };
+      const { alerts, live, toast, warn, teaching } = c.livePolicy.view;
+      return { alerts: alerts.map((a) => ({ ...a })), live, toast, warn, ...(teaching ? { teaching } : {}) };
     } });
     const inboxStore = store = m.city.kind === 'idb' ? new WorkerIdbStore(c, record, nextUnit) : new MainStore(m.city);
     const p = { regionId: m.city.regionId, tileKey: m.city.tileKey, regionName: m.regionName };

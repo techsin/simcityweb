@@ -77,8 +77,8 @@ export class LoopbackCore {
     this.core.sim.speed = opts.initialSpeed ?? 1;
     this.core.boot(opts.rctx ?? null, opts.modules ?? { createSystems, CityActions });
     this.recorder = new ChangeRecorder(this.core.sim, { policy: () => {
-      const { alerts, live, toast, warn } = this.core.livePolicy.view;
-      return { alerts: alerts.map((a) => ({ ...a })), live, toast, warn };
+      const { alerts, live, toast, warn, teaching } = this.core.livePolicy.view;
+      return { alerts: alerts.map((a) => ({ ...a })), live, toast, warn, ...(teaching ? { teaching } : {}) };
     }, ...opts.recorder, now: () => this.now(), signal: this.abort.signal });
     this.replica = opts.replicaInstance ?? new Replica(opts.replica);
     this.inbox = new ProtocolInbox(this.core, this.recorder, { now: () => this.now(), flush: (force) => this.flush(force),
