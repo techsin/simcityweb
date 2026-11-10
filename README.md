@@ -67,7 +67,7 @@ Camera letter keys use physical keyboard positions. Tool and panel letters follo
 | Right-drag | Orbit and tilt |
 | Q / E | Rotate by 90 degrees |
 | Page Up / Page Down | Tilt |
-| Mouse wheel; + / − | Zoom; a terrain brush uses + / − for brush size instead |
+| Mouse wheel; + / - | Zoom; a terrain or tree brush (main-row + / -) resizes instead. Numeric keypad + / - still zooms. |
 | Home | Recenter the camera |
 | Left-click with Query; left-drag with Query | Inspect; pan |
 | Left-click or left-drag with a building tool | Place a building or draw an area/path |
@@ -90,28 +90,28 @@ Camera letter keys use physical keyboard positions. Tool and panel letters follo
 | M / G / J | Budget / graphs / city statistics |
 | N / O / Y / P | Advisors & news / data views / ordinances / demographics |
 
-On the region map, left-drag pans, right-drag rotates and the wheel zooms. Q/E rotate by 45 degrees there. Home resets the region camera. Click a tile to select it.
+On the region map, right-drag rotates and the wheel zooms. Q/E rotate by 45 degrees there. Home resets the region camera. Left-drag or the arrow keys pan. Click a tile to select it, double-click to play its city or found one, Esc to deselect.
 
 ## Settings
 
-Open Settings from the title screen or the city pause menu. Settings are stored in this browser. The city panel offers:
+Open Settings from the title screen, the region screen's gear, the city top bar's gear, or the pause menu. Settings are stored in this browser. The title and region Settings dialog also offers **Play music**, **Mute all** and **Default quality**. The city panel offers:
 
 - **Graphics:** Low, Medium, High or Ultra quality; day/night cycle or a fixed hour. The first run chooses a quality preset from the device.
 - **Gameplay:** autosave Off, every 3 or 6 game months, or yearly; pause when hidden; New Year Cinematic, Fireworks or Off; Milestones or Every year show pacing; show camera on/off. The normal app autosave default is 3 game months.
-- **Emergencies:** Live speed, Pause or Keep going when manual dispatch is needed; Major or All alerts; LIVE slowdown from 1 to 5 times slower.
+- **Emergencies:** Live speed, Pause or Keep going when manual dispatch is needed; Major or All alerts; LIVE slowdown from normal speed to 5 times slower.
 - **Camera and interface:** edge scrolling, building grid, UI scale from 70% to 150%, notifications and the FPS display.
 - **Audio:** master, music, effects and ambience volumes; interface and hover sounds; pauses between songs; background muting; music playback and track selection; now-playing pop-ups.
 
 ## URL options
 
-Append these to the game URL. Join options with `&`, for example `?simworker=1&simwasm=blur:wasm`.
+Append these to the game URL. Join options with `&`, for example `?simworker=1&simwasm=blur:auto`.
 
 | Option | Effect |
 | --- | --- |
 | `simworker=1` | Opt in to running the simulation in a dedicated Web Worker. It remains opt-in until Worker step W1.4. A worker boot failure falls back to the main thread. |
 | `simworker=0` | Use the main thread, which is the current default. |
 | `simworker=loopback` | Diagnostic mode: run the worker protocol on the main thread. |
-| `simwasm=blur:wasm` | Opt in to the WebAssembly blur kernel. Blur uses JavaScript by default. |
+| `simwasm=blur:auto` | Use the WebAssembly blur kernel when ready and JavaScript otherwise. Blur uses JavaScript by default. |
 | `simwasm=js` | Keep simulation kernels on JavaScript. |
 
 The following are disposable testing shortcuts. **Reloading them deletes and recreates their test region.** Remove the shortcut before continuing a saved game through the title screen.
@@ -126,17 +126,18 @@ For these shortcuts, difficulty values are `easy`, `medium`, `hard`, `sandbox`. 
 
 ## Saving and export
 
-Save with Ctrl+S/Cmd+S, the save indicator or **Save city** in the pause menu. **Save & exit to region** saves before returning to the map. Autosave uses the interval in Settings. The app also saves when the tab is hidden and offers recovery when it finds newer unsaved progress.
+Save with Ctrl+S/Cmd+S, the save indicator or **Save city** in the pause menu. **Save & exit to region** saves before returning to the map. Autosave uses the interval in Settings, at most once a minute. The app also saves when the tab is hidden and offers recovery when it finds newer unsaved progress. Only one browser tab can save a region at a time; another tab opens it read-only.
 
-Cities and regions are stored locally in IndexedDB. Use **Export** on the region screen to download a `.metropolis` file containing the region and all its saved cities. Use **Import** on the region screen or **Import file…** in Load Region to restore one. An import with an existing region ID receives a new ID by default.
+Cities and regions are stored locally in IndexedDB. On the region screen, use the download icon (**Export region (.metropolis)**) to download a `.metropolis` file containing the region and all its saved cities. Load Region also has a download icon (**Export .metropolis file**). Use the region screen's upload icon (**Import region file**) or **Import file…** in Load Region to restore one. An import with an existing region ID receives a new ID by default.
 
 ## Known limits
 
 - Without WebGL2, the region loader can remain stuck. WebGL2 is required for this build.
 - When IndexedDB is unavailable, storage falls back to memory. That progress is lost on reload. Clearing browser storage also removes local saves; region exports provide a separate copy.
+- If browser storage fills up, the **Storage full** dialog offers **Export** and **Manage storage**.
 - Export uses gzip when the browser supports it. Importing a compressed export requires `DecompressionStream` support.
 - Worker mode is still opt-in. Recovery after closing a tab can lose progress since the last save or recovery snapshot.
-- Busy cities can repeatedly enter emergency LIVE speed. **Keep going** in Settings leaves the chosen simulation speed in place.
+- Busy cities can repeatedly enter emergency LIVE speed. **Keep going** in Settings leaves the chosen simulation speed in place, apart from a one-time tip on the first emergency.
 - Large cities and high graphics settings need more resources. Key rebinding and separate text-size, motion and colour-vision controls are still pending.
 
 ## Release measurements

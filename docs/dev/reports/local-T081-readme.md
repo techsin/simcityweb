@@ -1,6 +1,6 @@
 # local-T081-readme
 
-Docs-only work on `local/T081-readme`, based on `146c885` plus the committed task file. Changes are uncommitted.
+Docs-only work on `local/T081-readme`, based on `146c885` plus the committed task file. Committed in b725acd.
 
 ## Files
 
@@ -13,7 +13,7 @@ Docs-only work on `local/T081-readme`, based on `146c885` plus the committed tas
 
 Read the committed `docs/dev/queue/T081-readme.md`, `docs/POLISH_PLAN.md` §7.2–§7.4 in full, and `docs/WORKER_DESIGN.md`, including host selection and the W1.2–W1.4 migration rows. No `AGENTS.md` or `CLAUDE.md` was found in the repository or its applicable ancestor directories.
 
-The README follows the current code rather than future controls listed in the plan. Source references below are paths and line locations in this worktree; functions are included where useful.
+The README follows the code rather than future controls listed in the plan. Source references below are paths and line locations in this worktree unless marked as origin; functions are included where useful. The review fix round below records additions checked against origin without merging.
 
 ## Sources by README section
 
@@ -42,7 +42,7 @@ The README follows the current code rather than future controls listed in the pl
 | W/A/S/D, arrows | `src/render/world/CameraController.ts:371–385,465–477`; physical `KeyboardEvent.code` positions. |
 | Middle-drag, Shift+right-drag, right-drag | `src/render/world/CameraController.ts:263–277`. |
 | Q/E, Page Up/Down, Home | `src/render/world/CameraController.ts:382–392,479–481`; city rotate step is 90 degrees. |
-| Wheel, +/− including keypad zoom | `src/render/world/CameraController.ts:349–356,382,482–483`; brush override `src/game/tools/BrushTool.ts:114–127`. |
+| Wheel, + / - including keypad zoom | `src/render/world/CameraController.ts:349–356,382,482–483`; terrain/tree brush override `src/game/tools/BrushTool.ts:114–127` handles main-row `Equal`/`Minus` only; `src/game/toolCatalog.ts:219` makes Plant trees a BrushTool. Numeric keypad + / - still zooms. |
 | Query click / left-drag | `src/game/tools/QueryTool.ts:111–138`: inspect or pan. |
 | Build click / drag | `src/game/tools/ToolController.ts:45–62,95–98`, `src/game/tools/PlopTool.ts`, `ZoneTool.ts`, `NetworkTool.ts`: pointer forwarding to placement/area/path tools. |
 | Space; 1/2/3 and numeric keypad | `src/game/CityScene.ts:967–981`; normal/fast/ultra also listed in `src/ui/Modals.ts:152–153`. |
@@ -57,18 +57,19 @@ The README follows the current code rather than future controls listed in the pl
 | Right-click cancel drag | `src/game/tools/ToolController.ts:48–50,68–80`. Does not claim a universal right-click deselect. |
 | M/G/J/N/O/Y/P panels | `src/game/toolCatalog.ts:250–257` `PANEL_HOTKEYS`; `src/game/CityScene.ts:1001–1004`. |
 | Text-field behavior and letter-key distinction | `src/game/CityScene.ts:915–916,988–990`; `src/render/world/CameraController.ts:371–380`; `src/ui/Modals.ts:245`. |
-| Region left/right drag, wheel, Q/E 45 degrees, Home, tile click | `src/region/RegionView.ts:154–190,202–206`; these differ from city camera controls. |
+| Region left/right drag, arrows, wheel, Q/E 45 degrees, Home, tile click/double-click, Esc | `src/region/RegionView.ts:154–190,202–206`; origin `src/region/RegionScreen.ts:59–63,101`: Esc deselects, double-click plays a city or opens founding on an empty writable tile. These differ from city camera controls. |
 
 ## Every documented setting
 
 | README control or default | Actual source |
 | --- | --- |
+| Settings entry points; title/region Play music, Mute all and Default quality | Origin `src/region/RegionScreen.ts:136`, `src/ui/TopBar.ts:394–395`, `src/ui/Modals.ts` pause-menu Settings, `src/region/ui/dialogs.ts:17–99`: gear buttons, pause menu and title/region settings dialog. `dialogs.ts:35,49` names Play music, Mute all and Default quality. |
 | Low/Medium/High/Ultra, day/night, fixed hour | `src/ui/panels/SettingsPanel.ts:49–61,81–85`; defaults `src/game/settings.ts:85–88`. |
 | First-run quality choice | `src/region/settings.ts:124–136` `applyFirstRunQuality`; `src/render/world/quality.ts:167–173` `detectQuality`. No GPU benchmark or guaranteed FPS claimed. |
 | Autosave Off / 3 mo / 6 mo / yearly | `src/ui/panels/SettingsPanel.ts:64,87`; app default 3 in `src/region/settings.ts:62–64`, passed through `cityOverrides` and CityScene settings. |
 | Pause when hidden | `src/ui/panels/SettingsPanel.ts:91`; `src/game/CityScene.ts:1016–1027`. |
 | New Year Cinematic / Fireworks / Off; Milestones / Every year; show camera | `src/ui/panels/SettingsPanel.ts:61–63,88–90`; `src/game/NewYear.ts:291–324`. |
-| Emergency Live speed / Pause / Keep going; Major / All; slowdown 1–5 | `src/ui/panels/SettingsPanel.ts:93–95`; types/defaults in `src/game/settings.ts:74,105–107`; policy in `src/game/emergencyPolicy.ts`. |
+| Emergency Live speed / Pause / Keep going; Major / All; slowdown from normal speed to 5 times slower | `src/ui/panels/SettingsPanel.ts:93–95` labels the low end `Normal 1x`; types/defaults in `src/game/settings.ts:74,105–107`; policy in `src/game/emergencyPolicy.ts`. |
 | Edge scrolling; building grid | `src/ui/panels/SettingsPanel.ts:97–98`; `src/game/CityScene.ts:1301–1302`. |
 | UI scale 70–150%; notifications; FPS | `src/ui/panels/SettingsPanel.ts:100–102`; `src/region/settings.ts:23` `UI_SCALE`; `src/game/CityScene.ts:1304–1306`; notifications setting read in `src/ui/Notifications.ts`. |
 | Master/music/effects/ambience volumes | `src/ui/panels/SettingsPanel.ts:104–107`; `src/game/CityScene.ts:1288–1307` `applySettings`. |
@@ -83,12 +84,35 @@ The README follows the current code rather than future controls listed in the pl
 | `simworker=1`; boot fallback | `src/main.ts:154–157` and worker boot/fallback path; W1.2/W1.4 in `docs/WORKER_DESIGN.md` §6. |
 | `simworker=0`; default main | `src/main.ts:155` exact equality to `1`; `src/game/CityScene.ts:201` otherwise selects local unless loopback. |
 | `simworker=loopback` | `src/game/CityScene.ts:201`. |
-| `simwasm=blur:wasm`, `simwasm=js` | `src/wasm/simWasm.ts:120–144,173–208` parser/page flag; `src/wasm/simWasm.ts:106,239` blur JS default; `src/worker/SimCore.ts:35,79` page flag initialization; `src/wasm/kernels/blur.ts` binding. |
+| `simwasm=blur:auto`, `simwasm=js` | `src/wasm/simWasm.ts:120–144,166–170,173–208,235–242` parser/page flag and per-kernel auto preference; `src/wasm/simWasm.ts:106,239` blur JS default; `src/wasm/simWasm.ts:484–508` `KernelSlot.recompute`: auto returns the available WASM instance or null for the JS fallback; forced WASM throws when unavailable. `src/worker/SimCore.ts:35,79` page flag initialization; `src/wasm/kernels/blur.ts` binding. |
 | `quickstart=1`; `size`, `seed`, `difficulty`, `terrain`, `climate` | `src/main.ts:265,1006–1031`. Size aliases are in its mapping. `terrain=region` leaves the tile-derived terrain. `deleteRegion('quickstart')` at line 1013 supports the adjacent reload warning. |
 | `region=1`, `newcity=1`; `preset`, `seed`, `demo=1`, `cities` | `src/main.ts:266,979–1003`. `deleteRegion(id)` at line 985 supports the adjacent reload warning. |
 | Difficulty/terrain/climate values, preset IDs | `src/core/types.ts:83–85`; `src/region/types.ts:7`; `src/region/RegionModel.ts:37–45`. |
 
-The parser also accepts broader WASM preference forms. The README gives only the useful JS fallback and explicit blur opt-in. `simdev=1` is a worker audit/protector switch for QA (`src/main.ts:156–157`), so it is not offered as a player setting.
+The parser also accepts broader WASM preference forms. The README gives only the JS selection and the blur auto opt-in with fallback. Forced `blur:wasm` has no fallback and is not offered to players. `simdev=1` is a worker audit/protector switch for QA (`src/main.ts:156–157`), so it is not offered as a player setting.
+
+## Review fix round
+
+Read `REVIEW-T081.md` in the supplied scratch folder in full. Applied requested minors 1, 2, 3, 5 and 6 to README/report only. These fix-round edits are uncommitted.
+
+- Minor 1: changed the URL example and player option to `simwasm=blur:auto`, with WASM-when-ready/JS-otherwise wording; removed the forced value from the README.
+- Minor 2: named the region download/upload buttons by tooltip, added Load Region's export download tooltip, all four Settings entry points, the title/region dialog's Play music / Mute all / Default quality controls, and the corrected normal-speed low end of LIVE slowdown.
+- Minor 3(a–e): documented terrain and tree brush size, main-row versus numeric keypad + / -, region arrows/double-click/Esc, and used ASCII "-" for the key.
+- Minor 4: Motion remains with whichever of T078 and T081 merges second; that lane updates the README Settings list and Known limits. No Motion setting or pending-limit change was made in this fix round.
+- Minor 6: corrected line 3 to record the round-1 commit, `b725acd`.
+
+For minor 5, read the following directly with `git show origin/claude/beautiful-johnson-u2jqoz:<file>`. The remote-tracking ref was `41fcecc`. No fetch, merge or source changes were made.
+
+| Added wording | Origin evidence |
+| --- | --- |
+| Only one browser tab can save a region; another opens read-only | `src/region/ui/SaveStatus.ts:63–66`: "Open in another tab" and cannot-save tooltip; `src/ui/Modals.ts:34–37`: `regionSaveAccess()` disables Save city and changes the exit label to Exit to region; `src/ui/StorageDialog.ts:317–354`, `RegionStorageSession`, and `src/save/db.ts:277–292`, `regionSaveAccess` / `requireRegionSaveAccess`, enforce region ownership. |
+| Autosave runs at most once a minute | `src/game/CityScene.ts:110,1041–1044,1064`: `AUTOSAVE_FLOOR_MS = 60_000`, `onMonth` checks elapsed time since the last save, and automatic save checks the same floor. |
+| Storage full offers Export and Manage storage | `src/ui/StorageDialog.ts:79–85`, `showStorageError`: quota errors show those actions and the Storage full heading. |
+| Keep going has a one-time first-emergency tip exception | `src/ui/EmergencyBanner.ts:746–759`, `sendSettings`: teaching enabled only while tips are on and E1a is unseen; `src/game/emergencyPolicy.ts:30–43,89–95,114,159–163`: the first lesson is latched once and holds speed at zero even when the regular policy is `ignore`. |
+
+Other reviewed tooltip sources on the same origin ref: `src/region/RegionScreen.ts:133–136` (Export region (.metropolis), Import region file, Settings) and `src/region/ui/dialogs.ts:388–393` (Load Region's Export .metropolis file). The README now describes the release branch behavior added by T036s4/T036s5 even though this worktree's source base predates them.
+
+Fix-round validation passed: requested-wording/source audit, independent diff review, unchanged npm commands, four release markers, local links, UTF-8 without BOM, fences, whitespace and two-file docs-only scope. `git diff --check` passed. No runtime tests, build, browser or bot were rerun; the verification below records round 1.
 
 ## TODO(release) markers
 
