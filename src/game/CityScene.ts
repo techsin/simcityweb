@@ -30,7 +30,7 @@ import { FallbackObjectsView } from './fallback/FallbackObjectsView';
 import { FallbackWorldView } from './fallback/FallbackWorldView';
 import { NullObjectsView, NullWorldView } from './fallback/NullViews';
 import { loadGameModules, type GameModules } from './modules';
-import { loadPref, loadSettings, savePref, saveSettings, type GameSettings } from './settings';
+import { loadPref, loadSettings, resolveMotion, savePref, saveSettings, type GameSettings } from './settings';
 import { NewYearCelebration, type CelebrateOptions } from './NewYear';
 import { YearReview } from '../ui/YearReview';
 import { GameSounds } from './GameSounds';
@@ -64,6 +64,7 @@ import { EmergencyBanner } from '../ui/EmergencyBanner';
 import { EmergenciesPanel } from '../ui/panels/EmergenciesPanel';
 import { Sirens, type SirenOut, type SirenSource } from '../audio/sirens';
 import type { EmergencyVehicles } from '../render/city/vehicles/EmergencyVehicles';
+import type { CameraController } from '../render/world/CameraController';
 import { DemographicsPanel } from '../ui/panels/DemographicsPanel';
 import { attachOverlays } from '../sim/infra/overlays';
 import { windVector } from '../sim/infra/wind';
@@ -149,6 +150,7 @@ export class CityScene {
   private advisors: AdvisorsPanel;
   /** WP8: emergency alert banners (LIVE speed policy) and siren voices */
   private emgBanner: EmergencyBanner;
+  private followedVehicle: number | null = null;
   private sirens: Sirens | null = null;
   private sirenSrc: { x: number; y: number; z: number; responder: string }[] = [];
   private tip: CursorTip;
@@ -365,7 +367,11 @@ export class CityScene {
     // WP5: demographics panel; derived data-view rasters follow the sim's layer updates
     this.panels.register(new DemographicsPanel(ctx));
     this.offs.push(attachOverlays(this.host.sim));
-    this.emgBanner = new EmergencyBanner(ctx, this.uiRoot);
+    this.emgBanner = new EmergencyBanner(ctx, this.uiRoot, {
+      start: (id) => this.followEmergency(id),
+      active: () => this.followedVehicle,
+      stop: () => this.stopEmergencyFollow(),
+    });
     this.pause = new PauseMenu(ctx, this.uiRoot, { onSettings: () => this.panels.open('settings'), onHelp: () => this.panels.open('help') });
 
     // ---- events
@@ -1172,6 +1178,32 @@ export class CityScene {
     } catch (e) {
       console.warn(e);
     }
+  }
+
+  /** Follow the renderer's lead unit, using the same extrapolated emergency feed as its road animation. */
+  private followEmergency(id: number): void {
+    const c = this.world.controls as Partial<Pick<CameraController, 'follow'>>;
+    const vehicles = (this.objects as { emergency?: EmergencyVehicles }).emergency;
+    if (!c.follow || !vehicles?.followPosition(id)) return;
+    c.follow((aheadSeconds) => {
+      const secondsPerDay = this.host.secondsPerDay();
+      const aheadDays = this.host.speed > 0 && secondsPerDay > 0 ? aheadSeconds / secondsPerDay : 0;
+      return vehicles.followPosition(id, aheadDays);
+    }, {
+      reducedMotion: resolveMotion(this.settings.motion) === 'reduced',
+      onEnd: () => {
+        this.followedVehicle = null;
+        this.emgBanner.refreshFollow();
+      },
+    });
+    this.followedVehicle = id;
+  }
+
+  private stopEmergencyFollow(): void {
+    const c = this.world.controls as Partial<Pick<CameraController, 'stopFollowing'>>;
+    c.stopFollowing?.();
+    this.followedVehicle = null;
+    this.emgBanner?.refreshFollow();
   }
 
   private showQuery(t: QueryTarget | null, opts: { silent?: boolean } = {}): void {
