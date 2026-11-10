@@ -214,3 +214,15 @@ export function savedMarkers() {
     plopped: [...st.buildings.values()].filter((b) => b.flags & 256).map((b) => [b.id, b.def, b.x, b.z]),
   };
 }
+
+/**
+ * Crash and error overlays. W1.2's crash path (src/region/ui/dialogs.ts openSimCrashDialog, opened by main.ts
+ * onWorkerCrash, which also sets city.crashed) is the worker host's crash overlay; `[data-sim-crash]` never landed.
+ */
+export function crashOverlays() {
+  const title = 'The simulation stopped';
+  const found = [...document.querySelectorAll('.err-card, vite-error-overlay')].map((e) => e.textContent || e.tagName);
+  for (const h2 of document.querySelectorAll('.modal h2')) if (h2.textContent === title) found.push(`"${title}" crash dialog`);
+  if (window.__metropolis?.city?.crashed) found.push('the App marked the city crashed (W1.2 crash path)');
+  return found;
+}

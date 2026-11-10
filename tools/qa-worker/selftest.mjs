@@ -7,7 +7,7 @@ import { runInNewContext } from 'node:vm';
 import { parseArgs, waitForAcks, poll, selectedChecks, CHECKS, brokenBuildVerdict, withCleanup, Report, validateSession } from './harness.mjs';
 import { installProbe, savedMarkers } from './page.mjs';
 import { breakAckPlugin } from './build.mjs';
-import { freeze, hideForFreeze, resumeDelay, restoreVisibility } from './freeze.mjs';
+import { assertNoCrashOverlay, freeze, hideForFreeze, resumeDelay, restoreVisibility } from './freeze.mjs';
 import { owningLifecycleSession } from './lifecycle.mjs';
 import { Driver, toolSelected, dispatchState } from './driver.mjs';
 import { installProtector, watchProtectors } from './w1.mjs';
@@ -260,6 +260,24 @@ test('freeze oracle: deadline starts at later resume/visible; hidden, delayed an
   assert.throws(() => resumeDelay({ ...f, visibleAt: null }), /stayed hidden/);
   assert.throws(() => resumeDelay({ ...f, advancedAt: 16501 }), /limit 1000/);
   assert.throws(() => resumeDelay({ ...f, framesDuringFreeze: [1] }), /frames while frozen/);
+});
+
+test('crash overlay: the W1.2 crash dialog and a crashed city fail the gate; a healthy page passes', async () => {
+  // The page reads the real DOM; the same fake answers both a page-side read and a selector count.
+  const dom = (titles, crashed) => ({
+    document: { querySelectorAll: (sel) => sel === '.modal h2' ? titles.map((textContent) => ({ textContent })) : [] },
+    window: { __metropolis: { city: { crashed } } },
+  });
+  const pageFor = (d) => ({
+    async evaluate(fn, arg) {
+      globalThis.window = d.window; globalThis.document = d.document;
+      try { return fn(arg); } finally { delete globalThis.window; delete globalThis.document; }
+    },
+    locator: (sel) => ({ count: async () => d.document.querySelectorAll(sel).length, allTextContents: async () => [] }),
+  });
+  await assertNoCrashOverlay(pageFor(dom(['Settings'], undefined)), 'healthy');
+  await assert.rejects(assertNoCrashOverlay(pageFor(dom(['The simulation stopped'], false)), 'after freeze'), /after freeze: "The simulation stopped" crash dialog/);
+  await assert.rejects(assertNoCrashOverlay(pageFor(dom([], true)), 'at end'), /at end: the App marked the city crashed/);
 });
 
 test('freeze restore: normalize the hidden window, bring headed pages forward, and report persistent hidden state', async () => {

@@ -1,5 +1,12 @@
 import { assert, deadline, poll, sleep, withCleanup } from './harness.mjs';
 import { owningLifecycleSession } from './lifecycle.mjs';
+import { crashOverlays } from './page.mjs';
+
+/** §5.4: no crash overlay may appear, including W1.2's worker crash dialog. */
+export async function assertNoCrashOverlay(page, where) {
+  const found = await page.evaluate(crashOverlays);
+  assert(Array.isArray(found) && found.length === 0, `${where}: ${Array.isArray(found) ? found.join('; ') : 'overlay read failed'}`);
+}
 
 export function resumeDelay(f) {
   assert(Number.isFinite(f?.frozenAt) && Number.isFinite(f?.resumedAt), 'freeze/resume lifecycle timestamps were not observed');
@@ -106,7 +113,7 @@ export async function freeze(d, report, signal) {
     const elapsed = resumeDelay(f);
     assert(evidence.frozenForMs >= 15000, `freeze lasted only ${evidence.frozenForMs} ms`);
     assert(f.resumedAt - f.frozenAt >= 15000, `document lifecycle freeze lasted only ${f.resumedAt - f.frozenAt} ms`);
-    assert(await page.locator('.err-card, vite-error-overlay, [data-sim-crash]').count() === 0, 'crash overlay after freeze');
+    await assertNoCrashOverlay(page, 'crash overlay after freeze');
     return `frozen ${evidence.frozenForMs.toFixed(0)} ms; ${f.framesDuringFreeze.length} frames while frozen; day advanced ${elapsed.toFixed(1)} ms after later of resume/visible; page-clock freeze/resume/visible = ${[f.frozenAt, f.resumedAt, f.visibleAt].map((t) => t.toFixed(1)).join('/')} ms`;
   }, async () => {
     const failures = [];

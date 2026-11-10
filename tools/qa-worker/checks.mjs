@@ -2,7 +2,7 @@ import { assert, COMMANDS, PANELS, CHECKS, commandCheck, poll, withCleanup, vali
 import { Driver } from './driver.mjs';
 import { pointer, savedMarkers } from './page.mjs';
 import { verifyReplica } from './w1.mjs';
-import { freeze } from './freeze.mjs';
+import { assertNoCrashOverlay, freeze } from './freeze.mjs';
 
 const W1 = 'local host: use --w1 to include the shared digest and protector gates';
 export const BROWSER_CHECKS = [
@@ -430,9 +430,8 @@ export async function runChecks(page, options, report, protectors, signal) {
     return `all ${COMMANDS.length} UI commands have transported acknowledgements; exact refusals classified separately; only slider coalescing shares seqs; ${gestures.length} gestures settled with at most one failure each`;
   });
   await report.check('no crash overlay', async () => {
-    const cards = await page.locator('.err-card, vite-error-overlay, [data-sim-crash]').allTextContents();
-    assert(cards.length === 0, cards.join('; '));
-    return 'no error cards or crash overlay';
+    await assertNoCrashOverlay(page, 'crash overlay');
+    return 'no error cards, crash dialog or crashed city';
   });
   if (options.breakAck) await report.check('other command acknowledgements', async () => {
     const rows = await poll(async () => [...d.sessions.flat(), ...await page.evaluate(() => window.__qaWorker.commands)].filter((r) => r.op !== options.breakAck),

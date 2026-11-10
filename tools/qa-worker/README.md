@@ -94,6 +94,8 @@ The harness requires a **trusted DOM freeze event**, received through a CDP Runt
 CDP acknowledgement alone cannot pass as a freeze; no lifecycle events or timestamps are synthesized.
 The first new sim day must arrive **within 1000 ms of the later of resume
 and visible**, with **0 frames during freeze**, **0 crash overlays** and an intact protector afterwards.
+A crash overlay is an error card, Vite's overlay, W1.2's "The simulation stopped" dialog
+(`openSimCrashDialog`) or the App's `city.crashed` flag; the same read runs after the freeze and at the end.
 The JSON includes external timestamps, page lifecycle timestamps, frame counts and resume delay.
 
 SIGINT/SIGTERM close the browser, preview and owned temporary build. Playwright's automatic signal exits are
