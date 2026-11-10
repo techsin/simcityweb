@@ -283,9 +283,41 @@ at dense1m", and for the merge body).**
 | balance, 256 × 60 seed 7 (lock; B and W side by side; B2's criteria) | **passes**: pop year 15 184,426 (≥ 150k; B 181,278), year 60 1,451,189 (≥ 950k; B 1,513,835); lowest W / B **0.959** (2060; ≥ 0.9); approval ≥ 78.3 from year 30 (≥ 50; B 79.1); EQ 121.9 at year 30, ≥ 100 from 2018 (B 2020); lowest funds 5,957 (≥ 0; B 6,792); tourists W / B per year: geometric mean 1.036, 10 of 55 single years outside ±30 % (2007–09 low, 2015–20 high; the bot's chaos, as at G4: 9 of 55; B1's six-seed check not re-run); `totalMsPerDay` **+1.51** (B 10.29, W 11.80; ≤ +3). B reproduces dev's recorded `b3` rows in all 60 years. `runs/bal/` |
 | 128 × 15 seed 7 balance row (same hold) | 2015 = 198,115, as the bot; the `b2b3` rows are recorded in `tests/sim/fixtures/balance-baseline.json` (`0f0ad56`, `reference` = `b2b3`, older rows untouched; `botRules` and `balance` tests pass) |
 
+**Gate 4, one timing-lock hold** (`h2`, 03:25:51–03:28:06 UTC on Nov 10; W `99d19e9`, B dev `51ec328`; dense1m from a
+load, 3 runs per side interleaved, plus the warm windows; `scratchpad/b2m/runs/h2`, analysis `tools/anB2m.py`, now
+`tools/bench/b2/gate4.py`). **The box was not quiet:** `tgate.py` waited 40 min for a slot with other processes under
+1.5 cores and gave up, so the hold ran under `bin/lock.sh` with other agents' work beside it (load 3–5 on 4 cores,
+CPU pressure up to 19 %).
+
+| criterion (amended) | W (merged tree) | B (dev) | verdict |
+|---|---|---|---|
+| from a load: per-run all-task max without GC-overlapping steps, median ≤ 5 ms (days 0–20 / 20–80 / 80–220) | 8.06 / 5.45 / 5.94 → **5.94**; 6.38 / 4.88 / 8.74 → **6.38**; 2.96 / 2.47 / 4.12 → **2.96** | 25.27 / 24.67 / 22.87 | **not met in days 0–20 and 20–80 on this hold** |
+| the same without run-queue waits ≥ 0.5 ms (clean) | 3.49 / 6.38 / 1.82 (medians) | 24.13 / 22.06 / 21.71 | — |
+| p99 per run and window ≤ 3 ms (strict) | ≤ 0.56 / 0.34 / 0.14 | 33–41 / 22–33 / 14–19 | **pass** |
+| the first cold execution of each piece kind after the load ≤ 8 ms (283 kinds) | 5.60 / 4.42 / 3.40 per run (the 5.60: emergency `resp2.slack` with a 5.2 ms GC inside; without GC 4.99 / 4.42 / 3.40) | 40.83 / 33.44 / 34.92 (46 kinds) | **pass** |
+| warm max, every step (strict), median ≤ 5 ms | dense1m 1.68 / 2.13 / 2.13 → **2.13**; bot256 5.61 / 5.13 / 1.68 → **5.13** (without GC 2.11) | 18.60; 6.02 | dense1m **pass**; bot256 **over by 0.13 ms** (run 1: a 5.3 ms GC and a 3.7 ms run-queue wait inside services `prep.attach`; run 2: services `prep.bld` on the window's first day) |
+| warm p99 ≤ 3 ms | dense1m ≤ 0.11, bot256 ≤ 0.15 | 8.2–13.9; 3.7–4.3 | **pass** |
+| cost model: every task's median error within ±30 % warm, both fixtures | dense1m traffic +0.04, services +0.14, pollution −0.08, crime +0.03, utilities −0.01, emergency +0.27; bot256 +0.22, +0.22, −0.16, −0.08, −0.12, +0.06 | dense1m traffic −0.55 | **pass** |
+| cost error from a load (reported, not gated) | days 0–20: −0.40 / −0.27 / −0.71 / −0.78 / −0.16 / —; 20–80: −0.28 / −0.08 / −0.19 / −0.48 / −0.08 / −0.02; 80–220: +0.04 / +0.09 / −0.11 / −0.02 / +0.03 / +0.08 (same task order) | days 0–20 traffic −0.85, pollution −0.80 | — |
+
+**Why the max misses here.** W ran 13 steps over 5 ms in its three 220-day runs from a load (B: 289). Ten of them had a run-queue
+wait of 2.5–8.1 ms (another process held the core) and / or a GC pause inside. The other three (services `tiers.final`
+6.38 ms on day 30, crime `sources.bld` 6.07 ms on day 38, traffic `commute.pool1` 6.38 ms on day 46) had neither, and
+schedstat puts their on-CPU time at 0.6–2.4 ms: the thread was off the CPU without being runnable for most of the step
+(indicative only: schedstat's on-CPU sum can lag by up to one scheduler tick). The fix round's hold at `2c4f75b` (B2 on
+B1), the one that found a quiet slot, met the same criterion: 3.83 / 3.36 / 2.26 ms (warm bot256 max 1.48). B2's pieces
+and estimates are unchanged since; dev's later code is outside `src/sim/infra`.
+
 **Decisions** (conservative readings, with the evidence):
 1. **Gate 4 is judged under the lead's amendment** (above), recorded here as a plan amendment for WASM_PLAN B2 /
-   WORKER_DESIGN S3. The cold first-run residue goes to S5 (`docs/dev/POLISH_BACKLOG.md`).
+   WORKER_DESIGN S3, and **read conservatively: not confirmed.** On the one hold the brief allows, the max criterion
+   missed in days 0–20 (5.94 ms) and 20–80 (6.38 ms), and bot256's strict warm max by 0.13 ms, on a box that never
+   went quiet; p99, the first cold runs, dense1m's warm max and the warm cost-model gate pass. The evidence points at
+   the machine (10 of the 13 long steps waited for the CPU or held a GC; the quiet fix-round hold met it at
+   3.83 / 3.36 / 2.26 ms), but this lane did not take a second hold. The quiet-machine re-measure is Desktop QA item 1
+   (with `tools/bench/b2/`), and the lane reports **partial** until it is done. Merge-safe meanwhile: every correctness
+   gate is green, and against dev every latency number is 4–8 times lower. The cold first-run residue goes to S5
+   (`docs/dev/POLISH_BACKLOG.md`).
 2. **The utilities publish piece's test cap** (`633b917`): R7 exempts the flags' publish from the piece budget (one piece
    by rule; chunked only past 3 ms cold), so the test caps it like the snapshot take. No code change. The worst case of
    an unbounded publish is a city-wide flip (a blackout turning every building's Powered bit), which runs in one piece,
@@ -314,9 +346,19 @@ at dense1m", and for the merge body).**
    schedule's chaos, not a balance shift (the 256 × 60 gates above).
 
 **Desktop QA** (NOTE-059): this lane has **no browser check** (sim and tests only; no UI, render or save-format change).
-One optional quiet-slot item for the desktop, after the merge (the cloud's timings ran on a shared 4-core box):
-1. **Infra step latency on a quiet machine.** No page: in a checkout of dev at B2's merge commit and at its first parent,
-   `node tools/bench/sim-profile/bundle.mjs profile`, then `node node_modules/.cache/sim-profile/profile.js --fixture
-   tools/bench/.fixtures/fixtures/dense1m_s7.metropolis --mode headless --warm 20 --days 60` (the lead's profile
-   window; the fixture from `tools/makeFixtures.mjs`), three runs each. Expected: `maxStepMsWall` per infra task about
-   5 ms or less at the merge commit (the cloud: 2.8–4.7 ms) against about 31–33 ms at the parent.
+Two quiet-slot timing items (NOTE-059 item 4: quiet-slot timing runs first), after the merge; the cloud's hold ran on a
+busy shared box:
+1. **Gate 4 from a load, on a quiet machine (required to close B2's gate 4).** No page; Linux or WSL (the probe reads
+   `/proc/self/schedstat`). Two checkouts of dev: B = B2's merge commit's first parent, W1 = the merge commit; the
+   fixtures from `tools/makeFixtures.mjs` (`tools/bench/.fixtures/fixtures/dense1m_s7.metropolis`,
+   `bot256_s7_y60.metropolis`). In each checkout, three runs of each kind, B and W1 interleaved, nothing else running:
+   `npx tsx tools/bench/b2/gate4Probe.ts --fixture <dense1m> --warm 0 --days 220 --out <dir>/<side>_c_<i>.json`, the
+   same with `--warm 300 --days 120` into `<side>_w_<i>.json`, and with the bot256 fixture and `--warm 300 --days 120`
+   into `<side>_q_<i>.json` (side `B` or `W1`). Then `python3 tools/bench/b2/gate4.py <dir>`. Expected (the amended
+   gate): W1's per-run max without GC-overlapping steps, median ≤ 5 ms in each window (days 0–20 / 20–80 / 80–220);
+   the first cold execution of every piece kind ≤ 8 ms; p99 ≤ 3 ms; warm max (every step) median ≤ 5 ms on both
+   fixtures; every task's warm cost error within ±0.30. The cloud's quiet fix-round hold: 3.83 / 3.36 / 2.26 ms.
+2. **The lead's profile window (optional).** In both checkouts: `node tools/bench/sim-profile/bundle.mjs profile`, then
+   `node node_modules/.cache/sim-profile/profile.js --fixture <dense1m> --mode headless --warm 20 --days 60`, three runs
+   each. Expected: `maxStepMsWall` per infra task about 5 ms or less at the merge commit (the cloud's fix round:
+   2.8–4.7 ms) against about 31–33 ms at the parent.
