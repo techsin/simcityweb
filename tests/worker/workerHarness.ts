@@ -6,7 +6,7 @@ import type { KV } from '../../src/save/db';
 import { CityActions, type ActionResult } from '../../src/sim/actions';
 import type { SimSystem } from '../../src/sim/Simulation';
 import { installSimWorker } from '../../src/worker/simWorker';
-import { bootWorkerSimHost, type WorkerSimHost, type WorkerSimHostOptions } from '../../src/worker/WorkerSimHost';
+import { bootWorkerSimHost, loadWorkerSimHost, type WorkerSimHost, type WorkerSimHostOptions } from '../../src/worker/WorkerSimHost';
 import { PROTOCOL_VERSION } from '../../src/worker/protocol';
 import type { WorkerInput, WorkerOutput, WorkerPort } from '../../src/worker/workerProtocol';
 import type { CommandArgs, CommandOp, CommandResult } from '../../src/worker/SimHost';
@@ -39,6 +39,13 @@ export async function bootNode(city: SerializedCity, opts: Omit<WorkerSimHostOpt
   return bootWorkerSimHost({ kind: 'serialized', regionId: 'hosts', tileKey: '0', savedAt: city.savedAt, city },
     { dev: true, ...opts, port: opts.wrap?.(port) ?? port });
 }
+/** W1.3: the real worker on its own IndexedDB (`kv`, through nodeWorker.ts's bridge), as the App boots it: main sends
+ *  no city (persistence 'worker-idb'). With `memoryWorker` the worker's openKV() falls back to memory (no bridge). */
+export async function bootIdb(regionId: string, tileKey: string, opts: Omit<WorkerSimHostOptions, 'port'> & { kv: KV; memoryWorker?: boolean; wrap?: (port: WorkerPort) => WorkerPort }): Promise<WorkerSimHost> {
+  const url = await buildWorkerTest();
+  const port = (kv?: KV) => opts.wrap?.(nodeWorkerPort(url, { kv })) ?? nodeWorkerPort(url, { kv });
+  return loadWorkerSimHost(regionId, tileKey, { dev: true, respawn: () => port(), ...opts, port: port(opts.memoryWorker ? undefined : opts.kv) });
+}
 /** post a command and send it at once (sliders otherwise coalesce until the next frame) */
 export function send<K extends CommandOp>(host: WorkerSimHost, op: K, args: CommandArgs<K>): Promise<CommandResult<K>> {
   const t = host.post(op, args); host.flushCommands(); return t.done;
@@ -57,7 +64,9 @@ export async function waitFor(test: () => boolean, what: string, ms = 5000): Pro
 
 /** The production worker loop in this thread, behind a cloning scope, with test systems (no worker_threads). It acks
  *  each packet as main does, unless `ack` is false. */
-export function inProcess(systems: SimSystem[], init: { deterministic?: boolean; initialSpeed?: number; ack?: boolean } = {}) {
+export function inProcess(systems: SimSystem[], init: { deterministic?: boolean; initialSpeed?: number; ack?: boolean; idb?: boolean;
+  /** sees each message as the worker posts it, inside the worker's unit (W1.3: to post into the unit's queue) */
+  tap?: (m: WorkerOutput, send: (m: WorkerInput) => void) => void } = {}) {
   let receive!: (m: WorkerInput) => void, epoch = 0;
   const messages: WorkerOutput[] = [];
   const runtime = installSimWorker({
@@ -65,13 +74,16 @@ export function inProcess(systems: SimSystem[], init: { deterministic?: boolean;
     postMessage(message) {
       const m = structuredClone(message);
       messages.push(m);
+      init.tap?.(m, (input) => receive(input));
       if (m.t === 'ready') epoch++;
       else if (m.t === 'pkt' && init.ack !== false) queueMicrotask(() => receive({ t: 'ack', ack: m.p.seq, epoch }));
     },
   }, { createSystems: () => systems, CityActions });
   const city = initialCity();
-  receive({ t: 'init', v: PROTOCOL_VERSION, city: { kind: 'serialized', regionId: 'units', tileKey: '0', savedAt: 1, city },
-    persistence: 'main', rctx: null, initialSpeed: init.initialSpeed ?? 3, deterministic: init.deterministic,
+  // W1.3 `idb`: the worker reads 'units:0' from this realm's KV (the test's setKV), as a browser worker reads its own
+  const source = init.idb ? { city: { kind: 'idb' as const, regionId: 'units', tileKey: '0' }, persistence: 'worker-idb' as const }
+    : { city: { kind: 'serialized' as const, regionId: 'units', tileKey: '0', savedAt: 1, city }, persistence: 'main' as const };
+  receive({ t: 'init', v: PROTOCOL_VERSION, ...source, rctx: null, initialSpeed: init.initialSpeed ?? 3, deterministic: init.deterministic,
     settings: { emergencyUncovered: 'ignore', emergencyLiveSlowmo: 3, emergencyAlerts: 'all' }, flags: { simwasm: null, dev: true } });
   return {
     messages,

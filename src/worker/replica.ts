@@ -18,7 +18,8 @@ import {
 /** W0.6's save guards refuse this brand; it is declared in the save layer (save/state.ts), below this module. */
 export { REPLICA };
 export type ReplicaState = CityState & { readonly [REPLICA]: true };
-export interface ReplicaCause { seq: number; tag: object | null }
+/** T061 item 3: `dispatchIncidentId`, the incident a dispatch or dispatchBest command sends units to */
+export interface ReplicaCause { seq: number; tag: object | null; dispatchIncidentId?: number }
 export interface EmergencyReplicaView {
   readonly active: boolean;
   readonly layersReady: boolean;
@@ -35,6 +36,11 @@ export interface ReplicaHooks {
   policy?(policy: PolicyState, cmd: number): void;
   building?(building: Building, cmd: number): void;
   clock?(clock: Clock, cmd: number): void;
+  /** T061 item 1: a speedChanged of the log, before it is emitted: the authority's speed from that entry on (`cmd`: the
+   *  commands acked so far) */
+  speed?(speed: number, cmd: number): void;
+  /** T061 item 3: the incident an unacknowledged command dispatches units to, if it is a dispatch */
+  dispatchIncident?(seq: number): number | undefined;
   ack?(seq: number, result: unknown): void;
   tag?(seq: number): object | null;
   watch?(value: NonNullable<Packet['watch']>[number]): void;
@@ -85,6 +91,7 @@ export class Replica {
   private stations: StationRow[] = [];
   private routes: SampleRoute[] = [];
   private trucks: Float32Array | null = null;
+  private plantLoads = new Map<number, number>();
   private rasters = new Map<string, RasterPatch>();
   private loaded = new Set<string>();
   private lastSeq = 0;
@@ -125,6 +132,7 @@ export class Replica {
   get seq(): number { return this.lastSeq; }
   get emergencyActive(): boolean { return this.emergencyData.active; }
   get emergencyLayersReady(): boolean { return this.emergencyData.layersReady; }
+  plantLoad(id: number): number | null { return this.plantLoads.get(id) ?? null; }
   layerReady(name: LayerName): boolean { return this.loaded.has(name); }
   raster(overlay: number, variant: number): RasterPatch | null { return this.rasters.get(`${overlay}:${variant}`) ?? null; }
 
@@ -137,6 +145,7 @@ export class Replica {
     this.lastSeq = 0; this.cmd = ready.cmd; this.applied = ready.cmd; this.diverged = false; this.cause = null;
     this.clock = copyOwned(ready.clock); fresh.day = this.clock.day; this.newsSeq = fresh.news.length;
     this.incidentById.clear(); this.liveIncidents = []; this.stations = []; this.routes = []; this.trucks = null;
+    this.plantLoads.clear();
     this.emergencyData = { incidents: [], vehicles: [], active: false, layersReady: false, stVer: 0 };
     this.rasters.clear(); this.loaded.clear(); this.disasters = [];
     for (const [name, value] of Object.entries(ready.snapshot.layers)) {
@@ -234,12 +243,19 @@ export class Replica {
       this.trucks ??= new Float32Array(this.state.cells);
       this.trucks.fill(0); applySparse(this.trucks, p.traffic.trucks.idx, p.traffic.trucks.val);
     }
+    if (p.utilities) {
+      const { ids, loads } = p.utilities.plantLoads;
+      if (ids.length !== loads.length) throw new Error('Invalid plant load snapshot');
+      this.plantLoads.clear();
+      for (let i = 0; i < ids.length; i++) if (Number.isFinite(loads[i]) && loads[i] >= 0) this.plantLoads.set(ids[i], loads[i]);
+    }
     if (p.disasters) mergePlain(this.disasters, p.disasters);
   }
   private replay(entry: Entry, p: Packet): void {
     const [type, day, arg, cause] = entry;
     this.state.day = day;
-    this.cause = cause === undefined ? null : { seq: cause, tag: this.hooks.tag?.(cause) ?? null };
+    const incident = cause === undefined ? undefined : this.hooks.dispatchIncident?.(cause);
+    this.cause = cause === undefined ? null : { seq: cause, tag: this.hooks.tag?.(cause) ?? null, ...(incident !== undefined ? { dispatchIncidentId: incident } : {}) };
     if (type === EntryType.Ack) {
       if (cause === undefined || cause <= this.applied || !p.acks || typeof arg !== 'number' || arg < 0 || arg >= p.acks.length) throw new Error('Invalid Ack entry');
       this.applied = cause;
@@ -270,7 +286,7 @@ export class Replica {
       this.state.news.push(item);
       if (this.state.news.length > 200) this.state.news.splice(0, this.state.news.length - 200);
       this.newsSeq++; value = item;
-    }
+    } else if (type === EntryType.SpeedChanged) this.hooks.speed?.(value as number, this.applied);
     this.events.emit(name, value);
     this.cause = null;
   }

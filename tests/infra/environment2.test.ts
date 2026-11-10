@@ -657,8 +657,10 @@ describe('WP3 plumes and caches', () => {
       sys.step(sim); // first step sizes the per-id arrays
       st.nextBuildingId = Math.max(st.nextBuildingId, p.prodById.length + 64);
       place(st, 't_r2', 30 + (sys === p ? 0 : 2), 31, { pop: 60 }); // an id past every array
+      // (B2: a pass is many small pieces now — the guard covers a whole pass, and the pass must end)
       let guard = 0;
-      while (sys.stepIdx >= 0 && guard++ < 20) sys.step(sim);
+      while (sys.stepIdx >= 0 && guard++ < 4000) sys.step(sim);
+      expect(sys.stepIdx).toBe(-1);
     }
     for (const k of ['garbageProduced', 'garbageCapacity', 'garbageRecycled', 'powerSupply', 'powerDemand', 'waterSupply', 'waterDemand', 'avgNoise', 'avgAir'] as const) {
       expect(Number.isFinite(st.stats[k] as number), k).toBe(true);
