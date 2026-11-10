@@ -32,6 +32,7 @@ import { NullObjectsView, NullWorldView } from './fallback/NullViews';
 import { loadGameModules, type GameModules } from './modules';
 import { loadPref, loadSettings, savePref, saveSettings, type GameSettings } from './settings';
 import { NewYearCelebration, type CelebrateOptions } from './NewYear';
+import { YearReview } from '../ui/YearReview';
 import { GameSounds } from './GameSounds';
 import { HOTKEY_CYCLES, PANEL_HOTKEYS } from './toolCatalog';
 import { ToolController } from './tools/ToolController';
@@ -339,6 +340,8 @@ export class CityScene {
       // NOTE-041: a command, so a worker's clock holds too (the host is already gone when the scene disposes)
       holdCalendar: (on) => { if (!this.disposed) this.host.act('holdCalendar', [on], { tag: this.newYear }); },
     });
+    // ---- CONTENT: yearly feedback follows the celebration, without changing its timing or camera.
+    new YearReview(ctx, { busy: () => this.newYear.active, regionName: opts.persistence?.regionName });
     // CONTENT: rank moments share the renderer, with New Year and LIVE taking priority.
     const rankFireworks = new RankFireworks(ctx, () => this.newYear.busy);
     new MilestoneCard(ctx, this.uiRoot, (rank, intensity) => rankFireworks.start(rank, intensity), () => this.newYear.busy);
@@ -608,6 +611,7 @@ export class CityScene {
     const lost = this.ctxLost;
     if (!lost || lost.restoring || this.disposed) return;
     lost.restoring = true;
+    this.newYear?.cancel();
     const cam = readCamera(this.world.controls) ?? validCamera(this.sim.state.systemData.camera, this.sim.state);
     const timeOfDay = this.world.timeOfDay;
     // stop watching the old canvas first: disposing its views forces a (second) context loss on it

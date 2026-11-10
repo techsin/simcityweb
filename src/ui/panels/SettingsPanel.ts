@@ -96,6 +96,7 @@ export class SettingsPanel extends Panel {
       this.row('New Year celebration', 'Fireworks every January 1st — Cinematic switches to night first', newYear),
       this.row('New Year show', 'Milestones: the full show on the first New Year, a new city rank and at most every 10 minutes; a short burst otherwise', pacing),
       this.row('New Year show camera', 'Cinematic: frame the show from the skyline, then return (any camera move takes over)', this.sw('newYearCamera')),
+      this.row('Year in review', 'Show the annual city report and mayor\'s grade after New Year', this.sw('yearReview')),
       this.row('Pause when hidden', 'Pause the simulation when the tab is in the background', this.sw('pauseWhenHidden')),
       // WP8 emergency dispatch
       this.row('Uncovered emergencies', 'When no station can answer an emergency: slow down to live speed, pause, or keep going', segmented<EmergencyPolicy>([{ value: 'live', label: 'Live speed' }, { value: 'pause', label: 'Pause' }, { value: 'ignore', label: 'Keep going' }], s.emergencyUncovered ?? 'live', (v) => this.ctx.applySettings({ emergencyUncovered: v }), this.ctx.signal)),
