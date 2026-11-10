@@ -1,27 +1,19 @@
-/** Weather is cosmetic. This module has no runtime three import: the simulation can use the same pure calendar. */
+/**
+ * Weather is cosmetic, and this module is what it looks like: the particles, the real-time hold and easing, and the
+ * rain and flash hooks. What the weather is on a game day is the simulation's calendar,
+ * src/sim/economy/weatherCalendar.ts (NOTE-081), which the headlines read too. No runtime three import: three comes
+ * in through the constructor.
+ */
 import type * as Three from 'three';
-import type { Climate } from '../../core/types';
 import type { CityState } from '../../sim/CityState';
 import { headlineHash } from '../../sim/economy/eventHeadlines';
+import { weather, type WeatherState } from '../../sim/economy/weatherCalendar';
 
-export interface WeatherState { kind: 'clear' | 'rain' | 'snow' | 'haze'; intensity: number }
+/** The sim's calendar under the names this module had for it before the move: tests and QA page scripts ask here. */
+export { weather, type WeatherState };
 export interface WeatherAmounts { rain: number; snow: number; haze: number }
 export const WEATHER_HOLD_SECONDS = 20;
 export const WEATHER_EASE_SECONDS = 4;
-
-/** Three-day spells, using the city's 360-day year and a hash separate from the simulation RNG. */
-export function weather(day: number, seed: number, climate: Climate = 'temperate'): WeatherState {
-  const d = Math.max(0, Math.floor(day));
-  const month = Math.floor(d / 30) % 12;
-  const h = headlineHash(Math.floor(d / 3), 'weather', seed);
-  const intensity = 0.55 + ((h >>> 8) % 46) / 100;
-  if (climate === 'desert') return { kind: h % 100 < 40 ? 'haze' : 'clear', intensity: h % 100 < 40 ? intensity : 0 };
-  const winter = month === 11 || month <= 1;
-  const wetSeason = month >= 2 && month <= 4 || month >= 8 && month <= 10;
-  const chance = wetSeason ? 60 : winter ? 35 : climate === 'tropical' ? 40 : 15;
-  if (h % 100 >= chance) return { kind: 'clear', intensity: 0 };
-  return { kind: winter && climate !== 'tropical' ? 'snow' : 'rain', intensity };
-}
 
 const VERT = /* glsl */ `
 attribute vec3 seed;

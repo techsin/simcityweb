@@ -88,7 +88,7 @@ import { APPROVAL, GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, STAG
 import { buildingUpkeep } from './opex';
 import { getOrdinance, ordinanceAvailable, ordinanceEffect } from './ordinances';
 import { EventHeadlineFeed, postSightingHeadlines, type EventHeadlineData } from './eventHeadlines';
-import { weather } from '../../render/world/Weather';
+import { weather } from './weatherCalendar';
 import type { RegionContext } from '../../region/regionEffects';
 
 const ADVICE_PER_MONTH = 2;
