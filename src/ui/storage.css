@@ -1,0 +1,20 @@
+.storage-back { position: absolute; inset: 0; z-index: 130; pointer-events: auto; display: flex; align-items: center; justify-content: center; padding: 20px; background: #0008; }
+.storage-dialog { width: min(620px, 100%); max-height: 85vh; overflow: auto; padding: 24px; border-radius: 16px; background: var(--panel, #172332); color: var(--text, #eef3fa); box-shadow: 0 18px 70px #0008; }
+.storage-dialog h2 { margin: 0 0 14px; font-size: 22px; }
+.storage-dialog p { line-height: 1.55; }
+.storage-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.storage-details { margin: 12px 0; }
+.storage-details pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.storage-action-status { font-size: 13px; color: var(--text-dim); }
+.storage-lock-notice, .storage-backup { position: absolute; z-index: 95; pointer-events: auto; display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 12px; color: var(--text, #eef3fa); background: #172332f2; border: 1px solid #dfb56a80; }
+.storage-lock-notice { top: 82px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 32px); }
+.storage-lock-notice[hidden], .storage-backup[hidden] { display: none; }
+.storage-backup { z-index: 4; top: 150px; left: 50%; transform: translateX(-50%); width: 300px; flex-wrap: wrap; }
+.storage-backup > div { flex-basis: 100%; }
+.storage-backup p { margin: 0; font-size: 13px; line-height: 1.5; }
+.storage-region { border-top: 1px solid #ffffff20; padding: 14px 0; }
+.storage-region-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.storage-region-head strong { flex: 1; }
+.storage-slot { padding-top: 6px; font-size: 12px; color: var(--text-dim); }
+.storage-delete-confirm[hidden] { display: none; }
+.storage-delete-confirm .btn { margin-right: 8px; }
