@@ -81,6 +81,11 @@ async function adoptLsJournal(kv: KV, marker: RecoveryMarker): Promise<void> {
     if (!snapshot) return;
     base.snapshot = snapshot;
   }
+  // W1.3: a journal alone keeps its slot's description for the title screen's offer
+  if (!journal.info && marker.kind === 'journal' && journal.base.kind === 'save') {
+    const { cityName, regionName, day, baseDay, date, baseDate, population, funds, why } = marker;
+    journal.info = { cityName, regionName, day, baseDay, date, baseDate, population, funds, why };
+  }
   await idb.adoptRecoveryJournal(kv, journal, base);
 }
 
@@ -88,9 +93,17 @@ async function adoptLsJournal(kv: KV, marker: RecoveryMarker): Promise<void> {
  *  re-bound to the new record (§4.3), so the next boot replays it onto the restored city. KV has no transaction
  *  across stores: it is written after the record, so a stop in between loses only what the snapshot alone would. */
 export async function restoreRecoverySnapshot(p: PendingRecovery): Promise<void> {
-  const city = rebuildRecoveredCity(p);
   const kv = await openKV();
   const { regionId, tileKey } = p.marker;
+  if (p.marker.kind === 'journal') {
+    // W1.3 (§4.3 Restoring): a journal alone rebuilds nothing; it stays bound to the stored save, and the next boot of
+    // the city replays it (then saves). Only check that it still applies.
+    const record = await getCityRecord(kv, regionId, tileKey);
+    const journal = record ? await idb.readRecoveryJournal(kv, { regionId, tileKey, savedAt: record.savedAt }) : null;
+    if (!journal?.ops.length) throw new Error('recovery: the journal no longer matches the save');
+    return;
+  }
+  const city = rebuildRecoveredCity(p);
   const journal = p.record
     ? await idb.readRecoveryJournal(kv, { regionId, tileKey, savedAt: p.record.savedAt, snapshot: p.marker }).catch(() => null) : null;
   city.savedAt = Date.now();

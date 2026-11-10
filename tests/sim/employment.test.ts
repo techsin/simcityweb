@@ -93,9 +93,15 @@ describe('one employment ledger (WP1-1)', () => {
   it('with neighbour connections the ledger includes inbound workers and regional jobs', { timeout: 120000 }, () => {
     const t = town({ jobsPerWorker: 1.1, connections: true });
     const l = ledger(t);
-    console.log(`connected: unemployment ${(l.unemp * 100).toFixed(1)}% vs traffic ${(l.accUnemp * 100).toFixed(1)}%, jobs ${l.jobs} arriving ${l.arriving} (inbound ${t.traffic.inboundTotal.toFixed(0)})`);
+    // the arriving workers alternate by a few % between assignments (the inbound pass is recomputed every 2nd one and
+    // capped by the vacancies on the others), while the filled jobs follow them smoothed: compare the jobs with the mean
+    // of two consecutive assignments (B2: the headless schedule moved, so the check no longer lands on one parity)
+    t.traffic.invalidate();
+    t.traffic.runCycleSync(t.sim);
+    const arriving2 = ledger(t).arriving, arriving = (l.arriving + arriving2) / 2;
+    console.log(`connected: unemployment ${(l.unemp * 100).toFixed(1)}% vs traffic ${(l.accUnemp * 100).toFixed(1)}%, jobs ${l.jobs} arriving ${l.arriving} / ${arriving2} (inbound ${t.traffic.inboundTotal.toFixed(0)})`);
     expect(Math.abs(l.unemp - l.accUnemp)).toBeLessThan(0.01);
-    expect(Math.abs(l.jobs - l.arriving)).toBeLessThan(l.arriving * 0.03);
+    expect(Math.abs(l.jobs - arriving)).toBeLessThan(arriving * 0.03);
   });
 
   it('2x job capacity -> unemployment < 3 %; jobs = 0.5 x workers without connections -> 45-55 %', { timeout: 120000 }, () => {

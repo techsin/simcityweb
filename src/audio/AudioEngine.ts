@@ -19,6 +19,7 @@
  *                                        shuffle (get/set), setShuffle, isEnabled / setEnabled(id, on), onChange(cb)
  *   audio.setMuted(on) / muted
  *   audio.duck(db, hold, release)        music reduction in dB; hold / release in seconds (60 ms attack)
+ *   audio.releaseDuck(release)          release only the renewable LIVE duck (default 0.5 s)
  *   audio.setMusicPauses(on) / setMuteInBackground(on)   game settings, default on
  * Volumes, music toggle, shuffle, the enabled-track set and the UI / hover / now-playing toggles persist in
  * localStorage ('metropolis.audio').
@@ -384,9 +385,25 @@ export class AudioEngine {
   }
 
   // ------------------------------------------------------------------ music
-  /** Duck only music (dry + reverb send). Explicit long ducks are not subject to the SFX cooldown. */
-  duck(db: number, hold: number, release = 0.6): void {
-    this.ducking?.duck(db, hold, release);
+  /** Duck only music (dry + reverb send), bypassing the SFX cooldown. LIVE renewals have an independent envelope. */
+  duck(db: number, hold: number, release = 0.6, opts?: { renew?: boolean }): void {
+    this.ducking?.duck(db, hold, release, opts);
+  }
+
+  /** End the renewable LIVE duck without shortening an event's stronger duck. */
+  releaseDuck(release = 0.5): void {
+    this.ducking?.releaseDuck(release);
+  }
+
+  /** Dev / acceptance: effective dry music bus gain, including ducking, before the master gain. Computed from the
+   *  music volume and the duck envelopes, not from AudioParam.value, which goes stale while no song plays. */
+  get debugMusicBusGain(): number | null {
+    return this.ctx && this.ducking ? this.musicBusLevel() * this.ducking.musicGainAt() : null;
+  }
+
+  /** The music bus volume applyVolumes sets (perceptual curve). */
+  private musicBusLevel(): number {
+    return this.prefs.music * this.prefs.music * 0.9;
   }
 
   /** The Settings panel persists these two flags in GameSettings. */
@@ -493,8 +510,8 @@ export class AudioEngine {
     // perceptual curve
     const curve = (v: number) => v * v;
     this.background?.setVolume(this.prefs.muted ? 0 : curve(this.prefs.master), immediate);
-    set(this.buses.music.gain, curve(this.prefs.music) * 0.9);
-    if (this.musicReverb) set(this.musicReverb.gain, curve(this.prefs.music) * 0.9);
+    set(this.buses.music.gain, this.musicBusLevel());
+    if (this.musicReverb) set(this.musicReverb.gain, this.musicBusLevel());
     set(this.buses.sfx.gain, curve(this.prefs.sfx));
     set(this.buses.ambience.gain, curve(this.prefs.ambience));
   }

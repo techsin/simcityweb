@@ -3,15 +3,21 @@ import { Network, Overlay, isRoad } from '../../core/types';
 import { overlayInfo, overlayTitle } from '../../ui/overlays';
 import { overlayLayer, overlayReadout } from '../../sim/infra/overlays';
 import { getDef } from '../../sim/catalog';
-import { BF } from '../../sim/CityState';
+import { BF, type Building } from '../../sim/CityState';
+import { needsExpectation, waterRequired } from '../../sim/economy/demographics';
 import type { GameContext } from '../context';
 import { escapeHtml } from '../../ui/dom';
 import { num, pct } from '../../ui/format';
-import { RUINS_TEXT } from '../../ui/inspectorModel';
+import {
+  HoverStatusCache, THRIVING_CONDITION, THRIVING_TEXT, TIP_KIND, TIP_LINE, drawsPower, hoverStatus, type HoverStatus,
+} from '../../ui/inspectorModel';
 import { emptyZoneStatus, zoneStatusLine, zoneStatusTone } from '../../ui/zoneStatus';
 import { NETWORK_LABELS } from './NetworkTool';
 import { safe, Tool, type ToolPointer } from './Tool';
 import { ZONE_LABELS } from './ZoneTool';
+
+/** growables' conditions the hover keeps (FEEL-19); past this many it starts over */
+const MAX_CONDITIONS = 4096;
 
 export class QueryTool extends Tool {
   readonly id = 'query';
@@ -34,7 +40,18 @@ export class QueryTool extends Tool {
     return id;
   }
 
+  // ---- FEEL-19: the hover's status line
+  /** the line per building, for the sim day it was read on */
+  private statusCache = new HoverStatusCache();
+  /** growables' condition as the host last answered it, and the sim day it answered on */
+  private conditions = new Map<number, { day: number; health: number }>();
+  /** buildings whose condition is being asked */
+  private asking = new Set<number>();
+  /** the pointer of the last move, to show the tip again when a condition arrives (null: the cursor left) */
+  private lastPointer: ToolPointer | null = null;
+
   override move(p: ToolPointer): void {
+    this.lastPointer = p;
     const id = this.pick(p);
     if (id !== this.hoverId) {
       this.hoverId = id;
@@ -69,12 +86,15 @@ export class QueryTool extends Tool {
       const b = st.buildings.get(id);
       const def = b ? getDef(b.def) : undefined;
       if (b) {
-        // (a ruin houses and employs nobody: its residents / jobs are stale until the next population pass — final fixes
-        // r4: a fresh ruin read "40 / 40 jobs". The inspector's cause-neutral words instead)
-        const sub = b.flags & BF.Burnt
-          ? `<div class="tip-reason">${RUINS_TEXT}</div>`
+        // FEEL-19: one status line under the name and occupancy, from the inspector's chip table in the chip's words and
+        // tone (statusOf): what is wrong first, "Under construction N%" while it is built, "Thriving" for a growable
+        // doing well. (A ruin houses and employs nobody: its residents / jobs are stale until the next population pass —
+        // final fixes r4: a fresh ruin read "40 / 40 jobs". Its line is the inspector's cause-neutral "In ruins")
+        const status = this.statusOf(b);
+        const sub = b.flags & BF.Burnt ? ''
           : def?.category === 'growable' && def.devType !== undefined && def.devType <= 2 ? `<div class="tip-sub">${num(b.pop)} residents</div>` : b.capacity ? `<div class="tip-sub">${num(b.jobs)} / ${num(b.capacity)} jobs</div>` : '';
-        this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(def?.name ?? b.def)}</b></div>${sub}`, 'info');
+        const line = status ? `<div class="${TIP_LINE[status.tone]}">${escapeHtml(status.text)}</div>` : '';
+        this.ctx.tip.show(`<div class="tip-head"><b>${escapeHtml(def?.name ?? b.def)}</b></div>${sub}${line}`, status ? TIP_KIND[status.tone] : 'info');
         return;
       }
     }
@@ -96,6 +116,53 @@ export class QueryTool extends Tool {
       }
     }
     this.ctx.tip.hide();
+  }
+  /**
+   * FEEL-19: building b's status line (inspectorModel hoverStatus over the shared chip table), worked out once per
+   * building per sim day (HoverStatusCache; a flag or utility-cell change works it out again at once). Flags, built and
+   * the power / water cells are exact on a worker host's replica (W0.3); a growable's condition is not (WORKER_DESIGN
+   * §1.3: health is a lagged field there), so the host answers it, once per building per sim day, and the last answer
+   * stands meanwhile. Only a growable without a problem chip asks: the condition decides only its "Thriving".
+   */
+  private statusOf(b: Building): HoverStatus | null {
+    const st = this.ctx.state, def = getDef(b.def), growable = !def || def.category === 'growable';
+    const i = st.idx(b.x, b.z), pw = st.powered[i] ? 1 : 0, wt = st.watered[i] ? 1 : 0;
+    const cond = growable ? this.conditions.get(b.id) : undefined;
+    const sig = (b.flags * 4 + pw * 2 + wt) * 3 + (cond === undefined ? 0 : cond.health >= THRIVING_CONDITION ? 2 : 1);
+    const line = this.statusCache.get(b.id, st.day, sig, () => hoverStatus(b.flags, b.built, cond?.health, {
+      poweredCell: pw === 1, wateredCell: wt === 1, usesPower: drawsPower(def, growable), growable,
+      needsWater: safe(() => waterRequired(st, b), false), needsExpectation: safe(() => needsExpectation(st), 1),
+    }));
+    if (growable && (line === null || line.text === THRIVING_TEXT) && cond?.day !== st.day) this.askCondition(b.id);
+    return line;
+  }
+  /** ask the host for building `id`'s condition (one request at a time per building). The answer shows the tip again
+   *  while the cursor still rests on the building: at once on the local host, within a packet on the worker's */
+  private askCondition(id: number): void {
+    const host = this.ctx.host as GameContext['host'] | undefined;
+    if (this.asking.has(id) || !host) return;
+    this.asking.add(id);
+    let answer: Promise<number | null>;
+    try {
+      answer = host.query('buildingCondition', { id });
+    } catch {
+      this.asking.delete(id);
+      return;
+    }
+    answer.then((health) => {
+      this.asking.delete(id);
+      if (typeof health !== 'number') {
+        this.conditions.delete(id);
+        return;
+      }
+      if (this.conditions.size >= MAX_CONDITIONS) this.conditions.clear();
+      this.conditions.set(id, { day: this.ctx.state.day, health });
+      const p = this.lastPointer;
+      if (p && this.hoverId === id) {
+        this.lastCell = '';
+        safe(() => this.move(p), undefined);
+      }
+    }, () => this.asking.delete(id));
   }
   /** what stands on a tile: its building, road, empty lot or bare land (the hover readout names it) */
   private tileName(x: number, z: number): string {
@@ -141,11 +208,13 @@ export class QueryTool extends Tool {
   }
   override deactivate(): void {
     this.hoverId = null;
+    this.lastPointer = null;
     safe(() => this.ctx.objects.setSelected(null), undefined);
     this.ctx.tip.hide();
   }
   override leave(): void {
     this.lastCell = '';
+    this.lastPointer = null;
     this.ctx.tip.hide();
   }
   /** FEEL-24 (QA B6): photo mode draws the plain city: the hover box goes, and the next move puts it back */

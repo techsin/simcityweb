@@ -14,6 +14,7 @@ describe("Play's load time (T058)", () => {
     const t0 = body.indexOf('const t0 = performance.now();');
     expect(gate).toBeGreaterThan(-1);
     expect(t0).toBeGreaterThan(gate);
-    expect(body).toMatch(/await this\.enterCity\([^)]*\bt0\)/);
+    // W1.3 passes the journal choice after t0 (`enterCity(…, t0, undefined, replay)`): t0 is an argument, not the last one
+    expect(body).toMatch(/await this\.enterCity\([^)]*\bt0\b[^)]*\)/);
   });
 });
