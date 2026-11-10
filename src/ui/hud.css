@@ -137,6 +137,18 @@
 .hud-value { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.15; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .hud-sub { font-size: 11px; font-weight: 600; line-height: 1.1; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .hud-stack { display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+/* FEEL-03: the funds segment's month chip and the approval segment's change chip (src/ui/topbar/hudChip.ts): below the
+   bar for a few seconds, out of the flow (showing one moves nothing); a sandbox's empty net line takes no room */
+.hud-stack > .hud-sub:empty { display: none; }
+.hud-chip {
+  position: absolute; top: calc(100% + 6px); left: 36px; z-index: 1; padding: 2px 8px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 700; line-height: 1.35; white-space: nowrap; font-variant-numeric: tabular-nums; pointer-events: none;
+  background: rgba(17, 23, 31, 0.9); border: 1px solid var(--hair-2); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  opacity: 0; visibility: hidden; transform: translateY(-4px);
+  transition: opacity 0.25s ease, transform 0.25s ease, visibility 0s linear 0.25s;
+}
+.hud-chip.on { opacity: 1; visibility: visible; transform: none; transition-delay: 0s; }
+.hud-chip.rm { transition: none; transform: none; }
 
 .city-badge {
   width: 32px; height: 32px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex: none;

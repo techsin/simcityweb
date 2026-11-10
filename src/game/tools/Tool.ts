@@ -10,6 +10,9 @@ import { escapeHtml } from '../../ui/dom';
 import { money, moneySigned } from '../../ui/format';
 import type { CityState } from '../../sim/CityState';
 import type { BuildingDef } from '../../sim/catalogTypes';
+import { getDef } from '../../sim/catalog';
+import { upkeepEstimate } from '../../ui/upkeepModel';
+import { floatTextOf } from '../../ui/FloatText';
 
 export interface ToolPointer {
   clientX: number;
@@ -112,7 +115,7 @@ export function commitAction<K extends ActionOp>(ctx: GameContext, owner: object
     }
   }
   if (!ctx.signal.aborted && ticket.exact && predicted) {
-    if (predicted.ok) { g.recordFeedback(); feedback.ok(predicted); }
+    if (predicted.ok) { g.recordFeedback(); feedback.ok(predicted); costFloat(ctx, op, args, predicted, g); }
     else g.fail(() => fail(predicted));
   }
   const delivered = ticket.done.then((r: ActionResult) => {
@@ -120,7 +123,7 @@ export function commitAction<K extends ActionOp>(ctx: GameContext, owner: object
     if (ctx.signal.aborted) return;
     g.recordAck(r.ok);
     if (!ticket.exact || !predicted) {
-      if (r.ok) feedback.ok(r);
+      if (r.ok) { feedback.ok(r); costFloat(ctx, op, args, r, g); }
       else g.fail(() => fail(r));
     } else if (predicted.ok && !r.ok) g.fail(() => fail(r));
     feedback.ack?.(r);
@@ -140,6 +143,27 @@ export function commitAction<K extends ActionOp>(ctx: GameContext, owner: object
   g.track(delivered);
   if (!gesture) g.end();
   return ticket;
+}
+
+/**
+ * FEEL-03 (a): the commit's cost float at the cursor (src/ui/FloatText.ts), called once per commit beside
+ * `feedback.ok` (the exact prediction or the acknowledgement; never on failure). A plop adds its monthly upkeep. None
+ * in a sandbox, for a free commit, or in a context without CityScene's float layer. The gesture merges a held brush's
+ * commits into one float.
+ */
+function costFloat(ctx: GameContext, op: CommandOp, args: unknown, r: ActionResult, gesture: object): void {
+  const ft = floatTextOf(ctx);
+  if (!ft || !r.ok || !r.cost || (ctx.sandbox?.() ?? !!ctx.state.config.sandbox)) return;
+  safe(() => ft.cost(r.cost, op === 'plop' ? plopUpkeep(ctx.state, (args as [string])[0]) : 0, gesture), false);
+}
+
+/** FEEL-03 (a): the monthly upkeep a placed building adds, as PlopTool quotes it before the spot's own figure arrives
+ *  (upkeepModel's estimate for a running-cost facility, else the catalog's flat upkeep) */
+export function plopUpkeep(st: CityState, defId: string): number {
+  const def = getDef(defId);
+  if (!def) return 0;
+  const est = safe(() => upkeepEstimate(st, def), null);
+  return Math.max(0, est ? est.now : def.upkeep ?? 0);
 }
 
 /** Tooltip html for an action preview (`more`: html lines under the sub line, above the reason — FH-05's budget line). */

@@ -4,10 +4,40 @@
  * anywhere else opens the advisors.
  */
 import type { GameContext, PanelsApi } from '../../game/context';
+import type { CityState } from '../../sim/CityState';
+import { DAYS_PER_MONTH } from '../../core/constants';
 import { clear, h, setText } from '../dom';
 import { icon } from '../icons';
-import { approvalBreakdown } from '../../sim/economy/approval';
+import { APPROVAL_LABELS, approvalBreakdown } from '../../sim/economy/approval';
 import { NO_RESIDENTS_TEXT, approvalFix, approvalFixHint, approvalHud, newTownFooter } from './approvalGuide';
+import { HudChip } from './hudChip';
+
+/** FEEL-03 (d): how long the approval chip shows (ms) */
+export const APPROVAL_CHIP_MS = 3000;
+
+/**
+ * FEEL-03 (d): the label of the approval term that moved most between two monthly reports (`before` → `after`, term id
+ * → value), in the direction approval moved (`dir`); if none moved that way, the biggest move either way. Terms and
+ * values only: approvalBreakdown's detail lines differ on a replica (src/worker/replicaSafe.ts). null: no report to
+ * compare, or nothing moved.
+ */
+export function biggestTermChange(before: Readonly<Record<string, number>> | null, after: Readonly<Record<string, number>> | null, dir: number): string | null {
+  if (!before || !after) return null;
+  let best: string | null = null, bestV = 1e-9, any: string | null = null, anyV = 1e-9;
+  for (const id of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (id === 'clamp') continue;
+    const d = (after[id] ?? 0) - (before[id] ?? 0);
+    if (d * dir > bestV) { bestV = d * dir; best = id; }
+    if (Math.abs(d) > anyV) { anyV = Math.abs(d); any = id; }
+  }
+  const id = best ?? any;
+  return id === null ? null : APPROVAL_LABELS[id] ?? id;
+}
+
+/** FEEL-03 (d): the chip's text, "−2 · Residential taxes" (`d`: the displayed approval's change, whole points) */
+export function approvalChipText(d: number, term: string | null): string {
+  return `${d > 0 ? '+' : '−'}${Math.abs(d)}${term ? ` · ${term}` : ''}`;
+}
 
 export class ApprovalSegment {
   readonly el: HTMLElement;
@@ -17,12 +47,21 @@ export class ApprovalSegment {
   /** population band the card was built for (FH-06: no residents yet / a new town / from 10,000) */
   private apprBand = -1;
   private apprPop: HTMLElement;
+  /** FEEL-03 (d): the approval chip, the month of the last tick (-1: none yet), and the displayed approval (null: no
+   *  score) and term values at the last month tick (copied: a replica fills one terms object in place, NOTE-092) */
+  readonly chip: HudChip;
+  private chipMonth = -1;
+  /** the state the month was read from (a load or a replica's resync replaces it: no chip for that) */
+  private chipOf: object | null = null;
+  private chipAp: number | null = null;
+  private chipTerms: Record<string, number> | null = null;
 
   constructor(private ctx: GameContext) {
     this.apprEl = h('div', { class: 'hud-value' });
+    this.chip = new HudChip(ctx, 'appr');
     // hover card: why approval is where it is (approvalBreakdown, rebuilt monthly); the plain title is the fallback
     this.apprPop = h('div', { class: 'appr-pop mp-glass' });
-    this.el = h('div', { class: 'hud-seg click approval', title: 'Mayor approval — advisors (N)' }, h('span', { class: 'ico-wrap', html: icon('smile', 20) }), h('div', { class: 'hud-stack' }, h('div', { class: 'hud-label' }, 'Approval'), this.apprEl), this.apprPop);
+    this.el = h('div', { class: 'hud-seg click approval', title: 'Mayor approval — advisors (N)' }, h('span', { class: 'ico-wrap', html: icon('smile', 20) }), h('div', { class: 'hud-stack' }, h('div', { class: 'hud-label' }, 'Approval'), this.apprEl, this.chip.el), this.apprPop);
     // FH-06: a card row with a fix opens it (one delegated listener: the rows are rebuilt monthly); anywhere else, the advisors
     this.el.addEventListener('click', (e) => {
       if (this.openApprovalFix(e.target)) return;
@@ -112,5 +151,23 @@ export class ApprovalSegment {
       this.el.title = tip;
       this.apprPop.classList.toggle('empty', !this.apprPop.childElementCount);
     }
+    this.changeChip(st, ap, hud.band);
+  }
+
+  /** FEEL-03 (d): at the month tick, when the displayed approval moved by a point or more, the change and its main term
+   *  (none before the first residents, in a sandbox, or right after the city opened) */
+  private changeChip(st: CityState, ap: number, band: number): void {
+    const m = Math.floor(st.day / DAYS_PER_MONTH);
+    if (m !== this.chipMonth || st !== this.chipOf) {
+      const first = this.chipMonth < 0 || st !== this.chipOf, prevAp = this.chipAp, prevTerms = this.chipTerms;
+      const T = (st.systemData.economy as { approvalTerms?: Record<string, number> } | undefined)?.approvalTerms;
+      this.chipMonth = m;
+      this.chipOf = st;
+      this.chipAp = band > 0 && !st.config.sandbox ? Math.round(ap) : null;
+      this.chipTerms = T ? { ...T } : null;
+      const d = this.chipAp !== null && prevAp !== null ? this.chipAp - prevAp : 0;
+      if (!first && Math.abs(d) >= 1) this.chip.show(approvalChipText(d, biggestTermChange(prevTerms, this.chipTerms, d)), d > 0 ? 'pos' : 'neg', APPROVAL_CHIP_MS);
+    }
+    this.chip.tick();
   }
 }
