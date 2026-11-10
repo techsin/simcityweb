@@ -361,7 +361,7 @@ export class CityScene {
     });
     // (FEEL-07: the storage dialogs are dialogs too, and a spotlight's setView would end the truck the player follows)
     this.cameraMoments = new FirstCameraMoments(ctx, this.showCamera, () => this.newYear.busy || !!this.founding?.active || this.photo?.active
-      || this.pause?.isOpen || confirmOpen() || storageDialogOpen() || this.followedVehicle !== null);
+      || this.pause?.isOpen || confirmOpen() || storageDialogOpen() || modalOpen() || this.followedVehicle !== null);
     this.photo = new PhotoBar(ctx, this.root, undefined, { inspected: () => this.view.focus[0] ?? null, lastSpeed: () => this.lastSpeed });
     // ---- CONTENT: yearly feedback follows the celebration, without changing its timing or camera.
     // (and photo mode: the card is drawn in the HUD, hidden there, and the key that leaves photo mode would close it)
@@ -690,7 +690,7 @@ export class CityScene {
       if (this.newCity && !this.founding && landing && typeof showControls.setView === 'function' && resolveMotion(this.settings.motion) !== 'reduced') {
         // (QA B4: held at the high view until the app's loading screen is gone: reportLoadTime releases it)
         this.founding = new FoundingFlyIn(this.showCamera, showControls, landing, foundingTitle(st), this.resolveLanding, this.uiRoot, {
-          hold: true, inPlace: true, busy: () => !!this.photo?.active || !!this.pause?.isOpen || confirmOpen() || storageDialogOpen(),
+          hold: true, inPlace: true, busy: () => !!this.photo?.active || !!this.pause?.isOpen || confirmOpen() || storageDialogOpen() || modalOpen(),
           rules: { canvas: () => this.canvas, cameraKey: (e) => isCameraCode(e.code, this.settings.keyBindings), gameKey: (e) => isBoundCode(e.code, this.settings.keyBindings) },
         });
       } else this.resolveLanding();
