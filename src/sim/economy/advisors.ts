@@ -220,7 +220,9 @@ export interface AdvisorData {
   /** FH-03: the zoned tiles per family (0 R, 1 C, 2 I) at the last month tick — more of a family zoned since then is
    *  the advice followed: its zone rule's cooldown and back-off start over */
   zoned?: [number, number, number];
-  /** LG-21: the map was full at the last month tick — free land under BUILT_OUT_FREE of it, whatever the demand (LG-05's
+  /** LG-21: land exhaustion: free land under BUILT_OUT_FREE of the map in the zone scan the last month tick used (the
+   *  month's day-28 scan when one exists, else a fresh one, so land zoned or freed on days 28-29 shows one tick later),
+   *  whatever the demand (LG-05's
    *  built-out card also needs a family with demand and no room left). Kept only while it holds: a city with land left
    *  has no such field, like a save from before. The year review's grade reads it through the history's builtOut series
    *  (history.ts, the next system of the tick); no rule and no other system does */

@@ -44,7 +44,7 @@ uninterrupted game again.
    flag off the replica too (LoopbackSimHost, the real `YearReview` card).
 
 Negative controls (advisors.ts mutated, run, restored): publication removed, 5 of 5 fail; published by every pass, 3;
-always assigned including `false`, 3; the demand-gated card flag published instead, 4.
+always assigned including `false`, 4 (tests 1, 3, 4 and 5; REVIEW-T054b counted them); the demand-gated card flag published instead, 4.
 
 ## Gates run in the lane (through quietrun)
 
@@ -106,3 +106,7 @@ under 1 %. So the flag feeds nothing but the series.
 ## Desktop gate (10 Nov, a7faf737)
 
 tsc clean; full vitest 291 files passed, 3 skipped; 2,904 tests passed, 13 skipped; 0 failing. The 128x15 s7 bot with the action log is identical to dev: residents [ 61124, 93804, 37971 ] = 192,899.
+
+## Review (REVIEW-T054b, PASS)
+
+Minor 2: the JSDoc of `AdvisorData.full` now names the scan it comes from (the zone scan the last month tick used: the day-28 scan, else a fresh one). Minor 3: the negative control that always assigns the flag fails 4 tests, not 3. Minor 1 (history.ts:187 and a test title still say "will publish") is left for a later docs pass, as the lead decided.
