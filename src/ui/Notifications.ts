@@ -513,8 +513,9 @@ export class Toasts {
         },
       } : this.newsAction?.(n);
       // silent: GameSounds plays the (rate-limited) news sound even when toasts are off. FEEL-02a: bad news and disasters
-      // always show; every other kind shares the budget
-      this.show(n.text, n.kind, n.x !== undefined && n.z !== undefined ? { x: n.x, z: n.z } : undefined, n.advisor, {
+      // always show; every other kind shares the budget. T093 P2: a reward keeps its kind's title ("Reward unlocked");
+      // the advisor it is filed under ('planning', 'finance') read as the toast's title. The news panels keep it.
+      this.show(n.text, n.kind, n.x !== undefined && n.z !== undefined ? { x: n.x, z: n.z } : undefined, n.kind === 'reward' ? undefined : n.advisor, {
         silent: true, budget: n.kind !== 'bad' && n.kind !== 'disaster', ...(action ? { action } : {}),
       });
     });
