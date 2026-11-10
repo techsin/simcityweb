@@ -192,11 +192,13 @@ The supplied real-GPU QA on `3ee51c0` passed 7/8 acceptance lines before this pa
 - [ ] Recheck healthy/forced-F grades, records and approval changes against history; first-April founding works. After T037b merge, verify land-full with weak demand uses unemployment.
 - [ ] Lead: final full suite and GPU/frame-cost gates; refresh future-producer and long-run gates after its merge.
 
-## Cloud carry-over (Nov 3)
+## Cloud carry-over (Nov 3; fix round Nov 3-9)
 
 Chain desk6, branch `cloud/t054`, from `local/T054-lg21-year-review` at `0818204`, with dev `89a32a6` merged in
 (`c999770`; dev's six commits since the lane's last merge are docs only: NOTE-051..056 and a T061 line). This is a
-verification of a lane the desktop finished and gated on its real GPU.
+verification of a lane the desktop finished and gated on its real GPU. The fix round (its own subsection, after the
+decisions) fixed the review's major in src/sim and added a test and a tool. It then merged dev `87c7c9c`, which holds
+T040, T053, T034b, the Nov 4 handoff and NOTE-057..059, as `3ef6034`.
 
 ### Gap list (required against done, written before any change)
 
@@ -241,7 +243,7 @@ names LG-21.
      `approval_<term>` snapshots), with their types.
    - `src/sim/economy/history.ts` (+95/−1): the history system records those series monthly, and writes two
      economy records of its own, `systemData.economy.yearReviewGoals` (goal completion months) and
-     `yearReviewBaseline` (the founding snapshot); its new `init` seeds them and a January checkpoint's terms.
+     `yearReviewBaseline` (the founding snapshot); its new `init` seeds them and a January checkpoint's terms (since the fix round, the goals only on a city without the record).
    - `src/worker/replicaSafe.ts` (+1/−1): the `listMilestones` entry only, the same line as T053's (NOTE-053).
    - No sim system reads any of them (grep of every new name): only `src/ui/YearReview.ts` does, and the worker's
      recorder and replica and the save iterate `HISTORY_KEYS` generically, so they mirror and save the new series. The
@@ -277,9 +279,11 @@ names LG-21.
 | Adjacent files: hygiene, graphAxisLabels, panelsMisc, serializePhase0, sim/history, phase0Contract, worker/replica | **7 files passed; 78 tests passed, 2 skipped** |
 | New test lines with `2db5254` reverted | 3 failed, 35 passed (2 files); all pass with it |
 | The full vitest and the bot | **not run in this step**, as the lead set it out to save the shared lock: the desktop ran both on `9e67c6d`, which has the same src/ and tests/ as `0818204` (227 files / 2,268 tests passed; residents [ 61124, 93804, 37971 ] = 192,899, identical to dev). Since then only docs came from dev and `2db5254` changed src/ui only, so the bot is expected identical; the merge step runs both on the merged tree |
-| 256×60 s7 grades C or better every year from 2010 | the desktop's result stands: 51 of 51 years, 38 B / 13 A, minimum 73.53 (B, 2060), on the post-B3 sim (year 60 = 1,513,835, B3's reference); round 2 and `2db5254` change neither the grade nor its inputs; not rerun (a 256×60 bot run takes the lock; the probe is the desktop's scratch `grade-run.ts`) |
+| 256×60 s7 grades C or better every year from 2010 | the desktop's result stands: 51 of 51 years, 38 B / 13 A, minimum 73.53 (B, 2060), on the post-B3 sim (year 60 = 1,513,835, B3's reference); round 2 and `2db5254` change neither the grade nor its inputs; not rerun (a 256×60 bot run takes the lock). The desktop's probe was its scratch `grade-run.ts`; since the fix round the repo has `tools/yeargrades.ts` (`0a06c74`) |
 
 ### Browser evidence
+
+(Carry-over step. The fix round's SwiftShader sessions are fix round item 3, under NOTE-059, decision 9.)
 
 - **No browser session ran in this step.** The lead's instruction for this step limits it to tsc and the lane's own
   test files, to save the shared lock (27 waiters were queued at 23:34 UTC). A SwiftShader session was queued and
@@ -307,29 +311,147 @@ names LG-21.
    alone and read by the card alone (`yearReviewGoals`, `yearReviewBaseline`); no sim system reads any of them. That
    is wider than "the history field" by the letter. Accepted as part of the lane's history telemetry, which NOTE-056
    received with no infra.
-4. **The full vitest, the bot and the 256×60 grade run were not rerun here** (the lead's lock-saving instruction;
-   the merge step runs the full vitest and the bot). The 256×60 result is the desktop's, measured on the same sim
+4. **The full vitest, the bot and the 256×60 grade run were not rerun in the carry-over step** (the lead's
+   lock-saving instruction; the fix round below ran the full vitest and the bot). The 256×60 result is the desktop's, measured on the same sim
    as dev's (its year-60 population is B3's reference, and dev has changed nothing in src/sim, src/worker or
    src/save since the lane's base `fb1531f`).
 5. **The "since April" label** comes from FEEL-02a's Risk line, which names LG-21. It is shown when the founding
    baseline lies inside the reviewed year, so only a spring-founded city's first card carries it. The founding
    month comes from `systemData.economy.yearReviewBaseline` (mirrored through `economy`), not from
    `systemData.foundedDay`, which the worker does not mirror until T042's SYSTEM_KEYS line lands.
-6. **No browser session** (see Browser evidence): the real-GPU lines are the desktop's and pass; the label change is
-   DOM text, covered by the tests.
+6. **No browser session in the carry-over step** (see Browser evidence): the real-GPU lines are the desktop's and
+   pass; the label change is DOM text, covered by the tests. The fix round's two SwiftShader sessions and NOTE-059
+   are decision 9.
 7. **History precision and save size are left as gated.** Several new series keep full-precision floats (the
    approval terms, the recurring net and expense, the review funds, which must keep a negative balance below one
    unit). Worst case about 165 KB gzip at the 600-sample cap, about 45 KB if rounded to 3 decimals. Rounding would
    change the saved format and the desktop's gated digests, so it is a backlog candidate for the lead, not done here.
+8. **The card waits for `NewYearCelebration.active`, not `busy`** (added in the fix round; the lead confirms or
+   reverts). The task's `after` line and LG-21's Change say the card waits for `busy` to clear; the wiring passes
+   `busy: () => this.newYear.active` (`src/game/CityScene.ts:327` after the fix round's dev merge), so the card can open while the last fireworks
+   sparks still fade (`busy` stays true while `Fireworks.isRunning`). This is the desktop's round-2 change A: on the
+   real GPU, after a 1× full show, the card appeared 2.3-5.4 s after the show phase ended (the clock-return phase),
+   within one frame of `active` clearing, instead of waiting for the sparks as well.
+   `tests/game/yearReviewRestore.test.ts` asserts the card appears with `active === false`, `busy === true` and
+   `isRunning === true`. Kept as the desktop shipped it; reverting is the one-line change back to
+   `this.newYear.busy` plus that test's predicate.
+9. **Browser evidence follows NOTE-059** (added in the fix round). NOTE-059 cancelled the cloud's SwiftShader
+   recheck of T054: for a desktop lane the cloud reviews the desktop's real-GPU evidence and runs the full vitest and
+   the bot. Before that note reached this step, the fix round had already run two SwiftShader sessions (Nov 4, at
+   `0a06c74`; see the fix round below). Their functional lines pass. Their three timing FAILs come from SwiftShader
+   main-thread stalls of 3-5 s, which the harness's polling and screenshots cannot see past. The card's own 15 s
+   timer closed it every time. No further browser session was run. The desktop's real-GPU table stays the evidence
+   of record. The doubtful states go to the desktop as Desktop QA items (Remaining).
+10. **Dev merged into the lane** (fix round, `3ef6034`). NOTE-057 puts T053 after T054, but T053 landed first
+    (47bc952), and NOTE-057 says to merge dev into a conflicting later lane the same day. There was one conflict:
+    the CityScene.ts CONTENT slot. The resolution keeps both blocks (T053's report gives the same resolution). The
+    two constructors share no state, so their order does not matter. The `listMilestones` lines were byte-identical.
+    Not changed, and left to the lead: T053's report notes that the milestone card (top 112 px, z-index 54) does not
+    defer to the year-review card (bottom 86 px, up to `100% - 160px` tall, not a `.panel`). On a short viewport a
+    full review and a rank-up just after New Year can overlap. If the desktop's check shows that, its smallest fix is
+    for `MilestoneCard.present()` to treat `.year-review` like an open panel. Since the merge, dev has gained T058
+    (0b9bd9d) and NOTE-060/061 (1c2019c). A trial `git merge-tree` of dev `1c2019c` with this branch is clean, so it
+    was not merged again.
+
+### Fix round (Nov 3-9)
+
+Findings from the independent review of `cloud/t054` at `acd3462`: one major and four minors. Every one is addressed.
+The step was interrupted at the shared usage limit on Nov 4. Its commits and its uncommitted report edit match the
+handoff's `bundles/cloud_t054.bundle` (head `0a06c74`) and `wip/co_t054.uncommitted.patch`. It resumed on Nov 9 from
+that state.
+
+1. **Major: the goal record lost a goal reached in the partial month before a save** (`2d0b3a5`, src/sim). On every
+   load, `historySystem.init` re-seeded `economy.yearReviewGoals` silently. Any goal reached since the last monthly
+   tick was marked seen with no completion month: a rank crossed mid-month, or a reward that `rewards.init` unlocks on
+   load. That goal never reached a card. Init now seeds only a city without the record, which is a new city or a save
+   from before LG-21. With the record present, the next monthly tick stamps the goal in the same month as a
+   continuous run, so right after a load the record equals the continuous run's. This removes the key from NOTE-044's
+   post-load divergence.
+   - **New test:** the population crosses Village and Town on day 375 and the save is on day 380. The continuous run
+     and the reloaded run both end with `{ rank:village: 13, rank:town: 13 }`. The second-year card lists both goals
+     and the first-year card lists neither. The existing init test now also checks that a reward unlocked on load is
+     left to the monthly tick, which stamps it in month 15.
+   - **Negative controls** (history.ts mutated, the file run, then restored): the reviewer's partial fix, an init with
+     no guard, fails both cases. So does the lane's original always-seeding init. Each run: 2 failed, 15 passed.
+   - **The reviewer's own probe** (`co-review/t054-probe/zzReviewProbe.test.ts`, copied in for one run and then
+     removed) passes 2 of 2.
+   - No sim system reads the record, so the bot is unaffected (the bot gate is below).
+2. **Minor: the card waits for `active`, not `busy`.** Listed as decision 8 for the lead, with the desktop's
+   measurement. The code is unchanged.
+3. **Minor: no inspectable browser evidence.** Two SwiftShader sessions ran on Nov 4 under the lock, at `0a06c74`,
+   1280×720, `?quickstart=1&size=small&seed=7`, quality low, show off. The harness and scenarios are kept in the
+   scratchpad as `t054fix/qa/harness.mjs`, `scen.mjs` and `scen2.mjs`.
+   - **PASS:**
+     - on load at day 90 (founded day 90, baseline month 3, the setting on), no card shows;
+     - the founding card reads "2000 in review, since April · Settlement" and "Figures on 1 January 2001", above the
+       toolbar and clear of the minimap at 720p (screenshot `t054fix/qa/out/r-01-founding-card.png`, looked at);
+     - with the toggle off, no card shows on 1 January 2002;
+     - at 2×, no card shows on 1 January 2003, and a card shows on 1 January 2004, reading "2003 in review ·
+       Settlement" with no "since".
+   - **The 15 s close:** the run-2 instrumentation recorded the caller of every removal of the card. Both cards were
+     removed by `YearReview.dismiss`, called from the card's own `setTimeout(…, 15000)`, not by input, LIVE or a
+     setting. The stack frame is the served `/src/ui/YearReview.ts:258:38`. Vite's `transformRequest` gives that line
+     as `this.timer = setTimeout(() => this.dismiss(), 15e3);`, and column 38 is `dismiss`. YearReview.ts has not
+     changed since `0a06c74`.
+   - **Three FAILs, all from SwiftShader timing:**
+     - the measured times on screen (20.2 s; 16 s; 18.2 s) differ from 15 s by the page's own stalls. A 15 s probe
+       timer armed in the page beside the founding card fired after 18.5 s, 3.5 s late. The 50 ms poll saw that card
+       at least 3.6 s late (the card's own timer removed it 11.4 s after the poll first saw it), and saw its removal
+       4.6 s late;
+     - the 2× card's screenshot came after the card had closed. The screenshots `out2/r2-01-2004-card-2x.png` (5 Jan
+       2004) and `out2/r2-02-2004-card-2x-after-5s.png` (10 Jan) show no card, and `out/r-02-2004-card-2x.png` (3 Jan)
+       shows none either. All three were looked at.
+   - **Not shown in the browser:** run 1's "a map click closes the card" PASS is void, because the card had already
+     closed. Run 2 skipped the click for the same reason. The map-input close is covered by the fake-DOM tests and by
+     the desktop's real-GPU table.
+   - Per NOTE-059 (decision 9), the cloud ran no further session. The desktop items are under Remaining.
+4. **Minor: the grade gate after `full` is published** (`0a06c74`). Remaining now names the 256×60 s7 grade rerun. The
+   probe is in the repo as `tools/yeargrades.ts`. It runs the bot with any simbot options and grades each 1 January
+   from the history the card reads (`yearGradeInput`, `yearGrade`). It prints each year's score, letter and six stat
+   scores, and whether that year was graded on unemployment. It exits 1 when a year from `--from` (2010) is ungraded or
+   scores below `--min` (55). The card module's stylesheet loads as an empty module, because node has no .css loader.
+   It was smoke-run only, at 64×3 s7 with `--from 2001`: 3 of 3 years graded, 2001 C 62.1, 2002 B 77.9 and 2003 C 62.5, PASS
+   (`t054fix/smoke.json`). It has not yet reproduced the desktop's 256×60 numbers.
+5. **Minor: the recorded term list could drift from the approval terms** (`2d0b3a5`). A new test checks two things:
+   the sorted `YEAR_REVIEW_TERMS` equals the sorted keys of `APPROVAL_LABELS`, and it equals the term ids the approval
+   system writes to `economy.approvalTerms` in a 30-day run of the economy systems.
+
+**Gates (fix round, on the merged tree `3ef6034`; the commits after it change only this report):**
+
+| Gate | Result |
+|---|---|
+| tsc (sem) | clean, exit 0 |
+| The lane's 8 test files plus hygiene, milestoneCard (game and worker) and replicaSafe (sem, `--maxWorkers=2`) | **11 files passed; 127 tests passed, 1 skipped** |
+| The full vitest (lock), at `3ef6034` | queued under the lock at 23:31 UTC; the result follows in the next commit |
+| The bot, 128×15 s7 (lock), at `3ef6034` | **identical:** `residents [ 61124, 93804, 37971 ]` = 192,899, 193k in 2015; 24 s under the lock |
+| Before the dev merge, at `0a06c74` (Nov 4, lock) | full vitest 227 files passed, 2 skipped; 2,274 tests passed, 8 skipped. Bot `residents [ 61124, 93804, 37971 ]`, identical |
 
 ### Remaining
 
-- **The built-out producer** (NOTE-048, NOTE-056): once T037b is in dev, merge dev and publish `full` from the LG-05
+- **The built-out producer** (NOTE-048, NOTE-056; NOTE-061 §2 gives it to the desktop, after T037b and the TopBar
+  split): once T037b is in dev, merge dev and publish `full` from the LG-05
   block in src/sim/economy/advisors.ts as a typed, optional `AdvisorData.full`, as T054's own small commit; then
   show the bot at 192,899 and the exact and determinism digests unchanged, and add an end-to-end land-full test.
-- **The merge step:** the full vitest and the bot (expected identical: residents [ 61124, 93804, 37971 ]).
-- **Optional:** a SwiftShader functional and visual recheck with the kept harness; nothing in this lane needs the
-  real GPU again (the label is text).
+  Then **rerun the 256×60 s7 grade gate**: once `full` is published, the run's late, probably land-full years switch
+  the growth stat to unemployment scoring (`yearGradeInput` reads `history.builtOut`, `yearGrade` then uses
+  `unemploymentScore`), so the desktop's 51 of 51 no longer covers the shipped grade. The probe is now in the repo:
+  `npx tsx tools/yeargrades.ts --size 256 --years 60 --seed 7 --quiet --json <out.json>` under the timing lock
+  (a 256×60 bot run); it prints each year's score, letter, the six stat scores and whether the year was graded on
+  unemployment, and exits 1 when a year from 2010 is ungraded or below 55. A first run before `full` is published
+  should reproduce the desktop's 51 of 51 (38 B / 13 A, minimum 73.53 in 2060). That run checks the tool itself; so
+  far it has only been smoke-run.
+- **The merge step:** the full vitest and the bot on the merged tree (expected identical: residents
+  [ 61124, 93804, 37971 ]).
+- **For the lead: NOTE-061 §2 lists LG-21 as a free CONTENT item** for a new Codex lane ("None of these items is
+  started or in flight"). LG-21 is this lane, T054, now in its fix round. Only the producer above is left. A new
+  LG-21 lane would redo the card.
+- **Desktop QA (NOTE-059, NOTE-061 §1), on the real GPU, after the merge:**
+  1. Decision 8: confirm or revert `active` over `busy`. After a 1× full show, does the card open while the sparks
+     still fade, and is that acceptable?
+  2. Decision 10: at 1366×768 and 1280×720, a rank-up just after New Year with a full review card open. Do the
+     milestone card (top) and the review card (bottom) overlap?
+  3. The 15 s close and a real map click on the card. Both pass in the desktop's round-2 table; SwiftShader could not
+     time the close or reach the card in time to click it (fix round, item 3).
 - Two low backlog notes from the desktop stand (Space on a focused Settings switch; Graphs 5Y/10Y one month short).
 - The "Review round 2: the lane's notes" section above is the lane's mid-round text ("All changes below are
   uncommitted"); it was committed afterwards as `4b5c99c`..`e2165e0` and is kept as history.
