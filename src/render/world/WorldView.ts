@@ -27,6 +27,9 @@ import { WaterRenderer } from './WaterRenderer';
 import { releaseSharedTextures } from './textures';
 import { releaseTreeGeometries } from './fallbackTrees';
 import { previewBounds, type PendingPreview } from '../../worker/PendingEdits';
+import { Sightings } from '../city/Sightings';
+import { Weather } from './Weather';
+import { roadUniforms } from '../city/roads/roadMaterial';
 
 export { overlayLegend } from './overlays';
 export { QUALITY_PRESETS, detectQuality, type QualitySettings } from './quality';
@@ -88,6 +91,8 @@ export class WorldView implements WorldViewApi {
   readonly water: WaterRenderer;
   readonly trees: TreeRenderer;
   readonly post: PostFX;
+  private sightings?: Sightings;
+  private weather?: Weather;
 
   autoTime: boolean;
   /** game minutes per real second when autoTime is on (default 2 -> a day lasts 12 real minutes) */
@@ -276,6 +281,8 @@ export class WorldView implements WorldViewApi {
     // frame); off, only objects that update their own matrix (and their subtrees) are recomputed
     this.scene.matrixAutoUpdate = false;
     this.scene.matrixWorldAutoUpdate = true;
+    this.sightings = new Sightings(this.scene);
+    this.weather = new Weather(this.scene, THREE);
 
     const W = state.size * CELL_SIZE;
     const tt = performance.now();
@@ -397,6 +404,7 @@ export class WorldView implements WorldViewApi {
   /** replace / reload the city state (after load). Same map size required; otherwise create a new WorldView. */
   setState(state: CityState) {
     this.state = state;
+    this.sightings?.reset();
     this.terrain.reset(state);
     this.trees.reset(state);
     this.sky.setClimate(state.config.climate);
@@ -533,13 +541,33 @@ export class WorldView implements WorldViewApi {
     fitSunShadow(this.sun, this.camera, fit);
 
     this.updateAtmosphere();
+    this.updateWeather(dt);
     this.terrain.update();
+    this.sightings?.update(this.state, dt);
     // publish the season for renderers without a CityState (street / median trees in PropRenderer)
     setTreeSeason(this.state.month, this.state.config.climate);
     // lot lawns / hedges follow the climate & season (materials.ts uFoliageDry / uFoliageTint)
     setFoliageSeason(this.state.month, this.state.config.climate);
     this.trees.update(this.camera);
     this.lastFrameMs = performance.now() - t0;
+  }
+
+  private updateWeather(dt: number): void {
+    const target = this.cameraController.target;
+    const w = this.weather?.update(this.state, target, this.terrain.worldHeight(target.x, target.z), dt, this.q.level);
+    const wet = w?.kind === 'rain' ? w.intensity : 0;
+    const snow = w?.kind === 'snow' ? w.intensity : 0;
+    roadUniforms.uRoadWet.value = wet;
+    sharedUniforms.uWeatherSnow.value = snow;
+    const overcast = Math.max(wet, snow);
+    this.sun.intensity *= 1 - overcast * 0.45;
+    this.sky.uniforms.uSkyExposure.value *= 1 - overcast * 0.3;
+    this.sky.uniforms.uCloudCover.value = Math.max(this.sky.uniforms.uCloudCover.value, overcast * 0.9);
+    this.sky.uniforms.uCloudLit.value.multiplyScalar(1 - overcast * 0.45);
+    this.sky.uniforms.uCloudAmb.value.multiplyScalar(1 - overcast * 0.3);
+    this.post.fog.uSkyExposure.value = this.sky.uniforms.uSkyExposure.value;
+    this.post.fog.uCloudCover.value = this.sky.uniforms.uCloudCover.value;
+    this.post.fog.uHaze.value += w?.kind === 'haze' ? w.intensity * 0.00025 : 0;
   }
 
   private updateCameraPlanes() {
@@ -1229,6 +1257,9 @@ export class WorldView implements WorldViewApi {
     for (const u of this.unsub) u();
     this.unsub = [];
     this.cameraController.dispose();
+    this.sightings?.dispose();
+    this.weather?.dispose();
+    roadUniforms.uRoadWet.value = sharedUniforms.uWeatherSnow.value = 0;
     this.terrain.dispose();
     this.water.dispose();
     this.trees.dispose();

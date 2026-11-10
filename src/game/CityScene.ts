@@ -65,6 +65,8 @@ import type { EmergencyVehicles } from '../render/city/vehicles/EmergencyVehicle
 import { DemographicsPanel } from '../ui/panels/DemographicsPanel';
 import { attachOverlays } from '../sim/infra/overlays';
 import { windVector } from '../sim/infra/wind';
+import { weather } from '../render/world/Weather';
+import { sampleDistrictAmbience, type DistrictMix } from '../audio/ambience';
 
 export type { GameSettings } from './settings';
 
@@ -1160,10 +1162,10 @@ export class CityScene {
   /** feed the audio engine's city ambience (~2 Hz) */
   private updateAmbience(): void {
     this.feedSirens();
-    const a = this.mods.audio as (GameModules['audio'] & { setCityAmbience?: import('../audio/AudioEngine').AudioEngine['setCityAmbience'] }) | undefined;
+    const a = this.mods.audio as (GameModules['audio'] & { setCityAmbience?: import('../audio/AudioEngine').AudioEngine['setCityAmbience']; setAmbience?: import('../audio/AudioEngine').AudioEngine['setAmbience'] }) | undefined;
     if (!a?.setCityAmbience) return;
     try {
-      const st = this.sim.state;
+      const st = this.host.state;
       const dist = this.world.controls.distance || 800;
       const hour = this.world.timeOfDay;
       let constructing = 0;
@@ -1177,6 +1179,10 @@ export class CityScene {
       }
       const target = this.world.controls.target;
       a.setCityAmbience(st, target.x, target.z, dist, hour < 6 || hour > 19.5, constructing, this.sim.speed / 3);
+      const w = weather(st.day, st.config.seed, st.config.climate);
+      this.voiceAmbience.rain = w.kind === 'rain' ? w.intensity : 0;
+      sampleDistrictAmbience(this.host.state, target.x, target.z, dist, this.districtAmbience);
+      a.setAmbience?.(this.voiceAmbience);
       // soundtrack context: night, city size, liveliness (sim speed + recent growth + construction)
       const m = this.musicPop;
       const now = performance.now();
@@ -1192,6 +1198,8 @@ export class CityScene {
     }
   }
   private musicPop = { pop: 0, t: 0, growth: 0 };
+  private districtAmbience: DistrictMix = { industry: 0, parks: 0, crowd: 0, airport: 0, rail: 0, harbour: 0, distance: Infinity };
+  private voiceAmbience: import('../audio/ambience').AmbienceParams = { rain: 0, district: this.districtAmbience };
 
   /** WP8: siren voices follow the nearest emergency vehicle of each kind (camera distance, screen-x pan) */
   private feedSirens(): void {

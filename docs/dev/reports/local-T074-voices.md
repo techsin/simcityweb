@@ -1,0 +1,326 @@
+# T074 — the city's voice and weather
+
+Final status: typecheck and supplemental headless probes pass; the 128×15 seed-7 population is unchanged, and
+all 20 yearly hashes match base on both Medium and Hard after the specified advice/news exclusions. Vitest cannot
+start in this sandbox. Real-GPU/browser/audio checks remain for the lead. FEEL-13's literal dB bound down to exact
+silence remains an explicit exception below, not a passed acceptance gate. Changes are uncommitted.
+
+## FEEL-20 — headlines that react to events
+
+Implemented 26 event headline types in `src/sim/economy/eventHeadlines.ts`. Building events queue completed openings,
+first homes/shops/factories/towers and the 100th park; existing simulation news queues blackout, strike, strike-ended
+and bankruptcy-averted stories; resolved emergencies queue a thank-you story. Gerald's original bag headline can lead
+to his road repair and then his commemorative plaque. Event picks use a hash of the event, day and city seed: delay
+is 1–10 days, each type has a rolling 360-day trigger/post cooldown, and no event draw touches `sim.rng`.
+
+`src/sim/economy/advisors.ts` adds a separate feed initialization/daily call and the optional saved event record.
+The existing flavor-headline schedule, `rng.int` and `rng.next` calls remain in place. Its existing 720-day flavor
+repeat guard is stronger than FEEL-20's 360-day requirement. All new posts use ordinary `info` news with advisor
+`news`; existing `Notifications.ts` applies FEEL-02a's automatic toast budget. Located openings use the existing
+ticker camera flight.
+
+Event data lives only under `systemData.advisors.events`. Before the first daily advisor pass, an event writes an
+optional `{events}` envelope, without creating the normal flavor schedule early. Feed initialization restores that
+envelope before the advisor's first daily pass creates its normal record, so saving while the new city is paused
+does not lose an opening or move the first-headline day. Old saves without event data take a silent baseline.
+Park counts represent cumulative openings since that baseline and persist across removal/load. The emergency
+thank-you copy says the incident was resolved; it does not assert that there were no losses.
+
+New test file: `tests/sim/eventHeadlines.test.ts` (13 tests):
+
+- Ten seeded landmark openings each post within days 1–10, with clickable location coordinates.
+- Construction completion, duplicate building changes and burnt buildings.
+- One blackout story for repeated source notices; another only after the rolling-year cooldown.
+- All 26 event types have distinct copy and never repeat text within 360 days.
+- Stable hashes and unchanged simulation RNG state; ordinary flavor schedule/RNG draws with and without event news.
+- Pending opening save/load before the first daily pass; JSON continuation and the older city's unchanged first-headline day.
+- Silent old-save baseline, Gerald's ordered stories, and the 100th park across removal/save/load.
+- Family firsts and actual residential/commercial towers are independent; industrial campuses never announce a tower.
+- Farms never announce a factory or suppress the first actual factory.
+
+Validation status at completion of this item:
+
+- The final `npx tsc --noEmit` passes, including all new test files.
+- Quiet-gated `npx vitest run tests/sim/milestoneNews.test.ts --maxWorkers=1` could not start: Vite's
+  `externalize-deps`/`windowsSafeRealPathSync` subprocess failed with `spawn EPERM`. New/existing single-file test
+  execution therefore remains unverified here.
+- `npx tsx -e 'console.log(1)'` and the quiet-gated bot command could not start: `tsx` is absent and npm's cache-only
+  mode returned `ENOTCACHED`. Subsequent direct-Node runs passed; exact commands and results are in the final gates section.
+- Lead reruns, one at a time through the quiet gate:
+  `npx tsx tools/simbot.ts --size 128 --years 15 --seed 7` (expected residents
+  `[61124, 93804, 37971]`, total **192,899** in 2015), and
+  `npx tsx tools/simbot.ts --size 256 --years 20 --seed 7` (compare every yearly state hash to base after omitting
+  `news` and `systemData.advisors`, as required by FH-03). No simulation balance change is intended.
+
+Plan/code differences and requests:
+
+- The cited advisor line numbers have moved; the existing flavor block is now near the end of `daily()`.
+- “Saves” are implemented as emergency rescues/resolutions. Manual file persistence has no simulation event and
+  is not treated as an event in the city's world. No cloud-held save or worker change is required.
+- Snow headline gating belongs to FEEL-23 below, when the shared pure weather function exists.
+- No infra hunks and no out-of-scope source files in this item.
+
+Browser checklist for the lead:
+
+- [ ] Complete a landmark in ten seeded cities; its headline arrives within ten game days and clicking flies to it.
+- [ ] Cause one blackout with repeated utility reports; exactly one delayed event story appears.
+- [ ] Observe event stories over a game year: no event copy repeats inside 360 days; existing flavor copy retains its two-year guard.
+- [ ] Save/load while paused immediately after a placement and while a delayed story is pending; both continuations post on the same day.
+- [ ] Trigger many openings together and verify the existing toast budget still applies while news remains available in the ticker.
+
+## FEEL-29 — rare sightings
+
+Added five visitors in `src/render/city/Sightings.ts`: balloon flotilla, whale, visiting blimp, observatory light and
+Gerald's ribbon cutting. A headline's map coordinates are also the rendered visitor's anchor, so the existing ticker
+click flies to it. The renderer follows actual news, retains each visitor for 30 real seconds, and never respawns
+an expired visitor from the same headline. It caches the news tail and current day instead of searching the log on
+every frame. Reset/disposal releases every visitor geometry/material; disposal prevents later updates from rebuilding.
+
+Pure helpers in `src/sim/economy/eventHeadlines.ts` choose a hash-based date in a fixed slot for each type, so the
+five dates never collide. Each type repeats exactly 6,000 game days apart (more than 15 game years), giving at most
+two in every rolling 30-game-year window, including across cycle boundaries. The advisor's separate daily call posts
+the exact matching text/position on the scheduled day, with a saved guard against replay. There is no simulation RNG
+draw, and no saved state outside `news` and `systemData.advisors` changes.
+
+Whales require the largest edge-connected water body (at least 64 cells), a clear 5×5 patch and an actual visible
+shore within eight cells. Inland ponds, narrow edge channels and an entirely water-covered map are skipped.
+Observatory lights require a completed, unburnt observatory; Gerald requires a dry road. Missing habitats skip that
+occurrence. Balloons and blimps need no facility. Observatory copy does not claim evening: simulation dates do not
+contain the camera's independent day/night clock.
+
+`src/render/world/WorldView.ts` adds small, separate constructor/update/reset/dispose calls for the visitor group.
+No T073 smog hunks, building/effects renderer files or infra files are edited. This item's helper functions and the
+earlier FEEL-20 module are task-owned; no source outside the named files is changed.
+
+New test file: `tests/render/sightings.test.ts` (8 tests), using `THREE.Scene` without WebGL:
+
+- All five visitors appear only with their headline and use its exact anchor.
+- Thirty-second expiry, repeated-headline suppression, resource reset/disposal and disposed update suppression.
+- Cached news discovery between day/tail changes.
+- Ten seeds: unique dates, 6,000-day spacing and at most two sightings in rolling 30-year windows.
+- Same-day located news and the advisors daily integration, duplicate-post guard and unchanged RNG state.
+- Missing/invalid habitats; whale placement on open coastal water; pure helper leaves input state unchanged.
+
+Final typecheck and supplemental sighting assertions pass. Vitest execution remains blocked by `spawn EPERM`.
+The direct-Node bot population and both difficulties' yearly-hash comparisons passed (final gates below).
+No cloud-held file request is needed for this item.
+
+Browser checklist for the lead:
+
+- [ ] See each of the five visitor models at its headline's coordinates and click the ticker to fly there.
+- [ ] Confirm a whale is visibly off an actual coast, the light belongs to a completed observatory and Gerald is on a road.
+- [ ] Confirm each model remains visible long enough to inspect after an ultra-speed packet, expires after 30 real seconds and does not restart from old news.
+- [ ] Reload/reset and exit the city without lingering visitor meshes/resources or duplicate sighting news.
+- [ ] Check the news log over 30 game years: each type appears at most twice, always with its corresponding visible visitor.
+
+## FEEL-23 — weather that matches the headlines
+
+Added `src/render/world/Weather.ts`: a pure `weather(day, seed, climate)` calendar with deterministic three-day
+spells, spring/autumn rain, December–February temperate/alpine snow, tropical rain and desert haze. It imports
+three only as a type, so simulation/headline imports do not pull the graphics runtime into the worker. The renderer
+receives three through its constructor and uses one transparent, depth-tested point cloud with depth writes off:
+256/512/768/1,024 particles on Low/Medium/High/Ultra. It reuses its geometry/uniforms and follows the camera target.
+
+`src/sim/economy/advisors.ts` gates snowball/snow-day stories on actual snow days and April-showers stories on actual
+rain days. Meteor and heatwave copy also checks the calendar. The existing scheduled RNG draws are retained.
+`src/render/world/WorldView.ts` adds a separate weather update: precipitation, darker overcast sky/direct light,
+roof snow, road wetness and desert haze. `src/audio/ambience.ts` adds one persistent filtered rain bed, smoothly
+scaled by rain intensity/camera distance; `src/game/CityScene.ts` forwards the same calendar's rain value through
+the existing half-second ambience tick and a reused parameter object.
+
+Two minimal source hunks outside T074's named files are required for the requested visible surfaces:
+
+- **`src/assets/materials.ts`**: optional cosmetic `uWeatherSnow`, bound in `patchSurfaceMaterial`, adds a dusting to
+  upward-facing roof surface codes 3/4. The normal dry material is unchanged at zero snow.
+- **`src/render/city/roads/roadMaterial.ts`**: optional cosmetic `uRoadWet`, bound into the existing road material,
+  darkens asphalt/sidewalk albedo and lowers roughness during rain. Road roughness is generated inside that shader,
+  so setting the material's ordinary roughness property would not implement the requested sheen.
+
+Neither hunk changes geometry, simulation inputs or RNG. No `src/sim/infra/*`, cloud-held, building-renderer or
+building-effects file is edited. The sky can be adjusted through existing exposed uniforms, so no `Sky.ts` edit is
+needed. Plan/code difference: climate is an optional third argument to the named pure function, needed to distinguish
+desert/tropical weather while preserving a two-argument temperate default.
+
+New tests:
+
+- `tests/render/weather.test.ts` (6 tests): ten-seed/two-year deterministic three-day calendar; climate/season rules;
+  no random draw or runtime three import; forced headline bag across all dates/climates matches particle weather;
+  quality caps, depth settings, reused seed buffer, untouched city/RNG data, resource cleanup and replica replacement;
+  roof/road `onBeforeCompile` uniforms and shader expressions.
+- `tests/audio/weatherAmbience.test.ts` (3 tests): rain gain crossfade/clamp/distance, stable audio source/node count
+  over repeated parameter changes, and rain-source stop/processing-chain cleanup, using `MockContext`.
+
+Final typecheck and `tests/t074-probe.mjs` pass, including all dates/climates for snow/rain copy, shader uniform
+hooks, the High particle cap, rain gains and cleanup. These supplemental assertions are separate from the
+blocked Vitest startup. The direct-Node bot results are recorded below.
+
+Acceptance GPU timing (≤0.5 ms at 1080p High), the visual roof dusting/road sheen and actual rain-bed audibility
+are **unverified**: the user reserved browser/real-GPU checks for the lead. No browser or audio rendering tool ran.
+No additional cloud-held-file request is needed.
+
+Browser checklist for the lead:
+
+- [ ] On a forced/current snow day, see falling flakes and a roof dusting while the snow headline posts that same game day; no snow copy on clear/rain/haze days.
+- [ ] On a rain day, see darker overcast sky and wet-road sheen and hear the rain bed; all fade with the same weather calendar.
+- [ ] Check desert haze and tropical rain without snow, across season boundaries and after load/reset.
+- [ ] Measure incremental GPU cost at 1080p High: at most 0.5 ms for weather, with no more than 768 precipitation points.
+- [ ] Compare yearly bot hashes outside `news`/`systemData.advisors` and confirm the unchanged 128×15 s7 resident totals.
+
+## FEEL-13 — hear the camera's district
+
+`src/audio/ambience.ts` adds a read-only, clipped 7×7 land-use sample. It counts facility footprint cells,
+industrial/commercial/high-density zones and rail cells, using only the mirrored building map and grid arrays.
+The caller supplies the output object. Below 700 m it reads each of the 49 interior cells once per input grid;
+above that boundary it retains the last local mix and applies a distance fade, reaching −18 dB at 1,500 m and
+continuing downward above it. Empty/outside samples clear the mix. Completed park, airport, seaport/ferry and
+train/freight definitions take precedence over their underlying zones; incomplete/burnt facilities do not count.
+
+Four district beds reuse existing sources and add exactly six persistent processing nodes: an industry gain fed by
+the traffic/drone source, a moving bandpass and gain for a distant playground/chatter texture, a crowd gain fed by
+the existing city murmur, and a transport bandpass/gain fed by existing wind noise. The playground texture suggests
+distant voices through moving formants; it contains no recorded or intelligible speech. Industrial districts have
+the low mechanical thrum, downtown has the murmur, and transport combines airport jet swells, low rail rumble and
+harbour wash. Jet swells recur every 30–60 audio seconds using the independent audio random stream. Train/harbour
+horns and harbour gulls replace the existing horn/gull scheduler's contextual choice, rather than adding another
+concurrent scheduler or source family. Contextual horn/gull gains include the same distance attenuation. Existing
+construction and base seasonal/weather ambience retain their behavior. Both new people beds are halved at night.
+
+`src/game/CityScene.ts` adds one separate call in `updateAmbience`, using `this.host.state` and caller-owned mix/
+parameter objects on the existing half-second timer. The existing optional `setAmbience` API forwards the district
+mix alongside FEEL-23's rain value. No new simulation mutation, saved key or simulation RNG draw is introduced.
+No infra, cloud-held or out-of-scope source file is touched by this item.
+
+District gain retargets anchor their current automated value, then crossfade over 1.5 s. Above gain 0.045
+(approximately −26.9 dB in the gain control), log ramps change no faster than 1 dB per 100 ms. Linear tails below
+that explicit threshold reach actual silence continuously. **The literal acceptance limit at every gain down to
+zero is not claimed:** a finite crossfade to/from zero has unbounded dB change near silence. The threshold is a
+documented measurement boundary, not a measured audibility guarantee. The live/offline rendered audio still needs
+the lead's judgment and measurement; the unit test does not hide this distinction.
+
+New test file: `tests/audio/districtAmbience.test.ts` (8 tests):
+
+- Exact 49-cell reads, edge clipping, out-of-map clearing, caller object reuse and no high-altitude resampling.
+- Facility footprint/zone/rail classification and input immutability, including burnt and incomplete facilities.
+- Host-state wiring and allocation-free sampler source structure.
+- All six district families switch the dominant one of four beds within 1.5 s, without a gain discontinuity.
+- People gains are exactly halved at night; every bed's settled gain is at least 18 dB lower at/above 1,500 m.
+- Exactly six extra persistent processors, unchanged source count, stable nodes through two minutes of changes,
+  and processing-chain cleanup.
+- Two minutes of continuous gain retargets; 100 ms log-gain checks above the explicitly documented quiet tail.
+- Jet intervals of 30–60 audio seconds and contextual use of the existing gull/train/harbour horn scheduler.
+
+Final typecheck and supplemental district assertions pass: 49-cell sampling, district dominance, night scaling,
+settled distance attenuation, six persistent processors and two minutes of gain retargeting above the stated floor.
+Transient voice methods are stubbed for that allocation probe; peak native node counts including contextual
+horn/gull overlap still need the audio renderer. No rendered-audio acceptance result is claimed.
+
+Exact audio-lab follow-up: in `src/audio/lab/main.ts`, `renderAmbience()`, add a 120-second moving-district scenario
+that feeds `Ambience.set({district})`, logs all four `districtLevel()` gains every 100 ms and records native node
+counts; expose that scenario through `tools/render-audio.mjs`. Report the quiet-tail boundary separately. These
+out-of-scope lab/tool files are unchanged. This is not a request for any cloud-held source file.
+
+Plan/code differences: six land-use signatures share four simultaneous beds, keeping the six-node cap. The existing
+camera-control distance is the height proxy already used for ambience zoom; this change does not introduce a new
+camera-height convention. The zero-gain dB limit and missing lab scenario are explicit verification limitations.
+There are no requests for cloud-held files.
+
+Browser/audio checklist for the lead:
+
+- [ ] Move below 700 m between industry, parks/playgrounds, downtown, airports, rail and harbour; the dominant bed switches within two real seconds, including the half-second sampling delay.
+- [ ] Hear the playground chatter/birds, city crowd, industrial thrum, 30–60-second airport jet swells, rail rumble/horn and harbour gull/horn; assess their procedural sound quality.
+- [ ] Compare identical park/crowd views by day/night: the location people beds halve at night.
+- [ ] Above 1,500 m, measure at least 18 dB attenuation of every new location bed and contextual accent.
+- [ ] Render two minutes of district movement: six extra processing nodes, continuous fades and the measured 100 ms gain changes, reporting the quiet-tail exception explicitly.
+- [ ] Exit/restart or replace the city while ambience is active; no lingering district graph, extra source family or stale map reads remain.
+
+## Final gates and handoff
+
+All processes ran from this worktree, one at a time. Every Vitest/bot attempt used
+`node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs`.
+No browser, full suite, bench, commit, branch/worktree operation or `.done` file was used. Diagnostic results are
+recorded here; the supplied scratch directory is outside this session's writable root.
+
+| Gate | Observed result |
+|---|---|
+| `npx tsc --noEmit` | Pass, final source and new test files |
+| `git diff --check` | Pass |
+| `node --experimental-transform-types --loader ./tests/t074-loader.mjs tests/t074-probe.mjs` | Pass: event/continuation, sightings, weather/headline dates, shaders, rain and district assertions |
+| 128×15 s7 Medium | **192,899** in 2015; residents **[61124, 93804, 37971]**, unchanged |
+| 256×20 s7 Medium, base versus branch | **20/20 yearly hashes identical**; 2020 **283,841**, residents **[100754, 124171, 58916]** |
+| 256×20 s7 Hard, base versus branch | **20/20 yearly hashes identical**; 2020 **236,633**, residents **[96469, 99918, 40246]** |
+| Vitest | Startup blocked by `spawn EPERM` in Vite's `externalize-deps` / `windowsSafeRealPathSync`; no tests claimed passed |
+| Weather GPU / browser / rendered audio | Left to lead; no measurements fabricated |
+| Literal FEEL-13 1 dB / 100 ms limit to zero | **Not met in the linear near-silence tails**; bounded above gain 0.045 only |
+
+Exact successful bot command:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-transform-types --loader ./tests/t074-loader.mjs tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
+```
+
+The requested `quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7` was also attempted; `tsx` is not
+installed/cached and npm returned `ENOTCACHED`. The successful command above uses Node 22's native TS transform
+and a small extension resolver; it neither changes bot rules nor installs packages.
+
+`tests/t074-audit.mjs` uses the same `SimBot`, full systems and default flags, hashes `serializeCity(copy: true)`
+with sorted object keys and raw typed-array bytes, pins only `savedAt`, and omits only `data.news` and
+`data.systemData.advisors`. Base and branch ran in separate processes. For the base process, the loader's
+`T074_BASE_ADVISORS` pointed to a temporary UTF-8 copy of `git show 1c2019c:src/sim/economy/advisors.ts`; that fixture
+has been removed. This is sufficient because advisors is the only pre-existing simulation source edited here.
+Exact audit commands (each run once with the base override, then without it):
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-transform-types --loader ./tests/t074-loader.mjs tests/t074-audit.mjs --size 256 --years 20 --seed 7 --difficulty medium
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-transform-types --loader ./tests/t074-loader.mjs tests/t074-audit.mjs --size 256 --years 20 --seed 7 --difficulty hard
+```
+
+2020 digests, equal on base and branch:
+
+- Medium: `bc25b9dd5a8cc60f456ac96b24a610664822c0ebc17356be98893f9229d503b4`
+- Hard: `135ac001b54df647b80f06dc1201b2b63a19b779d6ddb9e7371ec1c3ac46ba38`
+
+New Vitest files awaiting execution (38 tests): `tests/sim/eventHeadlines.test.ts`, `tests/render/sightings.test.ts`,
+`tests/render/weather.test.ts`, `tests/audio/weatherAmbience.test.ts`, `tests/audio/districtAmbience.test.ts`.
+Quiet-gated startup failures were observed for `milestoneNews`, `eventHeadlines` and `sightings`; a final
+`districtAmbience` attempt waited behind an active timing run and its own waiting process was cancelled. No other
+process was stopped. Run each file through the quiet gate with `npx vitest run <file> --maxWorkers=1`.
+
+Existing directly affected tests left for the lead, by name:
+
+```text
+tests/audio/ambience.test.ts
+tests/game/cameraControls.test.ts
+tests/game/cityDisposeCanvas.test.ts
+tests/game/citySaves.test.ts
+tests/game/fallbackRetention.test.ts
+tests/game/graphicsFirstRun.test.ts
+tests/game/graphicsRestore.test.ts
+tests/game/miniMapSeason.test.ts
+tests/game/quakeShakePlop.test.ts
+tests/game/thumbsRetention.test.ts
+tests/game/toastBudget.test.ts
+tests/game/zoneStatus.test.ts
+tests/infra/feedbackGarbage.test.ts
+tests/render/exitRetention.test.ts
+tests/render/freshLoad.test.ts
+tests/render/lighting.test.ts
+tests/render/pendingPreviews.test.ts
+tests/render/seasons.test.ts
+tests/sim/advisors.test.ts
+tests/sim/advisorsFeedback.test.ts
+tests/sim/advisorsPredict.test.ts
+tests/sim/advisorsRuins.test.ts
+tests/sim/advisorsScanOrder.test.ts
+tests/sim/advisorsTexts.test.ts
+tests/sim/exact/advisorsScan.test.ts
+tests/sim/foundingDay.test.ts
+tests/sim/milestoneNews.test.ts
+tests/sim/monthSpread.test.ts
+tests/sim/taxHighAdvice.test.ts
+tests/worker/hygiene.test.ts
+tests/worker/worldResync.test.ts
+```
+
+No simulation balance change is intended. No infra hunks or cloud-held file edits/requests. The only out-of-task
+source hunks are the two small shader hooks listed in FEEL-23. Full-suite, GPU and audio/browser acceptance checks
+remain with the lead, using the item checklists above.

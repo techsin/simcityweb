@@ -14,6 +14,8 @@ import { sharedUniforms } from '../../../assets/materials';
 import { Network, Zone } from '../../../core/types';
 
 export const roadUniforms = {
+  /** cosmetic rain sheen, driven by the same calendar as particles and headlines */
+  uRoadWet: { value: 0 },
   /** 0..1: data-view overlay active (desaturate) */
   uRoadOverlay: { value: 0 },
   /** 0..1: underground view (dim the surface) */
@@ -85,6 +87,7 @@ uniform float uLamps;
 uniform float uTime;
 uniform float uRoadOverlay;
 uniform float uRoadDim;
+uniform float uRoadWet;
 uniform float uLampRibbon;
 uniform vec2 uPoolFade;
 uniform float uFoliageDry;
@@ -394,6 +397,11 @@ void roadSurface(inout vec3 albedo, inout float rough, inout float metal, inout 
     albedo = vec3(0.004); rough = 1.0; metal = 0.0;
   }
 
+  if (mat < 1.5) {
+    rough = mix(rough, 0.18, uRoadWet);
+    albedo *= 1.0 - 0.22 * uRoadWet;
+  }
+
   // street lighting: the chain of lamps along a lit road (every cell of streets / roads / avenues / one-ways,
   // median lamps on highways) reads as one continuous lit ribbon, brightest along the carriageway and fading over the
   // outer sidewalk; warm sodium amber for most of the city, white LED on highways and in the re-lamped districts (as
@@ -437,6 +445,7 @@ export function getRoadMaterial(): THREE.MeshStandardMaterial {
     shader.uniforms.uTime = sharedUniforms.uTime;
     shader.uniforms.uRoadOverlay = roadUniforms.uRoadOverlay;
     shader.uniforms.uRoadDim = roadUniforms.uRoadDim;
+    shader.uniforms.uRoadWet = roadUniforms.uRoadWet;
     shader.uniforms.uFoliageDry = sharedUniforms.uFoliageDry;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)

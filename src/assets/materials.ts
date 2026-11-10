@@ -92,6 +92,8 @@ import * as THREE from 'three';
 
 let _lampsOn = 0;
 export const sharedUniforms = {
+  /** cosmetic snowfall on upward-facing roofs (WorldView) */
+  uWeatherSnow: { value: 0 },
   uTime: { value: 0 },
   /** 0 = full day, 1 = full night */
   uNight: { value: 0 },
@@ -274,6 +276,7 @@ uniform vec4 uFoliageSeason;
 uniform float uFoliageDry;
 uniform vec3 uFoliageTint;
 uniform float uNight;
+uniform float uWeatherSnow;
 uniform float uLamps;
 uniform float uLotSpill;
 uniform float uLitFraction;
@@ -867,6 +870,9 @@ const FRAG_APPLY = /* glsl */ `
   float _m = metalnessFactor;
   vec3 _e = vec3(0.0);
   applySurface(_alb, _r, _m, _e, normalize(vObjNormal));
+  float snow = uWeatherSnow * smoothstep(0.25, 0.8, vObjNormal.y) * step(2.5, vSurf.x) * (1.0 - step(4.5, vSurf.x));
+  _alb = mix(_alb, vec3(0.82, 0.87, 0.9), snow * 0.85);
+  _r = mix(_r, 0.95, snow);
   diffuseColor.rgb = _alb;
   roughnessFactor = clamp(_r, 0.03, 1.0);
   metalnessFactor = clamp(_m, 0.0, 1.0);
@@ -879,6 +885,7 @@ export function patchSurfaceMaterial<T extends THREE.MeshStandardMaterial>(mat: 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = sharedUniforms.uTime;
     shader.uniforms.uNight = sharedUniforms.uNight;
+    shader.uniforms.uWeatherSnow = sharedUniforms.uWeatherSnow;
     shader.uniforms.uLamps = sharedUniforms.uLamps;
     shader.uniforms.uLotSpill = sharedUniforms.uLotSpill;
     shader.uniforms.uLitFraction = sharedUniforms.uLitFraction;

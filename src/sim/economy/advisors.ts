@@ -78,6 +78,8 @@ import { buildingPowered, buildingWatered } from './population';
 import { APPROVAL, GROW_MAX_SLOPE, GROW_MAX_SLOPE_PER_CELL, GROW_MIN_DESIR, STAGE_POP, TAX_NEUTRAL, TOURISM_INCOME_PER_VISITOR, WATER_REQUIRED_STAGE } from './tuning';
 import { buildingUpkeep } from './opex';
 import { getOrdinance, ordinanceAvailable, ordinanceEffect } from './ordinances';
+import { EventHeadlineFeed, postSightingHeadlines, type EventHeadlineData } from './eventHeadlines';
+import { weather } from '../../render/world/Weather';
 
 const ADVICE_PER_MONTH = 2;
 /** FH-09: taxHigh warns from this resident-weighted residential rate (approval falls 3.5 a point above 9%) */
@@ -152,6 +154,8 @@ export const HEADLINE_REPEAT_DAYS = 720;
 /** advisor state in state.systemData.advisors (plain data, saved with the city) */
 export interface AdvisorData {
   v: 1;
+  /** optional in older saves: event headlines use no simulation RNG */
+  events?: EventHeadlineData;
   /** highest building-stage population threshold announced (optional in older saves) */
   stageMilestone?: number;
   /** absolute day of the next flavour headline */
@@ -1050,7 +1054,7 @@ const WINTER = (c: HeadlineCtx) => c.month === 11 || c.month <= 1;
 const SPRING = (c: HeadlineCtx) => c.month >= 2 && c.month <= 4;
 const SUMMER = (c: HeadlineCtx) => c.month >= 5 && c.month <= 7;
 const AUTUMN = (c: HeadlineCtx) => c.month >= 8 && c.month <= 10;
-const SNOWY = (c: HeadlineCtx) => WINTER(c) && (c.st.config.climate === 'temperate' || c.st.config.climate === 'alpine');
+const SNOWY = (c: HeadlineCtx) => weather(c.st.day, c.st.config.seed, c.st.config.climate).kind === 'snow';
 const FIRE_STATION = ['civ_fire_station', 'civ_fire_hq'];
 
 const HEADLINES: readonly Headline[] = [
@@ -1062,7 +1066,7 @@ const HEADLINES: readonly Headline[] = [
   { id: 'houseplants', text: 'Study: {city} residents own more houseplants than anyone in the region.' },
   { id: 'jogging', text: 'Mayor {mayor} spotted jogging at dawn — citizens impressed.' },
   { id: 'gerald', text: 'Pothole named "Gerald" becomes local celebrity before repairs.' },
-  { id: 'meteors', text: '{city} sky hosts a spectacular meteor shower tonight.', when: (c) => (c.month === 7 || c.month === 11) && !c.recentDisaster },
+  { id: 'meteors', text: '{city} sky hosts a spectacular meteor shower tonight.', when: (c) => (c.month === 7 || c.month === 11) && !c.recentDisaster && weather(c.st.day, c.st.config.seed, c.st.config.climate).kind === 'clear' },
   { id: 'umbrella', text: 'Local inventor unveils a self-folding umbrella.' },
   { id: 'townsign', text: 'Historic society restores {city}\'s first town sign.', min: 2000 },
   { id: 'pumpkin', text: 'Community garden produces record-breaking pumpkin.', when: AUTUMN },
@@ -1081,12 +1085,12 @@ const HEADLINES: readonly Headline[] = [
   { id: 'scarecrow', text: 'Scarecrow contest turns the fields around {city} into an open-air gallery.', when: (c) => AUTUMN(c) && c.dev[DevType.IA] > 0 },
   { id: 'goat', text: 'Goat escapes a farm near {city} and briefly directs traffic on Main Street.', when: (c) => c.dev[DevType.IA] > 0 },
   { id: 'duckrace', text: 'Annual rubber duck race ends in a 12-way photo finish.', when: (c) => !WINTER(c) && c.water() },
-  { id: 'snowball', text: 'First snowfall of the season turns {city} into a snowball battlefield.', when: SNOWY },
+  { id: 'snowball', text: 'Snowfall turns {city} into a snowball battlefield.', when: SNOWY },
   { id: 'snowday', text: 'Snow day! Schools close and every sledding hill in {city} is at capacity.', when: (c) => SNOWY(c) && c.has('civ_elementary_school', 'civ_high_school') },
   { id: 'carols', text: 'Local choir sets a regional record for the longest carol sing-along.', when: (c) => c.month === 11 },
-  { id: 'icecream', text: 'Heatwave: {city} ice cream parlours report record sales.', when: (c) => SUMMER(c) && c.st.config.climate !== 'alpine' },
+  { id: 'icecream', text: 'Heatwave: {city} ice cream parlours report record sales.', when: (c) => SUMMER(c) && c.st.config.climate !== 'alpine' && weather(c.st.day, c.st.config.seed, c.st.config.climate).kind !== 'rain' },
   { id: 'kites', text: 'Kite festival fills the spring sky above {city}.', when: SPRING },
-  { id: 'showers', text: 'April showers: the {city} umbrella shop reports its best month ever.', when: (c) => c.month === 3 && c.st.config.climate !== 'desert' },
+  { id: 'showers', text: 'April showers: the {city} umbrella shop reports its best month ever.', when: (c) => c.month === 3 && weather(c.st.day, c.st.config.seed, c.st.config.climate).kind === 'rain' },
   { id: 'litter', text: 'Spring-cleaning volunteers collect two tons of litter from {city} parks.', when: (c) => SPRING(c) && c.parks > 0 },
   { id: 'lizard', text: 'Local lizard wins "most photographed resident" for the third year running.', when: (c) => c.st.config.climate === 'desert' },
   { id: 'coconut', text: 'Coconut falls, narrowly misses the mayor. Coconut unharmed.', when: (c) => c.st.config.climate === 'tropical' },
@@ -1580,6 +1584,7 @@ export const MONTH_SCAN_DAYS = [28, 29] as const;
 const LOCATE_TTL = 8;
 
 export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
+  const eventHeadlines = new EventHeadlineFeed();
   /** load baseline without creating the headline schedule earlier than its first daily pass */
   let initialStageMilestone = 0;
   /** flood-fill scratch for the monthly zone scan (re-sized with the map) */
@@ -2223,6 +2228,7 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
     },
     init(sim) {
       rt.attach(sim);
+      eventHeadlines.init(sim);
       const d = econData(sim.state);
       d.popMilestone = Math.max(d.popMilestone, POP_MILESTONES.filter((m) => m <= sim.state.stats.population).pop() ?? 0);
       initialStageMilestone = STAGE_POP.filter((m) => m.pop <= sim.state.stats.population).pop()?.pop ?? 0;
@@ -2278,6 +2284,8 @@ export function advisorsSystem(rt: EconRuntime): AdvisorsSystem {
         }
       }
       const a = advisorData(st);
+      eventHeadlines.daily(sim, a);
+      postSightingHeadlines(sim, a);
       // stage unlocks survive population drops and load silently at the city's existing population
       a.stageMilestone ??= initialStageMilestone;
       for (const m of STAGE_POP) {
