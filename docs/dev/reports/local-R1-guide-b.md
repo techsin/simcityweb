@@ -1,0 +1,604 @@
+# T037b — FH-03 ("zone more" impossible to miss) and LG-05 ("your city is built out")
+
+Branch `local/R1-guide-b` on dev `93b84a7` (with R1-interfaces' `NewsItem.ref`), with dev merged in before the push. The
+code was written by an agent lane (Codex was out of credits) and reviewed, gated and browser-checked by the local worker.
+
+## What it does
+
+- **Refs.** Every advice post carries `ref: { advice }`, so toasts and cards find their button by ref, never by text.
+  `Advice` gains an optional `ref` (a variant whose fix is another rule's) and `options` (a card's buttons).
+- **FH-03.** Below 20,000 residents, zoneR / zoneC / zoneI are warnings with a 180-day cooldown, on top of the existing
+  back-off (360, 720 days while the problem persists); from 20,000 they stay the quieter info every 90 days. Roadless
+  zones give the noRoadAccess variant ("Build roads"); land only R$$$ wants gives zoneDev2. A toast and the Advisors
+  card offer "Zone homes / shops / industry": the zone tool selected and the Zones button pulsing for 4.5 s, after a
+  flight to the advice's place. The card adds "N empty residential lots left — demand wants many more".
+- **LG-05.** The day-28 zone scan also counts free land: unzoned tiles with no building, network, water or power line.
+  Under 1 % of the map, with a family's demand at 0.5 or more, a `builtOut` card (Planning, priority 7) replaces zoneR /
+  C / I and the unemployment rule's "zone more". (The cloud's review fix round adds: only for a family with no room
+  left, the test its zone rule uses; see "Review fix round" below.) It names the three lowest-value occupied blocks ("Rezone": the Land
+  value view and the Zones flyout, after a flight to the block), and a neighbour with spare jobs when jobs are what is
+  missing ("Connect a highway"). Older saved scans lack the counter and are never built out.
+- **Files.** src/sim/economy/advisors.ts (the GUIDE hunks), src/ui/adviceActions.ts (new: the advice id -> action map),
+  src/ui/panels/AdvisorsPanel.ts; two small hunks outside the brief's list: src/ui/Notifications.ts (the toast's button
+  by ref; no META lane is on that file) and src/worker/queries.ts (the advice read now copies `ref` and `options`, which
+  its field copier dropped).
+- **Tests.** tests/sim/advisors.test.ts (FH-03: the warning and its 180-day cooldown, room returning, the 20,000 line,
+  C and I, roadless, R$$$-only; LG-05: built out with its three blocks and no zoneC or "zone more", the neighbour, room
+  left (the y15 case), a pre-LG-05 scan) and tests/game/adviceActions.test.ts (10: each button's action, nothing keyed on
+  text, a toast end to end).
+- **Sim outcome:** unchanged. No system reads news or advice cooldowns, and the default bot never reads advice. What
+  changes is news and advice state (kinds, refs, which advice posts, `systemData.advisors`, and the cooldowns and streak
+  in `systemData.economy`, which a determinism check must exclude too).
+
+## Review and gates (the local worker)
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| Full vitest (with the fixtures) | **187 files passed, 1 skipped; 1,908 tests passed, 7 skipped** |
+| The default bot (128x15, seed 7) | identical to `93069fa`, action log included (196,101) |
+| FH-03's newcomer gate (`--profile newcomer --difficulty medium`): 5,000 residents by year 4 | **not met: 283** (table below) |
+| FH-04's inherited gate (`--difficulty easy`): approval >= 50 % from year 2, year-6 population >= 2x Medium's | **not met:** approval 39-40 %, population equal to Medium's |
+| LG-05 on the 256x60 seed-7 checkpoints | y15: not built out (50 % free), as required. **y55: not built out either** (below) |
+| Browser check (below) | **8 of 8 pass**, except "Connect a highway", which no city could reach (the unit tests cover it) |
+
+The review changed nothing; the two out-of-brief hunks are small and correct (the options are plain data).
+
+**The browser check** (Playwright's Chromium 141, RTX 5070 Ti, 1280x720, real input for every action under test; setup
+through host calls where noted). No console or page errors in 12 runs.
+1. A new Medium town with its residential lots full by day 13 (R demand 0.85, setup by host calls): on day 30, the first
+   month tick, an amber toast "…no room to grow — zone more residential land along roads." with "Zone homes".
+2. The click selects zone:1 and pulses the Zones button for 4.41 s.
+3. At ultra (19.6 days a second) from day 30 to 450, with the condition holding throughout, the toast came on day 30
+   and day 390 only: the 180-day cooldown, doubled by the existing back-off.
+4. Alex Stone's card: the advice, "No empty residential lots left — demand wants many more", "Show me" and "Zone homes"
+   (same action, the panel stays open).
+5. 12 residential tiles zoned with no road (a real drag): toast and card read "…but 12 residential tiles have no road
+   access…" with "Build roads" (the Road tool, a flight to the block, Transport pulsing); no count line.
+6. small_s7_y10 (121k residents): zoneR is info, posted to the ticker and the news feed; no toast in 420 days.
+7. y55: 7.77 % free land, so no built-out card (zoneC and the unemployment line post, as above); y15: none either. A
+   built-out test city (a sandbox map zoned to its last tile through host calls): on day 30 the built-out toast names
+   three blocks and offers "Rezone" (a flight to the block, the Land value view, the Zones flyout); the card offers the
+   same; no zone-more or unemployment issue while built out.
+8. Toasts and cards readable at 1280x720.
+
+**The QA fix round** (`ba37339`, on top of the WIP save `2195272`, which alone does not type-check: it lacks
+`ZONE_RULE_IDS`):
+- **F1:** the advice pulse has a class of its own (`advice-pulse`, sharing the coach mark's look), so the onboarding
+  card's `Toolbar.setCoach`, which resets `coach` about twice a second, no longer ends it; a second pulse restarts its
+  4.5 s.
+- **F3:** below 20,000 residents a family with no zoned land gets no zone-more warning (a town still being laid out
+  would spend the cooldown before its real stall), and zoning more of a family resets that rule's cooldown and
+  back-off (`AdvisorData.zoned`, compared at each month tick), so the next stall is news at once.
+- **F5:** each rezoning candidate is worded by its own main zone and never offered what it already is ("to housing or
+  denser industry" for an industrial strip; a high-density residential block is passed over when only homes are wanted).
+
+**The newcomer now acts on its cues.** With FH-03 it zoned 10 patches in 10 years where it zoned none before (FH-04's
+report: it never grew past its four starting blocks), and its population went from about 100 to about 300. That is
+still far from 5,000:
+
+| year | Medium pop / approval | Easy pop / approval |
+|---:|---|---|
+| 1 | 160 / 28.6 % | 160 / 40.3 % |
+| 2 | 221 / 26.4 % | 221 / 40.0 % |
+| 4 | 283 / 25.0 % | 283 / 39.3 % |
+| 6 | 283 / 25.0 % | 283 / 39.2 % |
+| 10 | 324 / 24.3 % | 324 / 38.6 % |
+
+The profile zones one 4x4 patch (seven road-facing tiles) per cue, and a cue comes at most every 180 days per family,
+backing off while one patch does not lift the room back to 12 lots. That allows about eight residential patches by year
+4, about 100 residents per two patches in the FH-10 runs. On Easy, the terms that hold approval under 50 are the ones
+FH-04 named: residential taxes −7.0, air pollution −5.8 to −6.9, city services at homes −5.4.
+
+**LG-05 on y55.** The plan expects the y55 checkpoint built out (under 1 % buildable free land). Regenerated at this
+commit, it is not: 5,092 free tiles (7.77 % of the map), 2,145 of them road-facing (3.27 %) and 4,614 within three tiles
+of a road; 1,528 lie within two tiles of the map edge. Demand there: R 0.02, C 1.00, I 0.45, unemployment 9.1 %. So the
+card does not fire, and zoneC ("zone more commercial land") and the unemployment line still post. The city has
+road-facing land a player could zone; the bot's patterns leave it.
+
+## For the lead
+
+1. **FH-03's newcomer gate.** It cannot pass with this profile. Options: a bigger patch per cue in the newcomer profile
+   (tools/simbot.ts, LG-10's), no back-off for these warnings, or a lower target.
+2. **FH-04's gate stays missed** after FH-03, so by D3 LG-09's extra Easy rules come in; the candidate terms are above.
+3. **LG-05's threshold.** By the plan's own measure the y55 map is not built out. Options: keep 1 % (the advice is then
+   right: there is road-facing land), count only land a lot could use (for example road-facing tiles in runs a growable
+   lot fits), or raise the threshold. The checkpoint numbers are above; the probe is
+   `scratchpad/t037b/freeprobe.ts` on the worker's machine.
+4. **The TopBar parts are not done** (TopBar.ts was off limits): FH-03's RCI "+ zone" badge and LG-05's cap-hint line.
+   They wait for the TopBar split; `emptyFrontTiles` in adviceActions.ts is ready for the badge. (The cloud did both;
+   see "Cloud carry-over" below.)
+5. The rubble variants of the zone rules keep the rule id (so the newcomer still zones on them) and show "Zone homes",
+   a valid fix but not the one their text gives (bulldoze). LG-08, LG-04 and LG-12's options appear as they land.
+6. **T037e (NOTE-043)** starts after this branch merges, since this touches AdvisorsPanel.
+
+## Cloud carry-over (Nov 3)
+
+The desktop was unavailable (NOTE-044), so the cloud finishes this lane on `cloud/t037b`: `local/R1-guide-b`
+(`ba37339`) with dev merged in eleven times:
+- `67b567d` (dev `5b12abe`): advisors.ts and queries.ts merged without conflicts, T037d's `taxHigh` hunk and this
+  lane's zone rules being separate;
+- `00b96cb` (dev `48991d7`: B3 and T036 step 2): no conflicts; B3 moves the advisors' month-boundary work, and
+  `585bde4` adds a test that its day-29 prediction agrees with the tick after the player zones more (F3's reset);
+- `954306d` (dev `97f1a9c`, NOTE-045), `f077faf` (dev `fb1531f`, NOTE-046) and `5f634f6` (dev `90d1bad`, NOTE-047):
+  docs only;
+- `533178a` (dev `821a8d6`: T038, merged with no conflicts): src/render, tests/render and a bench tool only, none of
+  this lane's files and nothing the bot runs (src/sim, src/worker, src/game, src/save, src/core and tools/simbot.ts are
+  byte-identical between dev `97f1a9c` and `821a8d6`);
+- `270b709` (dev `683d02b`: T036 step 3, FEEL-02a's toast budget and New Year pacing): **one conflict**, in
+  Notifications.ts's news handler. Dev's version is kept as it is (the budget, and its `Toasts.newsAction` hook, "set by
+  the lane that adds the action map"); this lane now sets that hook in the Toasts constructor to its ref lookup
+  (`adviceActions.newsAction`), where it used to call the lookup inline. So FH-03's toast keeps its button and, over
+  budget, waits in FEEL-02a's queue instead of being dropped: FH-03 change 3, which the gap list had left to META, is
+  now in. The advice-toast tests in `adviceActions.test.ts` run on faked clocks, and the two that see more than one
+  toast move them past the budget (both failed after the merge as written: the month tick's other news spends the
+  budget, and a second toast within 4 s is dropped); a new test checks the queue through this lane's hook. With the
+  hook removed, 4 of the file's tests fail. dev's own sim, worker and save code is unchanged
+  since `97f1a9c`, and src/game's change (NewYear.ts, CityScene.ts, context.ts) is not in the bot.
+- `c65901f` (dev `50a6b29`: NOTE-050, NOTE-051, NOTE-052): docs only, no conflicts. Its code is `270b709`'s (src,
+  tests, tools and wasm unchanged), and dev's code is unchanged since `683d02b`.
+- `ddc6680` (dev `63c8f58`: T052, FEEL-17's garbage on the street, and NOTE-053 to NOTE-058): no conflicts. Dev's code
+  change is src/assets, src/render, tests/render and tests/assets only: none of this lane's files, and src/sim,
+  src/worker, src/game, src/save, src/core and tools are unchanged by it, so the bot cannot move. NOTE-056 and NOTE-057
+  name T037b and ask nothing of it (T054 publishes `full` after this lane lands; T037b is one of the cloud's lanes that
+  interleave with wave 1).
+- `cda0922` (dev `87c7c9c`: T040, T053, the Nov 4 handoff, NOTE-059), in the review fix round, because T053 landed and
+  conflicts with this lane (NOTE-057: merge dev in the same day). Two conflicts:
+  - advisors.ts, the comments above `advisorsSystem`'s scratch: dev's `initialStageMilestone` (FEEL-06's stage news)
+    and this lane's comment both kept; `AdvisorData` keeps dev's `stageMilestone` and this lane's `zoned`;
+  - Notifications.ts, the imports: both kept. A reward post takes FEEL-06's "Place it"; every other post takes this
+    lane's advice lookup by ref (the `Toasts.newsAction` hook), as before.
+  T040's change is src/render only. T053 adds stage news to src/sim (a news post, which no system reads) and its
+  card, sounds and fireworks to src/game, src/ui and src/render. NOTE-059 names T037b among the cloud lanes in flight:
+  they keep their browser checks, and the desktop runs their real-GPU items after the merge (the "Desktop QA" list
+  under the review fix round).
+- `fe24ace` (dev `1c2019c`: T058, NOTE-060, NOTE-061), the same day: no conflicts. T058 changes Notifications.ts
+  (questions keep their place above new toasts) and CityScene.ts; this lane's toast hook is untouched. NOTE-061 moves
+  every browser check to the desktop, and the lock now refuses them on the cloud: this lane's recheck is in its Desktop
+  QA list. NOTE-060 names T037b among the cloud's reviews and fixes, and T037e and T054's producer as waiting for it.
+
+The gates were run again at `c65901f` and at `ddc6680` (section "At the head" below the gates table), and at the
+review fix round's head (section "Review fix round"); the table's earlier rows are kept as the record of each merge.
+
+tsc is clean at `67b567d`, `954306d`, `f077faf`, `5f634f6`, `533178a`, `270b709`, `c65901f` and `ddc6680`. NOTE-045 to NOTE-047 keep T037b on the
+cloud (the desktop is back, but must not touch it); NOTE-047 moves T037a and T037e to the desktop, T037e to start once
+this lane is in dev. NOTE-048 and NOTE-050 also name T037b, and ask nothing of it: T054 publishes the built-out flag
+from this lane's LG-05 block (`full = scan.free < BUILT_OUT_FREE * st.cells`, advisors.ts:2186, which is there as
+NOTE-048 quotes it) once this lane is in dev, and T041 changes the taxHigh wording in advisors.ts after it. NOTE-051 is
+T037a's.
+
+### Gap list (required against done, written before any new work)
+
+Read: the task file, every NOTE naming T037 (NOTE-035, 037, 038, 040, 042, 043) and NOTE-044, POLISH_PLAN FH-03 and
+LG-05 in full with their Acceptance lists, FH-10 (the newcomer profile), §7.2-§7.4 and §8.1, FH-04's report ("Not met",
+the inherited newcomer gate), this report, and the lane's diff against dev.
+
+| Item | Required | State at the desktop's stop |
+|---|---|---|
+| FH-03 change 1 | below 20,000 residents zoneR / zoneC / zoneI are warnings, at most once per 180 days | done (+ the F3 rules), tests |
+| FH-03 change 2 | the toast's "Zone homes" selects `zone:1` and pulses Zones; found by `ref.advice`, never by text | done, tests, desktop browser check |
+| FH-03 change 3 | FEEL-02a's toast budget queues the action toast | not this lane: FEEL-02a is META's (T036 step 3), not in dev yet (it reached dev later, and the merge `270b709` wires it: see above) |
+| FH-03 change 4 | the RCI segment's "+ zone" badge (demand above 0.5, fewer than 12 empty front lots) | **not done** (TopBar; "waits for the TopBar split") |
+| FH-03 change 5 | the Planning card's count, "4 empty residential lots left — demand wants many more" | done, tests |
+| FH-03 acceptance | toast within one month tick and at most once per 180 days; click selects `zone:1`; the badge shows and goes at 12 lots; the newcomer passes 5,000 by year 4 on Medium; the ref test; advisors.test updated | 4 of 6: **the badge missing; the newcomer gate not met** (283 at year 4, before F3) |
+| FH-04's inherited gate | re-run the Easy newcomer gate (approval ≥ 50 from year 2, ≥ 2× Medium's population in year 6) once FH-03 lands | **not met** before F3 (39 %, 1.0×); re-measure after F3 |
+| LG-05 change 1-3 | the zone scan counts free land; under 1 % with a family's demand ≥ 0.5 a `builtOut` card (Planning, priority 7) replaces zone-more and unemployment; it names the three lowest-value blocks and only existing options, each a button | done, tests |
+| LG-05 change 4 | the RCI popover's cap hints show the same line | **not done** (TopBar) |
+| LG-05 acceptance | y55 (256×60 s7, regenerated): the card within a month, no zoneC / zoneI under 1 %; y15: never; each button opens its tool or view (UI test); the scan's cost unchanged | 2 of 4 met: **y55 is not built out** (7.77 % free), so the card never fires there; y15 fine; UI test and cost met |
+| Fix round | F1, F3, F5 (`2195272` WIP + `ba37339`) | code and tests in; **never gated** (no full suite, no bot after it); WIP to verify line by line |
+| Browser | the desktop's 8 items | 7 of 8 before the fix round; **"Connect a highway" never reached**; F1 / F3 / F5 not re-checked in a browser after their fix |
+| Gates | tsc, full vitest, the bot at 196,101 | green before the fix round only; re-run here |
+| Report | the fix-round paragraph, the numbers after F3, decisions with options | `FIXES_AFTER_QA` placeholder; numbers from before F3 |
+| §8.1 verifier list | "at the end" of round 1, with META's items | not this sub-lane's: it runs once every GUIDE and META round-1 item is in |
+
+The WIP save was verified line by line: `2195272` holds every code hunk of the fix round except `ZONE_RULE_IDS` (the
+missing constant is why it does not type-check); `ba37339` adds the constant, the comments and the tests. Read against
+the sim: the free count is one more test in the existing unzoned-tile branch of `scanZones` (each unzoned tile is seen
+there exactly once, as the flood fill never visits it), `zonedFam` adds per-block family counts the pass already had,
+`lowValueBlocks` runs only while built out, the F3 reset runs only in the month tick's `gather` (the Advisors panel's
+`'open'` pass stays read-only, as the replica's query side-effects suite requires), and `queries.ts` copies `ref` and
+`options` as plain data.
+
+### What the cloud did
+
+**FH-03's badge and LG-05's popover line** (the two TopBar parts the desktop left for the TopBar split). T030 is merged
+and the guide chain is serial (the split runs right after this lane, NOTE-044), so, as T037d did for the approval
+segment, the hunks in TopBar.ts are small and the logic lives in a GUIDE file the split keeps:
+- `src/ui/topbar/rciGuide.ts` (new, headless): `zoneBadge` — a family whose demand (the RCI bar's value) is above 0.5
+  with fewer than 12 empty road-facing lots gets the badge, never on a built-out map (free land under 1 %, the advisors'
+  own test: zoning more is not possible there); the click zones the strongest of them; the tooltip says how many lots
+  are left ("Residential demand is strong, with 4 empty residential lots left. Click to zone homes."). `builtOutIssue`
+  picks the built-out advice from the advisors' issues.
+- `src/ui/adviceActions.ts`: `zoneRoom` counts the empty front lots per family and the free land in one pass over the
+  mirrored layers (the free count is the zone scan's own definition; a test compares them); `emptyFrontTiles` reads it.
+- `src/ui/TopBar.ts`, the RCI segment and popover only: the "+ zone" button under the bars, recounted at most once a
+  real second (one pass over the map; it also notices zoning done while paused); a click runs the family's zoning
+  action (`zone:1` / `zone:4` / `zone:8`, the Zones pulse) without opening the popover. While the popover is open the
+  advisors' issues are watched monthly (as the Advisors panel does) and the built-out advice is shown first among the
+  cap hints, with one button per option (Rezone, Connect a highway), each closing the popover.
+- `src/ui/hud.css`: the `.rci-zone` rule next to the RCI segment's other rules, and the built-out hint's button column.
+- `tests/game/rciGuide.test.ts` (new, 8 tests): the badge model (12 lots, demand 0.5, the strongest family, built out),
+  `zoneRoom` against `emptyFrontTiles` and the zone scan's free count, the TopBar badge (shows, click selects `zone:1`,
+  goes at 12 lots after the recount, returns at 11, goes when demand fades; industry zones `zone:8`), the popover's
+  built-out line with Rezone (Land value view, Zones flyout, popover closed) and Connect a highway (`net:5`), no line
+  with room left, and the badge on the replica (`LoopbackSimHost`: mirrored layers; a zoning command reaches it).
+  Each fails with its behaviour reverted (the badge update removed: 3 fail; the built-out line removed: 1; the
+  built-out guard removed: 1; water counted as free land: 1).
+
+**The fix round's tests, reverted one fix at a time** (never done on the desktop): F1 (the pulse under the `coach`
+class) fails the coach-update test; F3's no-zoned-land guard removed fails its test; F3's reset removed fails the
+"advice followed" test; F5 (a block offered its own family) fails 4 LG-05 tests.
+
+### Gates (cloud)
+
+Heavy runs under the shared lock, tsc under the CPU semaphore. Logs in `scratchpad/t037b/gates/` (the `m3_*` files are
+the runs at `954306d`; `5f634f6`'s code was byte-identical to it). This table is the record up to `5f634f6`; the runs at
+`c65901f` (FEEL-02a's merge in) and at the final head `ddc6680` are in "At the head" below it.
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | clean at `67b567d`, `954306d`, `f077faf` and `5f634f6` (and at every later merge, above) |
+| Full vitest (`--configLoader runner`, fixtures present), at `954306d` | **218 files passed, 1 skipped; 2,182 tests passed, 4 skipped** (474.8 s; `m3_vitest.log`) |
+| The bot, 128 × 15, seed 7: the lane at `954306d` against a clean export of dev `97f1a9c` (`co/t037b-devbase`) | **identical**: both `residents [ 61124, 93804, 37971 ]` = 192,899, NOTE-045's reference after B3; the whole log is identical but for its two timing columns (`m3_bot_lane.log`, `m3_bot_dev.log`). Before B3, at `67b567d` against dev `5b12abe`: both `[ 59288, 95301, 41512 ]` = 196,101 |
+| FH-03 acceptance 1: R demand above 0.5 and fewer than 12 empty R front lots: the toast within one month tick, at most once per 180 days | met (unit tests; browser A1, A4; F3's reset is decision 4) |
+| FH-03 acceptance 2: the click selects `zone:1` | met (unit tests; browser A2, B3, B6) |
+| FH-03 acceptance 3: the badge shows, and goes at 12 empty front lots | met (`rciGuide.test.ts`; browser B2, B7) |
+| FH-03 acceptance 4: the newcomer passes 5,000 residents by year 4 on Medium | **not met: 2,348** (dev 100; below, decision 1) |
+| FH-03 acceptance 5: the action found through `ref.advice` (a test changes the text) | met (`adviceActions.test.ts`) |
+| FH-03 acceptance 6: `tests/sim/advisors.test.ts` updated | met |
+| FH-04's inherited gate (Easy approval ≥ 50 % from year 2; year-6 Easy ≥ 2× Medium) | **not met**: 39.0-39.7 %, 0.98× (decision 2) |
+| LG-05 acceptance 1: on y55, regenerated, the card within a month, no zoneC / zoneI under 1 % | **not reached**: y55 has 8.10 % free land, so the card rightly does not fire (decision 3); the built-out behaviour itself is met on a built-out map (unit tests; browser C1-C7) |
+| LG-05 acceptance 2: on y15 it never fires | met (51.12 % free; no built-out issue after a month) |
+| LG-05 acceptance 3: each button opens the right tool or view (UI test) | met (`adviceActions.test.ts`, `rciGuide.test.ts`; browser C5, C7) |
+| LG-05 acceptance 4: the scan's cost unchanged | **met in substance** (decision 9): no new pass, one more test in the scan's existing unzoned-tile branch (plus F3's per-block family counts). The day-28 scan alone (`scratchpad/t037b/scanbench.mts`: `advisorsSystem.daily` on day 28, the scan forced fresh), median ms, lane / dev: bot256_s7_y60 2.497 / 2.502 and 2.483 / 2.484 (no change); dense1m_s7, eight alternating pairs, median ratio **1.05** (1.18, 1.01, 0.73, 1.02, 1.04, 1.07, 1.07, 1.06), about 0.1 ms on a 1.7-2.0 ms scan that runs once a month (`m3_scanbench.log`, `m4_scanbench2.log`) |
+| The badge's recount (UI thread, at most once a real second) | `zoneRoom` on the 256 fixtures (node, 300 rounds; `gates/m5_roombench.json`): bot256_s7_y60 median **1.55 ms** (p90 2.24, max 4.40); dense1m_s7 median **0.59 ms** (p90 0.62, max 1.21). Once a second, so under 0.2 % of the main thread; decision 10 |
+| Browser checklist (below) | **19 of 19 checks pass** (C0 is the setup), "Connect a highway" included |
+| §8.1's round-1 verifier list | not this sub-lane's: it runs once every GUIDE and META round-1 item is in |
+
+**At the head, `c65901f` then `ddc6680`.** At `c65901f` (the code of `270b709`: FEEL-02a's toast budget merged and wired; logs `scratchpad/t037b/gates/m9_*`,
+`m10_*`, `m11_*`). The earlier run of this step was cut by the machine's restart (Nov 3, 22:16) before these ran. Its gap
+list on resuming: dev had moved on by three NOTE commits (merged: `c65901f`); after the FEEL-02a merge `270b709` the full
+vitest, the bot against dev and the browser recheck of scenario A had not run (its `m8_*` runs were cut by the restart);
+NOTE-048 and NOTE-050, which name T037b, were not yet in the report (above). Nothing else was open: the code, its tests
+and the revert checks were complete at `270b709` (`m7_revert.log`: 4 of `adviceActions.test.ts`'s tests fail with the
+hook removed).
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` (CPU semaphore) | clean (`m9_tsc.log`) |
+| Full vitest (lock, fixtures present) | **222 files passed, 2 skipped; 2,235 tests passed, 8 skipped** (440.8 s, load average 3; `m11_vitest.log`). The skips are dev's (the second skipped file and the four more skipped tests came with T036 step 3 and T038; none is in this lane's test files). A first run (`m9_vitest.log`, 602.7 s at a load average of 7 to 10) had 3 failures, all 5 s timeouts in `tests/worker/hygiene.test.ts` (W0.2, W0.4, NOTE-041: whole-`src` scans, 5.7-9.6 s each on the loaded machine), a file neither this lane nor the merge touches; alone it passed on the lane and on dev (17 passed, 1 skipped, 18.7 s and 17.9 s; `m9_hyg_lane.log`, `m9_hyg_dev.log`), and it passes in the clean run |
+| The bot, 128 × 15, seed 7: the lane against a fresh clean export of dev `50a6b29` (`co/t037b-devbase`; dev's code is `683d02b`'s) | **identical**: both `residents [ 61124, 93804, 37971 ]` = 192,899; the whole log is identical but for its two timing columns, the run time and the ms/day line (`m9_bot_lane.log`, `m9_bot_dev.log`), and identical in the same way to the lane's run at `954306d` (`m3_bot_lane.log`) |
+| The newcomer, Medium and Easy, seed 7 | identical to the run at `954306d` but for the run time (`m9_nc.log` against `m3_nc.log`): the numbers in the next section stand at the head (the bot runs src/sim and src/core only, and neither changed since) |
+| Browser, scenario A again (FH-03's toast now under FEEL-02a's budget) | **4 of 4 pass** (`qa/shots-m10/log.txt`): A1 the "Zone homes" toast at the day-30 tick, shown 5 ms after the tick (the budget allowed it; the fire-station advice shows beside it), `qa/shots-m10/A1-zone-homes-toast.png`; A2 a real click selects `zone:1` (the Low density tool and the zone grid, the toast closed), `qa/shots-m10/A2-zones-pulse.png`; A3 the Zones pulse lasts 6,028 ms of page time under the coaching card (3 class changes from the coach meanwhile); no page or console errors. The first attempt (`qa/shots-m9/`) passed A1 and then hung for 60 s in Playwright's "performing click action" on the toast, at a load average of 7 to 10 on 4 cores (other lanes' balance runs outside the lock); run again at a load of 2, the same script passed |
+
+**After the ninth merge, at the final head `ddc6680`** (dev `63c8f58`: T052's render and asset files, none of this
+lane's):
+- tsc clean (`m12_tsc.log`);
+- this lane's three test files with T052's five new or changed ones, under the CPU semaphore: 8 files, 103 tests passed
+  (`m12_targeted.log`);
+- the full vitest (lock, fixtures present): **226 files passed, 2 skipped; 2,270 tests passed, 8 skipped** (468.9 s;
+  `m13_vitest.log`; T052 adds the 4 files and 35 tests over `c65901f`'s run);
+- the bot is not rerun: everything it runs (src/sim, src/core, tools/simbot.ts) is byte-identical to `c65901f`, where it
+  was identical to dev's, and dev's T052 merge left those files unchanged too;
+- the browser is not rerun: T052 changed src/render's props and src/assets only, which none of this lane's checks reads.
+
+### The newcomer gates, re-measured after F3
+
+`npx tsx tools/simbot.ts --profile newcomer --difficulty medium|easy --seed 7` (128 cells, 10 years, founded day 90),
+under the lock, on this branch at the final merge (`954306d`) and on a clean export of dev `97f1a9c` (no FH-03; B3 in
+both):
+
+| year | dev Medium | **lane Medium** pop / approval | dev Easy | **lane Easy** pop / approval |
+|---:|---:|---|---:|---|
+| 1 | 97 / 26.6 % | **687** / 29.2 % | 97 / 38.9 % | **687** / 40.0 % |
+| 2 | 100 / 25.5 % | **1,553** / 26.7 % | 100 / 39.2 % | **1,553** / 39.7 % |
+| 3 | 100 / 24.5 % | **2,326** / 26.5 % | 100 / 39.2 % | **2,302** / 39.6 % |
+| 4 | 100 / 25.4 % | **2,348** / 21.4 % | 100 / 39.2 % | **2,351** / 39.0 % |
+| 6 | 100 / 25.4 % | **2,324** / 20.4 % | 100 / 39.2 % | **2,284** / 39.3 % |
+| 10 | 112 / 26.2 % | **2,220** / 14.0 % | 112 / 40.6 % | **2,157** / 29.3 % |
+
+(The same runs before B3, at `67b567d` against dev `5b12abe`: Medium 2,192 at year 4, Easy 2,336; dev's rows were the
+same as now. Logs: `scratchpad/t037b/gates/m3_nc.log`, `m3_ncdev.log`; before B3 `nc_medium.log`, `nc_easy.log`.)
+
+- **FH-03's gate (5,000 by year 4 on Medium): not met, 2,348** (23× dev's 100). The desktop's pre-F3 run had 283; F3's
+  reset lets the newcomer answer each cue as soon as its patch is full. Beyond its four founding blocks it zoned 47
+  patches in ten years on Medium (36 residential, the last in April 2003; 9 commercial, the last in September 2003; 2
+  industrial, in June 2000 and May 2001) and 44 on Easy (35, 7, 2); dev's newcomer zoned none beyond its founding
+  blocks, and the desktop's pre-F3 run 10 (`scratchpad/t037b/ncpatches.mts`, log `gates/m5_ncpatches.log`; the bot
+  itself prints only its last 25 log lines).
+- **FH-04's inherited gate: not met.** Easy approval 39.0-39.7 % in years 2-6 (≥ 50 required); year 6 Easy / Medium =
+  2,284 / 2,324 = 0.98× (≥ 2× required). The terms that hold Easy under 50 are FH-04's: residential taxes −7.0, city
+  services at homes −5.4, air pollution −3.6 to −4.7, and from year 7 unemployment −12.0 to −12.8.
+- **§8.1's newcomer target** (2,500 by year 3 on Easy, by year 4 on Medium) is lower than FH-03's 5,000; it is missed
+  too, by little: 2,302 (Easy, year 3, −8 %) and 2,348 (Medium, year 4, −6 %).
+- **Why the town stops at about 2,350** (a monthly trace of the Medium run's first five years at the final code,
+  `scratchpad/t037b/ncdiag.mts`, log `gates/m4_ncdiag.log`): the cue is no longer what is missing.
+  - Homes: the residential room is 0 every month and zoneR posts every month until year 3.1; the newcomer answers it.
+  - Industry: zoneI posts in years 0.17-0.25 and 1.08-1.17, while fewer than 8 industrial lots are empty. After that the
+    industrial room stays at 11-12 empty front lots for good, with industrial demand 0.5-0.8, so zoneI never fires
+    again (its rule needs fewer than 8 lots), and those lots never fill. The game's own `lotsSmallI` advice posts in
+    years 1.25-1.33 ("your empty industrial lots are odd tiles … too small for factories").
+  - Jobs: unemployment is 0 % until year 2.2, 5-8 % in years 2.3-3.0, 23.5 % at year 3.3 and 14-15 % from year 3.5 to 5.
+    At year 10 the town has 580 jobs (156 of them industrial) for 2,220 residents.
+  - Residential demand falls under 0.5 at year 3.1 (0.46, then 0.27-0.39), which ends the zoneR cue; population is
+    flat at about 2,350 from year 3.2.
+  - The unemployment warning ("Zone more commercial and industrial land") posts from year 3.0; the newcomer profile
+    ignores it.
+  - Approval on Medium falls with crime (crime at homes −12.0 at year 1 to −17.3 at year 10, the top term every year).
+
+### LG-05 on the 256×60 seed-7 checkpoints, regenerated here
+
+`tools/simbot.ts --size 256 --years 55 --seed 7 --save-years 15,55`, regenerated at the final code (`954306d`, B3 in;
+240 s with the lock wait; the run is the same as the 60-year one up to year 55). The probe
+(`scratchpad/t037b/freeprobe.mts`) loads each save, counts free land exactly as the zone scan does, and runs the full
+systems (`createSystems`) 31 days through the scan days and a month tick (logs `scratchpad/t037b/gates/m3_probe_y15.log`,
+`m3_probe_y55.log`):
+
+| checkpoint | residents | free land | road-facing free | within 3 of a road | within 2 of the map edge | demand R / C / I | unemployment | built-out card |
+|---|---:|---:|---:|---:|---:|---|---:|---|
+| y15 | 181,278 | 33,503 (51.12 %) | 2,351 (3.59 %) | 6,281 | 2,028 | 0.69 / 0.07 / 0.07 | 0 % | no (as required); zoneR open |
+| y55 | 1,433,758 | **5,310 (8.10 %)** | 2,301 (3.51 %) | 4,917 | 1,518 | 0.00 / 0.99 / 0.52 → 0.01 / 0.99 / 0.51 | 9.0 → 8.7 % | **no**: zoneC and unemployment open |
+
+The 1 % threshold is 655 tiles. Before B3 (`67b567d`) the same run gave y55 5,092 free tiles (7.77 %), 2,181
+road-facing (3.33 %), which reproduced the desktop's numbers (5,092, 7.77 %, 1,528 near the edge; its road-facing count
+was 2,145 and its "within three" 4,614, a slightly different neighbourhood rule); B3 moves the city a little and the
+picture is the same. Even counting only road-facing free land (3.51 %) or road-facing flat land (2,271 tiles, 3.47 %),
+y55 is above 1 %: by any free-land measure this city still has land a player could zone, and the bot's patterns leave
+it.
+
+### Browser checklist (cloud; one Chromium on SwiftShader, 1280 × 720, `demo-ui.html` on its own vite port)
+
+Harness: `scratchpad/t037b/qa/` (`run.mjs`, `check.mjs`; `dryrun.mts` checked each setup headless first). Setup by host
+calls (`scene.actions`, `sim.runDays` up to two days before each month tick, a region context for the neighbour);
+everything under test by real input: the speed buttons across each month tick, clicks on toasts, cards, the badge, the
+RCI segment and the popover's buttons, the N key, and zoning drags on the canvas. On the branch after the second dev
+merge (`f9fd2a9`), local host. Logs: `qa/shots-run4/log.txt` (A, B, C), `qa/shots-BC/log.txt` (B, C again, cards
+scrolled into view), `qa/shots-B2/log.txt` (B with the camera settled before each drag). No page or console errors in
+any run.
+
+| # | Check | Result | Evidence (`scratchpad/t037b/qa/…`) |
+|---|---|---|---|
+| A1 | FH-03: a young Medium town (8 residential tiles, R demand 0.87) gets the amber Planning toast "…no room to grow — zone more residential land along roads." with "Zone homes" at the first month tick (day 30) | pass | `shots-run4/A1-zone-homes-toast.png` |
+| A2 | the toast's click selects `zone:1` | pass | `shots-run4/A2-zones-pulse.png` |
+| A3 | F1: the Zones button pulses while the onboarding card coaches Transport: 6,245 ms in page time (4,500 ms of timer on a slow SwiftShader page; the desktop's bug ended it within a coach update) | pass | `shots-run4/log.txt` |
+| A4 | the condition held from day 30 to 400: posts on days 30 and 390 only (180 days, doubled by the back-off) | pass | `shots-run4/log.txt` |
+| A5 | F3: 4 more residential tiles zoned by a real drag on day 400; the still-full town hears it at the next tick (day 420), not on day 1110 | pass | `shots-run4/A5-after-reset.png` |
+| B1 | F3: strong R demand and no residential land zoned: no zoneR warning at the first tick | pass | `shots-B2/log.txt` |
+| B2 | the "+ zone" badge under the RCI segment (R, 0 empty lots), its tooltip naming the families | pass | `shots-B2/B2-zone-badge.png` |
+| B3 | a real click on the badge selects `zone:1`; the popover stays closed | pass | `shots-B2/log.txt` |
+| B4 | F3: 8 homes zoned by a real drag; the first real stall is announced at once (day 60) | pass | `shots-B2/log.txt` |
+| B5 | Alex Stone's card: the advice, "No empty residential lots left — demand wants many more", Show me and Zone homes | pass | `shots-BC/B5-advisors-card.png` |
+| B6 | the card's Zone homes (real click) selects `zone:1` | pass | `shots-B2/log.txt` |
+| B7 | 16 residential lots zoned by a real drag while paused: within a second the badge drops residential and points at industry (amber), which still qualifies (demand 0.77, 2 empty lots) | pass on review: the script expected no badge at all, which this town's industry rightly keeps (the unit tests cover the badge going) | `shots-B2/B7-after-drag.png`, `shots-B2/B7-badge-gone.png` |
+| C0 | a sandbox 64 × 64 map zoned to its last tile (8 free tiles, 0.2 %), 2,092 residents, a founded neighbour with 30,000 spare jobs and no road to its edge | setup | `shots-BC/log.txt` |
+| C1 | LG-05: the built-out toast at the month tick, naming three blocks, offering Rezone | pass | `shots-run4/C1-built-out-toast.png` |
+| C2 | no zoneR / zoneC / zoneI and no "zone more" unemployment post while built out | pass | `shots-BC/log.txt` |
+| C3 | no "+ zone" badge on the built-out map | pass | `shots-BC/log.txt` |
+| C4 | F5: the card words each block by its own zone ("to denser housing or industrial land" for the residential strips, "to housing or industrial land" for the commercial one) and offers Show me, Rezone and **Connect a highway** | pass | `shots-BC/C4-built-out-card.png` |
+| C5 | **Connect a highway** (real click): the Highway tool (`net:5`), Transport pulsing, the camera to the east edge | pass | `shots-run4/C5-connect-highway.png` |
+| C6 | the RCI popover's cap hints show "The city is built out" with the same text, Rezone and Connect a highway | pass | `shots-BC/C6-rci-popover-built-out.png` |
+| C7 | the popover's Rezone: the Land value view, the Zones flyout, the popover closed | pass | `shots-BC/C7-rezone-landvalue.png` |
+
+Scenario A (A1-A3) ran again at `c65901f`, after FEEL-02a's budget came in: 4 of 4 pass (the gates' "At the head"
+table, `qa/shots-m10/`). B and C were not rerun: of what the FEEL-02a merge changed, they reach only the toast's button
+lookup (the same hook for every advice id, C1's built-out toast included), which A1-A2 exercise in the browser and
+`adviceActions.test.ts` covers in the unit tests (the queue over budget, the ref lookup, a button with a place).
+
+**C1, C4 and C6 passed on the wrong map** (the independent review's major): at "C setup" the families still had 199,
+171 and 129 empty road-facing lots, so the card those rows saw told the player to rezone occupied blocks to families
+with room. After the review fix round that map gets no card; the recheck on a map whose homes have filled their lots
+is headless here and Q6-Q13 of the Desktop QA list (section "Review fix round").
+
+The browser check moved the badge: it first sat over the segment's R C I letters (`qa/shots-try3/B2-zone-badge.png`); it now
+hangs just under the segment (`f9fd2a9`).
+
+### Review fix round (findings of the independent review at `9be6741`; Nov 4, finished Nov 9)
+
+The first run of this step stopped at the shared usage limit (Nov 4) after its first commit, `8f23282`. On resuming
+(Nov 9) its gap list was: the second minor's fix covered only a family the card speaks for (a family that is not built
+out still heard "Zone some" on a full map); the fourth minor (F3) was not in the decisions; the gates, the browser
+recheck and this section had not run; dev had moved on by T040, T053 and the handoff, and T053 conflicts with this
+lane. Nothing in `8f23282` needed redoing: its tests fail with each of its fixes reverted (below).
+
+| # | Finding | What changed | Commit |
+|---|---|---|---|
+| 1 | **Major.** LG-05's card counted a family as strong on demand alone, so on a full map it told the player to rezone occupied blocks to a family with hundreds of empty lots (harmful: rezoning demolishes buildings to add more empty land), and it replaced zoneR / C / I where those stayed silent | A family counts toward the card only when, on a map with under 1 % free land, its demand is at least 0.5 **and its zone rule would ask for land**: fewer than 12 (R) or 8 (C, I) empty road-facing lots with its rubble counted, and fewer roadless zoned tiles than the road variant's minimum (`ROOM_RULE`, which the zone rules now read too). Rubble and roadless zones are room the zone rule names first ("bulldoze them", "Build roads"), so a family that has them is not built out either. The zone rules step aside only for a family the card speaks for; the unemployment rule stays keyed on the free land alone (`full`), as the review asked | `8f23282` |
+| 2 | Minor. Other "zone" texts still posted on a built-out map (the sub-type hints, the lot rules) | The sub-type hints skip a family the card speaks for. On a full map a family that is not built out hears its hint as rezoning its own empty lots (I-HT, I-A, CO$$$: "…almost no free land is left. Rezone some empty industrial lots to high density…"); R$$$'s zones are its whole family, so with none empty and the family not built out, its zone rule names the roadless zones or rubble and the hint stays quiet. The lot rules (lotsSmall*, lotsSteep*) drop "Zone new / flatter … land" on a full map, and the workers rule asks to rezone low-value blocks to housing | `8f23282`, `bec9562` |
+| 3 | Minor. The toast's button was fixed to Rezone (`ACTIONS.builtOut`), even when the card offered no option or only Connect a highway | The post's `ref` and place are its first option's (Rezone at the cheapest block, else Connect a highway at the edge). With no option it keeps the rule id, which has no entry in `adviceActions.ts`, so no button | `8f23282` |
+| 4 | Minor. F3's "no zoned land, no warning" guard also drops the old info line for an unzoned family below 20,000 residents | Not changed: listed as decision 12 below, with the mitigations and the one-line alternative | — |
+| 5 | Minor. NOTE-048 asks for a packet-host test of the `queries.ts` copier | `rciGuide.test.ts`: on `LoopbackSimHost`, `advisorIssues` carries a built-out card's options (Rezone, Connect a highway with its place), its `ref`, zoneR's `noRoadAccess` variant ref, and copies (a change to a returned row does not reach the core) | `8f23282` |
+
+**Tests added** (`tests/sim/advisors.test.ts`, `tests/game/adviceActions.test.ts`, `tests/game/rciGuide.test.ts`): the
+review's probe (a full map, shop demand 0.8, 300 empty shop lots: no card, no zoneC, no "rezone"); homes built out
+while the shops have lots (the card names homes only; rubble and roadless homes give the zone rule's variants
+instead); CO$$$ and I-HT on a built-out map (no sub-type "zone some"); a family that is not built out on a full map
+(the full-map hint texts, and the old texts with free land); the lot rules on full and free maps; the neighbour-only
+and no-option posts; the toast's first option end to end ("Rezone" at the cheapest block, "Connect a highway" at the
+edge); the packet-host test above.
+
+**Revert checks** (`scratchpad/t037b/gates/f2_revert.log`, in a throwaway worktree at `cda0922`, the three test files
+each time):
+
+| Reverted | Tests failing |
+|---|---|
+| the room test (strong on demand alone) | 5 (the probe, homes-only, both full-map hint tests, the packet-host test) |
+| the post's `ref` (no first option) | 4 (the card's post, the no-option post, the toast's first option, the packet-host test) |
+| the `queries.ts` copier's `ref` | 2 (the packet-host test, the Advisors card's "Build roads") |
+| the sub-type skip for a built-out family | 1 |
+| the lot rules' full-map wording | 1 |
+| the full-map hint texts (`bec9562`) | 1 (checked before its commit; the R$$$ skip alone: 1) |
+
+**Gates at the head** (`fe24ace` = `bec9562` with dev `1c2019c` merged; logs in `scratchpad/t037b/gates/`, the `f*_`
+files):
+- tsc clean after each step: `bec9562` (`f1_tsc.log`), the merge `cda0922` (`f2_tsc.log`), the merge `fe24ace`
+  (`f4_tsc.log`);
+- this lane's three test files: 54 tests passed at `bec9562` (`f1_targeted.log`); with T053's toast, milestone and
+  replicaSafe tests, 8 files and 107 tests at `cda0922` (`f2_targeted.log`); with T058's two new files, 8 files and 81
+  tests at `fe24ace` (`f4_targeted.log`);
+- the full vitest (lock, fixtures present): **243 files passed, 2 skipped; 2,452 tests passed, 7 skipped** (436.7 s,
+  load average 2 to 5; `f3_vitest.log`). Dev's last merge run (T053) had 237 files and 2,389 tests; T058's tests and
+  this lane's make up the difference, and the skips are dev's;
+- the bot, 128 × 15, seed 7 (lock; `f5_bot.log`; a first queued run, `f3_bot`, was stopped with its waiting shell before
+  it ran): **identical**, `residents [ 61124, 93804, 37971 ]` = 192,899. The whole log matches dev's at its T053 merge
+  (`scratchpad/t053-merge-bot.log`, whose code dev keeps for everything the bot runs) and this lane's run at `c65901f`
+  (`m9_bot_lane.log`), line for line but for the two timing columns, the run time and the ms/day line;
+- dev moved on after `fe24ace` (T057, T060's FEEL-01, T048, T036 steps 4 and 5, NOTE-062 to NOTE-064; `41fcecc`). A
+  trial merge in a throwaway worktree is clean: the only files both sides changed are Notifications.ts and hud.css
+  (this lane's toast hook and RCI rules). On it, tsc is clean and 11 files pass (117 tests, 1 skipped;
+  `f6_trial_tests.log`): this lane's three, T057's `loadContinuity`, `serialize`, `advisorsScanOrder` and `monthSpread`
+  (save continuity with this lane's advisor data: `AdvisorData.zoned`, the scan's free and per-family counts), FEEL-01's
+  `newsTicker` and `panelsNews`, T058's `notificationsQuestion`, and `replicaSafe`. The merge itself is left to the
+  merge step.
+
+**Browser recheck of C1, C4 and C6 on a map whose empty lots are filled: deferred to Desktop QA (NOTE-061).** The
+recheck was written (Page D in the list below) and queued under the lock, but the lock now refuses browser runs:
+NOTE-061 (9 Nov) moves every browser and real-GPU check to the desktop. What the cloud checked instead, headless, on
+the same map and host calls (`scratchpad/t037b/qa2/dryrunC2.mts`, output `qa2/dryrunC2.out`, at `cda0922`):
+- day 151 (the review's case, the old C1-C6 state): residential, commercial and industrial keep 196 / 170 / 129 empty
+  road-facing lots on a map with 8 free tiles (0.2 %), demand R 0.92, I 0.97: **no built-out post** on days 30-150,
+  and no zone rule either (each family has room);
+- day 300: the homes have filled their lots (3 empty) while shops and industry keep 117 and 129. The month tick posts
+  one built-out card, for the homes only, with its first option as its button (`ref: { advice: 'rezone' }`):
+  "Unemployment is at 8% and residential demand is strong, but the city is built out: only 0.2% of the map is free
+  land. Rezone the lowest-value blocks (around (32, 4), (32, 12) and (32, 44)) to denser housing, or connect a highway
+  to Fooville on the east edge, which has 30,000 jobs to spare." No zoneR / C / I and no unemployment post that tick.
+  At day 330 the card is still the open issue (its 180-day cooldown keeps it off the news); from day 360 zoneR is the
+  open issue instead (the homes have room again by the zone rule's count, as at day 240, when two burnt residential
+  lots lay in rubble).
+
+The card, toast and popover rendering of such a post is covered by the unit tests (`adviceActions.test.ts`,
+`rciGuide.test.ts`, on the fake DOM and on `LoopbackSimHost`); the look and the real clicks are the Desktop QA list's.
+
+### Desktop QA list (NOTE-059, NOTE-061: run on the real GPU; report PASS or FAIL per line with screenshots)
+
+**Branch and commit:** `cloud/t037b` at `fe24ace` or later (the code is unchanged after it; later commits are this
+report). `npm run dev`, Chromium at **1280 × 720** unless a line says otherwise. Each line names its page. Setup is by
+the snippets below, typed into the page's console once `window.__ready` is true (`window.__scene` is the CityScene);
+everything under test is a real click or key. Lines marked **(both hosts)**: run them on the default host and again
+with `&simworker=loopback` appended (if `__scene.sim.runDays` is not there on that host, reach the day by playing at
+Ultra instead).
+
+Helpers (paste first on every page):
+
+```js
+const s = __scene, a = s.actions, st = () => s.ctx.state;
+const L = (ax, az, bx, bz) => { const o = [{ x: ax, z: az }]; let x = ax, z = az;
+  while (x !== bx) { x += Math.sign(bx - x); o.push({ x, z }); } while (z !== bz) { z += Math.sign(bz - z); o.push({ x, z }); } return o; };
+const road = (ax, az, bx, bz) => a.buildNetwork(L(ax, az, bx, bz), 2);
+const zone = (x0, z0, x1, z1, zn) => a.zone({ x0, z0, x1, z1 }, zn);
+const plopNear = (def, nx, nz) => { for (let r = 0; r < 10; r++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+  if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+  for (const rot of [0, 1, 2, 3]) if (a.plop(def, nx + dx, nz + dz, rot, true).ok) return a.plop(def, nx + dx, nz + dz, rot, false); } };
+```
+
+**Page A/B** `demo-ui.html?size=64&speed=0&onboard=1&seed=4242&hills=0&water=0&difficulty=medium`. Setup A:
+`road(4, 30, 60, 30); zone(10, 31, 18, 32, 1); zone(24, 31, 30, 34, 4); zone(32, 31, 40, 35, 8);
+plopNear('util_coal_plant', 50, 31); plopNear('util_water_pump', 44, 31); s.sim.runDays(28);`. Setup B: the same
+without `zone(10, 31, 18, 32, 1)`.
+
+| # | Steps | Expected |
+|---|---|---|
+| Q1 (both hosts) | Page A/B, setup A. Click the Ultra speed button; pause after day 30 | An amber Planning toast "Residential demand is strong but there is no room to grow — zone more residential land along roads." with a "Zone homes" button, at the day-30 tick (or within 50 s, if the toast budget queues it) |
+| Q2 | Click the toast | The Low density residential tool is selected and the Zones toolbar button pulses for about 4.5 s, also while the onboarding card's coach mark is up |
+| Q3 | Press N | Alex Stone's card: the same advice, "No empty residential lots left — demand wants many more", Show me and Zone homes; Zone homes selects the same tool |
+| Q4 (both hosts) | Page A/B, setup B. Play at Ultra across day 30 | No "no room to grow" toast (no residential land zoned yet: F3, decision 12); a "+ zone" badge hangs under the RCI segment, its tooltip naming residential |
+| Q5 | Click the badge | The Low density residential tool is selected; the RCI popover stays closed |
+
+**Page D** `demo-ui.html?size=64&speed=0&onboard=0&seed=4242&hills=0&water=0&difficulty=sandbox&disasters=0`. Setup:
+
+```js
+plopNear('util_coal_plant', 2, 58); plopNear('util_water_pump', 9, 58);
+for (let z = 0; z < 64; z += 8) road(0, z, 62, z); road(0, 0, 0, 63);
+[1, 1, 4, 1, 8, 1, 4, 1].forEach((zn, k) => zone(1, 8 * k + 1, 64, 8 * k + 8, zn));
+st().systemData.region = { regionId: 'qa', tileKey: 'me', population: 100000, jobs: 80000, workers: 50000, adjacentPopulation: 100000,
+  adjacentJobs: 80000, adjacentWorkers: 50000, jobBonus: 0, workerBonus: 0, neighbors: [{ edge: 'e', tileKey: 'nb', name: 'Fooville',
+  founded: true, population: 100000, jobs: 80000, workers: 50000, r: 0, c: 0, i: 0, from: 0, to: 64 }] };
+s.sim.runDays(148);
+```
+
+| # | Steps | Expected |
+|---|---|---|
+| Q6 (both hosts) | Play at Ultra across day 150, then pause | **No** "built out" toast, card or popover line: the map is full (8 free tiles) but every family still has empty road-facing lots (the review's case). No "+ zone" badge (a full map) |
+| Q7 (both hosts) | `s.sim.runDays(298 - st().day)`, then play at Ultra across day 300 and pause (no card: repeat across day 330, then 360) | An amber toast "Unemployment is at N% and residential demand is strong, but the city is built out: only 0.2% of the map is free land. Rezone the lowest-value blocks (around …) to denser housing, or connect a highway to Fooville on the east edge, which has 30,000 jobs to spare." with a **Rezone** button. It names homes only (shops and industry still have empty lots), and no "zone more" toast comes |
+| Q8 | Click the toast's Rezone | The camera flies to the first named block, the Land value view turns on and the Zones flyout opens |
+| Q9 | Esc twice, press N | Alex Stone's card shows the built-out advice with Show me, **Rezone** and **Connect a highway**, readable at 1280 × 720 |
+| Q10 | Click Connect a highway | The Highway tool is selected, the Transport button pulses, the camera goes to the east edge |
+| Q11 | Esc twice, click the RCI segment | The popover's cap hints start with "The city is built out", the same text, Rezone and Connect a highway |
+| Q12 | Click the popover's Rezone | The Land value view, the Zones flyout, the popover closed |
+| Q13 | Repeat Q7 and Q11 at a narrow width (1024 × 640) | Toast, card and popover line readable, nothing clipped or overlapping |
+
+NOTE-061 also asks the desktop to re-measure the newcomer and y55 numbers. Those are headless bot runs; this lane's
+are in "The newcomer gates" and "LG-05 on the 256×60 seed-7 checkpoints" above. The review fix round does not move
+them: every code path it changed runs only on a map with under 1 % free land, which neither the newcomer's town nor
+y15 / y55 reach (decision 3).
+
+### Decisions (for the lead and the owner; conservative readings taken, nothing retuned)
+
+1. **FH-03's newcomer gate (5,000 by year 4 on Medium) stays not met: 2,348** (dev 100; the desktop's pre-F3 run 283).
+   The cue now works: the newcomer zones homes on it every month while it holds. What stops the town is jobs: after
+   year 1.2 its industrial lots stay empty (11-12 empty front lots with industrial demand 0.5-0.8, and the game's
+   `lotsSmallI` advice says they are too small for factories), so zoneI stays silent, unemployment reaches 14-24 % from
+   year 3.3, and residential demand drops under 0.5, which ends the cue. This lane did not retune balance or the bot.
+   Options:
+   - (a) take §8.1's newcomer target (2,500 by year 4 on Medium) as FH-03's too: missed by 6 % (2,348);
+   - (b) have the FH-10 profile also answer the unemployment warning (SIM lane, tools/simbot.ts): it already says
+     "zone more commercial and industrial land", which is what the town needs;
+   - (c) find why the newcomer's industrial lots stay empty with industrial demand 0.5-0.8 (a lot-fit question for SIM:
+     `lotsSmallI` posts on them; `scratchpad/t037b/ncdiag2.mts` reads the game's own lot explainer);
+   - (d) a bigger patch per cue in the newcomer profile.
+2. **FH-04's inherited gate stays not met** (Easy approval 39.0-39.7 % in years 2-6, 29.3-30.3 % from year 7; year 6
+   Easy / Medium = 2,284 / 2,324 = 0.98×). By D3 that brings in LG-09's extra Easy rules; the candidate terms are the
+   same three as FH-04's report (residential taxes −7.0, city services at homes −5.4, air pollution −3.6 to −4.7), plus
+   unemployment (−12.0 to −12.8) from year 7. Easy and Medium grow alike because the newcomer's growth is now set by
+   its cues and its jobs, which difficulty does not change.
+3. **LG-05 does not fire on y55: 8.10 % free land against the 1 % threshold** (road-facing free land 3.51 %; before B3
+   7.77 % and 3.33 %). The card is right not to fire by its own definition, and zoneC / unemployment still post there.
+   Options: keep 1 % (the advice is honest: there is land to zone); count only land a lot could use (still about
+   3.5 %, so it would not fire either); raise the threshold above 8.1 % (it would fire on y55, but also on a city with
+   5,000 tiles still to zone); or regenerate the checkpoint with a bot that fills its road-facing land (LG-10).
+4. **F3's reset against "at most once per 180 days".** The acceptance's fixture keeps the condition without zoning,
+   and there the warning comes on days 30 and 390 (unit test and browser). When the player zones more of the family,
+   the cooldown starts over by design (the desktop's QA fix), so a player who zones a little each month while lots
+   stay full hears it each month. Read conservatively as meeting the acceptance; the lead may prefer a floor (say 60
+   days) between posts even after zoning.
+5. **TopBar.ts edited before the split**, as T037d was: only the RCI segment and popover, with the logic in
+   `src/ui/topbar/rciGuide.ts`, so the split (next in the guide chain) moves two small hunks.
+6. **The toast's button lookup in Notifications.ts** (the plan gives META "that three-line lookup") was written by this
+   lane, as the desktop did; it is three lines, and META's FEEL-02a queue keys on the same `ref`.
+7. The desktop's open points stand: the rubble variants of the zone rules keep "Zone homes" (a valid fix, not the one
+   their text names); LG-08, LG-04 and LG-12's options join the card as those items land. T037e (NOTE-043) now goes to
+   the desktop (NOTE-047) and starts once this lane is in dev, since this lane touches AdvisorsPanel.
+8. **What from this lane could go to the desktop** (the desktop is back, NOTE-045; T037b itself stays on the cloud,
+   NOTE-046/047). Nothing here needs a real GPU to be finished: the browser items are function and layout checks, and
+   SwiftShader ran them. Two follow-ups fit the desktop, if the lead wants them: a real-GPU look at the badge, the
+   toasts and the popover's built-out line once this is in dev, alongside T037a / T037e's browser checks (same panels);
+   and decision 1's options (b)-(d), which are SIM / bot work (tools/simbot.ts, lot fit) suited to a Codex lane in
+   round 2's SIM queue. Both are the lead's call; this lane did neither.
+9. **LG-05's "the scan's cost is unchanged"** is read as the plan words it, "one more counter in the existing pass":
+   there is no new pass, and the counter costs about 0.1 ms (+5 %) on dense1m's monthly scan and nothing measurable on
+   bot256's (the gates table). The lead may want the free count moved behind a cheaper test if a stricter reading is
+   meant; this lane left it in the scan, where the plan puts it.
+10. **The badge's recount runs once a real second whatever the demand** (0.6-1.5 ms on a 256 map, the gates table). It
+    could skip the pass while no family's demand is above 0.5, when the badge cannot show; this lane left it as is
+    (the cost is small and the recount also keeps the room fresh for the moment demand rises). The lead may want the
+    skip; it is a two-line change in TopBar.ts's badge update.
+11. **FH-03's "a toast within one month tick" with FEEL-02a's budget in dev.** The advice still posts at the month tick
+    (day 30), and its toast shows at once when the budget allows; when the tick's other news has spent it, the toast
+    waits in FEEL-02a's queue, at most `Toasts.QUEUE_MAX_MS` (50 s of real time), and is never dropped. That is FH-03
+    change 3 as the plan words it, so this lane reads acceptance 1 as met; the unit test bounds the wait at 50 s, and the
+    browser recheck at `c65901f` (A1, `qa/shots-m10/log.txt`) shows the toast 5 ms after the tick, the budget allowing it.
+12. **F3's "no zoned land, no warning" guard goes beyond the plan** (review finding 4). Below 20,000 residents the zone
+    rule returns early for a family with no zoned tiles, so not even the old ticker info line posts, where the plan says
+    "below 20,000 the three zone rules become warnings" and dev posted that info line. F3's own reason (a town still
+    being laid out would spend the cooldown before its real stall) is already covered by its reset: zoning more of a
+    family clears the rule's cooldown and back-off at the next month tick. This lane kept the guard (the desktop's QA
+    fix, browser B1 and its unit test) and reads it conservatively as within FH-03's intent. Mitigations: the
+    onboarding's "Zone R, C and I" step, and the "+ zone" badge, which shows at 0 lots for a family with demand above
+    0.5. The alternative is a one-line change in `zoneRule` (post the info line, cooldown 90, for an unzoned family
+    instead of returning); with the reset it cannot hold back the later warning. The lead's call.
+13. **Decisions 3 and 9 after the review fix round.** The y55 checkpoint stays not built out (its families have
+    road-facing land; decision 3). "The scan's cost unchanged" is unaffected: the room test reads counts the month
+    tick already has (decision 9). The built-out card now speaks only for a family with no room left, so on a full map
+    whose families still have empty lots, the unemployment rule's "rezone low-value blocks to commercial or industrial
+    land" (keyed on the free land alone, as the review asked) is the only rezoning advice; the lead may prefer that
+    line keyed on the card too.

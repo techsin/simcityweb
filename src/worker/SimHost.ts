@@ -23,6 +23,8 @@ import type { HostState } from '../save/state';
 import { CHANGE_EVENTS, cityFingerprint } from '../save/fingerprint';
 import { writeRecoverySnapshot, type RecoverySnapshot, type WriteResult } from '../save/recovery';
 import { clearRecoveryAfterSave as clearRecoveryLs } from '../save/recoveryLs';
+// W1.3: the boot replay of the journal bound to the loaded save (§4.3, "in either host")
+import { bootJournal, type BootJournal } from './journal';
 
 export type { HostState } from '../save/state';
 export type { SaveReason } from './protocol';
@@ -201,7 +203,13 @@ export type CommandResult<K extends CommandOp> = ReturnType<Commands[K]>;
 export type Command = { [K in CommandOp]: { op: K; args: CommandArgs<K> } }[CommandOp];
 export interface Ticket<R> { readonly seq: number; readonly predicted?: R; readonly exact: boolean; readonly done: Promise<R> }
 export interface ActOptions { tag?: object; gesture?: Gesture }
-export interface Cause { seq: number; tag: object | null }
+/** T061 item 3 (T048's request a): `dispatchIncidentId` is the incident a dispatch or dispatchBest sends units to, so a
+ *  reinforcement the player sends to an incident the city already answered counts as the player's */
+export interface Cause { seq: number; tag: object | null; dispatchIncidentId?: number }
+/** the incident a command dispatches units to: dispatch's and dispatchBest's first argument */
+export function dispatchIncidentOf(command: { op: CommandOp; args: readonly unknown[] } | undefined): number | undefined {
+  return command && (command.op === 'dispatch' || command.op === 'dispatchBest') ? command.args[0] as number : undefined;
+}
 export type GestureOwner = object;
 
 /** W0.5: read-only system data, shared by local readers and the replica's streams. */
@@ -315,6 +323,9 @@ export interface LocalSimHostOptions {
   now?: () => number;
   signal?: AbortSignal;
   persistence?: CityPersistence;
+  /** W1.3 (§4.3, §4.4): replay the journal bound to the loaded save at start (default); false boots the save as it is
+   *  ("Continue on the main thread" after a worker crash). A worker or loopback session writes that journal. */
+  replayJournal?: boolean;
 }
 
 /** Broken lazy imports must not take down the city screen: the local host keeps its stand-ins. */
@@ -342,6 +353,7 @@ export class LocalSimHost implements SimHost {
   private news: ReturnType<typeof newsSequence>;
   // W0.6: the queue owns copies, never a page-provided state or callback.
   private persistence: CityPersistence | null;
+  private replayJournal: boolean;
   private saveChain: Promise<unknown> = Promise.resolve();
   private saveChanges = { count: 0, dispose: () => {} };
   readonly recovery = null;
@@ -359,6 +371,7 @@ export class LocalSimHost implements SimHost {
     this.views = localViews(this.sim);
     this.news = newsSequence(this.events, state.news.length, opts.signal);
     this.persistence = opts.persistence ?? null;
+    this.replayJournal = opts.replayJournal ?? true;
     this.saveChanges = changeSequence(this.events, opts.signal);
     const fallback = new FallbackActions(this.sim);
     this.actions = new LocalActions(fallback, this);
@@ -427,7 +440,8 @@ export class LocalSimHost implements SimHost {
     const seq = ++this.seq;
     const gesture = opts.gesture ?? this.gesture;
     const before = this.emitting;
-    this.emitting = { seq, tag: opts.tag ?? null };
+    const incident = dispatchIncidentOf({ op, args });
+    this.emitting = { seq, tag: opts.tag ?? null, ...(incident !== undefined ? { dispatchIncidentId: incident } : {}) };
     try {
       const predicted = cloneResult(this.core.applyCommand({ op, args } as Command, this.actions.target)) as CommandResult<K>;
       const done = Promise.resolve(predicted);
@@ -487,6 +501,11 @@ export class LocalSimHost implements SimHost {
     if (this.started || this.core.isDisposed) return this.ready;
     this.started = true;
     try {
+      // read before the systems boot, so that no tick runs between boot and replay
+      const journal = this.replayJournal ? bootJournal(this.persistence).catch((e: unknown) => {
+        this.core.report('The recovery journal could not be read', e, { key: 'recovery' });
+        return undefined;
+      }) : Promise.resolve(undefined);
       const [sysMod, actMod] = modules ? [modules, modules] : await Promise.all([
         SIM_MODULES['../sim/systems/index.ts']?.().catch((e: unknown) => {
           this.core.report('Simulation systems failed to load — the city will not grow', e, { sim: true });
@@ -498,9 +517,13 @@ export class LocalSimHost implements SimHost {
         }),
         this.initWasm(),
       ]) as [Pick<SimModules, 'createSystems'> | null | undefined, Pick<SimModules, 'CityActions'> | null | undefined, void];
+      const boot: BootJournal | undefined = await journal;
       if (this.core.isDisposed) return;
       this.core.boot(this.rctx, { createSystems: sysMod?.createSystems, CityActions: actMod?.CityActions });
       if (this.core.actions) this.actions.target = this.preview.target = this.core.actions;
+      // §4.3: after init, before the first tick. No save follows here: the replay's change events count, so the city
+      // reads as unsaved, and the journal stays bound to the loaded save until the first save deletes it
+      if (boot) this.core.replayBootJournal(boot);
       this.resolveReady();
     } catch (e) {
       this.rejectReady(e);

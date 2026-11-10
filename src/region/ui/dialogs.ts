@@ -458,21 +458,28 @@ export function openRecoverDialog(m: RecoveryMarker): Promise<'recover' | 'disca
   return new Promise((resolve) => {
     let result: 'recover' | 'discard' | null = null;
     const row = (k: string, v: string, sub?: string) => h('div', { class: 'rv-row' }, h('span', { class: 'rv-k' }, k), h('span', { class: 'rv-v' }, v, sub ? h('small', {}, sub) : null));
+    // W1.3: a journal alone (WORKER_DESIGN §4.3) is the list of edits made since the last save, replayed onto it
+    const edits = m.kind === 'journal';
+    const kept = edits ? 'A record of your edits since the last save was kept on this device.' : null;
     const body = h(
       'div',
       { class: 'recover-body' },
       regionTakenOver(m.regionId, m.at)
-        ? h('p', {}, 'This region was opened in another tab. Unsaved progress for ', h('b', {}, m.cityName), ' was kept in a recovery snapshot on this device.')
+        ? h('p', {}, ...(edits
+          ? ['This region was opened in another tab. A record of your edits to ', h('b', {}, m.cityName), ' since the last save was kept on this device.']
+          : ['This region was opened in another tab. Unsaved progress for ', h('b', {}, m.cityName), ' was kept in a recovery snapshot on this device.']))
         : m.why === 'exit'
-          ? h('p', {}, 'Saving ', h('b', {}, m.cityName), ' failed when you left it. A recovery snapshot of your progress was kept on this device.')
-          : h('p', {}, 'Metropolis closed before ', h('b', {}, m.cityName), ' was saved. A recovery snapshot of your last session was kept on this device.'),
+          ? h('p', {}, 'Saving ', h('b', {}, m.cityName), ' failed when you left it. ', kept ?? 'A recovery snapshot of your progress was kept on this device.')
+          : h('p', {}, 'Metropolis closed before ', h('b', {}, m.cityName), ' was saved. ', kept ?? 'A recovery snapshot of your last session was kept on this device.'),
       h(
         'div',
         { class: 'rv-grid' },
         row('Unsaved progress', m.date ?? `Day ${m.day}`, `${timeAgo(m.at)} · ${formatPop(m.population)} residents · ${formatMoney(m.funds)}`),
         row('Last save', m.baseDate ?? (m.baseDay !== undefined ? `Day ${m.baseDay}` : '—'), m.regionName ? m.regionName : undefined),
       ),
-      h('p', { class: 'rv-note' }, 'Recover replaces the last save with the snapshot. Discard keeps the last save and deletes the snapshot.'),
+      h('p', { class: 'rv-note' }, edits
+        ? 'Recover makes those edits again on the last save when the city opens. Discard keeps the last save and deletes them.'
+        : 'Recover replaces the last save with the snapshot. Discard keeps the last save and deletes the snapshot.'),
     );
     const recover = button('Recover', {
       icon: 'refresh',
@@ -514,10 +521,10 @@ export function openSimCrashDialog(o: { cityName: string; message: string; recov
       'div',
       { class: 'recover-body' },
       h('p', {}, 'The simulation of ', h('b', {}, o.cityName), o.recoverable
-        ? ' stopped. Progress since the last save is not in it, but a recovery snapshot was kept on this device.'
+        ? ' stopped. Progress since the last save is not in it, but a recovery copy was kept on this device.'
         : ' stopped. Progress since the last save is not in it.'),
       h('p', { class: 'rv-note' }, o.recoverable
-        ? 'Restart reloads the last save. Recover replaces it with the snapshot first. Continue on the main thread reloads the last save without the simulation worker, for the rest of this visit.'
+        ? 'Restart reloads the last save. Recover brings back the unsaved progress first. Continue on the main thread reloads the last save without the simulation worker, for the rest of this visit.'
         : 'Restart reloads the last save. Continue on the main thread reloads it without the simulation worker, for the rest of this visit.'),
       h('details', {}, h('summary', {}, 'Details'), h('pre', { class: 'rv-note' }, o.message)),
     );
@@ -534,6 +541,8 @@ export function openSimCrashDialog(o: { cityName: string; message: string; recov
       onEnter: () => restart.click(),
       onClose: () => resolve(result),
     });
+    // T061 F2: it opens over a running city; the region screen's backdrop (z 40) drew under the city HUD's layers
+    dlg.back.classList.add('modal-top');
     restart.classList.add('autofocus');
   });
 }
