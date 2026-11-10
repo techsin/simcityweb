@@ -84,6 +84,11 @@ export function isCameraCode(code: string, bindings?: KeyBindings): boolean {
   return cameraCode(code, bindings) !== null;
 }
 
+/** An action, or one of its alternatives, is on this key in this profile. */
+export function isBoundCode(code: string, bindings?: KeyBindings): boolean {
+  return BINDINGS.some((b) => codesOf(b, bindings).includes(code));
+}
+
 export function codeLabel(code: string): string {
   if (!code) return 'Unbound';
   if (/^Key[A-Z]$/.test(code)) return code.slice(3);
@@ -103,6 +108,19 @@ export function bindingLabel(id: string, bindings?: KeyBindings): string {
   if (!b) return '';
   const code = codeOf(b, bindings);
   return code && b.modified ? 'Ctrl / ⌘ + ' + codeLabel(code) : codeLabel(code);
+}
+
+/** The key a badge or a title shows for an action: its live key ("Ctrl S" for Save), '' while the action has none. */
+export function keyHint(id: string, bindings?: KeyBindings): string {
+  const b = BY_ID.get(id);
+  const code = b ? codeOf(b, bindings) : '';
+  return !b || !code ? '' : b.modified ? 'Ctrl ' + codeLabel(code) : codeLabel(code);
+}
+
+/** A control's title with its live key: "Budget (M)", or "Budget" while the action has no key. */
+export function titleWithKey(title: string, id: string, bindings?: KeyBindings): string {
+  const key = keyHint(id, bindings);
+  return key ? `${title} (${key})` : title;
 }
 
 const HELP_IDS: Record<string, readonly string[]> = {
@@ -129,8 +147,9 @@ export function shortcutKeys(label: string, defaults: string[], bindings?: KeyBi
   return defaults;
 }
 
+/** Escape, Tab and the modifiers stay with the game; so do Enter (it answers dialogs) and [ ] (the brush size). */
 export function validBindingCode(code: string): boolean {
-  return /^(?:Key[A-Z]|Digit[0-9]|Numpad(?:[0-9]|Add|Subtract|Multiply|Divide|Decimal|Equal|Enter)|F(?:[1-9]|1[0-9]|2[0-4])|Arrow(?:Up|Down|Left|Right)|PageUp|PageDown|Home|End|Insert|Delete|Backspace|Enter|Space|Equal|Minus|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Backquote|Comma|Period|Slash|IntlBackslash|IntlRo|IntlYen)$/.test(code);
+  return /^(?:Key[A-Z]|Digit[0-9]|Numpad(?:[0-9]|Add|Subtract|Multiply|Divide|Decimal|Equal)|F(?:[1-9]|1[0-9]|2[0-4])|Arrow(?:Up|Down|Left|Right)|PageUp|PageDown|Home|End|Insert|Delete|Backspace|Space|Equal|Minus|Backslash|Semicolon|Quote|Backquote|Comma|Period|Slash|IntlBackslash|IntlRo|IntlYen)$/.test(code);
 }
 
 export interface BindingConflict {
@@ -157,6 +176,30 @@ export function bindingConflicts(bindings: KeyBindings = {}): BindingConflict[] 
       }
       used.set(scope, [...used.get(scope) ?? [], b]);
     }
+  }
+  return out;
+}
+
+/** The actions whose stored entry differs between two tables (the editor's unapplied changes). */
+export function changedBindings(a: KeyBindings = {}, b: KeyBindings = {}): string[] {
+  return BINDINGS.filter(({ id }) => owns(a, id) !== owns(b, id) || (owns(a, id) && a[id] !== b[id])).map(({ id }) => id);
+}
+
+/**
+ * A stored table as the game may use it: known actions on bindable keys ('' = unbound). An unknown action, a reserved
+ * or unsupported key and an entry in conflict with another fall back to their defaults (a hand-edited or damaged
+ * profile put Photo mode on Escape); the editor's own tables pass unchanged.
+ */
+export function sanitizeBindings(stored: unknown): KeyBindings {
+  const out: KeyBindings = {};
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return out;
+  for (const [id, code] of Object.entries(stored)) {
+    if (BY_ID.has(id) && typeof code === 'string' && (code === '' || validBindingCode(code))) out[id] = code;
+  }
+  for (let conflicts = bindingConflicts(out); conflicts.length; conflicts = bindingConflicts(out)) {
+    const stale = conflicts.flatMap((c) => c.ids).filter((id) => owns(out, id));
+    if (!stale.length) break;
+    for (const id of stale) delete out[id];
   }
   return out;
 }

@@ -35,7 +35,7 @@ import { NewYearCelebration, type CelebrateOptions } from './NewYear';
 import { ShowCamera, FirstCameraMoments, type ShowControls } from './ShowCamera';
 import { GameSounds } from './GameSounds';
 import { hotkeyCycle, panelHotkey } from './toolCatalog';
-import { matchesBinding, isCameraCode } from './bindings';
+import { matchesBinding, isBoundCode, isCameraCode, sanitizeBindings } from './bindings';
 import { ToolController } from './tools/ToolController';
 import { CursorTip } from '../ui/CursorTip';
 import { h, isTyping } from '../ui/dom';
@@ -139,6 +139,7 @@ export class CityScene {
   private cameraMoments: FirstCameraMoments;
   private founding: FoundingFlyIn | null = null;
   private photo: PhotoBar;
+  private keyPanel: KeyBindingsPanel;
   private resolveLanding!: () => void;
   /** META: play cityReady at this landing (or immediately for saved cities / reduced motion). */
   readonly cameraLanded: Promise<void> = new Promise((resolve) => { this.resolveLanding = resolve; });
@@ -192,6 +193,8 @@ export class CityScene {
     this.opts = opts;
     this.abort.signal.addEventListener('abort', () => this.resolveLanding(), { once: true });
     this.settings = loadSettings(opts.settings);
+    // FH-25 (QA B12): a stored table is used only as far as the binding model allows it
+    this.settings.keyBindings = sanitizeBindings(this.settings.keyBindings);
     const state = opts.state;
 
     // ---- DOM
@@ -337,7 +340,7 @@ export class CityScene {
       holdCalendar: (on) => { if (!this.disposed) this.host.act('holdCalendar', [on], { tag: this.newYear }); },
     });
     this.cameraMoments = new FirstCameraMoments(ctx, this.showCamera, () => this.newYear.busy || !!this.founding?.active || this.photo?.active || this.pause?.isOpen || confirmOpen());
-    this.photo = new PhotoBar(ctx, this.root);
+    this.photo = new PhotoBar(ctx, this.root, undefined, { inspected: () => this.view.focus[0] ?? null, lastSpeed: () => this.lastSpeed });
     // CONTENT: rank moments share the renderer, with New Year and LIVE taking priority.
     const rankFireworks = new RankFireworks(ctx, () => this.newYear.busy);
     new MilestoneCard(ctx, this.uiRoot, (rank, intensity) => rankFireworks.start(rank, intensity), () => this.newYear.busy);
@@ -350,7 +353,7 @@ export class CityScene {
     this.advisors = new AdvisorsPanel(ctx);
     for (const p of [new BudgetPanel(ctx), new GraphsPanel(ctx), new StatsPanel(ctx), this.advisors, new OrdinancesPanel(ctx), new RewardsPanel(ctx), new SettingsPanel(ctx), new DataViewsPanel(ctx), this.info, new HelpPanel(ctx)]) this.panels.register(p);
     this.panels.register(new EmergenciesPanel(ctx));
-    this.panels.register(new KeyBindingsPanel(ctx));
+    this.panels.register((this.keyPanel = new KeyBindingsPanel(ctx)));
     // WP5: demographics panel; derived data-view rasters follow the sim's layer updates
     this.panels.register(new DemographicsPanel(ctx));
     this.offs.push(attachOverlays(this.host.sim));
@@ -582,6 +585,8 @@ export class CityScene {
     if (this.disposed || this.ctxLost) return;
     this.photo?.exit();
     this.showCamera?.cancel(true);
+    // (a fly-in still held at the high view has no show to cancel: the rebuilt view opens on its landing)
+    this.founding?.land();
     this.host.setSpeed(0, 'error');
     // the camera goes into the save, and the rebuilt view opens on it
     this.storeCamera();
@@ -648,7 +653,11 @@ export class CityScene {
       const landing = readCamera(c);
       const showControls = c as unknown as ShowControls;
       if (this.newCity && !this.founding && landing && typeof showControls.setView === 'function' && resolveMotion(this.settings.motion) !== 'reduced') {
-        this.founding = new FoundingFlyIn(this.showCamera, showControls, landing, foundingTitle(st), this.resolveLanding, this.uiRoot);
+        // (QA B4: held at the high view until the app's loading screen is gone: reportLoadTime releases it)
+        this.founding = new FoundingFlyIn(this.showCamera, showControls, landing, foundingTitle(st), this.resolveLanding, this.uiRoot, {
+          hold: true, inPlace: true, busy: () => !!this.photo?.active || !!this.pause?.isOpen || confirmOpen(),
+          rules: { canvas: () => this.canvas, cameraKey: (e) => isCameraCode(e.code, this.settings.keyBindings), gameKey: (e) => isBoundCode(e.code, this.settings.keyBindings) },
+        });
       } else this.resolveLanding();
     } catch (e) {
       this.resolveLanding();
@@ -721,7 +730,10 @@ export class CityScene {
     const dt = Math.min(0.1, Math.max(0, (now - this.last) / 1000));
     this.last = now;
     try {
-      if (!this.photo?.active) this.tools.frame(dt);
+      // (a spotlight or the fly-in in flight holds the hover too: the map moves under a resting pointer, and the box
+      // and the tip jumped with it. Any input ends the flight, and with it this hold)
+      const flying = this.showCamera?.active && (this.founding?.active || this.cameraMoments?.playing);
+      if (!this.photo?.active && !flying) this.tools.frame(dt);
     } catch (e) {
       this.errors.report('Tool error', e);
     }
@@ -732,9 +744,13 @@ export class CityScene {
     }
     this.edgeScroll(dt);
     try {
-      if (this.photo?.active && this.newYear.active) this.newYear.cancel(false);
+      // photo mode keeps its clock and camera: a celebration that takes them ends, fireworks alone play on (a year's
+      // burst can be photographed)
+      if (this.photo?.active && this.newYear.ownsTime) this.newYear.cancel(false);
       this.newYear.frame(dt);
-      const cameraDt = this.readyPending ? 0 : Math.max(0, (now - (this.cameraMomentAt || now)) / 1000);
+      // the camera shows run on the loop's clamped step (QA B4: the first render, seconds in one frame on cold shaders,
+      // ran the whole founding fly-in before anything was on screen)
+      const cameraDt = this.readyPending ? 0 : Math.min(0.1, Math.max(0, (now - (this.cameraMomentAt || now)) / 1000));
       this.founding?.frame(cameraDt);
       this.cameraMoments?.frame(cameraDt);
       this.cameraMomentAt = now;
@@ -843,6 +859,8 @@ export class CityScene {
   /** FH-21: the time from "Found City" (or "Play") to the first interactive frame, measured by the app; shown in the fps readout */
   reportLoadTime(ms: number): void {
     this.loadMs = ms;
+    // FEEL-27 (QA B4): the app's loading screen is gone, the city is on screen: the founding fly-in's clock starts here
+    this.founding?.release();
     console.info(`[metropolis] first interactive frame ${Math.round(ms)} ms after the click`);
     if (this.settings.showFps) this.updatePerf();
   }
@@ -966,14 +984,18 @@ export class CityScene {
       if (!e.repeat) {
         if (this.photo.active) this.photo.exit();
         else {
-          this.newYear.cancel(false);
-          this.showCamera.cancel();
+          // (a celebration that holds the clock or the camera gives them back; fireworks alone play on, as in the loop)
+          if (this.newYear.ownsTime) this.newYear.cancel(false);
+          this.showCamera.cancel(true);
           this.photo.enter();
         }
       }
       return;
     }
-    if (this.photo?.active) return;
+    if (this.photo?.active) {
+      this.keepFromBrowser(e);
+      return;
+    }
     if (this.tools.key(e)) {
       this.consume(e);
       return;
@@ -1006,6 +1028,7 @@ export class CityScene {
       if (!e.repeat) this.panels.toggle('help');
       return;
     }
+    this.keepFromBrowser(e);
     if (e.ctrlKey || e.metaKey) {
       if (matchesBinding('save', e, bindings)) {
         e.preventDefault();
@@ -1056,6 +1079,17 @@ export class CityScene {
   }
   private lastSpeed = 1;
   private cameraMomentAt = 0;
+
+  /**
+   * FH-25 (QA B12): the browser's Save dialog (Ctrl / Cmd + S) and its Help page (F1) stay out of the city wherever Save
+   * and Help are bound: the game swallowed both keys before they could be rebound. (F1 on a camera action is the
+   * camera's: its controller ignores a key that was already prevented.)
+   */
+  private keepFromBrowser(e: KeyboardEvent): void {
+    if (e.altKey) return;
+    const chord = e.ctrlKey || e.metaKey;
+    if (chord ? e.key?.toLowerCase() === 's' : e.code === 'F1' && !isCameraCode(e.code, this.settings?.keyBindings ?? {})) e.preventDefault();
+  }
 
   /** we handled this key: keep it from the camera controller too when the camera also binds it */
   private consume(e: KeyboardEvent): void {
@@ -1112,6 +1146,8 @@ export class CityScene {
     if (this.disposed) return;
     this.host.setSpeed(0, 'exit');
     this.tools.select(null, { silent: true });
+    // (FH-25: an unapplied key draft is kept by its panel's close; one in conflict goes without its question here)
+    this.keyPanel?.leave();
     this.panels.closeAll();
     await this.save(false, 'exit');
     if (this.disposed) return;

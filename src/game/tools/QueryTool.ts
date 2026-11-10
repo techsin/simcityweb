@@ -19,7 +19,8 @@ export class QueryTool extends Tool {
   override icon = 'query';
   override cursor = 'default';
   override wantsGrid = false;
-  private hoverId: number | null = null;
+  /** the highlighted building (undefined: unknown, the next move applies its pick whatever it is) */
+  private hoverId: number | null | undefined = null;
   private lastCell = '';
   private downAt: { x: number; y: number } | null = null;
 
@@ -145,6 +146,13 @@ export class QueryTool extends Tool {
   }
   override leave(): void {
     this.lastCell = '';
+    this.ctx.tip.hide();
+  }
+  /** FEEL-24 (QA B6): photo mode draws the plain city: the hover box goes, and the next move puts it back */
+  clearHover(): void {
+    this.hoverId = undefined;
+    this.lastCell = '';
+    safe(() => this.ctx.objects.setSelected(null), undefined);
     this.ctx.tip.hide();
   }
   override hints(): string[] {

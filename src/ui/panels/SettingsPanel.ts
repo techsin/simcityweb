@@ -96,7 +96,7 @@ export class SettingsPanel extends Panel {
       this.row('Live speed', 'How much 1x slows down while you handle an emergency', this.range('emergencyLiveSlowmo', 1, 5, 0.5, (v) => (v <= 1 ? 'Normal 1x' : `${v}x slower`))),
       sec('controls', 'Camera & controls'),
       this.row('Key bindings', 'Change shortcuts, check conflicts or restore the defaults', keys),
-      this.row('Camera moments', 'Spotlight the city’s firsts after four seconds without input; any input returns control', this.sw('cameraMoments')),
+      this.row('Camera moments', 'Spotlight the city’s firsts after four seconds without input; a key, a click or the wheel returns control', this.sw('cameraMoments')),
       this.row('Edge scrolling', 'Move the camera when the mouse touches the screen edge', this.sw('edgeScroll')),
       this.row('Show grid while building', null, this.sw('showGrid')),
       sec('interface', 'Interface'),

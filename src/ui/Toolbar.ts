@@ -1,7 +1,8 @@
 /** Bottom-center toolbar: categories → flyout menus of tools (data-driven from the catalog), rich tooltips, tool chip. */
 import { Network, Zone } from '../core/types';
 import type { GameContext } from '../game/context';
-import { CATEGORIES, CATEGORY_COLORS, categoryOfTool, findToolSpec, type ToolCategory, type ToolSpec } from '../game/toolCatalog';
+import { CATEGORIES, CATEGORY_COLORS, categoryOfTool, findToolSpec, hotkeyLabel, type ToolCategory, type ToolSpec } from '../game/toolCatalog';
+import { keyHint, type KeyBindings } from '../game/bindings';
 import { budgetEffect } from '../game/tools/Tool';
 import type { BuildingDef } from '../sim/catalogTypes';
 import { facilityDefFacts } from '../sim/infra/facilities';
@@ -34,17 +35,24 @@ function thumbInto(card: WeakRef<HTMLElement>): (url: string | null) => void {
   };
 }
 
-function hotkeyOf(spec: ToolSpec): string | undefined {
-  return spec.hotkey;
+/** the key a tool is on in this profile (FH-25: the badges, tips and hints follow the bindings) */
+function hotkeyOf(spec: Pick<ToolSpec, 'hotkey'>, bindings?: KeyBindings): string | undefined {
+  return spec.hotkey ? hotkeyLabel(spec.hotkey, bindings) || undefined : undefined;
+}
+/** a category's keys ("R C I") as they are bound now; an action without a key is left out */
+function hotkeysOf(c: ToolCategory, bindings?: KeyBindings): string[] {
+  return (c.hotkey ?? '').split(' ').filter(Boolean).map((k) => hotkeyLabel(k, bindings)).filter(Boolean);
 }
 
 /** the footer of a tool card's tooltip: its hotkey, or how to pick it — none for a locked or disabled card, which does
  *  not select (the box above it says why; close-out c1: "Click to select · R rotates while placing" sat under "In ruins
  *  — bulldoze its ruins first") */
-export function specTipFooter(s: Pick<ToolSpec, 'id' | 'hotkey' | 'def' | 'locked' | 'disabled'>): string {
+export function specTipFooter(s: Pick<ToolSpec, 'id' | 'hotkey' | 'def' | 'locked' | 'disabled'>, bindings?: KeyBindings): string {
   if (s.locked || s.disabled) return '';
-  if (s.hotkey) return `<div class="rt-key">Hotkey <kbd>${s.hotkey}</kbd>${s.id.startsWith('plop:') ? '' : ' (press again to cycle)'}</div>`;
-  return s.def ? '<div class="rt-key">Click to select · <kbd>R</kbd> rotates while placing</div>' : '';
+  const key = hotkeyOf(s, bindings);
+  if (key) return `<div class="rt-key">Hotkey <kbd>${escapeHtml(key)}</kbd>${s.id.startsWith('plop:') ? '' : ' (press again to cycle)'}</div>`;
+  const rotate = keyHint('rotateBuilding', bindings);
+  return s.def ? `<div class="rt-key">Click to select${rotate ? ` · <kbd>${escapeHtml(rotate)}</kbd> rotates while placing` : ''}</div>` : '';
 }
 
 export class Toolbar {
@@ -54,6 +62,8 @@ export class Toolbar {
   private chip: HTMLDivElement;
   private tip: HTMLDivElement;
   private btns = new Map<string, HTMLButtonElement>();
+  /** each category button's key badge (FH-25: it shows the bound key) */
+  private badges = new Map<string, HTMLElement>();
   private openCat: string | null = null;
 
   constructor(private ctx: GameContext, parent: HTMLElement) {
@@ -65,7 +75,9 @@ export class Toolbar {
     this.bar.appendChild(this.flyout);
     CATEGORIES.forEach((c, i) => {
       if (c.id === 'bulldoze') this.bar.appendChild(h('div', { class: 'sep' }));
-      const b = h('button', { class: 'tb-btn', style: { '--c': c.color } as Record<string, string>, title: '' }, h('span', { class: 'ico-wrap', html: icon(c.icon, 23) }), h('span', { class: 'tb-l' }, c.label), c.hotkey ? h('span', { class: 'tb-k' }, c.hotkey.split(' ')[0]) : null) as HTMLButtonElement;
+      const badge = c.hotkey ? h('span', { class: 'tb-k' }) : null;
+      if (badge) this.badges.set(c.id, badge);
+      const b = h('button', { class: 'tb-btn', style: { '--c': c.color } as Record<string, string>, title: '' }, h('span', { class: 'ico-wrap', html: icon(c.icon, 23) }), h('span', { class: 'tb-l' }, c.label), badge) as HTMLButtonElement;
       b.addEventListener('click', () => {
         this.onCategory(c);
         b.blur();
@@ -91,8 +103,30 @@ export class Toolbar {
       if (id === 'dataviews') this.syncActive();
     });
     ctx.ui.on('overlay', () => this.syncActive());
+    // FH-25 (QA B11): the badges, the chip's hints and an open flyout follow a rebinding
+    ctx.ui.on('settings', () => this.syncKeys());
+    this.syncKeys();
     this.syncActive();
   }
+
+  private get bindings(): KeyBindings | undefined {
+    return this.ctx.settings?.keyBindings;
+  }
+
+  /** the key badges show the first bound key of their category (none while it has no key) */
+  private syncKeys(): void {
+    const sig = JSON.stringify(this.bindings ?? {});
+    if (sig === this.keySig) return;
+    const first = this.keySig === null;
+    this.keySig = sig;
+    for (const [id, badge] of this.badges) {
+      const key = hotkeysOf(CATEGORIES.find((c) => c.id === id)!, this.bindings)[0] ?? '';
+      badge.textContent = key;
+      badge.style.display = key ? '' : 'none';
+    }
+    if (!first) this.syncActive();
+  }
+  private keySig: string | null = null;
 
   /** onboarding coach marks: pulse these category buttons */
   setCoach(catIds: string[]): void {
@@ -227,7 +261,7 @@ export class Toolbar {
     } catch (e) {
       console.error('[toolbar] failed to build category', c.id, e);
     }
-    const head = h('div', { class: 'fly-head' }, h('span', { class: 'ico-wrap', style: { color: c.color }, html: icon(c.icon, 18) }), h('span', { class: 'fly-title' }, c.label), c.hotkey ? h('span', { class: 'dim' }, 'Hotkeys ', ...c.hotkey.split(' ').map((k) => h('kbd', null, k))) : null);
+    const head = h('div', { class: 'fly-head' }, h('span', { class: 'ico-wrap', style: { color: c.color }, html: icon(c.icon, 18) }), h('span', { class: 'fly-title' }, c.label), hotkeysOf(c, this.bindings).length ? h('span', { class: 'dim' }, 'Hotkeys ', ...hotkeysOf(c, this.bindings).map((k) => h('kbd', null, k))) : null);
     const wrap = h('div', { class: 'fly-groups' });
     const active = this.ctx.tools.activeId;
     const total = groups.reduce((s, g) => s + g.items.length, 0);
@@ -283,7 +317,7 @@ export class Toolbar {
       h('div', { class: 'fly-name' + (s.label.length <= 13 ? ' one' : '') }, s.label),
       h('div', { class: 'fly-cost', html: this.costLine(s) }),
     );
-    const hk = hotkeyOf(s);
+    const hk = hotkeyOf(s, this.bindings);
     if (hk) el.appendChild(h('span', { class: 'fly-key' }, h('kbd', null, hk)));
     if (s.locked) {
       el.appendChild(h('span', { class: 'lock', html: icon('lock', 12) }));
@@ -366,7 +400,7 @@ export class Toolbar {
       query: 'Inspect buildings, roads and lots.',
       dataviews: 'Data views: traffic, pollution, land value, coverage…',
     };
-    this.tip.innerHTML = `<h4>${escapeHtml(c.label)}</h4><p style="margin-bottom:0">${escapeHtml(desc[c.id] ?? '')}</p>${c.hotkey ? `<div class="rt-key">Hotkey ${c.hotkey.split(' ').map((k) => `<kbd>${k}</kbd>`).join(' ')}</div>` : ''}`;
+    this.tip.innerHTML = `<h4>${escapeHtml(c.label)}</h4><p style="margin-bottom:0">${escapeHtml(desc[c.id] ?? '')}</p>${hotkeysOf(c, this.bindings).length ? `<div class="rt-key">Hotkey ${hotkeysOf(c, this.bindings).map((k) => `<kbd>${escapeHtml(k)}</kbd>`).join(' ')}</div>` : ''}`;
     this.tip.style.width = '240px';
     this.placeTip(anchor);
   }
@@ -445,7 +479,7 @@ export class Toolbar {
     }
     const lock = s.locked ? `<div class="rt-lock">${icon('lock', 14)}<div><b>Locked</b><br>${escapeHtml(s.locked.hint)}${s.locked.progress !== undefined ? ` · ${Math.round(s.locked.progress * 100)}%` : ''}</div></div>` : '';
     const dis = s.disabled ? `<div class="rt-lock">${icon('alert', 14)}<div>${escapeHtml(s.disabled)}</div></div>` : '';
-    const key = specTipFooter(s);
+    const key = specTipFooter(s, this.bindings);
     this.tip.style.width = '270px';
     const notes = hints.length ? `<div class="rt-notes">${hints.map((t) => `<div>${escapeHtml(t)}</div>`).join('')}</div>` : '';
     this.tip.innerHTML = `<div class="rt-cat" style="color:${catColor}">${escapeHtml(cat)}</div><h4>${escapeHtml(s.label)}</h4>${s.desc ? `<p>${escapeHtml(s.desc)}</p>` : '<div style="height:6px"></div>'}<div class="rt-rows">${rows.map(([a, b]) => `<span>${a}</span><span>${b}</span>`).join('')}</div>${notes}${lock}${dis}${key}`;
@@ -472,11 +506,15 @@ export class Toolbar {
     const color = spec?.color ?? '#3fa7ff';
     this.chip.style.setProperty('--c', color);
     const hints = h('div', { class: 'tc-hints' });
+    // (the Plop tool's hint names the live rotate key: R unless rebound)
+    const rotate = keyHint('rotateBuilding', this.bindings);
     for (const t of tool.hints()) {
       const span = h('span');
-      span.innerHTML = escapeHtml(t)
-        .replace(/\b(Esc|Shift|R|Alt)\b/g, (m) => `<kbd>${m}</kbd>`)
-        .replace('[ ]', '<kbd>[</kbd> <kbd>]</kbd>');
+      span.innerHTML = rotate && rotate !== 'R' && t === `${rotate} rotate`
+        ? `<kbd>${escapeHtml(rotate)}</kbd> rotate`
+        : escapeHtml(t)
+          .replace(/\b(Esc|Shift|R|Alt)\b/g, (m) => `<kbd>${m}</kbd>`)
+          .replace('[ ]', '<kbd>[</kbd> <kbd>]</kbd>');
       hints.appendChild(span);
     }
     const close = h('button', { class: 'icon-btn', title: 'Done (Esc)', html: icon('close', 15), style: 'width:28px;height:28px' });

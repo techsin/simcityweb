@@ -2,7 +2,7 @@
 import type { GameContext } from '../game/context';
 import { Panel } from './Panel';
 import { clear, escapeHtml, h } from './dom';
-import { shortcutKeys } from '../game/bindings';
+import { keyHint, shortcutKeys } from '../game/bindings';
 import { icon } from './icons';
 import { dayLabel, num } from './format';
 
@@ -19,8 +19,10 @@ export class PauseMenu {
     const ctx = this.ctx;
     const st = ctx.state;
     ctx.host.setSpeed(0, 'pause');
+    // (FH-25: the keys shown beside Save and Help are the bound ones)
+    const keys = ctx.settings?.keyBindings;
     const item = (ic: string, label: string, fn: () => void, key?: string, cls = '') => {
-      const b = h('button', { class: `btn block ${cls}`, html: icon(ic, 17) + `<span>${label}</span>` + (key ? `<span class="kbd" style="margin-left:auto">${key}</span>` : '') });
+      const b = h('button', { class: `btn block ${cls}`, html: icon(ic, 17) + `<span>${label}</span>` + (key ? `<span class="kbd" style="margin-left:auto">${escapeHtml(key)}</span>` : '') });
       b.addEventListener('click', fn, { signal: ctx.signal });
       return b;
     };
@@ -32,7 +34,7 @@ export class PauseMenu {
       item('play', 'Resume', () => this.close(), 'Esc', 'primary'),
       item('save', 'Save city', async () => {
         await ctx.save();
-      }, 'Ctrl S'),
+      }, keyHint('save', keys)),
       item('region', 'Save & exit to region', async () => {
         this.close(false);
         await ctx.exitToRegion();
@@ -46,7 +48,7 @@ export class PauseMenu {
       item('keyboard', 'Help & shortcuts', () => {
         this.close(true, true);
         this.hooks.onHelp();
-      }, 'F1'),
+      }, keyHint('help', keys)),
     );
     this.back = h('div', { class: 'modal-back' }, menu);
     this.back.addEventListener('pointerdown', (e) => {

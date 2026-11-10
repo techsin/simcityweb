@@ -16,7 +16,7 @@ import { DISPATCH_SPEC } from './tools/DispatchTool';
 import type { Tool } from './tools/Tool';
 import { titleCase } from '../ui/format';
 import { ruinsFor, type RuinState } from '../ui/ruinState';
-import { matchesBinding, type KeyBindings } from './bindings';
+import { keyHint, matchesBinding, type KeyBindings } from './bindings';
 
 export interface ToolSpec {
   id: string;
@@ -258,11 +258,19 @@ export const PANEL_HOTKEYS: Record<string, string> = {
   p: 'demographics',
 };
 
+/** the binding (src/game/bindings.ts) behind each cycle key */
+const HOTKEY_ACTIONS: Record<string, string> = { r: 'residential', c: 'commercial', i: 'industrial', x: 'dezone', t: 'roads', l: 'power', u: 'subway', b: 'bulldoze', v: 'query', k: 'terraform' };
+
 /** The default cycles keep their catalog order; profile bindings only choose the triggering key. */
 export function hotkeyCycle(e: KeyboardEvent, bindings: KeyBindings = {}): string[] | undefined {
-  const actions: Record<string, string> = { r: 'residential', c: 'commercial', i: 'industrial', x: 'dezone', t: 'roads', l: 'power', u: 'subway', b: 'bulldoze', v: 'query', k: 'terraform' };
-  for (const [key, action] of Object.entries(actions)) if (matchesBinding(action, e, bindings)) return HOTKEY_CYCLES[key];
+  for (const [key, action] of Object.entries(HOTKEY_ACTIONS)) if (matchesBinding(action, e, bindings)) return HOTKEY_CYCLES[key];
   return undefined;
+}
+
+/** The key a catalog hotkey ('R', 'B', 'O' …) is on in this profile, for badges and tips: '' while its action has none. */
+export function hotkeyLabel(key: string, bindings: KeyBindings = {}): string {
+  const action = HOTKEY_ACTIONS[key.toLowerCase()] ?? PANEL_HOTKEYS[key.toLowerCase()];
+  return action ? keyHint(action, bindings) : key;
 }
 
 export function panelHotkey(e: KeyboardEvent, bindings: KeyBindings = {}): string | undefined {

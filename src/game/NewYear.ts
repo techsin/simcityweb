@@ -721,7 +721,9 @@ export class NewYearCelebration {
     this.show ??= this.deps.showCamera ?? new ShowCamera(() => this.camCtl(), this.deps.signal);
     // New Year takes priority over a spotlight, restoring the player's view before saving it.
     this.show.cancel(true);
-    this.camWait = this.show.begin((e) => e.key === 'Escape' || isCameraCode(e.code, this.deps.settings().keyBindings));
+    // the base game's rule (QA B3): a camera key, or a press, wheel step or touch on the city, hands the camera back where
+    // it is; a pointer move, a click on the HUD and Escape leave the show running
+    this.camWait = this.show.begin({ cameraOnly: true, canvas: () => this.canvas(), cameraKey: (e) => isCameraCode(e.code, this.deps.settings().keyBindings) });
     this.camSession = this.camWait ? this.show.session : 0;
     this.camSnap = snap;
     this.camForce = force;
@@ -730,7 +732,8 @@ export class NewYearCelebration {
   private updateCamera(dt: number): void {
     const show = this.show;
     if (!show || !this.cameraActive) { this.camWait = false; return; }
-    if (!this.camForce && this.deps.settings().newYearCamera === false) { this.camStop(false); return; }
+    // (switched off mid-show: the player's view comes back; only camera input leaves the camera where it is)
+    if (!this.camForce && this.deps.settings().newYearCamera === false) { this.camStop(true); return; }
     if (this.camWait) {
       const ctr = this.fw?.centre;
       if (!ctr || !show.saved) return;
