@@ -13,24 +13,32 @@ export class Sightings {
   private anchorY = 0;
   private newsTail: CityState['news'][number] | undefined;
   private newsDay = -1;
+  private seen = new WeakSet<CityState['news'][number]>();
+  private state?: CityState;
   private disposed = false;
 
-  constructor(scene: THREE.Scene) {
+  constructor(scene: THREE.Scene, state?: CityState) {
     this.group.name = 'rare-sightings';
     scene.add(this.group);
+    if (state) this.reset(state);
   }
 
   update(st: CityState, dt: number): void {
     if (this.disposed) return;
+    if (this.state !== st) { this.reset(st); return; }
     const news = st.news, tail = news[news.length - 1];
     if (tail !== this.newsTail || st.day !== this.newsDay) {
       this.newsTail = tail; this.newsDay = st.day;
+      let fresh: CityState['news'][number] | undefined;
       for (let i = news.length - 1; i >= 0; i--) {
         const n = news[i];
-        if (st.day - n.day > 60) break;
+        if (this.seen.has(n)) continue;
+        this.seen.add(n);
+        if (fresh || st.day - n.day > 60) continue;
         const kind = KIND_BY_TEXT.get(n.text);
         if (!kind || n.day > st.day || n.x === undefined || n.z === undefined
           || !Number.isInteger(n.x) || !Number.isInteger(n.z) || n.x < 0 || n.z < 0 || n.x >= st.size || n.z >= st.size) continue;
+        fresh = n;
         const key = `${kind}:${n.day}`;
         if (key !== this.last) {
           this.clear();
@@ -43,7 +51,6 @@ export class Sightings {
           this.anchorY = kind === 'whale' ? SEA_LEVEL + 0.6 : height + (kind === 'balloons' ? 140 : kind === 'blimp' ? 180 : kind === 'observatory' ? 24 : 1);
           this.group.position.set(x, this.anchorY, z);
         }
-        break;
       }
     }
     if (!this.current) return;
@@ -106,6 +113,10 @@ export class Sightings {
     }
     this.group.clear(); this.group.rotation.set(0, 0, 0); this.current = null;
   }
-  reset(): void { this.clear(); this.last = ''; this.newsTail = undefined; this.newsDay = -1; }
+  reset(state = this.state): void {
+    this.clear(); this.last = ''; this.state = state;
+    this.seen = new WeakSet(state?.news);
+    this.newsTail = state?.news[state.news.length - 1]; this.newsDay = state?.day ?? -1;
+  }
   dispose(): void { if (this.disposed) return; this.reset(); this.group.removeFromParent(); this.disposed = true; }
 }

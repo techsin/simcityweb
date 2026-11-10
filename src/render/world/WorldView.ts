@@ -281,7 +281,7 @@ export class WorldView implements WorldViewApi {
     // frame); off, only objects that update their own matrix (and their subtrees) are recomputed
     this.scene.matrixAutoUpdate = false;
     this.scene.matrixWorldAutoUpdate = true;
-    this.sightings = new Sightings(this.scene);
+    this.sightings = new Sightings(this.scene, state);
     this.weather = new Weather(this.scene, THREE);
 
     const W = state.size * CELL_SIZE;
@@ -404,7 +404,8 @@ export class WorldView implements WorldViewApi {
   /** replace / reload the city state (after load). Same map size required; otherwise create a new WorldView. */
   setState(state: CityState) {
     this.state = state;
-    this.sightings?.reset();
+    this.sightings?.reset(state);
+    this.weather?.reset();
     this.terrain.reset(state);
     this.trees.reset(state);
     this.sky.setClimate(state.config.climate);
@@ -554,21 +555,27 @@ export class WorldView implements WorldViewApi {
 
   private updateWeather(dt: number): void {
     const target = this.cameraController.target;
-    const w = this.weather?.update(this.state, target, this.terrain.worldHeight(target.x, target.z), dt, this.q.level);
-    const wet = w?.kind === 'rain' ? w.intensity : 0;
-    const snow = w?.kind === 'snow' ? w.intensity : 0;
+    this.weather?.update(this.state, target, this.terrain.worldHeight(target.x, target.z), dt, this.q.level, this.controls.distance, this.sky.lighting.night);
+    const wet = this.weather?.shown.rain ?? 0;
+    const snow = this.weather?.shown.snow ?? 0;
     roadUniforms.uRoadWet.value = wet;
     sharedUniforms.uWeatherSnow.value = snow;
-    const overcast = Math.max(wet, snow);
+    const overcast = Math.min(1, wet + snow);
     this.sun.intensity *= 1 - overcast * 0.45;
+    this.sun.shadow.radius = this.q.shadowRadius * (1 + overcast * 2);
+    this.nightFill.intensity *= 1 + overcast * 0.35;
+    this.scene.environmentIntensity = this.sky.lighting.envIntensity * (1 - overcast * 0.12);
     this.sky.uniforms.uSkyExposure.value *= 1 - overcast * 0.3;
     this.sky.uniforms.uCloudCover.value = Math.max(this.sky.uniforms.uCloudCover.value, overcast * 0.9);
     this.sky.uniforms.uCloudLit.value.multiplyScalar(1 - overcast * 0.45);
     this.sky.uniforms.uCloudAmb.value.multiplyScalar(1 - overcast * 0.3);
     this.post.fog.uSkyExposure.value = this.sky.uniforms.uSkyExposure.value;
     this.post.fog.uCloudCover.value = this.sky.uniforms.uCloudCover.value;
-    this.post.fog.uHaze.value += w?.kind === 'haze' ? w.intensity * 0.00025 : 0;
+    this.post.fog.uHaze.value += (this.weather?.shown.haze ?? 0) * 0.00025;
   }
+
+  /** Public bridge for audio and the pedestrians lane's getRain callback. */
+  rainAmount(): number { return this.weather?.rainAmount() ?? 0; }
 
   private updateCameraPlanes() {
     const d = this.cameraController.distance;

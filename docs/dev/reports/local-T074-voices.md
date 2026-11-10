@@ -1,6 +1,9 @@
 # T074 — the city's voice and weather
 
-Final status: typecheck and supplemental headless probes pass; the 128×15 seed-7 population is unchanged, and
+The sections before “QA round 2” record the original implementation and its historical gates. The QA round-2
+section supersedes their weather pacing, district sampling/fade limitations, and Vitest status.
+
+Original status: typecheck and supplemental headless probes pass; the 128×15 seed-7 population is unchanged, and
 all 20 yearly hashes match base on both Medium and Hard after the specified advice/news exclusions. Vitest cannot
 start in this sandbox. Real-GPU/browser/audio checks remain for the lead. FEEL-13's literal dB bound down to exact
 silence remains an explicit exception below, not a passed acceptance gate. Changes are uncommitted.
@@ -324,3 +327,191 @@ tests/worker/worldResync.test.ts
 No simulation balance change is intended. No infra hunks or cloud-held file edits/requests. The only out-of-task
 source hunks are the two small shader hooks listed in FEEL-23. Full-suite, GPU and audio/browser acceptance checks
 remain with the lead, using the item checklists above.
+
+## QA round 2 — B1–B11
+
+Read the complete `qa_round1.md` against lane HEAD `8846fa8`, including the merged T057 save/load and T060 ticker
+code. This section supersedes the original status above. All changes remain uncommitted. No simulation RNG draws,
+balance edits, infra hunks, worker/save changes, or cloud-held-file requests.
+
+### FEEL-20 — B4, B6, B10
+
+- `eventHeadlines.ts`: 28 event types now include separate library and museum copy. Named facility openings wait
+  for completion, an intact/nonabandoned lot and edge road access; adding a road starts the usual 1–10-day delay.
+  Posting rechecks access and cancels bulldozed lots. Optional `events.waiting` IDs preserve newly completed roadless
+  facilities across saves. Legacy pending records without a building ID recheck the building at their coordinates.
+  Old saves without event data still take a silent baseline. Blackout retrospectives remain pending while
+  `powerSupply <= 0`, then post after power returns.
+- **Outside the original named source files:** `Notifications.ts` has small B4/B9 hooks. Overflow drops the oldest
+  event story before ordinary good/reward news. Existing FEEL-01 rotation, arrival order, clause formatting, hold
+  timing and toast budget are preserved; event news remains `info` from the news desk and adds no toast path.
+- Tests: `eventHeadlines.test.ts` **17 passed**; `eventTicker.test.ts` **4 passed**, including ordinary good/reward
+  retention through event bursts. Existing `newsTicker.test.ts` **20 passed**.
+
+### FEEL-29 — B8, B9
+
+- `Sightings.ts`: construction/reset baselines the actual existing news objects. Only subsequently posted headlines
+  can spawn a visitor, including new posts on the same game day. Load, re-entry and reset no longer replay old news.
+  `WorldView.ts` passes the state into construction/reset. The 30-real-second visitor lifetime is unchanged.
+- `eventHeadlines.ts`: balloons and blimps anchor to a built-up cell nearest the area-weighted centre of completed,
+  intact buildings, so a coastal city's map-centre water cell is not chosen. Empty cities retain the map-centre
+  fallback. `Notifications.ts` passes per-kind ticker focus distances: balloons/blimp 700 m, Gerald 150 m, whale
+  350 m, observatory 450 m.
+- Tests: `sightings.test.ts` **10 passed**, including old-news baselines, same-day new arrivals, coastal anchors,
+  persistence guards and deterministic scheduling; `eventTicker.test.ts` exercises the focus distances.
+
+### FEEL-23 — B1, B2, B11 and the two public seams
+
+- `Weather.ts` keeps its pure deterministic three-game-day calendar. A separate presentation holds its chosen target
+  for **20 real seconds**, then eases rain/snow/haze with a **4-second time constant**. Ultra-speed dates cannot
+  change that target faster. Initial entry/load starts on that city's current weather; an explicit reset prevents
+  carrying a prior city's envelope across a load. New same-day snow headlines receive a small particle-only
+  cue lasting four real seconds while the broad lighting, surface and audio envelope continues smoothly. Thus snow
+  copy still has visible flakes on its game day without reintroducing whole-frame luminance or rain-bed pulses.
+  Rain particles, roads and bed always use the shared eased amount, including when an April headline arrives
+  during a clear hold. Headline dates follow the deterministic calendar; broad visible weather follows real-time holds.
+- The one reused point cloud has distance-scaled width/height and perspective-scaled, capped point sizes at 120 m
+  and 300 m. Its footprint caps at 1,200 m, fading beyond 1,500 m to zero at 2,500 m. Rain/snow subsets share the
+  same draw call; High remains capped at 768 points. Night RGB falls to 8% of daytime. No extra geometry, draw
+  pass, shadow sample count or audio source is added by this round.
+- `WorldView.ts` uses the shown amounts for wet roads, roof snow, haze and overcast. Overcast increases the existing
+  shadow filter radius and fill, while reducing direct/environment light. Optional ground snow tint was left out;
+  the existing roof dusting remains. GPU cost and native appearance need the lead's measurement.
+- `CityScene.ts` now feeds audio the **shown** rain via `world.rainAmount()` on the existing half-second ambience
+  tick, rather than sampling the fast calendar independently.
+- **Pedestrian hook:** public `Weather.rainAmount()` and `Weather.isRaining()`; the former is also bridged through
+  `WorldView.rainAmount()`. **Outside the original named source files:** `render/contracts.ts` adds the optional
+  `WorldViewApi.rainAmount()` signature, preserving stand-in views. The pedestrians lane can pass
+  `getRain: () => world.rainAmount()` without an import from that lane.
+- **Reduced-flashing hook:** `Weather.flashAmount(strength, reducedFlashing)` is the single gate for future flash
+  contributions and returns zero when gated. Weather currently generates no lightning or other flashes; this round
+  does not add a setting or import the settings lane.
+- Tests: `weather.test.ts` **6 passed**, `weatherPacing.test.ts` **9 passed**, `weatherAmbience.test.ts` **4 passed**.
+  They cover all headline dates/climates, 1x/2x/ultra presentation, the real-time hold, per-frame sun-intensity
+  changes below 1%, same-day headline flakes, volume/night/far uniforms, overcast lighting, city reset, rain-audio
+  continuity and hooks. Actual GPU timing/visibility and sound remain native QA checks.
+
+### FEEL-13 — B3, B5, B7
+
+- `ambience.ts` samples the current 7×7 district at every distance; the existing distance factor supplies the fade.
+  Zone contributions require a completed, unburnt building, and farms never contribute industry. Bare rail remains
+  a transport signature. The sampler still reuses caller scratch and reads only the host replica.
+- Every positive-to-positive district gain change now uses an exponential ramp bounded to **10 dB/s**, including
+  sparse/far targets below the old 0.045 threshold. Native `cancelAndHoldAtTime` preserves the old ramp on retarget;
+  exact audio-clock envelope anchors avoid stale `.value` and the one-sample mid-rise dip. Silence boundaries alone
+  step at `min(target, 0.0064)`, with the final step to zero 20 ms after the exponential tail. This replaces every
+  old linear tail. The six-extra-processor budget is unchanged.
+- The boundary is −29.90 dB relative to the maximum 0.2 local gain. Its audibility must be checked in the native mix;
+  this is not a universal dBFS claim. Every positive target below that boundary is still ramped at the full bound.
+  Settled dense beds cross within 1.5 s, or 2 s including sampling. A universal 2 s dominance guarantee for arbitrary
+  tiny positive incoming targets conflicts with the strict rate bound: 0.2 versus 0.0000002 requires 6 s at equal
+  opposing 10 dB/s slopes. This implementation preserves the rate bound and avoids overshooting sparse targets.
+  That extreme case is a remaining plan/acceptance conflict, not a claimed universal two-second pass.
+- Tests: `districtAmbience.test.ts` **11 passed**: every-altitude sampling, completed zones/farms, dense crossover,
+  night/distance gains, six processors, two-minute positive-gain ratios at all levels, tiny targets, exact retarget
+  samples and jet/contextual accents. `mockAudio.ts` now preserves exponential hold curves; the older
+  `ambience.test.ts` stub gains one hold method. These minimal existing-test-support hunks are outside the original
+  new-tests-only list and model the native automation required by B7.
+
+### Gates and remaining desktop checks
+
+`npx tsc --noEmit` passed. The standard quiet-gated Vitest command still hits `spawn EPERM` in Vite's Windows config
+resolver, and native config with the default fork pool hits the same sandbox restriction. Native config plus a
+single **thread** worker succeeds. Every file below ran separately and serially through the quiet gate:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-transform-types node_modules/vitest/vitest.mjs run <file> --maxWorkers=1 --configLoader native --pool=threads
+```
+
+**44 files, 457 tests passed** (unique files and final case counts; one initial rain-test settling tolerance was
+corrected before its passing run):
+
+```text
+tests/audio/ambience.test.ts
+tests/audio/background.test.ts
+tests/audio/director.test.ts
+tests/audio/districtAmbience.test.ts
+tests/audio/ducking.test.ts
+tests/audio/oneShot.test.ts
+tests/audio/weatherAmbience.test.ts
+tests/game/cameraStart.test.ts
+tests/game/cameraControls.test.ts
+tests/game/cityDisposeCanvas.test.ts
+tests/game/citySaves.test.ts
+tests/game/cityTeardown.test.ts
+tests/game/emergencyBanner.test.ts
+tests/game/eventTicker.test.ts
+tests/game/fallbackRetention.test.ts
+tests/game/graphicsFirstRun.test.ts
+tests/game/graphicsRestore.test.ts
+tests/game/inspectorRetention.test.ts
+tests/game/newYearPacing.test.ts
+tests/game/newyear.test.ts
+tests/game/newsTicker.test.ts
+tests/game/notificationsQuestion.test.ts
+tests/game/panelsNews.test.ts
+tests/game/quakeShakePlop.test.ts
+tests/game/rewardToast.test.ts
+tests/game/settingsSchema.test.ts
+tests/game/thumbsPendingRetention.test.ts
+tests/game/thumbsRetention.test.ts
+tests/game/toastBudget.test.ts
+tests/game/uiSoundsRetention.test.ts
+tests/game/views.test.ts
+tests/render/cutShadows.test.ts
+tests/render/exitRetention.test.ts
+tests/render/pendingPreviews.test.ts
+tests/render/seasons.test.ts
+tests/render/shadows.test.ts
+tests/render/sightings.test.ts
+tests/render/weather.test.ts
+tests/render/weatherPacing.test.ts
+tests/sim/breakdownRetention.test.ts
+tests/sim/eventHeadlines.test.ts
+tests/worker/hygiene.test.ts
+tests/worker/localSimHost.test.ts
+tests/worker/worldResync.test.ts
+```
+
+The requested bot command was attempted through the quiet gate:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
+```
+
+`tsx` is absent and npm returned `ENOTCACHED`. The same bot ran with Node 22 native TypeScript transformation and an
+inline extension resolver (no repository helper, install, bot edits or strategy flags). Reproducible PowerShell:
+
+```powershell
+$weatherLoaderSource = @'
+export async function resolve(specifier, context, next) { try { return await next(specifier, context); } catch (error) { if (specifier.startsWith('.') || specifier.startsWith('file:')) { for (const suffix of ['.ts', '/index.ts']) { try { return await next(specifier + suffix, context); } catch {} } } throw error; } }
+'@
+$weatherLoader = 'data:text/javascript,' + [uri]::EscapeDataString($weatherLoaderSource)
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-transform-types --loader $weatherLoader tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
+```
+
+Observed 2015 residents **[61124, 93804, 37971] = 192,899**, unchanged. News differs by design. No new Medium/Hard
+state-hash comparison, full suite, browser, real-GPU timing or native audio render ran this round. The lead's reported
+2,469-test/full-bot pass is the pre-round baseline, not a result claimed for these edits. No larger bot run is needed
+for these QA fixes; the original yearly hash audit and full suite remain with the lead. Bot output/result is recorded
+here; the supplied external scratch folder is outside this session's writable workspace.
+
+Browser/audio checklist for round 2:
+
+- [ ] B1: watch rain/snow/clear transitions at 1x, 2x and ultra for a few minutes: no luminance steps or rain-bed
+  pulsing, targets hold at least 20 real seconds, surfaces/audio ease together; paused load/reset uses the loaded city.
+- [ ] Snow headlines and flakes appear on the same game day; rain gives road sheen and a sustained rain bed.
+- [ ] B2/B11: inspect precipitation at 120 m, 300 m, 1,500 m and far out, by day and night; no glowing points,
+  softer overcast shadows, roof dusting, and at most **0.5 ms incremental GPU at 1080p High**.
+- [ ] B3/B5: move between completed industry, farms, empty zones, parks, downtown, rail, harbour and airports at
+  300 m, 900 m and 1,500 m; the district follows the camera and location beds settle at least 18 dB down at 1,500 m.
+- [ ] B7: render two minutes of district movement with sparse/distant targets and mid-rise retargets; measure every
+  positive 100 ms gain interval, check the silence boundary's audibility and six extra processors; assess the noted
+  extreme-density two-second dominance conflict. People beds halve at night; jets remain 30–60 audio seconds apart.
+- [ ] B4/B6/B10: burst openings alongside ordinary good/reward news; retain ordinary ticker entries/FEEL-01 clauses
+  and toast budget; no recovery story before grid power returns; libraries/museums use their own copy; connect a
+  roadless completed facility, remove/reconnect its road before posting, and save/load both pending cases.
+- [ ] B8/B9: load/re-enter with old sighting news and see no returning visitor; post each new sighting, confirm its
+  30-real-second lifetime, airborne built-up anchor and useful per-kind ticker camera framing; disposal leaves no mesh.
+- [ ] Repeat original event-delay/repeat-guard, 30-year sighting-frequency and weather-climate checks; compare bot
+  hashes outside `news`/`systemData.advisors` and retain the exact seed-7 resident total above.

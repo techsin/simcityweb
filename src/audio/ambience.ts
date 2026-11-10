@@ -5,7 +5,7 @@
  */
 import { playVoice, type SfxEnv } from './sfx';
 import { oneShots, type OneShot } from './oneShot';
-import { Network, Zone, type Climate } from '../core/types';
+import { DevType, Network, Zone, type Climate } from '../core/types';
 import { CELL_SIZE } from '../core/constants';
 import { BF, type Building } from '../sim/CityState';
 import { getDef } from '../sim/catalog';
@@ -29,11 +29,10 @@ export interface AmbienceDistrictCity {
   readonly buildings: ReadonlyMap<number, Pick<Building, 'def' | 'built' | 'flags'>>;
 }
 
-/** A clipped 7x7 area sample, written into caller-owned scratch. Keep the last local mix above 700 m. */
+/** A clipped 7x7 area sample at every camera distance, written into caller-owned scratch. */
 export function sampleDistrictAmbience(st: AmbienceDistrictCity, worldX: number, worldZ: number,
   distance: number, out: DistrictMix): DistrictMix {
   out.distance = Math.max(0, distance);
-  if (distance >= 700) return out;
   out.industry = out.parks = out.crowd = out.airport = out.rail = out.harbour = 0;
   const x = Math.floor(worldX / CELL_SIZE), z = Math.floor(worldZ / CELL_SIZE);
   const x0 = Math.max(0, x - 3), x1 = Math.min(st.size - 1, x + 3);
@@ -43,14 +42,14 @@ export function sampleDistrictAmbience(st: AmbienceDistrictCity, worldX: number,
     const i = zz * st.size + xx;
     const id = st.building[i], zone = st.zone[i], network = st.network[i];
     const b = id >= 0 ? st.buildings.get(id) : undefined;
-    const def = b && b.built >= 1 && !(b.flags & BF.Burnt) ? getDef(b.def) : undefined;
+    const def = b && b.built >= 1 && !(b.flags & (BF.Burnt | BF.Constructing)) ? getDef(b.def) : undefined;
     count++;
     if (def?.id.includes('airport')) out.airport++;
     else if (def && (def.id.includes('seaport') || def.id.includes('harbour') || def.id.includes('ferry'))) out.harbour++;
     else if (network === Network.Rail || (def && (def.id.includes('train') || def.id.includes('freight')))) out.rail++;
     else if (def?.category === 'park') out.parks++;
-    else if (def?.model.startsWith('ind_') || zone === Zone.IndAg || zone === Zone.IndMed || zone === Zone.IndHigh) out.industry++;
-    else if (def?.model.startsWith('com_') || zone === Zone.ComHigh || zone === Zone.ResHigh) out.crowd++;
+    else if (def && def.devType !== DevType.IA && (def.model.startsWith('ind_') || zone === Zone.IndMed || zone === Zone.IndHigh)) out.industry++;
+    else if (def && (def.model.startsWith('com_') || zone === Zone.ComHigh || zone === Zone.ResHigh)) out.crowd++;
   }
   if (count) {
     out.industry /= count; out.parks /= count; out.crowd /= count;
@@ -65,8 +64,9 @@ export function districtAttenuation(distance: number): number {
 }
 
 export type DistrictLayer = 'industry' | 'parks' | 'crowd' | 'transport';
-/** Below this gain, a short linear tail reaches true silence; dB is undefined at zero. */
-export const DISTRICT_GAIN_FLOOR = 0.045;
+/** Only the boundary to/from zero uses this quiet step (-29.9 dB relative to a full local bed).
+ *  Every positive-to-positive change, including sparse targets below it, is limited to 10 dB/s. */
+export const DISTRICT_GAIN_FLOOR = 0.0064;
 
 export interface AmbienceParams {
   /** city population (0 .. 1M+) */
@@ -120,6 +120,11 @@ export class Ambience {
   private transportGain!: GainNode;
   private district: DistrictMix = { industry: 0, parks: 0, crowd: 0, airport: 0, rail: 0, harbour: 0, distance: Infinity };
   private districtTargets = [-1, -1, -1, -1];
+  private districtFrom = [0, 0, 0, 0];
+  private districtTo = [0, 0, 0, 0];
+  private districtStarted = [0, 0, 0, 0];
+  private districtEnds = [0, 0, 0, 0];
+  private districtZeroAt = [Infinity, Infinity, Infinity, Infinity];
   private p: Omit<Required<AmbienceParams>, 'district'> = { population: 0, zoom: 0.5, night: false, construction: 0, water: 0, activity: 1, month: 0, climate: 'temperate', rain: 0 };
   private random: () => number;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -355,22 +360,29 @@ export class Ambience {
     this.applyDistrict(t);
   }
 
-  /** Hold the current value before retargeting. Above the quiet tail, log ramps change at most 1 dB / 100 ms. */
+  /** Preserve the native ramp when retargeting, and limit every positive ramp to 1 dB / 100 ms. */
   private fadeDistrict(node: GainNode, slot: number, target: number, t: number): void {
-    if (Math.abs(this.districtTargets[slot] - target) < 0.000001) return;
+    const previous = this.districtTargets[slot];
+    if (Math.abs(previous - target) < 1e-12) return;
     this.districtTargets[slot] = target;
-    const gain = node.gain, current = Math.max(0, gain.value), floor = DISTRICT_GAIN_FLOOR;
-    gain.cancelScheduledValues(t);
-    gain.setValueAtTime(current, t);
-    if (current < floor && target > floor) {
-      gain.linearRampToValueAtTime(floor, t + 0.15);
-      gain.exponentialRampToValueAtTime(target, t + 1.5);
-    } else if (current > floor && target < floor) {
-      gain.exponentialRampToValueAtTime(floor, t + 1.35);
-      gain.linearRampToValueAtTime(target, t + 1.5);
-    } else if (current >= floor && target >= floor) {
-      gain.exponentialRampToValueAtTime(target, t + Math.max(1.5, Math.abs(20 * Math.log10(target / current)) / 10));
-    } else gain.linearRampToValueAtTime(target, t + 1.5);
+    const gain = node.gain, floor = DISTRICT_GAIN_FLOOR;
+    // Calculate from our audio-clock envelope: AudioParam.value can trail the render quantum.
+    const current = previous < 0 || t >= this.districtZeroAt[slot] ? 0 : t >= this.districtEnds[slot]
+      ? this.districtTo[slot] : this.districtFrom[slot] * (this.districtTo[slot] / this.districtFrom[slot])
+        ** ((t - this.districtStarted[slot]) / (this.districtEnds[slot] - this.districtStarted[slot]));
+    gain.cancelAndHoldAtTime(t);
+    const from = current > 0 ? current : Math.min(floor, target);
+    const to = target > 0 ? target : Math.min(floor, from);
+    const duration = from > 0 && to > 0 ? Math.abs(20 * Math.log10(to / from)) / 10 : 0;
+    // An explicit anchor also handles a hold after a ramp has finished. Native hold preserves the
+    // preceding exponential curve, so this identical value cannot produce the old one-sample dip.
+    gain.setValueAtTime(from, t);
+    if (duration > 0) gain.exponentialRampToValueAtTime(to, t + duration);
+    const zeroAt = target === 0 ? t + duration + 0.02 : Infinity;
+    if (target === 0) gain.setValueAtTime(0, zeroAt);
+    this.districtFrom[slot] = from; this.districtTo[slot] = to;
+    this.districtStarted[slot] = t; this.districtEnds[slot] = t + duration;
+    this.districtZeroAt[slot] = zeroAt;
   }
 
   private applyDistrict(t: number): void {

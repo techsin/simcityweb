@@ -65,7 +65,6 @@ import type { EmergencyVehicles } from '../render/city/vehicles/EmergencyVehicle
 import { DemographicsPanel } from '../ui/panels/DemographicsPanel';
 import { attachOverlays } from '../sim/infra/overlays';
 import { windVector } from '../sim/infra/wind';
-import { weather } from '../render/world/Weather';
 import { sampleDistrictAmbience, type DistrictMix } from '../audio/ambience';
 
 export type { GameSettings } from './settings';
@@ -1179,8 +1178,7 @@ export class CityScene {
       }
       const target = this.world.controls.target;
       a.setCityAmbience(st, target.x, target.z, dist, hour < 6 || hour > 19.5, constructing, this.sim.speed / 3);
-      const w = weather(st.day, st.config.seed, st.config.climate);
-      this.voiceAmbience.rain = w.kind === 'rain' ? w.intensity : 0;
+      this.voiceAmbience.rain = this.world.rainAmount?.() ?? 0;
       sampleDistrictAmbience(this.host.state, target.x, target.z, dist, this.districtAmbience);
       a.setAmbience?.(this.voiceAmbience);
       // soundtrack context: night, city size, liveliness (sim speed + recent growth + construction)

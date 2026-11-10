@@ -6,7 +6,7 @@ import { EconRuntime } from '../../src/sim/economy/runtime';
 import { EVENT_HEADLINES, EventHeadlineFeed, headlineHash, queueEventHeadline,
   type EventHeadlineData, type EventHeadlineStore, type EventHeadlineType } from '../../src/sim/economy/eventHeadlines';
 import { deserializeCity, serializeCity } from '../../src/save/serialize';
-import { newState, place } from '../infra/cityGen';
+import { newState, place, setRoad } from '../infra/cityGen';
 
 const empty = (): EventHeadlineData => ({ pending: [], triggered: {}, shown: {}, firsts: [], parks: 0 });
 const eventNews = (st: CityState) => st.news.filter((n) => n.advisor === 'news');
@@ -27,6 +27,7 @@ describe('FEEL-20 event headlines', () => {
       const c = city(seed);
       c.st.day = 20;
       const b = place(c.st, 'lm_clock_tower', 10, 11, { flags: BF.Plopped });
+      setRoad(c.st, 9, 11);
       c.sim.events.emit('buildingAdded', b);
       expect(eventNews(c.st)).toEqual([]);
       c.run(21, 30);
@@ -41,6 +42,7 @@ describe('FEEL-20 event headlines', () => {
   it('waits for construction to complete, and repeated changes never reopen the same building', () => {
     const c = city();
     const b = place(c.st, 'lm_clock_tower', 10, 10, { built: 0.2, flags: BF.Plopped | BF.Constructing });
+    setRoad(c.st, 9, 10);
     c.sim.events.emit('buildingAdded', b);
     c.run(1, 12);
     expect(eventNews(c.st)).toEqual([]);
@@ -63,6 +65,9 @@ describe('FEEL-20 event headlines', () => {
       c.adv.daily!(c.sim);
     }
     c.run(30, 359);
+    expect(eventNews(c.st).filter((n) => n.text === EVENT_HEADLINES.blackout)).toHaveLength(0);
+    c.st.stats.powerSupply = 100;
+    c.run(360);
     const first = eventNews(c.st).filter((n) => n.text === EVENT_HEADLINES.blackout);
     expect(first).toHaveLength(1);
     expect([first[0].x, first[0].z]).toEqual([12, 13]);
@@ -74,14 +79,15 @@ describe('FEEL-20 event headlines', () => {
     expect(both[1].day - both[0].day).toBeGreaterThanOrEqual(360);
   });
 
-  it('has 26 distinct event types and never repeats their text within 360 days', () => {
+  it('has 28 distinct event types and never repeats their text within 360 days', () => {
     const st = newState(64), sim = new Simulation(st), feed = new EventHeadlineFeed();
     feed.init(sim);
     const data = empty(), store: EventHeadlineStore = { events: data, shown: {} };
     st.systemData.advisors = store;
+    st.stats.powerSupply = 100;
     const types = Object.keys(EVENT_HEADLINES) as EventHeadlineType[];
-    expect(types).toHaveLength(26);
-    expect(new Set(Object.values(EVENT_HEADLINES)).size).toBe(26);
+    expect(types).toHaveLength(28);
+    expect(new Set(Object.values(EVENT_HEADLINES)).size).toBe(28);
     const seen = new Map<string, number>();
     sim.events.on('news', (n) => {
       const previous = seen.get(n.text);
@@ -93,7 +99,7 @@ describe('FEEL-20 event headlines', () => {
       for (const type of types) queueEventHeadline(data, day, 7, type, 'City Hall');
       feed.daily(sim, store);
     }
-    expect(seen.size).toBe(26);
+    expect(seen.size).toBe(28);
   });
 
   it('hashes repeatably and makes no simulation RNG draws while queuing or posting', () => {
@@ -102,8 +108,10 @@ describe('FEEL-20 event headlines', () => {
     const c = city();
     const before = c.sim.rng.state;
     const b = place(c.st, 'lm_clock_tower', 10, 10, { flags: BF.Plopped });
+    setRoad(c.st, 9, 10);
     c.sim.events.emit('buildingAdded', b);
     c.sim.notify('Blackout: 2 buildings lost power.', 'bad', undefined, undefined, 'utilities');
+    c.st.stats.powerSupply = 100;
     c.run(1, 20);
     expect(c.sim.rng.state).toBe(before);
     expect(eventNews(c.st)).toHaveLength(2);
@@ -113,6 +121,7 @@ describe('FEEL-20 event headlines', () => {
     const a = city(7), b = city(7);
     a.st.stats.population = b.st.stats.population = 1000;
     const landmark = place(a.st, 'lm_clock_tower', 10, 10, { flags: BF.Plopped });
+    setRoad(a.st, 9, 10);
     a.sim.events.emit('buildingAdded', landmark);
     for (let day = 1; day <= 130; day++) {
       a.run(day); b.run(day);
@@ -125,6 +134,7 @@ describe('FEEL-20 event headlines', () => {
     const live = city();
     expect(live.st.systemData.advisors).toBeUndefined();
     const b = place(live.st, 'lm_clock_tower', 10, 10, { flags: BF.Plopped });
+    setRoad(live.st, 9, 10);
     live.sim.events.emit('buildingAdded', b);
     const partial = live.st.systemData.advisors as Partial<EventHeadlineStore>;
     expect(partial.events?.pending).toHaveLength(1);
@@ -141,6 +151,7 @@ describe('FEEL-20 event headlines', () => {
     const live = city();
     live.st.day = 123;
     const b = place(live.st, 'lm_clock_tower', 10, 10, { flags: BF.Plopped });
+    setRoad(live.st, 9, 10);
     live.sim.events.emit('buildingAdded', b);
     const saved = serializeCity(live.st, { copy: true });
     const loaded = city(7, deserializeCity(structuredClone(saved)));
@@ -221,9 +232,78 @@ describe('FEEL-20 event headlines', () => {
     c.sim.events.emit('buildingRemoved', removed);
     const loaded = city(7, deserializeCity(structuredClone(serializeCity(st, { copy: true }))));
     const park = place(loaded.st, 't_park', 40, 40);
+    setRoad(loaded.st, 39, 40);
     loaded.sim.events.emit('buildingAdded', park);
     loaded.run(2, 15);
     expect(eventNews(loaded.st).filter((n) => n.text === EVENT_HEADLINES.park100)).toHaveLength(1);
     expect(advisorData(loaded.st).events?.parks).toBe(100);
+  });
+
+  it('gives libraries and museums their own opening copy, apart from a school bell', () => {
+    const c = city();
+    for (const [id, x] of [['civ_library', 10], ['civ_museum', 20], ['t_school', 30]] as const) {
+      const b = place(c.st, id, x, 10, { flags: BF.Plopped });
+      setRoad(c.st, x - 1, 10);
+      c.sim.events.emit('buildingAdded', b);
+    }
+    c.run(1, 10);
+    const texts = eventNews(c.st).map((n) => n.text);
+    expect(texts).toEqual(expect.arrayContaining([
+      EVENT_HEADLINES.library.replace('{name}', 'Public Library'),
+      EVENT_HEADLINES.museum.replace('{name}', 'Museum'),
+      EVENT_HEADLINES.education.replace('{name}', 'School'),
+    ]));
+    expect(texts.filter((text) => text.includes('first bell'))).toHaveLength(1);
+  });
+
+  it('waits for road access and remembers a new roadless facility through a save/load', () => {
+    const c = city();
+    const b = place(c.st, 't_fire', 10, 10, { flags: BF.Plopped });
+    c.sim.events.emit('buildingAdded', b);
+    c.run(1, 20);
+    expect(eventNews(c.st)).toEqual([]);
+    expect(advisorData(c.st).events?.waiting).toEqual([b.id]);
+    const loaded = city(7, deserializeCity(structuredClone(serializeCity(c.st, { copy: true }))));
+    loaded.st.day = 21;
+    setRoad(loaded.st, 9, 10);
+    loaded.sim.events.emit('networkChanged', { x0: 9, z0: 10, x1: 9, z1: 10 });
+    loaded.run(22, 31);
+    expect(eventNews(loaded.st).map((n) => n.text)).toEqual([EVENT_HEADLINES.fire.replace('{name}', 'Fire')]);
+    expect(advisorData(loaded.st).events?.waiting).toEqual([]);
+  });
+
+  it('holds an opening if its road disappears before the story, and drops a bulldozed opening', () => {
+    const c = city();
+    const b = place(c.st, 't_fire', 10, 10, { flags: BF.Plopped });
+    setRoad(c.st, 9, 10);
+    c.sim.events.emit('buildingAdded', b);
+    c.st.network.fill(0);
+    c.run(1, 12);
+    expect(eventNews(c.st)).toEqual([]);
+    setRoad(c.st, 9, 10);
+    c.run(13);
+    expect(eventNews(c.st).map((n) => n.text)).toEqual([EVENT_HEADLINES.fire.replace('{name}', 'Fire')]);
+    const police = place(c.st, 't_police', 20, 10, { flags: BF.Plopped });
+    setRoad(c.st, 19, 10);
+    c.sim.events.emit('buildingAdded', police);
+    c.st.buildings.delete(police.id);
+    c.run(14, 25);
+    expect(eventNews(c.st)).toHaveLength(1);
+  });
+
+  it('also rechecks road access for a legacy saved pending opening without its building ID', () => {
+    const c = city();
+    const b = place(c.st, 't_fire', 10, 10, { flags: BF.Plopped });
+    setRoad(c.st, 9, 10);
+    c.sim.events.emit('buildingAdded', b);
+    const store = c.st.systemData.advisors as EventHeadlineStore;
+    delete store.events!.pending[0].building;
+    c.st.network.fill(0);
+    const loaded = city(7, deserializeCity(structuredClone(serializeCity(c.st, { copy: true }))));
+    loaded.run(1, 12);
+    expect(eventNews(loaded.st)).toEqual([]);
+    setRoad(loaded.st, 9, 10);
+    loaded.run(13);
+    expect(eventNews(loaded.st).map((n) => n.text)).toEqual([EVENT_HEADLINES.fire.replace('{name}', 'Fire')]);
   });
 });

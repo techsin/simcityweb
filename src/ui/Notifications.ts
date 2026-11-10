@@ -6,6 +6,7 @@ import { icon } from './icons';
 import { dayLabel } from './format';
 import { newsMark, tickerItems } from './newsLog';
 import type { RewardsPanel } from './panels/ListPanels';
+import { isEventHeadline, sightingCameraDistance } from '../sim/economy/eventHeadlines';
 
 export const NEWS_META: Record<string, { color: string; icon: string; title: string }> = {
   info: { color: 'var(--accent)', icon: 'news', title: 'News' },
@@ -105,8 +106,8 @@ interface TickerShown {
  * - A new item enters from the right at once (a short ease-out slide; a rotation item gives way). It holds HOLD_S if it
  *   fits; otherwise it rests LEAD_S, scrolls through once at SCROLL_PX_S until its end is in view, and rests TAIL_S.
  * - Bursts queue: HOLD_S for the first, then BURST_S each (a long item's rests halve). At most QUEUE_MAX wait; past that
- *   the oldest waiting one gives way, and so does routine news (`tickerRoutine`) that waited STALE_S with more behind
- *   it. Everything stays in the news feed.
+ *   the oldest event story gives way first, then routine news, else the oldest item. Routine news (`tickerRoutine`)
+ *   also gives way after STALE_S with more behind it. Everything stays in the news feed.
  * - Idle, it rotates through the newest 8 items (`tickerItems`), newest first, skipping each one it just showed as new.
  * - Each item is one clause (`tickerClause`) and its tooltip has the full text. Flavour headlines carry a "Gazette" label.
  * - Hover pauses all of it. Its clock is real time (CityScene clamps the frame dt at 0.1 s; a slow frame must not slow
@@ -175,7 +176,9 @@ export class NewsTicker {
     this.el.addEventListener('click', (e) => {
       const it = (e.target as HTMLElement).closest('.tk-item') as HTMLElement | null;
       if (it && it.dataset.x) {
-        ctx.focusCell(Number(it.dataset.x), Number(it.dataset.z));
+        const distance = it.dataset.distance;
+        if (distance) ctx.focusCell(Number(it.dataset.x), Number(it.dataset.z), Number(distance));
+        else ctx.focusCell(Number(it.dataset.x), Number(it.dataset.z));
         return;
       }
       ctx.panels.open('advisors');
@@ -220,9 +223,10 @@ export class NewsTicker {
   private enqueue(item: TickerItem, news: boolean): void {
     const q = this.queue;
     q.push({ item, news, at: this.clock });
-    // full: the oldest routine news item gives way, else the oldest
+    // full: event bursts give way before ordinary news, then the oldest routine item, else the oldest
     while (q.length > NewsTicker.QUEUE_MAX) {
-      const k = q.findIndex((e) => e.news && tickerRoutine(e.item));
+      let k = q.findIndex((e) => e.news && isEventHeadline(e.item));
+      if (k < 0) k = q.findIndex((e) => e.news && tickerRoutine(e.item));
       q.splice(Math.max(0, k), 1);
     }
   }
@@ -321,6 +325,8 @@ export class NewsTicker {
     if (n.x !== undefined && n.z !== undefined) {
       el.dataset.x = String(n.x);
       el.dataset.z = String(n.z);
+      const distance = sightingCameraDistance(n.text);
+      if (distance !== undefined) el.dataset.distance = String(distance);
       el.style.cursor = 'pointer';
     }
     return el;

@@ -3,7 +3,7 @@ import type { Building, CityState, NewsItem } from '../CityState';
 import { BF } from '../CityState';
 import type { Simulation } from '../Simulation';
 import { getDef } from '../catalog';
-import { DevType } from '../../core/types';
+import { DevType, Network } from '../../core/types';
 
 export const EVENT_HEADLINES = {
   landmark: '{name} opens: the city has a new postcard view.',
@@ -15,6 +15,8 @@ export const EVENT_HEADLINES = {
   fire: '{name} opens; the crew takes its first group photograph.',
   health: '{name} welcomes its first patients.',
   education: '{name} opens; the first bell draws a cheer.',
+  library: '{name} opens; readers settle in with their first borrowed books.',
+  museum: '{name} opens; residents discover the stories behind the exhibits.',
   civic: '{name} opens with a queue around the block.',
   reward: '{name} opens; residents turn out for the ceremony.',
   transit: '{name} opens; commuters try a new way to work.',
@@ -34,15 +36,26 @@ export const EVENT_HEADLINES = {
   geraldPlaque: 'Gerald gets a plaque: the former pothole is officially a local institution.',
 } as const;
 export type EventHeadlineType = keyof typeof EVENT_HEADLINES;
-interface PendingHeadline { type: EventHeadlineType; due: number; text: string; x?: number; z?: number }
+interface PendingHeadline { type: EventHeadlineType; due: number; text: string; x?: number; z?: number; building?: number }
 export interface EventHeadlineData {
   pending: PendingHeadline[];
   triggered: Partial<Record<EventHeadlineType, number>>;
   shown: Partial<Record<EventHeadlineType, number>>;
   firsts: string[];
   parks: number;
+  /** New completed lots waiting for a road; optional in older saves. */
+  waiting?: number[];
 }
 export interface EventHeadlineStore { events?: EventHeadlineData; shown: Record<string, number> }
+
+/** Identify this desk's event copy without adding metadata to the saved / worker news protocol. */
+export function isEventHeadline(n: Pick<NewsItem, 'text' | 'advisor'> & { kind: string }): boolean {
+  return n.kind === 'info' && n.advisor === 'news' && Object.values(EVENT_HEADLINES).some((template) => {
+    const [before, after] = template.split('{name}');
+    return after === undefined ? n.text === before : n.text.startsWith(before) && n.text.endsWith(after)
+      && n.text.length > before.length + after.length;
+  });
+}
 
 export function headlineHash(day: number, event: string, seed = 0): number {
   let h = (day ^ seed ^ 0x811c9dc5) >>> 0;
@@ -62,6 +75,35 @@ export const SIGHTING_HEADLINES = {
 } as const;
 export type SightingKind = keyof typeof SIGHTING_HEADLINES;
 export interface Sighting { kind: SightingKind; day: number; x: number; z: number; text: string }
+
+/** The ticker frames airborne visitors and street ceremonies at a useful scale. */
+export function sightingCameraDistance(text: string): number | undefined {
+  if (text === SIGHTING_HEADLINES.balloons || text === SIGHTING_HEADLINES.blimp) return 700;
+  if (text === SIGHTING_HEADLINES.gerald) return 150;
+  if (text === SIGHTING_HEADLINES.whale) return 350;
+  if (text === SIGHTING_HEADLINES.observatory) return 450;
+}
+
+/** Anchor over the built-up district closest to its area-weighted centre, including separated coastal towns. */
+function builtUpCentre(st: CityState): { x: number; z: number } {
+  let x = 0, z = 0, area = 0;
+  for (const b of st.buildings.values()) {
+    if (b.built < 1 || b.flags & (BF.Burnt | BF.Abandoned)) continue;
+    const a = b.w * b.d;
+    x += (b.x + (b.w - 1) / 2) * a; z += (b.z + (b.d - 1) / 2) * a; area += a;
+  }
+  if (!area) return { x: Math.floor(st.size / 2), z: Math.floor(st.size / 2) };
+  x /= area; z /= area;
+  let at = { x: Math.round(x), z: Math.round(z) }, nearest = Infinity;
+  for (const b of st.buildings.values()) {
+    if (b.built < 1 || b.flags & (BF.Burnt | BF.Abandoned)) continue;
+    const bx = Math.max(b.x, Math.min(b.x + b.w - 1, Math.round(x)));
+    const bz = Math.max(b.z, Math.min(b.z + b.d - 1, Math.round(z)));
+    const d = (bx - x) ** 2 + (bz - z) ** 2;
+    if (d < nearest) { nearest = d; at = { x: bx, z: bz }; }
+  }
+  return at;
+}
 
 /** More than 15 years apart, including across cycle boundaries: at most two in any rolling 30 years. */
 export function sightingDay(seed: number, kind: SightingKind, cycle: number): number {
@@ -110,7 +152,8 @@ export function sightingsOnDay(st: CityState): Sighting[] {
   const out: Sighting[] = [];
   for (const kind of Object.keys(SIGHTING_HEADLINES) as SightingKind[]) {
     if (st.day !== sightingDay(st.config.seed, kind, Math.floor(st.day / SIGHTING_INTERVAL))) continue;
-    let x = Math.floor(st.size / 2), z = x;
+    let { x, z } = kind === 'balloons' || kind === 'blimp' ? builtUpCentre(st)
+      : { x: Math.floor(st.size / 2), z: Math.floor(st.size / 2) };
     if (kind === 'observatory') {
       const b = [...st.buildings.values()].find((b) => b.def === 'lm_observatory' && b.built >= 1 && !(b.flags & BF.Burnt));
       if (!b) continue;
@@ -144,22 +187,34 @@ export function postSightingHeadlines(sim: Simulation, store: EventHeadlineStore
 }
 
 export function queueEventHeadline(data: EventHeadlineData, day: number, seed: number, type: EventHeadlineType,
-  name = '', x?: number, z?: number): void {
+  name = '', x?: number, z?: number, building?: number): void {
   const last = data.triggered[type];
   if (last !== undefined && day - last < 360) return;
   if (data.pending.some((p) => p.type === type)) return;
   data.triggered[type] = day;
   data.pending.push({ type, due: day + 1 + headlineHash(day, type, seed) % 10,
-    text: EVENT_HEADLINES[type].replace('{name}', name), x, z });
+    text: EVENT_HEADLINES[type].replace('{name}', name), x, z, ...(building !== undefined ? { building } : {}) });
 }
 
 const openingType = (b: Building): EventHeadlineType | undefined => {
   const def = getDef(b.def);
   if (!def || def.category === 'growable') return undefined;
+  if (def.id === 'civ_library') return 'library';
+  if (def.id === 'civ_museum') return 'museum';
   if (/airport/.test(def.id)) return 'airport';
   if (/seaport|ferry|harbour/.test(def.id)) return 'harbour';
   return def.category === 'transport' ? 'transit' : def.category;
 };
+
+/** The facility rule: a completed, intact lot with Street..Highway along an edge. */
+function openingReady(st: CityState, b: Building): boolean {
+  if (b.built < 1 || b.flags & (BF.Burnt | BF.Abandoned)) return false;
+  const road = (x: number, z: number) => x >= 0 && z >= 0 && x < st.size && z < st.size
+    && st.network[z * st.size + x] >= Network.Street && st.network[z * st.size + x] <= Network.Highway;
+  for (let x = b.x; x < b.x + b.w; x++) if (road(x, b.z - 1) || road(x, b.z + b.d)) return true;
+  for (let z = b.z; z < b.z + b.d; z++) if (road(b.x - 1, z) || road(b.x + b.w, z)) return true;
+  return false;
+}
 const firstTypes = (b: Building): EventHeadlineType[] => {
   const def = getDef(b.def);
   if (def?.category !== 'growable') return [];
@@ -183,7 +238,7 @@ export class EventHeadlineFeed {
     const saved = (st.systemData.advisors as Partial<EventHeadlineStore> | undefined)?.events;
     this.fresh = saved ?? { pending: [], triggered: {}, shown: {}, firsts: [], parks: 0 };
     for (const b of st.buildings.values()) if (b.built >= 1) {
-      this.complete.add(b.id);
+      if (!saved?.waiting?.includes(b.id)) this.complete.add(b.id);
       if (!saved && getDef(b.def)?.category === 'park') this.fresh.parks++;
       if (!saved) for (const first of firstTypes(b)) if (!this.fresh.firsts.includes(first)) this.fresh.firsts.push(first);
     }
@@ -193,14 +248,20 @@ export class EventHeadlineFeed {
       const store = (sim.state.systemData.advisors ??= {}) as Partial<EventHeadlineStore>;
       return store.events ??= this.fresh;
     };
-    const queue = (type: EventHeadlineType, name = '', x?: number, z?: number) =>
-      queueEventHeadline(data(), sim.state.day, sim.state.config.seed, type, name, x, z);
+    const queue = (type: EventHeadlineType, name = '', x?: number, z?: number, building?: number) =>
+      queueEventHeadline(data(), sim.state.day, sim.state.config.seed, type, name, x, z, building);
     const opened = (b: Building) => {
       if (b.built < 1 || b.flags & BF.Burnt || this.complete.has(b.id)) return;
-      this.complete.add(b.id);
       const def = getDef(b.def), type = openingType(b);
+      if (type && !openingReady(sim.state, b)) {
+        const waiting = data().waiting ??= [];
+        if (!waiting.includes(b.id)) waiting.push(b.id);
+        return;
+      }
+      this.complete.add(b.id);
+      if (data().waiting) data().waiting = data().waiting!.filter((id) => id !== b.id);
       const x = b.x + (b.w >> 1), z = b.z + (b.d >> 1);
-      if (type) queue(type, def!.name, x, z);
+      if (type) queue(type, def!.name, x, z, b.id);
       for (const first of firstTypes(b)) if (!data().firsts.includes(first)) { data().firsts.push(first); queue(first, '', x, z); }
       if (def?.category === 'park' && ++data().parks === 100) queue('park100', '', x, z);
     };
@@ -216,6 +277,12 @@ export class EventHeadlineFeed {
       sim.events.on('news', news),
       sim.events.on('emergency', (e) => { if (e.type === 'resolved') queue('rescue', '', e.x, e.z); }),
       sim.events.on('networkChanged', () => {
+        const waiting = (sim.state.systemData.advisors as Partial<EventHeadlineStore> | undefined)?.events?.waiting ?? [];
+        for (const id of waiting) {
+          const b = sim.state.buildings.get(id);
+          if (b) opened(b);
+          else data().waiting = data().waiting!.filter((waiting) => waiting !== id);
+        }
         const a = sim.state.systemData.advisors as Partial<EventHeadlineStore> | undefined;
         if (a?.shown?.gerald !== undefined && data().triggered.geraldRepair === undefined) queue('geraldRepair');
       }),
@@ -228,6 +295,15 @@ export class EventHeadlineFeed {
     for (let i = 0; i < data.pending.length;) {
       const p = data.pending[i];
       if (p.due > day) { i++; continue; }
+      if (p.type === 'blackout' && sim.state.stats.powerSupply <= 0) { i++; continue; }
+      // Older pending opening records have only the lot coordinates.
+      const locatedOpening = p.x !== undefined && p.z !== undefined && EVENT_HEADLINES[p.type].includes('{name}');
+      if (p.building !== undefined || locatedOpening) {
+        const id = p.building ?? sim.state.building[p.z! * sim.state.size + p.x!];
+        const b = sim.state.buildings.get(id);
+        if (b && !openingReady(sim.state, b)) { i++; continue; }
+        if (!b) { data.pending.splice(i, 1); continue; }
+      }
       data.pending.splice(i, 1);
       const last = data.shown[p.type];
       if (last !== undefined && day - last < 360) continue;

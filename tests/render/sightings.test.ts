@@ -29,7 +29,7 @@ describe('FEEL-29 rare sightings', () => {
       st.day = sightingDay(7, kind, 0);
       const sighting = sightingsOnDay(st).find((s) => s.kind === kind)!;
       expect(sighting, kind).toBeDefined();
-      const sim = new Simulation(st), scene = new THREE.Scene(), view = new Sightings(scene);
+      const sim = new Simulation(st), scene = new THREE.Scene(), view = new Sightings(scene, st);
       view.update(st, 0);
       expect(view.group.children).toHaveLength(0);
       sim.notify(sighting.text, 'info', sighting.x, sighting.z, 'news');
@@ -44,7 +44,7 @@ describe('FEEL-29 rare sightings', () => {
   });
 
   it('expires after 30 real seconds and a repeated expired headline does not restart it', () => {
-    const st = habitat(), view = new Sightings(new THREE.Scene());
+    const st = habitat(), view = new Sightings(new THREE.Scene(), st);
     st.news.push({ day: 0, text: SIGHTING_HEADLINES.balloons, kind: 'info', x: 10, z: 11, advisor: 'news' });
     view.update(st, 15);
     expect(view.group.children.length).toBeGreaterThan(0);
@@ -57,7 +57,7 @@ describe('FEEL-29 rare sightings', () => {
   });
 
   it('disposes every geometry/material on reset and disposal, and ignores updates after disposal', () => {
-    const st = habitat(), scene = new THREE.Scene(), view = new Sightings(scene);
+    const st = habitat(), scene = new THREE.Scene(), view = new Sightings(scene, st);
     st.news.push({ day: 0, text: SIGHTING_HEADLINES.blimp, kind: 'info', x: 10, z: 11 });
     view.update(st, 0);
     const disposed = vi.fn();
@@ -71,6 +71,10 @@ describe('FEEL-29 rare sightings', () => {
     expect(view.group.rotation.toArray().slice(0, 3)).toEqual([0, 0, 0]);
     expect(view.group.parent).toBe(scene);
     view.update(st, 0);
+    expect(view.group.children).toHaveLength(0);
+    st.day++;
+    st.news.push({ day: st.day, text: SIGHTING_HEADLINES.blimp, kind: 'info', x: 10, z: 11 });
+    view.update(st, 0);
     expect(view.group.children).toHaveLength(4);
     view.dispose(); view.dispose(); view.update(st, 0);
     expect(view.group.children).toHaveLength(0);
@@ -78,7 +82,7 @@ describe('FEEL-29 rare sightings', () => {
   });
 
   it('only inspects the tail between news/day changes, rather than rescanning old news each frame', () => {
-    const st = habitat(), view = new Sightings(new THREE.Scene());
+    const st = habitat(), view = new Sightings(new THREE.Scene(), st);
     for (let i = 0; i < 20; i++) st.news.push({ day: 0, text: `Ordinary news ${i}`, kind: 'info' });
     let reads = 0;
     st.news = new Proxy(st.news, { get(target, key, receiver) {
@@ -104,6 +108,45 @@ describe('FEEL-29 rare sightings', () => {
       for (const day of days) for (const start of [day - 10800, day - 10800 + 1, day - 1, day, day + 1]) {
         expect(days.filter((d) => d >= start && d < start + 10800).length, `${seed} ${kind} start ${start}`).toBeLessThanOrEqual(2);
       }
+    }
+  });
+
+  it('does not replay old sightings on creation, same-day reload, reset or re-entry', () => {
+    const st = habitat();
+    st.day = 100;
+    st.news.push({ day: st.day, text: SIGHTING_HEADLINES.balloons, kind: 'info', x: 10, z: 11 });
+    const view = new Sightings(new THREE.Scene(), st);
+    view.update(st, 0);
+    expect(view.group.children).toHaveLength(0);
+    st.news.push({ day: st.day, text: SIGHTING_HEADLINES.gerald, kind: 'info', x: 40, z: 40 });
+    view.update(st, 0);
+    expect(view.group.children).toHaveLength(9);
+    const loaded = Object.assign(habitat(), { day: st.day, news: structuredClone(st.news) });
+    view.reset(loaded);
+    view.update(loaded, 0);
+    expect(view.group.children).toHaveLength(0);
+    view.dispose();
+    const reentered = new Sightings(new THREE.Scene(), loaded);
+    reentered.update(loaded, 0);
+    expect(reentered.group.children).toHaveLength(0);
+    reentered.dispose();
+  });
+
+  it('anchors balloons and the blimp on completed built-up land away from the map centre', () => {
+    const st = habitat();
+    st.buildings.clear(); st.building.fill(-1);
+    st.water[32 * st.size + 32] = 1;
+    const a = place(st, 't_co', 48, 46), b = place(st, 't_r3', 52, 48);
+    place(st, 't_co', 4, 4, { built: 0.5 });
+    place(st, 't_co', 6, 6, { flags: BF.Burnt });
+    for (const kind of ['balloons', 'blimp'] as const) {
+      st.day = sightingDay(7, kind, 0);
+      const s = sightingsOnDay(st).find((s) => s.kind === kind)!;
+      expect([a, b, ...st.buildings.values()].some((lot) => lot.built >= 1 && !(lot.flags & BF.Burnt)
+        && s.x >= lot.x && s.x < lot.x + lot.w && s.z >= lot.z && s.z < lot.z + lot.d)).toBe(true);
+      expect(s.x).toBeGreaterThanOrEqual(48);
+      expect(st.water[s.z * st.size + s.x]).toBe(0);
+      expect([s.x, s.z]).not.toEqual([32, 32]);
     }
   });
 

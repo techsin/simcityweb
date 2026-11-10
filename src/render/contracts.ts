@@ -44,6 +44,8 @@ export interface WorldViewApi {
   /** hours 0..24; with autoTime=true time advances with the simulation / real time */
   timeOfDay: number;
   autoTime: boolean;
+  /** Eased cosmetic rain; stand-in views may omit weather. */
+  rainAmount?(): number;
   /** data view overlay drawn on the terrain */
   setOverlay(o: Overlay): void;
   /** show the cell grid (while a zoning / building tool is active) */

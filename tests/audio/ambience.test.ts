@@ -17,6 +17,7 @@ class Param {
   exponentialRampToValueAtTime(v: number) { this.value = v; }
   setTargetAtTime(v: number, _t: number, tau: number) { this.value = v; this.timeConstant = tau; }
   cancelScheduledValues() {}
+  cancelAndHoldAtTime() {}
 }
 
 class Node {

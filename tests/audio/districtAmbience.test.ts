@@ -3,10 +3,11 @@ import { readFileSync } from 'node:fs';
 import { Ambience, DISTRICT_GAIN_FLOOR, districtAttenuation, sampleDistrictAmbience,
   type AmbienceDistrictCity, type DistrictLayer, type DistrictMix } from '../../src/audio/ambience';
 import { CELL_SIZE } from '../../src/core/constants';
-import { Network, Zone } from '../../src/core/types';
+import { DevType, Network, Zone } from '../../src/core/types';
 import { BF } from '../../src/sim/CityState';
+import { growablesFor } from '../../src/sim/catalog';
 import type { SfxEnv } from '../../src/audio/sfx';
-import { audioSetup, type MockNode } from './mockAudio';
+import { audioSetup, type MockParam, type MockNode } from './mockAudio';
 
 const mix = (change: Partial<DistrictMix> = {}): DistrictMix => ({
   industry: 0, parks: 0, crowd: 0, airport: 0, rail: 0, harbour: 0, distance: 300, ...change,
@@ -40,7 +41,7 @@ function harness() {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('FEEL-13 camera land-use sampling', () => {
-  it('reads exactly the 49 clipped map cells, writes only caller scratch and reuses it above 700 m', () => {
+  it('reads exactly the 49 clipped map cells at every height and writes only caller scratch', () => {
     const reads: number[][] = [[], [], []];
     const sample = (slot: number, value: number) => new Proxy({} as ArrayLike<number>, {
       get(_target, key) {
@@ -51,8 +52,8 @@ describe('FEEL-13 camera land-use sampling', () => {
       },
       set() { throw new Error('replica data is read only'); },
     });
-    const st: AmbienceDistrictCity = Object.freeze({ size: 20, building: sample(0, -1), zone: sample(1, Zone.IndMed),
-      network: sample(2, Network.None), buildings: new Map() });
+    const st: AmbienceDistrictCity = Object.freeze({ size: 20, building: sample(0, 1), zone: sample(1, Zone.IndMed),
+      network: sample(2, Network.None), buildings: new Map([[1, { def: growablesFor(DevType.ID)[0].id, built: 1, flags: 0 }]]) });
     const out = mix();
     expect(sampleDistrictAmbience(st, 10.8 * CELL_SIZE, 7.2 * CELL_SIZE, 300, out)).toBe(out);
     const expected: number[] = [];
@@ -65,11 +66,15 @@ describe('FEEL-13 camera land-use sampling', () => {
     sampleDistrictAmbience(st, 100 * CELL_SIZE, 0, 300, out);
     expect(out.industry).toBe(0);
     sampleDistrictAmbience(st, 0, 0, 300, out);
-    const count = reads[0].length;
     sampleDistrictAmbience(st, 200 * CELL_SIZE, 200 * CELL_SIZE, 1500, out);
-    expect(reads[0]).toHaveLength(count);
-    expect(out.industry).toBe(1);
+    expect(out.industry).toBe(0);
     expect(out.distance).toBe(1500);
+    for (const distance of [700, 900, 1500, 3000]) {
+      for (const layer of reads) layer.length = 0;
+      sampleDistrictAmbience(st, 10.8 * CELL_SIZE, 7.2 * CELL_SIZE, distance, out);
+      for (const layer of reads) expect(layer).toEqual(expected);
+      expect(out).toEqual(mix({ industry: 1, distance }));
+    }
   });
 
   it('counts footprint area and combines real facilities, zones and rails without mutating their data', () => {
@@ -81,9 +86,11 @@ describe('FEEL-13 camera land-use sampling', () => {
       [4, Object.freeze({ def: 'tr_train_station', built: 1, flags: 0 })],
       [5, Object.freeze({ def: 'park_small', built: 1, flags: BF.Burnt })],
       [6, Object.freeze({ def: 'tr_airport_large', built: 0.2, flags: BF.Constructing })],
+      [7, Object.freeze({ def: growablesFor(DevType.ID)[0].id, built: 1, flags: 0 })],
+      [8, Object.freeze({ def: growablesFor(DevType.CO2)[0].id, built: 1, flags: 0 })],
     ]);
     for (let i = 0; i < 7; i++) {
-      zone[i] = Zone.IndMed; building[7 + i] = 1; zone[14 + i] = Zone.ComHigh;
+      zone[i] = Zone.IndMed; building[i] = 7; building[7 + i] = 1; zone[14 + i] = Zone.ComHigh; building[14 + i] = 8;
       building[21 + i] = 2; building[28 + i] = 3; network[35 + i] = Network.Rail;
     }
     building[42] = 4; building[43] = 5; building[44] = 6;
@@ -94,6 +101,34 @@ describe('FEEL-13 camera land-use sampling', () => {
     expect({ building, zone, network, buildings: [...buildings] }).toEqual(before);
     building.fill(-1); zone.fill(0); network.fill(0);
     expect(sampleDistrictAmbience(st, 3 * CELL_SIZE, 3 * CELL_SIZE, 300, out)).toEqual(mix());
+  });
+
+  it('ignores empty, unfinished and burnt zones and every agricultural building, while retaining bare rail', () => {
+    const building = new Int32Array(49).fill(-1), zone = new Uint8Array(49), network = new Uint8Array(49);
+    const farms = growablesFor(DevType.IA);
+    const buildings = new Map<number, { def: string; built: number; flags: number }>([
+      [1, { def: growablesFor(DevType.ID)[0].id, built: 0.9, flags: BF.Constructing }],
+      [2, { def: growablesFor(DevType.CO2)[0].id, built: 1, flags: BF.Burnt }],
+      [3, { def: growablesFor(DevType.CO2)[0].id, built: 1, flags: 0 }],
+      [4, { def: growablesFor(DevType.ID)[0].id, built: 1, flags: 0 }],
+      [5, { def: growablesFor(DevType.R1)[0].id, built: 1, flags: 0 }],
+    ]);
+    for (let i = 0; i < farms.length; i++) buildings.set(10 + i, { def: farms[i].id, built: 1, flags: 0 });
+    for (let i = 0; i < 7; i++) {
+      zone[i] = Zone.IndMed;
+      zone[7 + i] = Zone.IndHigh; building[7 + i] = 1;
+      zone[14 + i] = Zone.ComHigh; building[14 + i] = 2;
+      zone[21 + i] = Zone.ComHigh; building[21 + i] = 3;
+      zone[28 + i] = i % 2 ? Zone.IndAg : Zone.IndMed; building[28 + i] = 10 + i % farms.length;
+      zone[35 + i] = Zone.IndMed; building[35 + i] = 4;
+      zone[42 + i] = Zone.ResHigh; building[42 + i] = 5;
+    }
+    network[0] = Network.Rail;
+    const st = { size: 7, building, zone, network, buildings };
+    for (const distance of [120, 900, 1500]) {
+      expect(sampleDistrictAmbience(st, 3 * CELL_SIZE, 3 * CELL_SIZE, distance, mix()))
+        .toEqual(mix({ industry: 7 / 49, crowd: 14 / 49, rail: 1 / 49, distance }));
+    }
   });
 
   it('keeps new scene reads behind the half-second tick and the host replica', () => {
@@ -111,18 +146,24 @@ describe('FEEL-13 camera land-use sampling', () => {
 });
 
 describe('FEEL-13 district beds', () => {
-  it('switches the dominant bed within 1.5 s for every district family, with continuous retargeting', () => {
+  it('switches a fully settled dense bed within 1.5 s for every district family', () => {
     vi.useFakeTimers();
     const h = harness();
-    for (const kind of ['industry', 'parks', 'crowd', 'airport', 'rail', 'harbour'] as const) {
+    h.ambience.set({ district: mix({ industry: 1 }) }); h.advance(4);
+    for (const kind of ['parks', 'crowd', 'airport', 'rail', 'harbour', 'industry'] as const) {
       const before = layers.map((layer) => h.ambience.districtLevel(layer));
       h.ambience.set({ district: mix({ [kind]: 1 }) });
-      expect(layers.map((layer) => h.ambience.districtLevel(layer))).toEqual(before);
+      for (let i = 0; i < layers.length; i++) {
+        const current = h.ambience.districtLevel(layers[i]);
+        if (before[i] > 0) expect(current).toBeCloseTo(before[i], 12);
+        else expect(current).toBeLessThanOrEqual(DISTRICT_GAIN_FLOOR);
+      }
       h.advance(1.5);
       const dominant: DistrictLayer = kind === 'airport' || kind === 'rail' || kind === 'harbour' ? 'transport' : kind;
       for (const layer of layers) if (layer !== dominant) {
         expect(h.ambience.districtLevel(dominant), `${kind} over ${layer}`).toBeGreaterThan(h.ambience.districtLevel(layer));
       }
+      h.advance(2.5);
     }
     h.ambience.stop(); vi.runAllTimers();
   });
@@ -130,7 +171,7 @@ describe('FEEL-13 district beds', () => {
   it('halves both people beds at night and attenuates every bed by at least 18 dB above 1,500 m', () => {
     vi.useFakeTimers();
     const h = harness(), d = mix({ industry: 1, parks: 1, crowd: 1, rail: 1 });
-    h.ambience.set({ district: d, night: false }); h.advance(2);
+    h.ambience.set({ district: d, night: false }); h.advance(4);
     const day = layers.map((layer) => h.ambience.districtLevel(layer));
     h.ambience.set({ night: true }); h.advance(2);
     expect(h.ambience.districtLevel('parks')).toBeCloseTo(day[1] / 2, 8);
@@ -139,7 +180,7 @@ describe('FEEL-13 district beds', () => {
     expect(h.ambience.districtLevel('transport')).toBeCloseTo(day[3], 8);
     for (const distance of [1500, 1700, 3000]) {
       d.distance = distance;
-      h.ambience.set({ district: d, night: false }); h.advance(2);
+      h.ambience.set({ district: d, night: false }); h.advance(6);
       for (let i = 0; i < layers.length; i++) {
         const db = 20 * Math.log10(h.ambience.districtLevel(layers[i]) / day[i]);
         expect(db, `${layers[i]} at ${distance}`).toBeLessThanOrEqual(-18 + 1e-8);
@@ -172,7 +213,7 @@ describe('FEEL-13 district beds', () => {
     expect(chain.every((node) => node.connections.size === 0)).toBe(true);
   });
 
-  it('keeps all retargets continuous over two minutes and bounds 100 ms dB changes above the quiet tail', () => {
+  it('bounds every positive 100 ms gain ratio over two minutes, including sparse and far districts', () => {
     vi.useFakeTimers();
     const h = harness(), district = mix();
     const params = { district, night: false };
@@ -183,17 +224,20 @@ describe('FEEL-13 district beds', () => {
       const before = layers.map((layer) => h.ambience.districtLevel(layer));
       if (i % 50 === 1) {
         const kind = Math.floor(i / 50) % 4;
-        district.industry = kind === 0 ? 1 : 0; district.parks = kind === 1 ? 1 : 0;
-        district.crowd = kind === 2 ? 1 : 0; district.rail = kind === 3 ? 1 : 0;
+        const density = [1, 1 / 49, 0.00001, 0.15][Math.floor(i / 200) % 4];
+        district.industry = kind === 0 ? density : 0; district.parks = kind === 1 ? density : 0;
+        district.crowd = kind === 2 ? density : 0; district.rail = kind === 3 ? density : 0;
+        district.distance = Math.floor(i / 400) % 2 ? 1500 : 300;
         params.night = Math.floor(i / 200) % 2 === 1;
         h.ambience.set(params);
       }
       if (i % 2 === 0) h.ambience.tick();
       const current = layers.map((layer) => h.ambience.districtLevel(layer));
       for (let j = 0; j < layers.length; j++) {
-        expect(current[j], `continuous ${layers[j]} at ${i / 10}`).toBeCloseTo(before[j], 10);
+        if (before[j] > 0 && current[j] > 0) expect(current[j], `continuous ${layers[j]} at ${i / 10}`).toBeCloseTo(before[j], 10);
+        else expect(Math.abs(current[j] - before[j])).toBeLessThanOrEqual(DISTRICT_GAIN_FLOOR);
         expect(Number.isFinite(current[j]) && current[j] >= 0).toBe(true);
-        if (current[j] >= DISTRICT_GAIN_FLOOR && previous[j] >= DISTRICT_GAIN_FLOOR) {
+        if (current[j] > 0 && previous[j] > 0) {
           expect(Math.abs(20 * Math.log10(current[j] / previous[j])), `${layers[j]} at ${i / 10}`).toBeLessThanOrEqual(1 + 1e-8);
           measured++;
         }
@@ -201,6 +245,49 @@ describe('FEEL-13 district beds', () => {
       previous = current;
     }
     expect(measured).toBeGreaterThan(500);
+    h.ambience.stop(); vi.runAllTimers();
+  });
+
+  it('retargets a native exponential rise without changing any earlier sample or dipping at the anchor', () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const graph = h.ambience as unknown as { industryGain: { gain: MockParam } };
+    h.ambience.set({ district: mix({ industry: 1 }) });
+    const gain = graph.industryGain.gain;
+    const held = vi.spyOn(gain, 'cancelAndHoldAtTime');
+    const rate = h.mock.sampleRate, t = 0.5;
+    const times = [t - 0.1, t - 1 / rate, t];
+    const before = times.map((at) => gain.valueAt(at));
+    h.mock.currentTime = t;
+    // Simulate a main-thread value one render quantum behind the audio envelope.
+    vi.spyOn(gain, 'value', 'get').mockReturnValue(gain.valueAt(t - 128 / rate));
+    h.ambience.set({ district: mix({ industry: 0.2 }) });
+    expect(held).toHaveBeenCalledWith(t);
+    times.forEach((at, i) => expect(gain.valueAt(at)).toBeCloseTo(before[i], 12));
+    expect(gain.valueAt(t + 1 / rate)).toBeGreaterThanOrEqual(before[2]);
+    expect(gain.events.filter((event) => event[0] === 'linear')).toEqual([]);
+    h.ambience.stop(); vi.runAllTimers();
+  });
+
+  it('holds the dB bound below the silence boundary and only steps at zero', () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const graph = h.ambience as unknown as { industryGain: { gain: MockParam } };
+    const gain = graph.industryGain.gain;
+    h.ambience.set({ district: mix({ industry: 0.02 }) });
+    expect(gain.valueAt(0)).toBeCloseTo(0.004, 12);
+    h.mock.currentTime = 1;
+    h.ambience.set({ district: mix({ industry: 0.000001 }) });
+    for (let i = 1; i <= 120; i++) {
+      const current = gain.valueAt(1 + i / 10), previous = gain.valueAt(1 + (i - 1) / 10);
+      expect(current).toBeGreaterThan(0);
+      expect(Math.abs(20 * Math.log10(current / previous))).toBeLessThanOrEqual(1 + 1e-8);
+    }
+    expect(gain.valueAt(13)).toBeCloseTo(0.0000002, 12);
+    h.mock.currentTime = 13;
+    h.ambience.set({ district: mix() });
+    expect(gain.valueAt(13)).toBeCloseTo(0.0000002, 12);
+    expect(gain.valueAt(13.03)).toBe(0);
     h.ambience.stop(); vi.runAllTimers();
   });
 

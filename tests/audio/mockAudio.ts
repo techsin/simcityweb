@@ -36,7 +36,9 @@ export class MockParam {
       return this;
     }
     this.cancelScheduledValues(t);
-    return this.linearRampToValueAtTime(value, t);
+    // Holding an exponential ramp must retain its shape before t, just like the native timeline.
+    this.events.push([next![0], value, t]);
+    return this;
   }
   cancelScheduledValues(t: number): this {
     this.events = this.events.filter((e) => e[2] < t);

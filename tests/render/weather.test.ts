@@ -51,7 +51,7 @@ describe('FEEL-23 shared weather calendar', () => {
     expect(source.replace(/^import type[^\n]*$/gm, '')).not.toMatch(/(?:from\s*|import\s*\()['"]three['"]/);
   });
 
-  it('posts snow/rain copy only on matching days, using the same calendar as the visible particles', () => {
+  it('posts snow/rain copy only on matching calendar days, with flakes on each snow headline day', () => {
     for (const climate of climates) {
       const st = newState(64);
       st.config.seed = 7; st.config.climate = climate; st.stats.population = 1000;
@@ -72,9 +72,9 @@ describe('FEEL-23 shared weather calendar', () => {
           if (/^Snowfall turns|^Snow day!/.test(n.text)) { expect(current.kind).toBe('snow'); snow++; }
           if (/^April showers:/.test(n.text)) { expect(current.kind).toBe('rain'); rain++; }
         }
-        if (expected) {
+        if (expected && id !== 'showers') {
           expect(renderer.particles.visible).toBe(true);
-          expect(renderer.uniforms.uSnow.value).toBe(id === 'showers' ? 0 : 1);
+          expect(renderer.uniforms.uSnow.value).toBeGreaterThan(0);
         }
       }
       if (climate === 'temperate' || climate === 'alpine') expect(snow).toBeGreaterThan(0);
@@ -94,10 +94,10 @@ describe('FEEL-23 cosmetic renderer and materials', () => {
     expect(renderer.particles.material.depthTest).toBe(true);
     expect(renderer.particles.material.transparent).toBe(true);
     for (const [quality, count] of [['low', 256], ['medium', 512], ['high', 768], ['ultra', 1024]] as const) {
-      const current = renderer.update(st, target, 12, 0.1, quality);
+      renderer.update(st, target, 12, 0.1, quality);
       expect(renderer.particles.geometry.drawRange.count).toBe(count);
       expect(renderer.uniforms.uAnchor.value.toArray()).toEqual([20, 12, 30]);
-      expect(renderer.particles.visible).toBe(current.kind === 'snow' || current.kind === 'rain');
+      expect(renderer.particles.visible).toBe(renderer.uniforms.uRain.value > 0.001 || renderer.uniforms.uSnow.value > 0.001);
       expect(renderer.particles.geometry.getAttribute('seed')).toBe(seeds);
     }
     expect(st.systemData).toEqual(state); expect(st.water).toEqual(water); expect(sim.rng.state).toBe(rng);
