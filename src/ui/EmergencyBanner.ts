@@ -61,7 +61,7 @@ import { DispatchOptionsWatches } from './dispatchOptions';
 import type { IncidentKind, Responder } from '../sim/CityState';
 import type { EmergencyEvent } from '../sim/Simulation';
 import {
-  INCIDENT_COLOR, INCIDENT_ICON, INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_UNIT, dispatchWindowEnd,
+  INCIDENT_COLOR, INCIDENT_ICON, INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_LABEL, RESPONDER_UNIT, dispatchWindowEnd,
   type DispatchOption, type EmergencyVehicle, type Incident,
 } from '../sim/infra/emergency';
 import { getDef } from '../sim/catalog';
@@ -763,6 +763,7 @@ export class EmergencyBanner {
   }
 
   private markTeachingSeen(id: keyof TeachingSeen): void {
+    if (this.seen[id]) return;
     this.seen[id] = true;
     savePref(TEACHING_PREF, this.seen);
   }
@@ -805,8 +806,10 @@ export class EmergencyBanner {
     this.dockDirty = true;
   }
 
-  private acknowledgeTeaching(id: number): void {
+  private acknowledgeTeaching(id: number, acted = false): void {
     if (this.teaching?.episode.id !== id && (this.teachingAck === id || this.policy.teaching?.id !== id)) return;
+    const episode = this.teaching?.episode ?? this.policy.teaching;
+    if (acted && episode?.id === id) this.markTeachingSeen(episode.variant);
     this.teachingAck = id;
     if (this.teaching?.episode.id === id) this.clearTeaching();
     this.sendSettings();
@@ -871,21 +874,19 @@ export class EmergencyBanner {
         card.send.classList.add('primary');
         buttons.appendChild(card.send);
       } else buttons.appendChild(this.teachingAction(`${TEACHING_TAB[primary]} tab`, () => {
-        this.acknowledgeTeaching(episode.id);
+        this.acknowledgeTeaching(episode.id, true);
         this.openTeachingService(inc);
       }));
       buttons.appendChild(this.teachingAction('Emergency view', () => {
-        this.acknowledgeTeaching(episode.id);
+        this.acknowledgeTeaching(episode.id, true);
         this.ctx.setOverlay(Overlay.Emergency);
       }));
-      if (episode.variant === 'E1a') buttons.appendChild(this.teachingAction('Got it', () => this.acknowledgeTeaching(episode.id)));
+      if (episode.variant === 'E1a') buttons.appendChild(this.teachingAction('Got it', () => this.acknowledgeTeaching(episode.id, true)));
       this.teaching = card;
       b.body.appendChild(card.el);
       toggleClass(b.el, 'teaching', true);
       b.hts?.clear();
       this.dockDirty = true;
-      this.markTeachingSeen(episode.variant);
-      this.sendSettings();
       this.layout();
     }
     const card = this.teaching;
@@ -896,6 +897,11 @@ export class EmergencyBanner {
     setText(card.text, episode.variant === 'E1a'
       ? `No ${primary === 'medical' ? 'clinic or hospital' : primary + ' station'} covers this spot, so nobody comes on their own. ${dispatchText} Areas marked “Auto-dispatch” in the Emergency view are answered automatically.`
       : `No station can reach this in time. ${preventionText(inc)}`);
+    // Loading alone must not consume E1a; an empty reply still displays the current dispatch options.
+    if (!this.seen[episode.variant] && (episode.variant === 'E1b' || options !== undefined)) {
+      this.markTeachingSeen(episode.variant);
+      this.sendSettings();
+    }
   }
 
   private teachFailure(b: BannerEl | undefined, inc: Incident | undefined): void {
@@ -1002,7 +1008,7 @@ export class EmergencyBanner {
     send.addEventListener('click', () => this.sendNearest(inc.id), { signal: this.ctx.signal });
     choose.addEventListener('click', () => openDispatch(this.ctx, inc.id), { signal: this.ctx.signal });
     close.addEventListener('click', () => {
-      this.acknowledgeTeaching(inc.id);
+      this.acknowledgeTeaching(inc.id, true);
       this.ctx.host.act('dismissAlert', [inc.id], { tag: this });
     }, { signal: this.ctx.signal });
     this.el.insertBefore(el, this.more);
@@ -1024,6 +1030,11 @@ export class EmergencyBanner {
 
   private async sendNearest(id: number): Promise<void> {
     const em = this.ctx.host.emergency;
+    const episode = this.teaching?.episode ?? this.policy.teaching;
+    if (episode?.id === id && !this.seen[episode.variant]) {
+      this.markTeachingSeen(episode.variant);
+      this.sendSettings();
+    }
     let r;
     try {
       const gesture = this.ctx.host.beginGesture?.(this);
@@ -1082,7 +1093,6 @@ export class EmergencyBanner {
     const waiting = inc.state === 'uncovered' || inc.state === 'queued';
     const em = this.ctx.host.emergency;
     b.inc = inc;
-    setText(b.note, waiting ? inc.note || stateText(inc, now, em) : stateText(inc, now, em));
     const sub = supportText(inc, now, em);
     setText(b.sub, sub);
     const sd = sub ? '' : 'none';
@@ -1100,11 +1110,19 @@ export class EmergencyBanner {
     // refreshes changed fleets while paused, capped at 5 Hz. The texts change in place (EM-4).
     const watch = waiting ? this.options.get(inc.id) : null;
     const options = watch?.value;
+    // dispatchBest sends missing responders primary first, then the fastest free station of that responder.
+    let best: DispatchOption | undefined;
+    if (options) for (const r of missingResponders(em, inc)) {
+      best = options.find((o) => o.responder === r && o.free > 0 && Number.isFinite(o.etaMin));
+      if (best) break;
+    }
+    const status = stateText(inc, now, em);
+    setText(b.note, waiting && inc.reason === 'outOfRange'
+      ? best ? `Outside ${RESPONDER_LABEL[INCIDENT_RESPONDERS[inc.kind][0]].toLowerCase()} coverage — nearest free ${RESPONDER_UNIT[best.responder][0]}: ${best.name}${inc.manualPossible ? '' : ' (too far to make it in time)'}` : status
+      : waiting ? inc.note || status : status);
     this.rememberTeachingResponse(b, inc, options);
     if (watch && b.optsVersion !== watch.version) {
       b.optsVersion = watch.version;
-      const miss = missingResponders(em, inc);
-      const best = options?.find((o) => o.free > 0 && Number.isFinite(o.etaMin) && miss.includes(o.responder));
       if (b.send.disabled !== !best) b.send.disabled = !best;
       // warn when the fastest free unit cannot arrive before the deadline (same unit: emergency minutes) — never for an
       // industrial accident: a truck SENT before the ignition saves the plant, whenever it arrives (EM-5)
