@@ -604,7 +604,8 @@ export function rewardsSystem(rt: EconRuntime): SimSystem {
     name: 'economy.rewards',
     init(sim) {
       rt.attach(sim);
-      updateHonours(sim.state, false, rt, parkReach);
+      // a loaded city keeps its honours record as saved (T057 continuity): only a city without one is surveyed here
+      if (!honoursData(sim.state)) updateHonours(sim.state, false, rt, parkReach);
       updateApprovalReward(sim.state, false, true);
       check(sim, true);
     },
