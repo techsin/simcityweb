@@ -31,6 +31,8 @@ export const HALF = CELL_SIZE / 2;
 export const LIFT = 0.1;
 /** sidewalk top above asphalt */
 export const CURB_H = 0.16;
+/** inside-corner curb radius shared by the junction mesh and vehicles */
+export const junctionFillet = (halfWidth: number) => Math.min(2.5, HALF - halfWidth - 0.05);
 
 export const isRoadT = (t: number) => t >= Network.Street && t <= Network.Highway;
 export const hasSidewalk = (t: number) => t >= Network.Street && t <= Network.OneWay;

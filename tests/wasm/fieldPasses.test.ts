@@ -16,6 +16,10 @@
  *  4. the profiler's 1M-population fixtures (captures written by tools/bench/fieldPasses.bench.mjs; skipped when absent);
  *  5. the whole city: 120 days of every system with the genuine field passes, the fair JS and the wasm kernels (resident
  *     and staged) — bit-identical layers and stats (after a JS-vs-JS baseline).
+ * B2 (G3): the live-instance sections (3's PollutionSystem test, 5) run the frozen pre-B2 PollutionSystem
+ * (tests/sim/exact/pollutionOriginal.ts = pollution.ts at 41ae570) in place of the live one in createSystems(): the
+ * overrides replace that pass structure's stage methods, which the split pass no longer calls. tests/infra/b2PiecesEnv.test.ts
+ * proves the split pass equal to the frozen class at every pass end, so the chain port = frozen class = B2 holds.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -49,6 +53,7 @@ const { NimbySources, NimbyTables, PH_ALL, SAT_TABLE, fieldKernelsJs } = await i
 const { FIELDS_KERNEL, makeFieldKernels, fieldsMathSelfTest } = await import('../../src/wasm/kernels/fieldPassesBind');
 const { adoptPollutionArrays, installFieldPasses, makeNimby } = await import('../../src/wasm/kernels/fieldPasses');
 const orig = await import('./fieldPassesOriginal');
+const { PollutionSystemOriginal } = await import('../sim/exact/pollutionOriginal');
 const core = await import('../../tools/bench/fieldPasses/core');
 const { stressCity } = await import('../infra/cityGen');
 
@@ -587,6 +592,14 @@ function testCity(size = 96, seed = 7): CityState {
   return st;
 }
 
+/** createSystems() with the frozen pre-B2 PollutionSystem in place of the live one (B2: see the header) */
+function createSystemsFrozenPollution(): ReturnType<typeof createSystems> {
+  const systems = createSystems();
+  const k = systems.findIndex((s) => s.name === 'pollution');
+  systems[k] = new PollutionSystemOriginal() as unknown as (typeof systems)[number];
+  return systems;
+}
+
 describe('live modules: nimby.ts vs makeNimby, PollutionSystem vs installFieldPasses', () => {
   it('rebuildNimby: outputs and scheduler cost identical across network and building edits', { timeout: 600000 }, () => {
     const st = testCity(96, 11);
@@ -621,7 +634,7 @@ describe('live modules: nimby.ts vs makeNimby, PollutionSystem vs installFieldPa
     const mk = (res: boolean) => {
       const st = testCity(80, 5);
       if (res) adopted.push(adoptLayers(st, w.heap, { reserveExtra: 8 << 20 }));
-      const sim = new Simulation(st, createSystems());
+      const sim = new Simulation(st, createSystemsFrozenPollution());
       for (let d = 0; d < 4; d++) sim.advanceDay();
       return sim;
     };
@@ -708,7 +721,7 @@ describe('whole city: 120 days with the field passes swapped in', () => {
         releases.push(() => impl.release(st));
       }
       if (label === 'wasm resident') { w.heap.reserve(24 << 20); const a = adoptLayers(st, w.heap, { reserveExtra: 8 << 20 }); releases.push(() => a.release()); }
-      const sim = new Simulation(st, createSystems());
+      const sim = new Simulation(st, createSystemsFrozenPollution());
       if (kernels) {
         const pol = sim.getSystem('pollution') as unknown as PollutionSystem;
         installFieldPasses(pol, kernels);

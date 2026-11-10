@@ -129,6 +129,155 @@ export function boxV(src: Float32Array, dst: Float32Array, N: number, r: number)
   }
 }
 
+/** B2: boxH over the rows [z0, z1) only — the same per-row operations as boxH (rows are independent), so ranges that
+ *  cover every row once give boxH's result exactly */
+export function boxHRows(src: Float32Array, dst: Float32Array, N: number, r: number, z0: number, z1: number): void {
+  const inv = 1 / (2 * r + 1);
+  if (canRestructure(src, dst, N, r)) {
+    let z = z0;
+    for (; z + 4 <= z1; z += 4) boxHRows4(src, dst, z * N, N, r, inv);
+    for (; z < z1; z++) boxHRow(src, dst, z * N, N, r, inv);
+    return;
+  }
+  for (let z = z0; z < z1; z++) {
+    const row = z * N;
+    let s = 0;
+    for (let x = 0; x < r && x < N; x++) s += src[row + x];
+    for (let x = 0; x < N; x++) {
+      if (x + r < N) s += src[row + x + r];
+      dst[row + x] = s * inv;
+      if (x - r >= 0) s -= src[row + x - r];
+    }
+  }
+}
+
+/**
+ * B2: boxV in row pieces — begin() is boxV's prologue (column sums of the first r rows), run(rows) continues the row
+ * loop with the same per-row operations; the running column sums live in the run (not in boxV's module scratch, which
+ * other code may use between two pieces). Rows in order give boxV's result exactly. src / dst must not change between
+ * the pieces (except dst rows already written).
+ */
+export class BoxVRun {
+  private cs: Float64Array<ArrayBuffer> = new Float64Array(0);
+  private src: Float32Array = new Float32Array(0);
+  private dst: Float32Array = new Float32Array(0);
+  private N = 0;
+  private r = 0;
+  private inv = 1;
+  private restructure = false;
+  /** next row */
+  z = 0;
+
+  begin(src: Float32Array, dst: Float32Array, N: number, r: number): void {
+    this.inv = 1 / (2 * r + 1);
+    if (this.cs.length < N) this.cs = new Float64Array(N);
+    const cs = this.cs;
+    cs.fill(0, 0, N);
+    for (let z = 0; z < r && z < N; z++) {
+      const row = z * N;
+      for (let x = 0; x < N; x++) cs[x] += src[row + x];
+    }
+    this.src = src; this.dst = dst; this.N = N; this.r = r;
+    this.restructure = canRestructure(src, dst, N, r);
+    this.z = 0;
+  }
+
+  /** the next `rows` rows; true when the last row is done */
+  run(rows: number): boolean {
+    const src = this.src, dst = this.dst, N = this.N, r = this.r, inv = this.inv, cs = this.cs;
+    const z0 = this.z, z1 = Math.min(N, z0 + rows);
+    if (this.restructure) {
+      for (let z = z0; z < z1; z++) {
+        const row = z * N;
+        const add = z + r < N, sub = z >= r;
+        if (add && sub) {
+          const ra = (z + r) * N, rs = (z - r) * N;
+          for (let x = 0; x < N; x++) { const c = cs[x] + src[ra + x]; dst[row + x] = c * inv; cs[x] = c - src[rs + x]; }
+        } else if (add) {
+          const ra = (z + r) * N;
+          for (let x = 0; x < N; x++) { const c = cs[x] + src[ra + x]; dst[row + x] = c * inv; cs[x] = c; }
+        } else if (sub) {
+          const rs = (z - r) * N;
+          for (let x = 0; x < N; x++) { const c = cs[x]; dst[row + x] = c * inv; cs[x] = c - src[rs + x]; }
+        } else {
+          for (let x = 0; x < N; x++) dst[row + x] = cs[x] * inv;
+        }
+      }
+    } else {
+      for (let z = z0; z < z1; z++) {
+        const row = z * N;
+        if (z + r < N) {
+          const add = (z + r) * N;
+          for (let x = 0; x < N; x++) cs[x] += src[add + x];
+        }
+        for (let x = 0; x < N; x++) dst[row + x] = cs[x] * inv;
+        if (z - r >= 0) {
+          const sub = (z - r) * N;
+          for (let x = 0; x < N; x++) cs[x] -= src[sub + x];
+        }
+      }
+    }
+    this.z = z1;
+    return z1 >= N;
+  }
+}
+
+/**
+ * B2 (G3): blur3 in row pieces — begin(), then run(rows) until it returns true. The six half passes (boxH a -> tmp, boxV
+ * tmp -> a, three times) run in order, `rows` rows per call across the half passes (boxHRows; BoxVRun keeps its running
+ * column sums itself, so other code may call boxV between two pieces). Rows in order give blur3's result exactly. a / tmp
+ * must not change between the pieces except through the run.
+ */
+export class Blur3Run {
+  private v = new BoxVRun();
+  private a: Float32Array = new Float32Array(0);
+  private t: Float32Array = new Float32Array(0);
+  private N = 0;
+  private r = 0;
+  /** half passes done (0..6: even = boxH, odd = boxV) and the next row of the current half */
+  half = 6;
+  z = 0;
+
+  begin(a: Float32Array, tmp: Float32Array, N: number, r: number): void {
+    this.a = a; this.t = tmp; this.N = N; this.r = r;
+    this.half = r <= 0 ? 6 : 0;
+    this.z = 0;
+  }
+
+  /** rows of the whole blur (six half passes of N rows; 0 when r <= 0, as blur3 returns at once) */
+  static rowsOf(N: number, r: number): number {
+    return r <= 0 ? 0 : 6 * N;
+  }
+
+  /** the next `rows` rows (across half passes); true when the blur is complete */
+  run(rows: number): boolean {
+    const N = this.N, r = this.r;
+    while (rows > 0 && this.half < 6) {
+      if ((this.half & 1) === 0) {
+        const z1 = Math.min(N, this.z + rows);
+        boxHRows(this.a, this.t, N, r, this.z, z1);
+        rows -= z1 - this.z;
+        this.z = z1;
+        if (z1 >= N) { this.half++; this.z = 0; this.v.begin(this.t, this.a, N, r); }
+      } else {
+        const z0 = this.v.z;
+        const done = this.v.run(rows);
+        rows -= this.v.z - z0;
+        this.z = this.v.z;
+        if (done) { this.half++; this.z = 0; }
+      }
+    }
+    return this.half >= 6;
+  }
+
+  /** drop the references (stage end) */
+  release(): void {
+    this.a = this.t = new Float32Array(0);
+    this.half = 6;
+    this.z = 0;
+  }
+}
+
 /** in-place ~Gaussian blur of `a` (3 box passes of radius r), tmp = scratch of same size */
 export function blur3(a: Float32Array, tmp: Float32Array, N: number, r: number): void {
   if (r <= 0) return;
@@ -264,6 +413,67 @@ export function blurDown(src: Float32Array, N: number, f: number, r: number, coa
   }
   blur3(coarse, coarseTmp, M, r);
   return M;
+}
+
+/**
+ * B2 (G3): blurDown's downsample over the fine rows [z0, z1) only (block sums into `coarse`). The caller zeroes coarse's
+ * first M x M cells before the first range; ranges that cover every row once, in order, give blurDown's coarse field
+ * before its blur3 exactly (each coarse cell adds its fine cells in blurDown's order).
+ */
+export function downsampleRows(src: Float32Array, N: number, f: number, coarse: Float32Array, z0: number, z1: number): void {
+  const M = Math.ceil(N / f);
+  const sh = f === 2 ? 1 : f === 4 ? 2 : f === 8 ? 3 : -1;
+  for (let z = z0; z < z1; z++) {
+    const cz = sh >= 0 ? z >> sh : (z / f) | 0;
+    const row = z * N, crow = cz * M;
+    if (sh >= 0) {
+      for (let x = 0; x < N; x++) {
+        const v = src[row + x];
+        if (v !== 0) coarse[crow + (x >> sh)] += v;
+      }
+    } else {
+      for (let x = 0; x < N; x++) {
+        const v = src[row + x];
+        if (v !== 0) coarse[crow + ((x / f) | 0)] += v;
+      }
+    }
+  }
+}
+
+/**
+ * B2 (G3): upsampleAdd over the fine rows [z0, z1) only — the same per-row operations (rows are independent; the
+ * interpolation tables are a pure cache of (N, f, dx, dz), rebuilt here when other code changed them in between), so
+ * ranges that cover every row once give upsampleAdd's result exactly.
+ */
+export function upsampleAddRows(coarse: Float32Array, acc: Float32Array, N: number, f: number, gain: number, dx: number, dz: number, z0: number, z1: number): void {
+  const M = Math.ceil(N / f);
+  const g = gain / (f * f);
+  upTables(N, f, M, dx, dz);
+  const I0 = upI0, I1 = upI1, T = upT, WX = upW, Z0 = upZ0, Z1 = upZ1, TZ = upTZ, WZ = upWZ;
+  const R = upRow;
+  const shiftX = dx !== 0;
+  for (let z = z0; z < z1; z++) {
+    const wz = WZ[z];
+    if (wz === 0) continue;
+    const tz = TZ[z];
+    const r0 = Z0[z] * M, r1 = Z1[z] * M;
+    const a = (1 - tz) * g * wz, b = tz * g * wz;
+    for (let m = 0; m < M; m++) R[m] = coarse[r0 + m] * a + coarse[r1 + m] * b;
+    const row = z * N;
+    if (shiftX) {
+      for (let x = 0; x < N; x++) {
+        const t = T[x];
+        const v0 = R[I0[x]];
+        acc[row + x] += (v0 + (R[I1[x]] - v0) * t) * WX[x];
+      }
+    } else {
+      for (let x = 0; x < N; x++) {
+        const t = T[x];
+        const v0 = R[I0[x]];
+        acc[row + x] += v0 + (R[I1[x]] - v0) * t;
+      }
+    }
+  }
 }
 
 /**
