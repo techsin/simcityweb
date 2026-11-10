@@ -333,6 +333,11 @@ export async function traceTopBar(): Promise<TraceStep[]> {
       q('.rci-seg').fire('click', { target: q('.rci') });
       calls.push(`closePopover → ${bar.closePopover()}`);
     });
+    await step('funds and date move, then the popover opens: the whole bar refreshes', () => {
+      st.funds = 777777; st.day += 1; st.stats.approval = 64;
+      q('.rci-seg').fire('click', { target: q('.rci') });
+      bar.closePopover();
+    });
     await step('the neighbours leave', () => { econData(st).regionTerms = undefined; econData(st).capBinding.fill(0); ctx.mods.econ = undefined; st.stats.demandCap.fill(0); st.stats.demand.fill(0); st.stats.demand[0] = 0.8; bar.update(); });
     await step('"+ zone" click', () => { q('.rci-zone').click(); });
     await step('8 more lots, 100 ms later (no recount yet)', () => { for (let x = 7; x < 15; x++) st.zone[st.idx(x, 21)] = Zone.ResLow; tick(100); });
