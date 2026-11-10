@@ -1,6 +1,83 @@
 # T071 LG-02: late-game landmarks
 
-Worktree branch `local/T071-lg02`, starting HEAD `c868c13d21ff246b96296ee42be86c64dc675629` (task commit over `ed31192`). Changes are uncommitted. No worker, save, UI, renderer, other worktree or branch was changed.
+Worktree branch `local/T071-lg02`, starting HEAD `c868c13d21ff246b96296ee42be86c64dc675629` (task commit over `ed31192`). Round 1 was committed by the lead as `b663747`; Round 2 changes below are uncommitted. No worker, save, UI, renderer, other worktree or branch was changed.
+
+## Round 2: restore exact cache and attachment layouts
+
+Both reported causes are fixed without changing either exact test or its reference implementation. The round-1 sections below retain their original measurements; this section records the new verification against `b663747`.
+
+| Changed file | Round-2 change |
+|---|---|
+| **Outside named files:** `src/sim/economy/population.ts` | One-line cause fix in `aggregate()`: inspect plopped commercial type with `getDef(b.def)`, which does not fill `EconRuntime.defCache`. The new aggregate lookup had cached civic definitions before the original occupancy path, changing sparse keys, holes and length. WTC commercial totals stay unchanged. No runtime cache code or layout changes. |
+| **INFRA, outside named files:** `src/sim/infra/traffic.ts` | Restore the original `stAtt` reserve, `stops.n * 6 + 8`. Use the original six-entry temporary scratch without a hub, ten entries with a hub, and grow the persistent pool only if actual attachments exceed its capacity. Per-mode hub verdicts remain in the separate `hubModes` map. |
+| **INFRA, outside named files:** `src/sim/infra/transportFacilities.ts` | Remove the redundant four-line Grand Central utility check from `transportUseFactor()`. Its existing `stopAttached()` call refreshes attachments and already enforces hub utilities. |
+| `tests/sim/lateLandmarkCache.test.ts` (new) | Sparse definition-cache lifecycle regression: initialization, staffed occupancy and state replacement, including zero-capacity, abandoned and burnt civic plops. |
+| `tests/infra/grandCentral.test.ts` | Two new regressions: all ten hub attachments fit the original reserve in a twelve-stop city (80 entries); eight duplicated hubs grow safely without truncating attachments or losing ownership. |
+| `docs/dev/reports/local-T071-lg02.md` | Round-2 causes, gates and complete remaining infra hunk inventory. |
+
+`stAtt` already uses packed attachments with `stAttS` offsets and `stAttC` counts; no stride change is needed. Ordinary stops use at most four nodes. One unique Grand Central needs at most ten, so a legal city with `n >= 1` stops uses at most `4(n - 1) + 10 = 4n + 6 <= 6n + 8` entries. Thus even the hub fits the old reserve. The overflow guard protects duplicated hubs in modded/debug cities; it cannot run in an ordinary city. The new regression exercises that guard. As with the existing grow-only pools, a modded city that once needed more capacity retains it after removals.
+
+Cities without an LG-02 landmark keep the original persistent infra array layouts, capacities and unused bytes, and the original definition-cache fill timing and sparse shape. The separate empty `hubModes` map adds an object property, rather than changing any legacy array or cache. No exact comparison was loosened and no helper under `tests/sim/exact` was edited.
+
+### Round-2 gates
+
+- `tests/sim/exact/traffic.test.ts`: **7 passed**, including all three formerly failing full-array byte comparisons and growth, shrink, reload and reset coverage.
+- `tests/sim/exact/j10.test.ts`: **4 passed**, including the formerly failing day-251 cache comparison.
+- `tests/sim/lateLandmarkCache.test.ts`: **1 passed**.
+- Every round-1 test file listed in the Tests and gates section below was rerun: **27 files / 375 tests passed** (Grand Central now has 9 cases).
+- Total: **30 files / 387 tests passed**, each file run sequentially through quietrun. One `economy.test.ts` attempt hit the existing 5-second timeout in its dynamic-import test; an unchanged rerun passed all 12 cases in 2.40 seconds. Both attempts are retained in scratch logs. No timeout or test configuration was changed to obtain the pass.
+- `npx tsc --noEmit`: **passed**. Final whitespace and UTF-8/BOM checks are clean.
+
+Exact commands for the two repaired gates (same quiet gate, native loader and thread pool used for all other files):
+
+```powershell
+$env:NODE_OPTIONS = '--experimental-transform-types --no-warnings'
+$quietrun = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs'
+node $quietrun npx vitest run tests/sim/exact/traffic.test.ts --maxWorkers=1 --pool=threads --configLoader=native
+node $quietrun npx vitest run tests/sim/exact/j10.test.ts --maxWorkers=1 --pool=threads --configLoader=native
+```
+
+The **128×15 seed-7 bot passes unchanged**, with residents `[61124, 93804, 37971]` = **192,899** in 2015. Exit status 0; no extra strategy flags. Actual round-2 command, using the previously documented scratch-only native TypeScript resolver because `tsx` is unavailable:
+
+```powershell
+$loader = 'file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T071/scratch/native-loader.mjs'
+node $quietrun node --no-warnings --experimental-transform-types --loader $loader tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
+```
+
+Output: `scratch/round2-bot-128x15-s7.log`. The canonical command remains `node $quietrun npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet`. Round-2 test logs are `scratch/round2-*.log`. The 256×60 s7/s11 gates were not rerun for these bookkeeping fixes; their round-1 commands and acceptance numbers remain recorded below. The full suite, real-GPU checks, independent two-process hashes, aggregate GATE SUMMARY and the previously outstanding 128×15 tourism/population-history observer remain for the lead. No process from this lane remains running.
+
+### Every remaining infra hunk for the B2 rebase
+
+This inventory covers **round 1 plus round 2**, against `b663747^`. All are outside the original named task files. Nothing was moved or refactored.
+
+| File | Remaining hunks, identified by symbol |
+|---|---|
+| `src/sim/infra/common.ts` | `Transit`: append `Hub = 8`; `TRANSIT_BY_MODEL`: Grand Central mapping. |
+| `src/sim/infra/facilities.ts` | `TRANSIT_USE_DEFS`: Grand Central; `APPROVAL_CIVIC`: Crown +3 inspector fact. |
+| `src/sim/infra/transit.ts` | `isStopMode()`: Hub; `computeTransitCoverage()`: hub catalog radius, preserving other mode radii. |
+| `src/sim/infra/transportFacilities.ts` | `TRANSPORT_DEFS`: Grand Central; `transportFacilityReport()`: hub case; `ROLE`: hub description; `transportDefFacts()`: hub facts; `transportUseFactor()`: hub in the existing attached-stop case; `TRANSPORT_EFFECT_METRICS`: hub coverage metric. The separate utility-check hunk is gone. |
+
+`src/sim/infra/traffic.ts` remaining hunks:
+
+1. `DEPOT_DEFS` / `GARAGE_DEFS`: hub fleet and parking entries.
+2. Class fields: separate `hubModes` map.
+3. `init()` / `markT`: hub building-change invalidation despite its landmark category.
+4. `hubModeAttached()`: separate connected-mode query.
+5. `prep()` / `stationIds`: include hub for train samples.
+6. `prep()` / `depotB`, `garageB`: gate hub fleet on bus attachment and parking on attachment.
+7. `prepTransit()` / `tmp`: ten scratch entries only with hubs, otherwise legacy six. The persistent `stAtt` reserve line is now identical to dev and is no longer a diff hunk.
+8. `prepTransit()` / node collection and depot assignment: hub's 2 bus + 4 rail + 4 subway nodes; actual-capacity overflow guard for duplicated hubs; bus ownership for road-connected hubs.
+9. `prepTransit()` / wait assignment: hub-only wait choice.
+10. `prepTransit()` / transfer edges: internal links between the hub's connected modes.
+11. `baseWait()` / `hubWait()`: hub wait helper; existing mode formulas unchanged.
+12. `refreshAttach()` / map clearing: reset side data with existing attachment verdicts.
+13. `refreshAttach()` / classification, `attachMode`, bus verdict: hub utility gate and three-mode membership; ordinary attachment writes retain their prior order and values.
+14. `refreshAttach()` / subway verdict: call `attachMode`.
+15. `refreshAttach()` / train verdict: call `attachMode`.
+16. `freightTrainRoutes()` / role filter: include hub in passenger samples.
+17. `freightTrainRoutes()` / rail verdict: sample a hub train only while its train mode is attached.
+
+Round 2 introduces no new plan/code mismatch, balance change, RNG draw, save key or cloud-held-file request. It fixes the layout violations rather than carrying them into B2. **Cloud requests: none.** The complete browser acceptance checklist remains in Art pipeline and browser handoff below; those checks were not run here.
 
 ## Behavior and files
 

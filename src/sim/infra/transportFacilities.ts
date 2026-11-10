@@ -651,10 +651,6 @@ export function transportUseFactor(st: CityState, b: Building): number {
   if (!isFunctional(b)) return 0;
   const tr = trafficOfSt(st);
   if (!tr) return 1;
-  if (kind === 'lm_grand_central') {
-    const inf = infoOf(st, b);
-    if ((inf.usesPower && (b.flags & BF.Powered) === 0) || (inf.usesWater && (b.flags & BF.Watered) === 0)) return 0;
-  }
   switch (kind) {
     case 'tr_bus_stop': case 'tr_subway_station': case 'tr_train_station': case 'tr_ferry_terminal': case 'lm_grand_central':
       return tr.stopAttached(b.id) ? 1 : 0;

@@ -24,6 +24,34 @@ function hubTown(partners = true, road = true) {
   return { st, hub, train, subway, traffic, sim };
 }
 
+function attachmentTown(hubCount: number, busCount = 0) {
+  const st = newState();
+  roadLine(st, 0, 19, st.size - 1, 19, Network.Rail);
+  roadLine(st, 0, 23, st.size - 1, 23);
+  for (let x = 0; x < st.size; x++) st.subway[st.idx(x, 21)] = 1;
+  const hubs = Array.from({ length: hubCount }, (_, k) => {
+    const x = 5 + k * 7;
+    roadLine(st, x - 1, 19, x - 1, 20, Network.Rail);
+    return place(st, 'lm_grand_central', x, 20, { flags: BF.Powered | BF.Watered });
+  });
+  place(st, 't_subway', 2, 21);
+  if (busCount > 0) roadLine(st, 0, 40, st.size - 1, 40);
+  for (let k = 0; k < busCount; k++) place(st, 't_bus', 2 + k * 3, 39);
+  const traffic = new TrafficSystem();
+  new Simulation(st, [traffic]);
+  return { hubs, traffic };
+}
+
+interface Attachments {
+  stops: { n: number };
+  stAtt: Int32Array;
+  stAttS: Int32Array;
+  stAttC: Uint8Array;
+  stIdxById: Map<number, number>;
+  nodeStop: Int32Array;
+  tnet: TransitNet;
+}
+
 describe('LG-02 Grand Central transport', () => {
   it('keeps one stop and load key while counting as a train and subway station', () => {
     const { st, hub, train, subway, traffic, sim } = hubTown();
@@ -50,6 +78,38 @@ describe('LG-02 Grand Central transport', () => {
       links.add(`${mode(node)}:${mode(net.trTo[e])}`);
     }
     for (const link of ['bus:train', 'train:bus', 'bus:subway', 'subway:bus', 'train:subway', 'subway:train']) expect(links.has(link)).toBe(true);
+  });
+
+  it('fits all ten hub attachments in the original stop pool allocation', () => {
+    const { hubs, traffic } = attachmentTown(1, 10);
+    const t = traffic as unknown as Attachments;
+    expect(t.stops.n).toBe(12);
+    expect(t.stAtt.length).toBe(80);
+    const s = t.stIdxById.get(hubs[0].id)!;
+    expect(t.stAttC[s]).toBe(10);
+    const nodes = Array.from(t.stAtt.slice(t.stAttS[s], t.stAttS[s] + t.stAttC[s]));
+    expect(new Set(nodes).size).toBe(10);
+    expect(nodes.filter((v) => v < t.tnet.nR)).toHaveLength(2);
+    expect(nodes.filter((v) => v >= t.tnet.nR && v < t.tnet.nR + t.tnet.nRail)).toHaveLength(4);
+    expect(nodes.filter((v) => v >= t.tnet.nR + t.tnet.nRail)).toHaveLength(4);
+  });
+
+  it('grows the attachment pool safely for duplicated hubs in modded cities', () => {
+    const { hubs, traffic } = attachmentTown(8);
+    const t = traffic as unknown as Attachments;
+    expect(t.stAttS[t.stops.n]).toBeGreaterThan(64);
+    expect(t.stAtt.length).toBeGreaterThanOrEqual(t.stAttS[t.stops.n]);
+    for (const hub of hubs) {
+      const s = t.stIdxById.get(hub.id)!;
+      expect(t.stAttC[s]).toBe(10);
+      const nodes = Array.from(t.stAtt.slice(t.stAttS[s], t.stAttS[s] + t.stAttC[s]));
+      expect(new Set(nodes).size).toBe(10);
+      for (const v of nodes) {
+        expect(v).toBeGreaterThanOrEqual(0);
+        expect(v).toBeLessThan(t.tnet.total);
+        expect(t.nodeStop[v]).toBe(s);
+      }
+    }
   });
 
   it('a road does not activate lone rail and subway lines', () => {

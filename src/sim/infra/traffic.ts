@@ -2099,7 +2099,7 @@ export class TrafficSystem implements SimSystem {
     // attach nodes per stop (combined ids)
     this.stAttS = growI32(this.stAttS, stops.n + 1);
     this.stAttC = growU8(this.stAttC, stops.n + 1);
-    this.stAtt = growI32(this.stAtt, stops.n * 10 + 8);
+    this.stAtt = growI32(this.stAtt, stops.n * 6 + 8);
     this.stWait = growF32(this.stWait, stops.n + 1);
     this.stLoad = growF32(this.stLoad, stops.n + 1);
     this.stLoad.fill(0, 0, stops.n);
@@ -2114,7 +2114,7 @@ export class TrafficSystem implements SimSystem {
     this.nodeStop = growI32(this.nodeStop, total + 1);
     this.nodeStop.fill(-1, 0, total);
     let an = 0;
-    const tmp = new Int32Array(10);
+    const tmp = new Int32Array(this.hubModes.size ? 10 : 6);
     const nD = this.depots.length;
     const dRiders = new Float64Array(nD + 1), dStops = new Int32Array(nD + 1);
     for (let s = 0; s < stops.n; s++) {
@@ -2159,6 +2159,7 @@ export class TrafficSystem implements SimSystem {
           }
         }
       }
+      if (an + c > this.stAtt.length) this.stAtt = growI32(this.stAtt, an + c);
       for (let q = 0; q < c; q++) { this.stAtt[an++] = tmp[q]; this.nodeStop[tmp[q]] = s; }
       this.stAttC[s] = c;
       // bus fleet: building bus stops belong to the depot that reaches them first (else the minibus pool)
