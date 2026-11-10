@@ -124,7 +124,7 @@ No test calls tool methods, mutates city state, patches a picker or uses host co
 | Replies/verify | Query replies ride in observed packets with cmd <= applied; cause clears outside replay; **0** unexpected resyncs; numeric authoritative digest equals replica digest while paused/drained |
 | Save/Continue | Ctrl+S's own camera ticket precedes host.save(manual)'s reply; save cmd includes camera; day/funds/next id/layer hashes/policies/buildings/camera preserved on reload/Continue; sim days advance afterwards |
 | Teardown | PauseMenu save/exit aborts the city with reason dispose; **0** pending edits and ghost meshes; return through region city list reaches fresh playable views |
-| RecoveryMirror | App pagehide writes a base-bound ordered whitelisted journal containing a real UI edit; excluded commands absent; worker close-page replay remains W1.3/T039 |
+| RecoveryMirror | Loopback: App pagehide writes a base-bound ordered whitelisted journal containing a real UI edit; excluded commands absent. SKIPPED on local (snapshots) and on W1.2's worker host (journal off, `SnapshotMirror`); worker close-page replay remains W1.3/T039 |
 | Consumers | Onboarding Play, keys 1/2/3, Space, PauseMenu resume, InfoPanel Historic/Demolish; graphs, stats, advisors, data views, demographics, emergencies, rewards; Power view then None |
 | Freeze/errors | >= **15000 ms** frozen, <= **1000 ms** visible resume, **0** frozen frames, **0** overlays/console errors/page exceptions/crashes |
 

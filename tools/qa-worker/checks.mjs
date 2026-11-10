@@ -1,4 +1,4 @@
-import { assert, COMMANDS, PANELS, CHECKS, commandCheck, poll, withCleanup, validateSession } from './harness.mjs';
+import { assert, COMMANDS, PANELS, CHECKS, commandCheck, poll, recoveryMirrorSkip, withCleanup, validateSession } from './harness.mjs';
 import { Driver } from './driver.mjs';
 import { pointer, savedMarkers } from './page.mjs';
 import { verifyReplica } from './w1.mjs';
@@ -232,7 +232,8 @@ export async function runChecks(page, options, report, protectors, signal) {
     return 'QueryTool → InfoPanel → idempotent setHistoric acknowledged';
   }, ['fixture / grow a neighbourhood']);
 
-  if (options.host === 'local') report.add(CHECKS.recovery, 'SKIPPED', 'LocalSimHost uses snapshot recovery; the command journal belongs to packet hosts');
+  const recoverySkip = recoveryMirrorSkip(options.host);
+  if (recoverySkip) report.add(CHECKS.recovery, 'SKIPPED', recoverySkip);
   else await report.check(CHECKS.recovery, async () => {
     const rows = await d.draw('zone', 'zone:1', [146, 154]);
     const journal = await page.evaluate(() => {

@@ -22,6 +22,13 @@ export const DEPENDENCIES = {
   [CHECKS.save]: [CHECKS.setCamera], triggerDisaster: [CHECKS.fixture], dispatch: ['triggerDisaster'], dispatchBest: ['dispatch'],
   dismissAlert: ['triggerDisaster'], [CHECKS.packets]: ['dispatch'], [CHECKS.recovery]: ['zone'],
 };
+/** The recovery-mirror check reads the packet journal that the App's pagehide writes. Hosts without one skip it. */
+export function recoveryMirrorSkip(host) {
+  if (host === 'local') return 'LocalSimHost uses snapshot recovery; the command journal belongs to packet hosts';
+  // WORKER_DESIGN §6 W1.2: WorkerSimHost runs with journal off and a SnapshotMirror; pagehide writes no journal.
+  if (host === 'worker') return 'W1.2 WorkerSimHost keeps snapshot recovery (journal off, SnapshotMirror); the worker journal is the W1.3/T039 gate';
+  return null;
+}
 export function selectedChecks(only) {
   if (!only) return null;
   const selected = new Set(['host ready', 'no crash overlay']);
