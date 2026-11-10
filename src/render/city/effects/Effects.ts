@@ -395,7 +395,12 @@ export class Effects {
       }
     }
     for (const pending of [this.pendingImpacts, this.pendingLandings]) for (const p of pending) {
-      while (this.impactCount + p.count > FEEDBACK_CAP && this.impacts.length) this.impactCount -= this.impacts.shift()!.count;
+      let need = this.impactCount + p.count - FEEDBACK_CAP;
+      for (let i = 0; need > 0 && i < this.impacts.length;) {
+        const old = this.impacts[i], cut = Math.min(old.count, need);
+        old.count -= cut; this.impactCount -= cut; need -= cut;
+        if (old.count === 0) this.impacts.splice(i, 1); else i++;
+      }
       p.birth = this.clock;
       this.impacts.push(p);
       this.impactCount += p.count;

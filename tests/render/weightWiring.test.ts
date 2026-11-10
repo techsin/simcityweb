@@ -12,6 +12,7 @@ type FeedbackView = {
   removalFeedback: unknown[];
   landingFeedback: Set<number>;
 };
+const captured = (view: CityObjectsView) => (view.buildings as unknown as { capturedCollapses: Map<unknown, unknown> }).capturedCollapses;
 const feedback = (view: CityObjectsView) => view as unknown as FeedbackView;
 const views = new Set<CityObjectsView>();
 
@@ -54,7 +55,7 @@ function lots(n: number): Partial<Building>[] {
 }
 
 describe('CityObjectsView weight feedback wiring', () => {
-  it('captures a drawn removal before freeing it, then queues one detached copy and its dust', () => {
+  it('retains a drawn removal immediately, then admits its detached collapse and dust', () => {
     const { sim, view, seeded: [b], impact, queue, flush } = town([{}]);
     const visual = view.buildings.getVisual(b.id)!;
     const capture = vi.spyOn(view.buildings, 'captureCollapse');
@@ -63,10 +64,14 @@ describe('CityObjectsView weight feedback wiring', () => {
     expect(capture).toHaveBeenCalledExactlyOnceWith(b.id);
     expect(queue).not.toHaveBeenCalled();
     expect(impact).not.toHaveBeenCalled();
+    expect(view.buildings.batch.instanceCount).toBe(1);
+    expect(captured(view).size).toBe(1);
     flush();
     expect(queue).toHaveBeenCalledTimes(1);
     expect(queue.mock.calls[0][0]).toBe(capture.mock.results[0].value);
     expect(queue.mock.calls[0][0].parts.length).toBeGreaterThan(0);
+    expect(view.buildings.collapsing).toBe(1);
+    expect(captured(view).size).toBe(0);
     expect(impact).toHaveBeenCalledExactlyOnceWith({ cx: visual.cx, cz: visual.cz, baseY: visual.baseY,
       sw: visual.sw, sd: visual.sd }, 'dust');
     flush();
@@ -88,13 +93,16 @@ describe('CityObjectsView weight feedback wiring', () => {
   });
 
   it('limits both redevelopment copy and dust to four in every rolling second', () => {
-    const { st, sim, seeded, impact, queue, flush } = town(lots(12));
+    const { st, sim, view, seeded, impact, queue, flush } = town(lots(12));
+    const discard = vi.spyOn(view.buildings, 'discardCollapse');
     const redevelop = (start: number, dt: number) => {
       for (const old of seeded.slice(start, start + 2)) {
         removeBuilding(sim, old);
         placeBuilding(sim, building(st, { x: old.x, z: old.z }));
       }
       flush(dt);
+      expect(captured(view).size).toBe(0);
+      expect(view.buildings.batch.instanceCount).toBe(view.buildings.count + view.buildings.collapsing);
     };
     redevelop(0, 0);
     expect(impact).toHaveBeenCalledTimes(2);
@@ -109,6 +117,7 @@ describe('CityObjectsView weight feedback wiring', () => {
     redevelop(10, 0.02);
     expect(impact).toHaveBeenCalledTimes(8);
     expect(queue).toHaveBeenCalledTimes(8);
+    expect(discard).toHaveBeenCalledTimes(4);
     expect(impact.mock.calls.every(([, kind]) => kind === 'dust')).toBe(true);
     expect(queue.mock.calls.map(([copy]) => [copy.cx, copy.cz])).toEqual(
       [0, 1, 2, 3, 6, 7, 10, 11].map((i) => [(seeded[i].x + 1) * 16, (seeded[i].z + 1) * 16]));
@@ -199,6 +208,20 @@ describe('CityObjectsView weight feedback wiring', () => {
     expect(feedback(view).landingFeedback.size).toBe(0);
   });
 
+  it('frees retained removal slots when the camera leaves range before feedback admission', () => {
+    const { sim, camera, view, seeded: [b], flush } = town([{}]);
+    removeBuilding(sim, b);
+    expect(captured(view).size).toBe(1);
+    expect(view.buildings.batch.instanceCount).toBe(1);
+    camera.position.set(144, 5, 3000);
+    flush();
+    expect(captured(view).size).toBe(0);
+    expect(view.buildings.collapsing).toBe(0);
+    expect(view.buildings.batch.instanceCount).toBe(0);
+    view.effects.update();
+    expect(view.effects.particleCount).toBe(0);
+  });
+
   it('silences bulk loads and resets, clearing active copies and pending removal/landing feedback', () => {
     const { st, sim, view, seeded, impact, queue, flush } = town([{ flags: BF.Plopped }, { x: 12 }]);
     removeBuilding(sim, seeded[0]);
@@ -217,6 +240,7 @@ describe('CityObjectsView weight feedback wiring', () => {
     view.effects.update();
     expect(view.buildings.getVisual(plop.id)).not.toBeNull();
     expect(view.buildings.collapsing).toBe(0);
+    expect(captured(view).size).toBe(0);
     expect(view.buildings.pendingBuilds).toBe(0);
     expect(view.effects.particleCount).toBe(0);
     expect(feedback(view).removalFeedback).toEqual([]);
@@ -241,5 +265,6 @@ describe('CityObjectsView weight feedback wiring', () => {
     expect(impact).not.toHaveBeenCalled();
     expect(queue).not.toHaveBeenCalled();
     expect(view.buildings.collapsing).toBe(0);
+    expect(captured(view).size).toBe(0);
   });
 });

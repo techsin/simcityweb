@@ -263,7 +263,10 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.redevelopmentTimes = this.redevelopmentTimes.filter((t) => t > this.feedbackClock - 1);
     for (const r of this.removalFeedback) {
       if (r.redevelopment) {
-        if (this.redevelopmentTimes.length >= 4) continue;
+        if (this.redevelopmentTimes.length >= 4) {
+          if (r.copy) this.buildings.discardCollapse(r.copy);
+          continue;
+        }
         this.redevelopmentTimes.push(this.feedbackClock);
       }
       if (r.copy) this.buildings.queueCollapse(r.copy);
