@@ -93,6 +93,9 @@ describe('W0.5 news sequence', () => {
 describe('W0.5 MiniMap utilities invalidation', () => {
   it('layerUpdated(utilities) marks the map dirty, repaints Power, and stops listening on city abort', async () => {
     const { ctx, host, abort } = city();
+    // A fixed clock: paintBase() stops a slice after 2 ms of wall time, so on a loaded machine one frame could leave the
+    // 16x16 map half painted and the counts below would depend on timing. miniMapFrame and miniMapSeason do the same.
+    vi.spyOn(performance, 'now').mockReturnValue(0);
     const painted: Uint8ClampedArray[] = [];
     const g = {
       createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),

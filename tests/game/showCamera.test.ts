@@ -8,6 +8,13 @@ import { FirstCameraMoments, ShowCamera, type ShowControls, type ShowRules, type
 import { DEFAULT_SETTINGS, type GameSettings } from '../../src/game/settings';
 import type { CityObjectsViewApi, WorldViewApi } from '../../src/render/contracts';
 import type { Simulation } from '../../src/sim/Simulation';
+import { Network } from '../../src/core/types';
+import { deserializeCity, serializeCity } from '../../src/save/serialize';
+import { CityActions, lPath } from '../../src/sim/actions';
+import type { CityState } from '../../src/sim/CityState';
+import { firstsOf, firstsSystem } from '../../src/sim/economy/firsts';
+import { LocalSimHost } from '../../src/worker/SimHost';
+import { newState } from '../infra/cityGen';
 import { FEl, installFakeDom } from './fakeDom';
 
 installFakeDom();
@@ -722,6 +729,18 @@ describe('FirstCameraMoments', () => {
     expect(t.caption()?.textContent).toBe('City Hall opens');
   });
 
+  it('the business deals and the rewards (unique:rw_*) get no spotlight; the other unique openings do', () => {
+    const t = momentsSetup();
+    for (const id of ['rw_military_base', 'rw_missile_range', 'rw_toxic_dump', 'rw_casino', 'rw_research_center']) t.first(`unique:${id}`, 18, 31, `${id} opens`);
+    t.start();
+    expect(t.show.active).toBe(false);
+    expect(t.caption()).toBeNull();
+    t.first('unique:civ_mayor_house', 22, 23, "Mayor's House opens in Queensbury!");
+    t.moments.frame(0);
+    expect(t.show.active).toBe(true);
+    expect(t.caption()?.textContent).toBe("Mayor's House opens in Queensbury!");
+  });
+
   it('removes the caption and subscription on abort', () => {
     const t = momentsSetup();
     t.first();
@@ -738,6 +757,88 @@ describe('FirstCameraMoments', () => {
     expect(t.show.active).toBe(false);
     expect(t.caption()).toBeNull();
     expect(t.controls.calls.length).toBe(calls);
+  });
+});
+
+// T096: the simulation records the firsts (src/sim/economy/firsts.ts) and announces each once; the cases above script
+// its news item, these play the real one
+describe('FirstCameraMoments on the real producer (T096)', () => {
+  const OPENS = "Mayor's House opens in Queensbury!";
+  const CONNECTED = 'New neighbor connection! Trade with the region boosts demand.';
+
+  /** a scene's spotlight on the local host with the firsts system, as tests/worker/firsts.test.ts boots it */
+  async function producerScene(state: CityState) {
+    const host = new LocalSimHost(state, { initialSpeed: 0 });
+    await host.start({ createSystems: () => [firstsSystem()], CityActions });
+    const t = setup(), root = new FEl('div');
+    const ctx = {
+      root, canvas, tip: { hide: vi.fn() }, tools: { refresh: vi.fn() }, host, state: host.state,
+      settings: { ...DEFAULT_SETTINGS, motion: 'full' }, signal: t.abort.signal,
+    } as unknown as GameContext;
+    const moments = new FirstCameraMoments(ctx, t.show, () => false);
+    let clock = 0;
+    /** ten idle seconds later, one frame: a first that is waiting starts now */
+    const idle = () => { clock += 10000; t.now(clock); moments.frame(0); };
+    const caption = () => root.querySelector('.show-caption')?.textContent ?? null;
+    return { ...t, host, moments, idle, caption };
+  }
+
+  it('a first the simulation records plays once, at the recorded building, and not again after a save and load', async () => {
+    const st = newState(32);
+    st.config.name = 'Queensbury';
+    st.config.sandbox = true;
+    const a = await producerScene(st);
+    let saved: ReturnType<typeof serializeCity> | undefined, record: unknown;
+    try {
+      // a business deal is a first of the simulation's too, and gets no spotlight
+      expect(a.host.actions.plop('rw_military_base', 2, 2, 0).ok).toBe(true);
+      expect(a.host.state.news.at(-1)?.ref).toEqual({ first: 'unique:rw_military_base' });
+      a.idle();
+      expect(a.moments.playing).toBe(false);
+      // the Mayor's House: its first opening is recorded with the building, and the spotlight frames that building
+      expect(a.host.actions.plop('civ_mayor_house', 20, 20, 0).ok).toBe(true);
+      const first = firstsOf(a.host.state)?.['unique:civ_mayor_house'];
+      record = structuredClone(first);
+      const house = a.host.state.buildings.get(first?.id ?? -1)!;
+      expect(house.def).toBe('civ_mayor_house');
+      const cx = house.x + (house.w >> 1), cz = house.z + (house.d >> 1);
+      expect(first).toMatchObject({ day: 0, x: cx, z: cz });
+      a.idle();
+      expect(a.moments.playing).toBe(true);
+      expect(a.caption()).toBe(OPENS);
+      a.moments.frame(2);
+      expect(a.controls.target).toEqual({ x: (cx + 0.5) * CELL_SIZE, z: (cz + 0.5) * CELL_SIZE });
+      a.moments.frame(6.5);
+      expect(a.moments.playing).toBe(false);
+      expectView(a.controls.view(), a.initial);
+      // built again in the same session: the plain news, no spotlight
+      expect(a.host.actions.bulldoze({ x0: 20, z0: 20, x1: 22, z1: 22 }).ok).toBe(true);
+      expect(a.host.actions.plop('civ_mayor_house', 24, 20, 0).ok).toBe(true);
+      expect(a.host.state.news.at(-1)?.text).toBe(OPENS);
+      expect(a.host.state.news.at(-1)?.ref).toBeUndefined();
+      a.idle();
+      expect(a.moments.playing).toBe(false);
+      // saved with no house standing: only the saved record can say the opening was had
+      expect(a.host.actions.bulldoze({ x0: 24, z0: 20, x1: 26, z1: 22 }).ok).toBe(true);
+      saved = serializeCity(a.host.sim.state, { copy: true });
+    } finally { await a.host.dispose(); }
+
+    // a new scene on the loaded city: its listener has seen nothing, and the loaded record has the opening
+    const b = await producerScene(deserializeCity(saved!));
+    try {
+      expect(firstsOf(b.host.state)?.['unique:civ_mayor_house']).toEqual(record);
+      expect(b.host.actions.plop('civ_mayor_house', 20, 20, 0).ok).toBe(true);
+      expect(b.host.state.news.at(-1)?.text).toBe(OPENS);
+      expect(b.host.state.news.at(-1)?.ref).toBeUndefined();
+      b.idle();
+      expect(b.moments.playing).toBe(false);
+      expect(b.controls.calls).toHaveLength(0);
+      // (the listener is live: the city's first neighbour connection, a first the save did not have, plays)
+      expect(b.host.actions.buildNetwork(lPath({ x: 0, z: 12 }, { x: 10, z: 12 }), Network.Road).ok).toBe(true);
+      b.idle();
+      expect(b.moments.playing).toBe(true);
+      expect(b.caption()).toBe(CONNECTED);
+    } finally { await b.host.dispose(); }
   });
 });
 

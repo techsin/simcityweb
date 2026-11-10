@@ -276,7 +276,13 @@ export class ShowCamera {
   }
 }
 
-/** CONTENT emits ref.first once, when it records systemData.firsts; old news is never replayed on load. */
+/**
+ * The city's firsts come from src/sim/economy/firsts.ts (T096): it records each kind in systemData.firsts and posts one
+ * news item with ref.first at the first's place (a building's centre cell, a connection's edge cell), once per city: a
+ * save and load, a resync or a recovery never announces a kind again. The record names the building
+ * (firstsOf(ctx.state)?.[kind]?.id); the spotlight frames the item's place. The business deals and the rewards
+ * (`unique:rw_*`) get no spotlight (the lead's decision).
+ */
 export class FirstCameraMoments {
   private pending: { key: string; x: number; z: number; caption: string }[] = [];
   private seen = new Set<string>();
@@ -289,8 +295,8 @@ export class FirstCameraMoments {
   constructor(private ctx: GameContext, private show: ShowCamera, private busy: () => boolean) {
     if (ctx.signal.aborted) return;
     const off = ctx.host.events.on('news', (n) => {
-      const key = (n.ref as { first?: string } | undefined)?.first;
-      if (!key || !(/^(?:stage:[678]|unique:.+|neighbor)$/.test(key)) || n.x === undefined || n.z === undefined || this.seen.has(key)) return;
+      const key = n.ref?.first;
+      if (!key || !(/^(?:stage:[678]|unique:(?!rw_).+|neighbor)$/.test(key)) || n.x === undefined || n.z === undefined || this.seen.has(key)) return;
       this.seen.add(key);
       // (B10) a first that happens while Camera moments is off, or motion is reduced, is not kept for later
       if (this.wanted()) this.pending.push({ key, x: n.x, z: n.z, caption: n.text });

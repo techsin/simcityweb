@@ -1,0 +1,1370 @@
+{
+  "protocol": "NOTE-062",
+  "complete": true,
+  "row": {
+    "size": 128,
+    "years": 15,
+    "seed": 7
+  },
+  "source": {
+    "commit": "05cbf594d265d4a8cc09eb16fdba37ec55dcbcc2",
+    "simBlob": "d3a85c7bbb593f0d9d3a10c67088c426387cc02f",
+    "srcTree": "5987655d37583b097325a0ff4401cb7fa99fd5ab",
+    "dependencies": "563d006dba91bbf3212dd9c02d7508488e5c901c8063576886fa9dd9c471f89e",
+    "observer": "ec3ceb1b0267f14e4bb0341e4fc1a10936f365f5c2fef8086bfafeda05040f49"
+  },
+  "provenance": {
+    "parentCommit": "1f4b99b14bf4c624657887a365ef1861e0fbaa25"
+  },
+  "configuration": {
+    "botArgs": [
+      "--tax=13"
+    ],
+    "variant": true
+  },
+  "nudge": 100,
+  "runs": 9,
+  "jobs": 2,
+  "members": [
+    {
+      "id": "control",
+      "path": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_base_c5d5bcc1643c2a4a.json",
+      "cacheKey": "c5d5bcc1643c2a4ae8494ece8016eecf98d6d333c1e891842aef6a4867d2a22e",
+      "nudge": 0,
+      "day": 1,
+      "observer": "ec3ceb1b0267f14e4bb0341e4fc1a10936f365f5c2fef8086bfafeda05040f49",
+      "command": "/opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/quiet-gate.mjs /opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/ensemble-variant-child.mjs --fork-child /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_base_c5d5bcc1643c2a4a.spec.json",
+      "execution": {
+        "startedAt": "2026-11-10T08:46:42.547Z",
+        "finishedAt": "2026-11-10T08:47:21.876Z",
+        "gatePid": 23114,
+        "schedulerJobs": 2,
+        "processLogPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_base_c5d5bcc1643c2a4a.process.log"
+      }
+    },
+    {
+      "id": "p100-d1",
+      "path": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n100_d1_92eedf4eecfcb9e6.json",
+      "cacheKey": "92eedf4eecfcb9e6b4383e50a7c2474e082db183bd67b324c62d0c5b8f21f4e3",
+      "nudge": 100,
+      "day": 1,
+      "observer": "ec3ceb1b0267f14e4bb0341e4fc1a10936f365f5c2fef8086bfafeda05040f49",
+      "command": "/opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/quiet-gate.mjs /opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/ensemble-variant-child.mjs --fork-child /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n100_d1_92eedf4eecfcb9e6.spec.json",
+      "execution": {
+        "startedAt": "2026-11-10T08:46:42.552Z",
+        "finishedAt": "2026-11-10T08:47:20.798Z",
+        "gatePid": 23115,
+        "schedulerJobs": 2,
+        "processLogPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n100_d1_92eedf4eecfcb9e6.process.log"
+      }
+    },
+    {
+      "id": "m100-d1",
+      "path": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n-100_d1_25c46d4bbada1b7b.json",
+      "cacheKey": "25c46d4bbada1b7bcf64ff0d1a45df30f0e33a99f150f81a6f7964b32f48aa15",
+      "nudge": -100,
+      "day": 1,
+      "observer": "ec3ceb1b0267f14e4bb0341e4fc1a10936f365f5c2fef8086bfafeda05040f49",
+      "command": "/opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/quiet-gate.mjs /opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/ensemble-variant-child.mjs --fork-child /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n-100_d1_25c46d4bbada1b7b.spec.json",
+      "execution": {
+        "startedAt": "2026-11-10T08:47:20.816Z",
+        "finishedAt": "2026-11-10T08:47:59.156Z",
+        "gatePid": 27118,
+        "schedulerJobs": 2,
+        "processLogPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n-100_d1_25c46d4bbada1b7b.process.log"
+      }
+    },
+    {
+      "id": "p100-d1441",
+      "path": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n100_d1441_eafc929fba19cf28.json",
+      "cacheKey": "eafc929fba19cf288cf41319beffbd5a5ae30b534aa538d9c2ace218c29a5522",
+      "nudge": 100,
+      "day": 1441,
+      "observer": "ec3ceb1b0267f14e4bb0341e4fc1a10936f365f5c2fef8086bfafeda05040f49",
+      "command": "/opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/quiet-gate.mjs /opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/ensemble-variant-child.mjs --fork-child /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n100_d1441_eafc929fba19cf28.spec.json",
+      "execution": {
+        "startedAt": "2026-11-10T08:47:21.884Z",
+        "finishedAt": "2026-11-10T08:47:59.805Z",
+        "gatePid": 27354,
+        "schedulerJobs": 2,
+        "processLogPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n100_d1441_eafc929fba19cf28.process.log"
+      }
+    },
+    {
+      "id": "m100-d1441",
+      "path": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n-100_d1441_3c48ddbb2ba204c8.json",
+      "cacheKey": "3c48ddbb2ba204c8525d154cceb530d60c34e9a421cd3fbff6590f432073d48d",
+      "nudge": -100,
+      "day": 1441,
+      "observer": "ec3ceb1b0267f14e4bb0341e4fc1a10936f365f5c2fef8086bfafeda05040f49",
+      "command": "/opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/quiet-gate.mjs /opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/ensemble-variant-child.mjs --fork-child /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n-100_d1441_3c48ddbb2ba204c8.spec.json",
+      "execution": {
+        "startedAt": "2026-11-10T08:47:59.164Z",
+        "finishedAt": "2026-11-10T08:48:32.756Z",
+        "gatePid": 30172,
+        "schedulerJobs": 2,
+        "processLogPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n-100_d1441_3c48ddbb2ba204c8.process.log"
+      }
+    },
+    {
+      "id": "p200-d1",
+      "path": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n200_d1_e5935dc85823eb96.json",
+      "cacheKey": "e5935dc85823eb9664fe003070492ca66a95c3a5e46d1875b77582873685cbc1",
+      "nudge": 200,
+      "day": 1,
+      "observer": "ec3ceb1b0267f14e4bb0341e4fc1a10936f365f5c2fef8086bfafeda05040f49",
+      "command": "/opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/quiet-gate.mjs /opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/ensemble-variant-child.mjs --fork-child /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n200_d1_e5935dc85823eb96.spec.json",
+      "execution": {
+        "startedAt": "2026-11-10T08:47:59.814Z",
+        "finishedAt": "2026-11-10T08:48:32.721Z",
+        "gatePid": 30189,
+        "schedulerJobs": 2,
+        "processLogPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n200_d1_e5935dc85823eb96.process.log"
+      }
+    },
+    {
+      "id": "m200-d1",
+      "path": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n-200_d1_0d8df1c79b5036a4.json",
+      "cacheKey": "0d8df1c79b5036a45a88d7412212cb02eecae63cb443f53c2548af7b9a230846",
+      "nudge": -200,
+      "day": 1,
+      "observer": "ec3ceb1b0267f14e4bb0341e4fc1a10936f365f5c2fef8086bfafeda05040f49",
+      "command": "/opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/quiet-gate.mjs /opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/ensemble-variant-child.mjs --fork-child /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n-200_d1_0d8df1c79b5036a4.spec.json",
+      "execution": {
+        "startedAt": "2026-11-10T08:48:32.728Z",
+        "finishedAt": "2026-11-10T08:49:06.260Z",
+        "gatePid": 30614,
+        "schedulerJobs": 2,
+        "processLogPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n-200_d1_0d8df1c79b5036a4.process.log"
+      }
+    },
+    {
+      "id": "p200-d1441",
+      "path": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n200_d1441_e74015a1b022cc6b.json",
+      "cacheKey": "e74015a1b022cc6b812a0883463194de26861eaf7640cddd11a0c1f9771a450d",
+      "nudge": 200,
+      "day": 1441,
+      "observer": "ec3ceb1b0267f14e4bb0341e4fc1a10936f365f5c2fef8086bfafeda05040f49",
+      "command": "/opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/quiet-gate.mjs /opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/ensemble-variant-child.mjs --fork-child /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n200_d1441_e74015a1b022cc6b.spec.json",
+      "execution": {
+        "startedAt": "2026-11-10T08:48:32.764Z",
+        "finishedAt": "2026-11-10T08:49:04.336Z",
+        "gatePid": 30621,
+        "schedulerJobs": 2,
+        "processLogPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n200_d1441_e74015a1b022cc6b.process.log"
+      }
+    },
+    {
+      "id": "m200-d1441",
+      "path": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n-200_d1441_010ee6cde42e7912.json",
+      "cacheKey": "010ee6cde42e7912a018df52f13517420280a20e6029982293dfd0457d94b202",
+      "nudge": -200,
+      "day": 1441,
+      "observer": "ec3ceb1b0267f14e4bb0341e4fc1a10936f365f5c2fef8086bfafeda05040f49",
+      "command": "/opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/quiet-gate.mjs /opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/ensemble-variant-child.mjs --fork-child /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n-200_d1441_010ee6cde42e7912.spec.json",
+      "execution": {
+        "startedAt": "2026-11-10T08:49:04.345Z",
+        "finishedAt": "2026-11-10T08:49:34.586Z",
+        "gatePid": 31109,
+        "schedulerJobs": 2,
+        "processLogPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/q-05cbf59/tax13/128x15_s7_n-200_d1441_010ee6cde42e7912.process.log"
+      }
+    }
+  ],
+  "policy": {
+    "minimumRuns": 5,
+    "noThirdStage": true
+  },
+  "observations": {
+    "available": [
+      "population",
+      "approval",
+      "air",
+      "ihtShare",
+      "commuteTerm",
+      "commuteTermRaw",
+      "resCommute",
+      "approvalNetCommute",
+      "ihtDemandShareRaw",
+      "ihtDemandShareCapped",
+      "ihtDemandShare",
+      "dirtyJobShare"
+    ],
+    "unavailable": [
+      "retooledIM",
+      "retooledIHT"
+    ]
+  },
+  "years": [
+    {
+      "yearIndex": 1,
+      "year": 2001,
+      "metrics": {
+        "population": {
+          "median": 3454,
+          "min": 3454,
+          "max": 3454,
+          "width": 0
+        },
+        "approval": {
+          "median": 39.175068526059505,
+          "min": 39.175068526059505,
+          "max": 39.175068526059505,
+          "width": 0
+        },
+        "air": {
+          "median": 0.017781606964458876,
+          "min": 0.017781606964458876,
+          "max": 0.017781606964458876,
+          "width": 0
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 9.547447035331404,
+          "min": 9.547447035331404,
+          "max": 9.547447035331404,
+          "width": 0
+        },
+        "approvalNetCommute": {
+          "median": 39.175068526059505,
+          "min": 39.175068526059505,
+          "max": 39.175068526059505,
+          "width": 0
+        },
+        "ihtDemandShareRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "ihtDemandShareCapped": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "ihtDemandShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "dirtyJobShare": {
+          "median": 0.695800227014756,
+          "min": 0.695800227014756,
+          "max": 0.695800227014756,
+          "width": 0
+        }
+      }
+    },
+    {
+      "yearIndex": 2,
+      "year": 2002,
+      "metrics": {
+        "population": {
+          "median": 10003,
+          "min": 10003,
+          "max": 10003,
+          "width": 0
+        },
+        "approval": {
+          "median": 43.47943317549824,
+          "min": 43.47943317549824,
+          "max": 43.47943317549824,
+          "width": 0
+        },
+        "air": {
+          "median": 0.02599234474251011,
+          "min": 0.02599234474251011,
+          "max": 0.02599234474251011,
+          "width": 0
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 9.16252987003809,
+          "min": 9.16252987003809,
+          "max": 9.16252987003809,
+          "width": 0
+        },
+        "approvalNetCommute": {
+          "median": 43.47943317549824,
+          "min": 43.47943317549824,
+          "max": 43.47943317549824,
+          "width": 0
+        },
+        "ihtDemandShareRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "ihtDemandShareCapped": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "ihtDemandShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "dirtyJobShare": {
+          "median": 0.6424216027874564,
+          "min": 0.6424216027874564,
+          "max": 0.6424216027874564,
+          "width": 0
+        }
+      }
+    },
+    {
+      "yearIndex": 3,
+      "year": 2003,
+      "metrics": {
+        "population": {
+          "median": 17930,
+          "min": 17930,
+          "max": 18254,
+          "width": 324
+        },
+        "approval": {
+          "median": 44.51319418879917,
+          "min": 44.51319418879917,
+          "max": 49.53024686685701,
+          "width": 5.017052678057844
+        },
+        "air": {
+          "median": 0.03412656777419091,
+          "min": 0.03412656777419091,
+          "max": 0.03582751557020172,
+          "width": 0.001700947796010814
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 8.738466711771187,
+          "min": 8.738466711771187,
+          "max": 8.798104284394862,
+          "width": 0.059637572623675084
+        },
+        "approvalNetCommute": {
+          "median": 44.51319418879917,
+          "min": 44.51319418879917,
+          "max": 49.53024686685701,
+          "width": 5.017052678057844
+        },
+        "ihtDemandShareRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "ihtDemandShareCapped": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "ihtDemandShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "dirtyJobShare": {
+          "median": 0.686456400742115,
+          "min": 0.686456400742115,
+          "max": 0.693640246796393,
+          "width": 0.00718384605427802
+        }
+      }
+    },
+    {
+      "yearIndex": 4,
+      "year": 2004,
+      "metrics": {
+        "population": {
+          "median": 25464,
+          "min": 25464,
+          "max": 26807,
+          "width": 1343
+        },
+        "approval": {
+          "median": 44.253529126550696,
+          "min": 44.253529126550696,
+          "max": 45.898132834236925,
+          "width": 1.6446037076862297
+        },
+        "air": {
+          "median": 0.039619182746871984,
+          "min": 0.03619599643335701,
+          "max": 0.039619182746871984,
+          "width": 0.0034231863135149726
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 8.537784571419445,
+          "min": 8.537784571419445,
+          "max": 8.602385233894307,
+          "width": 0.06460066247486118
+        },
+        "approvalNetCommute": {
+          "median": 44.253529126550696,
+          "min": 44.253529126550696,
+          "max": 45.898132834236925,
+          "width": 1.6446037076862297
+        },
+        "ihtDemandShareRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "ihtDemandShareCapped": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "ihtDemandShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "dirtyJobShare": {
+          "median": 0.6757599376461418,
+          "min": 0.6501552795031056,
+          "max": 0.6757599376461418,
+          "width": 0.025604658143036252
+        }
+      }
+    },
+    {
+      "yearIndex": 5,
+      "year": 2005,
+      "metrics": {
+        "population": {
+          "median": 31310,
+          "min": 31310,
+          "max": 34374,
+          "width": 3064
+        },
+        "approval": {
+          "median": 46.000373232728,
+          "min": 45.68398584717697,
+          "max": 46.000373232728,
+          "width": 0.31638738555103174
+        },
+        "air": {
+          "median": 0.03725256187807859,
+          "min": 0.03725256187807859,
+          "max": 0.03747231583230319,
+          "width": 0.00021975395422459826
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 8.402433739430654,
+          "min": 8.402433739430654,
+          "max": 8.51698764937695,
+          "width": 0.11455390994629688
+        },
+        "approvalNetCommute": {
+          "median": 46.000373232728,
+          "min": 45.68398584717697,
+          "max": 46.000373232728,
+          "width": 0.31638738555103174
+        },
+        "ihtDemandShareRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "ihtDemandShareCapped": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "ihtDemandShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "dirtyJobShare": {
+          "median": 0.6645986325652063,
+          "min": 0.6190884587111002,
+          "max": 0.6645986325652063,
+          "width": 0.04551017385410616
+        }
+      }
+    },
+    {
+      "yearIndex": 6,
+      "year": 2006,
+      "metrics": {
+        "population": {
+          "median": 38399,
+          "min": 37533,
+          "max": 43583,
+          "width": 6050
+        },
+        "approval": {
+          "median": 51.725951125499705,
+          "min": 48.182588427637874,
+          "max": 52.11807083285385,
+          "width": 3.9354824052159785
+        },
+        "air": {
+          "median": 0.03714431137388495,
+          "min": 0.036058032790724254,
+          "max": 0.03903281075127017,
+          "width": 0.0029747779605459185
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 8.447657453594552,
+          "min": 8.381028949365371,
+          "max": 8.609656129796956,
+          "width": 0.22862718043158559
+        },
+        "approvalNetCommute": {
+          "median": 51.725951125499705,
+          "min": 48.182588427637874,
+          "max": 52.11807083285385,
+          "width": 3.9354824052159785
+        },
+        "ihtDemandShareRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0.0012710966739637032,
+          "width": 0.0012710966739637032
+        },
+        "ihtDemandShareCapped": {
+          "median": 0,
+          "min": 0,
+          "max": 0.0013119533527696794,
+          "width": 0.0013119533527696794
+        },
+        "ihtDemandShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0.008641186991786991,
+          "width": 0.008641186991786991
+        },
+        "dirtyJobShare": {
+          "median": 0.6370322993284298,
+          "min": 0.5751746578619964,
+          "max": 0.6576189478096836,
+          "width": 0.08244428994768715
+        }
+      }
+    },
+    {
+      "yearIndex": 7,
+      "year": 2007,
+      "metrics": {
+        "population": {
+          "median": 48291,
+          "min": 47041,
+          "max": 51083,
+          "width": 4042
+        },
+        "approval": {
+          "median": 54.34138491806047,
+          "min": 51.63486462620349,
+          "max": 55.10297454713258,
+          "width": 3.468109920929095
+        },
+        "air": {
+          "median": 0.038652513695111176,
+          "min": 0.03572385044431497,
+          "max": 0.0392367306891869,
+          "width": 0.0035128802448719312
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 8.06254394298413,
+          "min": 7.964202971318949,
+          "max": 8.20926120191776,
+          "width": 0.24505823059881138
+        },
+        "approvalNetCommute": {
+          "median": 54.34138491806047,
+          "min": 51.63486462620349,
+          "max": 55.10297454713258,
+          "width": 3.468109920929095
+        },
+        "ihtDemandShareRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0.026204051922843623,
+          "width": 0.026204051922843623
+        },
+        "ihtDemandShareCapped": {
+          "median": 0,
+          "min": 0,
+          "max": 0.026731019120103953,
+          "width": 0.026731019120103953
+        },
+        "ihtDemandShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0.15076209745632527,
+          "width": 0.15076209745632527
+        },
+        "dirtyJobShare": {
+          "median": 0.6035340081690641,
+          "min": 0.5758238063214526,
+          "max": 0.62823822665361,
+          "width": 0.052414420332157374
+        }
+      }
+    },
+    {
+      "yearIndex": 8,
+      "year": 2008,
+      "metrics": {
+        "population": {
+          "median": 57561,
+          "min": 56716,
+          "max": 60669,
+          "width": 3953
+        },
+        "approval": {
+          "median": 56.802570719242794,
+          "min": 54.873273810039,
+          "max": 57.80113314685668,
+          "width": 2.9278593368176757
+        },
+        "air": {
+          "median": 0.03950943291052757,
+          "min": 0.03694464942152992,
+          "max": 0.041309231481514205,
+          "width": 0.004364582059984287
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 7.815608185819128,
+          "min": 7.767024992125576,
+          "max": 7.968057050259215,
+          "width": 0.20103205813363978
+        },
+        "approvalNetCommute": {
+          "median": 56.802570719242794,
+          "min": 54.873273810039,
+          "max": 57.80113314685668,
+          "width": 2.9278593368176757
+        },
+        "ihtDemandShareRaw": {
+          "median": 0.018273135285317377,
+          "min": 0.016404867849675656,
+          "max": 0.05181320384337225,
+          "width": 0.035408335993696596
+        },
+        "ihtDemandShareCapped": {
+          "median": 0.018813950929695237,
+          "min": 0.016668482405490796,
+          "max": 0.053127813973197734,
+          "width": 0.036459331567706935
+        },
+        "ihtDemandShare": {
+          "median": 0.073374313660918,
+          "min": 0.06524864787381551,
+          "max": 0.3760052240452703,
+          "width": 0.3107565761714548
+        },
+        "dirtyJobShare": {
+          "median": 0.5922490891023517,
+          "min": 0.5683821214982688,
+          "max": 0.5981133609823535,
+          "width": 0.029731239484084626
+        }
+      }
+    },
+    {
+      "yearIndex": 9,
+      "year": 2009,
+      "metrics": {
+        "population": {
+          "median": 68843,
+          "min": 67416,
+          "max": 71562,
+          "width": 4146
+        },
+        "approval": {
+          "median": 57.82673097887989,
+          "min": 55.756573135735756,
+          "max": 58.362900260859305,
+          "width": 2.606327125123549
+        },
+        "air": {
+          "median": 0.03905393597111293,
+          "min": 0.03717449075401414,
+          "max": 0.044381162938100384,
+          "width": 0.0072066721840862435
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 7.667206555829219,
+          "min": 7.5996963961188255,
+          "max": 7.8259242199708705,
+          "width": 0.22622782385204498
+        },
+        "approvalNetCommute": {
+          "median": 57.82673097887989,
+          "min": 55.756573135735756,
+          "max": 58.362900260859305,
+          "width": 2.606327125123549
+        },
+        "ihtDemandShareRaw": {
+          "median": 0.047133937373832216,
+          "min": 0.04479627473806752,
+          "max": 0.07476720417896889,
+          "width": 0.029970929440901364
+        },
+        "ihtDemandShareCapped": {
+          "median": 0.048248354077562595,
+          "min": 0.046892517669997566,
+          "max": 0.0761860680398056,
+          "width": 0.029293550369808033
+        },
+        "ihtDemandShare": {
+          "median": 0.1684904405984742,
+          "min": 0.14649407754736532,
+          "max": 0.513063141933377,
+          "width": 0.36656906438601167
+        },
+        "dirtyJobShare": {
+          "median": 0.56437575030012,
+          "min": 0.5290814769606347,
+          "max": 0.582711681919557,
+          "width": 0.053630204958922345
+        }
+      }
+    },
+    {
+      "yearIndex": 10,
+      "year": 2010,
+      "metrics": {
+        "population": {
+          "median": 82512,
+          "min": 80597,
+          "max": 85528,
+          "width": 4931
+        },
+        "approval": {
+          "median": 58.78255567870128,
+          "min": 57.252834751199416,
+          "max": 59.502754474315836,
+          "width": 2.2499197231164203
+        },
+        "air": {
+          "median": 0.049840892897106186,
+          "min": 0.04935797053448119,
+          "max": 0.059992883792973295,
+          "width": 0.010634913258492106
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 7.558765404525168,
+          "min": 7.484089798723423,
+          "max": 7.882579403763745,
+          "width": 0.3984896050403215
+        },
+        "approvalNetCommute": {
+          "median": 58.78255567870128,
+          "min": 57.252834751199416,
+          "max": 59.502754474315836,
+          "width": 2.2499197231164203
+        },
+        "ihtDemandShareRaw": {
+          "median": 0.07675675675675675,
+          "min": 0.07163771227796213,
+          "max": 0.10161240068546502,
+          "width": 0.029974688407502892
+        },
+        "ihtDemandShareCapped": {
+          "median": 0.07910700284735692,
+          "min": 0.07416538679169024,
+          "max": 0.10413091199361404,
+          "width": 0.029965525201923804
+        },
+        "ihtDemandShare": {
+          "median": 0.2043646525277822,
+          "min": 0.19548122507341575,
+          "max": 0.552447370552489,
+          "width": 0.3569661454790733
+        },
+        "dirtyJobShare": {
+          "median": 0.5644817185315971,
+          "min": 0.5231842205633956,
+          "max": 0.5876499853672812,
+          "width": 0.06446576480388555
+        }
+      }
+    },
+    {
+      "yearIndex": 11,
+      "year": 2011,
+      "metrics": {
+        "population": {
+          "median": 96752,
+          "min": 95048,
+          "max": 99741,
+          "width": 4693
+        },
+        "approval": {
+          "median": 61.12917303648098,
+          "min": 60.01350448336548,
+          "max": 62.44272362884393,
+          "width": 2.4292191454784486
+        },
+        "air": {
+          "median": 0.052897693956521386,
+          "min": 0.050858004117753645,
+          "max": 0.0631329696921826,
+          "width": 0.012274965574428955
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 7.6745119055239615,
+          "min": 7.475352723467167,
+          "max": 7.98572866658569,
+          "width": 0.5103759431185226
+        },
+        "approvalNetCommute": {
+          "median": 61.12917303648098,
+          "min": 60.01350448336548,
+          "max": 62.44272362884393,
+          "width": 2.4292191454784486
+        },
+        "ihtDemandShareRaw": {
+          "median": 0.10274549435741957,
+          "min": 0.09761278575763706,
+          "max": 0.12856200527704487,
+          "width": 0.03094921951940781
+        },
+        "ihtDemandShareCapped": {
+          "median": 0.10533950404089246,
+          "min": 0.10197970973650838,
+          "max": 0.13106812447434818,
+          "width": 0.029088414737839796
+        },
+        "ihtDemandShare": {
+          "median": 0.24701639583729343,
+          "min": 0.23188461837029667,
+          "max": 0.5094018023788878,
+          "width": 0.2775171840085911
+        },
+        "dirtyJobShare": {
+          "median": 0.5500550055005501,
+          "min": 0.5076343446361293,
+          "max": 0.5562981654504535,
+          "width": 0.04866382081432419
+        }
+      }
+    },
+    {
+      "yearIndex": 12,
+      "year": 2012,
+      "metrics": {
+        "population": {
+          "median": 112017,
+          "min": 110173,
+          "max": 115277,
+          "width": 5104
+        },
+        "approval": {
+          "median": 63.45839207561623,
+          "min": 62.694505095558135,
+          "max": 64.09337134853031,
+          "width": 1.3988662529721765
+        },
+        "air": {
+          "median": 0.056480445555305514,
+          "min": 0.055060889361576174,
+          "max": 0.06321086526316894,
+          "width": 0.008149975901592763
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 7.643054821522291,
+          "min": 7.555853602178401,
+          "max": 7.817123079239544,
+          "width": 0.261269477061143
+        },
+        "approvalNetCommute": {
+          "median": 63.45839207561623,
+          "min": 62.694505095558135,
+          "max": 64.09337134853031,
+          "width": 1.3988662529721765
+        },
+        "ihtDemandShareRaw": {
+          "median": 0.12554240340053724,
+          "min": 0.12078749643344007,
+          "max": 0.15258555793618622,
+          "width": 0.03179806150274615
+        },
+        "ihtDemandShareCapped": {
+          "median": 0.1312822413739845,
+          "min": 0.12868442401298,
+          "max": 0.15798006484928545,
+          "width": 0.029295640836305453
+        },
+        "ihtDemandShare": {
+          "median": 0.2890900267525517,
+          "min": 0.2613714023814377,
+          "max": 0.5257463050496678,
+          "width": 0.2643749026682301
+        },
+        "dirtyJobShare": {
+          "median": 0.5145637283144485,
+          "min": 0.4792650189762103,
+          "max": 0.5316366207140333,
+          "width": 0.05237160173782296
+        }
+      }
+    },
+    {
+      "yearIndex": 13,
+      "year": 2013,
+      "metrics": {
+        "population": {
+          "median": 127716,
+          "min": 125643,
+          "max": 131345,
+          "width": 5702
+        },
+        "approval": {
+          "median": 64.18356072237833,
+          "min": 63.43598355568915,
+          "max": 64.58004953761619,
+          "width": 1.1440659819270422
+        },
+        "air": {
+          "median": 0.0626349174984806,
+          "min": 0.059639519758828086,
+          "max": 0.06867490467543301,
+          "width": 0.009035384916604924
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 7.57962751764717,
+          "min": 7.479314417780453,
+          "max": 7.772626818739538,
+          "width": 0.29331240095908484
+        },
+        "approvalNetCommute": {
+          "median": 64.18356072237833,
+          "min": 63.43598355568915,
+          "max": 64.58004953761619,
+          "width": 1.1440659819270422
+        },
+        "ihtDemandShareRaw": {
+          "median": 0.1472013244710637,
+          "min": 0.1411727370373987,
+          "max": 0.17319691138151133,
+          "width": 0.032024174344112644
+        },
+        "ihtDemandShareCapped": {
+          "median": 0.14852044828942193,
+          "min": 0.14285361273104674,
+          "max": 0.1744074002698015,
+          "width": 0.03155378753875476
+        },
+        "ihtDemandShare": {
+          "median": 0.25788124765980364,
+          "min": 0.24680424118752792,
+          "max": 0.4151575939144013,
+          "width": 0.1683533527268734
+        },
+        "dirtyJobShare": {
+          "median": 0.5056201425910463,
+          "min": 0.45443026518236945,
+          "max": 0.5278961110347671,
+          "width": 0.07346584585239763
+        }
+      }
+    },
+    {
+      "yearIndex": 14,
+      "year": 2014,
+      "metrics": {
+        "population": {
+          "median": 144142,
+          "min": 141755,
+          "max": 147811,
+          "width": 6056
+        },
+        "approval": {
+          "median": 65.83677929187496,
+          "min": 64.08259468887675,
+          "max": 68.03283019801194,
+          "width": 3.950235509135183
+        },
+        "air": {
+          "median": 0.06511730573002905,
+          "min": 0.06322297601421999,
+          "max": 0.07410938592094962,
+          "width": 0.010886409906729635
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 7.601793265334562,
+          "min": 7.477727209042094,
+          "max": 7.787854418411808,
+          "width": 0.31012720936971405
+        },
+        "approvalNetCommute": {
+          "median": 65.83677929187496,
+          "min": 64.08259468887675,
+          "max": 68.03283019801194,
+          "width": 3.950235509135183
+        },
+        "ihtDemandShareRaw": {
+          "median": 0.16689968542467667,
+          "min": 0.1590636646978052,
+          "max": 0.1904484942484167,
+          "width": 0.031384829550611504
+        },
+        "ihtDemandShareCapped": {
+          "median": 0.1686850828729282,
+          "min": 0.1613660004869088,
+          "max": 0.192009048002262,
+          "width": 0.03064304751535321
+        },
+        "ihtDemandShare": {
+          "median": 0.26881157977478665,
+          "min": 0.26270371481724775,
+          "max": 0.40822076606310653,
+          "width": 0.1455170512458588
+        },
+        "dirtyJobShare": {
+          "median": 0.5060715875135101,
+          "min": 0.4435276613012309,
+          "max": 0.5298507462686567,
+          "width": 0.0863230849674258
+        }
+      }
+    },
+    {
+      "yearIndex": 15,
+      "year": 2015,
+      "metrics": {
+        "population": {
+          "median": 161256,
+          "min": 158484,
+          "max": 165591,
+          "width": 7107
+        },
+        "approval": {
+          "median": 68.74119390161849,
+          "min": 64.69922670712246,
+          "max": 69.05065103304551,
+          "width": 4.351424325923048
+        },
+        "air": {
+          "median": 0.07256471532758633,
+          "min": 0.07012687396310778,
+          "max": 0.08036256012625011,
+          "width": 0.010235686163142327
+        },
+        "ihtShare": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTerm": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "commuteTermRaw": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "width": 0
+        },
+        "resCommute": {
+          "median": 7.565454834504599,
+          "min": 7.390685812163544,
+          "max": 7.757654707813475,
+          "width": 0.36696889564993107
+        },
+        "approvalNetCommute": {
+          "median": 68.74119390161849,
+          "min": 64.69922670712246,
+          "max": 69.05065103304551,
+          "width": 4.351424325923048
+        },
+        "ihtDemandShareRaw": {
+          "median": 0.18380605292346697,
+          "min": 0.1750467749876908,
+          "max": 0.20477009024495058,
+          "width": 0.02972331525725977
+        },
+        "ihtDemandShareCapped": {
+          "median": 0.18632767000040165,
+          "min": 0.1780502980551151,
+          "max": 0.20698876805134606,
+          "width": 0.028938469996230953
+        },
+        "ihtDemandShare": {
+          "median": 0.2793007453909392,
+          "min": 0.27612792233771954,
+          "max": 0.4033444512528276,
+          "width": 0.12721652891510804
+        },
+        "dirtyJobShare": {
+          "median": 0.5060602194437357,
+          "min": 0.42580446361755514,
+          "max": 0.5293278053422144,
+          "width": 0.10352334172465921
+        }
+      }
+    }
+  ]
+}

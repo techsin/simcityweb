@@ -61,6 +61,7 @@ import { Toolbar } from '../ui/Toolbar';
 import { TopBar } from '../ui/TopBar';
 import { PhotoBar } from '../ui/PhotoBar';
 import { computeUiZoom, setUiZoom } from '../ui/zoom';
+import { attachFloatText } from '../ui/FloatText';
 import { installUiSounds, type UiSoundAudio } from '../ui/uiSounds';
 import { asMusicAudio, shortMood, watchTrackChanges } from '../ui/MusicPlayer';
 import { EmergencyBanner } from '../ui/EmergencyBanner';
@@ -320,6 +321,8 @@ export class CityScene {
 
     // ---- HUD
     this.topBar = new TopBar(ctx, this.uiRoot);
+    // FEEL-03: cost floats at the pointer (outside the zoomed .mp-ui; Tool.ts's commitAction finds them by the context)
+    attachFloatText(ctx, this.root, () => this.mouse);
     const bl = h('div', { class: 'hud-bl' });
     this.uiRoot.appendChild(bl);
     new LegendChip(ctx, bl);
