@@ -22,11 +22,15 @@ export const DEPENDENCIES = {
   [CHECKS.save]: [CHECKS.setCamera], triggerDisaster: [CHECKS.fixture], dispatch: ['triggerDisaster'], dispatchBest: ['dispatch'],
   dismissAlert: ['triggerDisaster'], [CHECKS.packets]: ['dispatch'], [CHECKS.recovery]: ['zone'],
 };
-/** The recovery-mirror check reads the packet journal that the App's pagehide writes. Hosts without one skip it. */
-export function recoveryMirrorSkip(host) {
+/**
+ * The recovery-mirror check reads the packet journal that the App's pagehide writes. `journalMirror` is whether the
+ * page's packet host holds one (PacketSimHost.mirror). WORKER_DESIGN §6 W1.2: WorkerSimHost runs with the journal off
+ * and a SnapshotMirror, so pagehide writes no journal; W1.3 turns it on where the page's store persists. Loopback
+ * always has to journal, so it never skips.
+ */
+export function recoveryMirrorSkip(host, journalMirror) {
   if (host === 'local') return 'LocalSimHost uses snapshot recovery; the command journal belongs to packet hosts';
-  // WORKER_DESIGN §6 W1.2: WorkerSimHost runs with journal off and a SnapshotMirror; pagehide writes no journal.
-  if (host === 'worker') return 'W1.2 WorkerSimHost keeps snapshot recovery (journal off, SnapshotMirror); the worker journal is the W1.3/T039 gate';
+  if (host === 'worker' && journalMirror === false) return 'this WorkerSimHost has no journal mirror (W1.2: snapshot recovery only; W1.3: only where the store persists); the worker journal is the W1.3/T039 gate';
   return null;
 }
 export function selectedChecks(only) {

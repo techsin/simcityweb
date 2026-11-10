@@ -262,14 +262,15 @@ test('freeze oracle: deadline starts at later resume/visible; hidden, delayed an
   assert.throws(() => resumeDelay({ ...f, framesDuringFreeze: [1] }), /frames while frozen/);
 });
 
-test('recovery mirror: local and the W1.2 worker host skip the journal check; loopback runs it', async () => {
-  assert.match(recoveryMirrorSkip('local'), /snapshot recovery/);
-  assert.equal(recoveryMirrorSkip('loopback'), null);
-  assert.match(recoveryMirrorSkip('worker'), /W1\.2 WorkerSimHost keeps snapshot recovery.*W1\.3\/T039/);
-  // Tripwire: when W1.3 turns the worker journal on, replace the worker skip with the journal check.
-  const source = await readFile(new URL('../../src/worker/WorkerSimHost.ts', import.meta.url), 'utf8');
-  assert.match(source, /journal: false/, 'WorkerSimHost now journals: revisit recoveryMirrorSkip(worker)');
-  assert.match(source, /class SnapshotMirror implements RecoveryMirror/);
+test('recovery mirror: local and a worker host without a journal mirror skip; loopback and a journaling worker run it', async () => {
+  for (const mirror of [true, false, null]) assert.match(recoveryMirrorSkip('local', mirror), /snapshot recovery/);
+  assert.match(recoveryMirrorSkip('worker', false), /no journal mirror.*W1\.3\/T039/);
+  assert.equal(recoveryMirrorSkip('worker', true), null, 'a journaling worker host (W1.3) must run the check');
+  assert.equal(recoveryMirrorSkip('worker', null), null, 'an unreadable host must fail in the check, not skip');
+  for (const mirror of [true, false, null]) assert.equal(recoveryMirrorSkip('loopback', mirror), null);
+  // The page reads PacketSimHost.mirror; W1.2's WorkerSimHost turns the journal off.
+  const packet = await readFile(new URL('../../src/worker/LoopbackSimHost.ts', import.meta.url), 'utf8');
+  assert.match(packet, /private mirror: JournalMirror \| null/, 'PacketSimHost.mirror moved: update the page read in checks.mjs');
 });
 
 test('crash overlay: the W1.2 crash dialog and a crashed city fail the gate; a healthy page passes', async () => {

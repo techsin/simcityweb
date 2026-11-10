@@ -232,7 +232,10 @@ export async function runChecks(page, options, report, protectors, signal) {
     return 'QueryTool → InfoPanel → idempotent setHistoric acknowledged';
   }, ['fixture / grow a neighbourhood']);
 
-  const recoverySkip = recoveryMirrorSkip(options.host);
+  let journalMirror = null;
+  // A failed read leaves the decision to the check itself, which then reports the page's actual error.
+  if (options.host === 'worker') journalMirror = await page.evaluate(() => window.__metropolis.city.scene.host.mirror != null).catch(() => null);
+  const recoverySkip = recoveryMirrorSkip(options.host, journalMirror);
   if (recoverySkip) report.add(CHECKS.recovery, 'SKIPPED', recoverySkip);
   else await report.check(CHECKS.recovery, async () => {
     const rows = await d.draw('zone', 'zone:1', [146, 154]);
