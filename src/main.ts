@@ -188,6 +188,7 @@ class App {
   private region: RegionModel | null = null;
   private storage = new RegionStorage(() => ({
     root: this.root, region: this.region, city: this.city, saved: this.saveChain,
+    busy: this.busy, setBusy: (busy) => { this.busy = busy; },
     clearCity: () => { this.city = null; }, open: (data) => this.openRegion(data),
   }));
   private city: {
@@ -555,7 +556,13 @@ class App {
     const offered = await this.startupOffer();
     if (offered === 'recovered' || offered === 'later') return;
     data = await this.storage.open(data);
-    if (!(await this.recoveryGate(data.id, tileKey))) return;
+    const offer = this.offerPending;
+    if (!(await this.recoveryGate(data.id, tileKey))) {
+      // T086 B6: "Later" leaves this tab on its title screen, which must not keep the region's lock (a second tab would
+      // open read-only). Only the start-up offer's Recover goes on into the city, on this session.
+      if ((await offer) !== 'recovered') this.storage.dispose();
+      return;
+    }
     const ld = new LoadingScreen(this.root);
     ld.set('Generating terrain…', 0.15);
     await paint();

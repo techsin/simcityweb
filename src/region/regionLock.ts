@@ -40,9 +40,15 @@ interface RegionStorageContext {
   region: RegionModel | null;
   city: StorageCity | null;
   saved: Promise<void>;
+  /** App.busy: a city is being founded or entered. The takeover's reload waits for it, then holds it itself. */
+  busy: boolean;
+  setBusy(busy: boolean): void;
   clearCity(): void;
   open(data: RegionData): Promise<void>;
 }
+
+/** how often a takeover asks whether the city entry it waits for has finished (real ms) */
+const ENTRY_POLL_MS = 50;
 
 export class RegionStorage {
   private session: RegionStorageSession | null = null;
@@ -52,13 +58,26 @@ export class RegionStorage {
     // Reopening after takeover re-enters here before acquire() has finished; never await that same request.
     if (this.session?.region.id === data.id) { this.session.region = data; return regionSaveAccess(data.id); }
     this.dispose();
-    const current = new RegionStorageSession(data, this.context().root, async () => {
-      const context = this.context();
-      await reopenStoredRegion(current.region.id, context.city, context);
-    }, () => this.context().city);
+    const current = new RegionStorageSession(data, this.context().root, () => this.takeOver(current), () => this.context().city);
     this.session = current;
     await current.acquire();
     return regionSaveAccess(data.id);
+  }
+
+  /**
+   * The takeover's reload: the session has the lock, and saves stay off until this returns. T086 B1: "Use it here
+   * instead" clicked while a city was loading reopened the region at once, and the load then entered its city over the
+   * region screen, as the writer, without the Recover question. So a city entry in flight finishes first (the teardown
+   * then finds the city it opened), and none starts while the old city goes and the region reopens.
+   */
+  private async takeOver(current: RegionStorageSession): Promise<void> {
+    while (this.session === current && this.context().busy) await new Promise((resolve) => setTimeout(resolve, ENTRY_POLL_MS));
+    // the player left this region while the takeover waited: nothing of it is left to reopen
+    if (this.session !== current) return;
+    const context = this.context();
+    context.setBusy(true);
+    try { await reopenStoredRegion(current.region.id, context.city, context); }
+    finally { context.setBusy(false); }
   }
 
   async open(data: RegionData): Promise<RegionData> {
