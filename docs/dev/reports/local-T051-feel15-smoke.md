@@ -329,3 +329,110 @@ game cannot be verified until the view/transport/caller request above lands.
   Continue an old save and switch LOW/HIGH; inspect smoke after the geometry/activity backlog settles.
 - [ ] On the real GPU, check T040's 2 ms scheduling/one-entry overshoot and the polish feedback frame budget during
   growth/month boundaries. Full Vitest, visual playability and GPU timing remain lead-owned checks.
+
+## Real-GPU QA on the desktop (10 Nov, 97691ad against dev 1c2019c)
+
+**Verdict: every FEEL-15 Acceptance line passes** on the RTX 5070 Ti (ANGLE D3D11, driver 610.47, Chromium 141), on the default host, `?simworker=loopback` and `?simworker=1`. Gate on 97691ad: tsc, vitest 243 files / 2,443 tests, the bot identical (192,899). The QA agent's report follows; its three low findings (two older than this lane) go to the polish backlog, not to a fix round.
+
+### QA: T051 · FEEL-15 · smoke that reads output (real GPU)
+
+Folder (`QA` below): `C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\qa\T051`.
+I did not edit either tree. T051 was served by its own Vite on 5643, and the dev checkout (A/B base) on 5646. Vite used a
+wrapper config in `QA\cfg` (it imports the tree's `vite.config.ts` and adds only COOP/COEP headers and a cache dir in my
+folder), so nothing was written into the trees. Every server and browser I started is stopped, and both trees are clean
+(`git status`: T051 0 lines; dev only the pre-existing `?? .claude/`).
+
+QUIET: the flag came up at 19:26:52 while my first session was running. I saw it at 19:33 and closed my browser. The
+timing run's browsers started at 19:36:58, after mine had closed. After that my driver closes itself the moment QUIET
+appears, and I launched nothing until the flag cleared at 19:44.
+
+#### Environment
+
+| | |
+|---|---|
+| GPU | `ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti (0x00002C05) Direct3D11 vs_5_0 ps_5_0, D3D11)` (WEBGL_debug_renderer_info, every session), driver 610.47 |
+| Browser | Chromium 141.0.7390.37, the headless shell that the tree's Playwright 1.56.1 launches by default (`chromium.launch({headless:true, args:['--enable-gpu','--ignore-gpu-blocklist','--use-angle=default']})` plus no background throttling); 1280x720, DPR 1, cross-origin isolated. Playwright 1.56.1 maps to revision 1194. `ms-playwright\chromium-1234` is Chromium 151.0.7922.34 and was not used. |
+| OS / Node | Windows 10 Education 10.0.19045, Node 22.12.0 |
+| T051 | `C:\Users\techsin\Desktop\projects\simcityweb-T051`, local/T051-feel15-smoke, **97691ad** (clean): dev 87c7c9c (T040, T053) merged over the plant-load round, whose last commit is 142c612 |
+| A/B base | `C:\Users\techsin\Desktop\projects\simcityweb` at dev **1c2019c** (clean, read-only: T040 included, T051 not) |
+| Cities | `small_s7_y10` (128², 101,602 residents, 2,765 buildings, one grid: coal #5092, gas #656, 6 wind turbines; 51 plume industries); `vet_s7_y43` (256², 991,343 residents, 11,495 buildings, 3 coal, 1 gas, 2 nuclear; about 405 output buildings). Both imported programmatically. HIGH, fixed hour 13, no tips, autosave or New Year. |
+| Hosts | default = `LocalSimHost` (`utilities.plantLoad` present); `?simworker=loopback` = `LoopbackSimHost`; `?simworker=1` = `WorkerSimHost` (simWorker.ts running). On both packet hosts `utilities.plantLoad` is absent (T061 not landed). |
+| Harness | `QA\drv.mjs` (driver), `QA\send.mjs`, `QA\lib.js` (page helpers: particle counts per building, a stale-plume audit, month runner), `QA\cmds\*.mjs` (one per check), `QA\run_*.sh` (batches). "Particles" means a building's operational emitter counts (smoke, steam, exhaust) in `Effects.emitters`. "Step" is `Effects.plumes.step`. |
+
+#### Results
+
+| # | Item | Result | Measured | Evidence |
+|---|---|---|---|---|
+| 1 | The 0/340 refinery (no workers) shows no smoke (default host) | **PASS** | Refinery #535 (ind_refinery.id.4), sim held. As loaded 326/340: 54 particles (step 4). Set to 0/340 (record change + buildingChanged): **0** at once (counts zeroed in place). 17/340 (5 %): 0. Phase-independent picture (brightest of 24 frames over 4 s): the luminance of the box beside the stacks went 146.3 → 125.3 on T051 (plume gone) and 146.7 → 147.8 on dev (plume stays). Dev at 0/340: **54** particles. Naturally (labour shortage): 46 plume buildings under 10 % staffed, 0 particles. | `ev\ab_refinery_0of340.jpg`; `out\t051h_refinery.json`, `out\t051_refinery_max.json`, `out\dev_refinery_max.json`, `out\devh_refinery.json` |
+| 2 | Industrial plume steps with staffing: four steps, zero when unpowered or under 10 % staffed | **PASS** | Every month boundary at ultra, after the refresh drains, all plume buildings checked against `ceil(min(1, jobs/cap) × 4)`, or 0 when unpowered or under 10 %. Mild shortage (540 homes bulldozed): steps 3 and 4, 51/51 match for 3 months; particle ratio to the building's own full count: step 3 0.778-0.80, step 4 1.0. Deep shortage (1,615 homes): step 2 (0.50), then step 1 (0.278-0.30), then 46 at step 0 with 0 particles; 51/51 match for 6 months. Unpowered refinery #647: 78 → 0 at once (dev: 78). Factory #3841: 157/170 → 36 p, 61/170 → 18, 19/170 (11 %) → 10, 14/170 (8 %) → 0. Loopback showed exactly 10 % (17/170) as step 1. | `ev\t051_staff_sheet.jpg`; `out\t051h2_staff_mild.json`, `out\t051h_staff.json` |
+| 3 | Default host: a coal plant at 15 % of its grid's load shows at most 40 % of its full-load particles | **PASS** | Coal #5092 with 2 coal plants and 2 gas plants added to its grid: load **0.153**, activity 0.25 (the floor), step 1, **10** particles. The same plant at load 0.796 (added plants removed, utilities funding 10 %): step 4, **36**. **27.8 %**. As loaded (0.398): step 2, 18. A/B: dev shows 36 at load 0.14 (always full). Big city: coal 10/36 at load 0.152 against 0.92. | `ev\t051_coal_15_vs_full.jpg`, `ev\ab_coal_dev_vs_t051.jpg`; `out\t051h_coal_add2.json`, `out\t051h_coal_full.json`, `out\devh_coal_add2.json` |
+| 3a | Gas exhaust and nuclear steam (lane checklist) | **PASS** | Gas #656: 10 vs 36 (27.8 %). Nuclear #25949 and #35045 (7 nuclear plants added, then removed): **14 vs 52 (26.9 %)**; as loaded (0.506) step 3, 40. | `ev\t051_nuclear_15_vs_full.jpg`; `out\t051h_big_add.json`, `out\t051h_big_full.json` |
+| 4 | Emitters rebuild at most once per building per month (several months at ultra) | **PASS** (activity-driven); see bug 2 for lifecycle | `Effects.onBuilding` wrapped, counting per (building, month). 9 runs, 5,793 building-months (small city: growth 2 × 12 months, coal phases, two shortages; big city: 4 and 10 months; loopback and worker 8 months each). **Activity-driven rebuilds: 423, never more than 1 per building-month.** Plus 3,070 creations, 41 lifecycle rebuilds and 137 immediate stops (in place, no rebuild). Counting lifecycle too (fire, abandonment): 3 building-months reached 2 (activity step, then a fire or abandonment in the same month). Plain growth over 12 months: T051 had 0 activity rebuilds and 2 lifecycle; dev had **48** list replacements (it also rebuilds the dust at each construction quarter) and up to 3 list constructions in a building-month. | `out\rebuild_table.json`, `out\*rebuild*.json` |
+| 4a | Mid-month staffing changes (event path; lane checklist) | **PASS** | Refinery #809 in one held month: 60 % → 30 % → 95 %: plume stays at step 4, same list. 5 % → 0 at once (in place). 80 % and 45 %: stays at 0. Next month: one rebuild (step 4, sim staffing 302/340). | `out\t051h_ratelimit.json` |
+| 5 | Fire, construction dust, burn-down (lane checklist) | **PASS** | The player's fire on unstaffed factory #3841: 0 plume + **118** fire particles. On staffed #2628: 18 + 118. Dev gives the same 118, and keeps the full plume (36) on the unstaffed one. After the fire, plumes follow staffing (see bug 2). 20 constructing buildings: all have dust (6), none a plume. Burnt rubble: no plume (audit). | `ev\t051_fire_a.jpg`; `out\t051h_fire.json`, `out\devh_fire.json` |
+| 6 | `?simworker=loopback`: plants "unavailable" (expected until T061); clean degradation | **PASS (as expected)** | `plantLoad` absent, so load null, activity 0, **no plume on coal or gas**: expected, not a failure. The replica's own map is filled by T051's stream (0.4081 against the core's 0.4130, which is drift under 0.005 accumulating as designed; 0.1559 = 0.1559 later). Industry follows the mirrored staffing: 49-51/49-51 every month, steps 2 → 1 → 0 (40 at step 0, 0 particles). Stale audit clean throughout: no orphan emitters, no particles without activity, no plant particles without load, no wrong or stale steps. Bulldozing refinery #1241 (78 p) removes its emitters. Utilities streams per month for months 120-128: 0, 1, 1, 0, 5, 5, 1, 0, 0, out of 2,099 packets (never every packet; unchanged months send none). | `out\t051lb_*.json` |
+| 7 | `?simworker=1` (real worker): the same | **PASS (as expected)** | Same as loopback: plants show no plume (load unavailable), replica map filled (0.3976 from the Ready). Industry 51/51 every month (steps 2 → 1 → 0, 43-45 at 0). Audit clean. Bulldoze clean. Streams per month: 0, 1, 1, 1, 6, 5, 1, 0, 0 out of 513 packets. | `ev\t051w_staff_sheet.jpg`, `ev\t051w_coal_unavailable.jpg`; `out\t051w_*.json` |
+| 8 | Load and resync: smoke starts from the new state (lane checklist) | **PASS** | Resync forced through the replica's own resync request on loopback and on the worker: one 'reset', the adopt carried the full plant-load snapshot (8 ids), and the audit was clean afterwards (46/45 groups, 9/6 operating, 0 stale). Local: repeated re-imports of the same city (same ids and month, a new scene each time): plumes as at first load, audit clean. | `out\t051lb_resync.json`, `out\t051w_resync.json` |
+| 9 | LOW / HIGH at runtime (lane checklist) | **PASS** (see bug 3, pre-existing) | Big city, HIGH → LOW → 2 months → HIGH: audit clean at every point; LOW smoke capped at 2,500. | `out\t051h_*` (eval output in the run log) |
+| 10 | Activity refresh at speed and the hook (lane checklist, indicative) | **PASS** | Big city, 9 months at ultra (about 90 frames a month): every output building refreshed every month (lag 0, 1 only just after a boundary). A burst of 150 plops just before a boundary: the 411-unit refresh finished in 2 frames (262 units in a 2.0 ms frame with 4 builds, then 149 in 0.85 ms), and 17 frames interleaved both kinds. Over 52 working frames: p50 0.15 ms, p95 1.73 ms, max 5.3 ms (one frame: 1 unit + 2 geometry builds, T040's indivisible build). Indicative only: other agents' browsers were running. | `out\t051h_big_stale.json`, `out\t051h2_big_stale.json`, `out\t051h2_hook_summary.json` |
+| 11 | Console and page errors (all hosts and sessions) | **PASS** | 0 page errors. The console showed only the baseline: the harness's `WEBGL_CONTEXT_LOST menu-bg-canvas attached=false` and D3D compiler warnings X4122 / X4000 (plus X3595 on quality switches); dev shows the same. | `out\*_errors.json` |
+
+#### Bugs and deviations
+
+1. **Low (pre-existing, kept by T051's cache): plume emitters are placed at the building's pop-in scale.**
+   - **What happens.** `place()` folds the pop-in animation into `v.sy` (`BuildingRenderer.ts:2092-2093`). `Effects.onBuilding` places emitters at `baseY + ly * v.sy` (`Effects.ts:280`). The plume key at `Effects.ts:264` has no `sy`, so later same-step calls return early. A plume built during the pop therefore sits low until the building's next step change or lifecycle change.
+   - **How often.** 5 of 278 operational builds in the T051 runs that logged it. Three were at sy **0.863** (construction finished with staff already above 10 %: refinery #5904 on loopback and the worker, #35400 locally): emitters 14 % low, inside the stack top. Two were at sy 0.977 (a monthly refresh during the pop). The ones I followed corrected themselves 1-2 months later, when staffing changed step. By the code, dev builds a finished industry's plume at the pop scale every time (it does not wait for staff) and never rebuilds it, so this is not a T051 regression.
+   - **Fix.** Place operational emitters at full height when not constructing (`const sy = v.constructing ? v.sy : 1` for the smoke and steam entries in `Effects.ts:280`). Or keep the pop factor out of `v.sy` and apply it only to the instance matrix in `place()`.
+2. **Low / deviation from the strictest reading: lifecycle rebuilds bypass the monthly limit.**
+   - **What happens.** A key change (fire start or end, abandonment, construction finished) always rebuilds at the current step (`Effects.ts:266-277`). In 3 of 5,793 building-months the emitters were built twice: an activity step, then a fire or abandonment.
+   - **The reverse case.** A lifecycle rebuild at zero activity holds a returning plume off for the rest of the month. Factory #2628 at 26 % staffing after its fire showed no plume until the boundary, then step 4. This is the documented scope of the lane report's item 5, and fire must start at once.
+   - **Fix, if the strict reading is wanted.** On a key change with `previous.month === v.activityMonth` and `previous.step > 0`, keep `previous.step` for the operational part, so that only fire and dust follow the lifecycle. Otherwise accept and document it.
+3. **Low (pre-existing, not T051): the smoke cap changes only at the next emitter change after a quality switch.**
+   - **What happens.** `CityObjectsView.setQuality` sets `effects.maxSmoke` without marking the buffer dirty (`CityObjectsView.ts:282`; dev has the identical line at :278). After HIGH → LOW the 991k city kept 6,948 smoke instances (cap 2,500) while paused. After LOW → HIGH it stayed at 2,500 until something changed.
+   - **Why T051 makes it a little worse.** Same-step updates no longer set dirty.
+   - **Fix.** Make `maxSmoke` a setter in `Effects.ts` (around :222) that sets `this.dirty = true`, or call an `effects.markDirty()` after line 282.
+4. **Note: the refresh restarts every month even when it has not finished** (`BuildingRenderer.ts:940-944`).
+   - Under sustained geometry pressure for a whole month, buildings late in the set could be skipped. I never saw it: the 991k city finished every month within 1-2 frames.
+   - Suggested hardening: start a new scan only once the current one is done, and rescan right after it if the month changed.
+5. **Note (outside FEEL-15): the refinery's flare-tip flames are model geometry and stay lit at 0/340.** They are visible in `ev\ab_refinery_0of340.jpg`. They are not smoke particles.
+6. **Expected, not a failure: no power-plant plume at all on `?simworker=loopback` and `?simworker=1` until T061.** The replica already holds correct loads (`Replica.plantLoad`), but the packet hosts' `utilities` view does not expose them (`LoopbackSimHost.ts:255`; `CityScene.ts:526` falls back to null). Nothing went stale: no errors, no plant particles, audit clean before and after resync.
+
+#### Lane checklist (report draft) covered
+
+- Round 3:
+  - Covered:
+    - local 15 % and full coal grids (activity 0.25 and 0.796; 27.8 %);
+    - zero staffing and power stop the plume;
+    - packet hosts unavailable before and after streams;
+    - unchanged months send no utilities stream, and changes send one after a pass;
+    - load and resync leave no stale producer data.
+  - Not covered:
+    - distinct disconnected grids (both test cities are single-grid);
+    - an explicit empty snapshot;
+    - the repeat on packet hosts after T061.
+- Round 2:
+  - Covered:
+    - 0/340 = 0 particles, and 15 % coal 10 vs 36;
+    - month-boundary burst (alternating turns, 2 ms plus one build; indicative);
+    - same-step updates with no reconstruction, positive rebuilds monthly;
+    - shutdown, fire, construction, load/reset, LOW/HIGH.
+  - Not covered: other lanes' merged work in the same hook.
+- Round 1:
+  - Covered:
+    - refinery returns after ≥ 10 % plus a month (#809, #3841);
+    - gas exhaust and nuclear steam;
+    - mid-month variation (≤ 1 positive reconstruction, immediate stop, same-month restart waits);
+    - fire and dust counts unchanged;
+    - removal and burn-down leave no plume;
+    - reset with the same ids and month;
+    - LOW/HIGH.
+  - Not covered:
+    - queued model swaps specifically;
+    - selection, picking and fireworks interaction.
+
+#### Evidence (8 screenshots, each viewed)
+
+`ev\ab_refinery_0of340.jpg`, `ev\t051_staff_sheet.jpg`, `ev\t051_coal_15_vs_full.jpg`, `ev\ab_coal_dev_vs_t051.jpg`,
+`ev\t051_nuclear_15_vs_full.jpg`, `ev\t051_fire_a.jpg`, `ev\t051w_staff_sheet.jpg`, `ev\t051w_coal_unavailable.jpg`.
+The measurements are in `out\` (`rebuild_table.json` summarises the 10 rebuild runs). Full command outputs are in
+`run\<session>\q\*.out.json`.
