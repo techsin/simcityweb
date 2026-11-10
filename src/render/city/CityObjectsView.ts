@@ -47,6 +47,8 @@ export interface CityObjectsViewContext {
   getPedestrianActivity?: PedestrianFeed;
   /** FEEL-23 supplies the visual rain state when its weather view is available. */
   getRain?: () => boolean;
+  /** FEEL-15: the plant's grid load from UtilitiesView (null until available). */
+  getPlantLoad?: (id: number) => number | null;
   /** WP8 emergency dispatch: vehicles, incidents and the continuous sim time (EmergencyVehicles) */
   getEmergency?: EmergencyFeed | null;
   /** returns the current CityState (used on 'reset' when the Simulation replaced its state) */
@@ -149,6 +151,7 @@ export class CityObjectsView implements CityObjectsViewApi {
       if (id === this.buildings.selected) this.previews.setSelection(v);
       this.launchSiteIndex?.visualChanged(id, v, CELL_SIZE);
     };
+    this.buildings.plantLoad = ctx.getPlantLoad ?? null;
     this.vehicles = new VehicleRenderer(state, this.net, this.surf, this.culler, this.quality);
     this.vehicles.signalized = this.roads.signalized;
     this.vehicles.getRoutes = ctx.getTrafficRoutes ?? null;
@@ -258,6 +261,7 @@ export class CityObjectsView implements CityObjectsViewApi {
     this.subwayDirty = true;
     this.flushPower();
     this.launchSiteIndex = null;
+    this.effects.clearBuildings();
     this.buildings.rebuildAll();
     this.launchSiteIndex = new LaunchSiteIndex(this.launchSiteSource());
     this.props.resetGarbage(this.state.buildings.values(), this.state.day, this.state);

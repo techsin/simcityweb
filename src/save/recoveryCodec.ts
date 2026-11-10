@@ -5,6 +5,7 @@ import { MONTH_NAMES } from '../sim/CityState';
 import type { SavableCityState } from './state';
 import type { CityRecord } from './cities';
 import type { Journal, JournalOp } from '../worker/protocol';
+import { CONTINUITY_RECORDS } from '../sim/persist';
 
 export const DELTA_KIND = 'metropolis-city-delta';
 export const DELTA_VERSION = 1;
@@ -263,14 +264,40 @@ const sameShape = (cv: Layer, bv: Layer | undefined): boolean =>
   !!bv && (Array.isArray(cv) ? Array.isArray(bv) && bv.length === cv.length && bv.every((a, i) => a.length === cv[i].length) : !Array.isArray(bv) && bv.length === cv.length);
 const RECOMPUTED = new Set(RECOMPUTED_LAYERS);
 
+/** typed-array bytes of the continuity records in a save's data (T057) */
+function continuityBytes(data: Record<string, unknown>): number {
+  const sd = data.systemData as Record<string, unknown> | undefined;
+  let n = 0;
+  const walk = (v: unknown): void => {
+    if (isTypedArray(v)) n += v.byteLength;
+    else if (Array.isArray(v)) for (const x of v) walk(x);
+    else if (v instanceof Map) for (const x of v.values()) walk(x);
+    else if (v && typeof v === 'object') for (const x of Object.values(v)) walk(x);
+  };
+  if (sd) for (const k of CONTINUITY_RECORDS) walk(sd[k]);
+  return n;
+}
+/** the save's data without the continuity records (shallow copies; the save itself is not changed) */
+function withoutContinuity(data: Record<string, unknown>): Record<string, unknown> {
+  const sd = data.systemData as Record<string, unknown> | undefined;
+  if (!sd || !CONTINUITY_RECORDS.some((k) => k in sd)) return data;
+  const s2 = { ...sd };
+  for (const k of CONTINUITY_RECORDS) delete s2[k];
+  return { ...data, systemData: s2 };
+}
+
 /**
  * Delta of `cur` against `base` (null = no base). With `budget` (bytes), recomputed layers are dropped largest-first
  * until the typed-array payload fits (primary data is never dropped). `lean`: every recomputed layer is left out up
  * front, not even encoded (periodic background snapshots: far cheaper on a big city; restored from the base).
+ * T057's continuity records (CONTINUITY_RECORDS in systemData) are left out of lean snapshots, and of a budgeted
+ * snapshot that would not fit with them, before any layer is dropped: a game restored without them rebuilds that state
+ * at load, as before T057 (a snapshot that leaves layers out continues approximately anyway).
  */
 export function encodeCityDelta(cur: SerializedCity, base: SerializedCity | null, baseSavedAt: number, opts: { budget?: number; lean?: boolean } = {}): CityDelta {
   const layers: Record<string, ArrayDelta | ArrayDelta[]> = {};
   const dropped: string[] = [];
+  let data = opts.lean ? withoutContinuity(cur.data) : cur.data;
   for (const [k, v] of Object.entries(cur.layers)) {
     const bv = base?.layers[k];
     if (opts.lean && RECOMPUTED.has(k) && sameShape(v, bv)) {
@@ -291,6 +318,9 @@ export function encodeCityDelta(cur: SerializedCity, base: SerializedCity | null
   for (const [k, v] of Object.entries(cur.buildings.opt ?? {})) (opt ??= {})[k] = arrayDelta(v, base?.buildings.opt?.[k] ?? null);
   if (opts.budget !== undefined && base) {
     let total = Object.values(layers).reduce((a, d) => a + deltaBytes(d), 0) + Object.values(cols).reduce((a, d) => a + d.x.length, 0);
+    const cb = continuityBytes(data);
+    if (cb > 0 && total + cb > opts.budget) data = withoutContinuity(data);
+    else total += cb;
     const cands = RECOMPUTED_LAYERS.filter((k) => layers[k] && base.layers[k]).sort((a, b) => deltaBytes(layers[b]) - deltaBytes(layers[a]));
     for (const k of cands) {
       if (total <= opts.budget) break;
@@ -309,7 +339,7 @@ export function encodeCityDelta(cur: SerializedCity, base: SerializedCity | null
     scalars: cur.scalars,
     sets: cur.sets,
     maps: cur.maps,
-    data: cur.data,
+    data,
     layers,
     dropped,
     buildings: { count: cur.buildings.count, defs: cur.buildings.defs, extra: cur.buildings.extra, cols, opt },
@@ -468,9 +498,28 @@ export function buildRecoverySnapshot(regionId: string, tileKey: string, state: 
 
 export interface PendingRecovery {
   marker: RecoveryMarker;
+  /** empty for a journal alone (`marker.kind === 'journal'`) */
   payload: Uint8Array;
   /** the full save the snapshot is a delta of */
   record: CityRecord | null;
+  /** W1.3 (§4.3 Restoring): a journal alone, bound to `record`; nothing is rebuilt, the next boot replays it */
+  journal?: RecoveryJournal;
+}
+
+/** W1.3: the title screen's offer of a journal alone, described from the journal's own `info` (the page's last view of
+ *  the city) or else from the save it extends */
+export function journalOnlyMarker(journal: RecoveryJournal, record: CityRecord, regionName?: string): RecoveryMarker {
+  const info = journal.info, city = record.city, startYear = Number(city.config?.startYear ?? 2000);
+  const baseDay = Number(city.scalars.day ?? 0), stats = (city.data as { stats?: { population?: unknown } }).stats;
+  const day = Number.isFinite(info?.day) ? info!.day : baseDay;
+  return {
+    v: DELTA_VERSION, regionId: journal.regionId, tileKey: journal.tileKey, at: journal.at, baseSavedAt: record.savedAt,
+    bytes: 0, ls: false, dropped: [], kind: 'journal',
+    cityName: info?.cityName || String(city.config?.name ?? ''), regionName: info?.regionName ?? regionName,
+    day, date: info?.date ?? gameDateLabel(day, startYear), baseDay, baseDate: gameDateLabel(baseDay, startYear),
+    population: Number(info?.population ?? stats?.population ?? 0), funds: Number(info?.funds ?? city.scalars.funds ?? 0),
+    ...(info?.why ? { why: info.why } : {}),
+  };
 }
 
 /** Rebuild and validate with a full deserialize; the stored base is never mutated. */

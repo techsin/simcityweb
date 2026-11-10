@@ -14,6 +14,7 @@ import { DAYS_PER_MONTH } from '../../core/constants';
 import { getDef } from '../catalog';
 import type { BuildingDef } from '../catalogTypes';
 import { COARSE, WORKFORCE_RATIO } from './tuning';
+import { setSaveHook } from '../persist';
 
 export interface EconData {
   v: number;
@@ -344,6 +345,43 @@ export class EconRuntime {
     this.defCache = [];
     econData(st);
     this.rebuildBuildingLists();
+    this.restoreListOrder(st);
+    setSaveHook(st, 'economy.lists', () => this.saveListOrder(st));
+  }
+
+  /**
+   * T057: the order of growables / plopped / constructing, saved (systemData.econLists). A running game reorders them
+   * (swap-removes); a load rebuilds them in Map order, and every system that sums or visits buildings in list order
+   * (population's slices, the survey, EQ / HQ, the budget's lines, the advisors' scans) would then run in another
+   * order. Not saved while a rebuild is pending (that rebuild is in Map order, as at a load).
+   */
+  private saveListOrder(st: CityState): void {
+    if (this.sim?.state !== st) return; // (a state this runtime no longer runs: its record stays as it was)
+    if (this.buildingsDirty) { delete st.systemData.econLists; return; }
+    const ids = (list: Building[]) => { const a = new Int32Array(list.length); for (let k = 0; k < list.length; k++) a[k] = list[k].id; return a; };
+    st.systemData.econLists = { v: 1, growables: ids(this.growables), plopped: ids(this.plopped), constructing: ids(this.constructing) };
+  }
+
+  /** a loaded city: the lists in their saved order (buildings the record misses keep their Map order after it) */
+  private restoreListOrder(st: CityState): void {
+    const r = st.systemData.econLists as { v?: number; growables?: unknown; plopped?: unknown; constructing?: unknown } | undefined;
+    if (!r || r.v !== 1 || !(r.growables instanceof Int32Array) || !(r.plopped instanceof Int32Array) || !(r.constructing instanceof Int32Array)) return;
+    const order = (list: Building[], ids: Int32Array): Building[] => {
+      const left = new Set(list);
+      const out: Building[] = [];
+      for (const id of ids) {
+        const b = st.buildings.get(id);
+        if (b && left.delete(b)) out.push(b);
+      }
+      for (const b of list) if (left.has(b)) out.push(b);
+      return out;
+    };
+    this.growables = order(this.growables, r.growables);
+    this.plopped = order(this.plopped, r.plopped);
+    this.constructing = order(this.constructing, r.constructing);
+    for (let k = 0; k < this.growables.length; k++) this.setIndex(this.growables[k].id, k);
+    for (let k = 0; k < this.plopped.length; k++) this.setIndex(this.plopped[k].id, k);
+    this.slicesDirty = true;
   }
 
   /** position of a building in growables / plopped (by building id), -1 = none */

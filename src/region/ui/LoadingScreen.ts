@@ -1,4 +1,7 @@
-/** Stylish full-screen loading overlay with progress text, bar and rotating tips. */
+/**
+ * Stylish full-screen loading overlay with progress text, bar and rotating tips: the general tips from a random one,
+ * or a caller's own list in its order (FH-12: the first city's three tips, firstCity.ts).
+ */
 import { h } from './dom';
 import { EMBLEM_SVG } from './emblem';
 
@@ -20,11 +23,12 @@ export class LoadingScreen {
   private tip: HTMLElement;
   private timer: ReturnType<typeof setInterval>;
 
-  constructor(root: HTMLElement, title = 'METROPOLIS') {
+  constructor(root: HTMLElement, title = 'METROPOLIS', tips: readonly string[] = TIPS) {
     this.text = h('div', { class: 'ld-text' }, 'Loading…');
     this.fill = h('div', { class: 'ld-fill' });
-    let k = Math.floor(Math.random() * TIPS.length);
-    this.tip = h('div', { class: 'ld-tip' }, h('b', {}, 'Tip'), TIPS[k]);
+    if (!tips.length) tips = TIPS;
+    let k = tips === TIPS ? Math.floor(Math.random() * tips.length) : 0;
+    this.tip = h('div', { class: 'ld-tip' }, h('b', {}, 'Tip'), tips[k]);
     this.el = h(
       'div',
       { class: 'loading' },
@@ -36,8 +40,8 @@ export class LoadingScreen {
     );
     root.appendChild(this.el);
     this.timer = setInterval(() => {
-      k = (k + 1) % TIPS.length;
-      this.tip.replaceChildren(h('b', {}, 'Tip'), TIPS[k]);
+      k = (k + 1) % tips.length;
+      this.tip.replaceChildren(h('b', {}, 'Tip'), tips[k]);
     }, 5000);
   }
 

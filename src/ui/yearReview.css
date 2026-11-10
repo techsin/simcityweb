@@ -1,0 +1,41 @@
+.year-review {
+  position: absolute; left: 50%; bottom: 86px; transform: translateX(-50%); z-index: 31;
+  width: min(700px, calc(100% - 32px)); max-height: calc(100% - 160px); overflow: auto;
+  padding: 20px 24px 14px; pointer-events: auto; font-variant-numeric: tabular-nums;
+  border-top: 2px solid #c9b27c;
+}
+.year-review header { display: flex; gap: 18px; justify-content: space-between; align-items: center; padding-right: 18px; }
+.year-review h2 { margin: 5px 0 6px; font: 600 25px/1.15 Georgia, serif; color: #f3e6c9; }
+.year-review .yr-date { margin-bottom: 8px; font-size: 10px; color: var(--text-dim); }
+.year-review h3 { margin: 0 0 6px; font-size: 11px; color: var(--text-dim); font-weight: 600; }
+.year-review p { margin: 0; line-height: 1.6; }
+.yr-eyebrow { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: #c9b27c; }
+.yr-close { position: absolute; right: 9px; top: 7px; width: 28px; height: 28px; border: 0; background: transparent; color: var(--text-dim); font-size: 24px; cursor: pointer; }
+.yr-close:hover { color: var(--text); background: var(--hover); border-radius: 4px; }
+.yr-grade { flex: 0 0 120px; display: grid; grid-template-columns: 38px 1fr; align-items: center; gap: 0 8px; }
+.yr-grade > span { grid-column: 1 / -1; font-size: 10px; color: var(--text-dim); }
+.yr-grade > b { grid-row: span 2; font-size: 38px; line-height: 1.2; color: #f3e6c9; }
+.yr-grade > small { font-size: 10px; color: var(--text-dim); }
+.yr-sparkline { display: flex; align-items: end; gap: 3px; height: 22px; }
+.yr-sparkline i { display: block; flex: 1; max-width: 9px; background: #c9b27c; opacity: .7; border-radius: 2px 2px 0 0; }
+.yr-sparkline i:last-child { opacity: 1; }
+.yr-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; padding: 12px 0; border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair); }
+.yr-metric { display: flex; flex-direction: column; gap: 3px; }
+.yr-metric > span, .yr-metric > small { font-size: 10px; color: var(--text-dim); }
+.yr-metric > b { font-size: 17px; font-weight: 600; }
+.yr-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px; padding: 14px 0; font-size: 12px; }
+.yr-term { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+.yr-term b { white-space: nowrap; font-size: 11px; }
+.yr-next { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 10px 0; border-top: 1px solid var(--hair); font-size: 11px; }
+.yr-next h3 { width: 100%; margin: 0; }
+.yr-next span { display: inline-flex; gap: 8px; }
+.yr-next b { color: #c9b27c; font-weight: 500; }
+.year-review footer { border-top: 1px solid var(--hair); padding-top: 9px; color: var(--text-dim); font-size: 10px; }
+.year-review footer small { display: block; margin-top: 5px; color: var(--text-faint); font-size: 10px; }
+.short .year-review { bottom: 82px; padding: 14px 18px 10px; }
+.short .yr-columns { gap: 10px 20px; padding: 10px 0; }
+@media (max-width: 650px) {
+  .yr-metrics { grid-template-columns: repeat(2, 1fr); }
+  .yr-columns { grid-template-columns: 1fr; }
+  .year-review h2 { font-size: 21px; }
+}
