@@ -130,6 +130,36 @@ describe('the packet hosts\' clock across day boundaries (T061 item 2)', () => {
     } finally { await r.host.dispose(); }
   });
 
+  it('does not go back when LIVE engages late in a day, and stops for at most the lead and a heartbeat', { timeout: 30000 }, async () => {
+    // T061 review (decision 5, Desktop QA item 7): LIVE triples a day's length at 1x, so the authority's day fraction
+    // drops to a third (0.9 of the day becomes 0.3; the local host's clock jumps back there, POLISH_BACKLOG). The page's
+    // clock is already past that: it waits until the packets come within the lead (500 ms) of it, which the heartbeat
+    // (250 ms) may delay a little, and then runs on with no step back.
+    const r = await rig();
+    try {
+      r.host.setSpeed(1, 'keyboard'); await r.host.drain();
+      for (let i = 0; i < 30; i++) await r.frame();
+      for (let i = 0; i < 120 && !(r.sim.dayFraction >= 0.9); i++) await r.frame();
+      expect(r.sim.dayFraction).toBeGreaterThanOrEqual(0.9);
+      // an uncovered major incident: the policy engages LIVE
+      r.em.spawn(r.sim, 'medical', r.home.x, r.home.z, { buildingId: r.home.id, major: true });
+      let t = await r.frame(), stopped = 0, longest = 0, engaged = false;
+      for (let i = 0; i < 300; i++) {
+        const next = await r.frame();
+        expect(next, 'never back').toBeGreaterThanOrEqual(t);
+        stopped = next > t ? 0 : stopped + FRAME_MS;
+        longest = Math.max(longest, stopped);
+        engaged ||= r.host.liveSlowdown === 3;
+        t = next;
+      }
+      expect(engaged, 'LIVE engaged').toBe(true);
+      expect(r.host.speed, 'and held at 1x').toBe(1);
+      expect(longest, 'it did wait for the slower authority').toBeGreaterThan(250);
+      expect(longest).toBeLessThanOrEqual(800);
+      expect(Math.abs(t - r.sim.simTime()), 'then follows it').toBeLessThan(0.05);
+    } finally { await r.host.dispose(); }
+  });
+
   it('starts from the adopted clock after a resync', { timeout: 30000 }, async () => {
     const r = await rig(0);
     try {
