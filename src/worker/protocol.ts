@@ -19,6 +19,7 @@ export type CommandOp = 'zone' | 'dezone' | 'bulldoze' | 'buildNetwork' | 'build
   | 'setSpeed' | 'resume' | 'dispatch' | 'dispatchBest' | 'dismissAlert' | 'triggerDisaster' | 'setCamera' | 'setSettings' | 'holdCalendar'
   | 'debug.runDays' | 'debug.verify' | 'debug.setStepBudget' | 'debug.setTrafficMinCycle';
 export type QueryName = 'inspectBuilding' | 'inspectCell' | 'dispatchOptions' | 'routePreview' | 'emergencyReport'
+  | 'buildingCondition'
   | 'demolishRisks' | 'sideDemolishRisks' | 'stopsNear' | 'ferryPartnersFor' | 'openAdvice' | 'advisorIssues'
   | 'capHints' | 'tourismSummary' | 'attractivenessBreakdown' | 'unservedClusters' | 'computeMonthlyBudget' | 'garageStates' | 'verify'
   | 'upkeepContext';

@@ -5,7 +5,8 @@
  *                           [--water 0.2] [--quiet] [--no-infra] [--tax 12] [--spendy] [--neglect]
  *                           [--skip schools,garbage,jail,transit,police,services] [--save-years 21,43 --save-prefix PATH]
  *                           [--profile default|newcomer]
- *                           [--subway] [--late-ordinances] [--venues] [--tax=N]
+ *                           [--subway] [--late-ordinances] [--venues] [--tax=N] [--tax-start-year N]
+ *                           [--aa-funds-nudge N]
  *   env: SIMBOT_BUDGET=1 (yearly budget lines) · SIMBOT_LOG=1 (full action log) · SIMBOT_VERBOSE=1
  *
  * Plays through CityActions only (like the UI): lays out a 9-cell road grid (avenues every 4th line) with a
@@ -32,7 +33,8 @@
  * Its table counts years from founding: population, approval, the three largest non-baseline approval terms,
  * funds and incidents failed during that year. The default profile still founds on day 0 and keeps its old output.
  * LG-10 (base 8182828): opt-in subway to the three densest residential blocks from 150k, useful late ordinances,
- * and a zoo / passenger train station when affordable. Fixed taxes apply from setup. --expand lands with LG-19.
+ * and a zoo / passenger train station when affordable. Fixed taxes apply from setup unless --tax-start-year delays
+ * them to a year counted from founding (year 21 starts on day 7200). --expand lands with LG-19.
  */
 import { createCityState } from '../src/sim/terrainGen';
 import { defaultCityConfig, type CityConfigData } from '../src/sim/config';
@@ -72,6 +74,10 @@ export interface BotOptions {
   noInfra: boolean;
   /** fixed tax rate for every DevType (disables the bot's tax management) */
   tax?: number;
+  /** NEW-05: manage taxes normally until this year starts (1-based; omitted = fixed taxes from setup) */
+  taxStartYear?: number;
+  /** NOTE-048: add this many funds once after the first simulated day, for the shared A/A envelope */
+  aaFundsNudge?: number;
   /** LG-10: a subway from 150k, useful ordinances the base bot never enacts, and the missing zoo / train venue */
   subway?: boolean;
   lateOrdinances?: boolean;
@@ -786,7 +792,7 @@ export class SimBot {
   // ------------------------------------------------------------------------------------------ setup
   setup(): void {
     if (this.opts.profile === 'newcomer') { this.setupNewcomer(); return; }
-    if (this.opts.tax !== undefined) for (let d = 0; d < 12; d++) this.A.setTax(d as DevType, this.opts.tax);
+    this.applyFixedTax();
     const N = this.N;
     if (this.opts.spendy) for (const k of Object.keys(this.st.budget.funding) as (keyof typeof this.st.budget.funding)[]) this.A.setFunding(k, 150);
     // trunk: avenue edge to edge through the center (highway later)
@@ -977,6 +983,13 @@ export class SimBot {
   /** player dispatches so far (report) */
   dispatches = 0;
 
+  private applyFixedTax(): boolean {
+    const tax = this.opts.tax;
+    if (tax === undefined || this.st.day < ((this.opts.taxStartYear ?? 1) - 1) * 360) return false;
+    for (let d = 0; d < 12; d++) this.A.setTax(d as DevType, tax);
+    return true;
+  }
+
   finance(): void {
     const st = this.st;
     const net = this.monthlyNet();
@@ -1002,10 +1015,7 @@ export class SimBot {
       const amt = Math.min(maxLoanAmount(st), 100000);
       if (amt >= 5000 && this.A.takeLoan(amt).ok) this.say(`emergency loan $${amt}`);
     }
-    if (this.opts.tax !== undefined) {
-      for (let d = 0; d < 12; d++) this.A.setTax(d as DevType, this.opts.tax);
-      return;
-    }
+    if (this.applyFixedTax()) return;
     // taxes: 9 % baseline; up when losing money and low on funds, down when rich. WP6b: services have running costs per
     // person served (economy/opex.ts), so a growing city's budget keeps a margin only if taxes follow it — the mayor
     // raises them while the surplus is under 2 % of income with less than 6 months of expenses in the bank, and lowers
@@ -2633,7 +2643,12 @@ export class SimBot {
     let e0 = this.econTime, t0 = this.totalTime, d0 = 0;
     for (let y = 0; y < years; y++) {
       for (let m = 0; m < 12; m++) {
-        for (let d = 0; d < 30; d++) { this.sim.advanceDay(); this.days++; this.daily(); }
+        for (let d = 0; d < 30; d++) {
+          if (this.opts.taxStartYear !== undefined) this.applyFixedTax();
+          this.sim.advanceDay(); this.days++;
+          if (this.days === 1 && this.opts.aaFundsNudge !== undefined) st.funds += this.opts.aaFundsNudge;
+          this.daily();
+        }
         this.monthly();
       }
       const s = st.stats;
@@ -2740,6 +2755,15 @@ export function parseArgs(argv: string[]): BotOptions {
       }
       o.profile = v; i++;
     } else if (a === '--no-infra') o.noInfra = true;
+    else if (a === '--aa-funds-nudge' || a.startsWith('--aa-funds-nudge=')) {
+      const nudge = a === '--aa-funds-nudge' ? v : a.slice('--aa-funds-nudge='.length);
+      if (!nudge?.trim() || !Number.isFinite(+nudge)) {
+        console.error('simbot: --aa-funds-nudge must be a finite amount');
+        process.exit(2);
+      }
+      o.aaFundsNudge = +nudge;
+      if (a === '--aa-funds-nudge') i++;
+    }
     else if (a === '--tax' || a.startsWith('--tax=')) {
       const rate = a === '--tax' ? v : a.slice(6);
       if (!rate?.trim() || !Number.isFinite(+rate) || +rate < 0 || +rate > 20) {
@@ -2748,6 +2772,15 @@ export function parseArgs(argv: string[]): BotOptions {
       }
       o.tax = +rate;
       if (a === '--tax') i++;
+    }
+    else if (a === '--tax-start-year' || a.startsWith('--tax-start-year=')) {
+      const year = a === '--tax-start-year' ? v : a.slice(17);
+      if (!year?.trim() || !Number.isSafeInteger(+year) || +year < 1) {
+        console.error('simbot: --tax-start-year must be a positive integer (year 1 starts on day 0)');
+        process.exit(2);
+      }
+      o.taxStartYear = +year;
+      if (a === '--tax-start-year') i++;
     }
     else if (a === '--subway') o.subway = true;
     else if (a === '--late-ordinances') o.lateOrdinances = true;
@@ -2766,10 +2799,14 @@ export function parseArgs(argv: string[]): BotOptions {
   if (o.profile === 'newcomer') {
     if (!argv.includes('--size')) o.size = 128;
     if (!argv.includes('--years')) o.years = 10;
-    if (o.tax !== undefined || o.spendy || o.skip?.length || o.subway || o.lateOrdinances || o.venues) {
-      console.error('simbot: --profile newcomer has its own tax, funding and service rules; omit --tax, --spendy, --skip, --subway, --late-ordinances and --venues');
+    if (o.tax !== undefined || o.taxStartYear !== undefined || o.spendy || o.skip?.length || o.subway || o.lateOrdinances || o.venues) {
+      console.error('simbot: --profile newcomer has its own tax, funding and service rules; omit --tax, --tax-start-year, --spendy, --skip, --subway, --late-ordinances and --venues');
       process.exit(2);
     }
+  }
+  if (o.taxStartYear !== undefined && (o.tax === undefined || o.taxStartYear > o.years)) {
+    console.error(`simbot: --tax-start-year needs --tax=N and a year of this run (1..${o.years})`);
+    process.exit(2);
   }
   return o;
 }
@@ -2791,6 +2828,9 @@ usage: npx tsx tools/simbot.ts [flags]   (no tsx: bundle with node_modules/.bin/
   --terrain T       terrain preset (plains)        --water F        water amount 0..1 (0.2)
   --quiet           no per-action log              --no-infra       economy systems only (no sim-infra)
   --tax=N           fixed tax rate for every type from setup (0..20 %, also --tax N; NEW-05 sweep)
+  --tax-start-year N delay --tax until year N starts (1-based, also =N; year 21 starts on day 7200);
+                    manage taxes normally before then; requires --tax and a year of this run
+  --aa-funds-nudge N add §N once after day 1 (first day from founding); A/A measurement only, no RNG draw
   --spendy          150 % funding, builds without budget checks
   --subway          from 150k: core to the three densest residential 8 x 8 blocks, entrances every 8 tiles
                     (nearest walkable lot within 4 tiles, with tunnel spurs); honors --skip transit
@@ -2806,7 +2846,7 @@ usage: npx tsx tools/simbot.ts [flags]   (no tsx: bundle with node_modules/.bin/
                     no manual dispatch for the first incident. NOTE-009: 30 days after a no-power warning,
                     rebuilds coal at the first fitting site beside the zones, once per lost plant; logs failures
                     and retries monthly while the warning persists. No fire station or other proactive rules.
-                    Cannot combine with --tax, --spendy, --skip or LG-10 rules. Years count from founding; prints population,
+                    Cannot combine with --tax, --tax-start-year, --spendy, --skip or LG-10 rules. Years count from founding; prints population,
                     approval and its three largest non-baseline terms, funds and failed incidents during each year.
   --skip a,b,...    leave rules out (the wrong choices): schools, garbage, jail, transit, police, services, dirty
   --save-years a,b  save the city at the end of these years (1 = after the first year) as game saves named by
@@ -2829,7 +2869,7 @@ if (process.argv[1]?.includes('simbot') && (process.argv.includes('--help') || p
   }
   console.log(`SIMBOT size=${opts.size} years=${opts.years} seed=${opts.seed} ${opts.difficulty} ${opts.terrain}${opts.noInfra ? ' (no infra)' : ''}${opts.profile === 'newcomer' ? ' profile=newcomer (founded day 90)' : ''}`);
   if (opts.subway || opts.lateOrdinances || opts.venues || opts.tax !== undefined) {
-    console.log('LG-10 rules:', [opts.subway && '--subway', opts.lateOrdinances && '--late-ordinances', opts.venues && '--venues', opts.tax !== undefined && `--tax=${opts.tax}`].filter(Boolean).join(' '));
+    console.log('LG-10 rules:', [opts.subway && '--subway', opts.lateOrdinances && '--late-ordinances', opts.venues && '--venues', opts.tax !== undefined && `--tax=${opts.tax}`, opts.taxStartYear !== undefined && `--tax-start-year=${opts.taxStartYear}`].filter(Boolean).join(' '));
   }
   const systems = opts.noInfra ? economySystems() : (await import("../src/sim/systems/index")).createSystems();
   const bot = new SimBot(opts, systems);
@@ -2863,6 +2903,8 @@ async function yearSaver(o: BotOptions): Promise<(bot: SimBot, r: YearRow) => vo
   const bot = {
     size: o.size, years: o.years, seed: o.seed, difficulty: o.difficulty, terrain: o.terrain, water: o.water, noInfra: o.noInfra,
     ...(o.tax !== undefined ? { tax: o.tax } : {}), ...(o.spendy ? { spendy: true } : {}), ...(o.neglect ? { neglect: true } : {}),
+    ...(o.taxStartYear !== undefined ? { taxStartYear: o.taxStartYear } : {}),
+    ...(o.aaFundsNudge !== undefined ? { aaFundsNudge: o.aaFundsNudge } : {}),
     ...(o.skip ? { skip: o.skip } : {}),
     ...(o.subway ? { subway: true } : {}), ...(o.lateOrdinances ? { lateOrdinances: true } : {}), ...(o.venues ? { venues: true } : {}),
   };

@@ -16,6 +16,7 @@ import { clear, h, toggleClass } from '../dom';
 import { icon } from '../icons';
 import { compact, num, pct } from '../format';
 import { termBars } from '../inspectorModel';
+import { EQ_GLOSSARY, HQ_GLOSSARY } from '../glossary';
 
 type Tab = 'people' | 'services' | 'tourism';
 
@@ -131,8 +132,9 @@ export class DemographicsPanel extends Panel {
     else this.tourism();
   }
 
-  private card(label: string, ic: string, value: string, sub: string, cls = ''): HTMLElement {
-    return h('div', { class: 'stat-card' }, h('div', { class: 'sc-l', html: icon(ic, 13) + `<span>${label}</span>` }), h('div', { class: 'sc-v ' + cls }, value), h('div', { class: 'sc-s' }, sub));
+  /** a KPI card; `tip`: its hover text (FH-16's glossary entry on the EQ / HQ cards) */
+  private card(label: string, ic: string, value: string, sub: string, cls = '', tip?: string): HTMLElement {
+    return h('div', { class: 'stat-card', title: tip }, h('div', { class: 'sc-l', html: icon(ic, 13) + `<span>${label}</span>` }), h('div', { class: 'sc-v ' + cls }, value), h('div', { class: 'sc-s' }, sub));
   }
 
   private history(key: Exclude<keyof HistorySeries, 't'>, months = 60): number[] {
@@ -149,8 +151,8 @@ export class DemographicsPanel extends Panel {
     this.content.append(h('div', { class: 'stat-cards demo-kpis' },
       this.card('Population', 'people', num(pop), `${compact(s.residents?.[2] ?? 0)} wealthy · ${compact(s.residents?.[0] ?? 0)} low-wealth`),
       this.card('Workforce', 'briefcase', compact(wf), `${pct(pop > 0 ? wf / pop : s.workforceRatio)} of residents · ${pct(s.unemployment, 1)} jobless`, s.unemployment > 0.12 ? 'neg' : ''),
-      this.card('Education', 'education', `EQ ${Math.round(s.eq)}`, s.eq >= 100 ? 'Educated workforce' : s.eq >= 60 ? 'Improving' : 'Needs schools', s.eq >= 90 ? 'pos' : s.eq < 50 ? 'neg' : 'warn'),
-      this.card('Health', 'health', `HQ ${Math.round(s.hq)}`, s.hq >= 100 ? 'Long, healthy lives' : s.hq >= 60 ? 'Fair' : 'Needs care', s.hq >= 90 ? 'pos' : s.hq < 50 ? 'neg' : 'warn'),
+      this.card('Education', 'education', `EQ ${Math.round(s.eq)}`, s.eq >= 100 ? 'Educated workforce' : s.eq >= 60 ? 'Improving' : 'Needs schools', s.eq >= 90 ? 'pos' : s.eq < 50 ? 'neg' : 'warn', EQ_GLOSSARY.tip),
+      this.card('Health', 'health', `HQ ${Math.round(s.hq)}`, s.hq >= 100 ? 'Long, healthy lives' : s.hq >= 60 ? 'Fair' : 'Needs care', s.hq >= 90 ? 'pos' : s.hq < 50 ? 'neg' : 'warn', HQ_GLOSSARY.tip),
       this.card('Attraction', 'star', `${Math.round(s.attractiveness)}`, 'out of 100 · draws newcomers', s.attractiveness >= 60 ? 'pos' : s.attractiveness < 30 ? 'neg' : ''),
     ));
     // ---- pyramid by wealth
@@ -176,16 +178,16 @@ export class DemographicsPanel extends Panel {
     // ---- trends
     this.content.appendChild(h('div', { class: 'sec-title' }, 'Last 5 years'));
     const grid = h('div', { class: 'demo-trends' });
-    const tr = (label: string, key: Exclude<keyof HistorySeries, 't'>, color: string, fmt: (v: number) => string) => {
+    const tr = (label: string, key: Exclude<keyof HistorySeries, 't'>, color: string, fmt: (v: number) => string, tip?: string) => {
       const vals = this.history(key);
-      grid.appendChild(h('div', { class: 'dt' }, h('div', { class: 'dt-l' }, label), spark(vals, color), h('div', { class: 'dt-v' }, vals.length ? fmt(vals[vals.length - 1]) : '—')));
+      grid.appendChild(h('div', { class: 'dt', title: tip }, h('div', { class: 'dt-l' }, label), spark(vals, color), h('div', { class: 'dt-v' }, vals.length ? fmt(vals[vals.length - 1]) : '—')));
     };
     tr('Population', 'pop', '#3987e5', (v) => compact(v));
     tr('Children', 'kids', '#9a7ae0', (v) => compact(v));
     tr('Seniors', 'seniors', '#d95a8a', (v) => compact(v));
     tr('Unemployment', 'unemployment', '#d95926', (v) => pct(v, 1));
-    tr('EQ', 'eq', '#8a52d6', (v) => String(Math.round(v)));
-    tr('HQ', 'hq', '#d6457e', (v) => String(Math.round(v)));
+    tr('EQ', 'eq', '#8a52d6', (v) => String(Math.round(v)), EQ_GLOSSARY.tip);
+    tr('HQ', 'hq', '#d6457e', (v) => String(Math.round(v)), HQ_GLOSSARY.tip);
     this.content.appendChild(grid);
   }
 
