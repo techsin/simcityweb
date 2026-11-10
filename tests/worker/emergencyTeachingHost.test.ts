@@ -6,6 +6,8 @@ import { DEFAULT_SETTINGS } from '../../src/game/settings';
 import type { DispatchOption, EmergencySystem, Incident } from '../../src/sim/infra/emergency';
 import type { EmergencyEvent } from '../../src/sim/Simulation';
 import { EmergencyBanner } from '../../src/ui/EmergencyBanner';
+import { loadGuideProfile } from '../../src/ui/guide/progress';
+import { setGuideTips } from '../../src/ui/guide/tips';
 import type { ToastOptions } from '../../src/ui/Notifications';
 import { LoopbackSimHost } from '../../src/worker/LoopbackSimHost';
 import { LocalSimHost, type PolicySnapshot, type SimSettings } from '../../src/worker/SimHost';
@@ -95,7 +97,7 @@ function mountBanner(host: LocalSimHost | LoopbackSimHost) {
   const ui = new Emitter<UIEvents>(), abort = new AbortController();
   const ctx = {
     host, get state() { return host.state; }, root, ui, signal: abort.signal,
-    settings: { ...DEFAULT_SETTINGS, tips: true }, newYearBusy: () => false,
+    settings: { ...DEFAULT_SETTINGS }, newYearBusy: () => false,
     panels: { open: vi.fn(), isOpen: () => false }, sound: vi.fn(),
     toast: (_text: string, _kind?: string, _cell?: { x: number; z: number }, _title?: string, opts?: ToastOptions) => opts?.onShow?.(),
     setOverlay: vi.fn(), openFlyout: vi.fn(), focusCell: vi.fn(), showQuery: vi.fn(),
@@ -133,8 +135,32 @@ describe('FH-08 packet policy view', () => {
 });
 
 for (const packet of [false, true]) describe(`FH-08 teaching on ${packet ? 'LoopbackSimHost packets' : 'LocalSimHost'}`, () => {
+  it('keeps profile Tips off authoritative without consuming the next lesson', async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+    });
+    setGuideTips(false);
+    const f = await fixture(packet), teaching = mountBanner(f.host);
+    await f.settle();
+    await f.raise(incident(1));
+    teaching.tick();
+    f.expectTeaching(undefined);
+    expect(f.host.speed).toBe(1);
+    expect(teaching.root.querySelector('.emg-teach')).toBeNull();
+    expect(loadGuideProfile().emergencyTeaching).toEqual({ E1a: false, E1b: false, E2: false, E3: false });
+    setGuideTips(true);
+    await f.settle();
+    teaching.tick();
+    f.expectTeaching({ id: 1, variant: 'E1a' });
+    expect(f.host.speed).toBe(0);
+    expect(teaching.root.querySelector('.emg-teach')).not.toBeNull();
+    expect(loadGuideProfile().emergencyTeaching.E1a).toBe(true);
+  });
+
   it('arms the real host from profile preferences, acknowledges through the card, and respects seen on a new city', async () => {
-    const storage = new Map<string, string>(), pref = 'metropolis.ui.emergencyTeaching';
+    const storage = new Map<string, string>(), pref = 'metropolis.ui.onboarding';
     vi.stubGlobal('localStorage', {
       getItem: (key: string) => storage.get(key) ?? null,
       setItem: (key: string, value: string) => { storage.set(key, value); },
@@ -148,7 +174,7 @@ for (const packet of [false, true]) describe(`FH-08 teaching on ${packet ? 'Loop
     const card = teaching.root.querySelector('.emg-teach');
     expect(card).not.toBeNull();
     expect(card!.style.display).not.toBe('none');
-    expect(JSON.parse(storage.get(pref) ?? '{}')).toMatchObject({ E1a: true, E1b: false });
+    expect(JSON.parse(storage.get(pref) ?? '{}').emergencyTeaching).toMatchObject({ E1a: true, E1b: false });
     const gotIt = card!.querySelectorAll('button').find((b) => b.textContent === 'Got it');
     expect(gotIt).toBeDefined();
     gotIt!.click();

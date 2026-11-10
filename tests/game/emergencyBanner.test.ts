@@ -22,7 +22,7 @@
  *  ignored instead of reaching the banner that moved there (SETTLE_MS from the move's first frame on screen); the
  *  tallest tab seen since the flyout opened bounds the stack (no re-dock with every tab switch).
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Network } from '../../src/core/types';
 import { Emitter } from '../../src/core/events';
 import { LIVE_COOLDOWN_MS, pendingCount, sendDays } from '../../src/game/emergencyPolicy';
@@ -40,6 +40,7 @@ import {
   type DockPlace,
 } from '../../src/ui/EmergencyBanner';
 import type { GameContext, UIEvents } from '../../src/game/context';
+import { setGuideTips } from '../../src/ui/guide/tips';
 import { newSim, newState, place, roadLine } from '../infra/cityGen';
 
 // ------------------------------------------------------------------------------------------------ minimal DOM
@@ -177,7 +178,12 @@ afterAll(() => {
 // ------------------------------------------------------------------------------------------------ harness
 interface Harness { banner: EmergencyBanner; policy: LivePolicy; sim: Simulation; root: FakeEl; toasts: string[]; abort: AbortController; tick(): void }
 const lifetimes: AbortController[] = [];
-afterEach(() => { for (const ac of lifetimes.splice(0)) ac.abort('dispose'); vi.restoreAllMocks(); });
+beforeEach(() => {
+  const stored = new Map<string, string>();
+  vi.stubGlobal('localStorage', { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) });
+  setGuideTips(false); // These scenarios exercise the established T029 policy, independently of first-time lessons.
+});
+afterEach(() => { for (const ac of lifetimes.splice(0)) ac.abort('dispose'); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 function harness(sim: Simulation): Harness {
   const root = new FakeEl('div');
   const toasts: string[] = [];
@@ -254,7 +260,7 @@ describe('EmergencyBanner on a live simulation', () => {
     expect(warning.mock.calls.filter(([name]) => name === 'warning')).toHaveLength(1);
     ctx.settings.emergencyLiveSlowmo = 5;
     ctx.ui.emit('settings', ctx.settings);
-    expect(act).toHaveBeenLastCalledWith('setSettings', [{ emergencyUncovered: 'live', emergencyAlerts: 'major', emergencyLiveSlowmo: 5 }], { tag: h.banner });
+    expect(act).toHaveBeenLastCalledWith('setSettings', [{ emergencyUncovered: 'live', emergencyAlerts: 'major', emergencyLiveSlowmo: 5, teachFirst: false, teachTooFar: false }], { tag: h.banner });
     expect(sim.liveSlowdown).toBe(5);
     parts(h, id).el.all().find((e) => e.classList.contains('emg-x'))!.click();
     expect(act).toHaveBeenLastCalledWith('dismissAlert', [id], { tag: h.banner });

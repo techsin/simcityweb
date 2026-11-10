@@ -40,6 +40,7 @@ export class Onboarding {
   private tipAction!: HTMLButtonElement;
   private visible = false;
   private primed = false;
+  private foundingStarted = false;
   private acc = 1;
   private lastCheck = -Infinity;
   private lastFacts = -Infinity;
@@ -234,6 +235,7 @@ export class Onboarding {
       case 'play': return { title: b.B5Title(), text: [b.B5()], action: { label: a.Play(), icon: 'play', coach: { categories: [], play: true }, run: (ctx) => {
         const done = foundingDone(ctx.host.state, this.p.startDay, this.targets);
         if (!FOUNDING_IDS.slice(0, 4).every((step) => done[step])) { this.acc = 1; this.frame(0); return; }
+        this.foundingStarted = true;
         if (ctx.host.speed !== 1) ctx.sound('speed1');
         ctx.host.setSpeed(1, 'onboarding');
       } } };
@@ -415,9 +417,10 @@ export class Onboarding {
     let action: GuideAction | null = null, fresh = false;
     if (this.p.phase === 'founding') {
       const done = foundingDone(st, this.p.startDay, this.targets);
+      const started = this.foundingStarted || done.play || this.p.completed.includes('play');
       for (const id of FOUNDING_IDS) {
         if (done[id] && !this.p.completed.includes(id)) { this.p.completed.push(id); fresh = true; }
-        else if (!done[id]) this.p.completed = this.p.completed.filter((step) => step !== id);
+        else if (!done[id] && !started) this.p.completed = this.p.completed.filter((step) => step !== id);
       }
       if (FOUNDING_IDS.every((id) => this.p.completed.includes(id))) {
         this.p.phase = 'year';

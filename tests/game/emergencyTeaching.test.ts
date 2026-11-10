@@ -8,6 +8,7 @@ import type { CityEvents } from '../../src/sim/Simulation';
 import { INCIDENT_RESPONDERS, type DispatchOption, type DispatchResult, type Incident } from '../../src/sim/infra/emergency';
 import { EMERG_DAYS_PER_MIN } from '../../src/sim/infra/params';
 import { EmergencyBanner } from '../../src/ui/EmergencyBanner';
+import { setGuideTips } from '../../src/ui/guide/tips';
 import type { ToastOptions } from '../../src/ui/Notifications';
 import type { PolicySnapshot } from '../../src/worker/SimHost';
 
@@ -125,6 +126,7 @@ function option(patch: Partial<DispatchOption> = {}): DispatchOption {
 interface HarnessOptions { initialBusy?: boolean; budgetBlocked?: boolean; packetPolicy?: boolean; alerted?: boolean }
 interface MockToast { text: string; opts: ToastOptions }
 function harness(inc = incident(), teaching?: TeachingPolicy['teaching'], tips = true, initialOptions: DispatchOption[] | null = [option()], config: HarnessOptions = {}) {
+  setGuideTips(tips);
   const root = new FakeEl('div'), ui = new Emitter<UIEvents>(), events = new Emitter<CityEvents>();
   const abort = new AbortController();
   lifetimes.push(abort);
@@ -191,7 +193,7 @@ function harness(inc = incident(), teaching?: TeachingPolicy['teaching'], tips =
       watch: () => ({ get value() { return options; }, get version() { return version; }, error: undefined,
         setArgs: () => undefined, subscribe: () => () => undefined, dispose: () => undefined }),
     },
-    root, ui, signal: abort.signal, settings: { ...DEFAULT_SETTINGS, tips }, newYearBusy: () => clock.busy,
+    root, ui, signal: abort.signal, settings: { ...DEFAULT_SETTINGS }, newYearBusy: () => clock.busy,
     panels: { open: vi.fn(), isOpen: () => false }, sound: vi.fn(),
     toast: (text: string, _kind?: string, _cell?: { x: number; z: number }, _title?: string, opts: ToastOptions = {}) => {
       const toast = { text, opts };
@@ -212,8 +214,8 @@ function harness(inc = incident(), teaching?: TeachingPolicy['teaching'], tips =
   };
 }
 type Harness = ReturnType<typeof harness>;
-const prefKey = 'metropolis.ui.emergencyTeaching';
-const seen = () => JSON.parse(storage.get(prefKey) ?? '{}') as Record<string, unknown>;
+const prefKey = 'metropolis.ui.onboarding';
+const seen = () => (JSON.parse(storage.get(prefKey) ?? '{}').emergencyTeaching ?? {}) as Record<string, unknown>;
 const byClass = (parent: FakeEl, cls: string) => parent.all().filter((e) => e.classList.contains(cls));
 function card(t: Harness): FakeEl | undefined { return byClass(t.root, 'emg-teach').find((e) => e.style.display !== 'none'); }
 function button(parent: FakeEl, text: string | RegExp): FakeEl {
@@ -313,7 +315,7 @@ describe('FH-08 emergency teaching from a host snapshot', () => {
   });
 
   it('acknowledges an already-seen authoritative episode on mount without showing another card', () => {
-    storage.set(prefKey, JSON.stringify({ E1a: true }));
+    storage.set(prefKey, JSON.stringify({ emergencyTeaching: { E1a: true } }));
     const t = harness(incident(), { id: 1, variant: 'E1a' });
     expect(card(t)).toBeUndefined();
     expect(t.settings.some((s) => s.teachingAck === 1)).toBe(true);
@@ -467,7 +469,7 @@ describe('FH-08 emergency teaching from a host snapshot', () => {
   });
 
   it('accepts only exact true preference flags as seen', () => {
-    storage.set(prefKey, JSON.stringify({ E1a: 'true', E1b: 1, E2: [], E3: true }));
+    storage.set(prefKey, JSON.stringify({ emergencyTeaching: { E1a: 'true', E1b: 1, E2: [], E3: true } }));
     const t = harness(incident(), { id: 1, variant: 'E1a' });
     expect(card(t)).toBeDefined();
     expect(t.settings[0]).toMatchObject({ teachFirst: true, teachTooFar: true });
@@ -801,20 +803,52 @@ describe('FH-08 emergency teaching from a host snapshot', () => {
     t.tick();
     expect(t.toasts.filter((s) => s.startsWith('LIVE:'))).toHaveLength(0);
     expect(byClass(t.root, 'emg-teach-reason')).toHaveLength(0);
-    expect(storage.has(prefKey)).toBe(false);
+    expect(seen()).toEqual({ E1a: false, E1b: false, E2: false, E3: false });
   });
 
   it('turning Tips off while the card is open acknowledges and closes the teaching episode', () => {
     const t = harness(incident(), { id: 1, variant: 'E1a' });
     expect(card(t)).toBeDefined();
-    t.ctx.settings.tips = false;
-    t.ui.emit('settings', t.ctx.settings);
+    setGuideTips(false);
     expect(card(t)).toBeUndefined();
     expect(t.settings.at(-1)).toMatchObject({ teachFirst: false, teachTooFar: false, teachingAck: 1 });
     t.publish({ teaching: { id: 1, variant: 'E1a' } });
     t.tick();
     expect(card(t)).toBeUndefined();
     expect(t.setSpeed).not.toHaveBeenCalled();
+  });
+
+  it('does not display or consume a budget-delayed LIVE lesson while profile Tips is off', () => {
+    const t = harness(incident(), undefined, true, [option()], { budgetBlocked: true });
+    t.clock.speed = 1;
+    t.clock.slowdown = 3;
+    t.publish({ live: true });
+    expect(t.pendingToasts).toHaveLength(1);
+    setGuideTips(false);
+    t.clock.budgetBlocked = false;
+    t.drainToasts();
+    expect(t.toasts).toHaveLength(0);
+    expect(seen().E2).toBe(false);
+    expect(t.settings.at(-1)).toMatchObject({ teachFirst: false, teachTooFar: false });
+    setGuideTips(true);
+    t.drainToasts();
+    expect(t.toasts.filter((s) => s.startsWith('LIVE:'))).toHaveLength(1);
+    expect(seen().E2).toBe(true);
+  });
+
+  it('hides an existing failure lesson immediately when profile Tips is off', () => {
+    const t = harness(incident({ manualPossible: false }));
+    t.inc.state = 'failed';
+    t.inc.lost = 1;
+    t.clock.day = 5 * EMERG_DAYS_PER_MIN;
+    t.events.emit('emergency', { id: 1, kind: 'fire', type: 'failed', x: 20, z: 12, major: true, manualPossible: false });
+    const reason = byClass(t.root, 'emg-teach-reason')[0];
+    expect(reason).toBeDefined();
+    setGuideTips(false);
+    expect(reason.style.display).toBe('none');
+    setGuideTips(true);
+    expect(reason.style.display).toBe('');
+    expect(byClass(t.root, 'emg-teach-reason')[0]).toBe(reason);
   });
 
   it('city abort removes retained card listeners and suppresses a late dispatch acknowledgement', async () => {

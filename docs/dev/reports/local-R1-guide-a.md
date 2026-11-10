@@ -1,4 +1,131 @@
-# T037ar — onboarding round 4
+# T037ar — onboarding round 5
+
+Base: **02763b0**, the clean textual merge of dev **34e3f81** (T057 continuity, T060 ticker, T048 outcomes, T036s5 FH-08, T036s4 storage and R1). Read **all of the assigned qa_full.md before any code work**. The QA evidence is from d4fa71b; it is prior browser evidence, not a browser pass for this tree. NOTE-069 is absent from this checkout's docs; the worker's explicit Job A instructions supplied the required integration scope. No AGENTS.md or CLAUDE.md was found.
+
+**Result:** the merge typechecks, FH-08 shares the guide profile, both founding regressions are fixed, and G7 now leads with views above the scroll fold. Changes remain uncommitted. No .done file, src/worker source, src/sim/infra file or other worktree was edited.
+
+## Round-5 findings and fixes
+
+| File:line in the reviewed merge | Severity | Finding / fix |
+|---|---|---|
+| src/ui/EmergencyBanner.ts:625, :740–779, :852–958, :1125, :1435; tests/game/emergencyTeaching.test.ts:810 | P1 integration | FH-08 still read the retired GameSettings.tips. The banner now reads profile Tips and follows signal-bound profile changes. Its lesson flags migrate into GuideProfile; host policy teaching and New Year deferral remain authoritative. |
+| src/ui/Onboarding.ts:416–421; src/ui/guide/founding.ts:21–31 | P1 | Growth changed empty-zone lot access to behind, revoking B2 before Play could complete. Keep revocation before Play; retain completed B1–B4 after a revalidated guide Play click or the first elapsed day. Count zoned growable-occupied cells, while empty cells behind buildings remain excluded. |
+| src/game/CityScene.ts:200–207 | P2 | A saved founding city with turbines/tower resumed at 1×. A readable founding record without completed Play now supplies initialSpeed 0; a booted packet host receives no initial unpause. Camera/new-city behavior and explicit development overrides remain unchanged. |
+| src/ui/guide/copy.ts:181 | Low | G7 led with Power/Water below the Data views fold. Lead with crime/pollution; no DataViewsPanel or scroll-layout change. |
+
+## Job A — FH-08 profile ownership and merged boundaries
+
+GuideProfile now owns four independent emergencyTeaching flags: E1a, E1b, E2 and E3. Only exact true values count as seen. If the nested field is absent and the retired loadPref('emergencyTeaching') value exists, loadGuideProfile normalizes and saves it into the current profile once, preserving Tips, dismissal, veteran, minimise and seenExplainers. Nested field presence is the migration marker; the old stored preference is retained but never consulted again. A profile without flags loads with all four false.
+
+The banner follows getGuideTips/watchGuideTips with the city's AbortSignal and marks lessons through a fresh-profile write. saveGuideProfile merges stored seen flags before writing a retained guide snapshot, preventing minimise, E11 or ExplainerQueue saves from erasing emergency lessons. Emergency writes fresh-load the profile, preserving the guide's current fields and Tips.
+
+Tips off immediately closes/hides lessons and disarms teaching through host.act('setSettings'). It consumes no unseen lesson. Queued E2/E3 continue to defer while Tips is off or New Year is busy; their display callbacks retain the existing consumption/relevance rules. The banner still reads the complete host.policy teaching snapshot on Local, packet and actual Worker paths. No policy or worker implementation changed.
+
+All existing FH-08 assertions remain except their permitted preference/Tips setup and flag-location adjustments. One old storage-absence assertion now checks all four flags are false: setting profile Tips off itself writes the onboarding preference. The older T029-only EmergencyBanner fixture now explicitly turns profile Tips off; its exact settings expectation includes the two false arming flags.
+
+Checked the other merged boundaries:
+
+- **Notifications.ts:** T053's capped releases remain spaced one per half budget gap; a show-deferred lesson cannot block ordinary news, and relevance is checked before onShow. T058 intentionally keeps questions as leading children of the existing .toasts stack, rather than adding a container (its report, local-T058-fh21-fixes.md, explains that design). New and deduplicated arrivals preserve question/button position. The guide prepends itself before the toast container. No notification source or CSS change was needed; its budget, question, reward, ticker, teardown and teaching-queue tests pass.
+- **StorageDialog / backup reminder:** the storage modal uses the global UI dialog stack at z-index 130, above the guide HUD's 50; CityScene suppresses underlying hotkeys while a dialog is open. The backup reminder belongs to the region screen, so it does not share a city-guide layout. The lock notice is centered while the 720p guide HUD sits at the left. StorageDialog tests pass. Physical rectangles/input at 1280×720 still require the browser recheck below.
+- **T057:** onboarding is outside the seven CONTINUITY_RECORDS in src/sim/persist.ts:50. Save hooks write only their own economy records; they do not hash the whole systemData object. Ordinary serialization preserves onboarding, and lean/budget recovery pruning targets only the continuity records. Present onboarding remains intentionally part of worker exactDigest's authoritative state equality; this is separate from T057's runtime records, and absent onboarding remains skipped for old-save digest compatibility.
+- **New continuity regression:** a guided economy city, a city without the UI record, and a freshly loaded guided city run 30 days with matching simulation/RNG state. All seven continuity records stay equal despite guide-only edits; the guided original and reload retain the same complete serialized state/exactDigest. Lean and budget-limited recovery keep the UI record. This does **not** claim full infrastructure continuity: cloud-T057-save-load.md explicitly leaves that work to B2. No save or infrastructure workaround was introduced.
+
+## Change per file
+
+| Job | File | Change |
+|---|---|---|
+| A | src/ui/guide/progress.ts | Typed emergency flags, safe defaults, one-time migration, fresh lesson write and stale-guide-save protection. |
+| A | src/ui/EmergencyBanner.ts | Profile Tips/seen flags, abort-bound Tips subscription, immediate lesson visibility/arming updates; existing host/New Year behavior preserved. |
+| A | tests/game/guideTips.test.ts | Migration, strict defaults, stale profile saves and independent guide/emergency fields. |
+| A | tests/game/emergencyTeaching.test.ts | Profile fixtures/Tips API; queued LIVE and visible E3 toggle regressions. |
+| A | tests/worker/emergencyTeachingHost.test.ts | Nested flags; real Local/packet Tips off/on preserves the next lesson. |
+| A | tests/game/emergencyBanner.test.ts | Explicit profile Tips-off setup for T029-only scenarios, updated arming fields; other expectations retained. |
+| B1 | src/ui/Onboarding.ts | Latch completed founding steps after validated Play / first elapsed day. |
+| B1 | src/ui/guide/founding.ts | Count growable-occupied zoned cells. |
+| B1 | tests/game/onboarding.test.ts | Occupied/empty-behind distinction; guide/keyboard latch; exact 40/8/12 + real three-turbine/tower start, Play and 30 days of full-system growth. |
+| B2, shared minimal hunk explicitly named this round | src/game/CityScene.ts | Read founding progress when choosing initial speed. |
+| B2 | tests/game/guideResume.test.ts (new) | Actual CityScene host-construction boundary on serialized Local/packet saves, booted packet no-unpause, completed/old saves and development overrides. |
+| B3 | src/ui/guide/copy.ts | G7 leads with crime/pollution above the fold. |
+| Boundary check | tests/save/guideContinuity.test.ts (new) | Guide/economy continuity record isolation, real reload and 30-day equality, recovery preservation. |
+| Report | docs/dev/reports/local-R1-guide-a.md | This merge review, test evidence and cloud/browser handoff. |
+
+**No src/sim/infra/* hunk. No outside-scope source hunk.** CityScene's one import/initial-speed hunk is kept small and separate. Notifications.ts, StorageDialog, settings.ts, NewYear.ts, TopBar/topbar and all src/worker sources remain untouched.
+
+## Round-5 verification
+
+**PASS:** npx tsc --noEmit after all code/test edits; git diff --check; all 14 changed files are UTF-8 without BOM. **36 selected single-file quiet-gated runs:** **34 files passed, 2 files entirely skipped; 533 tests passed / 11 existing skipped**. Every onboarding, guide, emergencyTeaching, notification-importing and replica file was included, plus the related storage, continuity, policy and hygiene suites. No full suite, browser, bench or real-GPU timing run was started.
+
+| Test file | Passed | Existing skips |
+|---|---:|---:|
+| tests/game/cityTeardown.test.ts | 4 | 0 |
+| tests/game/emergencyBanner.test.ts | 38 | 0 |
+| tests/game/emergencyPolicy.test.ts | 35 | 0 |
+| tests/game/emergencyTeaching.test.ts | 37 | 0 |
+| tests/game/emergencyTeachingToasts.test.ts | 12 | 0 |
+| tests/game/graphicsFirstRun.test.ts | 21 | 0 |
+| tests/game/guideCopy.test.ts | 137 | 0 |
+| tests/game/guideNewYear.test.ts | 3 | 0 |
+| tests/game/guidePowerUi.test.ts | 4 | 0 |
+| tests/game/guideResume.test.ts | 5 | 0 |
+| tests/game/guideTips.test.ts | 8 | 0 |
+| tests/game/guideToolbarCoach.test.ts | 1 | 0 |
+| tests/game/guideWhy.test.ts | 5 | 0 |
+| tests/game/newsTicker.test.ts | 20 | 0 |
+| tests/game/notificationsQuestion.test.ts | 6 | 0 |
+| tests/game/onboarding.test.ts | 52 | 0 |
+| tests/game/pacingProbe.test.ts | 0 | 4 |
+| tests/game/panelsNews.test.ts | 5 | 0 |
+| tests/game/rewardToast.test.ts | 7 | 0 |
+| tests/game/storageDialog.test.ts | 32 | 0 |
+| tests/game/tickerProbe.test.ts | 0 | 3 |
+| tests/game/toastBudget.test.ts | 10 | 0 |
+| tests/game/views.test.ts | 3 | 0 |
+| tests/render/terrainReplica.test.ts | 1 | 0 |
+| tests/save/continuity.test.ts | 2 | 0 |
+| tests/save/guideContinuity.test.ts | 1 | 0 |
+| tests/save/loadContinuity.test.ts | 4 | 0 |
+| tests/sim/approvalGuide.test.ts | 7 | 0 |
+| tests/worker/emergencyTeachingHost.test.ts | 13 | 0 |
+| tests/worker/emergencyTeachingWorker.test.ts | 1 | 0 |
+| tests/worker/guideFacts.test.ts | 3 | 0 |
+| tests/worker/hygiene.test.ts | 18 | 0 |
+| tests/worker/onboardingPersistence.test.ts | 10 | 0 |
+| tests/worker/replica.test.ts | 24 | 1 |
+| tests/worker/replicaLive.test.ts | 2 | 2 |
+| tests/worker/replicaSafe.test.ts | 2 | 1 |
+
+Existing skips: pacingProbe's four require PACING_SAVE, tickerProbe's three require TICKER_SAVE, and four replica cases require the absent grown fixture (one replica, two replicaLive, one replicaSafe). No new skip was added. Node's experimental-strip-types and the existing UI AbortSignal listener-limit warnings remain; all executed assertions pass. Used the same supported native loader / thread-pool runner as rounds 3–4, with no config or dependency edits:
+
+~~~text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types node_modules/vitest/vitest.mjs run <single-file-from-table> --maxWorkers=1 --configLoader native --pool threads
+~~~
+
+Assigned scratch evidence: round5-test-results.json contains every file/result and exact command. The QA report was read there, not modified. No new sim balance or RNG behavior is introduced. No standalone bot was run this round (not requested); the last measured reference remains **2015 residents [61,124, 93,804, 37,971] = 192,899** from round 4, not a fresh round-5 result. The regression command, if the lead reruns it, is:
+
+~~~text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet
+~~~
+
+## Cloud request, plan versus code, and remaining checks
+
+**W1.3 / T039 worker-side journal and boot replay:** preserve the existing setOnboarding whitelist/type entry and savedDataChanged handling when moving recovery into the worker. Journal setOnboarding like any other whitelisted edit, replay through SimCore's generic path with its boolean result, and keep progress made after the last periodic snapshot when the page closes. QA §1.6 passes on Local/loopback but W1.2's real Worker SnapshotMirror can keep only its last periodic snapshot. This is the exact remaining worker request; **no src/worker source was edited**. The unrelated duplicate E7 / TopBar coordination remains its earlier owner handoff.
+
+Plan/code differences: NOTE-069 itself is absent, so its quoted user instruction was implemented; T058 uses stable ordering in the existing stack rather than a separate question container; T057 proves economy continuity while infrastructure continuity remains deferred. No broader design amendment was needed.
+
+Left for the lead: full Vitest after integration; actual W1.3 close/recover behavior; 1280×720 layout/input and the real-GPU guide-only run. Automated constructor tests cannot replace physical browser checks.
+
+- [ ] Fresh Medium and Easy: zone exactly 40/8/12, place the recommended three turbines/tower, Play, and confirm Your first year/G1 on the first elapsed day without extra zoning. Run 30 days; repeat with Space/top-bar Play and on packet/Worker hosts.
+- [ ] Before Play, remove/rebuild road/zones/utilities: readiness still revokes/restores. After Play, growth never reopens founding.
+- [ ] Save during founding with utilities/camera, reload/Continue on Local, loopback and Worker: day and speed stay paused until Play; normal year/old saves retain their previous behavior.
+- [ ] Existing emergencyTeaching pref migrates once; seen lessons never repeat after reload/new city. Guide minimise/E11 writes preserve all four flags.
+- [ ] Tips off during an open card and a queued New Year/budget lesson hides it immediately and consumes no unseen flags; turn on and verify the eligible next lesson once. Repeat on each host with policy.teaching.
+- [ ] With the guide expanded/minimised, open Storage/Manage Storage and trigger a storage error: modal buttons and keys work, underlying guide input is blocked. Return to region and verify the backup reminder; repeat question Keep while a toast arrives and E11/FH-08 during New Year.
+- [ ] G7's crime/pollution buttons are reachable without scrolling at 1280×720; power/water remain available by scrolling.
+- [ ] After W1.3 lands, close after a guide-only edit made after the last snapshot and recover it on the real Worker. Keep the existing full FH-01/FH-02/FH-22 numeric checklist below.
+
+---
+
+## Round-4 report (historical; prior measured bot and save-path evidence)
 
 Round-4 base: **fb60208**, with dev 50a6b29 merged after round 3's e8d03de. Read NOTE-051 in full before editing. Its two approved save-path entries and event form **one standalone change**, with the tests and report below. They resolve the dirty/journal requests recorded in the historical rounds. FH-22's real Local/packet save/reload and fresh-core recovery checks now pass; browser acceptance remains with the lead.
 

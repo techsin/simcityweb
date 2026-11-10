@@ -8,8 +8,11 @@ import type { GameContext, UIEvents } from '../../src/game/context';
 import { deserializeCity, serializeCity } from '../../src/save/serialize';
 import { BF, type CityState } from '../../src/sim/CityState';
 import { getDef } from '../../src/sim/catalog';
+import { CityActions } from '../../src/sim/actions';
 import { updateNeighborConnections } from '../../src/sim/economy/connections';
 import { WIND_TURBINE_BASE, WIND_TURBINE_GAIN } from '../../src/sim/infra/params';
+import { schedulerOf } from '../../src/sim/infra/scheduler';
+import { createSystems } from '../../src/sim/systems';
 import { LocalSimHost } from '../../src/worker/SimHost';
 import { Onboarding } from '../../src/ui/Onboarding';
 import { guideCopy } from '../../src/ui/guide/copy';
@@ -109,6 +112,16 @@ describe('FH-01 founding predicates and card', () => {
     expect(accessibleZones(st).R).toBe(0);
   });
 
+  it('counts occupied growable cells while leaving empty land behind a house out', () => {
+    const st = newState(128);
+    roadLine(st, 0, 10, 30, 10);
+    for (let z = 11; z < 15; z++) for (let x = 10; x < 12; x++) st.zone[st.idx(x, z)] = Zone.ResHigh;
+    expect(accessibleZones(st).R).toBe(8);
+    place(st, 't_r3', 10, 11, { pop: 10 });
+    expect(accessibleZones(st).R).toBe(4);
+    expect(st.building[st.idx(10, 12)]).toBeGreaterThanOrEqual(0);
+  });
+
   it('rejects a two-cell edge stub and accepts six connected road cells reaching three tiles in', () => {
     const st = newState(128);
     roadLine(st, 0, 15, 1, 15);
@@ -197,6 +210,48 @@ describe('FH-01 founding predicates and card', () => {
     f.st.powered.fill(0); play.click();
     expect(f.host.speed).toBe(0);
     expect(f.row('play').querySelector('button')).toBeNull();
+  });
+
+  it('latches completed founding steps at Play and on the first elapsed day', () => {
+    for (const play of ['guide', 'keyboard'] as const) {
+      const f = setup(); ready(f.st); tick(f);
+      if (play === 'guide') f.row('play').querySelector('button')!.click();
+      else { f.host.setSpeed(1, 'keyboard'); f.st.day++; }
+      f.st.zone.fill(Zone.None); f.st.neighborConnections = []; f.st.powered.fill(0); f.st.watered.fill(0);
+      tick(f);
+      expect(f.card.progress.completed).toEqual(expect.arrayContaining(['road', 'zones', 'power', 'water']));
+      if (play === 'guide') { expect(f.card.progress.completed).not.toContain('play'); f.st.day++; tick(f); }
+      expect(f.card.progress.phase).toBe('year');
+      expect(goalRows(f).map((row) => row.dataset.guideId)).toContain('G1');
+    }
+  });
+
+  it('reaches Your first year after exactly 40/8/12 zones, Play and 30 days of real growth', async () => {
+    const st = newState(128); st.day = 90; st.systemData.foundedDay = 90;
+    const f = setup(st);
+    await f.host.start({ CityActions, createSystems });
+    const road = Array.from({ length: 81 }, (_, x) => ({ x, z: 10 }));
+    await expect(f.host.act('buildNetwork', [road, Network.Road]).done).resolves.toMatchObject({ ok: true });
+    for (const [rect, zone] of [
+      [{ x0: 5, z0: 11, x1: 15, z1: 15 }, Zone.ResLow],
+      [{ x0: 18, z0: 11, x1: 22, z1: 13 }, Zone.ComLow],
+      [{ x0: 25, z0: 11, x1: 31, z1: 13 }, Zone.IndMed],
+    ] as const) await expect(f.host.act('zone', [rect, zone]).done).resolves.toMatchObject({ ok: true });
+    for (const x of [5, 9, 13]) await expect(f.host.act('plop', ['util_wind_turbine', x, 9, 0]).done).resolves.toMatchObject({ ok: true });
+    await expect(f.host.act('plop', ['util_water_tower', 35, 9, 0]).done).resolves.toMatchObject({ ok: true });
+    schedulerOf(f.host.sim).flush(f.host.sim);
+    expect(accessibleZones(st)).toEqual({ R: 40, C: 8, I: 12, roadless: 0 });
+    tick(f);
+    f.row('play').querySelector('button')!.click();
+    expect(f.host.speed).toBe(1);
+    for (let day = 0; day < 30; day++) {
+      f.host.sim.advanceDay(); tick(f, 1000);
+      expect(f.card.progress.phase).toBe('year');
+    }
+    expect(st.day).toBe(120);
+    expect([...st.buildings.values()].some((b) => getDef(b.def)?.category === 'growable')).toBe(true);
+    expect(textOf(f.el.querySelector('.ob-title')!)).toBe(guideCopy.phaseC.CTitle());
+    expect(goalRows(f).map((row) => row.dataset.guideId)).toContain('G1');
   });
 
   it('starts a spring city on its founding day and waits one further day for Play', () => {
