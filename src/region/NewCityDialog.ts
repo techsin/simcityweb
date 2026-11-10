@@ -6,9 +6,10 @@
  * FH-11: each difficulty card carries its FH-04 blurb (difficultyRules); a profile's first city preselects Easy and
  * Guided start, later dialogs the last choice (newCityPrefs.ts); Disasters follows the difficulty's default until the
  * player sets it, with a note on when disasters start.
- * LG-12: founding a sister city (`sister`: the plan of regionEffects.ts) fills in the parent's mayor and adds the
- * endowment slider (endowmentField, in its own section below); "Found City" then asks once more, since the transfer
- * can't be undone, and writes the amount into the plan. Cancelling either dialog moves no money.
+ * LG-12: founding a sister city (`sister`: the plan of regionEffects.ts) fills in the parent's mayor, shows the parent's
+ * year as the starting year, fixed (the city starts on its parent's date: sisterStart), and adds the endowment slider
+ * (endowmentField, in its own section below); "Found City" then asks once more, since the transfer can't be undone,
+ * and writes the amount into the plan. Cancelling either dialog moves no money.
  */
 import type { Climate, Difficulty, TerrainPreset } from '../core/types';
 import { REGION_UNIT_CELLS } from '../core/constants';
@@ -27,7 +28,7 @@ import { randomCityName, randomMayorName } from './names';
 import { Modal, confirmDialog, segmented, slider, toggle } from './ui/modal';
 import { button, formatMoney, h, icon } from './ui/dom';
 import { formatMoney as exactMoney } from '../sim/economy/format';
-import { ENDOWMENT_MAX, ENDOWMENT_SHARE, ENDOWMENT_YEARS, type SisterPlan } from './regionEffects';
+import { ENDOWMENT_MAX, ENDOWMENT_SHARE, ENDOWMENT_YEARS, gameMonthLabel, sisterStart, type SisterPlan } from './regionEffects';
 
 export interface NewCityDialogOptions {
   region?: RegionModel;
@@ -37,8 +38,9 @@ export interface NewCityDialogOptions {
   defaults?: Partial<CityConfigData>;
   /** Runs inside the player's Found click (before the dialog promise resolves). */
   onFound?: () => void;
-  /** LG-12: the city is founded as a sister city: its parent's mayor is filled in, the parent's endowment is offered,
-   *  and the amount the player confirms is written into the plan (`sister.amount`; 0 when the dialog is cancelled) */
+  /** LG-12: the city is founded as a sister city: its parent's mayor is filled in, its starting year is the parent's
+   *  (fixed), the parent's endowment is offered, and the amount the player confirms is written into the plan
+   *  (`sister.amount`; 0 when the dialog is cancelled) */
   sister?: SisterPlan;
 }
 
@@ -149,6 +151,9 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
     const withDifficulty: Partial<CityConfigData> = { difficulty: startDifficulty, startFunds: DIFFICULTY_FUNDS[startDifficulty], sandbox: startDifficulty === 'sandbox', ...o.defaults };
     const base = o.region && o.tile ? o.region.cityConfigFor(o.tile, withDifficulty) : defaultCityConfig({ size, ...withDifficulty });
     const cfg: CityConfigData = { ...base, name: o.defaults?.name ?? randomCityName(), mayor: o.defaults?.mayor ?? o.sister?.parent.mayor ?? randomMayorName() };
+    // LG-12 (NOTE-095): a sister city starts on its parent's date, so in the parent's year (fixed below)
+    const sisterFrom = o.sister ? sisterStart(o.sister.parent) : null;
+    if (sisterFrom) cfg.startYear = sisterFrom.startYear;
     if (!hasRegion && cfg.terrain === 'region') cfg.terrain = 'hills';
     let customPreset: Exclude<TerrainPreset, 'region'> = cfg.terrain === 'region' ? 'hills' : cfg.terrain;
     let result: CityConfigData | null = null;
@@ -274,6 +279,10 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
     });
     const yearInput = h('input', { type: 'number', value: String(cfg.startYear), min: '1800', max: '2200', step: '1' }) as HTMLInputElement;
     yearInput.addEventListener('change', () => (cfg.startYear = Math.max(1800, Math.min(2200, Math.floor(+yearInput.value || 2000)))));
+    // LG-12: a sister city's year can't be changed (dimmed as the dialog's other disabled controls); the note names its
+    // month (prepareSisterCity founds it there)
+    if (sisterFrom) { yearInput.disabled = true; yearInput.style.opacity = '0.4'; }
+    const yearNote = sisterFrom && h('div', { class: 'nc-note nc-year-note' }, `A sister city starts on ${o.sister!.parent.name}’s date: ${gameMonthLabel(sisterFrom.day, sisterFrom.startYear)}.`);
 
     const km = Math.round((size * 16) / 100) / 10;
     const sizeLabel = `${TILE_SIZE_LABEL[(size / REGION_UNIT_CELLS) as 1 | 2 | 4] ?? 'Custom'} tile · ${km} × ${km} km · ${size} × ${size} cells`;
@@ -291,7 +300,7 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
         'div',
         { class: 'nc-opts' },
         h('div', { class: 'nc-opt' }, disasters.el, h('div', { class: 'nc-note' }, guideCopy.phaseA.A3Disasters(DISASTER_MIN_POP))),
-        h('div', { class: 'nc-opt' }, guide.el, veteranSw.el, h('div', { class: 'field nc-year' }, h('label', {}, 'Starting year'), yearInput)),
+        h('div', { class: 'nc-opt' }, guide.el, veteranSw.el, h('div', { class: 'field nc-year' }, h('label', {}, 'Starting year'), yearInput), yearNote),
       ),
     );
     const body = h(

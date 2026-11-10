@@ -594,3 +594,91 @@ describe('W1.3: a journal alone at the title screen (fix round)', () => {
     expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
   });
 });
+
+describe('T089: a journal bound to a stored snapshot stays until that snapshot goes (W1.3 decision 20)', () => {
+  const KEY = 'rtest:0_0', JOURNAL = `${KEY}#journal`;
+  const zoned = (st: Pick<CityState, 'zone' | 'idx'>) => st.zone[st.idx(rect.x0, rect.z0)] === Zone.ResLow;
+  /** a session that ended in a crash with unsaved progress: a tax edit in a host snapshot (at 1200), then a zone in the
+   *  journal bound to that snapshot. Returns the two recovery records as the store holds them. */
+  async function crashedSession() {
+    const savedAt = await savedCity(); now = 1100;
+    const host = await openHost();
+    host.post('setTax', [DevType.R1, 13]);
+    now = 1200; const snap = (await settle(host, host.snapshot('hidden')))!;
+    host.post('zone', [rect, Zone.ResLow]); await host.drain();
+    now = 1300; host.recovery!.writeNow('crash');
+    await host.dispose(); clearRecoveryBase();
+    const stored = { snapshot: await kv.get('recovery', KEY), journal: await kv.get<RecoveryJournal>('recovery', JOURNAL) };
+    expect(stored.snapshot).toMatchObject({ marker: { at: snap.marker.at, baseSavedAt: savedAt } });
+    expect(stored.journal).toMatchObject({ base: { kind: 'snapshot', at: snap.marker.at, baseSavedAt: savedAt }, ops: [{ op: 'zone' }] });
+    return { savedAt, stored };
+  }
+
+  it('a restore that fails on quota leaves the snapshot and its journal, through the boot that used to follow, and the next restore takes both', async () => {
+    const { savedAt, stored } = await crashedSession();
+    const pending = (await findPendingRecovery(city))!;
+    expect(pending.marker).toMatchObject({ at: 1200, baseSavedAt: savedAt });
+    // the store is full: the restored city cannot be written
+    const put = kv.put.bind(kv);
+    const full = vi.spyOn(kv, 'put').mockImplementation(async (store, value, key) => {
+      if (store === 'cities') throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+      return put(store, value, key);
+    });
+    now = 1400;
+    await expect(restoreRecoverySnapshot(pending)).rejects.toMatchObject({ name: 'QuotaExceededError' });
+    expect((await getCityRecord(kv, city.regionId, city.tileKey))?.savedAt).toBe(savedAt);
+    expect(await kv.get('recovery', KEY)).toEqual(stored.snapshot);
+    expect(await kv.get('recovery', JOURNAL)).toEqual(stored.journal);
+    // before T089 the crash dialog's Recover went on to boot the save with a replay, and that boot's read of the
+    // journal deleted it: it does not extend the save, only the snapshot that is still stored
+    const host = await openHost();
+    expect(host.state.budget.taxRates[DevType.R1]).not.toBe(13);
+    expect(zoned(host.state)).toBe(false);
+    expect(await kv.get('recovery', JOURNAL), 'the boot left it for the snapshot').toEqual(stored.journal);
+    await host.dispose(); clearRecoveryBase();
+    // space was freed: the same offer restores, and the next boot replays the journal onto it
+    full.mockRestore();
+    const again = (await findPendingRecovery(city))!;
+    expect(again.marker.at).toBe(1200);
+    now = 1500; await restoreRecoverySnapshot(again);
+    expect(await kv.get('recovery', JOURNAL)).toMatchObject({ base: { kind: 'save', savedAt: 1500 }, ops: [{ op: 'zone' }] });
+    const restored = await openHost();
+    expect(restored.harness.primary.budget.taxRates[DevType.R1], 'from the snapshot').toBe(13);
+    expect(zoned(restored.state), 'from its journal').toBe(true);
+  });
+
+  it('a boot with a pending snapshot leaves the journal bound to it in place, on a loopback and a local host, and the restore still takes it', async () => {
+    const { stored } = await crashedSession();
+    // the city opens on its save while the snapshot waits: every host reads the journal at its start
+    const loopback = await openHost();
+    expect(loopback.state.budget.taxRates[DevType.R1]).not.toBe(13);
+    expect(zoned(loopback.state)).toBe(false);
+    await loopback.dispose(); clearRecoveryBase();
+    const errors: unknown[] = [];
+    const local = new LocalSimHost((await loadCity(city.regionId, city.tileKey))!, { persistence: city, errors: { report: (...e) => errors.push(e) } });
+    try {
+      await local.start({ CityActions });
+      expect(errors).toEqual([]);
+      expect(local.state.budget.taxRates[DevType.R1]).not.toBe(13);
+      expect(zoned(local.state)).toBe(false);
+    } finally { await local.dispose(); clearRecoveryBase(); }
+    expect(await kv.get('recovery', KEY)).toEqual(stored.snapshot);
+    expect(await kv.get('recovery', JOURNAL)).toEqual(stored.journal);
+    // the offer is still whole: the snapshot, and its journal at the next boot
+    const pending = (await findPendingRecovery(city))!;
+    expect(pending.marker.at).toBe(1200);
+    now = 1400; await restoreRecoverySnapshot(pending);
+    const host = await openHost();
+    expect(host.harness.primary.budget.taxRates[DevType.R1], 'from the snapshot').toBe(13);
+    expect(zoned(host.state), 'from its journal').toBe(true);
+  });
+
+  it('once the snapshot is gone, a boot of the save deletes the journal that was bound to it', async () => {
+    await crashedSession();
+    await kv.delete('recovery', KEY);
+    const host = await openHost();
+    expect(host.state.budget.taxRates[DevType.R1]).not.toBe(13);
+    expect(zoned(host.state)).toBe(false);
+    expect(await kv.get('recovery', JOURNAL)).toBeUndefined();
+  });
+});

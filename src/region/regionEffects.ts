@@ -242,10 +242,11 @@ export function trackRegionEffects(sim: { state: CityState; events: { on(type: '
  *  2. saves and leaves the city, and plans the founding on the best free tile next to it (planSisterCity → sisterTile:
  *     the tile whose shared edge holds the most of the city's edge roads): the endowment limit, the 10-year rule and
  *     the road stub;
- *  3. opens the New City dialog with the plan (NewCityDialog.ts: the mayor filled in, the endowment slider and its
- *     confirmation). Cancelling changes nothing anywhere;
- *  4. on "Found City" generates the new city with its road stub and its parent's name (prepareSisterCity), stores it,
- *     and stores the region with the new tile AND the founding's ledger entry in one write (commitSisterCity).
+ *  3. opens the New City dialog with the plan (NewCityDialog.ts: the mayor filled in, the parent's year as the fixed
+ *     starting year, the endowment slider and its confirmation). Cancelling changes nothing anywhere;
+ *  4. on "Found City" generates the new city with its road stub, its parent's name and its parent's date (sisterStart,
+ *     prepareSisterCity), stores it, and stores the region with the new tile AND the founding's ledger entry in one
+ *     write (commitSisterCity).
  * MONEY. Step 4 pays nothing: the ledger entry is the transfer. regionContext gives each of the two cities its side of
  * the entry whenever it is opened, and economy/budget.ts books it exactly once per city (the parent −amount on the
  * "Sister city endowment" line, the new city +amount), keeping the entry's id in the city's save. A tab killed before
@@ -342,6 +343,17 @@ export function endowmentLimit(funds: number): number {
 /** "Apr 2053": a game day in a city's calendar */
 export function gameMonthLabel(day: number, startYear: number): string {
   return `${MONTH_NAMES[Math.floor(day / DAYS_PER_MONTH) % MONTHS_PER_YEAR]} ${startYear + Math.floor(day / DAYS_PER_YEAR)}`;
+}
+
+/**
+ * A sister city's start (NOTE-095): its parent's date at the founding, from the first day of that month — the start
+ * year in place of the dialog's default, the day in place of the 1 April a new city opens on (main.ts FOUNDING_DAY).
+ * The new city's calendar then begins where its parent's stands: its first save, its news and the parent's 10-year
+ * line ("Queensbury endowed a sister city in Sep 2043") name the same month and year.
+ */
+export function sisterStart(parent: Pick<SisterParent, 'day' | 'startYear'>): { startYear: number; day: number } {
+  const d = Math.max(0, Math.floor(parent.day));
+  return { startYear: parent.startYear + Math.floor(d / DAYS_PER_YEAR), day: (d % DAYS_PER_YEAR) - (d % DAYS_PER_MONTH) };
 }
 
 /** the game day of the last endowment the city on `tile` gave (not a founding without one); undefined: none */
@@ -470,12 +482,17 @@ function layStub(st: CityState, stub: readonly StubCell[][]): StubCell | null {
 export interface SisterOrigin { v: 1; id: string; tile: string; name: string; at?: { x: number; z: number } }
 
 /** step 4, before the new city's first save: its parent's name and ledger id (the budget system credits the endowment
- *  only to the city that carries the id) and its road stub */
+ *  only to the city that carries the id), its road stub, and its start on its parent's date (sisterStart: the year the
+ *  dialog showed, fixed, and the parent's month in place of the founding day the app has set) */
 export function prepareSisterCity(st: CityState, plan: SisterPlan): void {
   const origin: SisterOrigin = { v: 1, id: plan.id, tile: plan.from.key, name: plan.parent.name };
   const first = layStub(st, plan.stub);
   if (first) origin.at = { x: first.x, z: first.z };
   st.systemData.sisterOf = origin;
+  const start = sisterStart(plan.parent);
+  st.config.startYear = start.startYear;
+  st.day = start.day;
+  st.systemData.foundedDay = start.day;
 }
 
 /**

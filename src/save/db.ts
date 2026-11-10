@@ -349,6 +349,24 @@ export class RegionSaveLock {
     return this.writable;
   }
 
+  /**
+   * T086 B5: whether a tab holds this region now (null: not known, or this lock is taking it). A read-only tab polls
+   * this to learn that the region became free. A query takes no lock; a queued request would be granted ahead of the
+   * holder's own `ifAvailable` re-acquire (the start-up scan hands its lock to the session within a millisecond), and
+   * that tab would then open read-only. The BroadcastChannel fallback has no such query: null.
+   */
+  async heldElsewhere(): Promise<boolean | null> {
+    const taking = () => this.disposed || this.owned || !!this.pending;
+    if (taking()) return null;
+    try {
+      const snapshot = await (typeof navigator !== 'undefined' ? navigator.locks : undefined)?.query?.();
+      // (asked again: this tab may have started its own acquire while the query was out)
+      return taking() || !snapshot?.held ? null : snapshot.held.some((lock) => lock.name === this.name);
+    } catch {
+      return null;
+    }
+  }
+
   /** beforeWrite reloads a takeover's stale region while the lock is held and saves are still disabled. */
   acquire(steal = false, beforeWrite?: () => Promise<void>): Promise<boolean> {
     if (this.disposed) return Promise.resolve(false);

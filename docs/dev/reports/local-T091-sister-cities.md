@@ -352,3 +352,178 @@ Local host first, then once with `?simworker=1`.
     regional jobs term; with the parent's edge road bulldozed it drops to a tenth (point 2 above).
 11. **After the cloud's hunks land:** the built-out card and the RCI popover's built-out hint show "Found a sister city"
     when a free tile borders the city, and the button does what the pause-menu item does.
+
+## Round 2 (NOTE-095) and the dev merge
+
+Worktree base `a42b831c` (round 1 committed as `1cf1e0c2`, dev of 10 Nov morning merged). **The merge of dev `db519dfd`
+is in progress** (`MERGE_HEAD` = `db519dfd`), every conflict resolved, and everything is staged together with this
+round's change: nothing committed, pushed, stashed, reset or aborted. As the task asked, the merge came first and the
+change was made on top. tsc is clean, every listed gate passes, and the 128×15 s7 bot matches dev's own run line for
+line.
+
+The lead accepted choices 1-6, 8 and 9 as built. Choice 7 changes: **a sister city starts in its parent's current year
+and month.**
+
+### The change (choice 7)
+
+- **The start date.** A new city's start date has a year (the dialog's "Starting year", default 2000) and a month
+  (FEEL-05: `main.ts` opens every new city on 1 April, `FOUNDING_DAY`). A sister city now takes both from its parent,
+  through the new `sisterStart(parent)` in `regionEffects.ts`:
+  - the year is the parent's current year;
+  - the day is the first day of the parent's current month.
+
+  A parent on 6 Sep 2043 founds a city that opens on **1 Sep 2043**. Its first save, its founding news and its tile
+  card ("Year 2043") show that date, and so does the parent's 10-year line ("Queensbury endowed a sister city in
+  Sep 2043. It can endow another from Sep 2053"). Before this change it opened on 1 Apr 2000.
+- **Where it is set.** `prepareSisterCity` writes `config.startYear`, `day` and `systemData.foundedDay`. It already runs
+  in `startNewCity` after FEEL-05's lines and before the first save, so `main.ts` needed no code change, only a
+  comment. Whatever config reaches the founding, the date comes from the plan.
+- **What the dialog shows** (`NewCityDialog.ts`).
+  - "Starting year" shows the parent's year (2043).
+  - The field is disabled and dimmed to 0.4, like the dialog's other disabled controls.
+  - A note under it, in the same column, names the month: "A sister city starts on Queensbury’s date: Sep 2043."
+  - **The player can't change it.** The existing control is a free year box (1800–2200), and any other year would
+    break the agreement between the city's calendar, the endowment line and the 10-year dates. So the control doesn't
+    make changing it natural, and I kept it fixed.
+  - An ordinary founding is unchanged: 2000 by default, editable, no note, opening on 1 April.
+- **Each 10-year rule stays in its own city's calendar.**
+  - The parent's rule uses the parent's days and start year, as before.
+  - A sister city that later endows one of its own counts in its own calendar, which now starts in its parent's year.
+    In the test, Fairland (founded Sep 2043) endows from its 1 Sep 2045 and reads "Sep 2045 … from Sep 2055".
+  - The new city's side of a ledger entry never uses the entry's `day` (only `out` entries keep it, for the approval
+    bonus), so no date crosses from one calendar into the other.
+
+### The merge
+
+`git fetch origin claude/beautiful-johnson-u2jqoz`, then one `git merge --no-commit --no-ff
+origin/claude/beautiful-johnson-u2jqoz` (100 commits; first-parent merges T041, T042, T062, T065, T064 FEEL-19 /
+FH-16 / FEEL-03, T096, T089 with T086, and `b01918c4` storage stacking). Six files were changed on both sides. Five
+merged automatically: `CityScene.ts`, `main.ts`, `regionLock.ts`, `approval.ts`, `BudgetPanel.ts`. I read each
+merged result around the lane's hunks; they apply unchanged on dev's code.
+
+**One conflict: `src/sim/economy/budget.ts`.** Both sides added a new section right after `computeMonthlyBudget`:
+
+- dev (T042, LG-09): `MayorRemoval`, `MayorTenureData`, `mayorRemoval()`;
+- the lane: the LG-12 endowments section (`ENDOWMENT_KEY`, `SisterBooks`, `sisterBooks`, `bookEndowments`).
+
+Resolution: both kept whole. Dev's block stays where dev has it (right after `computeMonthlyBudget`), and the lane's
+section follows it under its own divider. Dev's `DAYS_PER_MONTH` import, its `econData(st) as … & MayorTenureData` in
+`settle` and its removal streak merged automatically, as did the lane's import lines and its `bookEndowments` call in
+`init`. Against dev, the file now differs only by the lane's hunks.
+
+**One fix the merge needed in the lane's own test:** `tests/regionSisterDialog.test.ts`. T086 added `busy` and
+`setBusy` to `RegionStorageContext`, so the test's stand-in context now has `busy: false, setBusy: vi.fn()`, as dev's
+`tests/regionStorage.test.ts` does. Nothing else needed changing: the staged tree differs from dev only in the lane's
+20 files.
+
+### Changes per file (round 2)
+
+| file | change |
+|---|---|
+| `src/region/regionEffects.ts` | `sisterStart` (new, after `gameMonthLabel`); `prepareSisterCity` sets the start year, the day and `foundedDay`; the section header's steps 3-4 |
+| `src/region/NewCityDialog.ts` | the parent's year in `cfg`; the year field disabled and dimmed; the note under it (`.nc-note.nc-year-note`); two doc comments |
+| `src/main.ts` | **comment only**, on the lane's LG-12 line in `startNewCity` (the founding day above it is replaced for a sister) |
+| `tests/save/sisterCities.test.ts` | +2 tests (below) |
+| `tests/game/sisterDialog.test.ts` | +2 tests (below); the helper also returns the year field |
+| `tests/regionSisterDialog.test.ts` | the merge fix above |
+| `src/sim/economy/budget.ts` | the conflict resolution above (no new code) |
+
+No `src/sim/infra/*`, `src/save/**`, `src/worker/**` or CSS hunk. No new save key: `foundedDay` already exists and is
+mirrored.
+
+### Tests
+
+New, all passing:
+
+- **`tests/save/sisterCities.test.ts`**, in "LG-12: a sister city starts on its parent's date (NOTE-095)" (the file now
+  has 34 tests, all passing):
+  - **its parent's year and month, from the first of that month**: 6 Sep 2043 gives 1 Sep 2043, 1 Apr stays 1 Apr,
+    30 Dec gives 1 Dec, 15 Jan 2000 in a city started in 1950 gives 1 Jan 2000, and day 0 gives day 0.
+  - **a sister founded from a parent in 2043 starts in 2043: its first save's date and the endowment line agree, and
+    each city's 10-year dates are in its own calendar.** The founding is `startNewCity`'s chain on an ordinary config
+    (2000, with FEEL-05's day 90 set first), stored and loaded back:
+    - the first save is `[startYear 2043, day 240, foundedDay 240, year 2043]`, which reads "Sep 1, 2043";
+    - the tile summary says year 2043;
+    - the parent's line reads "… in Sep 2043. It can endow another from Sep 2053 …" and contains the first save's
+      month label;
+    - the new city's founding news is dated Sep 1, 2043;
+    - two years on, the sister city endows its own sister: the grandchild starts `[2045, 240]`, and the sister's line
+      reads "Fairland endowed a sister city in Sep 2045. It can endow another from Sep 2055";
+    - the parent's window opens ten years to the day later, in its own calendar.
+- **`tests/game/sisterDialog.test.ts`** (9 tests, all passing):
+  - **starts in its parent's year, which the player can't change, from the month a note names (NOTE-095)**: the field
+    shows 2043, disabled, opacity 0.4; the note sits right under the field and reads "A sister city starts on
+    Queensbury’s date: Sep 2043."; the result has `startYear` 2043.
+  - **an ordinary founding keeps the default starting year, and the player can change it as before**: 2000, enabled,
+    no note, and the result has 2000; a changed field (1987) still gives 1987.
+
+**Mutation checks.** Each was applied, made the named tests fail, and was restored byte for byte (sha1 checked):
+
+| mutation | caught by |
+|---|---|
+| `prepareSisterCity` without the date | the 2043 founding test |
+| the parent's exact day instead of the first of its month | both calendar tests |
+| the dialog keeps 2000 for a sister | the dialog's NOTE-095 test |
+| the sister's year left editable | the dialog's NOTE-095 test |
+
+### Gates on the final tree
+
+Every vitest run went through quietrun, one process at a time, with `--maxWorkers=1`:
+
+| gate | result |
+|---|---|
+| `npx tsc --noEmit` (TypeScript 7.0.2, 1598 files) | clean |
+| the lane's 5 files: `tests/save/sisterCities`, `tests/game/sisterDialog`, `tests/game/sisterMenu`, `tests/game/sisterBudgetLine`, `tests/regionSisterDialog` | 34 + 9 + 12 = **55 passed** |
+| `tests/save/loadContinuity.test.ts` | 4 passed |
+| approval: `tests/sim/{approval,approvalGuide}`, `tests/game/{approvalHud,approvalCardReplica}` | 4 files, 29 passed |
+| budget: `tests/game/{budgetPreview,budgetTaxColor,budgetTaxCopy,budgetTaxes,toastBudget}`, `tests/sim/economy` | 6 files, 47 passed |
+| region: `tests/sim/{region,regionJobs}`, `tests/save/{regionEffects,regionSaveAccess,regionSummaryReload,liveRegionExport}`, `tests/{regionStorage,regionLockTakeover}`, `tests/infra/trafficRegion` | 9 files, 44 passed |
+| `tests/sim/difficultyRules.test.ts`, with `lg09EconomyDifficulty` and `lg09RemovalMigration` (T042's removal code in `budget.ts`, the conflict) | 3 files, 64 passed |
+| `tests/worker/hygiene.test.ts` (alone) | 18 passed |
+| the other New City dialog paths, FEEL-05 and the exit: `tests/game/{newCityStart,crashRecovery,storageTakeover,citySaves}`, `tests/save/foundingPersistence`, `tests/sim/foundingDay` | 6 files, 32 passed |
+| **bot 128×15 s7** | **`residents [ 61580, 93090, 37566 ]` = 192,236** |
+
+**The bot, row by row.** I ran the same command on dev itself (`db519dfd`, exported read-only with `git archive` into my
+scratch folder, no worktree):
+
+`SIMBOT_LOG=1 SIMBOT_BUDGET=1 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7`
+
+The two logs (1,298 lines each: 15 yearly rows, the yearly income and expense lines, the bot's action log, the final
+jobs and caps) are **identical apart from the two timing columns and the timing lines**. The lane changes no growth,
+as designed. Logs:
+`C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\t091r2\bot_lane.log`
+and
+`C:\Users\techsin\AppData\Local\Temp\claude\d1b83ee1fc675451\a2e68b0e-17ac-5b5a-9911-c4f474b44f9a\scratchpad\t091r2\bot_dev.log`.
+
+### Choices for the lead (round 2)
+
+1. **The first of the parent's month, not its exact day.** FEEL-05 opens cities on the 1st, and the dialog and the
+   endowment line are month-level. The exact day (6 Sep) would be a one-line change in `sisterStart`.
+2. **A sister city doesn't open in spring.**
+   - If the parent is in January to March, the sister opens before April (1 Jan if the parent is in January: day 0,
+     the paths FEEL-05's test shows any founding day takes).
+   - If the parent is in December, the city's first New Year and first year review come one month after the founding.
+   - Both follow from "the parent's year and month".
+3. **The year is fixed.** If the lead wants it editable, the founding still has to keep the parent's date, so the
+   control would need its own rule.
+
+### Not verified
+
+- **Anything in a browser.** In particular the dimmed field, the note at 1280×720, and the top bar date of the new
+  city.
+- **`main.ts` end to end.** Unchanged from round 1: the test's `found()` repeats `startNewCity`'s steps, and the new
+  test also sets FEEL-05's day first, as `startNewCity` does.
+- **The full vitest suite.** 35 files of it ran (listed above).
+
+### Browser checklist delta
+
+- **Items 2 and 3 (the dialog).** "Starting year" shows the parent's current year, dimmed, and can't be edited. Under
+  it: "A sister city starts on <parent>’s date: <Mon YYYY>." The sister dialog is one line taller: at 1280×720 it
+  should still fit or scroll.
+- **Item 6 (the new city).** It opens on the 1st of the parent's month in the parent's year (top bar "Sep 1, 2043" for a
+  parent in Sep 2043). Its founding news is dated that day, and the region tile card reads "Year 2043".
+- **Item 8 (ten years).** The parent's line names the same month and year as the sister city's first date. A sister city
+  that endows its own later shows dates in its own calendar.
+- **New: an ordinary "Found New City"** still shows 2000, editable, and opens on 1 April of the chosen year.
+- **New: a parent in December or January.** The sister city opens on 1 Dec or 1 Jan, and its first New Year follows
+  after one month or twelve.

@@ -195,6 +195,7 @@ class App {
   private region: RegionModel | null = null;
   private storage = new RegionStorage(() => ({
     root: this.root, region: this.region, city: this.city, saved: this.saveChain,
+    busy: this.busy, setBusy: (busy) => { this.busy = busy; },
     clearCity: () => { this.city = null; }, open: (data) => this.openRegion(data),
   }));
   private city: {
@@ -563,7 +564,8 @@ class App {
       ld.set('Planting trees…', 0.35);
       await paint();
       scatterTrees(st, topts);
-      // LG-12: a sister city's first save holds its road stub and names its parent
+      // LG-12: a sister city's first save holds its road stub, names its parent and starts on its parent's date (that
+      // year and month, in place of the founding day above: NOTE-095)
       if (sister) prepareSisterCity(st, sister);
       ld.set('Founding the city…', 0.5);
       await paint();
@@ -600,7 +602,13 @@ class App {
     const offered = await this.startupOffer();
     if (offered === 'recovered' || offered === 'later') return;
     data = await this.storage.open(data);
-    if (gate && !(await this.recoveryGate(data.id, tileKey))) return;
+    const offer = this.offerPending;
+    if (gate && !(await this.recoveryGate(data.id, tileKey))) {
+      // T086 B6: "Later" leaves this tab on its title screen, which must not keep the region's lock (a second tab would
+      // open read-only). Only the start-up offer's Recover goes on into the city, on this session.
+      if ((await offer) !== 'recovered') this.storage.dispose();
+      return;
+    }
     const ld = new LoadingScreen(this.root);
     ld.set('Generating terrain…', 0.15);
     await paint();
@@ -1029,9 +1037,9 @@ class App {
     c.crashed = true;
     clearInterval(c.ticker);
     console.error('[main] the simulation worker crashed', error);
-    const city = { regionId: model.data.id, tileKey: c.tile.key };
+    const city = { regionId: model.data.id, tileKey: c.tile.key }, name = c.tile.city?.name ?? 'This city';
     const recoverable = this.persistent && (await hasRecoverySnapshot(city).catch(() => false));
-    const choice = await openSimCrashDialog({ cityName: c.tile.city?.name ?? 'This city', message: error.message, recoverable });
+    const choice = await openSimCrashDialog({ cityName: name, message: error.message, recoverable });
     if (this.city !== c) return;
     const ld = new LoadingScreen(this.root);
     ld.set('Restarting the simulation…', 0.2);
@@ -1040,15 +1048,36 @@ class App {
     for (let i = 0; this.busy && i < 600; i++) await new Promise((r) => setTimeout(r, 50));
     await this.closeCity(c);
     if (choice === 'local') this.workerOff = true;
+    let replay = false;
     if (choice === 'recover') {
       // a snapshot that cannot be restored is reported and deleted: the last save is what remains
       const pending = await findRecoverySnapshot(city).catch(() => null);
-      if (pending) await this.restoreRecovery(pending);
+      const restored: RecoverChoice = pending ? await this.restoreRecovery(pending) : 'none';
+      // T089 (W1.3 decision 20): only a restore that succeeded is followed by a replay. One that left the recovery copy
+      // stored (a full store, a region now open in another tab, a copy that could not be read) opens no city over it,
+      // as the recovery gate opens none: that city's own snapshots and journal would replace the copy
+      replay = restored === 'recovered';
+      if (!replay && (await hasRecoverySnapshot(city).catch(() => false))) {
+        // NOTE-092: the region then says why nothing was recovered, and that the copy is kept (the city's Play asks
+        // about it again). A snapshot that could not be restored ('failed') was reported by restoreRecovery
+        const why = restored === 'failed' ? null
+          : !regionSaveAccess(city.regionId) ? 'this region is now open in another tab. Its recovery copy is kept.'
+          : restored === 'none' ? 'its recovery copy could not be read. The copy is kept. Free some browser storage, then play the city to try again.'
+          : "your browser's storage for Metropolis is full. Its recovery copy is kept. Free some browser storage, then play the city to recover it.";
+        ld.set('Returning to the region…', 0.7);
+        await this.showRegion(model, ld, c.tile.key);
+        if (why) toast(`${name} was not recovered: ${why}`, 'bad', 9000);
+        return;
+      }
+    } else {
+      // T089 (NOTE-080, the owner's choice): Restart and Continue on the main thread discard the crashed session's
+      // recovery copy (the worker's snapshot, the journal, the localStorage slot), as the dialog says: no later crash
+      // or start can bring that session back
+      await discardRecoverySnapshot(city);
     }
     // the player has chosen: no second recovery offer (a loading screen handed over skips it). W1.3: only Recover
-    // replays the journal; Restart and Continue on the main thread load the save as it is, and the journal stays as
-    // the snapshot does, until the next save or recovery write replaces it
-    await this.playCity(c.tile, ld, choice === 'recover');
+    // replays the journal; Restart and Continue on the main thread load the save as it is
+    await this.playCity(c.tile, ld, replay);
   }
 
   /** stand-in when src/game/CityScene.ts is not available yet */
@@ -1132,7 +1161,7 @@ class App {
     const climate = q.get('climate') as Climate | null;
     if (climate) partial.climate = climate;
     const cfg = model.cityConfigFor(tile, partial);
-    if (diff) cfg.startFunds = ({ easy: 250_000, medium: 100_000, hard: 40_000, sandbox: 10_000_000 } as const)[diff] ?? cfg.startFunds;
+    if (diff) cfg.startFunds = ({ easy: 250_000, medium: 100_000, hard: 40_000, expert: 40_000, sandbox: 10_000_000 } as const)[diff] ?? cfg.startFunds;
     cfg.sandbox = cfg.difficulty === 'sandbox';
     drawPreview(model);
     await saveRegion(data);

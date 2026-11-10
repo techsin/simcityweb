@@ -13,7 +13,7 @@
 import { CELL_SIZE } from '../../core/constants';
 import type { GameContext } from '../context';
 import type { ToolSpec } from '../toolCatalog';
-import { INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_UNIT, type DispatchOption, type Incident } from '../../sim/infra/emergency';
+import { INCIDENT_LABEL, INCIDENT_RESPONDERS, RESPONDER_UNIT, dispatchWindowEnd, type DispatchOption, type Incident } from '../../sim/infra/emergency';
 import { watchFor, type WatchHandle, type DispatchView } from '../../worker/SimHost';
 import type { Responder } from '../../sim/CityState';
 import { getDef } from '../../sim/catalog';
@@ -205,10 +205,12 @@ export class DispatchTool extends Tool {
     this.optionsWatch ??= watchFor(this.ctx.host, 'dispatchOptions', args, 'daily', this.ctx.signal);
     this.optionsWatch.setArgs(args);
     const options = this.optionsWatch.value;
-    const key = `${inc.id}:${this.optionsWatch.version}`;
+    const manualClosed = (inc.manualDispatchWindowMultiplier ?? 1) < 1 && this.ctx.host.simTime() >= dispatchWindowEnd(inc) - 1e-6;
+    const key = `${inc.id}:${this.optionsWatch.version}:${manualClosed}`;
     if (!force && key === this.optsKey) return;
     this.optsKey = key;
-    this.opts = options ?? [];
+    this.opts = manualClosed ? [] : options ?? [];
+    if (manualClosed) { this.hoverStation = null; this.routeCells = []; this.ctx.tip.hide(); }
     if (options && this.fitPending) { this.fitPending = false; this.fitCamera(inc); }
   }
 

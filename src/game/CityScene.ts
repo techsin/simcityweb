@@ -57,6 +57,7 @@ import { StatsPanel } from '../ui/panels/StatsPanel';
 import { Toolbar } from '../ui/Toolbar';
 import { TopBar } from '../ui/TopBar';
 import { computeUiZoom, setUiZoom } from '../ui/zoom';
+import { attachFloatText } from '../ui/FloatText';
 import { installUiSounds, type UiSoundAudio } from '../ui/uiSounds';
 import { asMusicAudio, shortMood, watchTrackChanges } from '../ui/MusicPlayer';
 import { EmergencyBanner } from '../ui/EmergencyBanner';
@@ -69,6 +70,7 @@ import { attachOverlays } from '../sim/infra/overlays';
 import { windVector } from '../sim/infra/wind';
 import { regionSaveAccess } from '../save/db';
 import { showStorageError, storageConditionVersion, storageDialogOpen } from '../ui/StorageDialog';
+import { modalOpen } from '../region/ui/modal';
 
 export type { GameSettings } from './settings';
 
@@ -319,6 +321,8 @@ export class CityScene {
 
     // ---- HUD
     this.topBar = new TopBar(ctx, this.uiRoot);
+    // FEEL-03: cost floats at the pointer (outside the zoomed .mp-ui; Tool.ts's commitAction finds them by the context)
+    attachFloatText(ctx, this.root, () => this.mouse);
     const bl = h('div', { class: 'hud-bl' });
     this.uiRoot.appendChild(bl);
     new LegendChip(ctx, bl);
@@ -951,6 +955,9 @@ export class CityScene {
     if (isTyping(e) || this.disposed) return;
     // dialogs handle their keys themselves; no hotkeys underneath them
     if (confirmOpen() || storageDialogOpen()) return;
+    // T089: nor under the worker crash dialog (main.ts onWorkerCrash), a region-screen Modal that opens over this scene.
+    // This listener was added before the dialog's and runs first, so the dialog cannot keep Space, the pause key, from it
+    if (modalOpen()) return;
     if (this.pause.isOpen) {
       if (e.key === 'Escape') {
         e.preventDefault();

@@ -22,7 +22,7 @@ const plan = { id: 's1', amount: 0 } as SisterPlan;
 function storage() {
   const context = {
     root: {} as HTMLElement, region: model as RegionModel | null, city: null as StorageCity | null,
-    saved: Promise.resolve(), clearCity: vi.fn(), open: vi.fn(async (_data: RegionData) => {}),
+    saved: Promise.resolve(), busy: false, setBusy: vi.fn(), clearCity: vi.fn(), open: vi.fn(async (_data: RegionData) => {}),
   };
   return { context, storage: new RegionStorage(() => context) };
 }

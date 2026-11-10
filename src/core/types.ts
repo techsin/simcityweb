@@ -82,7 +82,7 @@ export function isRoad(n: Network): boolean {
 // ---------------------------------------------------------------------------
 export type Climate = 'temperate' | 'desert' | 'tropical' | 'alpine';
 export type TerrainPreset = 'region' | 'flat' | 'plains' | 'hills' | 'mountains' | 'river' | 'coast' | 'islands' | 'lakes';
-export type Difficulty = 'easy' | 'medium' | 'hard' | 'sandbox';
+export type Difficulty = 'easy' | 'medium' | 'hard' | 'sandbox' | 'expert';
 
 // ---------------------------------------------------------------------------
 // Data-view overlays (UI selects, renderer draws)

@@ -1,0 +1,19 @@
+/*
+ * FEEL-03 (a): cost floats at the cursor (src/ui/FloatText.ts). The layer is fixed to the viewport outside the zoomed
+ * .mp-ui, so a float sits at the pointer's client coordinates; it scales by the UI zoom in its transform. The Web
+ * Animations API drives transform and opacity only; at rest a float is invisible (opacity 0).
+ */
+.ft-layer { position: fixed; left: 0; top: 0; width: 0; height: 0; overflow: visible; pointer-events: none; z-index: 70; }
+.ft { position: absolute; left: 0; top: 0; opacity: 0; transform-origin: 0 0; will-change: transform, opacity; pointer-events: none; }
+/* reduced motion: shown still for the float's life */
+.ft.on { opacity: 1; }
+.ft-in {
+  position: absolute; left: 0; bottom: 14px; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 1px; white-space: nowrap;
+  font-family: var(--font); font-size: 16px; font-weight: 800; line-height: 1.15; font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.55);
+}
+.ft-cost.neg { color: #ff7a6e; }
+.ft-cost.pos { color: #6fe3a0; }
+.ft-sub { font-size: 12px; font-weight: 700; color: #ffcf85; }
+.ft-sub:empty, .ft-cost:empty { display: none; }

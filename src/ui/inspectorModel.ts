@@ -58,6 +58,10 @@ export interface Chip {
   title?: string;
   /** topic for de-duplication against facility warnings */
   topic?: 'power' | 'water' | 'road' | 'staff' | 'burnt' | 'fire' | 'other';
+  /** which chip of the shared table it is (buildingChips; the hover's order, HOVER_ORDER, is written in these) */
+  key?: ChipKey;
+  /** an icon the inspector draws before the text (src/ui/icons.ts name, 11 px) */
+  icon?: string;
 }
 
 /** at most this many bars per section (critic item 30) */
@@ -445,6 +449,181 @@ export function headerIncome(def: { income?: number; category?: string }, row: M
 export function dedupeChips(chips: readonly Chip[], warnings: readonly string[]): Chip[] {
   const topics = new Set(warnings.map(warningTopic));
   return chips.filter((c) => !c.topic || c.topic === 'other' || !topics.has(c.topic));
+}
+
+// ------------------------------------------------------------------------------------------------ status chips (FEEL-19)
+/** the chips of the shared table (buildingChips), by what they say */
+export type ChipKey = 'power' | 'water' | 'construction' | 'needs' | 'abandoned' | 'fire' | 'ruin' | 'incident' | 'road' | 'staff'
+  | 'nojobs' | 'congested' | 'polluted' | 'noisy' | 'crime' | 'garbage' | 'historic';
+
+/** one building flag's chip: its BF bit, its words, its tone and its de-duplication topic */
+export interface FlagChip {
+  bit: number;
+  key: ChipKey;
+  text: string;
+  cls: Chip['cls'];
+  topic?: Chip['topic'];
+}
+
+/**
+ * The building flags' chips, in the order the inspector shows them. FEEL-19 moved this table here from InfoPanel.ts: the
+ * inspector's chips and the Query hover's status line (hoverStatus) both come from it, so the hover says what the chip
+ * says, in the chip's tone.
+ */
+export const FLAG_CHIPS: readonly FlagChip[] = [
+  { bit: BF.Abandoned, key: 'abandoned', text: 'Abandoned', cls: 'bad' },
+  { bit: BF.OnFire, key: 'fire', text: 'On fire!', cls: 'bad', topic: 'fire' },
+  // (cause-neutral, final fixes r3: a tornado, a quake or a meteor leaves ruins too)
+  { bit: BF.Burnt, key: 'ruin', text: RUINS_TEXT, cls: 'bad', topic: 'burnt' },
+  { bit: BF.Incident, key: 'incident', text: 'Emergency here', cls: 'bad' },
+  { bit: BF.NoRoad, key: 'road', text: 'No road access', cls: 'bad', topic: 'road' },
+  { bit: BF.Understaffed, key: 'staff', text: 'Understaffed', cls: 'warn', topic: 'staff' },
+  { bit: BF.NoJobs, key: 'nojobs', text: 'No jobs', cls: 'warn' },
+  { bit: BF.Congested, key: 'congested', text: 'Congested', cls: 'warn' },
+  { bit: BF.Polluted, key: 'polluted', text: 'Polluted', cls: 'warn' },
+  { bit: BF.Noisy, key: 'noisy', text: 'Noisy', cls: 'warn' },
+  { bit: BF.Crime, key: 'crime', text: 'High crime', cls: 'warn' },
+  { bit: BF.NoGarbage, key: 'garbage', text: 'Garbage piling up', cls: 'warn' },
+  { bit: BF.Historic, key: 'historic', text: 'Historic', cls: 'info' },
+];
+
+/** the words of the chips that are no flag of their own: power, water and unmet needs */
+export const CHIP_TEXT = { powered: 'Powered', noPower: 'No power', water: 'Water', noWater: 'No water', needsUnmet: 'Needs unmet' } as const;
+export const CHIP_TITLE = {
+  noWater: 'This building needs piped water',
+  needsWarn: 'Some residents lack a school, clinic, playground… (see Residents)',
+  needsInfo: 'Residents of a small town do not mind yet — they will as the city grows',
+} as const;
+
+/** the construction chip: "Under construction 60%" (the plan's sample read "Under construction · 60%"; the chip's
+ *  words win, the hover shows the same) */
+export function constructionText(built: number): string {
+  return `Under construction ${Math.round(built * 100)}%`;
+}
+
+/** a building's chip inputs besides its flags and progress: what the inspector reads from the cell, the def and its
+ *  report (each field has the default named) */
+export interface ChipContext {
+  /** the power layer at the building's min corner (the inspector's Powered: BF.Powered or state.powered[idx(x, z)]) */
+  poweredCell?: boolean;
+  /** the same for water (state.watered) */
+  wateredCell?: boolean;
+  /** the building draws power (drawsPower); default true */
+  usesPower?: boolean;
+  /** a growable (it shows a Water chip on any piped cell); default true */
+  growable?: boolean;
+  /** it needs piped water (demographics.waterRequired, the inspectBuilding report's waterRequired); default false */
+  needsWater?: boolean;
+  /** demographics.needsExpectation: at or below 0.01 an unmet need is information only (a small town); default 1 */
+  needsExpectation?: number;
+}
+
+/** every building draws power except power plants and parks without an explicit use (lawns and benches) */
+export function drawsPower(def: { category?: string; powerOut?: number; powerUse?: number } | undefined, growable: boolean): boolean {
+  return growable || (!!def && !((def.powerOut ?? 0) > 0) && (def.category !== 'park' || (def.powerUse ?? 0) > 0));
+}
+
+/**
+ * A building's status chips, in the inspector's order: Powered / No power, Water / No water, Under construction N%, the
+ * flag chips (FLAG_CHIPS) and Needs unmet. A ruin (BF.Burnt) shows only RUIN_CHIP_FLAGS' chips: nothing of the live
+ * building it was. The inspector draws them (after dedupeChips against its facility warnings); hoverStatus picks one.
+ */
+export function buildingChips(flags: number, built: number, ctx: ChipContext = {}): Chip[] {
+  const chips: Chip[] = [];
+  const ruin = (flags & BF.Burnt) !== 0, growable = ctx.growable ?? true;
+  if (!ruin && (ctx.usesPower ?? true)) {
+    const powered = (flags & BF.Powered) !== 0 || !!ctx.poweredCell;
+    chips.push({ key: 'power', icon: 'power', text: powered ? CHIP_TEXT.powered : CHIP_TEXT.noPower, cls: powered ? 'good' : 'bad', topic: 'power' });
+  }
+  const watered = (flags & BF.Watered) !== 0 || !!ctx.wateredCell;
+  const needW = !ruin && !!ctx.needsWater;
+  // (a facility that uses no water — a wind turbine, a plaza — shows no Water chip on a piped cell: routed 15)
+  if (watered && !ruin && (growable || needW)) chips.push({ key: 'water', icon: 'water', text: CHIP_TEXT.water, cls: 'good', topic: 'water' });
+  else if (needW) chips.push({ key: 'water', icon: 'water', text: CHIP_TEXT.noWater, cls: 'warn', topic: 'water', title: CHIP_TITLE.noWater });
+  if (!ruin && (built < 1 || flags & BF.Constructing)) chips.push({ key: 'construction', text: constructionText(built), cls: 'info' });
+  for (const c of FLAG_CHIPS) if (flags & c.bit && (!ruin || c.bit & RUIN_CHIP_FLAGS)) chips.push({ key: c.key, text: c.text, cls: c.cls, topic: c.topic });
+  if (flags & BF.NeedsUnmet && !ruin) {
+    const warn = (ctx.needsExpectation ?? 1) > 0.01;
+    chips.push({ key: 'needs', text: CHIP_TEXT.needsUnmet, cls: warn ? 'warn' : 'info', title: warn ? CHIP_TITLE.needsWarn : CHIP_TITLE.needsInfo });
+  }
+  return chips;
+}
+
+/** the Query hover's status line: one chip's words and tone, or "Thriving" */
+export interface HoverStatus {
+  text: string;
+  tone: Chip['cls'];
+}
+
+/**
+ * The status line's order: the first of these chips a building shows. A ruin, then an emergency on it (On fire!,
+ * Emergency here), then while it is built its progress, then the plan's order — Abandoned, No road, No power, No water,
+ * Understaffed, garbage, noise, polluted, needs, crime — and the table's two other problem chips (No jobs, Congested).
+ * Only problem chips count (tone bad or warn) and the construction chip: Powered, Water, Historic and a small town's
+ * unmet need (info) are no news.
+ */
+export const HOVER_ORDER: readonly ChipKey[] = [
+  'ruin', 'fire', 'incident', 'construction', 'abandoned', 'road', 'power', 'water', 'staff', 'garbage', 'noisy', 'polluted', 'needs', 'crime',
+  'nojobs', 'congested',
+];
+export const THRIVING_TEXT = 'Thriving';
+/** a growable with no problem chip reads "Thriving" from this condition (Building.health) up */
+export const THRIVING_CONDITION = 0.9;
+
+/**
+ * FEEL-19: the one status line the Query hover adds under a building's name. The first problem chip in HOVER_ORDER (or
+ * the construction chip while it is built), in the chip's own words and tone, so it always equals the inspector's chip;
+ * else "Thriving" (tone good) when `condition` is at least THRIVING_CONDITION; else none. `condition` counts only for a
+ * growable (ctx.growable): a plopped building keeps health 1 from the day it is placed, and the inspector shows a
+ * condition for growables only. null / undefined condition: unknown (no "Thriving").
+ */
+export function hoverStatus(flags: number, built: number, condition: number | null | undefined, ctx: ChipContext = {}): HoverStatus | null {
+  let best: Chip | null = null, rank = HOVER_ORDER.length;
+  for (const c of buildingChips(flags, built, ctx)) {
+    if (c.cls !== 'bad' && c.cls !== 'warn' && c.key !== 'construction') continue;
+    const r = c.key ? HOVER_ORDER.indexOf(c.key) : -1;
+    if (r >= 0 && r < rank) { rank = r; best = c; }
+  }
+  if (best) return { text: best.text, tone: best.cls };
+  if ((ctx.growable ?? true) && condition != null && condition >= THRIVING_CONDITION) return { text: THRIVING_TEXT, tone: 'good' };
+  return null;
+}
+
+/** the cursor tip's line class of a chip tone (hud.css / insight.css .cursor-tip: the zone-lot hover's classes) */
+export const TIP_LINE: Readonly<Record<Chip['cls'], string>> = { good: 'tip-ok', warn: 'tip-warn', bad: 'tip-reason', info: 'tip-sub' };
+/** the cursor tip box's kind of a chip tone (CursorTip.show) */
+export const TIP_KIND: Readonly<Record<Chip['cls'], 'ok' | 'bad' | 'info'>> = { good: 'ok', warn: 'info', bad: 'bad', info: 'info' };
+
+/**
+ * The hover's status line per building for the sim day it was read on (FEEL-19). The tip re-reads its building about
+ * once a second while the cursor rests and on every move to another cell; the line is worked out once per building per
+ * sim day. `sig` holds what can change within a day without the day turning — the building's flags and utility cells
+ * (power restored while paused, a fire) and whether its condition is known yet: a different `sig` works the line out
+ * again at once. Lines of past days are dropped as the day turns.
+ */
+export class HoverStatusCache {
+  private day = Number.NaN;
+  private lines = new Map<number, { sig: number; line: HoverStatus | null }>();
+  /** lines worked out so far (tests) */
+  computed = 0;
+
+  get(id: number, day: number, sig: number, compute: () => HoverStatus | null): HoverStatus | null {
+    if (day !== this.day) {
+      this.lines.clear();
+      this.day = day;
+    }
+    const e = this.lines.get(id);
+    if (e && e.sig === sig) return e.line;
+    this.computed++;
+    const line = compute();
+    this.lines.set(id, { sig, line });
+    return line;
+  }
+
+  clear(): void {
+    this.lines.clear();
+    this.day = Number.NaN;
+  }
 }
 
 // ------------------------------------------------------------------------------------------------ residents

@@ -5,6 +5,8 @@
  * - "Found City" with an endowment asks first: the transfer can't be undone. Declining returns to the form, agreeing
  *   founds the city and writes the amount into the plan. Cancelling the dialog leaves the amount at 0.
  * - A parent inside its 10 years gets the reason with the date instead of the slider; a sandbox city gets no endowment.
+ * - NOTE-095: the starting year is the parent's, and the player can't change it; a note names the month the city starts
+ *   in. An ordinary founding keeps the default year and its control.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openNewCityDialog } from '../../src/region/NewCityDialog';
@@ -63,6 +65,7 @@ function open(over?: Partial<SisterPlan> | null) {
   const press = (box: FEl, label: string) => box.querySelectorAll('button').find((b) => textOf(b) === label)!.click();
   return {
     plan, result, dlg, name: texts[0], mayor: texts[1], endow, range,
+    year: dlg.querySelectorAll('input').find((i) => i.getAttribute('type') === 'number')!,
     settled: () => settled,
     note: () => textOf(endow()!.querySelector('.nc-note')!),
     card: (title: string) => dlg.querySelector('.nc-diff')!.querySelectorAll('.seg-item').find((b) => textOf(b.querySelector('.si-t')!) === title)!,
@@ -186,6 +189,33 @@ describe('LG-12: the New City dialog founding a sister city', () => {
     expect(d.confirm()).toBeNull();
     expect((await d.result)!).toMatchObject({ difficulty: 'sandbox', sandbox: true });
     expect(d.plan!.amount).toBe(0);
+  });
+
+  it('starts in its parent\'s year, which the player can\'t change, from the month a note names (NOTE-095)', async () => {
+    // the parent on 6 September 2043, in its 44th year (start year 2000)
+    const d = open({ parent: { ...sisterPlan(region()).parent, day: 43 * 360 + 8 * 30 + 5 } });
+    expect([d.year.getAttribute('value'), d.year.disabled, d.year.style.opacity]).toEqual(['2043', true, '0.4']);
+    // (under the field, in its column)
+    const note = d.dlg.querySelector('.nc-year-note')!;
+    expect(note.parentElement!.children.indexOf(note)).toBe(note.parentElement!.children.indexOf(d.year.parentElement!) + 1);
+    expect(textOf(note)).toBe('A sister city starts on Queensbury’s date: Sep 2043.');
+    d.found();
+    expect(await d.result).toMatchObject({ startYear: 2043 });
+  });
+
+  it('an ordinary founding keeps the default starting year, and the player can change it as before', async () => {
+    const d = open(null);
+    expect([d.year.getAttribute('value'), d.year.disabled, d.year.style.opacity]).toEqual(['2000', false, undefined]);
+    expect(d.dlg.querySelector('.nc-year-note')).toBeNull();
+    d.found();
+    expect(await d.result).toMatchObject({ startYear: 2000 });
+    root = new FEl('div');
+    setUiRoot(root as unknown as HTMLElement);
+    const later = open(null);
+    later.year.value = '1987';
+    later.year.fire('change');
+    later.found();
+    expect(await later.result).toMatchObject({ startYear: 1987 });
   });
 
   it('an ordinary founding has no endowment field and keeps its title', async () => {

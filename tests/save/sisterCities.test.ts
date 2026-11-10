@@ -7,6 +7,8 @@
  * - The region's ledger entry is the transfer: both cities book it once, from every save, and a store killed anywhere in
  *   the founding's save chain holds a whole transfer or none.
  * - The parent's "Founded a sister city" approval for 12 months; a city without a sister is not touched at all.
+ * - NOTE-095: a sister city starts on its parent's date (that year and month), so its first save, its news and the
+ *   parent's 10-year line agree, and each city's 10-year dates are in its own calendar.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Network } from '../../src/core/types';
@@ -15,7 +17,7 @@ import { summarizeCity } from '../../src/region/citySummary';
 import {
   ADJ_SHARE, ENDOWMENT_MAX, ENDOWMENT_MIN, ENDOWMENT_SHARE, ENDOWMENT_YEARS, SISTER_STUB_CELLS, applyRegionEffects, commitSisterCity, endowmentBlock,
   endowmentLimit, gameMonthLabel, lastEndowmentDay, planSisterCity, prepareSisterCity, regionContext, sisterLines, sisterLinks, sisterNote, sisterParent,
-  sisterStub, sisterTile, type SisterPlan,
+  sisterStart, sisterStub, sisterTile, type SisterPlan,
 } from '../../src/region/regionEffects';
 import type { RegionData, RegionTile } from '../../src/region/types';
 import { loadRegion, saveRegion } from '../../src/save';
@@ -33,6 +35,7 @@ import { EDGE_CONN, EDGE_NONE, WORKFORCE_RATIO } from '../../src/sim/economy/tun
 import { REGION_JOB_MIN, REGION_JOB_SHARE } from '../../src/sim/infra/params';
 import { Simulation } from '../../src/sim/Simulation';
 import { economySystems } from '../../src/sim/systems/economy';
+import { dayLabel } from '../../src/ui/format';
 import { LoopbackSimHost } from '../../src/worker/LoopbackSimHost';
 import { SimCore } from '../../src/worker/SimCore';
 import { LocalSimHost } from '../../src/worker/SimHost';
@@ -457,6 +460,55 @@ describe('LG-12: the region\'s ledger', () => {
     expect(sisterLinks(data).map((l) => l.city.city!.name)).toEqual(['Northgate']);
     delete tile(P).city;
     expect(sisterNote(data, tile(E1))).toBe('sister city: Northgate');
+  });
+});
+
+// ------------------------------------------------------------------------------------------------ the calendar
+describe('LG-12: a sister city starts on its parent\'s date (NOTE-095)', () => {
+  it('its parent\'s year and month, from the first of that month', () => {
+    const at = (day: number, startYear = 2000) => sisterStart({ day, startYear });
+    expect(at(43 * 360 + 8 * 30 + 5)).toEqual({ startYear: 2043, day: 240 }); // 6 Sep 2043: 1 Sep 2043
+    expect(at(DAY)).toEqual({ startYear: 2043, day: 90 }); // 1 Apr 2043: the day itself
+    expect(at(43 * 360 + 359)).toEqual({ startYear: 2043, day: 330 }); // 30 Dec 2043: 1 Dec 2043
+    expect(at(50 * 360 + 14, 1950)).toEqual({ startYear: 2000, day: 0 }); // 15 Jan 2000 in a city started in 1950
+    expect(at(0)).toEqual({ startYear: 2000, day: 0 });
+  });
+
+  it('a sister founded from a parent in 2043 starts in 2043: its first save\'s date and the endowment line agree, and each city\'s 10-year dates are in its own calendar', async () => {
+    const st = parentCity(8_000_000, 43 * 360 + 8 * 30 + 5); // 6 Sep 2043 (start year 2000)
+    const plan = planFrom(st, 2_000_000);
+    // main.ts startNewCity: the dialog's config (here an ordinary one: start year 2000) and FEEL-05's 1 April, then the
+    // sister city's own preparation
+    const child = childOf(plan);
+    child.day = 90;
+    child.systemData.foundedDay = 90;
+    await found(plan, child);
+    const first = (await loadCity(data.id, E1))!;
+    expect([first.config.startYear, first.day, first.systemData.foundedDay, first.year]).toEqual([2043, 240, 240, 2043]);
+    expect(dayLabel(first.day, first.config.startYear)).toBe('Sep 1, 2043');
+    expect(tile(E1).city!.year).toBe(2043); // the region's tile card
+    // the parent's 10-year line names the month the new city's calendar starts in
+    const line = endowmentBlock(data, tile(P), sisterParent(st, P))!;
+    expect(line).toBe('Queensbury endowed a sister city in Sep 2043. It can endow another from Sep 2053 (once every 10 years).');
+    expect(line).toContain(` in ${gameMonthLabel(first.day, first.config.startYear)}.`);
+    // and so does the new city's news of its founding, booked when it is opened
+    open(first, E1);
+    expect(dayLabel(first.news.find((n) => n.text.startsWith('Queensbury founded'))!.day, first.config.startYear)).toBe('Sep 1, 2043');
+    // two years on in its own calendar the sister city endows one of its own: that line is in its calendar, from 2045
+    first.day += 2 * 360;
+    tile(E1).city = { ...summarizeCity(first), founded: tile(E1).city!.founded };
+    const grand = planSisterCity(model, tile(E1), sisterParent(first, E1))!;
+    grand.amount = 100_000;
+    const north = childOf(grand, 'Northgate');
+    await found(grand, north);
+    expect([north.config.startYear, north.day]).toEqual([2045, 240]);
+    expect(endowmentBlock(data, tile(E1), sisterParent(first, E1))).toBe('Fairland endowed a sister city in Sep 2045. It can endow another from Sep 2055 (once every 10 years).');
+    // the parent's has not moved: its own calendar opens the window ten years to the day later, in Sep 2053
+    expect(endowmentBlock(data, tile(P), sisterParent(st, P))).toBe(line);
+    st.day = 53 * 360 + 8 * 30 + 4;
+    expect(endowmentBlock(data, tile(P), sisterParent(st, P))).toBe(line);
+    st.day += 1;
+    expect(endowmentBlock(data, tile(P), sisterParent(st, P))).toBeUndefined();
   });
 });
 

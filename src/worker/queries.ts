@@ -41,6 +41,9 @@ export const QUERY_HANDLERS = {
   upkeepContext,
   inspectBuilding,
   inspectCell,
+  /** FEEL-19: a building's condition (health; null when it is gone) for the Query hover's "Thriving": a lagged field on
+   *  the replica (WORKER_DESIGN §1.3), so the hover asks, once per building per sim day */
+  buildingCondition: (sim: Simulation, { id }: { id: number }) => sim.state.buildings.get(id)?.health ?? null,
   dispatchOptions: (sim: Simulation, { incidentId }: { incidentId: number }) => sim.getSystem<EmergencySystem>('emergency')?.dispatchOptions(sim, incidentId) ?? [],
   routePreview: (sim: Simulation, { incidentId, stationId }: { incidentId: number; stationId: number }) => sim.getSystem<EmergencySystem>('emergency')?.routePreview(sim, incidentId, stationId) ?? null,
   emergencyReport: (sim: Simulation, { x, z }: { x: number; z: number }) => {

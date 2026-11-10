@@ -1,0 +1,21 @@
+{
+  "commit": "1f37700c3de8ac5e632f31858a732b237b02a2c2",
+  "simBlob": "525f8f18da0fe7d1d89807ef374ddc79fa952194",
+  "srcTree": "067ae33ead4b6a310fb94aa0bc004cf73092afba",
+  "dependencies": "563d006dba91bbf3212dd9c02d7508488e5c901c8063576886fa9dd9c471f89e",
+  "observer": "ec3ceb1b0267f14e4bb0341e4fc1a10936f365f5c2fef8086bfafeda05040f49",
+  "nudge": 0,
+  "day": 1,
+  "id": "128x15_s7_base",
+  "size": 128,
+  "years": 15,
+  "seed": 7,
+  "botArgs": [],
+  "cacheKey": "3ee67f02fa1e021fb2ff1326dc4aa9252d5f47ab8facd670dfb941b38f6297d1",
+  "jsonPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/check-1f37700/128x15_s7_base_3ee67f02fa1e021f.json",
+  "annualPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/check-1f37700/128x15_s7_base_3ee67f02fa1e021f.ndjson",
+  "actionPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/check-1f37700/128x15_s7_base_3ee67f02fa1e021f.actions.ndjson",
+  "logPath": "/tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/check-1f37700/128x15_s7_base_3ee67f02fa1e021f.actions.log",
+  "command": "/opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/quiet-gate.mjs /opt/node22/bin/node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/check-1f37700/fork-child.mjs --fork-child /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/out/check-1f37700/128x15_s7_base_3ee67f02fa1e021f.spec.json",
+  "equivalentCommand": "node /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/quiet-gate.mjs npx tsx /tmp/claude-0/-home-user-simcityweb/4580b61e-4eb1-589c-8d44-88f27e267d08/scratchpad/ens/dev-1f37700/tools/simbot.ts --size 128 --years 15 --seed 7 --quiet"
+}

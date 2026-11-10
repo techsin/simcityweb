@@ -33,7 +33,7 @@ const model = { data } as RegionModel;
 function fixture() {
   const context = {
     root: {} as HTMLElement, region: model as RegionModel | null, city: null as StorageCity | null,
-    saved: Promise.resolve(), clearCity: vi.fn(), open: vi.fn(async (_data: RegionData) => {}),
+    saved: Promise.resolve(), busy: false, setBusy: vi.fn(), clearCity: vi.fn(), open: vi.fn(async (_data: RegionData) => {}),
   };
   return { context, storage: new RegionStorage(() => context) };
 }

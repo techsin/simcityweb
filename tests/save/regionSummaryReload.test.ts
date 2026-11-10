@@ -129,7 +129,7 @@ describe('region summary reload after takeover', () => {
     markRegionSummaryStale(region.id);
     session.acquire.mockReturnValue(new Promise<boolean>((resolve) => { acquired = resolve; }));
     const get = vi.spyOn(kv, 'get'), put = vi.spyOn(kv, 'put'), remove = vi.spyOn(kv, 'delete');
-    const context = { root: {} as HTMLElement, region: null, city: null, saved: Promise.resolve(), clearCity: vi.fn(), open: vi.fn() };
+    const context = { root: {} as HTMLElement, region: null, city: null, saved: Promise.resolve(), busy: false, setBusy: vi.fn(), clearCity: vi.fn(), open: vi.fn() };
     const storage = new RegionStorage(() => context);
     const opening = storage.open(region);
     expect(session.acquire).toHaveBeenCalledOnce();

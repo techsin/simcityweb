@@ -26,7 +26,7 @@ describe('taxHigh advice (FH-09)', () => {
   it('fires at 11%, not at 10.5%, and names the approval cost', () => {
     expect(TAX_HIGH_ADVICE).toBe(11);
     const { issue, news } = city([11, 11, 11]);
-    expect(issue?.text).toBe('Residential taxes average 11.0%. Each point above 9% costs 3.5 approval, so approval heads 7 points lower; above 13% demand collapses.');
+    expect(issue?.text).toBe('Residential taxes average 11.0%. Each point above 9% costs 3.5 approval, so approval heads 7 points lower; higher rates also slow growth.');
     expect(news).toHaveLength(1);
     expect(news[0].kind).toBe('warning');
     expect(news[0].text).toMatch(/approval/);

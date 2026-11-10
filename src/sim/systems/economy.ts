@@ -3,6 +3,7 @@
  *   land value → desirability → population (construction, occupancy, stats) → tourism (WP4) → demand → growth → budget
  *   → rewards / unlocks → approval (EQ/HQ) → advisors & news → history.
  * All share one EconRuntime (indices / scratch); persistent data lives in state.systemData.economy.
+ * The city's firsts (economy/firsts.ts, after the rewards) have no tick: they follow the building events.
  */
 import type { SimSystem } from '../Simulation';
 import { EconRuntime } from '../economy/runtime';
@@ -14,6 +15,7 @@ import { demandSystem } from '../economy/demand';
 import { growthSystem } from '../economy/growth';
 import { budgetSystem } from '../economy/budget';
 import { rewardsSystem } from '../economy/rewards';
+import { firstsSystem } from '../economy/firsts';
 import { approvalSystem } from '../economy/approval';
 import { advisorsSystem } from '../economy/advisors';
 import { historySystem } from '../economy/history';
@@ -29,6 +31,7 @@ export function economySystems(): SimSystem[] {
     growthSystem(rt),
     budgetSystem(rt),
     rewardsSystem(rt),
+    firstsSystem(),
     approvalSystem(rt),
     advisorsSystem(rt),
     historySystem(),

@@ -6,6 +6,7 @@ import { CityActions } from '../../src/sim/actions';
 import type { CityState } from '../../src/sim/CityState';
 import type { Simulation } from '../../src/sim/Simulation';
 import { approvalBreakdown } from '../../src/sim/economy/approval';
+import { needsExpectation, waterRequired } from '../../src/sim/economy/demographics';
 import { demandInfo, econData, infraFlags, listOrdinances, listRewards, loanOffer, maxLoanAmount, onStrike, serviceEffectiveness } from '../../src/sim/economy';
 import { ORDINANCES } from '../../src/sim/economy/ordinances';
 import { listMilestones } from '../../src/sim/economy/rewards';
@@ -82,6 +83,9 @@ describe('REPLICA_SAFE', () => {
           .toEqual(approvalBreakdown(loop.primary).map(({ id, value }) => [id, value]));
         compare('regionTerms', (s) => econData(s).regionTerms); compare('demandInfo', demandInfo);
         compare('infraFlags', infraFlags); compare('windVector', windVector); compare('cityFingerprint', cityFingerprint);
+        // FEEL-19's hover reads these on main, for every building it is pointed at (by id: the two maps fill in their own order)
+        compare('waterRequired', (s) => [...s.buildings.values()].sort((a, b) => a.id - b.id).map((b) => [b.id, waterRequired(s, b)]));
+        compare('needsExpectation', needsExpectation);
         for (const service of ['education', 'health', 'fire', 'police', 'parks', 'transit', 'utilities'] as const) {
           compare('serviceEffectiveness', (s) => serviceEffectiveness(s, service)); compare('onStrike', (s) => onStrike(s, service));
         }
