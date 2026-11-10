@@ -1,15 +1,383 @@
 # T045 — LG-08 transit-oriented development
 
-Branch `local/T045-lg08-tod`; current merged base is `683d02b` via merge `b5577e5`. The user committed the original
-implementation as WIP `731fffa`, the recovery as `6e62a61`, and round 3 as `ed20c0a`; `7fbb0f4` isolates the backlog
-line. Round-4 test/report changes remain uncommitted; no `.done` file is written. Historical evidence against
-`fb1531f` is retained below and is not the fresh gate matrix.
+Branch `local/T045-lg08-tod`; FX5 starts from `1f231e7bffcf0effe42834a94594d077d4a7be61`, whose parent is
+`59f7ce9aff92ceecb3f1fc1ff815100b92dfe5f4`. This FX3/FX5 diagnostic and report update is uncommitted; no `.done` file is written.
+Older implementation, test, single-run and ensemble records are retained below with their original provenance.
 
-**The implementation fails NOTE-048's annual base-population rule on all three rows.** All nine fresh bot cases
-are complete. Peak annual population drift is **+1.34464%** on 128×15 s7, **+1.92675%** on 256×60 s7 and
-**−12.29426%** on 256×60 s11; the shared A/A envelopes are zero. The amended transit-loss, station tower-share
-and commute-activation gates pass, as does the same-strategy year-60 subway floor. Approval of start 8/−0.25 did
-not waive the annual rule. The approved constants remain fixed; no compensating growth or weaker cost is added.
+**Current lead disposition: HOLD under NOTE-062.** The nine-member s11 no-flag median ends at **1,394,211**
+against dev **1,483,518** (−6.019947%), **74,471.82 people below the 0.99× floor**. Early population increases and
+the 128×15 cleaner-air moves still fail the written rules; D2 has not signed them. Approval is now judged net of
+each member's smoothed commute contribution and remains **OPEN pending FX2**, not a raw-approval pass or fail.
+Monthly nine-member commute activation remains **OPEN pending FX1**. Nothing here authorizes a merge or a balance
+change: final gates run after B2, T041 and the preceding SIM lanes reach dev.
+
+## FX5: NOTE-053 rules with NOTE-062 amendments
+
+Read in full for this update: `NOTE-062.md` in the shared lane scratchpad;
+`ebb88bd:docs/dev/queue/NOTE-053-sim-ensembles.md`; and T062's `note053-lanes/T045.md` and `SUMMARY.md`.
+The latter two are the complete pre-NOTE-062 campaign exports. Their population tolerance of zero and raw
+approval totals are superseded below; their raw medians/bands and member paths remain evidence. NOTE-048's
+single-run/A/A rule and the historical single-run headlines below are no longer the current gate protocol.
+
+### Origin and limits of these measurements
+
+- **Lane:** measured tree `f8b3f145a379694adedb1e26bb825886d49282a2`, parent
+  `59f7ce9aff92ceecb3f1fc1ff815100b92dfe5f4`. This is the parent lane plus T062's funds-nudge instrumentation
+  from `3833c8d`, used only for measurement. A read-only diff to current HEAD shows no changes in `src/sim`,
+  `src/core` or `src/assets`; `tools/simbot.ts` differs by that instrumentation, which is absent from production.
+- **Dev:** cached simulation `805d7d466972eaf89cfba4e1fc8c5f2df16ae0ef`, before B2/T041. Five original dev
+  members were reused; added members came from an exact read-only extraction. Member JSON retains its own
+  origin, cache key and command. This comparison does not rename old dev as the final dev.
+- **Evidence root:**
+  `C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T062/scratch/note053-lanes`.
+  `T045.manifest.json` names all summaries/raw members; `commands.json` records the campaign; `T045.audit.json`
+  and `validation.json` retain its independent audit. The tables below are read-only reductions of those files.
+- **B2 separation is not present in the measured/current lane trees.** `stopAttached()` still refreshes attachment
+  state and clears `attachDirty`, while `stepCost()` uses that flag for its PREP estimate. Thus subway reads can
+  fork the headless schedule through estimated budget/credit/carry, even without a new RNG draw or an immediate
+  serialized-city mutation. As of NOTE-062, **B2 is not in dev yet**, and has not been merged here. The
+  final comparison must record whether B2 has separated query freshness from scheduler work accounting.
+
+### Protocol, fixed before the final runs
+
+1. **NOTE-053 as written:** compare the per-year lane median with the matched dev reference's median and min–max band,
+   for every completed year from 10. A base check passes only if the lane median is **inside dev's band** and
+   `abs(lane median − dev median) ≤ max(item tolerance, half of dev's band width)`. Both conditions apply.
+   Population tolerance is **1% of that year's dev median, two-sided**; approval net of commute, air and I-HT
+   have tolerance **0**. A favorable direction does not exempt T045; T044's one-sided exceptions do not transfer.
+2. **Separate population floors:** each no-flag row must also meet `median(lane) ≥ 0.99 × median(dev)` at its
+   endpoint, including 128×15 at year 15. The same floor applies to subway versus dev subway. A wide dev band
+   cannot waive this additional floor.
+3. **Variants:** compare median(variant) with median(base) at the same lane commit. Transit loss remains at least
+   **1% in 2040** and **10% in 2060**. NOTE-053 literally requires all three rows to move in the same direction
+   **at year 60** by more than one quarter of dev's band. The 128×15 row has no year 60. T062 operationally used
+   mixed endpoints 15/60/60; that calculation is reported separately, not silently presented as a written
+   amendment. The literal three-row year-60 reading cannot be evaluated from these rows; the lead must settle
+   that ambiguity before final implementation of the check.
+4. **NOTE-062 member amendment:** all final base rows and all 256×60 variant rows run **nine members directly**:
+   control, ±§100 and ±§200 once on day 1 and day 1441. A 128×15 variant uses five members and NOTE-053's
+   second stage when within half a dev band of its threshold. Cached members may be reused. **Nine is final;
+   there is no third stage or extra-member search.** Fewer failures at nine than five do not establish noise.
+5. **Disjoint bands:** if the entire lane min–max band lies outside dev's for at least **three consecutive
+   years**, report a real shift and its mechanism regardless of the other rows. This is additional to the
+   three-row check; overlap does not convert a failing median into a pass.
+6. **Only the stated zero-width exception:** a year with all nine dev I-HT shares exactly zero does not gate
+   that metric; report the first year the lane median leaves zero. Air retains its written rule. There is no
+   general air/I-HT favorable-direction waiver, percentage floor or missing-data exemption.
+7. **ApprovalNetCommute:** derive each member's commute contribution with the same initialization, monthly
+   updates and smoothing as that member's recorded approval, then form
+   `approvalNetCommute(member, year) = recorded approval − smoothed commute contribution`.
+   Take the median and band **after** this per-member derivation and judge with tolerance zero. Subtracting the
+   current annual raw term from displayed approval, or subtracting two independently calculated medians, is not
+   this metric. Report the term's own median/band per year. FX2 has not supplied it, so all three amended
+   approval verdicts are **OPEN**; raw approval failures below are descriptive history only.
+
+### Interim verdicts on the measured dev
+
+The following population/air/I-HT counts were recomputed from the nine-member summaries with tolerance 1% for
+population and NOTE-062's zero-I-HT exception. Approval is deliberately excluded from a combined failure count
+until FX2 supplies the amended metric.
+
+| No-flag row | Population, years ≥10 | Air, years ≥10 | I-HT share | ApprovalNetCommute | Endpoint floor |
+|---|---|---|---|---|---|
+| 128×15 s7 | **FAIL**, 2012 and 2014 (2/6) | **FAIL**, 2010–2014 (5/6) | PASS in 3 gated years; 3 zero-band years not gated | **OPEN — FX2** | PASS: 193,438 ≥189,672.12 |
+| 256×60 s7 | **FAIL**, 2010, 2011, 2018, 2020, 2022 (5/51) | PASS (0/51 failures) | PASS in 29 gated years; 22 zero-band years not gated | **OPEN — FX2** | PASS: 1,496,254 ≥1,446,476.13 |
+| 256×60 s11 | **FAIL**, 22/51, including every year 2050–2060 | **FAIL**, 15/51 | **FAIL**, 2051–2060 (10/40 gated); 11 zero-band years not gated | **OPEN — FX2** | **FAIL:** 1,394,211 <1,468,682.82 |
+
+I-HT first nonzero lane median: **never** in 128×15, **2052** on s7, **2010** on s11. In particular, the
+pre-amendment export's s11 I-HT failures in 2047–2050 are now **not gated**, because dev's entire band is zero.
+Later favorable I-HT departures still fail when dev's band has width. The s11 air failures remain 2012, 2013,
+2016, 2018–2026, 2028, 2029 and 2032; cleaner air is not a general exemption for this lane.
+
+The s11 median is below dev's minimum throughout **2050–2060**; this is distinct from disjoint entire bands.
+No population, air or I-HT pair in the supplied summaries has three consecutive wholly disjoint band years
+(s11 population has 2011 alone; air has 2016 alone). That additional rule therefore adds no new current verdict
+for those three metrics; approval-net disjointness is **OPEN**. T062's operational mixed-endpoint 15/60/60 check
+does not trigger for population/air/I-HT because the directions/quarter-band conditions do not all agree. That
+does not claim evaluation of NOTE-053's literal three-row year-60 wording. Approval-net's three-row check also
+remains **OPEN**, rather than inheriting the raw-approval result.
+
+| Variant / separate check | Nine-member measurement | Current disposition |
+|---|---|---|
+| Transit loss in 2040 | subway 888,704 [885201,891505]; skip 875,976 [867226,882641]; loss **1.432198%**, margin **3,840.96 people** | PASS ≥1%; nine-member verdict final on this base |
+| Transit loss in 2060 | subway 1,497,147 [1283912,1587140]; skip 1,265,455 [1179555,1366306]; loss **15.475568%**, margin **81,977.3 people** | PASS ≥10% on this base |
+| Subway floor in 2060 | lane 1,497,147; dev subway 1,491,542 [1306531,1552165]; floor 1,476,626.58, margin **20,520.42 people** | PASS, matched strategy |
+| Monthly commute activation from Jan 2030 | median of all nine skip members must be negative each month; weakest member must be reported | **OPEN — FX1 monthly probe**; one control or annual traffic mean cannot establish it |
+| Stage-6+ near-station share | `--subway` control's final census **4.673862446×**, threshold 2× | Retained **single-control PASS** under NOTE-062; not an ensemble median or evidence from `maxStage` |
+| ms/day | NOTE-062/NOTE-055 require one same-strategy pair in its own quiet timing slot | Historical pair retained below; **OPEN for final-dev timing**, concurrent campaign CPU is not timing evidence |
+
+The retained stage census is **45/130 (34.615385%)** stage-6+ buildings within six tiles of a connected station,
+against **661/8925 (7.406162%)** citywide. Mean stages over tower-eligible types are **4.851851852 near stations**
+and **4.136494433 citywide**, diagnostic only. It is a realised-building census, not a maximum-stage permission check.
+
+### D2 items, separate from the written gate verdicts
+
+Early population-up failures on all three rows and 128×15 cleaner-air failures stay **FAIL, pending FX4 and D2**.
+They may be signed as a by-design base move only if FX4 names the mechanism, the changes stay within **+3%**,
+and they repeat on final dev. Staying below +3% alone is not a pass and is not a retrospective tolerance change.
+The first differing approval-gated bot decision is not yet identified. FX4 is explicitly **WAIT**: the user will
+provide FX1 next. This update performs no speculative diagnosis run or balance change while that log is absent.
+
+The s11 late regression is not covered by that early D2 option. If on final dev its no-flag median remains below
+dev's band in 2050–2060 **or** below 0.99×dev at year 60, **LG-08 does not merge**. Return start/coefficient trade-offs
+to the lead against s11 and s7 year-60 base, Jan-2030 activation, and 2040/2060 transit loss. Do not add compensation,
+free approval, alter the default bot, weaken a specified cost, or move an LG-08-induced stall to an “outside LG-08”
+backlog item. No such backlog change is made in FX5.
+
+### Per-member endpoint and stall columns (read-only derivation)
+
+`S` means 2050→2060 population growth **<100,000**; `G` means at least 100,000. These flags/counts are reported,
+not gated. They were derived from each existing member's `rows[].population` at years 50/60, using the paths in
+`T045.manifest.json`; no FX2 approval metric is inferred. IDs encode the signed funds nudge and its day.
+
+| Member | s7 lane 2060 | Gain | Flag | s7 dev 2060 | Gain | Flag |
+|---|---:|---:|---|---:|---:|---|
+| control | 1,520,331 | 242,276 | G | 1,513,835 | 248,094 | G |
+| p100-d1 | 1,497,363 | 233,039 | G | 1,379,922 | 117,959 | G |
+| m100-d1 | 1,519,049 | 250,865 | G | 1,461,087 | 189,499 | G |
+| p100-d1441 | 1,497,363 | 233,039 | G | 1,504,801 | 243,852 | G |
+| m100-d1441 | 1,458,575 | 185,052 | G | 1,461,087 | 189,499 | G |
+| p200-d1 | 1,456,284 | 186,791 | G | 1,522,489 | 249,500 | G |
+| m200-d1 | 1,408,194 | 141,707 | G | 1,438,474 | 175,613 | G |
+| p200-d1441 | 1,496,254 | 210,661 | G | 1,542,590 | 271,208 | G |
+| m200-d1441 | 1,256,440 | 73,578 | S | 1,341,715 | 139,257 | G |
+
+Stalled: **s7 lane 1/9; dev 0/9**.
+
+| Member | s11 lane 2060 | Gain | Flag | s11 dev 2060 | Gain | Flag |
+|---|---:|---:|---|---:|---:|---|
+| control | 1,261,054 | 78,639 | S | 1,427,340 | 155,237 | G |
+| p100-d1 | 1,409,102 | 165,838 | G | 1,483,518 | 216,565 | G |
+| m100-d1 | 1,336,265 | 113,938 | G | 1,498,791 | 244,718 | G |
+| p100-d1441 | 1,323,259 | 114,924 | G | 1,503,201 | 240,951 | G |
+| m100-d1441 | 1,272,478 | 102,396 | G | 1,472,527 | 210,888 | G |
+| p200-d1 | 1,544,601 | 272,530 | G | 1,467,836 | 192,149 | G |
+| m200-d1 | 1,441,588 | 170,963 | G | 1,504,163 | 227,698 | G |
+| p200-d1441 | 1,424,463 | 153,844 | G | 1,511,108 | 240,837 | G |
+| m200-d1441 | 1,394,211 | 129,572 | G | 1,465,363 | 201,961 | G |
+
+Stalled: **s11 lane 1/9; dev 0/9**. The formal flag finds only one stalled lane member; FX4 must not invent two
+under this definition. Any broader “low-growth” pair selection must be named separately when FX1 arrives.
+
+| Member | Subway 2060 / gain / flag | Skip transit 2060 / gain / flag | Dev subway 2060 / gain / flag |
+|---|---|---|---|
+| control | 1,483,601 / 215,043 / G | 1,179,555 / 22,938 / S | 1,491,542 / 220,461 / G |
+| p100-d1 | 1,499,653 / 224,763 / G | 1,247,398 / 87,578 / S | 1,384,807 / 111,089 / G |
+| m100-d1 | 1,537,767 / 266,503 / G | 1,292,020 / 111,859 / G | 1,514,352 / 245,403 / G |
+| p100-d1441 | 1,499,653 / 224,763 / G | 1,247,398 / 87,578 / S | 1,480,884 / 214,487 / G |
+| m100-d1441 | 1,476,271 / 203,198 / G | 1,366,306 / 100,363 / G | 1,514,352 / 245,403 / G |
+| p200-d1 | 1,497,147 / 226,978 / G | 1,229,823 / 65,052 / S | 1,552,165 / 272,798 / G |
+| m200-d1 | 1,436,809 / 166,892 / G | 1,308,054 / 132,201 / G | 1,462,188 / 195,634 / G |
+| p200-d1441 | 1,587,140 / 303,480 / G | 1,296,553 / 59,598 / S | 1,542,327 / 274,435 / G |
+| m200-d1441 | 1,283,912 / 96,513 / S | 1,265,455 / 48,413 / S | 1,306,531 / 97,746 / S |
+
+Stalled: **lane subway 1/9; skip transit 6/9; dev subway 1/9**.
+
+### Work left and final-base reruns
+
+**FX1/FX2 OPEN; FX4 WAIT for the user's FX1.** FX1 must provide per-member term/resCommute and dated
+approval-gated actions; the monthly skip probe must establish the all-nine monthly median and weakest member.
+FX2 must supply correctly smoothed per-member `approvalNetCommute` and the annual term median/band. FX5's
+report-only endpoint/stall derivation above does not close those missing metrics.
+
+After B2, T041 and all preceding SIM lanes merge, use that exact final dev for nine-member dev/lane no-flag
+128×15 s7, 256×60 s7/s11, and nine-member lane subway/skip-transit plus dev subway on 256×60 s7. Collect monthly
+commute on every skip member, the single-control stage census (with dev comparison), one isolated quiet-slot
+timing pair and the 128 reference movement. Repeat FX4 there if s11 still misses. No extra members are allowed.
+The lead sends final verdicts from those tables. FX5 starts no bots, tests, builds, browser, benchmark or timing run.
+
+## FX3: fallback diagnostic (separate measure-only work)
+
+**Measure only; six paired runs complete, no balance change.** The diagnostic uses archived source from measured T045 commit
+`f8b3f145a379694adedb1e26bb825886d49282a2` (parent `59f7ce9`). Its hooks are inserted only into scratch copies of
+that source. `tests/sim/transitFallbackObserver.ts` holds the standalone collector and
+`tests/sim/transitFallbackObserver.test.ts` its fixtures; neither imports production simulation code. The collector
+keeps traffic history, survey diagnostics and alternative approval histories outside `CityState`. No production or
+infra hunk, RNG draw, bot decision or balance constant changes. It makes no diagnostic call to `stopAttached` or
+`residentSurvey`. The entire archived `src/**` tree matches current HEAD. The archived bot retains T062's optional
+funds-nudge branch, absent at HEAD; none of these controls enables it. Both captures use the same 84 original
+module hashes, aggregate SHA `46cd8e8e354ae651673247018ce702731949b091383565e602c806b502753a80`.
+
+The source mechanism is unchanged: traffic PREP fixes its origin list, while the city can change before FINAL2.
+FINAL2 clears the commute raster and stamps only surviving selected origins. An omitted ID can retain an older
+positive `commuteById` result while its raster is zero. Approval reads that raster and charges 25 minutes. The
+observer records this condition rather than asking traffic to refresh an attachment or route.
+
+The survey hooks observe the homes that approval actually samples, with their population and commute raster on
+each sampling day. They follow the same accumulator through all 30 daily slices, its resets, and the selected
+full-pass fallback if slices are incomplete. The selected survey is copied before its accumulator is cleared;
+tourism's earlier monthly call and approval's reuse of that cached survey do not count it twice. The production
+accumulator's population `W` and commuter-minute numerator `N` are authoritative. Checks compare the category
+weights with `W`, the observed sample sum with `N`, and the calculated actual term with the recorded term. This
+does not substitute a month-end home census, `stats.population`, or outage population for the survey's weights.
+
+Traffic PREP and FINAL2 hooks copy primitive origin metadata and the last completed assignment's selected IDs.
+A home enters the narrow **stale routed** category only if its latest selected result matched workers, was not
+cut off, had positive minutes, still matches the prepared/current geometry and centre, and its ID is absent from
+the last completed assignment when the survey samples its non-positive raster. A newer unmatched or cut-off
+result replaces older valid history. New/unmeasured homes, selected-but-unmatched homes, cut-offs, disabled
+traffic, geometry mismatches and other current zero results remain separate categories. Unmatched records
+distinguish zero workers, no road entries, no assigned workers and non-positive result minutes. Examples retain
+PREP/final/sample dates and weights, with at most three examples per category per survey.
+
+Two external shadows quantify the term contribution on the **unchanged realised city path**. Let `E` be only the
+stale-routed resident weight and `R` its retained-route commuter-minute sum. The carry shadow's mean is
+`(N − 25E + R) / W`. The exclusion shadow's mean is `(N − 25E) / (W − E)`; if no weight remains, its diagnostic
+commute term is zero. Neither shadow removes any other fallback category. Both apply the approved
+`−0.25 × max(0, mean − 8)` after aggregation and retain the original `smoothstep(2000, 8000, W)` population fade.
+The correction is signed: retained routes longer than 25 minutes can increase the shadow penalty. Each shadow
+replaces only the commute term in the realised unclamped raw total, clamps that total to 0–100, then advances its
+own approval EMA at the existing rate. Initialization snaps a fresh city's shadow to its raw target; a resumed
+city keeps its saved EMA until subsequent monthly ticks. These values never feed approval, growth or the bot.
+
+### Resident weight and approval contribution
+
+These are **January checkpoints** (day 10800 and 14400), using approval's actual sliced-survey weight, not the
+annual traffic mean or the city's end-of-day population. All fallback weight outside the narrow target in these
+four surveys is **never observed routed**. Selected-but-unmatched, cut-off, disabled, geometry-mismatch and
+current-zero categories each have zero weight here; the raw monthly files retain all categories and examples.
+
+| s7 control / January | Survey weight W | All 25-minute fallback weight | Omitted routed E / sampled homes | E / W | Never observed routed |
+|---|---:|---:|---:|---:|---:|
+| Subway 2030 | 553,647 | 2,540 | 44 / 4 | 0.007947302% | 2,496 |
+| Skip transit 2030 | 553,317 | 3,627 | 29 / 1 | 0.005241119% | 3,598 |
+| Subway 2040 | 887,883 | 5,290 | 0 / 0 | 0% | 5,290 |
+| Skip transit 2040 | 875,021 | 3,260 | 248 / 2 | 0.028342177% | 3,012 |
+
+All four surveys have the full population fade, 1. Deltas below are **shadow minus actual**, in approval points.
+Carry/exclude replace only E; the other 25-minute fallback weight remains charged. The term delta equals the raw
+approval delta to rounding at these checkpoints, because none of these four changed totals hits the clamp.
+
+| s7 control / January | Actual mean / term | Carry mean / term | Carry raw Δ / EMA Δ | Exclude mean / term | Exclude raw Δ / EMA Δ |
+|---|---|---|---|---|---|
+| Subway 2030 | 9.881743454 / −0.470435863 | 9.880416032 / −0.470104008 | +0.000331855 / +0.000253889 | 9.880541865 / −0.470135466 | +0.000300397 / +0.000268879 |
+| Skip transit 2030 | 8.937546637 / −0.234386659 | 8.937048580 / −0.234262145 | +0.000124514 / +0.000079578 | 8.936704740 / −0.234176185 | +0.000210474 / +0.000108788 |
+| Subway 2040 | 10.509131427 / −0.627282857 | 10.509131427 / −0.627282857 | 0 / +0.000076537 | 10.509131427 / −0.627282857 | 0 / +0.000076913 |
+| Skip transit 2040 | 11.008914313 / −0.752228578 | 11.004142854 / −0.751035713 | +0.001192865 / +0.000401123 | 11.004947810 / −0.751236953 | +0.000991626 / +0.000352788 |
+
+The subway's 2040 EMA delta persists from earlier months even though its current E is zero. Across **January–December
+2030** (12 months, day 10800 through 11130), the totals below sum monthly survey weights; they are not counts of
+distinct people. The ordinary even-sample median is the mean of the sixth and seventh sorted monthly terms.
+
+| s7 control, 2030 | Sum W | Sum E / share | Never observed routed / share | Months E > 0 | Median actual / carry / exclude term |
+|---|---:|---:|---:|---:|---|
+| Subway | 6,814,654 | 51 / 0.000748387% | 32,224 / 0.472863332% | 2/12 | −0.463683378 / −0.463683378 / −0.463683378 |
+| Skip transit | 6,804,442 | 29 / 0.000426192% | 30,400 / 0.446766980% | 1/12 | −0.256000001 / −0.256000001 / −0.256000001 |
+
+Every actual and both shadow terms are negative in **all 12/12 months** in each control. In the skip control,
+the actual terms range from **−0.292506947 to −0.230998858**. Thus this narrow fallback case does not create the
+control's 2030 activation on the unchanged city path. This is **not** NOTE-062's median across nine skip members
+each month and does not close that gate or establish its weakest member.
+
+Over all 480 monthly surveys through 2040, the maximum E/W is **0.047669994%** in subway and **0.067456076%** in
+skip transit. Maximum absolute carry-term deltas are **0.002446122 / 0.002243946** points respectively; maximum
+absolute carry-EMA deltas are **0.000827202 / 0.000679436**. These bounds describe these controls only.
+
+### What this establishes about the 2040 loss
+
+The diagnostic controls end at **888,952 subway** and **877,353 skip transit**: **11,599 people, 1.304794860% loss**.
+Plain and observed populations are equal. The campaign's separate nine-member medians remain 888,704 versus
+875,976, **1.432198%**, as reported in FX5; these new controls do not replace them.
+
+At January 2040 the observed approval gap is **0.842288458** points. The carry shadow narrows it by
+**0.000324586** points; the exclusion shadow by **0.000275875**. These are fixed-path approval contributions,
+**not a population-loss attribution**. The causal change in 2040 population loss from changing the fallback is
+**UNKNOWN, not zero**: a changed approval can change approval-gated purchases, growth, RNG use and later city
+paths. Small raw/EMA deltas alone cannot rule out such a fork. No changed-fallback simulation was run.
+
+**Option for the lead, not implemented:** separately calibrate retaining a previous valid commute for this narrow
+omitted-origin case, with explicit geometry/validity/lifetime rules; the carry shadow is its fixed-path signal.
+Exclusion is a second diagnostic convention, not a proposed free-approval fix. Either production change would be
+a calibration amendment and would need approval and the final-dev ensemble gates. For this round, **keep the
+25-minute fallback unchanged**. FX4 still waits for T062's dated approval-gated-action log; these message hashes
+and survey examples do not substitute for FX1 or identify the first differing purchase.
+
+### Observation neutrality, tests and exact commands
+
+All three plain/observed pairs have identical ordinary annual rows, normalized serialized-state hashes, simulation
+and traffic RNG state, and cumulative bot-message SHA at **all 95 annual checkpoints** (15 + 40 + 40). Every pair
+also has an identical final hash and message digest. CPU timing fields are omitted from the comparison; these
+instrumented runs are not timing evidence. The message SHA covers `say` output, not a full approval-gated action log.
+
+| Pair | Annual checks | Final population / residents | Normalized final state SHA-256 |
+|---|---:|---|---|
+| 128×15 s7, no flags | 15/15 | **193,844 [66507, 90953, 36384]** | `dc0ca8e04309ea12a4d4c26f09a549dd14d5c467a39411e347a604e5510e92ba` |
+| 256×40 s7 subway | 40/40 | **888,952 [220254, 430916, 237782]** | `0e56b80ee92dbdf6c18f91b21462b93b57c6355cfcb6b9c33891afe4f7765af6` |
+| 256×40 s7 subway, skip transit | 40/40 | **877,353 [205960, 431483, 239910]** | `de09301c27f6a9a719389da9636888bb0ae54b86ae5b2890ff2e9b2c082533a7` |
+
+The 128×15 default reference remains **193,844 [66507, 90953, 36384]**. The compact paired assertions and numerical
+reduction are `fx3/note062-v2/summary.json` under this lane's scratch folder; individual files retain every annual
+checkpoint and all 180/480 monthly records. `capture.metadata.json`, `sourceSnapshot`, `instrumentedSource`,
+`probe-source.mts` and `observer-source.ts` preserve the captured inputs. The archive SHA is
+`228d421f69749230624ef12e3bfa85a00ed5ee890d461e09c9ebee713b722977`; the frozen collector SHA is
+`e35481956beb52710da5317b8236a087571bb3a4ec5268771de32c3a29ccb6c8`.
+
+| Check run this round | Result |
+|---|---|
+| `tests/sim/transitFallbackObserver.test.ts` | **12 passed**: stale eligibility, other fallback categories, newer failed/cut results, geometry, signed correction, sampled weights/reset/cache, clamp/EMA/resume, bounded examples and reconstruction guards |
+| `tests/sim/difficultyRules.test.ts` | **32 passed**, including all eight old-save difficulty/disaster cases |
+| `tests/sim/transitDevelopment.test.ts` | **19 passed** |
+| `npx tsc --noEmit` | **PASS** |
+| Paired JSON/state/RNG/message assertions | **95/95 annual checkpoints PASS** |
+
+All bots and Vitest runs went through the quiet gate, with **one bot process at a time**. Native config loading
+and the thread pool use the already established workaround for this sandbox's process-spawn restriction. Full
+Vitest, browser/GPU checks and timing runs are left to the lead as instructed. Exact commands from the worktree:
+
+```powershell
+$taskRoot = 'C:/Users/techsin/Desktop/projects/simcityweb-T045'
+$taskLane = 'C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes'
+$taskQuiet = "$taskLane/quietrun.mjs"
+$taskScratch = "$taskLane/T045/scratch"
+
+git archive --format=tar --output="$taskScratch/fx3-f8b3f14-source.tar" f8b3f145a379694adedb1e26bb825886d49282a2 src tools package.json tsconfig.json
+node "$taskScratch/fx3-launch.mjs" --capture --name plain --revision note062-v2 --source-tar "$taskScratch/fx3-f8b3f14-source.tar" --source-commit f8b3f145a379694adedb1e26bb825886d49282a2 --expect-commute-start 8
+node "$taskScratch/fx3-launch.mjs" --capture --name observed --revision note062-v2 --source-tar "$taskScratch/fx3-f8b3f14-source.tar" --source-commit f8b3f145a379694adedb1e26bb825886d49282a2 --expect-commute-start 8
+
+node $taskQuiet node "$taskScratch/fx3-launch.mjs" --name plain --revision note062-v2 --size 128 --years 15 --seed 7 --out "$taskScratch/fx3/note062-v2/plain/s7-128.json"
+node $taskQuiet node "$taskScratch/fx3-launch.mjs" --name observed --revision note062-v2 --size 128 --years 15 --seed 7 --out "$taskScratch/fx3/note062-v2/observed/s7-128.json"
+node $taskQuiet node "$taskScratch/fx3-launch.mjs" --name plain --revision note062-v2 --size 256 --years 40 --seed 7 --subway --out "$taskScratch/fx3/note062-v2/plain/s7-256-subway.json"
+node $taskQuiet node "$taskScratch/fx3-launch.mjs" --name observed --revision note062-v2 --size 256 --years 40 --seed 7 --subway --out "$taskScratch/fx3/note062-v2/observed/s7-256-subway.json"
+node $taskQuiet node "$taskScratch/fx3-launch.mjs" --name plain --revision note062-v2 --size 256 --years 40 --seed 7 --subway --skip transit --out "$taskScratch/fx3/note062-v2/plain/s7-256-skip.json"
+node $taskQuiet node "$taskScratch/fx3-launch.mjs" --name observed --revision note062-v2 --size 256 --years 40 --seed 7 --subway --skip transit --out "$taskScratch/fx3/note062-v2/observed/s7-256-skip.json"
+
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/sim/transitFallbackObserver.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/fx3-observer-vitest.json"
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/sim/difficultyRules.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/fx3-difficulty-rules-vitest.json"
+node $taskQuiet node --experimental-strip-types "$taskRoot/node_modules/vitest/vitest.mjs" run tests/sim/transitDevelopment.test.ts --maxWorkers=1 --configLoader native --pool threads --reporter=json --outputFile="$taskScratch/fx3-transit-development-vitest.json"
+node $taskQuiet npx tsc --noEmit
+node "$taskScratch/fx3-summary.mjs" s7-128 s7-256-subway s7-256-skip
+```
+
+The launcher executes an immutable captured `SimBot` with the shown size/year/seed/strategy arguments; it is a
+scratch probe, not a modified `tools/simbot.ts`. Existing output/capture paths deliberately refuse overwriting.
+These are 40-year diagnostics for FX3's 2030/2040 question, not new 60-year acceptance runs. Final dev is not
+ready while B2/T041 and the preceding SIM lanes are outstanding; the final ensemble, monthly nine-member gate,
+stage census and isolated timing pair remain as listed in FX5.
+
+### Current-round file and owner summary
+
+- `tests/sim/transitFallbackObserver.ts`: new standalone diagnostic collector; no runtime import from the app.
+- `tests/sim/transitFallbackObserver.test.ts`: new 12-case diagnostic validation file.
+- `docs/dev/reports/local-T045-lg08-tod.md`: FX3 evidence and FX5's amended HOLD verdicts; historical records retained.
+- **Infra hunks: none. Outside-owned production hunks: none. Cloud-held files: untouched; no new cloud request.**
+  The existing B2 attachment-query/scheduler request and Worker retained-inspector-watch request remain with their
+  owners. Transit stats' **“Riders save N minutes” waits for PB-COMMUTE**; Grand Central's definition stays with LG-02.
+- **Decisions for the lead:** any fallback calibration is a separate option; D2 must explicitly sign the diagnosed
+  early-year moves after FX4/final-dev repeat; settle NOTE-053's literal three-row year-60 versus 15/60/60 ambiguity.
+  The s11 late regression remains LG-08's blocker, with no compensation or unrelated balance change here.
+
+Browser checklist, left to the lead (no browser opened this round):
+
+- [ ] Near-station Why term is +0.04 only for R$$, CO$$ and CO$$$, and follows connected stations/radius.
+- [ ] Stage-5 inspector note reads through the host; connect/disconnect updates a retained inspector after its
+      pending Worker invalidation fix, and realised stage-6+ station development is visible.
+- [ ] An old save adopts the approved 8-minute term without a new grace mechanism; approval's EMA moves normally.
+- [ ] Grand Central's eight-tile hook works once LG-02 supplies its definition; PB-COMMUTE owns the deferred stats line.
+
+## Historical records below (superseded gate protocols)
+
+The remaining single-run/A/A verdicts and the appended pre-NOTE-062 campaign judgement retain their historical
+meaning only. FX5 above is the current disposition. Test results remain attributed to the round that ran them.
 
 ## Round 4: old-save difficulty regression
 
@@ -81,7 +449,7 @@ and browser checks remain with the lead. In the browser, verify that loading an 
 commute pressure with the existing population grace, preserves the saved approval initially, and moves the EMA
 on the following month ticks. Earlier owner requests and the broader browser checklist remain below.
 
-## Round 2: approved criteria and fresh evidence
+## Historical Round 2: approved criteria and single-run evidence
 
 NOTE-048 also introduces the shared SIM A/A rule. All three flags-off rows — 128×15 s7 and 256×60 s7/s11 — must
 be compared with fresh dev in every year from year 10, within the maximum of the item's tolerance, 1% and that
@@ -790,8 +1158,9 @@ node $taskQuiet node "$taskScratch/growth-counter-launch.mjs" --variant wip-fade
 3. Grand Central has an asset but no simulation catalog/reward definition with passenger attachment roles.
    **CONTENT/SIM request:** its final LG-02 definition should use model `lm_grand_central` and the intended
    train/subway connectivity semantics. The 8-tile hook exists; real Grand Central connectivity remains unverified.
-4. Historical plan/b3 rows are context only. Current acceptance uses fresh `683d02b` pairs and NOTE-048's shared
-   annual/A/A rule, followed by final remeasurement after B2/T041. The 2040 threshold is now 1%, and the 2060
+4. Historical plan/b3 and `683d02b` single-run/A/A rows are context only. Current acceptance uses NOTE-053 as
+   written with NOTE-062's amendments and FX5's HOLD disposition, followed by final remeasurement after B2/T041
+   and preceding SIM lanes merge. The 2040 threshold is 1%, and the 2060
    stage-6+ share threshold is 2×city. NOTE-048's reason for the 2040 amendment is that most individual 2040 bot
    commutes are below 8.5 minutes; this is not a claim that a newly measured population mean is below 8.5.
 5. **Inspector ownership reassigned:** NOTE-048 authorizes T045's isolated `src/ui/inspectorModel.ts`,
@@ -815,20 +1184,20 @@ node $taskQuiet node "$taskScratch/growth-counter-launch.mjs" --variant wip-fade
 
 ## Decisions for the lead
 
-- **Approved amendments:** NOTE-048 settles start 8/−0.25 with existing grace, 2040 loss ≥1%, and the stage-6+
-  share ≥2×city. Keep radius/appeal and unrelated balance fixed. The historical 1.2448% cost and rejected −0.125
-  sensitivity remain visible; no fresh start-15 paired cost is claimed.
-- **Acceptance is FAIL under the shared annual rule:** all nine bot cases are complete, and all three flags-off
-  rows fail the measured ±1% annual band. Peak drifts are +1.34464%, +1.92675% and −12.29426%; s11 ends
-  −11.65006%. Zero A/A envelopes do not excuse the misses. All three rows also shift upward by >0.5% in each
-  shared year 2010–2013. The lead must resolve this conflict with the approved start-8 mechanism; its historical
-  endpoint approval does not waive the annual rule. T045 keeps the specified cost and makes no compensating
-  residential growth, free approval, default-bot strategy or other balance change. Final merge gates/envelopes
-  must still be remeasured after B2/T041 on that exact base.
+- **Current disposition: HOLD, not a final merge gate.** Use the FX5 nine-member medians/bands and NOTE-062's
+  rules. The s11 median is 1,394,211, 74,471.82 below its 0.99× floor. If the specified late median/band or floor
+  failure survives on final dev, LG-08 does not merge and the approved 8/−0.25 setting returns with the requested
+  trade-off table. The old single-run peak drifts and zero +§1 A/A envelope do not decide this ensemble verdict.
+- **D2 remains separate:** early population-up/128 cleaner-air failures stay FAIL until FX4 names a mechanism,
+  the +3% bound is respected, and final-dev repetition supports a D2 signature. FX4 is WAIT for the user's FX1.
+  ApprovalNetCommute and monthly nine-member commute activation/weakest-member checks are OPEN, not inferred
+  from raw approval, annual traffic averages or the one control run. No extra members or compensating balance
+  change is authorized. Radius/appeal and the existing new-town grace remain fixed.
 - **Permission/realization follow-up:** the requested CONTENT/SIM backlog entry is present. No local quota exists
   to remove: near-station permission already retains all original downtown rights. Catalog, demand, growth
   allowance or footprint changes require their own later balance lane; historical counters are evidence, not
-  authority to extend LG-08's scope.
+  authority to extend LG-08's scope. This historical R$ content follow-up does not outsource an LG-08-induced
+  stall; NOTE-062 requires that stall's diagnosis and trade-off to remain with LG-08. FX5 edits no backlog.
 - **Owner work and remaining checks:** route the concrete attachment-query/scheduler request to B2, keep the
   Stats line with PB-COMMUTE and Grand Central with LG-02, and run the remaining full Vitest/browser/GPU checks.
   Route retained-inspector watch invalidation to the Worker owner. The inspector payload/text hunk is isolated
@@ -854,9 +1223,13 @@ node $taskQuiet node "$taskScratch/growth-counter-launch.mjs" --variant wip-fade
 - [ ] Inspect station-area skyline variety/concentration. Browser inspection alone does not establish NOTE-048's
   numerical stage-6+ share gate; use the final census and fresh paired bot evidence.
 
-## NOTE-053 ensemble verdicts (T062 campaign, against the dev this lane is built on)
+## Historical T062 campaign export (pre-NOTE-062 evaluator)
 
-Measured on a throwaway tree (this lane plus T062's flag commit 3833c8d); final gates on the dev with T041 follow after B2 and T041 land.
+The following archived campaign export retains the raw medians, bands, commands and original evaluator results
+copied at `1f231e7`. It is **not the current verdict**: its population tolerance-zero interpretation is corrected
+to two-sided 1% in FX5, its raw approval counts do not judge approvalNetCommute, and its zero-band I-HT failures
+are subject to NOTE-062's exception. Do not reuse its mixed-unit overall minimum or combined 108-failure total as
+an amended approval verdict. Final gates run on dev containing B2, T041 and preceding SIM lanes.
 
 # T045 (LG-08): NOTE-053 ensemble judgement
 
@@ -866,7 +1239,11 @@ Reference: the cached dev simulation used to start the lanes, before T041, at `8
 
 The ensemble uses control, ±§100 on days 1/1441, and adds ±§200 at both timings where stage two is required. All new commands use `--jobs 4`, run sequentially across the campaign, and launch every bot through the quiet gate.
 
-NOTE-053 replaces the old generic ±1%/A/A base allowance. T045 specifies a one-sided year-60 population floor, not a two-sided annual item tolerance: the base tolerance is therefore **0** for each of population, approval, air and I-HT share. Each annual median must lie inside dev’s min–max band and within half its width of dev’s median. Every year from 10 is checked; funds are additional raw-annual diagnostics, not a base gate.
+**Archived evaluator assumption, superseded by NOTE-062:** the original export treated population tolerance as
+zero and kept a one-row floor. FX5 above instead uses two-sided 1% population tolerance **plus** the band clause,
+and separate floors for all three no-flag rows and matched subway. The raw tables retain the old passing
+interval/margin columns for traceability; they are not recalibrated approval-net or D2 verdicts. Funds remain
+additional raw-annual diagnostics, not a base gate.
 
 NOTE-048 approves the 8-minute/−0.25 commute rule and changes the transit-loss target to ≥1% in 2040, retaining ≥10% in 2060. The skyline target is a stage-6+ share near connected stations ≥2×city, replacing the old mean-stage ratio.
 
