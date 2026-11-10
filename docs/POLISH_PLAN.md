@@ -1753,7 +1753,7 @@ Each gets a `REWARDS` entry, an `ATTRACTIONS` draw and `CAP_RELIEF`.
 **Files.** `src/sim/economy/rewards.ts`; `src/sim/catalog.ts`; `src/sim/economy/tourism.ts` (CONTENT hunk: `ATTRACTIONS`); `src/sim/economy/approval.ts` (SIM: civic term for the Crown); `src/assets/manifest.ts` and new `src/assets/builders/lm_*.ts`; `gallery.html`.
 
 **Acceptance**
-- With LG-10 buying them on 256×60 s7, each landmark unlocks at the first monthly check after its population threshold (the lane's measured years, as the first year-end row at or above each threshold: 2016, 2021, 2025, 2034, 2038, 2044, 2057; NOTE-092).
+- Each landmark unlocks at the first monthly check after its population threshold (A1, NOTE-092), and the bot (LG-10) buys each unlocked landmark when it can afford it (NOTE-103: rule-based; the Crown’s 1.5M is a stretch goal a 60-year 256 city may miss, and its threshold stays). Measured on 256×60 s7 on the merged tree (dev with B2, T041 and T042, 27f9394): first year-end rows at or above each threshold 2017, 2022, 2026, 2034, 2039, 2044; the Crown not reached (1,494,146 in 2060, 5,854 short); bought: Central Library 2023, Grand Central 2025, Stock Exchange 2026, Dome 2033, World Trade Center 2038, Millennium Tower 2044.
 - The tourism-jobs ratio stays within 0.7–1.3 from year 15 on 256×60 s7/s11 and 128×15. Extend the synthetic case at `tests/sim/tourism.test.ts:242`.
 - Every model has at least 2 variants or is unique, and `gallery.html` renders all of them.
 
