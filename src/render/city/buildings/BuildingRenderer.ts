@@ -675,6 +675,7 @@ if (uBuildingNoRoadOn > 0.5) {
     .replace('#include <common>', `#include <common>
 flat varying float vBuildingNoRoad;
 uniform vec3 uBuildingNoRoadColor;`)
+    .replace('_sel * vec3(0.25, 0.6, 1.0)', '_sel * (vBuildingNoRoad > 0.5 ? vec3(1.0, 0.3, 0.3) : vec3(0.25, 0.6, 1.0))')
     .replace('#include <normal_fragment_begin>', `
 if (vBuildingNoRoad > 0.5) diffuseColor.rgb = mix(diffuseColor.rgb, uBuildingNoRoadColor, 0.9);
 #include <normal_fragment_begin>`)
@@ -689,7 +690,7 @@ function getNoRoadMaterial(): THREE.MeshStandardMaterial {
   const city = getCityMaterial(), m = city.clone(), compile = city.onBeforeCompile;
   m.onBeforeCompile = (shader, renderer) => { compile.call(city, shader, renderer); patchNoRoad(shader); };
   const key = city.customProgramCacheKey();
-  m.customProgramCacheKey = () => key + '|building-noroad-v1';
+  m.customProgramCacheKey = () => key + '|building-noroad-v2';
   m.name = 'building-noroad';
   return (_noRoadMat = m);
 }

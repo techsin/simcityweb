@@ -35,6 +35,7 @@ import { VehicleRenderer, type TrafficRoute } from './vehicles/VehicleRenderer';
 import { Previews } from './previews/Previews';
 import { EmergencyVehicles, type EmergencyFeed } from './vehicles/EmergencyVehicles';
 import { Underground } from './underground/Underground';
+import { buildingOverlayOf, setBuildingOverlay } from '../world/overlays';
 
 export interface CityObjectsViewContext {
   scene: THREE.Scene;
@@ -173,6 +174,8 @@ export class CityObjectsView implements CityObjectsViewApi {
     const N = () => this.state.size;
     this.unsub.push(
       ev.on('networkChanged', (r) => {
+        const overlay = buildingOverlayOf(this.state);
+        if (overlay?.overlay === Overlay.Emergency) setBuildingOverlay(this.state, overlay.overlay, overlay.variant, overlay.ready, true);
         const d = this.net.update(r);
         this.roads.markDirty(expand(d, 1, N()));
         this.props.invalidateGarbage(r);

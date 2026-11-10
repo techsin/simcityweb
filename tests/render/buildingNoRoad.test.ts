@@ -3,13 +3,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { registerAllModels } from '../../src/assets/builders';
 import { CELL_SIZE } from '../../src/core/constants';
-import { Overlay } from '../../src/core/types';
+import { Emitter } from '../../src/core/events';
+import { Network, Overlay } from '../../src/core/types';
+import { CityObjectsView } from '../../src/render/city/CityObjectsView';
 import { BuildingRenderer, type BudgetedWork } from '../../src/render/city/buildings/BuildingRenderer';
 import { TileCuller } from '../../src/render/city/common/batch';
 import { getCityMaterial, getGhostMaterial } from '../../src/render/city/common/cityMaterial';
 import { TerrainRenderer } from '../../src/render/world/TerrainRenderer';
 import { buildingOverlayOf, overlayDef, setBuildingOverlay } from '../../src/render/world/overlays';
 import { BF, RESP_NONE, type Building, type CityState } from '../../src/sim/CityState';
+import type { CityEvents } from '../../src/sim/Simulation';
 import { EMG_FIRE, EMG_MEDICAL, EMG_POLICE, emgNearSlack, markOverlaysDirty, overlayReadout, registerDerivedSource } from '../../src/sim/infra/overlays';
 import { EMERG_RMAX } from '../../src/sim/infra/params';
 import { newState, place, setRoad } from '../infra/cityGen';
@@ -189,6 +192,47 @@ describe('Emergency model tint', () => {
     expect(noRoadOn(br)).toBe(0);
     setBuildingOverlay(st, Overlay.None);
     expect(noRoadOn(br)).toBe(0);
+  });
+
+  for (const variant of [EMG_FIRE, EMG_POLICE, EMG_MEDICAL]) it(`follows road additions and removals while paused for responder ${variant}`, () => {
+    const st = newState(32), events = new Emitter<CityEvents>();
+    st.respFire.fill(-EMERG_RMAX);
+    st.respPolice.fill(-EMERG_RMAX);
+    st.respMedical.fill(-EMERG_RMAX);
+    const b = place(st, 'lm_obelisk', 8, 8);
+    const view = new CityObjectsView(st, events, {
+      scene: new THREE.Scene(), camera: new THREE.PerspectiveCamera(), renderer: {} as THREE.WebGLRenderer,
+      canvas: {} as HTMLCanvasElement,
+    });
+    const terrain = new TerrainRenderer(st, 0, false);
+    terrains.push(terrain);
+    const br = view.buildings, day = st.day, layer = response(st, variant).slice();
+    try {
+      terrain.setOverlay(Overlay.Emergency, variant);
+      terrain.update();
+      settle(br);
+      expectMask(st, br, b, 255);
+      const refresh = vi.spyOn(inside(br), 'refreshNoRoad');
+      for (const network of [Network.Road, Network.None]) {
+        refresh.mockClear();
+        const revision = buildingOverlayOf(st)!.revision;
+        st.network[st.idx(b.x, b.z - 1)] = network;
+        const readout = overlayReadout(st, Overlay.Emergency, b.x, b.z, variant)!;
+        expect(readout.reason === 'noRoad').toBe(network === Network.None);
+        if (network === Network.Road) expect(readout.text).toBe('Out of reach by 6+ min');
+        events.emit('networkChanged', { x0: b.x, z0: b.z - 1, x1: b.x + 1, z1: b.z });
+        // The event only invalidates: individual building reads remain in the frame's shared budget.
+        expect(refresh).not.toHaveBeenCalled();
+        expect(buildingOverlayOf(st)!.revision).toBeGreaterThan(revision);
+        terrain.update();
+        settle(br);
+        expect(refresh).toHaveBeenCalled();
+        expectMask(st, br, b, network === Network.None ? 255 : 0);
+        expect(st.day).toBe(day);
+        expect(response(st, variant)).toEqual(layer);
+        expect(buildingOverlayOf(st)).toMatchObject({ overlay: Overlay.Emergency, variant, ready: true });
+      }
+    } finally { view.dispose(); }
   });
 
   it('follows terrain selection, late paused delivery, invalidation and replacement state', () => {

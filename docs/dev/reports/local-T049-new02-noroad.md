@@ -1,5 +1,90 @@
 # T049: no-road model tint in the Emergency view
 
+## QA round 2: paused road edits and selection glow
+
+Based on `f7600b2` with dev / T040's hook merged. The desktop worker reported the original NEW-02 GPU acceptance
+lines passing except these two findings. Both fixes below are uncommitted; no commit, push, merge or `.done` file.
+
+### Findings and fixes
+
+1. **Stale mask after a paused road edit.** Hover read the mirrored network immediately, but models waited for the
+   next emergency raster delivery. `src/render/city/CityObjectsView.ts` now invalidates the selected Emergency
+   overlay revision in the existing `networkChanged` listener. This is an import plus two lines; no new listener,
+   simulation read or state write. The existing sweep coalesces revisions and reads buildings through
+   `overlayReadout` inside T040's shared 2 ms budget. No per-building work runs in the network event handler.
+2. **Hover/selection washed the red out.** `src/render/city/buildings/BuildingRenderer.ts` changes only the selection
+   glow's color in `patchNoRoad`: red `(1.0, 0.3, 0.3)` when the model's noRoad lookup is set, otherwise the original
+   `(0.25, 0.6, 1.0)`. Selection pulse and multiplication remain unchanged. The main model, proxy and LOD fade inherit
+   the patch; shared prop/vehicle/ghost materials are untouched. The building shader cache key advances to v2.
+
+`tests/render/buildingNoRoad.test.ts` adds three actual CityObjectsView / TerrainRenderer event regressions, one per
+responder. Each builds then removes the neighboring road with no simulation advance, no response-raster change,
+no layer event and no view switch; it verifies hover and model agree after budgeted frames. They also assert that
+the event itself performs no per-building refresh. These three cases failed before the handler fix and pass after it.
+`tests/render/buildingNoRoadSelection.test.ts` adds three composed-shader tests: numeric red selection/deselection
+on full/fade programs, exact original selection arithmetic for accessible/off models, and unchanged shared shaders.
+
+This round changes only those two source files, the existing no-road test, the new selection test and this report.
+CityObjectsView's minimal hunk is explicitly authorized by the QA request. **No infra or cloud-held-file hunk or
+request. No changes to T040's hook, drain, clear or dispose.** No RNG, balance, save or simulation changes.
+
+### QA-round verification
+
+TypeScript passed through the quiet gate:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsc --noEmit
+```
+
+Each file below ran separately and sequentially with the established native-config/thread launch (no config edit):
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types node_modules/vitest/vitest.mjs run <file> --maxWorkers=1 --configLoader native --pool threads
+```
+
+| Test file | Result |
+|---|---|
+| `tests/render/buildingNoRoad.test.ts` | 19 passed |
+| `tests/render/buildingNoRoadSelection.test.ts` | 3 passed |
+| `tests/render/buildingWork.test.ts` | 12 passed |
+| `tests/render/buildingBudget.test.ts` | 22 passed |
+| `tests/render/lod.test.ts` | 35 passed |
+| `tests/infra/overlays.test.ts` | 22 passed |
+| `tests/render/overlaysCrisp.test.ts` | 5 passed |
+| `tests/render/overlayReadiness.test.ts` | 2 passed |
+| `tests/render/garbageView.test.ts` | 1 passed |
+| `tests/worker/hygiene.test.ts` | 18 passed |
+
+**139 passed across 10 files; no failures or skips.** The merged base includes T040's compatibility-fixture fix,
+so the earlier historical round-2 blocker is resolved. `git diff --check` and UTF-8/no-BOM checks pass.
+
+The 128x15 seed-7 Medium / plains bot also passed, exit 0: **[61124, 93804, 37971] = 192,899 in 2015**. Exact run:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --no-warnings --experimental-transform-types --experimental-loader file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T049/scratch/resolve-ts.mjs tools/simbot.ts --size 128 --years 15 --seed 7
+```
+
+Output: assigned scratch directory's `simbot-128-y15-s7-qa-round2-native.log`. This reuses the earlier Node TypeScript
+fallback because tsx is still absent locally. The prescribed command remains:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
+```
+
+No new plan/code mismatch. The change preserves the helper's existing response semantics and keeps model/hover on
+the same readout. No full suite, separate Hard/256x60 bot, two-process hash probe or browser was run. Numeric shader
+tests verify the expression, not rendered pixels. New GPU screenshots and actual paused host interaction remain
+for the desktop worker; the earlier GPU results are worker-reported, not rerun here.
+
+Desktop recheck checklist:
+
+- [ ] Paused local, loopback and worker hosts: add/remove the adjacent road; hover and model agree after budgeted
+  render frames without advancing a simulation day. Repeat Fire/Police/Medical.
+- [ ] HIGH and LOW, at 300 m and 700 m: hovering or inspector-selecting the roadless Obelisk keeps it visibly red,
+  including a proxy/fade; leaving hover or selection restores its normal unselected red.
+- [ ] Fixed-camera A/B: road-access buildings retain their existing hover/selection and off-overlay appearance;
+  no misleading amber ring. Full suite and GPU/frame-cost gates remain with the lead.
+
 ## Round 2: T040 BudgetedWork integration
 
 Based on the worker's merged `f6d9ce1`, including T040 hook `6bf60ee` and committed round 1 (`e6378e3`;
