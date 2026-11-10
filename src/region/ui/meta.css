@@ -95,9 +95,10 @@
   position: absolute; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 24px;
   background: rgba(5, 8, 14, 0.55); backdrop-filter: blur(6px) saturate(1.1); animation: fadein 0.25s ease both;
 }
-/* T061 F2: a dialog over the city screen (the simulation crash dialog) stacks above every city HUD layer (hud.css and
-   emergency.css stop at 95), so nothing of the HUD shows or takes a click through it */
-.modal-back.modal-top { z-index: 100; }
+/* T061 F2: a dialog over the city screen (the simulation crash dialog) stacks above every city layer, so nothing of
+   the HUD shows or takes a click through it: hud.css and emergency.css stop at 95, and T036 step 4's storage dialogs
+   (storage.css) at 130. A dead worker makes their Retry useless, so the crash dialog wins over them too */
+.modal-back.modal-top { z-index: 200; }
 .modal {
   position: relative; display: flex; flex-direction: column; max-height: calc(100vh - 48px); width: min(560px, 100%);
   background: linear-gradient(180deg, rgba(26, 34, 48, 0.94), rgba(16, 21, 31, 0.96)); border: 1px solid rgba(255, 255, 255, 0.1);

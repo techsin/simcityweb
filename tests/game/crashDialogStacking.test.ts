@@ -2,7 +2,8 @@
  * T061 F2 (T034b's review): the worker crash dialog (§4.4) opens over a running city, but it is a region-screen modal:
  * its backdrop (meta.css `.modal-back`, z 40) sat under the city HUD's layers (the toasts 50, the toolbar's block 45,
  * the emergency banners 55, the error stack 80, the tips 90-95: the review's probe clicked the toolbar through it). It
- * now takes `.modal-top`, which stacks above every z-index the city screen uses.
+ * now takes `.modal-top`, which stacks above every z-index the city screen uses, T036 step 4's storage dialogs
+ * (storage.css, z 130) included: with the worker dead their Retry cannot work, so the crash dialog wins.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
