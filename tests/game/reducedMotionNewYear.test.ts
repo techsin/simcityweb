@@ -141,10 +141,13 @@ describe('New Year reduced motion (FEEL-21)', () => {
   it('reduced motion restores a fixed clock without a return time-lapse', () => {
     const { ny, settings, world, fw, step } = setup({ motion: 'full', autoTime: false, fixedHour: 14 });
     ny.celebrate({ camera: true });
-    step(10);
+    // A finished show must be past the existing five-second guard after its opening salvo.
+    step(fw.midnight + 6);
     expect(ny.ownsTime).toBe(true);
     settings.motion = 'reduced';
     ny.applyMotion();
+    expect(ny.ownsTime).toBe(false);
+    expect(ny.cameraActive).toBe(false);
     expect(world.autoTime).toBe(false);
     expect(world.timeOfDay).toBe(14);
     fw.active = false;

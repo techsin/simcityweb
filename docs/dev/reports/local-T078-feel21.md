@@ -1,9 +1,11 @@
 # T078 — FEEL-21 motion and flashing settings (FH-24)
 
-Implemented META and WORLD hooks on `local/T078-feel21`, based on `146c885`. Round 1 is committed; round 2 remains
-uncommitted. The desktop worker clarified that `Fireworks.ts` is available and authorized the renderer changes.
+Implemented META and WORLD hooks on `local/T078-feel21`, based on `146c885`. Rounds 1–2 are committed and dev
+`41fcecc` is merged. Round 3 leaves only two test-fixture fixes and this report uncommitted. The desktop worker
+clarified that `Fireworks.ts` is available and authorized the renderer changes in round 2.
 **All FEEL-21 behavior on this base is now implemented**, including live half-strength fireworks and a shared flash
-rate limit. The direct CPU probe passes; formal Vitest and real-GPU browser acceptance remain unverified below.
+rate limit. The direct CPU probe and all eight requested round-3 Vitest files pass; real-GPU browser acceptance
+remains unverified below.
 
 ## Changes by file
 
@@ -63,12 +65,12 @@ the small effect hunks covered by the task's camera/pulse component scope, thoug
 
 | Acceptance | Implementation / evidence | Remaining verification |
 |---|---|---|
-| OS reduced motion reads Reduced | Existing System persistence/resolution; effective in-city label and live device listener; title control enabled | Unit tests and browser check pending |
-| Quake moves camera 0 m | Camera choke point rejects every shake and removes an in-flight shake immediately; new test compares complete camera matrices for 240 frames | Runtime tests and real-GPU check pending |
-| No animation over 200 ms; nothing flashes over 3 Hz | Discretionary HUD effects disabled, toast fades 150 ms, camera/cinematic/countdown skipped, steady emergencies; half-strength fireworks with steady glitter/strobes and a shared 400 ms sharp-flash grid, light pulses at most 160 ms | CPU flash-rate/brightness probe passed; Vitest and real-GPU/CSS checks pending |
-| Switching back restores everything | Root classes, camera flag, future cinematic celebrations, ticker motion and badge/card effects return to Full; System follows later OS changes | Runtime tests and browser check pending |
+| OS reduced motion reads Reduced | Existing System persistence/resolution; effective in-city label and live device listener; title control enabled; unit tests pass | Browser check pending |
+| Quake moves camera 0 m | Camera choke point rejects every shake and removes an in-flight shake immediately; camera-matrix tests pass for 240 frames | Real-GPU check pending |
+| No animation over 200 ms; nothing flashes over 3 Hz | Discretionary HUD effects disabled, toast fades 150 ms, camera/cinematic/countdown skipped, steady emergencies; half-strength fireworks with steady glitter/strobes and a shared 400 ms sharp-flash grid, light pulses at most 160 ms; CPU probe and unit tests pass | Real-GPU/CSS checks pending |
+| Switching back restores everything | Root classes, camera flag, future cinematic celebrations, ticker motion and badge/card effects return to Full; System follows later OS changes; unit tests pass | Browser check pending |
 
-- `npx tsc --noEmit`: **passed** in round 1 and after round-2 renderer/helper/test additions.
+- `npx tsc --noEmit`: **passed** in rounds 1–3, including the merged round-3 tree.
 - `git diff --check`: **passed**.
 - Round 1 attempted one test file through the quiet gate:
 
@@ -135,7 +137,8 @@ tests/worker/hygiene.test.ts
 ```
 
 The long diagnostic `pacingProbe.test.ts` / `tickerProbe.test.ts`, remaining retention diagnostics and full suite are
-also left to the lead. None of the existing test files above could be runtime-verified here after the startup block.
+also left to the lead. The startup block prevented local runtime verification of these existing regression files
+in rounds 1–2. The lead's merged-tree full-suite result and round-3 targeted results are recorded below.
 
 ## Bot gate for the lead
 
@@ -176,7 +179,7 @@ same Vite `externalize-deps` / `optimizeSafeRealPathSync` **`spawn EPERM`** as r
 with `--configLoader runner` (used by existing repository probes) also failed during config loading:
 **`ReferenceError: require is not defined`** in `picomatch/index.js`. No repository configuration was changed. No other
 tests, probes or bot ran alongside either attempt. Vitest assertions in the new files and the untouched existing
-`fireworks.test.ts` remain unverified. Commands for the lead (one file at a time):
+`fireworks.test.ts` remained unverified until round 3. Original commands for the lead (one file at a time):
 
 ```text
 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run tests/render/reducedFireworks.test.ts --maxWorkers=1
@@ -200,6 +203,55 @@ no source/configuration. It verified:
 This CPU result does not replace the Vitest/GPU gates. Shader compilation, actual pixel equality and rendered flash
 rate/brightness still need the browser checks. No bot was run; its command and expected numbers above are unchanged.
 Diagnostic results: `round2-verification.json` in the supplied T078 scratch folder.
+
+## Round-3 fixes and verification
+
+The lead's full run after merging dev `41fcecc` reported **2,732 passed, 5 failed**. All five failures were in the
+two fixtures corrected here; no production changes were needed:
+
+- `tests/game/motionNotifications.test.ts`: replace `window = globalThis` with an `EventTarget` carrying the fake
+  `setTimeout` / `clearTimeout` functions. The merged ticker's resize fallback needs real add/remove event methods
+  and AbortSignal cleanup. All four ticker assertions and the two toast/toolbar cases now pass.
+- `tests/game/reducedMotionNewYear.test.ts`: advance the fixed-clock fixture to `fw.midnight + 6` before marking
+  its fireworks finished. The full cinematic opens at 6.8 seconds in this fixture, and the existing show-completion
+  guard requires more than five seconds after that opening. The old assertion at 11 seconds was premature. The
+  completion assertion remains; new immediate `ownsTime === false` / `cameraActive === false` assertions strengthen
+  the release check. Fixed hour 14 is restored immediately and stays there. The longstanding finish guard and
+  FH-08's busy/deferral behavior are unchanged.
+- This report. No source, infra or cloud-held file changed in round 3.
+
+The ordinary quiet-gated `--pool=threads` retry still failed before loading tests with `spawn EPERM` while bundling
+`vite.config.ts`. A scratch-only native `.mjs` config succeeds; no repository configuration changed. Its contents:
+
+```js
+export default {
+  root: 'C:/Users/techsin/Desktop/projects/simcityweb-T078',
+  test: { pool: 'threads', maxWorkers: 1 },
+};
+```
+
+All eight files ran separately and sequentially through the quiet gate with this command template:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run <file> --maxWorkers=1 --pool=threads --config C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T078/scratch/round3-vitest.config.mjs --configLoader native
+```
+
+| Test file | Result |
+|---|---|
+| `tests/game/motionSettings.test.ts` | 5 passed |
+| `tests/game/reducedMotionCamera.test.ts` | 5 passed |
+| `tests/game/reducedMotionNewYear.test.ts` | 7 passed |
+| `tests/game/motionNotifications.test.ts` | 6 passed |
+| `tests/game/motionCss.test.ts` | 5 passed |
+| `tests/game/reducedFlashing.test.ts` | 5 passed |
+| `tests/render/reducedFireworks.test.ts` | 7 passed |
+| `tests/render/fireworks.test.ts` (untouched) | 12 passed, 2 existing skips |
+
+**Total: 52 passed, 2 skipped.** The first notification run included the suggested legacy `poolOptions` setting;
+Vitest 5 warned that it was removed, so subsequent runs use only the supported top-level options above.
+`motionSettings.test.ts` emitted Node's AbortSignal listener-limit warning; all its assertions passed.
+`npx tsc --noEmit` and `git diff --check` also pass. The full suite after these fixes, bot and browser checks remain
+with the lead; the bot command and expected residents above are unchanged.
 
 ## Hooks for future files
 
@@ -244,6 +296,7 @@ No requests for worker, save, App wiring, TopBar or advisor files.
       identity against round 1; the Full shader source and scheduling are unchanged.
 - [ ] **After T074/T075 land:** lightning and spotlight hooks obey Reduced immediately and restore in Full.
 
-Unverified here: Vitest assertions (runner blocked), bot identity, real-GPU displacement/flash rate/brightness and Full
-pixel equality, CSS cascade/layout, real-worker interaction and old-save runtime continuation. CPU probe results are
-recorded separately above. No browser was opened; no test or probe process remains running.
+Unverified here: full suite after the round-3 fixes, bot identity, real-GPU displacement/flash rate/brightness and Full
+pixel equality, CSS cascade/layout, real-worker interaction and old-save runtime continuation. All eight requested
+targeted Vitest files pass; CPU probe results are recorded separately above. No browser was opened; no test or probe
+process remains running.

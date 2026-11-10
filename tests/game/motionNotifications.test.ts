@@ -14,7 +14,7 @@ let osReduced = false;
 beforeEach(() => {
   osReduced = false;
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
-  vi.stubGlobal('window', globalThis);
+  vi.stubGlobal('window', Object.assign(new EventTarget(), { setTimeout, clearTimeout }));
   vi.stubGlobal('matchMedia', () => ({ matches: osReduced }));
 });
 afterEach(() => {
