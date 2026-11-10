@@ -2,13 +2,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DevType, Network, Zone } from '../../src/core/types';
 import { clearRecoveryBase, getCityRecord, getRecoveryBase, loadCity, saveCity } from '../../src/save/cities';
-import { setKV } from '../../src/save/db';
+import { restrictRegionSaveAccess, setKV } from '../../src/save/db';
 import {
   JOURNAL_OPS, JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, journalMatches, rebuildRecoveredCity,
   type JournalBase, type RecoveryJournal,
 } from '../../src/save/recoveryCodec';
 import { adoptRecoveryJournal, findRecoverySnapshot, readRecoveryJournal, storeJournalIdb, storeRecoveryIdb } from '../../src/save/recoveryIdb';
-import { peekRecoveryMarker, readLsJournal, readLsSnapshot } from '../../src/save/recoveryLs';
+import { peekRecoveryMarker, readLsJournal, readLsSnapshot, storeRecoveryLs } from '../../src/save/recoveryLs';
 import { findRecoverySnapshot as findPendingRecovery, restoreRecoverySnapshot, writeRecoverySnapshot } from '../../src/save/recovery';
 import * as codec from '../../src/save/serialize';
 import { ReplicaSaveError } from '../../src/save/state';
@@ -545,5 +545,52 @@ describe('RecoveryMirror through LoopbackSimHost (T033 carry-over)', () => {
     host.post('setTax', [DevType.R1, 14]);
     expect(host.recovery).toBeNull();
     expect(storage.m.size).toBe(0);
+  });
+});
+
+describe('W1.3: a journal alone at the title screen (fix round)', () => {
+  /** a journal of one tax edit, bound to the save `savedAt` */
+  const taxJournal = (savedAt: number, at: number, tax = 12): RecoveryJournal => ({
+    v: 1, ...city, at, base: { kind: 'save', savedAt }, fromCmd: 0, ops: [{ seq: 1, op: 'setTax', args: [DevType.R1, tax] }],
+  });
+
+  it('describes a localStorage journal alone from its slot\'s marker when the journal carries no info', async () => {
+    const savedAt = await savedCity(); now = 1500;
+    // a journal-only slot whose journal has no `info` (written by a page that did not add it)
+    storeRecoveryLs({ v: 1, ...city, at: 1500, baseSavedAt: savedAt, bytes: 0, ls: false, dropped: [], cityName: 'Slot City',
+      day: 77, population: 4321, funds: 98765, why: 'pagehide' }, null, taxJournal(savedAt, 1500));
+    expect(readLsJournal()?.info).toBeUndefined();
+    const pending = await findPendingRecovery();
+    expect(pending?.marker).toMatchObject({ kind: 'journal', baseSavedAt: savedAt, cityName: 'Slot City', day: 77, population: 4321, funds: 98765, why: 'pagehide' });
+    expect((await readRecoveryJournal(kv, { ...city, savedAt }))?.info).toMatchObject({ cityName: 'Slot City', day: 77 });
+  });
+
+  it('refuses to restore a journal alone whose save changed after the offer, and the journal is deleted', async () => {
+    const savedAt = await savedCity(); now = 1100;
+    await storeJournalIdb(kv, taxJournal(savedAt, 1100));
+    const pending = (await findPendingRecovery(city))!;
+    expect(pending.marker.kind).toBe('journal');
+    // another save of the city lands between the offer and Recover
+    const record = (await getCityRecord(kv, city.regionId, city.tileKey))!;
+    await kv.put('cities', { ...record, savedAt: 1200 }, record.key);
+    await expect(restoreRecoverySnapshot(pending)).rejects.toThrow(/no longer matches/);
+    expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
+  });
+
+  it('NEW-04: a LocalSimHost in a tab without its region\'s lock boots past a stale journal without an error', async () => {
+    const savedAt = await savedCity();
+    // bound to an older save: it can never apply, and only the region's holder may delete it
+    await storeJournalIdb(kv, taxJournal(savedAt - 100, savedAt - 50, 15));
+    const release = restrictRegionSaveAccess((regionId) => regionId !== city.regionId);
+    try {
+      const errors: unknown[] = [];
+      const local = new LocalSimHost((await loadCity(city.regionId, city.tileKey))!, { persistence: city, errors: { report: (...e) => errors.push(e) } });
+      hosts.push(local); await local.start({ CityActions });
+      expect(errors).toEqual([]);
+      expect(local.state.budget.taxRates[DevType.R1]).not.toBe(15);
+      expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeDefined();
+    } finally { release(); }
+    expect(await readRecoveryJournal(kv, { ...city, savedAt })).toBeNull();
+    expect(await kv.get('recovery', 'rtest:0_0#journal')).toBeUndefined();
   });
 });

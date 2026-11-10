@@ -26,6 +26,7 @@ import { gunzipSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 import { loadCity } from '../../src/save/cities';
 import { MemStorage, PersistentMemoryKV, regionData } from '../save/fixtures';
+import { registerTestDefs } from '../infra/cityGen';
 
 beforeAll(async () => { await buildWorkerTest(); }, 60000);
 afterEach(() => { clearRecoveryBase(); setKV(new MemoryKV()); vi.unstubAllGlobals(); });
@@ -145,6 +146,9 @@ describe('Local, Loopback and the real Worker', () => {
   });
 
   it.runIf(existsSync(grownFixture()))('W1.3: an old save (the grown fixture) loads through the worker\'s IndexedDB and continues as LocalSimHost does', { timeout: 300000 }, async () => {
+    // the node worker bundle always registers the test building defs (tools/bench/worker/nodeWorker.ts): register them
+    // here too, so both sides grow the city from the same catalogue whichever cases ran before this one
+    registerTestDefs();
     const kv = new PersistentMemoryKV(); setKV(kv);
     const raw = new Uint8Array(readFileSync(grownFixture()));
     const city = decodeBundle(raw[0] === 0x1f && raw[1] === 0x8b ? new Uint8Array(gunzipSync(raw)) : raw) as SerializedCity;

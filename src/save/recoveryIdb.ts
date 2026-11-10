@@ -23,7 +23,9 @@ export async function readRecoveryJournal(kv: KV, base: JournalBase): Promise<Re
   const journal = await kv.get<RecoveryJournal>('recovery', key);
   if (!journal) return null;
   if (journalMatches(journal, base)) return journal;
-  await kv.delete('recovery', key);
+  // it can never apply. The cleanup is best-effort: a tab without its region's lock is refused the delete (NEW-04), and
+  // that must not fail a boot's read (LocalSimHost and the loopback read here on every start); the holder deletes it
+  await kv.delete('recovery', key).catch(() => undefined);
   return null;
 }
 
