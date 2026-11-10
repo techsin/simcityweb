@@ -37,9 +37,11 @@ import type { BuildingCategory, BuildingDef, ServiceKind } from '../catalogTypes
 import { COV_KINDS, Fam, SERVICE_TIERS, buildingList, centerCell, fundingFactor, infoOf, isFunctional, setFlag, type DefInfo } from './common';
 import {
   TIER_NEED, facilityLoad, newReachScratch, reachCells, registerTierProvider, tierProvider, type FacilityLoad, type ReachScratch,
+  type TierNeedRun,
 } from './catchments';
 import {
-  AIRPORT_CAP, AIRPORT_PAX_EXP, AIRPORT_PAX_K, COURTHOUSE_POLICE_MUL, CRIME_SPILL, GARBAGE_UNPOWERED, HOLDING_CELLS, JAIL_BEDS,
+  AIRPORT_CAP, AIRPORT_PAX_EXP, AIRPORT_PAX_K, COURTHOUSE_POLICE_MUL, CRIME_SPILL, GARBAGE_UNPOWERED, HOLDING_CELLS, INFRA_BLD_SIZING_US,
+  INFRA_CELL_SIZING_US, JAIL_BEDS,
   JUSTICE_CRIME_K, JUSTICE_POLICE_K, OVERCROWDED_UTIL, PATIENTS_PER_BED, POLICE_CAP, POLICE_CRIME_BASE, POLICE_JOB_W, RECYCLE_MAX_SHARE, SEAPORT_TRUCKS,
   SOLAR_SUMMER, SOLAR_WINTER, STAFF_CITY_INFO, STAFF_CITY_MIN, STAFF_FLAG, STAFF_OP_MIN, STAFF_STEP, THERMAL_UNWATERED, UNPOWERED_SERVICE_EFF,
   UNWATERED_HEALTH_EFF, USE_FACTOR_MIN, USE_FULL, WIND_TURBINE_BASE, WIND_TURBINE_GAIN,
@@ -240,9 +242,126 @@ function policeNeed(st: CityState, res: Float32Array, out: Float32Array): void {
   for (let i = 0; i < C; i++) out[i] = (res[i] + out[i]) * (POLICE_CRIME_BASE + crime[i]);
 }
 
+/** policeNeed's cell pass over [i0, i1): people >= 0, so (res + jobs) x (base + crime) is exactly 0 where nobody is */
+function policeCellRange(res: Float32Array, out: Float32Array, crime: Float32Array, i0: number, i1: number): void {
+  for (let i = i0; i < i1; i++) out[i] = (res[i] + out[i]) * (POLICE_CRIME_BASE + crime[i]);
+}
+
+/** B2: estimated warm µs per unit of the police need run's pieces (services' prep budget; G2 fit, dense1m) */
+const PN_US = { scan: 0.03, jobs: 0.02, jobCell: 0.004, cell: 0.004, piece: 2 } as const;
+/** the police run's chunks: its Building loops (scan, job sites) and its cell pass at the cold floors (params.ts) */
+const PN_SIZE = {
+  scan: Math.max(PN_US.scan, INFRA_BLD_SIZING_US), jobs: Math.max(PN_US.jobs, INFRA_BLD_SIZING_US), cell: Math.max(PN_US.cell, INFRA_CELL_SIZING_US),
+} as const;
+/**
+ * B2 (docs/dev/B2_DESIGN.md §4 S_PREP, review 2 item 5b): policeNeed in pieces over services' pass list (the catchments
+ * TierNeedRun) — the monthly scan when stale, by building chunks of `list` (installed at its end, jobNext = the list's
+ * nextBuildingId: buildings placed after the list was taken make the next reader rescan), the job sites in chunks (the
+ * same compaction), the cell pass by ranges. With nothing in between it writes exactly what policeNeed(st, res, out)
+ * writes, and leaves the same per-state lists.
+ */
+class PoliceNeedRun implements TierNeedRun {
+  /** 0 the stale check, 1 the scan chunks, 2 the job sites, 3 the cell pass, 4 done */
+  private stage = 0;
+  private cur = 0;
+  private n = 0;
+  private jobs: Building[] = [];
+  private readonly scan: MonthlyScanParts = newScanParts();
+  constructor(private readonly st: CityState, private readonly res: Float32Array, private readonly out: Float32Array,
+    private readonly list: readonly Building[], private readonly listNextId: number) {}
+
+  get label(): string {
+    return ['check', 'scan', 'jobs', 'cells', 'done'][this.stage];
+  }
+
+  pieceUs(budgetUs: number): number {
+    const c = (us: number, size: number, left: number) => Math.max(0, Math.min(Math.max(1, Math.floor(budgetUs / size)), left)) * us + PN_US.piece;
+    switch (this.stage) {
+      case 0: {
+        // (the stale check falls through into the scan or the job sites; side-effect free: no cache is created here)
+        const sc = stateCache.get(this.st);
+        return !sc || sc.jobNext !== this.st.nextBuildingId ? c(PN_US.scan, PN_SIZE.scan, this.list.length) : c(PN_US.jobs, PN_SIZE.jobs, sc.jobs.length);
+      }
+      case 1: return c(PN_US.scan, PN_SIZE.scan, this.list.length - this.cur);
+      case 2: return c(PN_US.jobs, PN_SIZE.jobs, this.jobs.length - this.cur);
+      case 3: return c(PN_US.cell, PN_SIZE.cell, this.st.cells - this.cur);
+      default: return 0;
+    }
+  }
+
+  step(budgetUs: number): boolean {
+    const st = this.st;
+    if (this.stage === 0) {
+      // policeNeed's first line: the monthly scan when the job-site list is stale
+      if (cacheOf(st).jobNext !== st.nextBuildingId) { scanBegin(this.scan); this.stage = 1; this.cur = 0; }
+      else this.startJobs();
+    }
+    switch (this.stage) {
+      case 1: {
+        const end = Math.min(this.list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_SIZE.scan)));
+        scanRange(st, cacheOf(st), this.list, this.cur, end, this.scan);
+        this.cur = end;
+        if (end < this.list.length) return false;
+        scanInstall(cacheOf(st), this.scan, this.listNextId);
+        this.startJobs();
+        return false;
+      }
+      case 2: this.jobSites(budgetUs); return false;
+      case 3: return this.cells(budgetUs);
+      default: return true;
+    }
+  }
+
+  /** the job sites in chunks: the jobs part of the raster (and the list's compaction, as policeNeed) */
+  private jobSites(budgetUs: number): void {
+    const st = this.st, N = st.size, grid = st.building, out = this.out, list = this.jobs;
+    const k1 = Math.min(list.length, this.cur + Math.max(1, Math.floor(budgetUs / PN_SIZE.jobs)));
+    let n = this.n;
+    for (let k = this.cur; k < k1; k++) {
+      const b = list[k];
+      const x = b.x, z = b.z;
+      if (grid[z * N + x] !== b.id) continue; // removed (building ids are never reused)
+      list[n++] = b;
+      const j = b.jobs;
+      if (!(j > 0) || b.pop > 0) continue;
+      const w = b.w, d = b.d;
+      if (w === 1 && d === 1) { out[z * N + x] += POLICE_JOB_W * j; continue; }
+      const v = (POLICE_JOB_W * j) / (w * d);
+      const x1 = Math.min(N, x + w), z1 = Math.min(N, z + d);
+      for (let zz = z; zz < z1; zz++) for (let xx = x; xx < x1; xx++) out[zz * N + xx] += v;
+    }
+    this.n = n;
+    this.cur = k1;
+    if (k1 < list.length) return;
+    list.length = n;
+    this.stage = 3;
+    this.cur = 0;
+  }
+
+  /** the cell pass by ranges; true when the raster is complete */
+  private cells(budgetUs: number): boolean {
+    const C = this.st.cells;
+    const i1 = Math.min(C, this.cur + Math.max(1, Math.floor(budgetUs / PN_SIZE.cell)));
+    policeCellRange(this.res, this.out, this.st.crime, this.cur, i1);
+    this.cur = i1;
+    if (i1 < C) return false;
+    this.stage = 4;
+    return true;
+  }
+
+  private startJobs(): void {
+    this.jobs = cacheOf(this.st).jobs;
+    this.n = 0;
+    this.cur = 0;
+    this.stage = 2;
+  }
+}
+
 const POLICE_PROVIDER = {
   shared: true,
   needOf: policeNeed,
+  needRun: (st: CityState, res: Float32Array, out: Float32Array, list: readonly Building[], listNextId: number): TierNeedRun =>
+    new PoliceNeedRun(st, res, out, list, listNextId),
   capacityOf: (_st: CityState, b: Building) => policeCapacityOf(b.def),
 };
 /** register the police tier provider (module load; again on first use when an import cycle made catchments unready) */
@@ -536,11 +655,28 @@ export function pluggedList(st: CityState): Building[] {
  * buildings and the job-weighted fill of the C / I job sites (-1 without job sites); refreshes the per-state lists
  */
 export function monthlyScan(st: CityState): { plopped: Building[]; tier: Building[]; cityFill: number } {
-  const plopped: Building[] = [], tier: Building[] = [], jobs: Building[] = [], justice: Building[] = [];
-  let filled = 0, slots = 0;
+  const p = newScanParts();
   const c = cacheOf(st);
   const list = buildingList(st);
-  for (let k = 0; k < list.length; k++) {
+  scanRange(st, c, list, 0, list.length, p);
+  scanInstall(c, p, st.nextBuildingId);
+  return { plopped: p.plopped, tier: p.tier, cityFill: p.slots > 0 ? Math.min(1, p.filled / p.slots) : -1 };
+}
+
+/** the lists of one monthly scan while it is built (B2: the police need run builds them in chunks) */
+interface MonthlyScanParts { plopped: Building[]; tier: Building[]; jobs: Building[]; justice: Building[]; filled: number; slots: number }
+function newScanParts(): MonthlyScanParts {
+  return { plopped: [], tier: [], jobs: [], justice: [], filled: 0, slots: 0 };
+}
+function scanBegin(p: MonthlyScanParts): void {
+  p.plopped = []; p.tier = []; p.jobs = []; p.justice = [];
+  p.filled = 0; p.slots = 0;
+}
+/** monthlyScan's loop over list[k0, k1) (in list order; the fill sums are doubles in `p`) */
+function scanRange(st: CityState, c: StateCache, list: readonly Building[], k0: number, k1: number, p: MonthlyScanParts): void {
+  const { plopped, tier, jobs, justice } = p;
+  let filled = p.filled, slots = p.slots;
+  for (let k = k0; k < k1; k++) {
     const b = list[k];
     const cls = classOf(st, c, b);
     const fam = (cls & 15) - 1;
@@ -556,12 +692,16 @@ export function monthlyScan(st: CityState): { plopped: Building[]; tier: Buildin
     filled += b.jobs;
     slots += b.capacity * (b.hire ?? 1);
   }
-  c.plopped = plopped;
-  c.tier = tier;
-  c.jobs = jobs;
-  c.justice = justice;
-  c.jobNext = st.nextBuildingId;
-  return { plopped, tier, cityFill: slots > 0 ? Math.min(1, filled / slots) : -1 };
+  p.filled = filled;
+  p.slots = slots;
+}
+/** the scanned lists become the state's lists; `nextId` = st.nextBuildingId of the scanned list */
+function scanInstall(c: StateCache, p: MonthlyScanParts, nextId: number): void {
+  c.plopped = p.plopped;
+  c.tier = p.tier;
+  c.jobs = p.jobs;
+  c.justice = p.justice;
+  c.jobNext = nextId;
 }
 
 /** set / clear BF.Understaffed of a tier facility (buildingChanged on a flip) */
