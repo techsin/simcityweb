@@ -1,4 +1,7 @@
-.storage-back { position: absolute; inset: 0; z-index: 130; pointer-events: auto; display: flex; align-items: center; justify-content: center; padding: 20px; background: #0008; }
+/* T089 O1: `.modal-back.storage-back`, not `.storage-back`: `.modal-back` (meta.css, z 40) and `:where(.mp-ui) .modal-back`
+   (hud.css, z 60) have the same specificity and load after this sheet, so they won and the toolbar drew over and took
+   clicks through "Storage full" in the city. */
+.modal-back.storage-back { position: absolute; inset: 0; z-index: 130; pointer-events: auto; display: flex; align-items: center; justify-content: center; padding: 20px; background: #0008; }
 .storage-dialog { width: min(620px, 100%); max-height: 85vh; overflow: auto; padding: 24px; border-radius: 16px; background: var(--panel, #172332); color: var(--text, #eef3fa); box-shadow: 0 18px 70px #0008; }
 .storage-dialog h2 { margin: 0 0 14px; font-size: 22px; }
 .storage-dialog p { line-height: 1.55; }

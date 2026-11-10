@@ -1,7 +1,7 @@
 /** Save failures, region backups and the one-writer storage session shared by the region and city screens. */
 import './storage.css';
 import type { RegionData } from '../region/types';
-import { toast, uiRoot } from '../region/ui/modal';
+import { modalOpen, toast, uiRoot } from '../region/ui/modal';
 import { buildRegionFile, clearRecoveryBase, deleteRegion, deserializeCity, downloadBlob, exportRegion, findRecoverySnapshot, getCityRecord, getRecoveryBase, hasRecoverySnapshot, listRegions, loadRegion, packFile, peekRecoveryMarker, rebuildRecoveredCity, safeFileName, type PendingRecovery, type RecoveryCity, type RegionFile } from '../save';
 import { markRegionExported, markRegionSummaryStale, openKV, regionSaveAccess, RegionSaveLock, restrictRegionSaveAccess, storageEstimate } from '../save/db';
 import type { SimHost } from '../worker/SimHost';
@@ -89,6 +89,9 @@ export async function showStorageError(error: unknown, actions: StorageActions):
   actions.signal?.addEventListener('abort', close, { once: true, signal });
   window.addEventListener('keydown', (e) => {
     if (dialogs.at(-1) !== back) return;
+    // T089 B2: a Modal opened over this dialog (the worker crash dialog) owns the keys; swallowing them here left its
+    // focused button pressed after Space
+    if (modalOpen()) return;
     if (e.key === 'Escape') { e.preventDefault(); close(); }
     e.stopImmediatePropagation();
   }, { capture: true, signal });
