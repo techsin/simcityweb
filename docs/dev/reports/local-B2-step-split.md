@@ -105,11 +105,14 @@ In `scratchpad/b2work/G4-utilities-emergency-recalibration/`: `cpumapG4.ts`, `ed
 
 ## Integration with dev (B3 and later)
 
-`cloud/b2m` merges dev (`origin/claude/beautiful-johnson-u2jqoz`) into `b2-step-split` (`1abb357`) three times: merge
+`cloud/b2m` merges dev (`origin/claude/beautiful-johnson-u2jqoz`) into `b2-step-split` (`1abb357`) four times: merge
 `d388fa6` (dev `63c8f58`), then `604fc75` (simwasmFlag) and `4608258` (the flag events, the hygiene rename), then merge
 `539b692` (dev `086152a`: T034 with T034b, which landed during the gates), then, on the resume after the usage-limit stop,
 merge `3d9b29d` (dev `87c7c9c`: T040, T053, NOTE-059 and the Nov 4 handoff; no conflict, and no `src/sim/infra` change:
-dev's only `src/sim` change is T053's `advisors.ts` / `rewards.ts`) and `633b917` (item 5 below). Dev had gained, since B2's base `41ae570`: B3 (`530d570`), T038, T036 steps 2–3, T052, W0–W1.1b (the worker seam, the replica, the recorder, the
+dev's only `src/sim` change is T053's `advisors.ts` / `rewards.ts`) and `633b917` (item 5 below), then merge `99d19e9`
+(dev `51ec328`: T058, T057's economy save / load continuity, T060 FEEL-01, NOTE-060 to NOTE-064; no conflict: in
+`tests/sim/exact/j10.test.ts` git kept B2's lines and T057's, which drops the `popRun` record from both arms' saves; T057
+changed no file in `src/sim/infra` or the scheduler). Dev had gained, since B2's base `41ae570`: B3 (`530d570`), T038, T036 steps 2–3, T052, W0–W1.1b (the worker seam, the replica, the recorder, the
 loopback host), B1's final live cap and others. After the merge, the diff against dev is B2's own files only:
 18 files in `src/sim/infra`, B2's tests and these documents (no `src/ui`, `src/game`, `src/render`, `src/save` or
 `src/worker` change; NOTE-048's NewYear.ts / TopBar.ts lines were the premerge stack's, not B2's).
@@ -229,7 +232,7 @@ the scratch logs of the Nov 4 run):
 
 | # | required | state at the resume |
 |---|---|---|
-| R1 | Dev merged in to its current head | dev had moved from `086152a` to `87c7c9c` (T040, T053, NOTE-059, the handoff): **not merged** |
+| R1 | Dev merged in to its current head | dev had moved from `086152a` to `87c7c9c` (T040, T053, NOTE-059, the handoff), and moved again to `51ec328` (T058, T057, T060 FEEL-01) while the resume's first gates queued: **not merged** |
 | R2 | The full vitest green on the merged tree | the Nov 4 run at `539b692` (`scratchpad/b2m/vitest3.log`) **failed 2 tests**: `b2PiecesInfra` G4 utilities, the flip-coverage marker and the publish piece's estimate cap (both left behind by `4608258`) |
 | R3 | The bot, W against dev; the new reference | **not run** (the chain stopped at the vitest failure) |
 | R4 | Exactness (passdigest atomic) and determinism (cityDigest twice) | run at `539b692` against `086152a` (identical); **to re-run** on the final tree |
@@ -239,13 +242,15 @@ the scratch logs of the Nov 4 run):
 | R8 | The gate 4 amendment as a plan amendment, the S5 follow-up in POLISH_BACKLOG, the `grownCity` tolerance recorded as accepted, the done line, Desktop QA | **not done** |
 
 **What was done:**
-1. **R1:** merge `3d9b29d` (dev `87c7c9c`), no conflict, tsc clean.
+1. **R1:** merge `3d9b29d` (dev `87c7c9c`) and merge `99d19e9` (dev `51ec328`), no conflict, tsc clean after each. The
+   first full vitest ran green on `633b917` (below); the bot had not started when dev gained T057 (economy and save
+   code), so that chain was stopped, dev merged again, and every gate below re-ran on `99d19e9`.
 2. **R2:** `633b917` updates the two utilities piece tests to the flags' publish with its events (integration item 5).
    With the test change, `b2PiecesInfra` passes 21 / 21; the old marker and cap fail it (the Nov 4 log). No code change.
-3. **R3–R7:** the gates below, on `633b917` (the commits after it are docs only).
+3. **R3–R7:** the gates below, on `99d19e9` (the commits after it are docs only).
 4. **R8:** the plan amendment and the decisions below; the S5 line in `docs/dev/POLISH_BACKLOG.md`; the done line in the
    header.
 5. Tools (scratch, not in the repo): `scratchpad/b2m/build.sh` (the probes bundled against W and a clean export of dev
-   `87c7c9c` in `scratchpad/co/b2m-devbase`), `master2.sh` (the heavy gates, one lock hold each), `pd.sh`, `lc.sh` +
+   in `scratchpad/co/b2m-devbase`), `master2.sh` / `master3.sh` (the heavy gates, one lock hold each), `pd.sh`, `lc.sh` +
    `tools/loadcmp2.ts` / `tools/anlc2.py` (the save / load comparison), `hold.sh` + `tools/anB2m.py` (gate 4),
-   `bal.sh` (the balance).
+   `bal.sh` (the balance). The dev export is `51ec328` for every gate on `99d19e9`.
