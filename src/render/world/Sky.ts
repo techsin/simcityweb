@@ -84,6 +84,11 @@ const lum = (c: THREE.Color) => c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722;
 const _lc = new THREE.Color();
 const _lc2 = new THREE.Color();
 
+/** Smog only dims the sun above the tint threshold; the moon and the sky LUT keep their normal cadence. */
+export function smogSunTransmission(smog: number): number {
+  return 1 - 0.25 * THREE.MathUtils.smoothstep(smog, 0.25, 0.6);
+}
+
 /**
  * Direct light, sky fill, exposure, night / lamp / dusk factors for a sun & moon position (pure; SkySystem.update and
  * tests). Active light: the sun by day, then a "twilight sky light" from the sunset azimuth (warm -> blue), then the
@@ -396,6 +401,8 @@ export class SkySystem {
   };
   /** 0..1 amount of city lights (population driven), set by WorldView (1 = no dark-city exposure boost) */
   cityLights = 1;
+  /** Camera-local smog, disabled by WorldView on Low and in data views. */
+  smog = 0;
   climate: ClimateSky;
 
   private renderer: THREE.WebGLRenderer;
@@ -548,6 +555,8 @@ export class SkySystem {
     atmTransmittanceJS(L.moonDir, 0.35, mie, this.moonT);
 
     lightRig(L.sunDir, L.moonDir, this.sunT, L, this.cityLights);
+    const sunTransmission = smogSunTransmission(this.smog);
+    if (sy > LIGHT_RIG.switchY) L.lightIntensity *= sunTransmission;
     const sunF = THREE.MathUtils.smoothstep(sy, -0.035, 0.07);
     // twilight amount (sun just below the horizon): brightens the sky for a readable blue hour
     const twilight = THREE.MathUtils.smoothstep(sy, -0.2, -0.07) * (1 - THREE.MathUtils.smoothstep(sy, -0.06, 0.0));
@@ -573,7 +582,7 @@ export class SkySystem {
     u.uSkyFloor.value.set(0.0012 * fl, 0.0022 * fl, 0.0058 * fl);
 
     // sun / moon disk radiance
-    u.uSunDisk.value.set(this.sunT.r, this.sunT.g, this.sunT.b).multiplyScalar(120 * THREE.MathUtils.smoothstep(sy, -0.03, 0.01));
+    u.uSunDisk.value.set(this.sunT.r, this.sunT.g, this.sunT.b).multiplyScalar(120 * THREE.MathUtils.smoothstep(sy, -0.03, 0.01) * sunTransmission);
     const mT = this.moonT;
     const moonVis = THREE.MathUtils.smoothstep(L.moonDir.y, -0.02, 0.05) * (0.25 + 0.75 * L.night);
     u.uMoonDisk.value.set(mT.r * 0.95, mT.g * 0.97, mT.b * 1.0).multiplyScalar(2.2 * moonVis);

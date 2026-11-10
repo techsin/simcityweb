@@ -89,6 +89,7 @@ uniform float uBloomOn;
 uniform float uBloomStrength;
 uniform float uExposure;
 uniform vec3 uTint;
+uniform float uSmog;
 uniform float uSaturation;
 uniform float uContrast;
 uniform vec3 uLift;
@@ -167,6 +168,8 @@ void main() {
   if (uBloomOn > 0.5) col += texture2D(tBloom, vUv).rgb * uBloomStrength;
   // grading (pre tonemap, linear)
   col *= uTint;
+  // Brown-grey aerosol tint, normalized around green so the veil does not darken the whole frame.
+  if (uSmog > 0.25) col *= mix(vec3(1.0), vec3(0.55, 0.50, 0.42) * 2.0, smoothstep(0.25, 0.6, uSmog));
   float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
   col = max(mix(vec3(l), col, uSaturation), 0.0);
   col = pow(col / 0.18 + 1e-6, vec3(uContrast)) * 0.18;
@@ -325,6 +328,7 @@ export class PostFX {
     uFogFalloff: { value: 1 / 90 },
     uFogStart: { value: 200 },
     uHaze: { value: 0.00002 },
+    uSmog: { value: 0 },
     uSunDir: { value: new THREE.Vector3(0, 1, 0) },
     uSunGlow: { value: new THREE.Vector3(0, 0, 0) },
     uSkyLut: { value: null as THREE.Texture | null },

@@ -13,7 +13,7 @@ import { Overlay } from '../../core/types';
 import { setFoliageSeason, sharedUniforms } from '../../assets/materials';
 import { registerAllModels } from '../../assets/builders';
 import { setTreeSeason } from '../../assets/builders/nat_season';
-import type { CityState, Building } from '../../sim/CityState';
+import { BF, type CityState, type Building } from '../../sim/CityState';
 import type { CityEvents } from '../../sim/Simulation';
 import type { CameraControllerApi, CellHit, QualityLevel, WorldViewApi } from '../contracts';
 import { CameraController } from './CameraController';
@@ -73,6 +73,68 @@ export const DUSK_GRADE = {
    *  strong lift read as a blue haze over the dusk scene) */
   lift: [0.0003, 0.001, 0.003] as [number, number, number],
 };
+
+/** Monthly snapshot of mirrored flags. Only the nine nearby buckets are sampled, twice a second. */
+export class DistrictSmog {
+  value = 0;
+  private state: CityState | undefined;
+  private buckets = new Map<number, number[]>();
+  private dirty = true;
+  private month = -1;
+  private sampleIn = 0;
+  private target = 0;
+
+  invalidate(): void { this.dirty = true; }
+
+  update(state: CityState, dt: number, x: number, z: number): number {
+    if (this.state !== state) {
+      this.state = state;
+      this.buckets.clear();
+      this.dirty = true;
+      this.month = -1;
+      this.sampleIn = this.target = this.value = 0;
+    }
+    this.sampleIn -= dt;
+    if (this.sampleIn <= 1e-9) {
+      this.sampleIn += 0.5;
+      const stride = Math.ceil(state.size / 32) + 1;
+      if (this.dirty && this.month !== state.monthIndex) {
+        this.buckets.clear();
+        for (const b of state.buildings.values()) {
+          const bx = b.x + b.w * 0.5, bz = b.z + b.d * 0.5;
+          const key = Math.floor(bz / 32) * stride + Math.floor(bx / 32);
+          let bucket = this.buckets.get(key);
+          if (!bucket) this.buckets.set(key, (bucket = []));
+          bucket.push(bx, bz, (b.flags & BF.Polluted) ? 1 : 0);
+        }
+        this.month = state.monthIndex;
+        this.dirty = false;
+      }
+      let total = 0, polluted = 0;
+      const bx = Math.floor(x / 32), bz = Math.floor(z / 32);
+      const limit = Math.ceil(state.size / 32);
+      for (let iz = Math.max(0, bz - 1); iz <= Math.min(limit, bz + 1); iz++) {
+        for (let ix = Math.max(0, bx - 1); ix <= Math.min(limit, bx + 1); ix++) {
+          const bucket = this.buckets.get(iz * stride + ix);
+          if (!bucket) continue;
+          for (let i = 0; i < bucket.length; i += 3) {
+            const dx = bucket[i] - x, dz = bucket[i + 1] - z;
+            if (dx * dx + dz * dz > 32 * 32) continue;
+            total++;
+            polluted += bucket[i + 2];
+          }
+        }
+      }
+      const local = total > 0 ? polluted / total : 0;
+      const air = state.history.air.at(-1) ?? 0;
+      // History moderates the local signal; it cannot put smog over an unpolluted district.
+      this.target = 0.8 * local + 0.2 * Math.min(local, Number.isFinite(air) ? Math.max(0, air) : 0);
+    }
+    this.value += (this.target - this.value) * (1 - Math.exp(-dt / 3));
+    if (this.target === 0 && this.value < 1e-5) this.value = 0;
+    return this.value;
+  }
+}
 
 export class WorldView implements WorldViewApi {
   readonly renderer: THREE.WebGLRenderer;
@@ -174,6 +236,7 @@ export class WorldView implements WorldViewApi {
   private pixelRatio = 1;
   private nightFill: THREE.HemisphereLight;
   private overlay: Overlay = Overlay.None;
+  private smog: DistrictSmog | undefined;
   private maxHeight = 100;
   private terrainMin = 0;
   private lastFrameMs = 0;
@@ -379,9 +442,12 @@ export class WorldView implements WorldViewApi {
       ev.on('networkChanged', cells),
       ev.on('treesChanged', cells),
       ev.on('powerLinesChanged', cells),
-      ev.on('buildingAdded', (b) => cells(bRect(b))),
-      ev.on('buildingRemoved', (b) => cells(bRect(b))),
-      ev.on('layerUpdated', (name) => this.terrain.onLayerUpdated(name)),
+      ev.on('buildingAdded', (b) => { cells(bRect(b)); this.smog?.invalidate(); }),
+      ev.on('buildingRemoved', (b) => { cells(bRect(b)); this.smog?.invalidate(); }),
+      ev.on('layerUpdated', (name) => {
+        this.terrain.onLayerUpdated(name);
+        if (name === 'pollution') this.smog?.invalidate();
+      }),
       ev.on('month', () => {
         this.trees.setMonth(this.state.month);
         this.terrain.setMonth(this.state.month);
@@ -397,6 +463,7 @@ export class WorldView implements WorldViewApi {
   /** replace / reload the city state (after load). Same map size required; otherwise create a new WorldView. */
   setState(state: CityState) {
     this.state = state;
+    this.smog = undefined;
     this.terrain.reset(state);
     this.trees.reset(state);
     this.sky.setClimate(state.config.climate);
@@ -488,6 +555,7 @@ export class WorldView implements WorldViewApi {
     }
     this.cameraController.update(dt);
     this.updateCameraPlanes();
+    this.updateSmog(dt);
 
     // sky & lighting
     const pop = this.state.stats.population;
@@ -551,6 +619,12 @@ export class WorldView implements WorldViewApi {
     cam.updateProjectionMatrix();
   }
 
+  private updateSmog(dt: number): void {
+    const target = this.cameraController.target;
+    const value = (this.smog ??= new DistrictSmog()).update(this.state, dt, target.x / CELL_SIZE, target.z / CELL_SIZE);
+    this.sky.smog = this.overlay === Overlay.None && this.q.level !== 'low' ? value : 0;
+  }
+
   /** fog, haze, grading and bloom per time of day & climate */
   private updateAtmosphere() {
     const L = this.sky.lighting;
@@ -560,6 +634,8 @@ export class WorldView implements WorldViewApi {
     const h = this._time;
     const d = this.cameraController.distance;
     const climate = this.state.config.climate;
+    const smog = this.overlay === Overlay.None ? this.smog?.value ?? 0 : 0;
+    f.uSmog.value = this.q.level === 'low' ? 0 : smog;
     const hazeBase = climate === 'desert' ? 1.6e-4 : climate === 'tropical' ? 1.35e-4 : climate === 'alpine' ? 0.6e-4 : 1.05e-4;
     // morning mist (5..9h), thin at noon, a bit of evening haze
     const mist = Math.max(0, 1 - Math.abs(h - 6.8) / 2.6);
@@ -568,7 +644,7 @@ export class WorldView implements WorldViewApi {
     // (+ night haze: the flat landscape skirt fades into the sky-LUT horizon instead of a hard black band)
     f.uFogDensity.value = (0.00008 + 0.0008 * mist * mist + 0.00022 * n) * (climate === 'desert' ? 0.6 : 1);
     f.uFogFalloff.value = 1 / (60 + 90 * (1 - mist));
-    f.uHaze.value = hazeBase * (1 + 0.6 * L.golden) * (1 / (1 + d / 3500));
+    f.uHaze.value = hazeBase * (1 + 0.6 * L.golden) * (1 / (1 + d / 3500)) * (1 + 2.5 * smog);
     f.uFogMax.value = 0.96;
     f.uSunDir.value.copy(L.sunDir);
     _col.copy(L.lightColor).multiplyScalar(L.lightIntensity * 0.12 * (1 - n));
