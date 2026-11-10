@@ -348,7 +348,10 @@ export class ChangeRecorder {
     let changed = full;
     for (const b of this.state.buildings.values()) {
       if (!((getDef(b.def)?.powerOut ?? 0) > 0)) continue;
-      const value = utilities?.plantLoad(b.id) ?? -1;
+      // T087 (REVIEW-T051 minor 4): a plant that delivers 0 MW is unavailable on the wire, as in the local view (-1: no
+      // smoke); a utilities system that reports no output breakdown keeps its load
+      const output = utilities?.producerInfo?.(b.id)?.output;
+      const value = output !== undefined && output <= 0 ? -1 : utilities?.plantLoad(b.id) ?? -1;
       const rounded = value < 0 ? -1 : Math.fround(value);
       const load = Number.isFinite(rounded) ? rounded : -1;
       loads.set(b.id, load);

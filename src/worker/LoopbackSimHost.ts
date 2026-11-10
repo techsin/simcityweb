@@ -268,7 +268,9 @@ export class PacketSimHost implements SimHost {
   readonly utilities = { waterQualityAt: (_sim: Pick<Simulation, 'state'>, cell: number): number => {
     const r = this.replica.raster(Overlay.Water, 1);
     return r ? Math.max(0, Math.min(1, (r.data[cell] - TAP_T0) / (1 - TAP_T0))) : this.state.stats.tapWater ?? 1;
-  } };
+  },
+  // T087 (T061 item 5, NOTE-054): T051's plant loads, from the replica's stream map; null until a snapshot names the plant
+  plantLoad: (id: number): number | null => this.replica.plantLoad(id) };
   protected now(): number { return this.options.now?.() ?? performance.now(); }
   installActions(factory: ActionFactory): void { this.controller?.dispose(); this.controller = factory(this); this.controller.pending.rebase(this.replica.cmd); }
   connect(send: (m: M2W) => void): void {
@@ -351,9 +353,16 @@ export class PacketSimHost implements SimHost {
   setSpeed(value: number, source: SpeedSource): void { this.act('setSpeed', [value, source]); }
   resume(source: SpeedSource): void { this.act('resume', [source]); }
   private optimism(command: Command, seq: number): void {
-    this.writeOptimistic(command);
     const field = this.fieldOf(command);
-    if (field) this.pendingFields.set(field.key, { seq, read: field.read, value: field.read() });
+    // NOTE-077 (X1): a speed command's F8 record is the value the command itself writes, set before the write, not a
+    // read after it. That read is another command's value when the write's speedChanged makes a listener post a newer
+    // speed command (whose record must stay the latest); before T061 it was the packet's speed on WorkerSimHost, hence
+    // the false "speed read 0 before ack N, which wrote 3". The other fields keep the read: CityActions rounds, clamps
+    // or refuses what their commands carry.
+    const speed = command.op === 'setSpeed' ? Math.max(0, Math.min(3, command.args[0] | 0)) : command.op === 'resume' ? this.pausedFrom : undefined;
+    if (field && speed !== undefined) this.pendingFields.set(field.key, { seq, read: field.read, value: speed });
+    this.writeOptimistic(command);
+    if (field && speed === undefined) this.pendingFields.set(field.key, { seq, read: field.read, value: field.read() });
   }
   /** The field an optimistic op writes, for F8's dev check; a building that is gone reads as undefined (not a revert). */
   private fieldOf(command: Command): { key: string; read(): unknown } | null {

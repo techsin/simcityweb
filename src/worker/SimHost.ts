@@ -218,7 +218,8 @@ export interface TrafficView {
 }
 export interface UtilitiesView {
   waterQualityAt(sim: Pick<Simulation, 'state'>, cell: number): number;
-  /** Optional until T061 adds packet-host forwarding; absent means unavailable. */
+  /** A plant's share of its grid's load, 0..1, on all three hosts (T087); null: no data yet, or the plant delivers
+   *  0 MW. A view without the reader means unavailable. */
   plantLoad?(id: number): number | null;
 }
 
@@ -579,7 +580,10 @@ function localViews(sim: Simulation): { emergency: EmergencyView; traffic: Traff
     utilities: {
       waterQualityAt: (_source, cell) => sim.getSystem<UtilitiesSystem>('utilities')?.waterQualityAt(sim, cell) ?? sim.state.stats.tapWater ?? 1,
       plantLoad: (id) => {
-        const load = sim.getSystem<UtilitiesSystem>('utilities')?.plantLoad(id);
+        const utilities = sim.getSystem<UtilitiesSystem>('utilities'), output = utilities?.producerInfo?.(id)?.output;
+        // T087 (REVIEW-T051 minor 4): a plant that delivers 0 MW (shut down by ordinance, burnt) is unavailable: no smoke
+        if (output !== undefined && output <= 0) return null;
+        const load = utilities?.plantLoad(id);
         return load !== undefined && Number.isFinite(load) && load >= 0 ? load : null;
       },
     },

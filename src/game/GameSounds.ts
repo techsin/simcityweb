@@ -352,8 +352,10 @@ export class GameSounds {
     // Local hosts remove terminal incidents before emitting; their earlier view objects retain the final values.
     const inc = host?.emergency.incident(e.id) ?? this.incidents.get(e.id);
     if (inc) this.incidents.set(e.id, inc);
-    // A disaster command can also cause automatic dispatches; the host record identifies the player's response.
-    if (e.type === 'dispatched' && host?.cause && inc?.answered === 2) this.playerDispatches.add(e.id);
+    // A disaster command can also cause automatic dispatches; only a dispatch command names its incident in the cause
+    // (T061's Cause.dispatchIncidentId, T087), so a reinforcement the player sends to an incident the city answered by
+    // itself (answered stays 1) counts as the player's too, on every host.
+    if (e.type === 'dispatched' && host?.cause?.dispatchIncidentId === e.id) this.playerDispatches.add(e.id);
     if (e.type === 'resolved' || e.type === 'failed') {
       const lost = e.type === 'failed' || !!inc && (inc.lost > 0 || inc.deaths > 0);
       const player = inc?.answered === 2 || this.playerDispatches.has(e.id);
