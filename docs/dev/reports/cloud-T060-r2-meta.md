@@ -236,3 +236,32 @@ the next item, whose ResizeObserver report read the new widths (2 reads, after l
   rerun them) and `tests/game/tickerProbe.test.ts` + `tests/game/tickerLayout.ts` (test helpers). No other lane's
   file is touched; `Notifications.ts`'s hunks stay inside the ticker's old lines 26-124 (T058's question container in
   `Toasts` merges around them).
+
+## Cloud carry-over (Nov 3): FH-12
+
+Branch `cloud/t060fh12`, a new lane from dev `51ec328` (FEEL-01 merged as `156e0bc`). No desktop branch, WIP or report
+existed for FH-12: this sub-lane starts from dev itself.
+
+### Gap list (what was required, against what was done when this step started)
+
+Sources: the task file (owns, do, gates); POLISH_PLAN FH-12 in full (Problem, Change, Files, Acceptance, Depends on,
+Risk) and §4.3 Phase A (A1, A2, A3); the items it builds on, FH-11 (the dialog, `recommendedTile`), FH-04
+(`difficultyRules`, Easy's `defaultDisasters: false`) and FEEL-05 (the day-90 founding in `startNewCity`); the guide's
+copy (`src/ui/guide/copy.ts` `phaseA`, T037d); NOTE-044, and the NOTEs naming T060 (NOTE-057, -059, -060, -061, -064);
+the handoff README (docs/dev/handoff/2026-11-04); the in-flight branches that edit the same files (T036s4 and W1.3 in
+`src/main.ts`, T042's one funds line, T037a's `WIND_START`).
+
+| # | required (POLISH_PLAN FH-12, §4.3) | state on dev `51ec328` | left for this step |
+|---|---|---|---|
+| 1 | With no region saved, the primary button is "Start your first city", sub-line "Guided · your first road in about 2 minutes" | the menu leads with a disabled "Continue — No saved region yet" and "New Region" is primary (`TitleScreen.ts:61-62`); the strings exist as `guideCopy.phaseA.A1`, `A1Subtitle`, `A1Region`, used nowhere | **all of it** |
+| 2 | "New Region" moves to second place | — | **all of it** |
+| 3 | One click creates a Greenvale Valley region with a unique id | only `?quickstart=1`, which deletes and recreates the fixed id `quickstart` (`main.ts:1013-1014`) | **all of it** (a persistent region, never the fixed id) |
+| 4 | …founds FH-11's recommended tile on Easy, with Guided start and Disasters off, on day 90 (FEEL-05) | the parts exist: `RegionModel.recommendedTile()` (FH-11), `defaultCityConfig({ difficulty: 'easy' })` gives §250k and Disasters off (FH-04), `rememberNewCity` records Guided start (FH-11), `startNewCity` founds on day 90 (FEEL-05) | **wire them into one path** |
+| 5 | …and opens the paused city | `CityScene` starts a city with no camera and no building paused (`CityScene.ts:200-202`); the guide card opens while its pref is not dismissed and the town is young (`Onboarding.ts:161-164`) | **verify on the new path** |
+| 6 | The first-city loading screen rotates the three tips of §4.3 A2 | one tip list of 8 general tips from a random start (`LoadingScreen.ts:5-14`), among them the region tip the plan quotes; the three tips exist as `guideCopy.phaseA.A2Wind/A2Zones/A2Play`, used nowhere | **all of it** |
+| 7 | Acceptance: on a fresh profile, one click reaches a founded, paused city with the guide card, after one loading screen | `quickstart` shows two (its own, removed, then `startNewCity`'s) | **one loading screen handed to `startNewCity`; unit tests; the browser check** |
+| 8 | Acceptance: exiting shows the city on its tile, and Continue returns to it | `exitCity` shows the region with the city's tile selected; it stores the session without the tile, so the title's Continue then opens the region with nothing selected | **Continue selects the last-played city on its region; browser check** |
+| 9 | Acceptance: an existing region is never overwritten (a unit test on region ids) | — | **a unique-id rule and its test** |
+| 10 | Task gates: tsc, the full vitest, the bot identical to dev (192,899), browser checks at 1280×720 (the one click to a playable first city on a persistent region; a second start offers to continue it; the loading screen) | — | **run them; the browser checks go to the Desktop QA list (NOTE-061, below)** |
+| 11 | Keep `main.ts` hunks small (T036s4, W1.3 and T042 edit it too) | — | **the logic in a new module, `main.ts` only wires it** |
+| 12 | The report section and a `.done` line | — | **write them** |
