@@ -26,7 +26,7 @@ describe('LG-09 cached dispatch controls', () => {
       settings: {},
       tip: { hide: vi.fn() },
     } as unknown as GameContext;
-    const banner = Object.assign(Object.create(EmergencyBanner.prototype), { ctx, options: { get: () => watch } }) as {
+    const banner = Object.assign(Object.create(EmergencyBanner.prototype), { ctx, options: { get: () => watch }, followDispatches: new Map() }) as {
       refresh(b: unknown, inc: Incident): void;
     };
     const b = {
@@ -34,6 +34,7 @@ describe('LG-09 cached dispatch controls', () => {
       sub: document.createElement('div'), time: document.createElement('div'), el: document.createElement('div'),
       send: document.createElement('button'), choose: document.createElement('button'),
       sendLbl: document.createElement('span'), sendEta: document.createElement('span'), optsVersion: -1,
+      follow: document.createElement('button'), // (T047: refresh() also refreshes the Follow button)
     };
     const tool = new DispatchTool(ctx) as unknown as {
       inc: number; optionsWatch: unknown; opts: DispatchOption[]; refreshOptions(): void;
