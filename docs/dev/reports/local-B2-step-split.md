@@ -267,3 +267,18 @@ at dense1m", and for the merge body).**
   load) goes to WORKER_DESIGN S5 (the frame budget) as a follow-up line in `docs/dev/POLISH_BACKLOG.md`.
 - The fix round's `grownCity` continuation tolerance, 1 % → 1.5 % (dev's own base sits at 0.97 % on its seed), is
   accepted.
+
+**Gates on the merged tree** (W = `cloud/b2m` at `99d19e9`, B = a clean export of dev `51ec328`; the commits after
+`99d19e9` are docs and the baseline rows only):
+
+| gate | result |
+|---|---|
+| `npx tsc --noEmit` | clean at `3d9b29d`, `633b917` and `99d19e9` (sem) |
+| full vitest | **`99d19e9`: 249 files passed, 3 skipped; 2,501 tests passed, 30 skipped, 0 failed (246 s; `scratchpad/b2m/vitest5.log`)**. Also `633b917` (dev `87c7c9c`): 243 files / 2,456 tests passed, 0 failed (`vitest4.log`). The Nov 4 run at `539b692` had the two utilities failures fixed in `633b917` (`vitest3.log`) |
+| B2's tests after the T057 merge | `j10`, `loadContinuity`, `b2FlagEvents`, `monthSpread`: 4 files / 22 tests passed (sem, before the full run) |
+| the bot, 128 × 15 seed 7 (lock) | **W `residents [ 61828, 95515, 40772 ]` = 198,115 in 2015** (pop 198k, EQ 105, approval 82, funds §156k); B (dev) `residents [ 61124, 93804, 37971 ]` = 192,899, dev's reference. **Changes by design:** the headless schedule follows B2's new pieces and estimates on top of B3 (B2 on B1 gave 193,416). `scratchpad/b2m/runs/bot/bot_{W,B}.log` |
+| exactness: `passdigest --mode atomic`, W against B, every pass uninterrupted | **dense1m and bot256, days 30 and 100: 4 of 4 checkpoints identical** in every part and layer (dense1m `339f758a…` / `d95b1b8d…`, bot256 `63862cd0…` / `262e27c5…`; `runs/pd4/cmp_*.txt`). Also identical at `633b917` against `87c7c9c` (`runs/pd3`) |
+| determinism: `cityDigest --mode headless`, 120 days, twice in W | identical: dense1m `a3e7e01d2bae7a40` (pop 1,151,454), bot256 `3b2954fc0f79e62e` (pop 668,724) (`runs/pd4/cd_*`) |
+| B2's save / load mid-pass checks | the vitest R9 cases (every task: a save mid-pass holds no pass state, loads idle, loads the same twice; in the full run). **Against dev** (`lc.sh`, new `tools/loadcmp2.ts`): per task, W saved at 8–9 points inside its first pass after 30 warm days (from step 0 to the last piece), dev at every step boundary of the same pass; each save loaded (init) and run 20 days. On `633b917` / `87c7c9c`: **every W cut of every task equals a dev cut, right after the load and 20 days later, on bot256 and dense1m (96 of 96)**. On `99d19e9` / `51ec328`: 94 of 96; the two exceptions are the same cut on both fixtures, traffic's last piece (after final2's publish, before the cycle's end): right after the load it differs from dev's step-19 save **only in `systemData.lvRun`** (T057's land value record, new in dev `51ec328`), and **20 days later it equals dev's step-19 save exactly**. Cause and follow-up: decision 4 |
+| balance, 256 × 60 seed 7 (lock; B and W side by side; B2's criteria) | **passes**: pop year 15 184,426 (≥ 150k; B 181,278), year 60 1,451,189 (≥ 950k; B 1,513,835); lowest W / B **0.959** (2060; ≥ 0.9); approval ≥ 78.3 from year 30 (≥ 50; B 79.1); EQ 121.9 at year 30, ≥ 100 from 2018 (B 2020); lowest funds 5,957 (≥ 0; B 6,792); tourists W / B per year: geometric mean 1.036, 10 of 55 single years outside ±30 % (2007–09 low, 2015–20 high; the bot's chaos, as at G4: 9 of 55; B1's six-seed check not re-run); `totalMsPerDay` **+1.51** (B 10.29, W 11.80; ≤ +3). B reproduces dev's recorded `b3` rows in all 60 years. `runs/bal/` |
+| 128 × 15 seed 7 balance row (same hold) | 2015 = 198,115, as the bot; the `b2b3` rows are recorded in `tests/sim/fixtures/balance-baseline.json` (`0f0ad56`, `reference` = `b2b3`, older rows untouched; `botRules` and `balance` tests pass) |
