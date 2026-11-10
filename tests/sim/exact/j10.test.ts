@@ -234,6 +234,9 @@ describe('J10 exact lookup reuse', () => {
         edit(a.sim, seed, day); edit(b.sim, seed, day);
         if (day === 113 || day === 227) {
           const sa = serializeCity(a.sim.state, { copy: true }), sb = serializeCity(b.sim.state, { copy: true });
+          // (T057: the population system's continuity record is the current code's; the original writes none. Both arms
+          //  load the save without it, as a save from before T057, which the current code loads as the original does)
+          for (const s of [sa, sb]) delete (s.data.systemData as Record<string, unknown>).popRun;
           exact(sa, sb, 'save');
           a.sim.replaceState(deserializeCity(sa)); b.sim.replaceState(deserializeCity(sb));
           a.trace(); b.trace();
