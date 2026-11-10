@@ -182,15 +182,98 @@ describe('FEEL-25 street life', () => {
     Object.defineProperty(st, 'visitors', { get: () => { throw new Error('unsubscribed visitors'); } });
     Object.defineProperty(st, 'transitCov', { get: () => { throw new Error('unsubscribed transit'); } });
     try {
-      for (let k = 0; k < 30; k++) {
-        get.mockClear();
-        people.update(0, cam, 12);
-        expect(get.mock.calls.length).toBeLessThanOrEqual(80 * 4);
+      // 80 cells a frame at 60 fps and faster, 160 at 30 fps, never more than 320: four building reads a cell at most
+      for (const [dt, cells] of [[0, 80], [1 / 60, 80], [1 / 30, 160], [0.1, 320], [1, 320]]) {
+        people.invalidate();
+        for (let k = 0; k < 30; k++) {
+          get.mockClear();
+          people.update(dt, cam, 12);
+          expect(get.mock.calls.length).toBeLessThanOrEqual(cells * 4);
+        }
+        expect(people.mesh.count).toBeGreaterThan(0);
       }
-      expect(people.mesh.count).toBeGreaterThan(0);
       expect(values).not.toHaveBeenCalled();
       expect(next).not.toHaveBeenCalled();
     } finally { people.dispose(); vi.restoreAllMocks(); }
+  });
+
+  it.each([[144, 80], [60, 80], [30, 160], [20, 240], [15, 320], [10, 320]])('searches by the second: at %i fps a frame takes %i cells, and a search the same time', (fps, cells) => {
+    const { people, cam, settle } = setup();
+    const search = people as unknown as { scanning: boolean; cursor: number };
+    try {
+      settle();
+      people.invalidate();
+      people.update(1 / fps, cam, 12);
+      expect(search.cursor).toBe(cells);
+      let frames = 1;
+      while (search.scanning && frames < 40) { people.update(1 / fps, cam, 12); frames++; }
+      expect(search.cursor).toBe(2025);
+      expect(frames).toBe(Math.ceil(2025 / cells)); // 26 at 60 fps, 13 at 30, 9 at 20, 7 at 15: 0.43 to 0.47 s
+    } finally { people.dispose(); }
+  });
+
+  // While a search runs, update() draws what it has found together with the previous roster's walkers on the cells
+  // it has not reached. With the camera still the two must add up to exactly the old roster in every frame: a cell
+  // counted twice, or dropped before the search gets to it, shows here (it is also what checks spiralIndex()).
+  it.each([['high', 12, 0], ['high', 21, 0], ['high', 3, 0], ['low', 12, 1], ['medium', 21, 2], ['high', 3, 4]] as const)(
+    'draws the same walkers while a new search takes the street over (%s, %i:00, %i a cell from the feed)', (quality, hour, perCell) => {
+      const st = city(), a = setup(st, quality), b = setup(st, quality);
+      const searching = (p: Pedestrians) => (p as unknown as { scanning: boolean }).scanning;
+      const drawn = (p: Pedestrians) => positions(p).map((v) => `${v.x},${v.z}`).sort();
+      for (const { people, cam } of [a, b]) {
+        if (!perCell) continue;
+        // a wide view with enough walkers to fill the cap well before the search is through
+        cam.fov = 110; cam.updateProjectionMatrix();
+        people.getActivity = () => ({ customers: 40 * perCell, visitors: 0, riders: 0 });
+      }
+      try {
+        a.settle(hour); b.settle(hour);
+        expect(a.people.mesh.count).toBeGreaterThan(0);
+        expect((a.people as unknown as { active: { n: number } }).active.n === ({ low: 120, medium: 300, high: 600 })[quality]).toBe(perCell > 0);
+        let shared = 0;
+        // The twin only walks: its next search is a second away. (26 + 13 frames here are 0.87 s.)
+        for (const [dt, frames] of [[1 / 60, 26], [1 / 30, 13], [0, 26]]) {
+          a.people.invalidate();
+          for (let f = 0; f < frames; f++) {
+            a.people.update(dt, a.cam, hour); b.people.update(dt, b.cam, hour);
+            if (searching(a.people)) shared++;
+            expect(searching(b.people)).toBe(false);
+            expect(drawn(a.people), `frame ${f} at dt ${dt}`).toEqual(drawn(b.people));
+          }
+          expect(searching(a.people)).toBe(false);
+        }
+        expect(shared).toBeGreaterThan(perCell ? 8 : 50);
+      } finally { a.people.dispose(); b.people.dispose(); }
+    });
+
+  it('hands every cell over exactly once wherever a frame\'s slice ends: the spiral\'s order on all four sides of a ring', () => {
+    // Streets both ways put walkable cells on every side of every ring; the wide view takes all of them in.
+    const st = newState(64);
+    for (let k = 4; k < 61; k += 4) { roadLine(st, 1, k, 62, k, Network.Road); roadLine(st, k, 1, k, 62, Network.Road); }
+    const net = new NetInfo(st), surf = new RoadSurface(st, net), cam = camera(64);
+    cam.fov = 150; cam.updateProjectionMatrix();
+    const pair = [0, 1].map(() => {
+      const people = new Pedestrians(st, net, surf);
+      people.getActivity = () => ({ customers: 40, visitors: 0, riders: 0 });
+      for (let k = 0; k < 30; k++) people.update(0, cam, 12);
+      return people;
+    });
+    const [a, b] = pair;
+    const drawn = (p: Pedestrians) => Array.from({ length: p.mesh.count }, (_, j) => `${p.mesh.instanceMatrix.array[j * 16 + 12]},${p.mesh.instanceMatrix.array[j * 16 + 14]}`).sort();
+    try {
+      expect(a.mesh.count).toBeGreaterThan(300);
+      expect(a.mesh.count).toBeLessThan(600);
+      (b as unknown as { timer: number }).timer = Infinity; // the twin only walks: it never searches again
+      for (let cells = 80; cells <= 320; cells += 7) {
+        a.invalidate();
+        for (let frame = 0; frame <= Math.ceil(2025 / cells); frame++) {
+          a.update(cells / 4800, cam, 12); b.update(cells / 4800, cam, 12);
+          expect(drawn(a), `${cells} cells a frame, frame ${frame}`).toEqual(drawn(b));
+        }
+        expect((a as unknown as { scanning: boolean; cursor: number }).scanning).toBe(false);
+        expect((a as unknown as { cursor: number }).cursor).toBe(2025);
+      }
+    } finally { a.dispose(); b.dispose(); }
   });
 
   it('uses the optional streamed customers, visitors and riders independently on the next bounded refresh', () => {

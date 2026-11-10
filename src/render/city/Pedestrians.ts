@@ -21,7 +21,12 @@ const CAP = 600;
 const CAPS: Record<QualityLevel, number> = { low: 120, medium: 300, high: CAP, ultra: CAP };
 const SPAWN_DISTANCE = 350;
 const HIDE_DISTANCE = 600;
+/** The search's cell budget is per second, not per frame: 80 cells a frame at 60 fps and faster, 160 at 30, 320 at most. */
 const CELLS_PER_FRAME = 80;
+const MAX_CELLS_PER_FRAME = 320;
+/** Half the side, in cells, of the square a search covers around the camera cell it started from. */
+const REACH = Math.ceil(SPAWN_DISTANCE / CELL_SIZE);
+const SEARCH_CELLS = (2 * REACH + 1) ** 2;
 const PATH = 12;
 const ACTIVITY_SALT = 0x5bd1e995;
 const COATS = [0x5a6470, 0x7a5b4a, 0x4f6152, 0xb16b42].map((c) => new THREE.Color(c));
@@ -63,7 +68,19 @@ function geometry(rain: boolean): THREE.BufferGeometry {
 }
 
 function roster() {
-  return { cells: new Int32Array(CAP), seeds: new Uint32Array(CAP), ranks: new Uint32Array(CAP), order: new Uint16Array(CAP), n: 0 };
+  return { cells: new Int32Array(CAP), seeds: new Uint32Array(CAP), ranks: new Uint32Array(CAP), n: 0 };
+}
+
+/** When discover()'s square spiral reaches the cell (dx, dz) from its centre; SEARCH_CELLS for a cell it never does. */
+function spiralIndex(dx: number, dz: number): number {
+  const r = Math.max(Math.abs(dx), Math.abs(dz));
+  if (r > REACH) return SEARCH_CELLS;
+  if (!r) return 0;
+  const first = (2 * r - 1) ** 2; // the ring starts at (r, 1 - r) and runs +z, -x, -z, +x, 2r cells a side
+  if (dx === r && dz > -r) return first + r - 1 + dz;
+  if (dz === r) return first + 3 * r - 1 - dx;
+  if (dx === -r) return first + 5 * r - 1 - dz;
+  return first + 7 * r - 1 + dx;
 }
 
 export class Pedestrians {
@@ -86,9 +103,16 @@ export class Pedestrians {
   private leg = 1;
   private step = 0;
   private cursor = 0;
+  /** The previous roster's slots in the order the running search reaches their cells, and how many it has passed. */
+  private keys = new Uint32Array(CAP);
+  private passed = 0;
+  /** The ranks of the walkers written this frame, and room to sort them when the night quota binds. */
+  private kept = new Uint32Array(CAP);
+  private sorted = new Uint32Array(CAP);
   private frustum = new THREE.Frustum();
   private projection = new THREE.Matrix4();
   private point = new THREE.Vector3();
+  private around = new THREE.Sphere();
 
   constructor(private state: CityState, private net: NetInfo, private surf: RoadSurface, quality: QualityLevel = 'high') {
     this.cap = CAPS[quality];
@@ -161,13 +185,30 @@ export class Pedestrians {
       + residents / 55 + jobs / 70 + shops / 35 + visitors / 25 + riders / 30 + Math.min(1, st.traffic[i] / 100));
   }
 
-  /** Scan outwards from the camera, at most 80 cells a frame, retaining the previous roster until ready. */
-  private discover(camera: THREE.PerspectiveCamera): void {
-    const st = this.state, N = st.size, cp = camera.position;
-    const limit = (2 * Math.ceil(SPAWN_DISTANCE / CELL_SIZE) + 1) ** 2;
-    for (let k = 0; k < CELLS_PER_FRAME && this.cursor < limit && this.pending.n < this.cap; k++) {
-      const x = this.cx + this.sx, z = this.cz + this.sz;
-      this.cursor++;
+  /**
+   * Whether a search takes the walkable cell now: its middle inside the spawn distance of the camera and in view. A
+   * cell the previous roster holds stays until none of its walkers can be in view (they pace within 10 m of the
+   * middle; 12 m allows for a sloping deck), so nobody vanishes inside the screen because the middle of his cell
+   * has left it. A full roster has no places to spare for that: there `held` is false.
+   */
+  private taken(i: number, x: number, z: number, cp: THREE.Vector3, held: boolean): boolean {
+    const wx = (x + 0.5) * CELL_SIZE, wz = (z + 0.5) * CELL_SIZE;
+    const y = this.surf.baseIn(i, wx, wz) + LIFT + CURB_H;
+    if ((wx - cp.x) ** 2 + (y - cp.y) ** 2 + (wz - cp.z) ** 2 > (SPAWN_DISTANCE - 12) ** 2) return false;
+    this.around.center.set(wx, y + 1, wz);
+    this.around.radius = held ? 12 : 0;
+    return this.frustum.intersectsSphere(this.around);
+  }
+
+  /**
+   * Scan outwards from the camera; update() draws what has been found so far. The slice follows the frame's length,
+   * so a search takes the same 0.43 s at 30 fps as at 60 and a fast pan on a slow machine cannot outrun it.
+   */
+  private discover(camera: THREE.PerspectiveCamera, dt: number): void {
+    const st = this.state, N = st.size, cp = camera.position, old = this.active, keys = this.keys, spare = old.n < this.cap;
+    const budget = Math.min(MAX_CELLS_PER_FRAME, Math.max(CELLS_PER_FRAME, Math.round(CELLS_PER_FRAME * 60 * dt)));
+    for (let k = 0; k < budget && this.cursor < SEARCH_CELLS && this.pending.n < this.cap; k++) {
+      const x = this.cx + this.sx, z = this.cz + this.sz, at = this.cursor++;
       if (this.direction === 0) this.sx++;
       else if (this.direction === 1) this.sz++;
       else if (this.direction === 2) this.sx--;
@@ -176,14 +217,11 @@ export class Pedestrians {
         this.step = 0; this.direction = (this.direction + 1) & 3;
         if (!(this.direction & 1)) this.leg++;
       }
+      // The previous roster's walkers on the cells before this one have given way to what the search found there.
+      while (this.passed < old.n && keys[this.passed] >>> 10 < at) this.passed++;
       if (x < 0 || z < 0 || x >= N || z >= N) continue;
       const i = z * N + x;
-      if (!this.walkable(i)) continue;
-      const wx = (x + 0.5) * CELL_SIZE, wz = (z + 0.5) * CELL_SIZE;
-      const y = this.surf.baseIn(i, wx, wz) + LIFT + CURB_H;
-      if ((wx - cp.x) ** 2 + (y - cp.y) ** 2 + (wz - cp.z) ** 2 > (SPAWN_DISTANCE - 12) ** 2) continue;
-      this.point.set(wx, y + 1, wz);
-      if (!this.frustum.containsPoint(this.point)) continue;
+      if (!this.walkable(i) || !this.taken(i, x, z, cp, spare && this.passed < old.n && keys[this.passed] >>> 10 === at)) continue;
       const amount = this.density(i, x, z), seed = hash(i);
       const n = Math.floor(amount) + ((seed & 65535) / 65536 < amount % 1 ? 1 : 0);
       for (let j = 0; j < n && this.pending.n < this.cap; j++) {
@@ -191,18 +229,30 @@ export class Pedestrians {
         this.pending.cells[slot] = i;
         this.pending.seeds[slot] = hash(i * 16 + j);
         this.pending.ranks[slot] = hash(this.pending.seeds[slot] ^ ACTIVITY_SALT);
-        this.pending.order[slot] = slot;
       }
     }
-    if (this.cursor >= limit || this.pending.n === this.cap) {
-      // Sort once per roster, not per frame: the rare night quota keeps the same lowest-ranked seeds even when
-      // discovery visits their cells in a different order. Edge crossings never shift every later walker's rank.
-      const r = this.pending;
-      r.order.subarray(0, r.n).sort((a, b) => r.ranks[a] - r.ranks[b] || r.seeds[a] - r.seeds[b]);
-      const old = this.active; this.active = this.pending; this.pending = old;
+    while (this.passed < old.n && keys[this.passed] >>> 10 < this.cursor) this.passed++;
+    if (this.cursor >= SEARCH_CELLS || this.pending.n === this.cap) {
+      this.active = this.pending; this.pending = old;
       this.scanning = false;
       this.timer = 1;
     }
+  }
+
+  /** The night quota, when it binds: keep the lowest-ranked of the n walkers written, whatever order they are in. */
+  private thin(n: number, quota: number): number {
+    const kept = this.kept, sorted = this.sorted.subarray(0, n);
+    sorted.set(kept.subarray(0, n));
+    sorted.sort();
+    const top = quota ? sorted[quota - 1] : -1; // ranks are distinct: hash() is one-to-one, and so are the seeds
+    const data = this.mesh.instanceMatrix.array, colors = this.mesh.instanceColor!.array;
+    let m = 0;
+    for (let j = 0; j < n; j++) {
+      if (kept[j] > top) continue;
+      if (m < j) { data.copyWithin(m * 16, j * 16, j * 16 + 16); colors.copyWithin(m * 3, j * 3, j * 3 + 3); }
+      m++;
+    }
+    return m;
   }
 
   update(dt: number, camera: THREE.PerspectiveCamera, hour: number, rain = false): void {
@@ -211,47 +261,66 @@ export class Pedestrians {
     const cp = camera.position;
     if (cp.y - this.surf.terrain(cp.x, cp.z) > HIDE_DISTANCE) { this.clear(); return; }
     this.frustum.setFromProjectionMatrix(this.projection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
-    const cx = Math.floor(cp.x / CELL_SIZE), cz = Math.floor(cp.z / CELL_SIZE);
-    const moved = Math.abs(cx - this.cx) > 3 || Math.abs(cz - this.cz) > 3;
-    if (!this.scanning && (this.dirty || moved || this.timer <= 0)) {
+    const N = this.state.size, cx = Math.floor(cp.x / CELL_SIZE), cz = Math.floor(cp.z / CELL_SIZE);
+    const away = Math.max(Math.abs(cx - this.cx), Math.abs(cz - this.cz));
+    // A running search is left to finish while the camera stays inside the square it covers: restarting it on every
+    // small move starved a fast pan (QA B3). Once the camera is outside that square (a jump) the search is centred
+    // on the wrong place, so it is abandoned and a new one starts at once (QA N1).
+    if (this.scanning ? away > REACH : this.dirty || away > 3 || this.timer <= 0) {
       this.cx = cx; this.cz = cz;
-      this.sx = this.sz = this.direction = this.step = this.cursor = this.pending.n = 0;
+      this.sx = this.sz = this.direction = this.step = this.cursor = this.pending.n = this.passed = 0;
       this.leg = 1; this.scanning = true; this.dirty = false;
+      // Order the previous roster as this search will reach its cells: it keeps each cell until the search gets
+      // there, and where the cap has to cut the two together it cuts what the finished search would drop.
+      const old = this.active, keys = this.keys;
+      for (let s = 0; s < old.n; s++) keys[s] = spiralIndex(old.cells[s] % N - cx, Math.floor(old.cells[s] / N) - cz) * 1024 + s;
+      keys.subarray(0, old.n).sort();
     }
-    if (this.scanning) this.discover(camera);
+    if (this.scanning) this.discover(camera, dt);
     this.mesh.geometry = rain ? this.wet : this.dry;
     const data = this.mesh.instanceMatrix.array, colors = this.mesh.instanceColor!.array;
-    const active = this.active, N = this.state.size, activity = pedestrianActivityAt(hour);
+    const searching = this.scanning, cap = this.cap, kept = this.kept, activity = pedestrianActivityAt(hour);
     let n = 0, eligible = 0;
-    for (let j = 0; j < active.n; j++) {
-      const slot = active.order[j], i = active.cells[slot], seed = active.seeds[slot];
-      if (!this.walkable(i)) continue;
-      const horizontal = this.net.roadMask[i] === 5;
-      const phase = (this.time * (0.85 + (seed & 255) / 512) + (seed >>> 8) / 0x1000000 * PATH * 2) % (PATH * 2);
-      const along = phase < PATH ? phase - PATH / 2 : PATH * 1.5 - phase;
-      const forward = phase < PATH ? 1 : -1;
-      const t = this.net.roadType[i];
-      const side = (t === Network.Avenue ? 7.72 : (HALF_W[t] + HALF) / 2) * (seed & 1 ? 1 : -1);
-      const x = (i % N + 0.5) * CELL_SIZE + (horizontal ? along : side);
-      const z = (Math.floor(i / N) + 0.5) * CELL_SIZE + (horizontal ? side : along);
-      const y = this.surf.baseIn(i, x, z) + LIFT + CURB_H;
-      if ((x - cp.x) ** 2 + (y - cp.y) ** 2 + (z - cp.z) ** 2 > (HIDE_DISTANCE - 3) ** 2) continue;
-      this.point.set(x, y + 1, z);
-      if (!this.frustum.containsPoint(this.point)) continue;
-      eligible++;
-      if (active.ranks[slot] / 4294967296 >= activity) continue;
-      const o = n * 16, c = n * 3, coat = COATS[seed & 3];
-      const fx = horizontal ? forward : 0, fz = horizontal ? 0 : forward;
-      data[o] = fz; data[o + 1] = 0; data[o + 2] = -fx; data[o + 3] = 0;
-      data[o + 4] = 0; data[o + 5] = 1; data[o + 6] = 0; data[o + 7] = 0;
-      data[o + 8] = fx; data[o + 9] = 0; data[o + 10] = fz; data[o + 11] = 0;
-      data[o + 12] = x; data[o + 13] = y; data[o + 14] = z; data[o + 15] = 1;
-      colors[c] = coat.r; colors[c + 1] = coat.g; colors[c + 2] = coat.b;
-      n++;
+    // While a search runs its finds are drawn at once, so nothing waits for the whole search and pops in together;
+    // the previous roster follows, less the cells the search has passed. Otherwise there is only the last roster.
+    for (let pass = searching ? 0 : 1; pass < 2; pass++) {
+      const r = pass ? this.active : this.pending, ordered = searching && pass === 1;
+      let cell = -1, stays = true;
+      for (let j = ordered ? this.passed : 0; j < r.n && eligible < cap; j++) {
+        const slot = ordered ? this.keys[j] & 1023 : j, i = r.cells[slot], seed = r.seeds[slot];
+        if (!this.walkable(i)) continue;
+        // A cell the search would not take any more goes now rather than when the search gets to it: what is drawn
+        // is then what the finished search will hold, and the cap never cuts a walker that is about to return.
+        if (ordered && i !== cell) { cell = i; stays = this.taken(i, i % N, Math.floor(i / N), cp, r.n < cap); }
+        if (!stays) continue;
+        const horizontal = this.net.roadMask[i] === 5;
+        const phase = (this.time * (0.85 + (seed & 255) / 512) + (seed >>> 8) / 0x1000000 * PATH * 2) % (PATH * 2);
+        const along = phase < PATH ? phase - PATH / 2 : PATH * 1.5 - phase;
+        const forward = phase < PATH ? 1 : -1;
+        const t = this.net.roadType[i];
+        const side = (t === Network.Avenue ? 7.72 : (HALF_W[t] + HALF) / 2) * (seed & 1 ? 1 : -1);
+        const x = (i % N + 0.5) * CELL_SIZE + (horizontal ? along : side);
+        const z = (Math.floor(i / N) + 0.5) * CELL_SIZE + (horizontal ? side : along);
+        const y = this.surf.baseIn(i, x, z) + LIFT + CURB_H;
+        if ((x - cp.x) ** 2 + (y - cp.y) ** 2 + (z - cp.z) ** 2 > (HIDE_DISTANCE - 3) ** 2) continue;
+        this.point.set(x, y + 1, z);
+        if (!this.frustum.containsPoint(this.point)) continue;
+        eligible++;
+        if (r.ranks[slot] / 4294967296 >= activity) continue;
+        const o = n * 16, c = n * 3, coat = COATS[seed & 3];
+        const fx = horizontal ? forward : 0, fz = horizontal ? 0 : forward;
+        data[o] = fz; data[o + 1] = 0; data[o + 2] = -fx; data[o + 3] = 0;
+        data[o + 4] = 0; data[o + 5] = 1; data[o + 6] = 0; data[o + 7] = 0;
+        data[o + 8] = fx; data[o + 9] = 0; data[o + 10] = fz; data[o + 11] = 0;
+        data[o + 12] = x; data[o + 13] = y; data[o + 14] = z; data[o + 15] = 1;
+        colors[c] = coat.r; colors[c + 1] = coat.g; colors[c + 2] = coat.b;
+        kept[n++] = r.ranks[slot];
+      }
     }
-    // Keep the 03:00 share below 20%, even for small / unusually night-heavy views. Roster rank order makes the
-    // quota deterministic; normally it is slack, so each walker's own seed alone decides its presence.
-    n = Math.min(n, Math.floor(eligible * Math.min(1, activity * 1.33)));
+    // Keep the 03:00 share below 20%, even for small / unusually night-heavy views. Normally the quota is slack, so
+    // each walker's own seed alone decides its presence; when it binds, the lowest ranks stay, whatever the order.
+    const quota = Math.floor(eligible * Math.min(1, activity * 1.33));
+    if (n > quota) n = this.thin(n, quota);
     this.mesh.count = n;
     this.mesh.visible = n > 0;
     if (n) {
