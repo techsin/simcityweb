@@ -75,7 +75,7 @@ import { NeighborLabels } from './region/NeighborLabels';
 import type { Camera } from 'three';
 import { regionSaveAccess, requestPersistentStorage, requireRegionSaveAccess, withRegionSaveAccess } from './save/db';
 import { RegionStorage } from './region/regionLock';
-import { handleRecoveryStorageError, isStorageError, RECOVERY_UNDECIDED_MESSAGE, recoveryStorageGate, showStorageError, storageRecoveryChoice, withRecoveryStorage } from './ui/StorageDialog';
+import { handleRecoveryStorageError, isStorageError, recoveryStorageGate, showStorageError, storageRecoveryChoice, withRecoveryStorage } from './ui/StorageDialog';
 
 // ---------------------------------------------------------------------------------------------------------------
 // CityScene contract (owned by ui-game; loaded lazily so the app works before it exists)
@@ -1012,9 +1012,9 @@ class App {
     c.crashed = true;
     clearInterval(c.ticker);
     console.error('[main] the simulation worker crashed', error);
-    const city = { regionId: model.data.id, tileKey: c.tile.key };
+    const city = { regionId: model.data.id, tileKey: c.tile.key }, name = c.tile.city?.name ?? 'This city';
     const recoverable = this.persistent && (await hasRecoverySnapshot(city).catch(() => false));
-    const choice = await openSimCrashDialog({ cityName: c.tile.city?.name ?? 'This city', message: error.message, recoverable });
+    const choice = await openSimCrashDialog({ cityName: name, message: error.message, recoverable });
     if (this.city !== c) return;
     const ld = new LoadingScreen(this.root);
     ld.set('Restarting the simulation…', 0.2);
@@ -1033,9 +1033,16 @@ class App {
       // as the recovery gate opens none: that city's own snapshots and journal would replace the copy
       replay = restored === 'recovered';
       if (!replay && (await hasRecoverySnapshot(city).catch(() => false))) {
-        if (restored === 'none') toast(RECOVERY_UNDECIDED_MESSAGE, 'bad', 6000);
+        // NOTE-092: the region then says why nothing was recovered, and that the copy is kept (the city's Play asks
+        // about it again). A snapshot that could not be restored ('failed') was reported by restoreRecovery
+        const why = restored === 'failed' ? null
+          : !regionSaveAccess(city.regionId) ? 'this region is now open in another tab. Its recovery copy is kept.'
+          : restored === 'none' ? 'its recovery copy could not be read. The copy is kept. Free some browser storage, then play the city to try again.'
+          : "your browser's storage for Metropolis is full. Its recovery copy is kept. Free some browser storage, then play the city to recover it.";
         ld.set('Returning to the region…', 0.7);
-        return this.showRegion(model, ld, c.tile.key);
+        await this.showRegion(model, ld, c.tile.key);
+        if (why) toast(`${name} was not recovered: ${why}`, 'bad', 9000);
+        return;
       }
     } else {
       // T089 (NOTE-080, the owner's choice): Restart and Continue on the main thread discard the crashed session's

@@ -10,6 +10,9 @@
  *     that old session in place of the newer edit.
  * (b) W1.3 decision 20: a Recover that does not restore is never followed by a replay, and no city opens over a recovery
  *     copy that is still stored. Before, the boot that followed deleted the journal bound to the kept snapshot.
+ * Round 2 (NOTE-092): the region then says why nothing was recovered and that the copy is kept, and the city's Play
+ *     recovers it once the cause is gone; and with the real dialog over the crashed city, neither Space nor Enter
+ *     deletes the copy (the dialog's keys alone, and the city's under it: crashDialogKeys.test.ts).
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DevType } from '../../src/core/types';
@@ -26,6 +29,8 @@ interface ScreenStub { el: FEl; disposed: boolean }
 interface RegionStub extends ScreenStub {
   model: { data: RegionData; tileByKey(key: string): RegionTile | undefined };
   cb: { onPlay(tile: RegionTile): void };
+  /** the tile whose card is open (its Play button) */
+  selected: string | null;
 }
 /** the host as this test drives it (WorkerSimHost; `link` is its private transport) */
 interface Host {
@@ -65,10 +70,6 @@ vi.mock('../../src/region/ui/dialogs', () => ({
   openRecoverDialog: ui.recover, openSimCrashDialog: ui.crash, openCredits: vi.fn(), openLoadRegion: vi.fn(), openNewRegion: vi.fn(), openSettings: vi.fn(),
 }));
 vi.mock('../../src/region/ui/SaveStatus', () => ({ SaveStatus: class { el = { disabled: false }; mount() {} set() {} dispose() {} } }));
-vi.mock('../../src/region/ui/modal', () => {
-  let root: unknown = null;
-  return { setUiRoot: (el: unknown) => { root = el; }, uiRoot: () => root, toast: ui.toast };
-});
 vi.mock('../../src/region/ui/TitleScreen', () => ({
   TitleScreen: class {
     readonly ready = Promise.resolve();
@@ -83,8 +84,9 @@ vi.mock('../../src/region/RegionScreen', () => ({
     readonly ready = Promise.resolve();
     readonly el = ui.screen('region-hud');
     disposed = false;
+    selected: string | null = null;
     constructor(root: FEl, readonly model: RegionStub['model'], readonly cb: RegionStub['cb']) { root.appendChild(this.el); ui.regions.push(this); }
-    selectTile(): void {}
+    selectTile(tile: RegionTile | null): void { this.selected = tile?.key ?? null; }
     async refresh(): Promise<void> {}
     dispose(): void { this.disposed = true; this.el.remove(); }
   },
@@ -157,6 +159,11 @@ beforeEach(() => {
     }
     return { CityScene: Scene };
   });
+  // the App's toasts are the test's to read; the last test puts the real Modal back, for the real crash dialog
+  vi.doMock('../../src/region/ui/modal', () => {
+    let root: unknown = null;
+    return { setUiRoot: (el: unknown) => { root = el; }, uiRoot: () => root, toast: ui.toast };
+  });
   ui.titles.length = ui.regions.length = 0;
   ui.recover.mockReset().mockResolvedValue(null);
   // a crash the test did not make leaves its dialog open, and the test's next wait says so
@@ -177,7 +184,13 @@ beforeEach(() => {
   vi.stubGlobal('setInterval', interval);
   const events = () => {
     const t = new EventTarget();
-    return { addEventListener: t.addEventListener.bind(t), removeEventListener: t.removeEventListener.bind(t), dispatchEvent: t.dispatchEvent.bind(t) };
+    // (node's removeEventListener takes a boolean `capture` for false: spelled out, as a browser reads it)
+    const options = <T extends EventListenerOptions>(o?: boolean | T) => (typeof o === 'boolean' ? { capture: o } : o);
+    return {
+      addEventListener: (type: string, f: EventListener, o?: boolean | AddEventListenerOptions) => t.addEventListener(type, f, options(o)),
+      removeEventListener: (type: string, f: EventListener, o?: boolean | EventListenerOptions) => t.removeEventListener(type, f, options(o)),
+      dispatchEvent: t.dispatchEvent.bind(t),
+    };
   };
   vi.stubGlobal('document', {
     ...events(), body: new El('body'), hidden: false, visibilityState: 'visible',
@@ -246,10 +259,33 @@ function checksum(bytes: Uint8Array): number {
 }
 type Choice = 'restart' | 'recover' | 'local';
 /** W1.3's Desktop QA crash: an invalid tick is a fatal in the worker. The crash dialog answers `choice`. */
-function crash(host: Host, choice: Choice | (() => Promise<Choice>)): void {
+function crash(host: Host, choice: Choice | ((o: { cityName: string; message: string; recoverable: boolean }) => Promise<Choice>)): void {
   if (typeof choice === 'function') ui.crash.mockImplementationOnce(choice);
   else ui.crash.mockResolvedValueOnce(choice);
   host.link.post({ t: 'tick', seq: 0, dt: -1, ack: 0 });
+}
+/** NOTE-092: what the region says after a Recover that restored nothing and left the copy stored */
+const NOT_RECOVERED = {
+  full: 'Crashville was not recovered: your browser\'s storage for Metropolis is full. Its recovery copy is kept. Free some browser storage, then play the city to recover it.',
+  unread: 'Crashville was not recovered: its recovery copy could not be read. The copy is kept. Free some browser storage, then play the city to try again.',
+  otherTab: 'Crashville was not recovered: this region is now open in another tab. Its recovery copy is kept.',
+};
+/** the App is back on its region screen and has said `text` there, once, after the loading screen went */
+async function noticed(app: AppView, text: string): Promise<void> {
+  const shown: { regions: number; loading: number }[] = [];
+  ui.toast.mockImplementation(() => { shown.push({ regions: liveRegions().length, loading: app.root.querySelectorAll('.loading').length }); });
+  await backOnTheRegion(app);
+  // (it follows the loading screen's removal in the same task: a short wait, so a missing notice fails at once)
+  await vi.waitFor(() => expect(ui.toast).toHaveBeenCalled(), { timeout: 10000, interval: 10 });
+  expect(ui.toast.mock.calls).toEqual([[text, 'bad', 9000]]);
+  expect(shown, 'over the region screen, not the loading screen').toEqual([{ regions: 1, loading: 0 }]);
+}
+const clickButton = (app: AppView, label: string) => app.root.querySelectorAll('button').find((b) => textOf(b) === label)!.click();
+/** a key press on the page's window, as the browser dispatches it */
+function key(type: 'keydown' | 'keyup', char: string, code: string): Event {
+  const e = Object.assign(new Event(type, { cancelable: true }), { key: char, code, repeat: false, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false });
+  window.dispatchEvent(e);
+  return e;
 }
 
 /**
@@ -321,7 +357,7 @@ async function boot() {
       return put(store, value, key);
     });
   };
-  return { app, kv, first, inits, stored, snapshotRecord, saved, playWithSnapshot, fill };
+  return { app, db, kv, first, inits, stored, snapshotRecord, saved, playWithSnapshot, fill };
 }
 
 describe('the crash dialog\'s Restart and Continue on the main thread discard the crashed session (T089 a)', () => {
@@ -385,7 +421,7 @@ describe('a Recover that does not restore (T089 b, W1.3 decision 20)', () => {
     const full = fill((store) => store === 'cities');
     let kept!: Awaited<ReturnType<typeof stored>>;
     crash(first, async () => { kept = await stored(); return 'recover'; });
-    await backOnTheRegion(app);
+    await noticed(app, NOT_RECOVERED.full);
 
     // back on the region screen with the guided dialog; the city did not boot again, so nothing replaced the copy
     expect(app.city).toBeNull();
@@ -394,12 +430,11 @@ describe('a Recover that does not restore (T089 b, W1.3 decision 20)', () => {
     expect(textOf(app.root.querySelector('.storage-dialog')!)).toContain('Storage full');
     expect(kept.journal).toMatchObject({ base: { kind: 'snapshot', at: kept.snapshot!.marker.at, baseSavedAt: 1000 }, ops: [{ op: 'setFunding', args: ['fire', 125] }] });
     expect(await stored()).toEqual(kept);
-    expect(ui.toast).not.toHaveBeenCalled();
 
     // space is freed: the dialog's Retry asks again, and Recover restores the snapshot
     full.mockRestore();
     ui.recover.mockResolvedValue('recover');
-    app.root.querySelectorAll('button').find((b) => textOf(b) === 'Retry')!.click();
+    clickButton(app, 'Retry');
     await vi.waitFor(() => expect(ui.toast).toHaveBeenCalledWith(expect.stringMatching(/^Recovered Crashville/), 'good', 3500), long);
     expect(ui.recover).toHaveBeenLastCalledWith(expect.objectContaining({ regionId: REGION, tileKey: TILE, at: kept.snapshot!.marker.at }));
     const restored = await stored();
@@ -416,6 +451,71 @@ describe('a Recover that does not restore (T089 b, W1.3 decision 20)', () => {
     expect(again.state.budget.taxRates[DevType.R1], 'from the snapshot').toBe(14);
     expect(again.state.budget.funding.fire, 'from its journal').toBe(125);
     expect(run.logged).toEqual([CRASHED, '[main] recovery failed The quota has been exceeded.']);
+  }, TEST_MS);
+
+  it('storage full: the region says so and that the copy is kept, and the tile\'s Play recovers it once space is freed', async () => {
+    const { app, first, inits, stored, saved, playWithSnapshot, fill } = await boot();
+    await playWithSnapshot(first);
+    const full = fill((store) => store === 'cities');
+    let kept!: Awaited<ReturnType<typeof stored>>;
+    crash(first, async () => { kept = await stored(); return 'recover'; });
+    await noticed(app, NOT_RECOVERED.full);
+
+    // the region screen, on the city's tile; T036s4's dialog names the cause too, with its ways to free space
+    expect(app.city).toBeNull();
+    expect(inits, 'no boot after the failed restore').toHaveLength(1);
+    expect(liveRegions()[0].selected).toBe(TILE);
+    const dialog = app.root.querySelector('.storage-dialog')!;
+    expect(textOf(dialog.querySelector('h2')!)).toBe('Storage full');
+    expect(dialog.querySelectorAll('button').map((b) => textOf(b))).toEqual(['Export', 'Manage storage', 'Retry', 'Close']);
+    // the copy is still stored: the snapshot, and the journal bound to it
+    expect(kept.snapshot).not.toBeNull();
+    expect(kept.journal).toMatchObject({ base: { kind: 'snapshot', at: kept.snapshot!.marker.at }, ops: [{ op: 'setFunding', args: ['fire', 125] }] });
+    expect(await stored()).toEqual(kept);
+
+    // the player closes the dialog and frees space: the tile's Play asks about the copy, and Recover restores it
+    clickButton(app, 'Close');
+    expect(app.root.querySelector('.storage-dialog')).toBeNull();
+    full.mockRestore();
+    ui.recover.mockResolvedValue('recover');
+    liveRegions()[0].cb.onPlay(app.region!.tileByKey(TILE)!);
+    const again = await entered(app, first);
+    expect(ui.recover).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ regionId: REGION, tileKey: TILE, at: kept.snapshot!.marker.at, baseSavedAt: 1000 }));
+    expect(ui.toast).toHaveBeenLastCalledWith(expect.stringMatching(/^Recovered Crashville/), 'good', 3500);
+    // one question: the worker replayed the journal that the restore bound to the new save, and saved before its Ready
+    expect(inits).toHaveLength(2);
+    expect(inits[1].replay).toBeUndefined();
+    expect(again.state.budget.taxRates[DevType.R1], 'from the snapshot').toBe(14);
+    expect(again.state.budget.funding.fire, 'from its journal').toBe(125);
+    const budget = await saved();
+    expect([budget.taxRates[DevType.R1], budget.funding.fire]).toEqual([14, 125]);
+    expect(await stored()).toMatchObject({ snapshot: null, journal: null });
+    expect(again.changes).toBe(0);
+    expect(run.logged).toEqual([CRASHED, '[main] recovery failed The quota has been exceeded.']);
+  }, TEST_MS);
+
+  it('a region taken over by another tab while the dialog was open: nothing is recovered here, the region says why, and the copy stays', async () => {
+    const { app, db, first, inits, stored, playWithSnapshot } = await boot();
+    await playWithSnapshot(first);
+    const other = new db.RegionSaveLock(REGION, false);
+    let kept!: Awaited<ReturnType<typeof stored>>;
+    crash(first, async () => {
+      kept = await stored();
+      // "Use it here instead" in another tab, while this one shows the crash dialog
+      await other.acquire(true);
+      return 'recover';
+    });
+    await noticed(app, NOT_RECOVERED.otherTab);
+
+    expect(other.writable).toBe(true);
+    expect(app.city).toBeNull();
+    expect(inits, 'no boot').toHaveLength(1);
+    expect(app.root.querySelector('.storage-dialog'), 'not a storage failure').toBeNull();
+    expect(textOf(app.root.querySelector('.storage-lock-notice')!.querySelector('span')!)).toBe('This region is now open in another tab');
+    expect(kept.snapshot).not.toBeNull();
+    expect(await stored()).toEqual(kept);
+    expect(run.logged).toEqual([CRASHED, '[main] recovery failed This region is open in another tab']);
+    other.dispose();
   }, TEST_MS);
 
   it('a snapshot that cannot be restored is reported and deleted, and the save boots without a replay', async () => {
@@ -444,13 +544,12 @@ describe('a Recover that does not restore (T089 b, W1.3 decision 20)', () => {
     const full = fill((store) => store === 'recovery');
     await send(first, 'setTax', [DevType.R1, 14]);
     crash(first, 'recover');
-    await backOnTheRegion(app);
+    await noticed(app, NOT_RECOVERED.unread);
 
     expect(ui.crash).toHaveBeenLastCalledWith({ cityName: CITY, message: 'Invalid tick', recoverable: true });
     expect(app.city).toBeNull();
     expect(inits, 'no boot over the copy').toHaveLength(1);
-    const { RECOVERY_UNDECIDED_MESSAGE } = await import('../../src/ui/StorageDialog');
-    expect(ui.toast).toHaveBeenCalledExactlyOnceWith(RECOVERY_UNDECIDED_MESSAGE, 'bad', 6000);
+    expect(liveRegions()[0].selected).toBe(TILE);
     expect(await stored()).toEqual({ snapshot: null, journal: null, savedAt: 1000 });
     expect(JSON.parse(slot()!)).toMatchObject({ kind: 'journal', regionId: REGION, tileKey: TILE, why: 'crash' });
     expect(JSON.parse(localStorage.getItem('metropolis.recovery.journal')!)).toMatchObject({ base: { kind: 'save', savedAt: 1000 }, ops: [{ op: 'setTax', args: [DevType.R1, 14] }] });
@@ -465,6 +564,47 @@ describe('a Recover that does not restore (T089 b, W1.3 decision 20)', () => {
     expect(inits[1].replay).toBeUndefined();
     expect(again.state.budget.taxRates[DevType.R1]).toBe(14);
     expect(slot()).toBeNull();
+    expect(run.logged).toEqual([CRASHED]);
+  }, TEST_MS);
+});
+
+describe('the real crash dialog over the crashed city: no key deletes the recovery copy (T089, NOTE-092)', () => {
+  it('Space chooses nothing and the copy stays; Enter is Recover, and the session comes back', async () => {
+    // the real Modal for this test, and the real dialog through the mock that stands for it
+    vi.doMock('../../src/region/ui/modal', async (importOriginal) => ({ ...(await importOriginal<typeof import('../../src/region/ui/modal')>()), toast: ui.toast }));
+    vi.stubGlobal('HTMLTextAreaElement', class {});
+    const { app, first, inits, stored, saved, playWithSnapshot } = await boot();
+    const { openSimCrashDialog } = await vi.importActual<typeof import('../../src/region/ui/dialogs')>('../../src/region/ui/dialogs');
+    await playWithSnapshot(first);
+    crash(first, openSimCrashDialog);
+    const dialog = () => app.root.querySelectorAll('.modal-top');
+    await until(() => expect(dialog()).toHaveLength(1));
+    expect(dialog()[0].querySelector('.modal-foot')!.querySelectorAll('button').map((b) => textOf(b))).toEqual(['Continue on the main thread', 'Restart from autosave', 'Recover unsaved progress']);
+    const kept = await stored();
+    expect(kept.snapshot).not.toBeNull();
+    expect(kept.journal).toMatchObject({ base: { kind: 'snapshot', at: kept.snapshot!.marker.at }, ops: [{ op: 'setFunding', args: ['fire', 125] }] });
+
+    // Space, the pause key, down and up: the browser gets no default action, and the App no choice
+    expect([key('keydown', ' ', 'Space').defaultPrevented, key('keyup', ' ', 'Space').defaultPrevented]).toEqual([true, true]);
+    await new Promise((resolve) => realTimers.setTimeout(resolve, 300));
+    expect(dialog(), 'the dialog is still the question').toHaveLength(1);
+    expect(app.city?.host, 'the crashed city is still under it').toBe(first);
+    expect(app.root.querySelectorAll('.loading')).toHaveLength(0);
+    expect(inits).toHaveLength(1);
+    expect(await stored()).toEqual(kept);
+
+    // Enter is the default button, Recover: the snapshot is restored, and the worker replays its journal
+    expect(key('keydown', 'Enter', 'Enter').defaultPrevented).toBe(true);
+    const second = await entered(app, first);
+    expect(ui.toast).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/^Recovered Crashville/), 'good', 3500);
+    expect(inits).toHaveLength(2);
+    expect(inits[1].replay).toBeUndefined();
+    expect(second.state.budget.taxRates[DevType.R1], 'from the snapshot').toBe(14);
+    expect(second.state.budget.funding.fire, 'from its journal').toBe(125);
+    const budget = await saved();
+    expect([budget.taxRates[DevType.R1], budget.funding.fire]).toEqual([14, 125]);
+    expect(await stored()).toMatchObject({ snapshot: null, journal: null });
+    expect(ui.recover, 'the crash dialog was the question: no second one').not.toHaveBeenCalled();
     expect(run.logged).toEqual([CRASHED]);
   }, TEST_MS);
 });

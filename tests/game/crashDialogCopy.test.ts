@@ -31,7 +31,8 @@ describe('the worker crash dialog says what happens to unsaved progress (T089)',
     expect(body()).toContain('Recover brings back the unsaved progress.');
     expect(body()).toContain('Restart reloads the last save and deletes the recovery copy.');
     expect(body()).toContain('Continue on the main thread does that too, and runs without the simulation worker for the rest of this visit.');
-    expect(buttons()).toEqual(['Continue on the main thread', 'Recover unsaved progress', 'Restart from autosave']);
+    // NOTE-092: Recover is the default, so it is the last button of the row, as each dialog's default is
+    expect(buttons()).toEqual(['Continue on the main thread', 'Restart from autosave', 'Recover unsaved progress']);
     click('Recover unsaved progress');
     await expect(choice).resolves.toBe('recover');
   });
