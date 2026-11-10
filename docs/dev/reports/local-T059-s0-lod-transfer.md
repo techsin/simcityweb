@@ -86,6 +86,9 @@ to NOTE-064. That is not merged here; the merge step merges and gates it.
 - On that merged tree, in a scratch export: tsc is clean, and `lodNoTransfer` + `lod.test.ts` pass, 37 of 37. So
   none of the new worker or game code adds a main-thread transfer (`t059-tmp/logs/tsc-mt-cb6ca4c.log` and
   `targeted-mt-cb6ca4c.log`).
+- At the final commit, dev was at `34e3f81` (T036s4 and R1 merged too). `git merge-tree` is still clean with it. A
+  `git grep` for a `postMessage` with a transfer list there, outside `src/sim`, still finds only lodBuilder's old post
+  (which this lane removes) and lodWorker's reply.
 
 The machine is a shared 4-core container with WebGL on SwiftShader. Its browser runs check function, not timings.
 
