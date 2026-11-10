@@ -326,7 +326,12 @@ export class CityScene {
     const rankFireworks = new RankFireworks(ctx, () => this.newYear.busy);
     new MilestoneCard(ctx, this.uiRoot, (rank, intensity) => rankFireworks.start(rank, intensity), () => this.newYear.busy);
     // event-driven sounds (news, disasters, rewards, budget ticks, construction) + generic control feedback
-    this.gameSounds = new GameSounds({ sim: this.sim, sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox() });
+    this.gameSounds = new GameSounds({
+      sim: this.sim, host: this.host, signal: this.abort.signal,
+      duck: (db, hold, release) => (this.mods.audio as { duck?: import('../audio/AudioEngine').AudioEngine['duck'] } | undefined)?.duck?.(db, hold, release, { renew: true }),
+      releaseDuck: (release) => (this.mods.audio as { releaseDuck?: (release: number) => void } | undefined)?.releaseDuck?.(release),
+      sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox(),
+    });
     this.offUiSounds = installUiSounds(() => this.mods.audio as unknown as UiSoundAudio | undefined);
     this.fpsEl = h('div', { class: 'fps mp-glass', style: 'display:none' });
     this.uiRoot.appendChild(this.fpsEl);

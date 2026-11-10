@@ -20,7 +20,7 @@ export const SFX_COST: Record<SoundName, readonly [Count, Count]> = {
   error: [4, 8], zone: [[2, 3], [5, 7]], dezone: [2, 5], road: [[6, 7], [11, 13]], rail: [6, 9], power: [4, 9],
   pipe: [2, 4], bulldoze: [[10, 11], [21, 23]], plop: [4, 7], terraform: [7, 15], tree: [[4, 6], [10, 14]],
   construct: [2, 5], built: [4, 7], cash: [7, 10], notify: [6, 8], news: [4, 6], good: [8, 10], warning: [8, 10],
-  bad: [4, 7], advisor: [8, 10], coin: [5, 8], cashLow: [2, 5], bankrupt: [7, 10], reward: [12, 16],
+  bad: [4, 7], saved: [5, 7], lost: [4, 7], advisor: [8, 10], coin: [5, 8], cashLow: [2, 5], bankrupt: [7, 10], reward: [12, 16],
   milestone: [18, 22], found: [25, 29], cityReady: [8, 11], regionEnter: [7, 10], alarm: [1, 5],
   fire: [37, 40], fireBell: [8, 10], tornado: [3, 8], quake: [15, 27], meteor: [12, 24],
 };
