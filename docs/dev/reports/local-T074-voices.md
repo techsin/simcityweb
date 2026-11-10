@@ -1,8 +1,10 @@
 # T074 — the city's voice and weather
 
 The sections before “QA round 2” record the original implementation and its historical gates. The QA round-2
-section supersedes their weather pacing, district sampling/fade limitations, and Vitest status. “Round 3” at the end
-closes T060 FEEL-01's QA findings F1–F3 in the news ticker (NOTE-077).
+section supersedes their weather pacing, district sampling/fade limitations, and Vitest status. “Round 3” closes
+T060 FEEL-01's QA findings F1–F3 in the news ticker (NOTE-077). “Round 4” at the end moves the weather calendar from
+`src/render/world/Weather.ts` to `src/sim/economy/weatherCalendar.ts` (NOTE-081); it supersedes where the FEEL-23
+sections place `weather(day, seed, climate)`.
 
 Original status: typecheck and supplemental headless probes pass; the 128×15 seed-7 population is unchanged, and
 all 20 yearly hashes match base on both Medium and Hard after the specified advice/news exclusions. Vitest cannot
@@ -764,3 +766,273 @@ C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9
   visible within 15 s. Record the new figures; the old ones are from the fast clock. Ultra stays reported only.
 - [ ] Unchanged: the newest item within 1 s, hover holds and resumes, a click flies to the place or opens the feed,
   the queue cap, and round 2's B4 order (event stories give way before ordinary good news and rewards).
+
+## Round 4 (NOTE-081): the weather calendar lives under src/sim
+
+Base: `local/T074-voices` at `55bc0dec` (current dev merged in, full gate green). NOTE-081: sim code must not import
+from src/render, even type-only. Round 1 had `src/sim/economy/advisors.ts` import `weather` from
+`src/render/world/Weather.ts`, so a renderer module loaded with the sim worker, with `SimCore` and with the bot. This
+round moves the calendar and changes nothing else: the same weather on the same day, the same headlines, round 2's
+holds and easing, the same hooks. All changes are uncommitted. There is no logic, random draw, balance, save or
+worker change and no infra hunk.
+
+### Changes per file
+
+- **New `src/sim/economy/weatherCalendar.ts`** (23 lines): `weather(day, seed, climate)` and `WeatherState`, moved
+  from the renderer's module with the body unchanged. It imports the `Climate` type from `src/core/types` and
+  `headlineHash` from `./eventHeadlines`, and nothing else: no src/render, no three, no DOM. It takes no simulation
+  and draws from no random stream. It is still a hash of the day's three-day spell, the seed and the climate.
+- `src/sim/economy/advisors.ts` (`:91`, one line): `import { weather } from './weatherCalendar'`. The file is on the
+  cloud-held list for its GUIDE hunks; this line is the lane's own import from round 1 and no GUIDE hunk.
+- `src/render/world/Weather.ts`: the function and the interface are gone, and the `Climate` import with them. The
+  module imports both from the calendar and keeps the visuals:
+  - the particle cloud, its shaders and its uniforms;
+  - the 20 s hold and the 4 s easing (`WEATHER_HOLD_SECONDS`, `WEATHER_EASE_SECONDS`, `WeatherAmounts`, `shown`), the
+    same-day snow cue and `reset()`;
+  - `rainAmount()` and `isRaining()` for the pedestrians lane, and `flashAmount(strength, reducedFlashing)`, the single
+    flash gate.
+
+  `update()` is unchanged and still returns the calendar's state for the day. Three is still a type-only import and
+  still comes in through the constructor.
+- **One line there is a choice for the lead:** `export { weather, type WeatherState }` (`:13`) keeps the two names
+  importable from the renderer's module. It is a re-export of the sim's function, so the direction is render to sim,
+  which the rule allows. It is there because two things outside this round's files still ask the renderer's module:
+  - the lane's `tests/render/weather.test.ts`, `tests/render/weatherPacing.test.ts` and
+    `tests/audio/weatherAmbience.test.ts`, which this round leaves untouched;
+  - QA's page scripts: nine files under `qa/T074` (`cmds/f23_*.mjs`, `cmds/news_run.mjs`, `js/wxcal.js`,
+    `js/survey256.js`) call `WX.weather` after `import('/src/render/world/Weather.ts')`.
+
+  To have the renderer's module export visuals only: delete `:12-13`, point those three tests and the QA scripts at
+  `src/sim/economy/weatherCalendar.ts`, and delete the last test of `tests/sim/weatherCalendar.test.ts`.
+- New tests: `tests/sim/simImports.test.ts` and `tests/sim/weatherCalendar.test.ts` (below).
+- Not touched: `src/sim/infra/overlays.ts` and every other infra file, `WorldView.ts`, `CityScene.ts`,
+  `render/contracts.ts`, `audio/ambience.ts`, and every existing test.
+
+### Imports from src/render, src/ui and src/game inside src/sim
+
+The search parsed the sources; it did not grep them. Before the move: 62 files under src/sim and 492 module
+references, counting type-only imports, re-exports, `import()` calls and `import()` types. After it: 63 files, 494.
+
+- **One, and it is this lane's:** `src/sim/economy/advisors.ts:91` to `src/render/world/Weather.ts`, a runtime
+  import from round 1 (`061eb48b`). Moved, as above. `git log --all -G"from '(\.\./)+render/" -- src/sim` lists that
+  commit and no other, in any ref.
+- **None** into src/ui or src/game, and none that is type-only. src/core names nothing outside src/core.
+- **`src/sim/infra/overlays.ts` has no import from src/render.** Its imports (`:17-27`) are src/core and src/sim.
+  What a search for `render/` finds there is the doc comment at `:990`, which cites
+  `src/render/world/overlays.ts` (curbCells). No commit in any ref ever gave the file such an import. So the exception
+  NOTE-081 names needs no exemption: the new test has none, names the file and says why. The file is untouched.
+- **What the import dragged along.** Before, `src/render/world/Weather.ts` was one of the 97 modules that load with
+  `src/worker/simWorker.ts`, and it loaded with `src/worker/SimCore.ts` and `tools/simbot.ts` too, each time through
+  `advisors.ts`. Now no module of src/render loads with any of the three; `weatherCalendar.ts` takes its place. The
+  calendar itself loads with 7 modules (4 of src/sim, 2 of src/core, `src/assets/manifest.ts`) and no package.
+- **The lane's other imports across layers** (rounds 1-3) all point down, so none needed moving:
+  - render to sim: `Sightings.ts` and `Weather.ts` import `eventHeadlines`, and `CityState` as a type;
+  - ui to sim: `Notifications.ts` imports `eventHeadlines`;
+  - game to audio: `CityScene.ts` imports `ambience`;
+  - audio to sim: `src/audio/ambience.ts` imports `BF` from `sim/CityState` and `getDef` from `sim/catalog` (round
+    1's district sampler). It is the first import of src/sim in src/audio.
+- For information, outside "sim code" and outside this lane: seven modules of src/game and src/ui load with the
+  worker through src/worker's own imports (`queries.ts`, `inspect.ts`, `SimCore.ts`, `protocolInbox.ts`):
+  `game/demolishRisk`, `game/emergencyPolicy`, `game/fallback/FallbackActions`, `game/tools/placement`,
+  `ui/statsModel`, `ui/format` and `ui/zoneStatus`. That is dev's worker code. The lane has no hunk in src/worker.
+
+### Tests
+
+`npx tsc --noEmit` passes on the final tree, and `git diff --check` is clean. Every test file ran alone, one process
+at a time:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run <file> --maxWorkers=1
+```
+
+New tests (7).
+
+`tests/sim/simImports.test.ts` (4 tests). It parses the sources as `tests/worker/hygieneScan.ts` does, so a comment
+or a string that names a path is no import:
+
+- `the scan reads every way a module names another, type-only ones too, and no comment or string`: `import`, `import
+  type`, `import { type X }`, `export ... from`, `export type ... from`, `export * from`, `import()` as a call and as
+  a type, `import x = require()` and `require()`. A line comment, a string and a doc comment worded like
+  `overlays.ts:990` are no reference.
+- `no file under src/sim/economy imports from src/render, src/ui or src/game, type-only imports included`.
+- `nor does the rest of src/sim: src/sim/infra/overlays.ts cites the renderer in a comment, which is no import`.
+- `the weather calendar names sim and core modules alone, and nothing that loads with it is the renderer or a
+  package`: what the module names itself, type-only included, and its runtime import graph. No three anywhere.
+
+A failure names the line: `src/sim/economy/advisors.ts:91 -> src/render/world/Weather`.
+
+`tests/sim/weatherCalendar.test.ts` (3 tests):
+
+- `names the same weather on the same day as before the move: 4 climates, 16 seeds, 10 game years each`: 230,410
+  rows of climate, seed, day, kind and intensity, the number of days of each kind per climate, and the SHA-256 of the
+  table. The digest, `d4ad2949...a70e`, was taken from `src/render/world/Weather.ts` on the clean tree before the
+  edit.
+- `gives a seed one weather for three whole game days, and each climate its own reading of that spell`: seed 7's
+  first snow (days 6-8, intensity 0.57) and first rain (day 60, 0.74); the same spell is snow in alpine, rain in
+  tropical and haze in desert.
+- `is the one calendar: the renderer module hands out this function under its old name`: the re-export is the sim's
+  function itself.
+
+The lane's files and the hygiene gate, on the final tree (12 files: 133 passed, none failed). None of the ten
+existing files was edited:
+
+| File | Result |
+|---|---|
+| `tests/sim/eventHeadlines.test.ts` | 17 passed |
+| `tests/render/weather.test.ts` | 6 passed |
+| `tests/render/weatherPacing.test.ts` | 9 passed |
+| `tests/render/sightings.test.ts` | 10 passed |
+| `tests/audio/weatherAmbience.test.ts` | 4 passed |
+| `tests/audio/districtAmbience.test.ts` | 11 passed |
+| `tests/audio/ambience.test.ts` | 12 passed |
+| `tests/game/eventTicker.test.ts` | 4 passed |
+| `tests/game/newsTicker.test.ts` | 35 passed |
+| `tests/worker/hygiene.test.ts` | 18 passed |
+| `tests/sim/simImports.test.ts` | 4 passed (new) |
+| `tests/sim/weatherCalendar.test.ts` | 3 passed (new) |
+
+Also run, because `advisors.ts` or `WorldView`'s weather is in their import graph (22 files: 207 passed, 1 skipped).
+These ran before the last edit, which reworded one comment in `Weather.ts`; `tsc` and the 12 files above ran after
+it.
+
+| File | Result |
+|---|---|
+| `tests/sim/advisors.test.ts` | 32 passed |
+| `tests/sim/advisorsTexts.test.ts` | 6 passed |
+| `tests/sim/advisorsFeedback.test.ts` | 17 passed |
+| `tests/sim/advisorsPredict.test.ts` | 3 passed |
+| `tests/sim/advisorsRuins.test.ts` | 19 passed |
+| `tests/sim/advisorsScanOrder.test.ts` | 1 passed |
+| `tests/sim/exact/advisorsScan.test.ts` | 3 passed |
+| `tests/sim/milestoneNews.test.ts` | 10 passed |
+| `tests/sim/monthSpread.test.ts` | 12 passed |
+| `tests/sim/foundingDay.test.ts` | 5 passed |
+| `tests/sim/taxHighAdvice.test.ts` | 2 passed |
+| `tests/worker/protocol.test.ts` | 8 passed |
+| `tests/worker/hosts.test.ts` | 6 passed, 1 skipped (its own skip) |
+| `tests/worker/localSimHost.test.ts` | 4 passed |
+| `tests/worker/worldResync.test.ts` | 1 passed |
+| `tests/render/seasons.test.ts` | 33 passed |
+| `tests/render/lighting.test.ts` | 11 passed |
+| `tests/render/exitRetention.test.ts` | 5 passed |
+| `tests/render/freshLoad.test.ts` | 12 passed |
+| `tests/render/pendingPreviews.test.ts` | 3 passed |
+| `tests/game/graphicsRestore.test.ts` | 10 passed |
+| `tests/game/cityTeardown.test.ts` | 4 passed in each of 4 runs; one run also exited 1 (see "Not verified here") |
+
+The new tests see what they guard. Each line is one change to one file, one test run and the file put back byte for
+byte (`mutate.mjs`; the SHA-256 of all five files matched afterwards):
+
+| Change | Tests that failed |
+|---|---|
+| `advisors.ts` imports `weather` from the renderer again (round 1's line) | `no file under src/sim/economy imports ...` |
+| a type-only import of the renderer in `weatherCalendar.ts` | that test and `the weather calendar names sim and core modules alone ...` |
+| a type-only import of `src/game` in `src/sim/config.ts` | `nor does the rest of src/sim ...` |
+| an `import('../../ui/...')` type in `weatherCalendar.ts` | `no file under src/sim/economy imports ...` and `the weather calendar names ...` |
+| `weatherCalendar.ts` imports three | `the weather calendar names sim and core modules alone ...` |
+| `eventHeadlines.ts`, which loads with the calendar, imports three | `the weather calendar names sim and core modules alone ...` |
+| intensity over 47 steps instead of 46 | `names the same weather on the same day ...` and `gives a seed one weather ...` |
+| four-day spells | the same two |
+| winter chance 36 instead of 35 | `names the same weather on the same day ...` |
+| the renderer's module exports a wrapper of its own | `is the one calendar ...` |
+
+### Bot and digests
+
+```text
+SIMBOT_LOG=1 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
+```
+
+`residents [ 61124, 93804, 37971 ]` = **192,899** in 2015, unchanged (funds $146k, 2,818 buildings, approval 81,
+loans 0, unlocked 38). The command ran twice on the clean tree before any edit, once after the move and once on the
+final tree. With the run-to-run timings removed (the `done in` time, the `ms/day` line and the two ms columns of the
+year rows), all 1,187 lines are identical in the four outputs: the 15 year rows, the 1,111 lines of the action log,
+the last income and expense and the last news. The two clean runs agree with each other, so the comparison is sound.
+
+The calendar itself, before and after. `calendar-digest.mts` writes the table the new test pins (230,410 rows). It
+ran against `src/render/world/Weather.ts` on the clean tree, then against `src/sim/economy/weatherCalendar.ts` and
+against the renderer's re-export on the edited tree. The three files are identical byte for byte (SHA-256
+`d4ad29498b9649977221a0fb94982c67e23a7470fa4a75729a38bc0f9843a70e`).
+
+The headlines, end to end. The bot prints only its last 12 news items, so `news-digest.mts` plays the same bot (the
+CLI's systems and defaults) and records every news item the sim posts in the 15 years, the SHA-256 of the whole saved
+city at the end of each year (news and `systemData.advisors` included, only `savedAt` pinned) and the advisors' saved
+record at the end. "Before" is a `git archive` of `55bc0dec`'s `src` and `tools` in the scratch folder (`head-export`,
+with that commit's `package.json` so its files load as modules); under `src` and `tools` it differs from the
+worktree in the three source files above and in nothing else.
+
+| City | News items | Before against after |
+|---|---|---|
+| the bot's (temperate) | 412 | identical: all news, 15 yearly digests, advisors record |
+| the same, climate set to alpine | 413 | identical |
+| the same, climate set to tropical | 412 | identical |
+| the same, climate set to desert | 421 | identical |
+
+The three other climates are the bot's city with `config.climate` changed after the terrain is made: cities for this
+comparison only, not balance numbers. In the four runs the calendar gates 21 headlines, and each sits on a day the
+calendar agrees with: 6 snow headlines on snow days, 4 "April showers" on rain days, 6 meteor showers on clear days,
+and 5 heatwaves on days without rain. The temperate city's, from the log: "Snow day!" on day 1473 (snow), "April
+showers" on day 1891 (rain), "Snowfall turns Botville into a snowball battlefield" on days 1825 and 4336 (snow).
+
+The outputs of this round (the same folder also has one `vt-*.log` per test run):
+
+```text
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/bot-base.log
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/bot-base2.log
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/bot-after.log
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/bot-final.log
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/botdiff.mjs
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/calendar-digest.mts
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/calendar-before.txt
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/calendar-after-sim.txt
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/calendar-after-render.txt
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/news-digest.mts
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/news-before.summary.txt
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/news-after.summary.txt
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/graph-before.log
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/graph-after.log
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/closure.log
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/mutate.mjs
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/summary-mutations.txt
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/summary-final.txt
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/summary-advisors.txt
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r4/summary-graph.txt
+```
+
+### Plan against code
+
+- **NOTE-081's exception does not exist.** `src/sim/infra/overlays.ts` imports nothing from src/render (above). The
+  rule has no exception today.
+- **The gate is wider than the task's sentence.** The task asks for a test over src/sim/economy. NOTE-081 states the
+  rule for all sim code, and with no exception to carve out, the third test covers the rest of src/sim too. To keep
+  the gate to src/sim/economy, delete that one test.
+- **POLISH_PLAN's FEEL-23 puts the pure function in the new `src/render/world/Weather.ts`** (its "Files" line,
+  `docs/POLISH_PLAN.md:2712`). NOTE-081 overrides it; the plan does not name `src/sim/economy/weatherCalendar.ts`.
+- **The re-export** in `Weather.ts` is the choice described under "Changes per file".
+- `Weather.ts` took three through its constructor so that the sim's import of it would not pull the graphics runtime
+  into the worker. With the calendar out, nothing of the sim reaches the module, so that indirection is no longer
+  needed. It stays: there is no behaviour change this round, and round 1's test pins it.
+
+### Not verified here
+
+- No browser, no real GPU, no `vite build`, no full suite and no bench ran. Nothing on screen should change: the
+  renderer calls the same function with the same arguments.
+- QA's page scripts under `qa/T074` were read, not run. They keep working through the re-export.
+- The bot's wall time is no measurement on this machine: 21.4 s and 24.4 s on the clean tree, 31.6 s and 48.2 s
+  after, while other lanes' processes ran. Every system slowed together (utilities 2.5 to 3.2 ms a day), and the
+  advisors' own cost stayed between 0.05 and 0.14 ms a day in all four runs. The moved function has the same body.
+- `tests/game/cityTeardown.test.ts` is not on this round's list. Its 4 tests passed in each of 4 runs, and one of the
+  4 runs also exited 1 on an unhandled rejection after the tests: `requestAnimationFrame is not a function` at
+  `src/ui/thumbs.ts:125`. It is the load flake NOTE-012 describes, through a window its fix left open, and it has
+  nothing of this round in it. The file's `afterAll` waits until no stubbed frame is pending, but the thumbnail pump
+  can be inside `await this.render(job)` at that moment, with no frame pending; it asks for the next frame after the
+  stubs are gone. The machine was loaded (the run's transform took 22 s against 4.6 s in round 3).
+
+### Browser recheck for the lead
+
+- [ ] Nothing visible changes. One spot check is enough: on a snow day and on a rain day of the calendar, the flakes,
+  the roof dusting, the road sheen and the rain bed are there as before, and a snow headline still falls on a snow
+  day.
+- [ ] QA's FEEL-23 scripts still run as they are (`WX.weather` through the re-export). If the re-export goes, they
+  import `/src/sim/economy/weatherCalendar.ts`.
+- [ ] The worker host loads: the worker's bundle now holds `weatherCalendar.ts` and no module of src/render
+  (`tests/worker/hygiene.test.ts` builds that graph and passes; a city on the worker host is the real check).
