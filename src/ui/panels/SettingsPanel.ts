@@ -66,6 +66,8 @@ export class SettingsPanel extends Panel {
     // the long music player stays last). A sticky nav jumps to each section (the body scrolls at 720p).
     const sec = (id: string, title: string) => h('div', { class: 'sec-title', dataset: { sec: id } }, title);
     const nav = h('div', { class: 'set-nav' });
+    const keys = h('button', { type: 'button', class: 'btn' }, 'Edit keys…');
+    keys.addEventListener('click', () => this.ctx.panels.open('keybindings'), { signal: this.ctx.signal });
     for (const [id, label] of [['graphics', 'Graphics'], ['gameplay', 'Gameplay'], ['controls', 'Controls'], ['interface', 'Interface'], ['audio', 'Audio & music']]) {
       const b = h('button', { type: 'button' }, label);
       b.addEventListener('click', () => {
@@ -93,6 +95,8 @@ export class SettingsPanel extends Panel {
       this.row('Emergency alerts', 'Banners for major incidents only, or for every incident that needs you', segmented<'major' | 'all'>([{ value: 'major', label: 'Major' }, { value: 'all', label: 'All' }], s.emergencyAlerts ?? 'major', (v) => this.ctx.applySettings({ emergencyAlerts: v }), this.ctx.signal)),
       this.row('Live speed', 'How much 1x slows down while you handle an emergency', this.range('emergencyLiveSlowmo', 1, 5, 0.5, (v) => (v <= 1 ? 'Normal 1x' : `${v}x slower`))),
       sec('controls', 'Camera & controls'),
+      this.row('Key bindings', 'Change shortcuts, check conflicts or restore the defaults', keys),
+      this.row('Camera moments', 'Spotlight the city’s firsts after four seconds without input; any input returns control', this.sw('cameraMoments')),
       this.row('Edge scrolling', 'Move the camera when the mouse touches the screen edge', this.sw('edgeScroll')),
       this.row('Show grid while building', null, this.sw('showGrid')),
       sec('interface', 'Interface'),

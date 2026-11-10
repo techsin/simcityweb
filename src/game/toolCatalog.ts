@@ -16,6 +16,7 @@ import { DISPATCH_SPEC } from './tools/DispatchTool';
 import type { Tool } from './tools/Tool';
 import { titleCase } from '../ui/format';
 import { ruinsFor, type RuinState } from '../ui/ruinState';
+import { matchesBinding, type KeyBindings } from './bindings';
 
 export interface ToolSpec {
   id: string;
@@ -256,6 +257,18 @@ export const PANEL_HOTKEYS: Record<string, string> = {
   y: 'ordinances',
   p: 'demographics',
 };
+
+/** The default cycles keep their catalog order; profile bindings only choose the triggering key. */
+export function hotkeyCycle(e: KeyboardEvent, bindings: KeyBindings = {}): string[] | undefined {
+  const actions: Record<string, string> = { r: 'residential', c: 'commercial', i: 'industrial', x: 'dezone', t: 'roads', l: 'power', u: 'subway', b: 'bulldoze', v: 'query', k: 'terraform' };
+  for (const [key, action] of Object.entries(actions)) if (matchesBinding(action, e, bindings)) return HOTKEY_CYCLES[key];
+  return undefined;
+}
+
+export function panelHotkey(e: KeyboardEvent, bindings: KeyBindings = {}): string | undefined {
+  for (const panel of Object.values(PANEL_HOTKEYS)) if (matchesBinding(panel, e, bindings)) return panel;
+  return undefined;
+}
 
 export const CATEGORIES: ToolCategory[] = [
   {

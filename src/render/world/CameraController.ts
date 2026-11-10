@@ -14,6 +14,7 @@
  */
 import * as THREE from 'three';
 import type { CameraControllerApi } from '../contracts';
+import { cameraCode, type KeyBindings } from '../../game/bindings';
 
 export interface CameraControllerOptions {
   /** world size of the map (m) */
@@ -71,6 +72,7 @@ export class CameraController implements CameraControllerApi {
   private goalTilt = 52 * DEG;
   private groundY = 0;
   private flight: { start: THREE.Vector3; distance: number; peak: number; elapsed: number; duration: number } | null = null;
+  private bindingOverrides: KeyBindings = {};
 
   // interaction
   private panning = false;
@@ -190,6 +192,24 @@ export class CameraController implements CameraControllerApi {
   recenter(): void {
     const c = this.opts.mapSize / 2;
     this.focusOn(c, c, Math.min(this.opts.maxDistance, this.opts.mapSize * 0.9));
+  }
+
+  /** Presentation travel may start above the player's zoom limit (the founding fly-in is 3× the landing distance). */
+  setShowView(x: number, z: number, distance: number, tiltDeg?: number, yawDeg?: number): void {
+    this.setView(x, z, distance, tiltDeg, yawDeg);
+    this.goalDistance = this._distance = Math.max(this.opts.minDistance, distance);
+    this.apply();
+  }
+
+  /** Rebinding clears held keys so a released or replaced key can never leave the camera moving. */
+  setKeyBindings(bindings: KeyBindings): void {
+    if (JSON.stringify(bindings) === JSON.stringify(this.bindingOverrides)) return;
+    this.bindingOverrides = { ...bindings };
+    this.keys.clear();
+  }
+
+  private boundCameraCode(code: string): string | null {
+    return cameraCode(code, this.bindingOverrides);
   }
 
   // ------------------------------------------------------------------ input
@@ -369,19 +389,20 @@ export class CameraController implements CameraControllerApi {
   }
 
   private onKey(e: KeyboardEvent, down: boolean) {
-    const k = e.code;
+    const k = this.boundCameraCode(e.code);
     if (!down) {
-      this.keys.delete(k);
+      if (k) this.keys.delete(k);
       return;
     }
     if (!this.enabled) return;
     this.cancelFlight();
     if (isTypingTarget() || e.defaultPrevented) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!k) return;
     const handled = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'NumpadEqual'];
     if (handled.includes(k)) {
       this.keys.add(k);
-      if (k.startsWith('Arrow') || k.startsWith('Page')) e.preventDefault();
+      if (e.code.startsWith('Arrow') || e.code.startsWith('Page')) e.preventDefault();
     }
     if (e.repeat) return;
     if (k === 'KeyQ') this.rotateStep(-1);

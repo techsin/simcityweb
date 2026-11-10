@@ -30,10 +30,12 @@ import { FallbackObjectsView } from './fallback/FallbackObjectsView';
 import { FallbackWorldView } from './fallback/FallbackWorldView';
 import { NullObjectsView, NullWorldView } from './fallback/NullViews';
 import { loadGameModules, type GameModules } from './modules';
-import { loadPref, loadSettings, savePref, saveSettings, type GameSettings } from './settings';
+import { loadPref, loadSettings, resolveMotion, savePref, saveSettings, type GameSettings } from './settings';
 import { NewYearCelebration, type CelebrateOptions } from './NewYear';
+import { ShowCamera, FirstCameraMoments, type ShowControls } from './ShowCamera';
 import { GameSounds } from './GameSounds';
-import { HOTKEY_CYCLES, PANEL_HOTKEYS } from './toolCatalog';
+import { hotkeyCycle, panelHotkey } from './toolCatalog';
+import { matchesBinding, isCameraCode } from './bindings';
 import { ToolController } from './tools/ToolController';
 import { CursorTip } from '../ui/CursorTip';
 import { h, isTyping } from '../ui/dom';
@@ -41,7 +43,7 @@ import { MiniMap } from '../ui/MiniMap';
 import { MilestoneCard } from '../ui/MilestoneCard';
 import { RankFireworks } from '../ui/rankFireworks';
 import { ErrorOverlay, HelpPanel, PauseMenu, SavePill, confirmOpen } from '../ui/Modals';
-import { CameraMemory, applyCamera, readCamera, validCamera } from './cameraStart';
+import { CameraMemory, FoundingFlyIn, foundingTitle, applyCamera, readCamera, validCamera } from './cameraStart';
 import { NewsTicker, Toasts } from '../ui/Notifications';
 import { Onboarding } from '../ui/Onboarding';
 import { PanelManager } from '../ui/Panel';
@@ -52,9 +54,11 @@ import { GraphsPanel } from '../ui/panels/GraphsPanel';
 import { InfoPanel } from '../ui/panels/InfoPanel';
 import { OrdinancesPanel, RewardsPanel } from '../ui/panels/ListPanels';
 import { SettingsPanel } from '../ui/panels/SettingsPanel';
+import { KeyBindingsPanel } from '../ui/panels/KeyBindingsPanel';
 import { StatsPanel } from '../ui/panels/StatsPanel';
 import { Toolbar } from '../ui/Toolbar';
 import { TopBar } from '../ui/TopBar';
+import { PhotoBar } from '../ui/PhotoBar';
 import { computeUiZoom, setUiZoom } from '../ui/zoom';
 import { installUiSounds, type UiSoundAudio } from '../ui/uiSounds';
 import { asMusicAudio, shortMood, watchTrackChanges } from '../ui/MusicPlayer';
@@ -88,9 +92,6 @@ export interface CitySceneOptions {
   /** dev/testing: initial simulation speed (default 1) */
   initialSpeed?: number;
 }
-
-/** physical camera keys: skip character hotkeys, and stop propagation when a tool consumes one */
-const CAMERA_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'NumpadEqual']);
 
 /** UI sound aliases -> audio engine sound names (src/audio/sfx.ts; any other name is passed through) */
 const SOUND_MAP: Record<string, string> = {
@@ -134,6 +135,13 @@ export class CityScene {
   private savePill: SavePill;
   private info: InfoPanel;
   private newYear: NewYearCelebration;
+  private showCamera: ShowCamera;
+  private cameraMoments: FirstCameraMoments;
+  private founding: FoundingFlyIn | null = null;
+  private photo: PhotoBar;
+  private resolveLanding!: () => void;
+  /** META: play cityReady at this landing (or immediately for saved cities / reduced motion). */
+  readonly cameraLanded: Promise<void> = new Promise((resolve) => { this.resolveLanding = resolve; });
   private gameSounds: GameSounds;
   private offUiSounds: () => void;
   private advisors: AdvisorsPanel;
@@ -182,6 +190,7 @@ export class CityScene {
 
   constructor(opts: CitySceneOptions) {
     this.opts = opts;
+    this.abort.signal.addEventListener('abort', () => this.resolveLanding(), { once: true });
     this.settings = loadSettings(opts.settings);
     const state = opts.state;
 
@@ -308,9 +317,14 @@ export class CityScene {
       },
     });
     this.savePill = new SavePill(this.uiRoot);
+    this.showCamera = new ShowCamera(() => {
+      const c = this.world.controls as unknown as ShowControls;
+      return typeof c?.setView === 'function' ? c : null;
+    }, this.abort.signal);
     // New Year fireworks (src/game/NewYear.ts): listens to the sim's 'year' event itself
     this.newYear = new NewYearCelebration({
       sim: this.sim,
+      showCamera: this.showCamera,
       world: () => this.world,
       objects: () => this.objects,
       settings: () => this.settings,
@@ -322,6 +336,8 @@ export class CityScene {
       // NOTE-041: a command, so a worker's clock holds too (the host is already gone when the scene disposes)
       holdCalendar: (on) => { if (!this.disposed) this.host.act('holdCalendar', [on], { tag: this.newYear }); },
     });
+    this.cameraMoments = new FirstCameraMoments(ctx, this.showCamera, () => this.newYear.busy || !!this.founding?.active || this.photo?.active || this.pause?.isOpen || confirmOpen());
+    this.photo = new PhotoBar(ctx, this.root);
     // CONTENT: rank moments share the renderer, with New Year and LIVE taking priority.
     const rankFireworks = new RankFireworks(ctx, () => this.newYear.busy);
     new MilestoneCard(ctx, this.uiRoot, (rank, intensity) => rankFireworks.start(rank, intensity), () => this.newYear.busy);
@@ -334,6 +350,7 @@ export class CityScene {
     this.advisors = new AdvisorsPanel(ctx);
     for (const p of [new BudgetPanel(ctx), new GraphsPanel(ctx), new StatsPanel(ctx), this.advisors, new OrdinancesPanel(ctx), new RewardsPanel(ctx), new SettingsPanel(ctx), new DataViewsPanel(ctx), this.info, new HelpPanel(ctx)]) this.panels.register(p);
     this.panels.register(new EmergenciesPanel(ctx));
+    this.panels.register(new KeyBindingsPanel(ctx));
     // WP5: demographics panel; derived data-view rasters follow the sim's layer updates
     this.panels.register(new DemographicsPanel(ctx));
     this.offs.push(attachOverlays(this.host.sim));
@@ -400,6 +417,7 @@ export class CityScene {
       this.errors.report('Starting the city view failed', e);
       this.veil.classList.add('gone');
       this.resolveReady();
+      this.resolveLanding();
     });
   }
 
@@ -562,6 +580,8 @@ export class CityScene {
 
   private onContextLost(): void {
     if (this.disposed || this.ctxLost) return;
+    this.photo?.exit();
+    this.showCamera?.cancel(true);
     this.host.setSpeed(0, 'error');
     // the camera goes into the save, and the rebuilt view opens on it
     this.storeCamera();
@@ -620,12 +640,18 @@ export class CityScene {
    * best buildable land — the largest flat dry area near the centre / a neighbour connection — not the map centre.
    */
   private placeInitialCamera(): void {
-    const st = this.sim.state;
+    const st = this.ctx.state;
     const c = this.world.controls;
-    if (!c) return;
+    if (!c) { this.resolveLanding(); return; }
     try {
       this.camMemory.place(st, c);
+      const landing = readCamera(c);
+      const showControls = c as unknown as ShowControls;
+      if (this.newCity && !this.founding && landing && typeof showControls.setView === 'function' && resolveMotion(this.settings.motion) !== 'reduced') {
+        this.founding = new FoundingFlyIn(this.showCamera, showControls, landing, foundingTitle(st), this.resolveLanding, this.uiRoot);
+      } else this.resolveLanding();
     } catch (e) {
+      this.resolveLanding();
       console.warn('[game] initial camera', e);
       try {
         c.focusOn((st.size / 2) * CELL_SIZE, (st.size / 2) * CELL_SIZE);
@@ -641,6 +667,15 @@ export class CityScene {
    */
   storeCamera(): void {
     try {
+      if (this.founding?.active) {
+        this.host.act('setCamera', [this.founding.landing], { tag: this.camMemory });
+        return;
+      }
+      if (this.showCamera?.active && this.showCamera.saved) {
+        const v = this.showCamera.saved;
+        this.host.act('setCamera', [{ x: v.x, z: v.z, distance: v.d, tilt: v.tilt, yaw: v.yaw }], { tag: this.showCamera });
+        return;
+      }
       this.camMemory.store(this.host, this.world.controls, !!(this.world as NullWorldView).isNull);
     } catch {
       /* ignore */
@@ -686,7 +721,7 @@ export class CityScene {
     const dt = Math.min(0.1, Math.max(0, (now - this.last) / 1000));
     this.last = now;
     try {
-      this.tools.frame(dt);
+      if (!this.photo?.active) this.tools.frame(dt);
     } catch (e) {
       this.errors.report('Tool error', e);
     }
@@ -697,7 +732,13 @@ export class CityScene {
     }
     this.edgeScroll(dt);
     try {
+      if (this.photo?.active && this.newYear.active) this.newYear.cancel(false);
       this.newYear.frame(dt);
+      const cameraDt = this.readyPending ? 0 : Math.max(0, (now - (this.cameraMomentAt || now)) / 1000);
+      this.founding?.frame(cameraDt);
+      this.cameraMoments?.frame(cameraDt);
+      this.cameraMomentAt = now;
+      this.photo?.frame();
     } catch (e) {
       this.errors.report('New Year celebration error', e, { key: 'newyear' });
     }
@@ -909,6 +950,7 @@ export class CityScene {
   // ------------------------------------------------------------------------------------------------ input
   private onKey(e: KeyboardEvent): void {
     if (isTyping(e) || this.disposed) return;
+    const bindings = this.settings?.keyBindings ?? {};
     // a confirmation dialog handles Enter / Esc itself; no hotkeys underneath it
     if (confirmOpen()) return;
     if (this.pause.isOpen) {
@@ -919,6 +961,19 @@ export class CityScene {
       }
       return;
     }
+    if (matchesBinding('photo', e, bindings) || (this.photo?.active && e.key === 'Escape')) {
+      this.consume(e);
+      if (!e.repeat) {
+        if (this.photo.active) this.photo.exit();
+        else {
+          this.newYear.cancel(false);
+          this.showCamera.cancel();
+          this.photo.enter();
+        }
+      }
+      return;
+    }
+    if (this.photo?.active) return;
     if (this.tools.key(e)) {
       this.consume(e);
       return;
@@ -945,21 +1000,21 @@ export class CityScene {
       this.pause.open();
       return;
     }
-    if (k === 'F1' || k === '?') {
+    if (matchesBinding('help', e, bindings)) {
       e.preventDefault();
       // (a held F1 auto-repeats: it flipped the help panel open / closed with a sound each time)
       if (!e.repeat) this.panels.toggle('help');
       return;
     }
     if (e.ctrlKey || e.metaKey) {
-      if (k.toLowerCase() === 's') {
+      if (matchesBinding('save', e, bindings)) {
         e.preventDefault();
         if (!e.repeat) void this.save(false);
       }
       return;
     }
     if (e.altKey || e.repeat) return;
-    if (k === ' ') {
+    if (matchesBinding('pause', e, bindings)) {
       e.preventDefault();
       if (document.activeElement instanceof HTMLButtonElement) document.activeElement.blur();
       this.host.setSpeed(this.host.speed === 0 ? this.lastSpeed || 1 : 0, 'keyboard');
@@ -967,23 +1022,22 @@ export class CityScene {
       this.sound(this.sim.speed === 0 ? 'pause' : 'speed' + this.sim.speed);
       return;
     }
-    const speed = /^(?:Digit|Numpad)([123])$/.exec(e.code);
-    if (speed) {
+    const speed = [1, 2, 3].find((n) => matchesBinding('speed' + n, e, bindings));
+    if (speed !== undefined) {
       e.preventDefault();
-      if (this.sim.speed !== Number(speed[1])) this.sound('speed' + speed[1]);
-      this.host.setSpeed(Number(speed[1]), 'keyboard');
+      if (this.sim.speed !== speed) this.sound('speed' + speed);
+      this.host.setSpeed(speed, 'keyboard');
       this.lastSpeed = this.sim.speed;
       return;
     }
-    if (k === 'Delete' || k === 'Backspace') {
+    if (matchesBinding('bulldoze', e, bindings) && (k === 'Delete' || k === 'Backspace')) {
       e.preventDefault();
       this.tools.select('bulldoze');
       return;
     }
-    if (CAMERA_KEYS.has(e.code)) return;
-    const lk = k.toLowerCase();
-    const cycle = HOTKEY_CYCLES[lk];
-    if (cycle && !e.shiftKey) {
+    if (isCameraCode(e.code, bindings)) return;
+    const cycle = hotkeyCycle(e, bindings);
+    if (cycle) {
       const cur = this.tools.activeId ?? 'query';
       const i = cycle.indexOf(cur);
       const next = cycle[(i + 1) % cycle.length];
@@ -993,18 +1047,20 @@ export class CityScene {
       this.consume(e);
       return;
     }
-    const panel = PANEL_HOTKEYS[lk];
-    if (panel && !e.shiftKey) {
+    const panel = panelHotkey(e, bindings);
+    if (panel) {
       this.panels.toggle(panel);
+      this.consume(e);
       return;
     }
   }
   private lastSpeed = 1;
+  private cameraMomentAt = 0;
 
   /** we handled this key: keep it from the camera controller too when the camera also binds it */
   private consume(e: KeyboardEvent): void {
     e.preventDefault();
-    if (CAMERA_KEYS.has(e.code)) e.stopImmediatePropagation();
+    if (isCameraCode(e.code, this.settings?.keyBindings ?? {})) e.stopImmediatePropagation();
   }
 
   private onVisibility(): void {
@@ -1294,6 +1350,7 @@ export class CityScene {
       w.setGridVisible(s.showGrid && !!this.tools?.activeId && this.tools.active.wantsGrid);
       const c = w.controls as unknown as { edgeScroll?: boolean };
       if (c && 'edgeScroll' in c) c.edgeScroll = s.edgeScroll;
+      (w.controls as { setKeyBindings?: (bindings: Record<string, string>) => void }).setKeyBindings?.(s.keyBindings);
     } catch (e) {
       console.warn('[game] applying settings', e);
     }

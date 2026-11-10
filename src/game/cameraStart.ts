@@ -7,6 +7,7 @@ import { CELL_SIZE } from '../core/constants';
 import type { CameraControllerApi } from '../render/contracts';
 import type { CityState } from '../sim/CityState';
 import type { SimHost } from '../worker/SimHost';
+import { ShowCamera, type ShowControls } from './ShowCamera';
 
 /** persisted camera (state.systemData.camera): world focus x / z (m), distance (m), yaw / tilt (degrees) */
 export interface SavedCamera {
@@ -144,6 +145,61 @@ export function startCamera(st: CityState, distance: number): SavedCamera {
     cell = { x: Math.floor(sx / n), z: Math.floor(sz / n) };
   }
   return { x: (cell.x + 0.5) * CELL_SIZE, z: (cell.z + 0.5) * CELL_SIZE, distance };
+}
+
+/** A new city's title uses its founding calendar date, including cities that begin in April. */
+export function foundingTitle(st: CityState): string {
+  const day = typeof st.systemData.foundedDay === 'number' ? st.systemData.foundedDay : st.day;
+  const date = new Date(Date.UTC(st.config.startYear + Math.floor(day / 360), Math.floor(day % 360 / 30), 1));
+  const founded = new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(date);
+  return `${st.config.name} · Founded ${founded} · Mayor ${st.config.mayor}`;
+}
+
+/** View-only opening travel. Input skips to the landing; saved cities never construct this. */
+export class FoundingFlyIn {
+  private done = false;
+  private elapsed = 0;
+  private title: HTMLElement | null = null;
+  private session: number;
+
+  constructor(private show: ShowCamera, private controls: ShowControls, readonly landing: SavedCamera, title: string, private landed: () => void, root?: HTMLElement) {
+    controls.setView(landing.x, landing.z, landing.distance, landing.tilt, landing.yaw);
+    show.begin();
+    this.session = show.session;
+    if (!show.active || !show.saved) { this.finish(); return; }
+    const v = show.saved;
+    (controls.setShowView ?? controls.setView).call(controls, v.x, v.z, v.d * 3, v.tilt, v.yaw);
+    show.moveTo(v, 2.5);
+    if (root) {
+      this.title = document.createElement('div');
+      this.title.className = 'founding-title mp-glass';
+      this.title.textContent = title;
+      this.title.style.cssText = 'position:absolute;top:30%;left:15%;right:15%;padding:20px;text-align:center;font-size:24px;pointer-events:none';
+      root.appendChild(this.title);
+    }
+  }
+
+  get active(): boolean { return !this.done; }
+
+  frame(dt: number): void {
+    if (this.done) return;
+    if (!this.show.active || this.session !== this.show.session) { this.finish(); return; }
+    this.elapsed += Math.max(0, dt);
+    this.show.frame(dt);
+    if (this.elapsed >= 2.5) this.finish();
+  }
+
+  private finish(): void {
+    if (this.done) return;
+    this.done = true;
+    if (this.session === this.show.session) {
+      this.show.cancel();
+      this.controls.setView(this.landing.x, this.landing.z, this.landing.distance, this.landing.tilt, this.landing.yaw);
+    }
+    this.title?.remove();
+    this.title = null;
+    this.landed();
+  }
 }
 
 /**

@@ -1,7 +1,8 @@
 /** Pause menu (modal), help / shortcuts panel, error overlay, save indicator. */
 import type { GameContext } from '../game/context';
 import { Panel } from './Panel';
-import { escapeHtml, h } from './dom';
+import { clear, escapeHtml, h } from './dom';
+import { shortcutKeys } from '../game/bindings';
 import { icon } from './icons';
 import { dayLabel, num } from './format';
 
@@ -154,6 +155,7 @@ export const SHORTCUTS: { title: string; keys: [string, string[]][] }[] = [
       ['Save city', ['Ctrl', 'S']],
       ['Menu', ['Esc']],
       ['Help', ['F1']],
+      ['Photo mode', ['H']],
     ],
   },
   {
@@ -200,6 +202,7 @@ export const SHORTCUTS: { title: string; keys: [string, string[]][] }[] = [
       ['Pan', ['W', 'A', 'S', 'D']],
       ['Rotate 90°', ['Q', 'E']],
       ['Tilt', ['PgUp', 'PgDn']],
+      ['Recenter', ['Home']],
       ['Orbit', ['Right-drag']],
       ['Pan (mouse)', ['Middle-drag']],
       ['Zoom', ['Wheel']],
@@ -213,6 +216,8 @@ export class HelpPanel extends Panel {
   override icon = 'keyboard';
   override width = 900;
   override center = true;
+  private shortcutRows: { el: HTMLElement; label: string; defaults: string[] }[] = [];
+  private shortcutSignature = '';
 
   override defaultPos(w: number, hh: number): { x: number; y: number } {
     return { x: Math.max(14, (w - this.width) / 2), y: Math.max(72, (hh - 600) / 2) };
@@ -228,7 +233,11 @@ export class HelpPanel extends Panel {
         const g = SHORTCUTS[gi];
         if (!g) continue;
         col.appendChild(h('div', { class: 'sec-title' }, g.title));
-        for (const [label, keys] of g.keys) col.appendChild(h('div', { class: 'hk' }, h('span', null, label), h('span', { class: 'keys' }, ...keys.map((k) => h('kbd', null, k)))));
+        for (const [label, keys] of g.keys) {
+          const el = h('span', { class: 'keys' }, ...shortcutKeys(label, keys, this.ctx.settings.keyBindings).map((k) => h('kbd', null, k)));
+          this.shortcutRows.push({ el, label, defaults: keys });
+          col.appendChild(h('div', { class: 'hk' }, h('span', null, label), el));
+        }
       }
       cols.appendChild(col);
     }
@@ -243,6 +252,17 @@ export class HelpPanel extends Panel {
       this.ctx.panels.close(this.id);
     }, { signal: this.ctx.signal });
     this.body.append(h('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:12px' }, h('div', { class: 'dim', style: 'font-size:12.5px' }, 'Build the city of your dreams. Shortcuts and camera keys work even while panels are open; when you type in a text box (such as a city name), your keys go to that box instead.'), guide), cols, tips);
+  }
+
+  override update(): void {
+    const bindings = this.ctx.settings.keyBindings;
+    const signature = JSON.stringify(bindings);
+    if (signature === this.shortcutSignature) return;
+    this.shortcutSignature = signature;
+    for (const row of this.shortcutRows) {
+      clear(row.el);
+      row.el.append(...shortcutKeys(row.label, row.defaults, bindings).map((key) => h('kbd', null, key)));
+    }
   }
 }
 

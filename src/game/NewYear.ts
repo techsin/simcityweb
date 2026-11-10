@@ -35,10 +35,14 @@ import { DAYS_PER_MONTH, MONTHS_PER_YEAR } from '../core/constants';
 import type { Fireworks, FireworksSoundKind } from '../render/city/effects/Fireworks';
 import type { FireworksAudio, FireworksAudioOut, FireworksListener, FireworksSpatial } from '../audio/fireworks';
 import type { GameSettings, NewYearMode } from './settings';
+import { ShowCamera, type ShowControls } from './ShowCamera';
+import { isCameraCode } from './bindings';
 import { CITY_RANKS } from '../sim/economy/rewards';
 
 export interface NewYearDeps {
   sim: Simulation;
+  /** shared camera travel; a standalone celebration creates its own */
+  showCamera?: ShowCamera;
   /** Aborted when the owning city is disposed. */
   signal?: AbortSignal;
   world: () => WorldViewApi;
@@ -152,26 +156,6 @@ type TimeWorld = WorldViewApi & { timeScale?: number };
 /** the parts of the fireworks the celebration uses (duck-typed: tests pass a stand-in) */
 type FireworksLike = Pick<Fireworks, 'start' | 'stop' | 'fastForward' | 'active' | 'midnight' | 'timeScale' | 'onSound'> &
   Partial<Pick<Fireworks, 'settled' | 'isRunning' | 'centre' | 'showSize' | 'lengthFor' | 'time' | 'liveCount'>>;
-/** WorldView's camera controller (CameraController): only what the show camera needs */
-interface CamCtl {
-  enabled: boolean;
-  readonly target: { x: number; z: number };
-  readonly distance: number;
-  readonly yawAngle: number;
-  readonly tiltAngle: number;
-  /** base tilt before the far-zoom top-down blend (radians) */
-  readonly baseTilt?: number;
-  setView(x: number, z: number, distance: number, tiltDeg?: number, yawDeg?: number): void;
-}
-/** camera view: target x/z (m), distance (m), tilt / yaw (degrees) */
-interface View {
-  x: number;
-  z: number;
-  d: number;
-  tilt: number;
-  yaw: number;
-}
-
 /** 23:55 */
 const EVE = 23 + 55 / 60;
 /** seconds of countdown from 23:55 to midnight */
@@ -187,9 +171,6 @@ const CAM_TILT = 25;
 const DAYS_PER_YEAR = DAYS_PER_MONTH * MONTHS_PER_YEAR;
 /** at most this much real time (s) advances the celebration in one frame (a hidden tab or a long stall skips nothing) */
 const REAL_STEP_MAX = 1;
-/** keys the camera controller acts on: pressing one hands the camera back to the player */
-const CAMERA_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'NumpadEqual']);
-const DEG = 180 / Math.PI;
 
 const nf = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
@@ -240,18 +221,12 @@ export class NewYearCelebration {
   private bannerShown = false;
   private countdownOn = true;
   private off: (() => void) | null;
-  // ---- show camera
-  private camPhase: 'off' | 'wait' | 'in' | 'hold' | 'out' = 'off';
-  private camT = 0;
-  private camDur = CAM_IN;
+  // ---- shared show camera
+  private show: ShowCamera | null = null;
+  private camWait = false;
   private camSnap = false;
-  private camUser = false;
-  private camMoved = false;
-  private camSaved: View = { x: 0, z: 0, d: 900, tilt: 50, yaw: 45 };
-  private camFrom: View = { x: 0, z: 0, d: 900, tilt: 50, yaw: 45 };
-  private camTo: View = { x: 0, z: 0, d: 900, tilt: 50, yaw: 45 };
-  private camCur: View = { x: 0, z: 0, d: 900, tilt: 50, yaw: 45 };
-  private camOffs: (() => void)[] = [];
+  private camForce = false;
+  private camSession = 0;
   /** a pointer button is held on the canvas (a tool drag): never start moving the camera then */
   private pointerHeld = false;
   private pointerOffs: (() => void)[] = [];
@@ -284,7 +259,7 @@ export class NewYearCelebration {
   }
   /** the show camera is driving (or about to drive) the camera */
   get cameraActive(): boolean {
-    return this.camPhase !== 'off';
+    return !!this.show?.active && this.camSession === this.show.session;
   }
 
   // ------------------------------------------------------------------------------------------------ trigger
@@ -474,7 +449,7 @@ export class NewYearCelebration {
       // fast-forwarded: put the clock where it would be
       world.timeOfDay = this.targetHour(this.t) % 24;
     }
-    if (wantCam && this.fw) this.camStart(!!opts.instant || !!opts.fastForward);
+    if (wantCam && this.fw) this.camStart(!!opts.instant || !!opts.fastForward, opts.camera === true);
     this.loadAudio();
     return true;
   }
@@ -506,6 +481,7 @@ export class NewYearCelebration {
     this.pointerOffs.length = 0;
     this.overlay?.remove();
     this.overlay = null;
+    if (!this.deps.showCamera) this.show?.dispose();
     this.audio?.dispose();
     this.audio = null;
   }
@@ -527,7 +503,7 @@ export class NewYearCelebration {
     // a burst's last embers never outlast burstMaxS, also after the celebration settled (only a show seen from far away
     // gets there). Its show clock: the fireworks advance at most 0.1 s a frame
     if (this.burstOn) this.capBurst();
-    if (this.phase === 'idle' && this.camPhase === 'off') {
+    if (this.phase === 'idle' && !this.cameraActive) {
       this.releaseDate();
       return;
     }
@@ -734,146 +710,47 @@ export class NewYearCelebration {
   }
 
   // ------------------------------------------------------------------------------------------------ show camera
-  private camCtl(): CamCtl | null {
-    try {
-      const c = (this.deps.world() as { cameraController?: CamCtl }).cameraController;
-      return c && typeof c.setView === 'function' ? c : null;
-    } catch {
-      return null;
-    }
+  private camCtl(): ShowControls | null {
+    const w = this.deps.world() as WorldViewApi & { cameraController?: ShowControls };
+    const c = w.cameraController ?? w.controls as unknown as ShowControls;
+    return c && typeof c.setView === 'function' ? c : null;
   }
 
-  private readView(c: CamCtl, out: View): View {
-    out.x = c.target.x;
-    out.z = c.target.z;
-    out.d = c.distance;
-    out.tilt = (typeof c.baseTilt === 'number' ? c.baseTilt : c.tiltAngle) * DEG;
-    out.yaw = c.yawAngle * DEG;
-    return out;
-  }
-
-  private camStart(snap: boolean): void {
-    const c = this.camCtl();
-    if (!c || !c.enabled || this.pointerHeld) return;
-    this.readView(c, this.camSaved);
-    this.camUser = false;
-    this.camMoved = false;
+  private camStart(snap: boolean, force: boolean): void {
+    if (this.pointerHeld) return;
+    this.show ??= this.deps.showCamera ?? new ShowCamera(() => this.camCtl(), this.deps.signal);
+    // New Year takes priority over a spotlight, restoring the player's view before saving it.
+    this.show.cancel(true);
+    this.camWait = this.show.begin((e) => e.key === 'Escape' || isCameraCode(e.code, this.deps.settings().keyBindings));
+    this.camSession = this.camWait ? this.show.session : 0;
     this.camSnap = snap;
-    this.camPhase = 'wait';
-    this.listenForUser();
+    this.camForce = force;
   }
 
   private updateCamera(dt: number): void {
-    if (this.camPhase === 'off') return;
-    const c = this.camCtl();
-    if (!c || this.camUser) {
-      // the player took the camera (or it is gone): leave it where it is
-      this.camStop(false);
-      return;
-    }
-    if (this.camPhase === 'wait') {
-      // the show's launch sites are collected one frame after it starts
+    const show = this.show;
+    if (!show || !this.cameraActive) { this.camWait = false; return; }
+    if (!this.camForce && this.deps.settings().newYearCamera === false) { this.camStop(false); return; }
+    if (this.camWait) {
       const ctr = this.fw?.centre;
-      if (!ctr) return;
+      if (!ctr || !show.saved) return;
       const k = this.fw?.showSize ?? 0.5;
-      const S = this.camSaved;
-      Object.assign(this.camFrom, S);
-      const to = this.camTo;
-      to.x = ctr.x;
-      to.z = ctr.z;
-      to.d = 780 + (1350 - 780) * Math.pow(clamp01(k), 0.8);
-      to.tilt = CAM_TILT;
-      to.yaw = S.yaw;
-      // arrive before the opening salvo's sites are chosen (2.6 s before midnight), so its bursts fit the frame
-      this.camDur = this.camSnap ? 0 : Math.max(0.8, Math.min(CAM_IN, this.midnightAt - 2.9 - this.t));
-      this.camT = 0;
-      this.camPhase = 'in';
+      show.moveTo({ x: ctr.x, z: ctr.z, d: 780 + (1350 - 780) * Math.pow(clamp01(k), 0.8), tilt: CAM_TILT, yaw: show.saved.yaw },
+        this.camSnap ? 0 : Math.max(0.8, Math.min(CAM_IN, this.midnightAt - 2.9 - this.t)));
+      this.camWait = false;
     }
-    if (this.camPhase === 'in' || this.camPhase === 'out') {
-      this.camT += dt;
-      const k = this.camDur > 0 ? smooth(this.camT / this.camDur) : 1;
-      this.applyView(c, k);
-      if (k >= 1) {
-        if (this.camPhase === 'in') this.camPhase = 'hold';
-        else this.camStop(false);
-      }
-    }
+    show.frame(dt);
   }
 
-  /** place the camera between camFrom and camTo (distance eased in log space) */
-  private applyView(c: CamCtl, k: number): void {
-    const a = this.camFrom, b = this.camTo, v = this.camCur;
-    v.x = a.x + (b.x - a.x) * k;
-    v.z = a.z + (b.z - a.z) * k;
-    v.d = Math.exp(Math.log(Math.max(1, a.d)) + (Math.log(Math.max(1, b.d)) - Math.log(Math.max(1, a.d))) * k);
-    v.tilt = a.tilt + (b.tilt - a.tilt) * k;
-    let dy = b.yaw - a.yaw;
-    while (dy > 180) dy -= 360;
-    while (dy < -180) dy += 360;
-    v.yaw = a.yaw + dy * k;
-    try {
-      c.setView(v.x, v.z, v.d, v.tilt, v.yaw);
-      this.camMoved = true;
-    } catch {
-      this.camStop(false);
-    }
-  }
-
-  /** after the show: ease back to the player's view (unless they took the camera meanwhile) */
   private camBack(): void {
-    if (this.camPhase === 'off' || this.camUser) {
-      this.camStop(false);
-      return;
-    }
-    const c = this.camCtl();
-    if (!c || !this.camMoved) {
-      this.camStop(false);
-      return;
-    }
-    this.readView(c, this.camFrom);
-    Object.assign(this.camTo, this.camSaved);
-    this.camDur = CAM_OUT;
-    this.camT = 0;
-    this.camPhase = 'out';
+    this.camWait = false;
+    if (this.cameraActive) this.show?.back(CAM_OUT);
   }
 
-  /** stop driving the camera; restore = snap back to the player's view (cancelled mid-way) */
   private camStop(restore: boolean): void {
-    if (this.camPhase === 'off') return;
-    const c = restore && this.camMoved && !this.camUser ? this.camCtl() : null;
-    if (c) {
-      const v = this.camSaved;
-      try {
-        c.setView(v.x, v.z, v.d, v.tilt, v.yaw);
-      } catch {
-        /* ignore */
-      }
-    }
-    this.camPhase = 'off';
-    for (const f of this.camOffs) f();
-    this.camOffs.length = 0;
-  }
-
-  /** any camera input (or a click / touch on the city) hands the camera back to the player */
-  private listenForUser(): void {
-    if (this.camOffs.length) return;
-    const user = () => {
-      this.camUser = true;
-    };
-    const el = this.canvas();
-    if (el) {
-      for (const ev of ['pointerdown', 'wheel', 'touchstart'] as const) {
-        el.addEventListener(ev, user, { capture: true, passive: true, signal: this.deps.signal });
-        this.camOffs.push(() => el.removeEventListener(ev, user, { capture: true }));
-      }
-    }
-    if (typeof window !== 'undefined') {
-      const kd = (e: KeyboardEvent) => {
-        if (CAMERA_KEYS.has(e.code)) this.camUser = true;
-      };
-      window.addEventListener('keydown', kd, { capture: true, signal: this.deps.signal });
-      this.camOffs.push(() => window.removeEventListener('keydown', kd, true));
-    }
+    this.camWait = false;
+    if (this.cameraActive) this.show?.cancel(restore);
+    this.camSession = 0;
   }
 
   private canvas(): HTMLElement | null {

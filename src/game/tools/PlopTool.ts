@@ -26,6 +26,7 @@ import { upkeepEstimate } from '../../ui/upkeepModel';
 import { budgetEffect, FAIL, resultTip, safe, Tool, type ToolPointer } from './Tool';
 import { shoreFacesWater, shoreRotation, staffedService, type Rot } from './placement';
 import type { QueryResult } from '../../worker/SimHost';
+import { bindingLabel, matchesBinding } from '../bindings';
 
 /** actions.ts plop's shore rule failure (the tip adds how to fix it) */
 const SHORE_FAIL = 'Must be placed on the shore with its front facing water';
@@ -245,7 +246,8 @@ export class PlopTool extends Tool {
       }
       this.ctx.world.setHighlight(cells);
     }
-    const facing = this.manual ? 'R rotate' : this.facingWater ? 'Auto-facing water · R rotate' : 'Auto-facing road · R rotate';
+    const rotate = `${bindingLabel('rotateBuilding', this.ctx.settings?.keyBindings)} rotate`;
+    const facing = this.manual ? rotate : this.facingWater ? `Auto-facing water · ${rotate}` : `Auto-facing road · ${rotate}`;
     // FH-05: what it does to the monthly budget at the upkeep quoted above (a placeable spot only; red below zero)
     const be = this.res?.ok ? safe(() => budgetEffect(this.ctx.state, this.def, this.upkeepMo, this.ctx.sandbox()), null) : null;
     const budget = be ? `<div class="${be.bad ? 'tip-reason' : 'tip-sub'}">Monthly budget: ${escapeHtml(be.text)}${be.reserves ? ` · ${escapeHtml(be.reserves)}` : ''}</div>` : '';
@@ -290,7 +292,7 @@ export class PlopTool extends Tool {
         other = safe(() => shoreFacesWater(st, o.x, o.z, rw, rd, r), false);
       }
       // (the reason already says "with its front facing water": the fix only names the move — final fixes UI-4)
-      this.shoreHint = other ? ' — press R to face the water' : ' — move it onto the water\'s edge';
+      this.shoreHint = other ? ` — press ${bindingLabel('rotateBuilding', this.ctx.settings?.keyBindings)} to face the water` : ' — move it onto the water\'s edge';
     }
   }
 
@@ -358,7 +360,7 @@ export class PlopTool extends Tool {
     return Math.abs(p.hit.point.x - lp.hit.point.x) <= tol && Math.abs(p.hit.point.z - lp.hit.point.z) <= tol;
   }
   override key(e: KeyboardEvent, p: ToolPointer | null): boolean {
-    if (e.type === 'keydown' && (e.key === 'r' || e.key === 'R') && !e.ctrlKey && !e.metaKey) {
+    if (e.type === 'keydown' && matchesBinding('rotateBuilding', e, this.ctx.settings?.keyBindings)) {
       this.manual = true;
       this.rot = ((this.rot + (e.shiftKey ? 3 : 1)) % 4) as Rot;
       this.ctx.sound('rotate');
@@ -371,6 +373,6 @@ export class PlopTool extends Tool {
     this.refresh(null);
   }
   override hints(): string[] {
-    return ['Click to place', 'R rotate', 'Esc done'];
+    return ['Click to place', `${bindingLabel('rotateBuilding', this.ctx.settings?.keyBindings)} rotate`, 'Esc done'];
   }
 }
