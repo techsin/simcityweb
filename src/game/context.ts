@@ -103,6 +103,9 @@ export interface GameContext {
   showOnboarding?(): void;
   save(): Promise<void>;
   exitToRegion(): Promise<void>;
+  /** LG-12: "Found a sister city": save, leave the city and open the New City dialog on the free tile next door.
+   *  Absent when the city has no unfounded tile beside it (or no region) */
+  foundSister?(): Promise<void>;
   openPauseMenu(): void;
   /** is the sandbox / everything unlocked */
   sandbox(): boolean;

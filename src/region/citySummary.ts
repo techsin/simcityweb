@@ -48,6 +48,8 @@ export function summarizeCity(st: CityState, prev?: Partial<RegionCitySummary>):
   if (!pop) for (const b of st.buildings.values()) pop += b.pop ?? 0;
   const r = s.residents ? s.residents[0] + s.residents[1] + s.residents[2] : pop;
   const now = Date.now();
+  // LG-12: a sister city's save names its parent's tile (regionEffects.ts prepareSisterCity)
+  const sisterOf = (st.systemData?.sisterOf as { tile?: unknown } | undefined)?.tile;
   return {
     name: st.config.name,
     mayor: st.config.mayor,
@@ -62,5 +64,6 @@ export function summarizeCity(st: CityState, prev?: Partial<RegionCitySummary>):
     difficulty: st.config.difficulty,
     year: st.year,
     skyline: encodeBytes(skylineGrid(st)),
+    ...(typeof sisterOf === 'string' ? { sisterOf } : {}),
   };
 }

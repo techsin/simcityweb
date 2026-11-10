@@ -13,6 +13,7 @@
  *           'recycling'         recycled material sales: tons recycled × 0.5                          (WP4 / WP3)
  *           'ordinance:<id>'    revenue ordinances (legalized gambling, parking fines)
  *           'oneoff:loan'       loan proceeds          'oneoff:refund'  bulldoze refunds
+ *           'oneoff:endowment'  LG-12: the endowment a city founded as a sister city starts with (ENDOWMENT_KEY)
  *  expense: 'service:police' 'service:fire' 'service:health' 'service:education' 'service:transit'
  *           'service:parks' 'service:utilities' 'service:roads' 'service:civic' (no funding slider)
  *           'transport:streets' 'transport:roads' 'transport:oneway' 'transport:avenues' 'transport:highways'
@@ -20,6 +21,7 @@
  *           'utilities:powerlines' 'utilities:landfill'
  *           'ordinance:<id>'    'loan' (all loan payments)
  *           'oneoff:construction' 'oneoff:zoning' 'oneoff:demolition' 'oneoff:terraform' 'oneoff:loanRepay'
+ *           'oneoff:endowment'  LG-12: "Sister city endowment", what the city gave a sister city it founded (ENDOWMENT_KEY)
  *  'oneoff:*' entries were paid / received immediately when the action happened; everything else is settled on
  *  the first day of the month. Σ lastIncome − Σ lastExpense = change of funds over the month.
  */
@@ -39,6 +41,8 @@ import { ORDINANCES, ordinanceEffect, ordinanceMonthly } from './ordinances';
 import { payLoansMonthly } from './loans';
 import { ATTRACTIONS, venueVisits } from './tourism';
 import { facilityUseFactor } from '../infra/facilities';
+import { formatMoney } from './format';
+import type { EndowmentDue } from '../../region/regionEffects';
 
 const NET_KEY: Record<number, string> = {
   [Network.Street]: 'transport:streets',
@@ -212,6 +216,67 @@ export function computeMonthlyBudget(st: CityState, rt: EconRuntime | null): Bud
   return { income, expense, totalIncome: ti, totalExpense: te };
 }
 
+// ------------------------------------------------------------------------------------------------ LG-12 endowments
+/** budget key of a sister-city endowment: a one-off expense of the city that gives it ("Sister city endowment"), a
+ *  one-off income of the city founded with it */
+export const ENDOWMENT_KEY = 'oneoff:endowment';
+
+/** systemData.sisterBooks: the ids of the region's ledger entries this city has booked, and the game day it last
+ *  founded a sister city (approval.ts: "Founded a sister city") */
+export interface SisterBooks { v: 1; booked: string[]; founded?: number }
+
+export function sisterBooks(st: CityState): SisterBooks | undefined {
+  const b = st.systemData.sisterBooks as SisterBooks | undefined;
+  return b && b.v === 1 && Array.isArray(b.booked) ? b : undefined;
+}
+
+/**
+ * LG-12: book the sister-city foundings the region's ledger holds for this city (systemData.region.endowments, which
+ * src/region/regionEffects.ts writes whenever the city is opened), each exactly once.
+ *  - `out`, a sister city this city founded: its endowment leaves the funds as a one-off expense, and the founding's day
+ *    is kept for the approval bonus.
+ *  - `in`, the founding that made this city: its endowment joins the funds as a one-off income — only when the city's
+ *    own save names that founding (systemData.sisterOf.id): another city on the same tile gets nothing.
+ * The booked ids live in the save next to the money they moved, so a city loaded from a save older than its booking
+ * books the entry again, and one loaded from a later save does not: the ledger entry moves its amount exactly once
+ * through each of its two cities, whatever was killed in between. A city without such an entry is not touched.
+ */
+export function bookEndowments(sim: Pick<Simulation, 'state' | 'notify'>): void {
+  const st = sim.state;
+  const dues = (st.systemData.region as { endowments?: EndowmentDue[] } | undefined)?.endowments;
+  if (!Array.isArray(dues) || dues.length === 0) return;
+  const books: SisterBooks = sisterBooks(st) ?? { v: 1, booked: [] };
+  const origin = st.systemData.sisterOf as { id?: unknown; at?: { x?: unknown; z?: unknown } } | undefined;
+  const sandbox = !!st.config.sandbox || st.config.difficulty === 'sandbox';
+  const b = st.budget;
+  let any = false;
+  for (const d of dues) {
+    if (!d || typeof d.id !== 'string' || books.booked.includes(d.id)) continue;
+    const amount = Number.isFinite(d.amount) && d.amount > 0 ? d.amount : 0;
+    if (d.dir === 'in') {
+      if (origin?.id !== d.id) continue;
+      if (amount > 0) {
+        b.curIncome[ENDOWMENT_KEY] = (b.curIncome[ENDOWMENT_KEY] ?? 0) + amount;
+        if (!sandbox) st.funds += amount;
+      }
+      // (the news shows where the parent's road reaches this city: the stub is a connection once roads lead on from it)
+      const at = typeof origin.at?.x === 'number' && typeof origin.at.z === 'number' ? { x: origin.at.x, z: origin.at.z } : null;
+      sim.notify(`${d.city ?? 'Our parent city'} founded this city as its sister city${amount > 0 ? ` and gave it ${formatMoney(amount)} to start with` : ''}.`
+        + (at ? ' Its road reaches our border here: build on from it to connect the two cities.' : ''), 'good', at?.x, at?.z, 'finance');
+    } else if (d.dir === 'out') {
+      if (amount > 0) {
+        b.curExpense[ENDOWMENT_KEY] = (b.curExpense[ENDOWMENT_KEY] ?? 0) + amount;
+        if (!sandbox) st.funds -= amount;
+      }
+      if (Number.isFinite(d.day) && (books.founded === undefined || d.day > books.founded)) books.founded = d.day;
+      sim.notify(`We founded ${d.city ?? 'a new city'} as our sister city${amount > 0 ? ` and gave it ${formatMoney(amount)} to start with` : ''}. Residents are proud of it.`, 'good', undefined, undefined, 'finance');
+    } else continue;
+    books.booked.push(d.id);
+    any = true;
+  }
+  if (any) st.systemData.sisterBooks = books;
+}
+
 export function budgetSystem(rt: EconRuntime): SimSystem {
   const settle = (sim: Simulation) => {
     const st = sim.state;
@@ -277,6 +342,8 @@ export function budgetSystem(rt: EconRuntime): SimSystem {
       rt.attach(sim);
       // (a loaded city keeps the estimate of its last week, as the uninterrupted game does until its next one: T057)
       if (!infraFlags(sim.state).utilities && !(sim.state.day > 0)) estimateUtilities(sim.state, rt);
+      // LG-12: a sister-city endowment the region's ledger holds for this city and its save has not booked yet
+      bookEndowments(sim);
     },
     daily(sim) {
       // keep utility estimates fresh for the UI when sim-infra is absent (weekly)

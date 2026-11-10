@@ -25,7 +25,7 @@ import {
 } from './tuning';
 import { type EconRuntime, type InfraFlags, GROWABLE_SLICES, econData, infraFlags } from './runtime';
 import { ordinanceEffect } from './ordinances';
-import { serviceEffectiveness } from './budget';
+import { serviceEffectiveness, sisterBooks } from './budget';
 import { waterRequired } from './demographics';
 import { DAYS_PER_MONTH } from '../../core/constants';
 import type { FactorTerm } from '../explain';
@@ -242,6 +242,17 @@ export const APPROVAL_LABELS: Record<string, string> = {
   clamp: 'Limit (0–100)',
 };
 
+/**
+ * LG-12: residents' recognition for founding a sister city: +SISTER_APPROVAL in each of the 12 monthly updates after
+ * the founding the budget booked (budget.ts bookEndowments → systemData.sisterBooks.founded). The term is in the
+ * breakdown only while it counts, so a city that founded none keeps its terms, and its save, bit for bit. Its label is
+ * kept apart from APPROVAL_LABELS: that table names exactly the terms the year review records (YEAR_REVIEW_TERMS, one
+ * history series each in every save), and a twelve-month bonus is not one of them.
+ */
+export const SISTER_APPROVAL = 1;
+export const SISTER_APPROVAL_DAYS = 360;
+const BONUS_LABELS: Record<string, string> = { sisterCity: 'Founded a sister city' };
+
 /** soft saturation of a negative term: ≈ raw while small (slope 1 at 0), never below −sat */
 function saturate(raw: number, sat: number): number {
   if (raw === 0) return 0; // no −0 in the breakdown
@@ -418,6 +429,9 @@ export function approvalSystem(rt: EconRuntime): SimSystem {
     T.toxicDump = toxicDumpOperating(rt) ? AT.toxicDump : 0;
     const dis = sim.getSystem<SimSystem & DisastersApi>('disasters');
     T.disaster = disasterMonth || (dis?.active?.length ?? 0) > 0 ? AT.disaster : 0;
+    // LG-12: "Founded a sister city" (see SISTER_APPROVAL: no key at all unless it counts)
+    const sister = sisterBooks(st)?.founded;
+    if (sister !== undefined && st.day - sister <= SISTER_APPROVAL_DAYS) T.sisterCity = SISTER_APPROVAL;
     firesMonth = 0;
     disasterMonth = false;
     let raw = 0;
@@ -490,7 +504,7 @@ export function approvalBreakdown(st: CityState): FactorTerm[] {
   for (const id in T) {
     const v = T[id];
     if (!v && id !== 'base' && !(id === 'crime' && crimeGrace)) continue;
-    out.push({ id, label: APPROVAL_LABELS[id] ?? id, value: v, detail: id === 'crime' && crimeGrace ? 'new-town grace' : approvalDetail(st, id, T) });
+    out.push({ id, label: APPROVAL_LABELS[id] ?? BONUS_LABELS[id] ?? id, value: v, detail: id === 'crime' && crimeGrace ? 'new-town grace' : approvalDetail(st, id, T) });
   }
   out.sort((a, b) => (a.id === 'base' ? -1 : b.id === 'base' ? 1 : Math.abs(b.value) - Math.abs(a.value)));
   return out;

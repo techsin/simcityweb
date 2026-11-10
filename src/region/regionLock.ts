@@ -5,6 +5,7 @@ import { clearRegionSummaryStale, openKV, regionSaveAccess, regionSummaryStale, 
 import { RegionStorageSession, reopenStoredRegion, type StorageCity } from '../ui/StorageDialog';
 import { openNewCityDialog } from './NewCityDialog';
 import type { RegionModel } from './RegionModel';
+import type { SisterPlan } from './regionEffects';
 import { summarizeCity } from './citySummary';
 import type { RegionData, RegionTile } from './types';
 
@@ -77,9 +78,10 @@ export class RegionStorage {
     return true;
   }
 
-  async foundDialog(model: RegionModel, tile: RegionTile): Promise<CityConfigData | null> {
+  /** `sister` (LG-12): the planned founding of a sister city; the dialog shows its endowment and sets its amount */
+  async foundDialog(model: RegionModel, tile: RegionTile, sister?: SisterPlan): Promise<CityConfigData | null> {
     if (this.context().region !== model || !regionSaveAccess(model.data.id)) return null;
-    const choice = await openNewCityDialog({ region: model, tile, onFound: () => { void requestPersistentStorage(); } });
+    const choice = await openNewCityDialog({ region: model, tile, ...(sister ? { sister } : {}), onFound: () => { void requestPersistentStorage(); } });
     return this.context().region === model && regionSaveAccess(model.data.id) ? choice : null;
   }
 

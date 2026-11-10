@@ -6,6 +6,9 @@
  * FH-11: each difficulty card carries its FH-04 blurb (difficultyRules); a profile's first city preselects Easy and
  * Guided start, later dialogs the last choice (newCityPrefs.ts); Disasters follows the difficulty's default until the
  * player sets it, with a note on when disasters start.
+ * LG-12: founding a sister city (`sister`: the plan of regionEffects.ts) fills in the parent's mayor and adds the
+ * endowment slider (endowmentField, in its own section below); "Found City" then asks once more, since the transfer
+ * can't be undone, and writes the amount into the plan. Cancelling either dialog moves no money.
  */
 import type { Climate, Difficulty, TerrainPreset } from '../core/types';
 import { REGION_UNIT_CELLS } from '../core/constants';
@@ -21,8 +24,10 @@ import type { RegionTile } from './types';
 import { TILE_SIZE_LABEL } from './types';
 import { drawCityMap } from './mapPreview';
 import { randomCityName, randomMayorName } from './names';
-import { Modal, segmented, slider, toggle } from './ui/modal';
-import { button, h, icon } from './ui/dom';
+import { Modal, confirmDialog, segmented, slider, toggle } from './ui/modal';
+import { button, formatMoney, h, icon } from './ui/dom';
+import { formatMoney as exactMoney } from '../sim/economy/format';
+import { ENDOWMENT_MAX, ENDOWMENT_SHARE, ENDOWMENT_YEARS, type SisterPlan } from './regionEffects';
 
 export interface NewCityDialogOptions {
   region?: RegionModel;
@@ -32,6 +37,9 @@ export interface NewCityDialogOptions {
   defaults?: Partial<CityConfigData>;
   /** Runs inside the player's Found click (before the dialog promise resolves). */
   onFound?: () => void;
+  /** LG-12: the city is founded as a sister city: its parent's mayor is filled in, the parent's endowment is offered,
+   *  and the amount the player confirms is written into the plan (`sister.amount`; 0 when the dialog is cancelled) */
+  sister?: SisterPlan;
 }
 
 const PRESETS: { id: Exclude<TerrainPreset, 'region'>; label: string; icon: string }[] = [
@@ -67,6 +75,71 @@ function toggleControl(label: string, checked: boolean, onChange: (v: boolean) =
   return { el, set: (v) => void (input.checked = v) };
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// LG-12: a sister city's endowment. Its own section: openNewCityDialog only places the field, tells it when the
+// difficulty changes and asks it before founding.
+// ---------------------------------------------------------------------------------------------------------------
+interface EndowmentField {
+  el: HTMLElement;
+  /** the difficulty changed: the start funds in the note, and no endowment for a sandbox city */
+  refresh(): void;
+  /**
+   * "Found City" was pressed. true: the founding goes on, and the plan holds the amount — 0 for none, or what the
+   * player has just agreed to. false: the confirmation is open (the transfer can't be undone); agreeing calls `again`
+   * (press Found once more), declining returns to the form.
+   */
+  confirmed(city: string, again: () => void): boolean;
+}
+
+/** the slider (0 … the plan's limit) with a note on the rule and on what the new city starts with; a parent that can
+ *  give nothing now gets the reason instead (the 10-year rule names the date it can endow again) */
+function endowmentField(plan: SisterPlan, cfg: CityConfigData): EndowmentField {
+  const p = plan.parent;
+  const note = h('div', { class: 'nc-note' });
+  plan.amount = 0;
+  if (plan.blocked || plan.limit <= 0) {
+    note.textContent = plan.blocked ?? `${p.name} has too little money to endow a sister city.`;
+    return { el: h('div', { class: 'field nc-endow' }, h('label', {}, `Endowment from ${p.name}`), note), refresh: () => undefined, confirmed: () => true };
+  }
+  let chosen = 0, agreed = false, asking = false;
+  const amount = () => (cfg.sandbox ? 0 : chosen);
+  const refresh = () => {
+    sl.setDisabled(!!cfg.sandbox);
+    const give = amount();
+    note.textContent = cfg.sandbox
+      ? 'A sandbox city has unlimited money: no endowment is sent.'
+      : give > 0
+        ? `The new city starts with ${exactMoney(cfg.startFunds + give)} (${exactMoney(cfg.startFunds)} + ${exactMoney(give)}). ${p.name} pays it once, on its budget line “Sister city endowment”.`
+        : `${p.name} can give up to ${exactMoney(plan.limit)}: ${Math.round(ENDOWMENT_SHARE * 100)}% of its ${exactMoney(p.funds)}, at most ${exactMoney(ENDOWMENT_MAX)}, once every ${ENDOWMENT_YEARS} years.`;
+  };
+  const sl = slider({ label: `Endowment from ${p.name}`, icon: 'coins', value: 0, min: 0, max: plan.limit, step: plan.step, format: (v) => formatMoney(v), onInput: (v) => ((chosen = Math.max(0, Math.min(plan.limit, v))), refresh()) });
+  // (a field like the others: the note sits under the slider, at the form's own spacing, also in the compact layout)
+  sl.el.style.marginBottom = '0';
+  refresh();
+  const confirmed = (city: string, again: () => void): boolean => {
+    const give = amount();
+    if (give <= 0 || agreed) {
+      plan.amount = give;
+      return true;
+    }
+    if (asking) return false;
+    asking = true;
+    void confirmDialog({
+      title: `Give ${exactMoney(give)} to ${city || 'the new city'}?`,
+      message: `${p.name} pays ${exactMoney(give)} from its treasury when the city is founded. This transfer can’t be undone, and ${p.name} can’t endow another sister city for ${ENDOWMENT_YEARS} years.`,
+      confirm: 'Found and give',
+      icon: 'coins',
+    }).then((ok) => {
+      asking = false;
+      if (!ok) return;
+      agreed = true;
+      again();
+    });
+    return false;
+  };
+  return { el: h('div', { class: 'field nc-endow' }, sl.el, note), refresh, confirmed };
+}
+
 export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityConfigData | null> {
   return new Promise((resolve) => {
     const size = o.tile ? o.tile.size * REGION_UNIT_CELLS : o.size ?? 128;
@@ -75,7 +148,7 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
     const startDifficulty = o.defaults?.difficulty ?? pick.difficulty;
     const withDifficulty: Partial<CityConfigData> = { difficulty: startDifficulty, startFunds: DIFFICULTY_FUNDS[startDifficulty], sandbox: startDifficulty === 'sandbox', ...o.defaults };
     const base = o.region && o.tile ? o.region.cityConfigFor(o.tile, withDifficulty) : defaultCityConfig({ size, ...withDifficulty });
-    const cfg: CityConfigData = { ...base, name: o.defaults?.name ?? randomCityName(), mayor: o.defaults?.mayor ?? randomMayorName() };
+    const cfg: CityConfigData = { ...base, name: o.defaults?.name ?? randomCityName(), mayor: o.defaults?.mayor ?? o.sister?.parent.mayor ?? randomMayorName() };
     if (!hasRegion && cfg.terrain === 'region') cfg.terrain = 'hills';
     let customPreset: Exclude<TerrainPreset, 'region'> = cfg.terrain === 'region' ? 'hills' : cfg.terrain;
     let result: CityConfigData | null = null;
@@ -125,9 +198,12 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
         cfg.sandbox = v === 'sandbox';
         // Easy unticks Disasters; the others tick it again, until the player sets the toggle themselves
         if (!disastersTouched) disasters.set((cfg.disasters = difficultyRules(v).defaultDisasters));
+        endow?.refresh();
       },
     });
     diff.el.classList.add('nc-diff');
+    // LG-12: the parent's endowment, under the starting funds it adds to
+    const endow = o.sister ? endowmentField(o.sister, cfg) : null;
     const disasters = toggleControl('Disasters', cfg.disasters, (v) => {
       disastersTouched = true;
       cfg.disasters = v;
@@ -206,6 +282,7 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
       {},
       h('div', { class: 'nc-row2' }, h('div', { class: 'field' }, h('label', {}, 'City name'), h('div', { class: 'input-row' }, nameInput, diceName)), h('div', { class: 'field' }, h('label', {}, 'Mayor'), h('div', { class: 'input-row' }, mayorInput, diceMayor))),
       h('div', { class: 'field' }, h('label', {}, 'Difficulty · starting funds'), diff.el),
+      endow?.el,
       h('div', { class: 'field' }, h('label', {}, 'Terrain'), source.el),
       custom,
       trees.el,
@@ -235,6 +312,8 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
       onClick: () => {
         if (result) return;
         o.onFound?.();
+        // LG-12: an endowment is confirmed first; "Found and give" presses Found again, declining returns to the form
+        if (endow && !endow.confirmed(nameInput.value.trim(), () => found.click())) return;
         cfg.name = nameInput.value.trim() || randomCityName();
         cfg.mayor = mayorInput.value.trim() || randomMayorName();
         // city founded: short celebratory fanfare (plays over the loading screen)
@@ -245,8 +324,8 @@ export function openNewCityDialog(o: NewCityDialogOptions = {}): Promise<CityCon
       },
     });
     const m: Modal = new Modal({
-      title: 'Found a New City',
-      subtitle: h('span', {}, icon('map', 12), ' ', sizeLabel, o.region ? ` · ${o.region.data.name}` : ''),
+      title: o.sister ? 'Found a Sister City' : 'Found a New City',
+      subtitle: h('span', {}, icon('map', 12), ' ', sizeLabel, o.region ? ` · ${o.region.data.name}` : '', o.sister ? ` · sister city of ${o.sister.parent.name}` : ''),
       icon: 'building',
       size: 'wide',
       body,

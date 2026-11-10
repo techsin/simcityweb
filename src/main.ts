@@ -62,7 +62,7 @@ import {
   type PendingRecovery,
   type WriteResult,
 } from './save';
-import { regionContext, type RegionContext } from './region/regionEffects';
+import { commitSisterCity, planSisterCity, prepareSisterCity, regionContext, sisterParent, type RegionContext, type SisterParent, type SisterPlan } from './region/regionEffects';
 import type { CityPersistence, HostState, SaveReason, SimHost, SnapshotWhy } from './worker/SimHost';
 // W1.3: the packet hosts' snapshot cadence, min(30 s, 90 sim days) (WORKER_DESIGN §4.3)
 import { periodicSnapshotDue } from './worker/recoveryMirror';
@@ -109,6 +109,8 @@ interface CitySceneOptions {
   /** W1.3: false starts a local or loopback host without the save's recovery journal (§4.4) */
   replayJournal?: boolean;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
+  /** LG-12: "Found a sister city": the same exit, then the New City dialog on a free tile next to the city */
+  onFoundSister?: (thumbnailDataUrl?: string) => void;
   onSave: (state: HostState, reason?: SaveReason) => Promise<void>;
   /** app-level settings; CityScene treats these keys as overrides of its stored in-game prefs */
   settings?: Partial<AppSettings>;
@@ -541,8 +543,9 @@ class App {
   }
 
   /** `t0`: when the player asked for the city (performance.now(); FH-21 measures the load from it); `existing`: a loading
-   *  screen already up (FH-12's first city keeps its one screen; removed if the region's lock is refused) */
-  private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData, t0 = performance.now(), existing?: LoadingScreen): Promise<void> {
+   *  screen already up (FH-12's first city keeps its one screen; removed if the region's lock is refused); `sister`
+   *  (LG-12): the city is founded as a sister city, with a road stub and its founding in the region's ledger */
+  private async startNewCity(model: RegionModel, tile: RegionTile, cfg: CityConfigData, t0 = performance.now(), existing?: LoadingScreen, sister?: SisterPlan): Promise<void> {
     if (!(await this.storage.hold(model.data))) return void existing?.remove();
     this.busy = true;
     const ld = existing ?? new LoadingScreen(this.root);
@@ -560,6 +563,8 @@ class App {
       ld.set('Planting trees…', 0.35);
       await paint();
       scatterTrees(st, topts);
+      // LG-12: a sister city's first save holds its road stub and names its parent
+      if (sister) prepareSisterCity(st, sister);
       ld.set('Founding the city…', 0.5);
       await paint();
       tile.city = summarizeCity(st);
@@ -567,7 +572,9 @@ class App {
       storing = true;
       // `st!`: still set here (it is dropped just before enterCity); no second binding keeps it alive past that
       await withRegionSaveAccess(model.data.id, () => saveCity(model.data.id, tile.key, st!));
-      await this.persistRegion();
+      // LG-12: the founding's ledger entry (the endowment) is stored by the region write that first names the new city
+      if (sister) await commitSisterCity(model.data, sister, () => this.persistRegion());
+      else await this.persistRegion();
       storing = false;
       // W1.2: the worker then loads it from IndexedDB (§4.5). Main keeps no recovery base and no state of its own (O6):
       // the scene runs on the worker's replica, as when a saved city is played
@@ -578,7 +585,7 @@ class App {
       await this.enterCity(model, tile, state, ld, t0, worker ?? undefined);
     } catch (e) {
       console.error('[main] failed to found city', e);
-      if (storing || isStorageError(e)) void showStorageError(e, { retry: () => this.startNewCity(model, tile, cfg) });
+      if (storing || isStorageError(e)) void showStorageError(e, { retry: () => this.startNewCity(model, tile, cfg, undefined, undefined, sister) });
       else toast(`Could not found the city: ${(e as Error).message}`, 'bad', 6000);
       ld.remove();
     } finally {
@@ -689,6 +696,7 @@ class App {
         replayJournal: replay,
         settings: cityOverrides(this.settings),
         onExitToRegion: (thumb) => void this.exitCity(thumb),
+        onFoundSister: (thumb) => void this.exitCity(thumb, true),
         onSave: (_state, reason = 'manual') => this.saveCityState(reason),
         onSettingsChange: (gs) => {
           // keep the app-level settings (the shared keys) in sync with changes made in the in-game settings panel
@@ -862,10 +870,13 @@ class App {
     await this.persistRegion();
   }
 
-  async exitCity(thumb?: string): Promise<void> {
+  /** `sister` (LG-12): the city was left through "Found a sister city": the founding follows once the region shows */
+  async exitCity(thumb?: string, sister = false): Promise<void> {
     const c = this.city;
     const model = this.region;
     if (!c || !model) return;
+    // LG-12: what the founding needs of the parent, read while its host still stands
+    const parent = sister && c.host ? sisterParent(c.host.state, c.tile.key) : null;
     const ld = new LoadingScreen(this.root);
     ld.set('Saving city…', 0.3);
     await paint();
@@ -880,7 +891,7 @@ class App {
     } catch (e) {
       console.error('[main] save on exit failed', e);
       ld.remove();
-      void showStorageError(e, { retry: () => this.exitCity(thumb) });
+      void showStorageError(e, { retry: () => this.exitCity(thumb, sister) });
       return;
     }
     // the save failed: keep the progress as a recovery snapshot (offered when the city is opened again)
@@ -889,6 +900,19 @@ class App {
     await this.closeCity(c);
     ld.set('Returning to the region…', 0.7);
     await this.showRegion(model, ld, c.tile.key);
+    if (parent) await this.foundSister(c.tile, parent);
+  }
+
+  /** LG-12: "Found a sister city" (the pause menu, the built-out advice): the New City dialog on the best free tile next
+   *  to the city just left, with its endowment. Nothing is charged or stored unless the player presses Found there */
+  private async foundSister(from: RegionTile, parent: SisterParent): Promise<void> {
+    const model = this.region;
+    if (this.busy || !model) return;
+    const plan = planSisterCity(model, from, parent);
+    if (!plan) return toast(`No free land borders ${parent.name}: a sister city needs an unfounded tile next to it.`, 'bad', 5000);
+    this.regionScreen?.selectTile(plan.to);
+    const cfg = await this.storage.foundDialog(model, plan.to, plan);
+    if (cfg) await this.startNewCity(model, plan.to, cfg, undefined, undefined, plan);
   }
 
   /** the city's scene, host and indicators go; nothing is saved here */

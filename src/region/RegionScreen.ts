@@ -2,13 +2,15 @@
  * RegionScreen — RegionView + HUD overlay: region card (name, totals, RCI), toolbar (menu, rename, export, import,
  * music, settings), founded-cities list, hover tooltip, floating city labels and the selected-tile card
  * (Found new city / Play / Delete city). In a region without cities one medium tile is outlined and labelled as a good
- * first city (FH-11, RegionModel.recommendedTile).
+ * first city (FH-11, RegionModel.recommendedTile). LG-12: the region card lists the sister links (parent → the cities
+ * it founded), and a city's tile card names its own.
  */
 import * as THREE from 'three';
 import { audio } from '../audio';
 import type { QualityLevel } from '../render/contracts';
 import { PRESET_BY_ID, type RegionModel } from './RegionModel';
 import { RegionView } from './RegionView';
+import { sisterLines, sisterNote } from './regionEffects';
 import { TILE_SIZE_LABEL, type RegionData, type RegionTile } from './types';
 import { button, formatMoney, formatPop, h, icon, timeAgo, withSounds } from './ui/dom';
 import { confirmDialog, promptDialog, toast } from './ui/modal';
@@ -170,7 +172,20 @@ export class RegionScreen {
         h('div', {}, h('i', { style: `background: var(--ind); width:${Math.max(6, (t.i / total) * 100)}%` }), h('b', {}, formatPop(t.i)), 'Industrial'),
       ),
       h('div', { class: 'rh-tags', style: 'margin-top:12px' }, icon('building', 13), `${t.cities} of ${d.tiles.length} tiles founded`),
+      ...this.sisterRows(),
     );
+  }
+
+  /** LG-12: the region's sister links on the card, one line per parent city ("Queensbury → Fairland, Eastport") */
+  private sisterRows(): HTMLElement[] {
+    const lines = sisterLines(this.model.data);
+    if (!lines.length) return [];
+    // (a card for the whole region: the first few parents, then a count)
+    const shown = lines.length > 5 ? [...lines.slice(0, 4), `and ${lines.length - 4} more`] : lines;
+    return [
+      h('div', { class: 'rh-tags rh-sisters', style: 'margin-top:10px' }, icon('heart', 13), 'Sister cities'),
+      ...shown.map((l) => h('div', { class: 'rh-tags rh-sister', style: 'white-space:normal; margin-top:3px; color:var(--text)', title: 'A city and the sister cities it founded' }, l)),
+    ];
   }
 
   private renderList(): void {
@@ -235,6 +250,8 @@ export class RegionScreen {
     const km = tile.size;
     const water = Math.round(this.model.tileWaterFraction(tile) * 100);
     const img = c?.thumbnail ? h('img', { class: 'tc-img', src: c.thumbnail, alt: '' }) : this.tilePreview(tile);
+    // LG-12: "sister city of Queensbury" / "sister city: Fairland"
+    const sisters = c ? sisterNote(this.model.data, tile) : '';
     const actions = h('div', { class: 'tc-actions' });
     if (c) {
       actions.append(
@@ -260,7 +277,7 @@ export class RegionScreen {
         'div',
         { style: 'min-width:0' },
         h('div', { class: 'tc-title' }, h('h3', {}, c ? c.name : 'Unfounded land'), h('span', { class: `size-badge s${tile.size}` }, TILE_SIZE_LABEL[tile.size])),
-        h('div', { class: 'tc-sub' }, c ? `Mayor ${c.mayor} · ${c.difficulty} difficulty` : tile === this.view.recommendedTile ? `${guideCopy.phaseA.A3Tile()}: mostly flat land with a little water.` : 'Found a city here — its terrain will match the neighbouring tiles.'),
+        h('div', { class: 'tc-sub' }, c ? `Mayor ${c.mayor} · ${c.difficulty} difficulty${sisters ? ` · ${sisters}` : ''}` : tile === this.view.recommendedTile ? `${guideCopy.phaseA.A3Tile()}: mostly flat land with a little water.` : 'Found a city here — its terrain will match the neighbouring tiles.'),
         h('div', { class: 'tc-stats' }, ...stats),
         actions,
       ),

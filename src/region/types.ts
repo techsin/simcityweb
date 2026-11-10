@@ -34,6 +34,32 @@ export interface RegionCitySummary {
    * per 8x8-cell block. Drives the extruded "skyline hints" in the region view.
    */
   skyline?: string;
+  /**
+   * LG-12: tile key of the city this one was founded from as its sister city. citySummary.ts copies it from the city's
+   * own save (systemData.sisterOf), so it survives every summary refresh; absent for any other city.
+   */
+  sisterOf?: string;
+}
+
+/**
+ * LG-12: one sister-city founding in the region's ledger (RegionData.endowments). The entry IS the transfer: it is
+ * stored by the region write that first names the new city, and each of the two cities books its side from it the next
+ * time it is opened, once (regionEffects.ts dueEndowments → budget.ts bookEndowments). A tab killed at any moment
+ * therefore leaves a whole transfer or none.
+ */
+export interface SisterEndowment {
+  /** unique per founding; a city remembers the ids it has booked (systemData.sisterBooks) */
+  id: string;
+  /** tile keys of the parent and of the new city */
+  from: string;
+  to: string;
+  /** § the parent gave the new city (0: founded without an endowment) */
+  amount: number;
+  /** the parent's game day at the founding: the 10-year rule and the parent's approval bonus count from it */
+  day: number;
+  /** the two cities' RegionCitySummary.founded: a city founded later on the parent's tile owes nothing */
+  fromFounded: number;
+  toFounded: number;
 }
 
 export interface RegionTile {
@@ -71,6 +97,8 @@ export interface RegionData {
   preview?: string;
   /** what `preview` was drawn from (regionPreviewKey): regenerated only when this changes */
   previewKey?: string;
+  /** LG-12: the sister-city foundings and their endowments, oldest first (absent in a region saved before LG-12) */
+  endowments?: SisterEndowment[];
 }
 
 export const TILE_SIZE_LABEL: Record<TileSize, string> = { 1: 'Small', 2: 'Medium', 4: 'Large' };

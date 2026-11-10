@@ -78,6 +78,8 @@ export function ledgerGroup(key: string): [group: string, item: string] {
 const ONEOFF_LABELS: Record<string, string> = {
   construction: 'Construction', zoning: 'Zoning', demolition: 'Demolition', terraform: 'Terraforming', trees: 'Trees',
   loan: 'Loan proceeds', loanRepay: 'Early loan repayment', refund: 'Refunds',
+  // LG-12 (economy/budget.ts ENDOWMENT_KEY): paid by the city that founds a sister city, received by the new city
+  endowment: 'Sister city endowment',
 };
 
 function taxKeys(d: DevType): string[] {

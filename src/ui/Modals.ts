@@ -31,9 +31,16 @@ export class PauseMenu {
       this.close(false);
       await ctx.exitToRegion();
     });
+    // LG-12: offered while a free tile borders the city (CityScene sets the hook then); it founds, so it needs to write
+    const sister = ctx.foundSister ? item('map', 'Found a sister city', async () => {
+      this.close(false);
+      await ctx.foundSister?.();
+    }) : null;
+    if (sister) sister.title = 'Saves the city and opens the New City dialog on the free land next to it';
     const syncSave = () => {
       const writable = regionSaveAccess();
       save.disabled = !writable;
+      if (sister) sister.disabled = !writable;
       exit.innerHTML = icon('region', 17) + `<span>${writable ? 'Save & exit to region' : 'Exit to region'}</span>`;
     };
     syncSave();
@@ -46,6 +53,7 @@ export class PauseMenu {
       item('play', 'Resume', () => this.close(), 'Esc', 'primary'),
       save,
       exit,
+      sister,
       h('div', { class: 'pm-sep' }),
       // (silent close: the panel that replaces the menu plays its own open sound)
       item('settings', 'Settings', () => {

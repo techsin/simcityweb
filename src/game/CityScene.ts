@@ -83,6 +83,9 @@ export interface CitySceneOptions {
   /** W1.3: false starts the local or loopback host on the save without its recovery journal (§4.4's crash choices) */
   replayJournal?: boolean;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
+  /** LG-12: "Found a sister city" leaves the city like onExitToRegion (saved, with its thumbnail); the App then opens
+   *  the New City dialog on a free tile next to it. Offered while `rctx` has an unfounded neighbour */
+  onFoundSister?: (thumbnailDataUrl?: string) => void;
   onSave: (state: HostState, reason?: SaveReason) => Promise<void>;
   /** initial settings (e.g. the app-level settings); keys given here win over the stored in-game prefs */
   settings?: Partial<GameSettings>;
@@ -114,6 +117,12 @@ const AUTOSAVE_FLOOR_MS = 60_000;
 const AUTOSAVE_BACKOFF_INITIAL_MS = AUTOSAVE_FLOOR_MS;
 const AUTOSAVE_BACKOFF_MULTIPLIER = 2;
 const AUTOSAVE_BACKOFF_MAX_MS = 15 * 60_000;
+
+/** LG-12: "Found a sister city" is offered when the App takes it (onFoundSister) and the region context the city was
+ *  entered with names an unfounded tile next to it */
+export function sisterOffered(opts: Pick<CitySceneOptions, 'onFoundSister' | 'rctx'>): boolean {
+  return !!opts.onFoundSister && !!opts.rctx?.neighbors.some((n) => !n.founded);
+}
 
 export class CityScene {
   readonly host: LocalSimHost | LoopbackSimHost | WorkerSimHost;
@@ -293,6 +302,8 @@ export class CityScene {
       showOnboarding: () => this.onboarding?.show(),
       save: () => this.save(false),
       exitToRegion: () => this.exitToRegion(),
+      // LG-12: "Found a sister city", only with a free tile next door
+      ...(sisterOffered(opts) ? { foundSister: () => this.exitToRegion(opts.onFoundSister) } : {}),
       openPauseMenu: () => this.pause.open(),
       sandbox: () => !!this.sim.state.config.sandbox || this.sim.state.config.difficulty === 'sandbox',
     };
@@ -1097,7 +1108,8 @@ export class CityScene {
     return this.saving;
   }
 
-  async exitToRegion(): Promise<void> {
+  /** `leave`: where the saved city goes (LG-12: onFoundSister, the same exit followed by the New City dialog) */
+  async exitToRegion(leave: (thumbnailDataUrl?: string) => void = this.opts.onExitToRegion): Promise<void> {
     if (this.disposed) return;
     this.host.setSpeed(0, 'exit');
     this.tools.select(null, { silent: true });
@@ -1110,7 +1122,7 @@ export class CityScene {
     } catch (e) {
       console.warn('[game] capture failed', e);
     }
-    this.opts.onExitToRegion(thumb);
+    leave(thumb);
   }
 
   /** the variant each data view was last shown with (-1 = its default) */
