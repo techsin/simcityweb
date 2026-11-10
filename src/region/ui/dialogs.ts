@@ -534,6 +534,8 @@ export function openSimCrashDialog(o: { cityName: string; message: string; recov
       onEnter: () => restart.click(),
       onClose: () => resolve(result),
     });
+    // T061 F2: it opens over a running city; the region screen's backdrop (z 40) drew under the city HUD's layers
+    dlg.back.classList.add('modal-top');
     restart.classList.add('autofocus');
   });
 }
