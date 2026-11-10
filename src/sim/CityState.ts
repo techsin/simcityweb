@@ -477,8 +477,9 @@ export interface NewsItem {
   x?: number;
   z?: number;
   advisor?: string;
-  /** stable ids for news actions, independent of the displayed text */
-  ref?: { advice?: string; reward?: string };
+  /** stable ids for news actions, independent of the displayed text; `first`: the city's first this item announces
+   *  (a kind of economy/firsts.ts: 'stage:6', 'unique:<defId>', 'neighbor'), at the item's x, z */
+  ref?: { advice?: string; reward?: string; first?: string };
 }
 
 // ---------------------------------------------------------------------------

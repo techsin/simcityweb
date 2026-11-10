@@ -74,7 +74,7 @@ export function validateBotArgs(args: unknown): string[] {
     if (!values.includes(flag)) throw new Error(`unsupported variant argument ${arg}; selectors, nudge and save output are owned by the ensemble runner`);
     const value = assigned ?? args[++i];
     if (!value || value.startsWith('--')) throw new Error(`${flag} needs a value`);
-    if (flag === '--difficulty' && !['easy', 'medium', 'hard', 'sandbox'].includes(value)) throw new Error('invalid difficulty');
+    if (flag === '--difficulty' && !['easy', 'medium', 'hard', 'expert', 'sandbox'].includes(value)) throw new Error('invalid difficulty');
     if (flag === '--profile' && !['default', 'newcomer'].includes(value)) throw new Error('invalid profile');
     if (flag === '--water' && (!Number.isFinite(+value) || +value < 0 || +value > 1)) throw new Error('water must be in [0,1]');
     if (flag === '--tax' && (!Number.isFinite(+value) || +value < 0 || +value > 20)) throw new Error('tax must be in [0,20]');

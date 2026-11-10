@@ -152,8 +152,13 @@ export const TAX_SENS: readonly number[] = [0.35, 0.5, 0.8, 0.4, 0.5, 0.7, 0.55,
 export const TAX_DEMAND_RESPONSE = 0.3;
 export const TAX_FACTOR_MIN = 0.05;
 export const TAX_FACTOR_MAX = 1.5;
-/** Budget red threshold: NEW-05 128×15 s7 loses 12.8503% at 13→14%, the first step above 10% (NOTE-050). */
-export const TAX_GROWTH_WARNING_RATE = 14;
+/**
+ * Budget red threshold, by NEW-05's own rule (the first one-point step that loses more than 10% of population), set from
+ * the 9-member ensembles at 128×15 s7 on dev 05cbf59 (B2 + T041; docs/dev/ensembles/sweep-05cbf59): the median falls
+ * 22.7% at 16→17%, while every step from 9% to 16% loses at most 6.8%. Year-end funds also peak at 16%, so from 17% a
+ * higher rate loses both residents and money.
+ */
+export const TAX_GROWTH_WARNING_RATE = 17;
 
 /** unemployment above this pushes R down and C/I up */
 export const UNEMP_NEUTRAL = 0.08;
