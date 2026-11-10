@@ -176,8 +176,8 @@ describe('Toasts: the FEEL-02a budget', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('the demand-cap toast shares the budget (TopBar passes budget through ctx.toast, CityScene through to Toasts)', () => {
-    const top = readFileSync(new URL('../../src/ui/TopBar.ts', import.meta.url), 'utf8');
+  it('the demand-cap toast shares the budget (the TopBar\'s RCI segment passes budget through ctx.toast, CityScene through to Toasts)', () => {
+    const top = readFileSync(new URL('../../src/ui/topbar/rciSegment.ts', import.meta.url), 'utf8');
     expect(top).toMatch(/'warning', undefined, 'Demand cap', \{ budget: true \}\)/);
     const scene = readFileSync(new URL('../../src/game/CityScene.ts', import.meta.url), 'utf8');
     expect(scene).toContain('toast: (text, kind, cell, title, opts) => this.toasts?.show(text, kind, cell, title, opts),');
