@@ -1,5 +1,114 @@
 # T050: bulldozing and placement with weight
 
+## QA round 2 fixes (November 9)
+
+Uncommitted over `6982a0f`, with dev merged in. Read the full assigned `scratch/qa_round2.md`, including its bugs and
+timing notes, before editing. The desktop worker's pre-fix RTX 5070 Ti QA passed the FEEL-14 acceptance lines with a
+thin timing margin: **+3.1 ms CPU in the drag's frame**, including **1.1 ms installing 199 collapse copies**. It found
+the three defects addressed here. Those GPU results describe `6982a0f`; no local browser or GPU timing was run for
+these fixes.
+
+### Changes per file
+
+- `src/render/city/buildings/BuildingRenderer.ts`: `captureCollapse` now transfers the drawn main/site slots into
+  detached ownership and sets the building's main/site to `-1`, so ordinary removal leaves those slots drawn.
+  Foundations and other normal removal resources are still freed. A fading building restores its dominant real
+  geometry before removal drops the fade layer. There is **no collapse free/re-add, allocation or free-list sort**.
+  `queueCollapse` admits the retained slots synchronously. A private map owns captures awaiting admission;
+  `discardCollapse`, range rejection, clear/reset and disposal release them exactly once. Duplicate/stale handles
+  cannot acquire or free another copy's slots. `collapseQueue`, `buildCollapse` and `collapseWork` are removed.
+  T040's registry and budget drain are unchanged; clear/dispose have a separate collapse cleanup call before their
+  existing registered-work cleanup. Normal building geometry retains its 2 ms budget.
+- In the same renderer, the first frame keeps the full drawn removal pose. Later updates clamp progress to `1` and
+  retain the exact **15% Y scale with final tilt for one rendered frame**, including a large `dt` crossing 0.35 s.
+  Removal occurs on the next update. A camera cut beyond 2,200 m still removes the effect immediately.
+- `src/render/city/CityObjectsView.ts`: the redevelopment-limit rejection explicitly discards the captured slots.
+  All other event wiring and effect limits stay unchanged: at most four redevelopments per rolling second and no
+  effects beyond 2,200 m.
+- `src/render/city/effects/Effects.ts`: admission trims only the required number of particles from the oldest impacts.
+  A 600-particle cloud plus a 32-particle house is now **568 + 32**; a landing ring is **599 + 1**, instead of erasing
+  the whole cloud. Retained particles keep their seeded positions, sizes, birth time and original expiry. The live
+  feedback cap remains 600; the 30/31 merge threshold, dust lifetime, ring/ash and shared smoke pool remain unchanged.
+- `tests/render/weightBuildings.test.ts`: covers two consecutive 200-building removals with every retained slot drawn
+  and zero batch adds/removes during transfer/admission; reused ids; both dominant fade levels; main/site handover
+  with normal foundation removal; pending/active cancellation/reset/disposal accounting; exact final pose on normal
+  and oversized time steps; and the unchanged geometry deadline without collapse work registration.
+- `tests/render/weightEffects.test.ts`: four additional regressions cover house/ring/ash admission into a full cloud,
+  retained particle-buffer prefixes and original expiry, and partial trimming across multiple old impacts.
+- `tests/render/weightWiring.test.ts`: verifies immediate retained-slot accounting, rejected redevelopment cleanup,
+  camera movement before admission, and pending/active reset/disposal cleanup alongside existing event tests.
+- This report. **No infra hunks, cloud-held changes, or edits outside the task's named sources/tests/report.**
+  T040's test files are unchanged. No commit, push, merge, `.done` file, browser, benchmark or process cleanup was done.
+
+### Verification
+
+TypeScript passed through the quiet gate:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsc --noEmit
+```
+
+Every test file below ran separately, sequentially, through the quiet gate using the prior native-config/thread
+workaround; no repository configuration changed:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --experimental-strip-types node_modules/vitest/vitest.mjs run <file> --maxWorkers=1 --configLoader native --pool threads
+```
+
+| Test file | QA-fix result |
+|---|---|
+| `tests/render/weightBuildings.test.ts` | 11 passed |
+| `tests/render/weightEffects.test.ts` | 13 passed |
+| `tests/render/weightWiring.test.ts` | 11 passed |
+| `tests/render/buildingWork.test.ts` | 12 passed, unchanged |
+| `tests/render/buildingBudget.test.ts` | 22 passed, unchanged |
+| `tests/render/lod.test.ts` | 35 passed |
+| `tests/worker/hygiene.test.ts` | 18 passed |
+| `tests/render/freshLoad.test.ts` | 12 passed |
+| `tests/render/fireworks.test.ts` | 12 passed, 2 skipped (optional large fixtures unavailable) |
+
+Total: **146 passed, 2 skipped**. The earlier round-2 clock-read failures and test-owner request below are now
+**resolved** by removing collapse work registration; no hook or fixture workaround was needed. Tests establish slot
+ownership, finite poses, particle-prefix stability and scheduling, not new real-GPU timings.
+
+The bot completed through the quiet gate using the established scratch-only Node TypeScript resolver (`tsx` remains
+unavailable in the offline installation):
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs node --no-warnings --experimental-transform-types --experimental-loader file:///C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T050/scratch/resolve-ts.mjs tools/simbot.ts --size 128 --years 15 --seed 7
+```
+
+Exit 0, Medium/plains, 24.8 s; **2015 residents [61124, 93804, 37971] = 192,899**, exactly the required baseline.
+Output: `C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T050/scratch/simbot-qa-round2-128-y15-s7-native.log`.
+No Hard, 256-tile or two-process hash rerun was needed for these render-only fixes.
+
+### Timing expectation and remaining gates
+
+The slot handover removes the measured 1.1 ms installation phase and its free-list-length growth. Expect roughly
+**1 ms less CPU in a 200-building drag's frame**, bringing the prior **+3.1 ms** increment toward **+2 ms** over base
+(roughly 36 ms total CPU against QA's 34.2 ms base frame). Some handover bookkeeping now runs during capture, so this
+is an estimate from QA's measured parts, **not a new timing result or a claimed GPU recheck**. There are no additional
+draw calls, particles or geometry builds. Repeated/large drags cannot spill collapse installation into later frames
+because no such installation remains.
+
+**Plan/code differences:** the detached visual now owns the removed instance's existing slots, rather than copying
+into newly allocated slots. This is the preferred QA correction and preserves id-independent lifetime and pose data.
+One final rendered pose is retained after the 0.35 s progression. **Cloud-held requests: none.** Full Vitest and a
+fresh real-GPU visual/timing confirmation remain with the lead. No balance, simulation, save or RNG-state changes.
+
+Browser recheck checklist:
+
+- [ ] Repeat six 200-building drags, then 400/800-building drags: every removed model remains drawn immediately and
+  sinks, with no empty frame/pop-back, no growing installation cost, and exact live-slot accounting afterward.
+- [ ] Remeasure the drag's frame under the hold: <4 ms added cost; expected CPU increment around +2 ms. Include the
+  capture/removal handlers, admission and animation, LOW/HIGH, a tall district and saturated smoke.
+- [ ] A house at 300 m visibly reaches the final 15% scale/tilt once before disappearing; dust still lives 1.5-2.5 s.
+- [ ] At 0.5 s after a 600 cloud, bulldoze a house or plop a park elsewhere: the original cloud retains 568/599 particles
+  respectively and fades at its original birth + 2.5 s; total feedback stays <=600.
+- [ ] Recheck 30/31 merging, 2,200 m cuts, four-per-second redevelopment, the 1.2 s ring, ash, fade removal and id reuse.
+- [ ] Reset/quality/load/dispose while captured slots await admission and while copies animate: no stale visuals,
+  duplicate frees or leaks; no console/page errors. Real worker-host coverage and the full suite remain for the lead.
+
 ## Round 2: use T040's shared work hook
 
 Round 1 is committed at `3ffd5b3`; T040's `6bf60ee` hook was merged at `93cb93c`. The round-2 changes below are

@@ -98,6 +98,71 @@ describe('building weight effects', () => {
     } finally { fx.dispose(); }
   });
 
+  it('trims a full cloud only by a new house burst while preserving its prefix and original expiry', () => {
+    const fx = rig();
+    try {
+      fx.update(7);
+      for (let i = 0; i < 38; i++) fx.impact(lot(100 + i * 4, 200, 16, 16), 'dust');
+      fx.update(0);
+      const original = feedback(fx);
+      const attributes = ['aEmit', 'aP', 'aBirth'].map((name) => Array.from(geometry(fx).getAttribute(name).array));
+      expect(original).toHaveLength(600);
+      fx.update(0.5);
+      fx.impact(lot(1000), 'dust'); fx.update(0);
+      expect(feedback(fx)).toHaveLength(600);
+      expect(feedback(fx).slice(0, 568)).toEqual(original.slice(0, 568));
+      expect(feedback(fx).slice(568).every((p) => p.kind === 6 && p.life === 2.5 && p.birth === 7.5)).toBe(true);
+      for (const [i, name] of ['aEmit', 'aP', 'aBirth'].entries()) {
+        const n = 568 * (name === 'aBirth' ? 1 : 4);
+        expect(Array.from(geometry(fx).getAttribute(name).array).slice(0, n)).toEqual(attributes[i].slice(0, n));
+      }
+      fx.update(1.999);
+      expect(feedback(fx)).toHaveLength(600);
+      fx.update(0.002);
+      expect(feedback(fx)).toHaveLength(32);
+      expect(feedback(fx).every((p) => p.birth === 7.5)).toBe(true);
+      fx.update(0.5);
+      expect(feedback(fx)).toHaveLength(0);
+    } finally { fx.dispose(); }
+  });
+
+  it.each([['landing', 1], ['ash', 16]] as const)('trims only the %s feedback share from a full cloud', (kind, count) => {
+    const fx = rig();
+    try {
+      for (let i = 0; i < 38; i++) fx.impact(lot(100 + i * 4, 200, 16, 16), 'dust');
+      fx.update(0);
+      const original = feedback(fx);
+      fx.update(0.5);
+      fx.impact(lot(1000), kind); fx.update(0);
+      const particles = feedback(fx);
+      expect(particles).toHaveLength(600);
+      expect(particles.slice(0, 600 - count)).toEqual(original.slice(0, 600 - count));
+      expect(particles.slice(600 - count).every((p) => p.kind === (kind === 'landing' ? 8 : 7) && p.birth === 0.5)).toBe(true);
+    } finally { fx.dispose(); }
+  });
+
+  it('trims multiple oldest impacts in order and keeps the combined feedback cap exact', () => {
+    const fx = rig();
+    try {
+      for (let i = 0; i < 30; i++) fx.impact(lot(100 + i * 32), 'dust');
+      fx.update(0);
+      const original = feedback(fx);
+      const impacts = () => (fx as unknown as { impacts: { count: number }[] }).impacts;
+      expect(impacts().map((p) => p.count)).toEqual(Array(30).fill(20));
+      fx.update(0.1);
+      fx.impact(lot(1500), 'dust'); fx.update(0);
+      expect(impacts().map((p) => p.count)).toEqual([8, ...Array(28).fill(20), 32]);
+      expect(feedback(fx).slice(0, 568)).toEqual([...original.slice(20, 28), ...original.slice(40)]);
+      fx.impact(lot(1600), 'ash'); fx.impact(lot(1700), 'landing'); fx.update(0);
+      const particles = feedback(fx);
+      expect(particles).toHaveLength(600);
+      expect(impacts().map((p) => p.count)).toEqual([11, ...Array(27).fill(20), 32, 16, 1]);
+      expect(particles.slice(0, 551)).toEqual([...original.slice(40, 51), ...original.slice(60)]);
+      expect(particles.filter((p) => p.kind === 7)).toHaveLength(16);
+      expect(particles.filter((p) => p.kind === 8)).toHaveLength(1);
+    } finally { fx.dispose(); }
+  });
+
   it('gives a landing ring 1.2 seconds and an ash puff its own smaller grey kind', () => {
     const fx = rig();
     try {

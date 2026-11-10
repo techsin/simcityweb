@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { registerAllModels } from '../../src/assets/builders';
 import { CELL_SIZE } from '../../src/core/constants';
-import { BuildingRenderer, type BudgetedWork, type BuildingCollapse } from '../../src/render/city/buildings/BuildingRenderer';
+import { BuildingRenderer, type BuildingCollapse } from '../../src/render/city/buildings/BuildingRenderer';
 import { TileCuller } from '../../src/render/city/common/batch';
 import { shadowCasters } from '../../src/render/world/Shadows';
 import { BF, type Building } from '../../src/sim/CityState';
@@ -11,16 +11,13 @@ import { createCityState } from '../../src/sim/terrainGen';
 
 registerAllModels();
 
-type BI = { id: number; main: number; site: number; geom: number; anim: number; li: number; fade: { p: number; gOld: number; gNew: number } | null };
+type BI = { id: number; main: number; site: number; found: number; geom: number; lodGeom: number; anim: number; li: number; fade: { p: number; gOld: number; gNew: number } | null };
 type Inside = {
   inst: Map<number, BI>;
   collapses: { copy: BuildingCollapse; slots: number[]; age: number }[];
-  collapseQueue: BuildingCollapse[];
-  collapseAt: number;
-  collapseWork: BudgetedWork;
-  budgetedWorks: BudgetedWork[];
+  capturedCollapses: Map<BuildingCollapse, { slots: number[] }>;
+  budgetedWorks: unknown[];
   build(bi: BI): void;
-  buildCollapse(copy: BuildingCollapse): void;
   startFade(bi: BI, from: number, to: number): void;
 };
 const inside = (br: BuildingRenderer) => br as unknown as Inside;
@@ -53,7 +50,7 @@ function removeWithCopy(br: BuildingRenderer, id = 1) {
 }
 
 describe('detached building collapse', () => {
-  it('copies the drawn geometry, pose and tint before freeing, independently of a reused id', () => {
+  it('hands over the drawn geometry, pose and tint independently of a reused id', () => {
     const br = town(), b = building();
     br.add(b, false);
     const old = inside(br).inst.get(b.id)!;
@@ -77,11 +74,13 @@ describe('detached building collapse', () => {
     br.update(0.2);
     expect(br.batch.mesh.getMatrixAt(replacement.main, new THREE.Matrix4()).equals(replacementMatrix)).toBe(true);
     br.update(0.15);
+    expect(br.collapsing).toBe(1);
+    br.update(0);
     expect(br.collapsing).toBe(0);
     expect(br.batch.instanceCount).toBe(1);
   });
 
-  it('sinks toward 15% height with a slight tilt, expires at 0.35 s and never invalidates shadows', () => {
+  it.each([0.35, 0.5])('draws the exact 15%% pose once when a %s s step reaches or crosses expiry', (dt) => {
     const br = town(); br.add(building(), false);
     const copy = removeWithCopy(br);
     br.update(0);
@@ -90,30 +89,37 @@ describe('detached building collapse', () => {
     // Static batches must register an untiled copy for per-instance pass culling.
     expect((br.batch as unknown as { untiled: number[] }).untiled).toContain(slot);
     const version = shadowCasters.version;
-    br.update(0.349999);
+    br.update(dt);
     const m = br.batch.mesh.getMatrixAt(slot, new THREE.Matrix4());
     const originalY = new THREE.Vector3().setFromMatrixColumn(copy.parts[0].matrix, 1).length();
-    expect(new THREE.Vector3().setFromMatrixColumn(m, 1).length() / originalY).toBeCloseTo(0.15, 4);
+    expect(new THREE.Vector3().setFromMatrixColumn(m, 1).length() / originalY).toBeCloseTo(0.15, 6);
     expect(Math.abs(m.elements[4])).toBeGreaterThan(0);
     expect(Math.abs(m.elements[13] - copy.baseY)).toBeLessThan(0.05);
     expect(shadowCasters.version).toBe(version);
-    br.update(0.0000011);
+    expect(br.collapsing).toBe(1);
+    expect(br.batch.mesh.getVisibleAt(slot)).toBe(true);
+    br.update(0);
     expect(br.collapsing).toBe(0);
     expect(br.batch.instanceCount).toBe(0);
   });
 
-  it('captures the dominant real geometry during a fade instead of its empty stand-in', () => {
+  it.each([0.33, 0.8])('hands over the dominant real geometry at fade progress %s', (progress) => {
     const br = town(); br.add(building(), false); br.flushLod();
     const bi = inside(br).inst.get(1)!;
-    const to = br.batch.mesh.getGeometryIdAt(bi.main);
+    const to = bi.lodGeom, main = bi.main;
+    expect(to).not.toBe(bi.geom);
     inside(br).startFade(bi, bi.geom, to);
     expect(br.batch.mesh.getGeometryIdAt(bi.main)).not.toBe(bi.geom);
-    expect(br.captureCollapse(1)!.parts[0].geom).toBe(bi.geom);
-    bi.fade!.p = 0.8;
-    expect(br.captureCollapse(1)!.parts[0].geom).toBe(to);
-    removeWithCopy(br); br.update(0);
+    bi.fade!.p = progress;
+    const copy = br.captureCollapse(1)!;
+    expect(copy.parts[0].geom).toBe(progress < 0.5 ? bi.geom : to);
+    expect(br.batch.mesh.getGeometryIdAt(main)).toBe(copy.parts[0].geom);
+    expect(br.captureCollapse(1)).toBeNull();
+    br.remove(1); br.queueCollapse(copy); br.update(0);
     expect(br.fading).toBe(0);
     expect(br.collapsing).toBe(1);
+    expect(inside(br).collapses[0].slots).toEqual([main]);
+    expect(br.batch.instanceCount).toBe(1);
   });
 
   it('keeps the main batch culling version fixed while a tall detached copy tilts', () => {
@@ -132,12 +138,17 @@ describe('detached building collapse', () => {
     br.add(building(1, { flags: BF.Burnt }), false); expect(br.captureCollapse(1)).toBeNull(); br.remove(1);
     br.add(building(), false);
     br.feedbackCamera!.set(160, 0, 2360);
-    expect(br.captureCollapse(1)).not.toBeNull();
+    const copy = br.captureCollapse(1)!;
+    expect(copy).not.toBeNull();
+    br.remove(1);
     br.feedbackCamera!.z += 0.01;
+    br.queueCollapse(copy);
+    expect(br.batch.instanceCount).toBe(0);
+    br.add(building(), false);
     expect(br.captureCollapse(1)).toBeNull();
   });
 
-  it('drops queued and active copies after a camera cut, clear and dispose', () => {
+  it('releases unplayed and active slots exactly once on cancellation, clear and dispose', () => {
     const br = town(); br.add(building(), false); removeWithCopy(br);
     br.feedbackCamera!.z = 10000; br.update(0);
     expect(br.collapsing).toBe(0);
@@ -145,59 +156,90 @@ describe('detached building collapse', () => {
     br.add(building(), false); const copy = removeWithCopy(br); br.update(0);
     br.feedbackCamera!.z = 10000; br.update(0);
     expect(br.collapsing).toBe(0);
-    br.feedbackCamera!.z = 460; br.queueCollapse(copy); br.update(0);
-    br.queueCollapse(copy); br.clear();
-    expect(br.collapsing).toBe(0); expect(inside(br).collapseQueue).toHaveLength(0);
-    br.queueCollapse(copy); br.update(0); br.dispose();
-    expect(br.collapsing).toBe(0); expect(inside(br).collapseQueue).toHaveLength(0);
+    br.feedbackCamera!.z = 460;
+    br.queueCollapse(copy); br.discardCollapse(copy);
+    expect(br.batch.instanceCount).toBe(0);
+    br.add(building(), false);
+    const pending = br.captureCollapse(1)!; br.remove(1);
+    br.add(building(2), false); removeWithCopy(br, 2);
+    expect(inside(br).capturedCollapses.size).toBe(1);
+    expect(br.collapsing).toBe(1);
+    br.clear();
+    br.queueCollapse(pending); br.discardCollapse(pending);
+    expect(br.collapsing).toBe(0); expect(inside(br).capturedCollapses.size).toBe(0);
+    expect(br.batch.instanceCount).toBe(0);
+    br.add(building(), false); const discarded = br.captureCollapse(1)!; br.remove(1);
+    br.discardCollapse(discarded); br.discardCollapse(discarded); br.queueCollapse(discarded);
+    expect(br.batch.instanceCount).toBe(0);
+    br.add(building(), false); const unplayed = br.captureCollapse(1)!; br.remove(1);
+    br.add(building(2), false); const played = removeWithCopy(br, 2); br.queueCollapse(played);
+    expect(br.collapsing).toBe(1);
+    br.dispose(); br.queueCollapse(unplayed);
+    expect(br.collapsing).toBe(0); expect(inside(br).capturedCollapses.size).toBe(0);
+    expect(br.batch.instanceCount).toBe(0);
     renderers.splice(renderers.indexOf(br), 1);
   });
 
-  it('shares the 2 ms geometry deadline and admits live builds between detached copies', () => {
-    const br = town(); br.add(building(), false);
-    const copy = br.captureCollapse(1)!; br.remove(1);
-    for (let i = 0; i < 10; i++) { br.queueCollapse(copy); br.add(building(i + 2)); }
-    let now = 0;
-    vi.spyOn(performance, 'now').mockImplementation(() => now);
-    const internal = inside(br), build = internal.build.bind(br), collapse = internal.buildCollapse.bind(br);
-    let nBuild = 0, nCollapse = 0;
-    vi.spyOn(internal, 'build').mockImplementation((bi) => { build(bi); nBuild++; now += 0.65; });
-    vi.spyOn(internal, 'buildCollapse').mockImplementation((c) => { collapse(c); nCollapse++; now += 0.65; });
-    br.update(0);
-    expect(nBuild).toBe(2); expect(nCollapse).toBe(2);
-    expect(now).toBeCloseTo(2.6);
-    expect(br.pendingBuilds).toBe(8);
-    for (let i = 0; i < 10; i++) br.update(0);
-    expect(br.pendingBuilds).toBe(0); expect(nCollapse).toBe(10); expect(nBuild).toBe(10);
+  it('hands over main and construction-site slots while freeing the foundation normally', () => {
+    const br = town(); br.add(building(1, { baseY: 3, flags: BF.Constructing, built: 0.5 }), false);
+    const bi = inside(br).inst.get(1)!, slots = [bi.main, bi.site];
+    expect(slots.every((slot) => slot >= 0)).toBe(true);
+    expect(bi.found).toBeGreaterThanOrEqual(0);
+    expect(br.batch.instanceCount).toBe(3);
+    removeWithCopy(br);
+    expect(inside(br).collapses[0].slots).toEqual(slots);
+    expect(br.batch.instanceCount).toBe(2);
+    expect(slots.every((slot) => br.batch.mesh.getVisibleAt(slot))).toBe(true);
+    br.update(0); br.update(0.35); br.update(0);
+    expect(br.batch.instanceCount).toBe(0);
   });
 
-  it('runs registered collapse work and queued builds under one deadline across alternating frames', () => {
+  it('keeps every slot drawn through two consecutive 200-building removals without allocation', () => {
+    const br = town();
+    for (let wave = 0; wave < 2; wave++) {
+      const ids: number[] = [], slots: number[] = [];
+      for (let i = 0; i < 200; i++) {
+        const id = wave * 200 + i + 1;
+        br.add(building(id, { x: 2 + i % 20 * 3, z: 2 + Math.floor(i / 20) * 3 }), false);
+        ids.push(id); slots.push(inside(br).inst.get(id)!.main);
+      }
+      const add = vi.spyOn(br.batch, 'add'), remove = vi.spyOn(br.batch, 'remove');
+      const copies = ids.map((id) => { const copy = br.captureCollapse(id)!; br.remove(id); return copy; });
+      expect(br.count).toBe(0);
+      expect(br.batch.instanceCount).toBe(200);
+      expect(slots.every((slot) => br.batch.mesh.getVisibleAt(slot))).toBe(true);
+      for (const copy of copies) br.queueCollapse(copy);
+      br.update(0);
+      expect(br.collapsing).toBe(200);
+      expect(inside(br).capturedCollapses.size).toBe(0);
+      expect(inside(br).collapses.flatMap((c) => c.slots)).toEqual(slots);
+      expect(add).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
+      add.mockRestore(); remove.mockRestore();
+      br.update(0.35); br.update(0);
+      expect(br.batch.instanceCount).toBe(0);
+    }
+  });
+
+  it('leaves the 2 ms geometry deadline unchanged without registering collapse work', () => {
     const br = town(); br.add(building(), false);
-    const copy = br.captureCollapse(1)!; br.remove(1);
-    const internal = inside(br), work = internal.collapseWork;
-    expect(internal.budgetedWorks).toContain(work);
-    expect(work.pending()).toBe(false);
-    expect(work.step()).toBe(false);
-    for (let i = 0; i < 3; i++) { br.queueCollapse(copy); br.add(building(i + 2)); }
+    removeWithCopy(br);
+    const internal = inside(br);
+    expect(internal.budgetedWorks).toHaveLength(0);
+    expect(br.collapsing).toBe(1);
+    for (let i = 0; i < 6; i++) br.add(building(i + 2));
     let now = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => now);
-    const trace: string[] = [], build = internal.build.bind(br), collapse = internal.buildCollapse.bind(br);
-    vi.spyOn(internal, 'build').mockImplementation((bi) => { build(bi); trace.push(`build:${bi.id}`); now += 0.75; });
-    vi.spyOn(internal, 'buildCollapse').mockImplementation((c) => { collapse(c); trace.push('collapse'); now += 0.75; });
-    const step = vi.spyOn(work, 'step');
+    const built: number[] = [], build = internal.build.bind(br);
+    vi.spyOn(internal, 'build').mockImplementation((bi) => { build(bi); built.push(bi.id); now += 0.75; });
     br.update(0);
-    expect(trace).toEqual(['build:2', 'collapse', 'build:3']);
+    expect(built).toEqual([2, 3, 4]);
     expect(now).toBe(2.25);
-    expect(step).toHaveBeenCalledTimes(1);
-    expect(br.pendingBuilds).toBe(1);
-    expect(work.pending()).toBe(true);
+    expect(br.pendingBuilds).toBe(3);
+    expect(br.collapsing).toBe(1);
     br.update(0);
-    expect(trace.slice(3)).toEqual(['collapse', 'build:4', 'collapse']);
+    expect(built).toEqual([2, 3, 4, 5, 6, 7]);
     expect(now).toBe(4.5);
-    expect(step).toHaveBeenCalledTimes(3);
     expect(br.pendingBuilds).toBe(0);
-    expect(work.pending()).toBe(false);
-    expect(internal.collapseQueue).toHaveLength(0);
-    expect(internal.collapseAt).toBe(0);
+    expect(br.collapsing).toBe(1);
   });
 });

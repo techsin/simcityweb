@@ -147,6 +147,7 @@ interface Collapse {
   copy: BuildingCollapse;
   slots: number[];
   age: number;
+  fresh: boolean;
 }
 
 interface BInst {
@@ -992,19 +993,8 @@ export class BuildingRenderer {
   /** next update evaluates everything due without a budget (flushLod: captures / benchmarks want the settled state) */
   private lodFull = false;
   private animating = new Set<number>();
-  private collapseQueue: BuildingCollapse[] = [];
-  private collapseAt = 0;
+  private capturedCollapses = new Map<BuildingCollapse, Collapse>();
   private collapses: Collapse[] = [];
-  private collapseWork = this.addBudgetedWork({
-    pending: () => this.collapseAt < this.collapseQueue.length,
-    step: () => {
-      if (this.collapseAt >= this.collapseQueue.length) return false;
-      this.buildCollapse(this.collapseQueue[this.collapseAt++]);
-      if (this.collapseAt >= this.collapseQueue.length) { this.collapseQueue.length = 0; this.collapseAt = 0; }
-      return true;
-    },
-    clear: () => this.clearCollapses(),
-  });
   /** The live view position; detached feedback is skipped without a view. */
   feedbackCamera: THREE.Vector3 | null = null;
   private collapseTransform = new THREE.Matrix4();
@@ -1205,12 +1195,13 @@ export class BuildingRenderer {
     return this.collapses.length;
   }
 
-  /** Snapshot before remove frees the original slots. Geometry is immutable and shared with the existing batch. */
+  /** Hand drawn main/site slots to a detached collapse before remove frees the rest of the building. */
   captureCollapse(id: number): BuildingCollapse | null {
     const bi = this.inst.get(id);
-    if (!bi || bi.li < 0 || bi.vis.burnt || !this.feedbackNear(bi.vis)) return null;
+    if (this.disposed || !bi || bi.li < 0 || bi.vis.burnt || !this.feedbackNear(bi.vis)) return null;
     const v = bi.vis;
     const parts: BuildingCollapse['parts'] = [];
+    const slots: number[] = [];
     for (const slot of [bi.main, bi.site]) {
       if (slot < 0) continue;
       const f = slot === bi.main ? bi.fade : null;
@@ -1221,12 +1212,32 @@ export class BuildingRenderer {
       const sy = Math.hypot(matrix.elements[4], matrix.elements[5], matrix.elements[6]);
       pivot.applyMatrix4(this.m4.copy(matrix).scale(this.s.set(1, sy > 0 ? Math.max(1, sy) / sy : 1, 1)));
       parts.push({ geom, matrix, color, pivot });
+      if (f) this.batch.setGeometry(slot, geom);
+      this.batch.setShadowCascades(slot, 0);
+      this.batch.setTile(slot, -1);
+      slots.push(slot);
     }
-    return { cx: v.cx, cz: v.cz, baseY: v.baseY, parts };
+    if (!slots.length) return null;
+    bi.main = bi.site = -1;
+    const copy = { cx: v.cx, cz: v.cz, baseY: v.baseY, parts };
+    this.capturedCollapses.set(copy, { copy, slots, age: 0, fresh: true });
+    return copy;
   }
 
   queueCollapse(copy: BuildingCollapse): void {
-    if (!this.disposed && this.feedbackNear(copy)) this.collapseQueue.push(copy);
+    const collapse = this.capturedCollapses.get(copy);
+    if (!collapse) return;
+    this.capturedCollapses.delete(copy);
+    if (this.disposed || !this.feedbackNear(copy)) this.releaseCollapse(collapse);
+    else this.collapses.push(collapse);
+  }
+
+  /** A captured removal rejected by feedback admission still owns slots until explicitly discarded. */
+  discardCollapse(copy: BuildingCollapse): void {
+    const collapse = this.capturedCollapses.get(copy);
+    if (!collapse) return;
+    this.capturedCollapses.delete(copy);
+    this.releaseCollapse(collapse);
   }
 
   private feedbackNear(p: { cx: number; cz: number; baseY: number }): boolean {
@@ -1234,33 +1245,23 @@ export class BuildingRenderer {
     return !!c && (p.cx - c.x) ** 2 + (p.baseY - c.y) ** 2 + (p.cz - c.z) ** 2 <= FEEDBACK_DISTANCE2;
   }
 
-  /** Allocation shares the live geometry deadline; animation only visits the short-lived detached copies. */
-  private buildCollapse(copy: BuildingCollapse): void {
-    if (!this.feedbackNear(copy)) return;
-    const slots: number[] = [], version = shadowCasters.version;
-    for (const part of copy.parts) {
-      const slot = this.batch.add(part.geom);
-      this.batch.setShadowCascades(slot, 0);
-      this.batch.setMatrix(slot, part.matrix);
-      this.batch.setColor(slot, part.color.x, part.color.y, part.color.z, part.color.w);
-      this.batch.setTile(slot, -1);
-      slots.push(slot);
-    }
-    shadowCasters.version = version;
-    this.collapses.push({ copy, slots, age: 0 });
+  private releaseCollapse(collapse: Collapse): void {
+    for (const slot of collapse.slots) this.batch.remove(slot);
+    collapse.slots.length = 0;
   }
 
   private updateCollapses(dt: number): void {
     const version = shadowCasters.version;
     for (let i = this.collapses.length - 1; i >= 0; i--) {
       const collapse = this.collapses[i], copy = collapse.copy;
-      collapse.age += dt;
       if (collapse.age >= COLLAPSE_TIME || !this.feedbackNear(copy)) {
-        for (const slot of collapse.slots) this.batch.remove(slot);
+        this.releaseCollapse(collapse);
         this.collapses.splice(i, 1);
         continue;
       }
-      const t = collapse.age / COLLAPSE_TIME, p = t * t;
+      if (collapse.fresh) { collapse.fresh = false; continue; }
+      collapse.age += dt;
+      const t = Math.min(1, collapse.age / COLLAPSE_TIME), p = t * t;
       const sign = cellHash(Math.floor(copy.cx), Math.floor(copy.cz), 0) & 1 ? 1 : -1;
       const sy = 1 - 0.85 * p;
       for (let k = 0; k < copy.parts.length; k++) {
@@ -1278,9 +1279,10 @@ export class BuildingRenderer {
   }
 
   private clearCollapses(): void {
-    for (const c of this.collapses) for (const slot of c.slots) this.batch.remove(slot);
-    this.collapses.length = this.collapseQueue.length = 0;
-    this.collapseAt = 0;
+    for (const c of this.collapses) this.releaseCollapse(c);
+    for (const c of this.capturedCollapses.values()) this.releaseCollapse(c);
+    this.collapses.length = 0;
+    this.capturedCollapses.clear();
   }
 
   /** buildings in a LOD cross-fade now (stats) */
@@ -1732,6 +1734,7 @@ export class BuildingRenderer {
   }
 
   clear(): void {
+    this.clearCollapses();
     for (const work of this.budgetedWorks) work.clear();
     this.budgetedWorkAt = 0;
     this.budgetedWorkTurn = false;
@@ -2843,6 +2846,7 @@ export class BuildingRenderer {
 
   dispose(): void {
     this.disposed = true;
+    this.clearCollapses();
     for (const work of this.budgetedWorks) work.clear();
     this.budgetedWorkAt = 0;
     this.budgetedWorkTurn = false;
