@@ -1,7 +1,8 @@
 /**
- * FH-03 / LG-05 on the top bar (src/ui/topbar/rciGuide.ts, src/ui/TopBar.ts): the RCI segment's "+ zone" badge while a
- * family's demand is above 0.5 and fewer than 12 empty road-facing lots exist (gone once 12 exist, and on a built-out
- * map), its click zoning that family; and the RCI popover's cap hints showing the built-out advice with its buttons.
+ * FH-03 / LG-05 on the top bar (src/ui/topbar/rciGuide.ts, src/ui/topbar/rciSegment.ts): the RCI segment's "+ zone"
+ * badge while a family's demand is above 0.5 and fewer than 12 empty road-facing lots exist (gone once 12 exist, and on
+ * a built-out map), its click zoning that family; and the RCI popover's cap hints showing the built-out advice with its
+ * buttons.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Emitter } from '../../src/core/events';
@@ -173,7 +174,7 @@ describe('TopBar: the RCI popover\'s built-out line (LG-05)', () => {
     seg.fire('click', { target: seg });
     const hint = t.el.querySelector('.built-out')!;
     expect(textOf(hint)).toContain('The city is built out');
-    const issue = builtOutIssue(t.bar['issuesWatch']?.value);
+    const issue = builtOutIssue(t.bar.rci['issuesWatch']?.value);
     expect(issue?.text).toMatch(/^Commercial demand is strong, but the city is built out: no free land is left\. Rezone the lowest-value blocks/);
     expect(textOf(hint)).toContain(issue!.text);
     const button = (label: string) => hint.querySelectorAll('button').find((b) => textOf(b) === label)!;

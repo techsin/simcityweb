@@ -102,8 +102,10 @@ async function run(reads: boolean, loopback = false, grown = false) {
           await read('inspectBuilding', { id: b.id, sections: [] });
           for (const section of INSPECT_SECTIONS) await read('inspectBuilding', { id: b.id, sections: [section] });
           await read('inspectBuilding', { id: b.id, sections: INSPECT_SECTIONS });
+          await read('buildingCondition', { id: b.id });
         }
         await read('inspectBuilding', { id: -1, sections: INSPECT_SECTIONS });
+        await read('buildingCondition', { id: -1 });
         for (const [x, z] of [[2, 2], [9, 20], [55, 21], [56, 21], [57, 21], [58, 21], [10, 60]]) {
           for (const section of INSPECT_SECTIONS) await read('inspectCell', { x, z, sections: [section] });
           await read('inspectCell', { x, z, sections: INSPECT_SECTIONS });

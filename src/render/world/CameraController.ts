@@ -28,8 +28,17 @@ export interface CameraControllerOptions {
   edgeScroll?: boolean;
 }
 
+/** Position supplied by the rendered emergency fleet, without a simulation read. */
+export interface CameraFollowPosition {
+  x: number;
+  y: number;
+  z: number;
+  onScene: boolean;
+}
+
 const DEG = Math.PI / 180;
 const SNAP0 = Math.PI / 4; // default diagonal view (SC4-like)
+const FOLLOW_LAMBDA = 6;
 
 /** zoom-out limit for a map of `mapSize` m: ~2.2 × its extent (whole map in view at any yaw with a margin), never below
  *  1.5 km (tiny maps) nor above 7 km (the previous global limit, reached by 4 km maps) */
@@ -71,6 +80,7 @@ export class CameraController implements CameraControllerApi {
   private goalTilt = 52 * DEG;
   private groundY = 0;
   private flight: { start: THREE.Vector3; distance: number; peak: number; elapsed: number; duration: number } | null = null;
+  private followState: { source: (aheadSeconds: number) => CameraFollowPosition | null; onSceneUntil: number | null; onEnd?: () => void } | null = null;
 
   // interaction
   private panning = false;
@@ -140,7 +150,39 @@ export class CameraController implements CameraControllerApi {
     return this.tilt;
   }
 
+  get following(): boolean {
+    return this.followState !== null;
+  }
+
+  /** Source predicts the drawn position one damping time ahead; its onScene flag stays on the current clock. */
+  follow(source: (aheadSeconds: number) => CameraFollowPosition | null, opts?: { reducedMotion?: boolean; onEnd?: () => void }): void {
+    this.stopFollowing();
+    this.cancelFlight();
+    this.followState = { source, onSceneUntil: null, onEnd: opts?.onEnd };
+    this.goalYaw = this.yaw;
+    this.goalTilt = this.tilt;
+    this.panVel.set(0, 0, 0);
+    this.panning = this.orbiting = this.zoomAnchorActive = false;
+    this.goalDistance = THREE.MathUtils.clamp(260, this.opts.minDistance, this.opts.maxDistance);
+    // Reduced motion omits the automatic zoom animation; the monotone target damping remains.
+    if (opts?.reducedMotion) {
+      this._distance = this.goalDistance;
+      this.apply();
+    }
+  }
+
+  stopFollowing(): void {
+    const follow = this.followState;
+    if (!follow) return;
+    this.followState = null;
+    this.goalTarget.copy(this._target);
+    this.goalDistance = this._distance;
+    this.panVel.set(0, 0, 0);
+    follow.onEnd?.();
+  }
+
   focusOn(worldX: number, worldZ: number, distance?: number, opts?: { fly?: boolean }): void {
+    this.stopFollowing();
     this.cancelFlight();
     this.goalTarget.set(worldX, 0, worldZ);
     this.clampGoal();
@@ -167,6 +209,7 @@ export class CameraController implements CameraControllerApi {
   }
 
   rotateStep(dir: 1 | -1): void {
+    this.stopFollowing();
     this.cancelFlight();
     const k = Math.round((this.goalYaw - SNAP0) / (Math.PI / 2));
     this.goalYaw = SNAP0 + (k + dir) * (Math.PI / 2);
@@ -174,6 +217,7 @@ export class CameraController implements CameraControllerApi {
 
   /** immediately place the camera (no smoothing). Angles in degrees. */
   setView(x: number, z: number, distance: number, tiltDeg?: number, yawDeg?: number): void {
+    this.stopFollowing();
     this.cancelFlight();
     this.goalTarget.set(x, 0, z);
     this.clampGoal();
@@ -266,6 +310,7 @@ export class CameraController implements CameraControllerApi {
     const pan = e.button === 1 || (e.button === 2 && e.shiftKey);
     const orbit = e.button === 2 && !e.shiftKey;
     if (!pan && !orbit) return;
+    this.stopFollowing();
     e.preventDefault();
     this.lastX = e.clientX;
     this.lastY = e.clientY;
@@ -284,6 +329,7 @@ export class CameraController implements CameraControllerApi {
   /** Query's left drag uses the same ground anchor as middle / Shift+right drag. */
   beginPan(clientX: number, clientY: number): void {
     if (!this.enabled) return;
+    this.stopFollowing();
     this.cancelFlight();
     if (this.groundHit(clientX, clientY, this.panAnchor)) {
       this.panning = true;
@@ -358,6 +404,7 @@ export class CameraController implements CameraControllerApi {
 
   /** zoom by factor (>1 = out) toward a screen point (client coords) */
   zoomBy(factor: number, clientX?: number, clientY?: number) {
+    this.stopFollowing();
     this.cancelFlight();
     const nd = THREE.MathUtils.clamp(this.goalDistance * factor, this.opts.minDistance, this.opts.maxDistance);
     if (clientX !== undefined && clientY !== undefined && factor < 1 && this.groundHit(clientX, clientY, this.zoomAnchor)) {
@@ -380,6 +427,7 @@ export class CameraController implements CameraControllerApi {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const handled = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Equal', 'Minus', 'NumpadAdd', 'NumpadSubtract', 'NumpadEqual'];
     if (handled.includes(k)) {
+      this.stopFollowing();
       this.keys.add(k);
       if (k.startsWith('Arrow') || k.startsWith('Page')) e.preventDefault();
     }
@@ -394,6 +442,7 @@ export class CameraController implements CameraControllerApi {
 
   private onTouch(e: TouchEvent) {
     if (!this.enabled) return;
+    this.stopFollowing();
     this.cancelFlight();
     e.preventDefault();
     const r = this.dom.getBoundingClientRect();
@@ -463,6 +512,7 @@ export class CameraController implements CameraControllerApi {
     }
     // keyboard
     if (this.enabled && this.keys.size) {
+      this.stopFollowing();
       this.cancelFlight();
       let fx = 0, fz = 0;
       if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) fz += 1;
@@ -493,6 +543,7 @@ export class CameraController implements CameraControllerApi {
       if (this.pointerY < m) fz = 1;
       else if (this.pointerY > h - m) fz = -1;
       if (fx || fz) {
+        this.stopFollowing();
         this.cancelFlight();
         const speed = this._distance * 0.9;
         const sx = Math.sin(this.yaw), cz = -Math.cos(this.yaw);
@@ -510,9 +561,21 @@ export class CameraController implements CameraControllerApi {
       if (this.panVel.lengthSq() < 1) this.panVel.set(0, 0, 0);
     }
 
+    const follow = this.followState;
+    if (follow) {
+      const p = follow.source(1 / FOLLOW_LAMBDA);
+      const now = performance.now();
+      if (p?.onScene && follow.onSceneUntil === null) follow.onSceneUntil = now + 2000;
+      if (follow.onSceneUntil !== null ? now >= follow.onSceneUntil : !p) this.stopFollowing();
+      else if (p) {
+        this.goalTarget.set(p.x, p.y, p.z);
+        this.clampGoal();
+      }
+    }
+
     // zooming out pushes the tilt up to the allowed minimum
     const mt = this.minTiltRad(this.goalDistance);
-    if (this.goalTilt < mt) this.goalTilt = mt;
+    if (!this.following && this.goalTilt < mt) this.goalTilt = mt;
     // smoothing
     const prevDist = this._distance;
     const flight = this.flight;
@@ -528,10 +591,11 @@ export class CameraController implements CameraControllerApi {
       if (t === 1) this.flight = null;
     } else {
       if (!this.panning) {
-        this._target.x = damp(this._target.x, this.goalTarget.x, 10, dt);
-        this._target.z = damp(this._target.z, this.goalTarget.z, 10, dt);
+        const lambda = this.following ? FOLLOW_LAMBDA : 10;
+        this._target.x = damp(this._target.x, this.goalTarget.x, lambda, dt);
+        this._target.z = damp(this._target.z, this.goalTarget.z, lambda, dt);
       }
-      this._distance = Math.exp(damp(Math.log(this._distance), Math.log(this.goalDistance), 9, dt));
+      this._distance = Math.exp(damp(Math.log(this._distance), Math.log(this.goalDistance), this.following ? FOLLOW_LAMBDA : 9, dt));
     }
     this.yaw = damp(this.yaw, this.goalYaw, 9, dt);
     this.tilt = damp(this.tilt, this.goalTilt, 10, dt);
@@ -548,7 +612,7 @@ export class CameraController implements CameraControllerApi {
       if (Math.abs(this._distance - this.goalDistance) < this.goalDistance * 0.002) this.zoomAnchorActive = false;
     }
     // follow terrain height at the target (smoothed so hills don't make the camera jitter)
-    const gy = this.opts.heightAt(this._target.x, this._target.z);
+    const gy = this.following ? this.goalTarget.y : this.opts.heightAt(this._target.x, this._target.z);
     this.groundY = damp(this.groundY, Math.max(gy, 0), 6, dt);
     this._target.y = this.groundY;
     this.apply();
@@ -597,6 +661,7 @@ export class CameraController implements CameraControllerApi {
   }
 
   dispose() {
+    this.stopFollowing();
     for (const [t, type, fn, o] of this.listeners) t.removeEventListener(type, fn, o);
     this.listeners = [];
   }

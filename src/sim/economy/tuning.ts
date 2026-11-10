@@ -144,11 +144,16 @@ export const CONN_MAX = { R: 1.3, C: 1.35, I: 1.5 };
 export const FREIGHT_BOOST: Record<string, number> = { tr_freight_station: 0.05, tr_seaport: 0.12, tr_airport_small: 0.03, tr_airport_large: 0.08 };
 export const FREIGHT_BOOST_MAX = 0.3;
 
-/** tax sensitivity per DevType: target × clamp(1 − sens × (rate − TAX_NEUTRAL)/TAX_NEUTRAL, TAX_FACTOR_MIN, TAX_FACTOR_MAX) */
+/** tax sensitivity per DevType (also used by desirability) */
 export const TAX_NEUTRAL = 9;
+export const TAX_DEMAND_PIVOT = 11;
 export const TAX_SENS: readonly number[] = [0.35, 0.5, 0.8, 0.4, 0.5, 0.7, 0.55, 0.8, 0.3, 0.35, 0.45, 0.75];
+/** target-demand tax curvature above the pivot; preserves the legacy value and slope at the join */
+export const TAX_DEMAND_RESPONSE = 0.3;
 export const TAX_FACTOR_MIN = 0.05;
 export const TAX_FACTOR_MAX = 1.5;
+/** Budget red threshold: NEW-05 128×15 s7 loses 12.8503% at 13→14%, the first step above 10% (NOTE-050). */
+export const TAX_GROWTH_WARNING_RATE = 14;
 
 /** unemployment above this pushes R down and C/I up */
 export const UNEMP_NEUTRAL = 0.08;
@@ -212,14 +217,18 @@ export const CAP_BINDING = 0.92;
 // ============================================================================ GROWTH
 /** per-day fraction of positive absolute demand that may start construction */
 export const GROWTH_RESPONSE = 0.06;
-/** always allow at least this much capacity per day when demand is positive */
+/** normalized subtype demand for full throughput; wanted growth weights the family's capped responses */
+export const GROWTH_DEMAND_FULL = { R: 1, C: 0.1, I: 0.1 };
+/** exponent of the family's wanted-weighted capped subtype response */
+export const GROWTH_DEMAND_EXPONENT = 0.1;
+/** minimum wanted capacity per day when demand is positive (before throughput and demand response) */
 export const GROWTH_MIN_ALLOW = { R: 25, C: 10, I: 10 };
 /**
- * hard throughput cap per family (capacity started per day): base + frac × cap / sqrt(1 + cap / scale).
+ * throughput ceiling per family before demand response: base + frac × cap / sqrt(1 + cap / scale).
  * Growth slows relatively as the city grows (≈ 120%/yr max at 10k, 30% at 100k, 10% at 1M) — the realized
  * rate is lower (demand, caps, zoning, stage milestones). This is the main "pace of the game" knob.
  */
-export const GROWTH_MAX_BASE = { R: 18, C: 7, I: 8 };
+export const GROWTH_MAX_BASE = { R: 19, C: 8, I: 9 };
 export const GROWTH_MAX_FRAC = 0.0006;
 export const GROWTH_MAX_SCALE = 25000;
 /** growth attempts (candidate lots) per day: base + per 100 candidates, capped */
@@ -576,18 +585,46 @@ export interface DifficultyRules {
   fadeCrime: boolean;
   fadeMonthlyEmergencies: boolean;
   defaultDisasters: boolean;
+  /** running costs per person served (the building's fixed upkeep is unchanged) */
+  opexMultiplier: number;
+  taxPerPoint: number;
+  disasterMultiplier: number;
+  manualDispatchWindowMultiplier: number;
+  /** consecutive negative-balance months before removal; null keeps the mayor in office */
+  bankruptRemovalMonths: number | null;
+  /** new borrowing closes after this many years from foundedDay; null leaves it open */
+  loanCutoffYears: number | null;
   /** the New City dialog's one-line description, shown after the difficulty's name (FH-11) */
   blurb: string;
 }
-/** FH-04: only Easy adds new-town grace; the other modes keep their original approval formulas. */
+/** FH-04's Easy grace and LG-09's Hard / Expert rules; Medium keeps its original formulas. */
 export const DIFFICULTY_RULES: Readonly<Record<Difficulty, DifficultyRules>> = {
   easy: {
     income: 1.2, fadeCrime: true, fadeMonthlyEmergencies: true, defaultDisasters: false,
+    opexMultiplier: 1, taxPerPoint: -3.5, disasterMultiplier: 1, manualDispatchWindowMultiplier: 1,
+    bankruptRemovalMonths: null, loanCutoffYears: null,
     blurb: '§250k, +20% taxes, forgiving first years · Recommended for your first city',
   },
-  medium: { income: 1.0, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true, blurb: '§100k, the intended balance' },
-  hard: { income: 0.85, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true, blurb: '§40k, −15% taxes, tight from day one' },
-  sandbox: { income: 1.0, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true, blurb: 'unlimited money, everything unlocked' },
+  medium: {
+    income: 1.0, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true,
+    opexMultiplier: 1, taxPerPoint: -3.5, disasterMultiplier: 1, manualDispatchWindowMultiplier: 1,
+    bankruptRemovalMonths: null, loanCutoffYears: null, blurb: '§100k, the intended balance',
+  },
+  hard: {
+    income: 0.85, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true,
+    opexMultiplier: 1.15, taxPerPoint: -4.5, disasterMultiplier: 1.5, manualDispatchWindowMultiplier: 1,
+    bankruptRemovalMonths: 12, loanCutoffYears: null, blurb: '§40k, −15% taxes, tight from day one',
+  },
+  sandbox: {
+    income: 1.0, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true,
+    opexMultiplier: 1, taxPerPoint: -3.5, disasterMultiplier: 1, manualDispatchWindowMultiplier: 1,
+    bankruptRemovalMonths: null, loanCutoffYears: null, blurb: 'unlimited money, everything unlocked',
+  },
+  expert: {
+    income: 0.85, fadeCrime: false, fadeMonthlyEmergencies: false, defaultDisasters: true,
+    opexMultiplier: 1.15, taxPerPoint: -4.5, disasterMultiplier: 3, manualDispatchWindowMultiplier: 0.75,
+    bankruptRemovalMonths: 12, loanCutoffYears: 5, blurb: '§40k, Hard rules, no new loans after year 5',
+  },
 };
 /** tornadoes, quakes and meteors strike only from this population (src/sim/infra/disasters.ts; the New City dialog's note) */
 export const DISASTER_MIN_POP = 2000;
