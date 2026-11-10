@@ -305,7 +305,8 @@ export function budgetSystem(rt: EconRuntime): SimSystem {
     name: 'economy.budget',
     init(sim) {
       rt.attach(sim);
-      if (!infraFlags(sim.state).utilities) estimateUtilities(sim.state, rt);
+      // (a loaded city keeps the estimate of its last week, as the uninterrupted game does until its next one: T057)
+      if (!infraFlags(sim.state).utilities && !(sim.state.day > 0)) estimateUtilities(sim.state, rt);
     },
     daily(sim) {
       // keep utility estimates fresh for the UI when sim-infra is absent (weekly)

@@ -245,7 +245,7 @@ export function rewardsSystem(rt: EconRuntime): SimSystem {
           const text = r.announce ?? (r.kind === 'landmark' ? `New landmark available: ${r.name}!`
             : r.kind === 'unlock' ? `${r.name} is now available.`
               : `Reward unlocked: ${r.name}! ${r.description}`);
-          sim.notify(text, 'reward', undefined, undefined, r.kind === 'deal' ? 'finance' : 'planning');
+          sim.notify(text, 'reward', undefined, undefined, r.kind === 'deal' ? 'finance' : 'planning', { reward: r.id });
         }
       }
       sim.events.emit('unlocked', r.id);

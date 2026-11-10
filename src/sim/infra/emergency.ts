@@ -46,9 +46,14 @@
  *            industrial accidents ignite, spills pollute, medical calls lose patients.
  * LAYERS     st.respFire / respPolice / respMedical: auto-dispatch slack in minutes (>= 0 reached within a station's
  *            range, < 0 minutes beyond it, RESP_NONE = no station of that type). Scheduler task 'emergency.response'
- *            (3 forward station searches in chunks of EMERG_SEARCH_CHUNK nodes, a land fill, building fills in chunks
- *            of EMERG_FILL_CHUNK), every EMERG_RESP_PERIOD days, right after station / fleet changes, within
- *            EMERG_RESP_NET_DAYS of a road-graph change in live play, and synchronously in init() (derived, not saved).
+ *            (3 forward station searches, a land fill, building fills), every EMERG_RESP_PERIOD days, right after
+ *            station / fleet changes, within EMERG_RESP_NET_DAYS of a road-graph change in live play, and synchronously
+ *            in init() (derived, not saved). B2 (docs/dev/B2_DESIGN.md §8): every step is one small piece (about a quarter
+ *            of INFRA_PIECE_COLD_MS estimated warm ms): the sequence start's lazy refreshes in pieces of their own (the
+ *            signature of a moved road graph by node ranges, the station scan by building chunks, the siren times by
+ *            node ranges into a private buffer), each search's start, settle chunks and slack pass, the land fill by
+ *            rows, the building fills by chunks of the live list. A sequence whose pieces run with nothing in between
+ *            computes exactly what the pre-B2 steps computed.
  * EVENTS     sim.events 'emergency' (new / queued / dispatched / arrived / escalated / resolved / failed / uncovered),
  *            news via sim.notify (advisors 'safety' / 'health'; its per-key throttle is saved), BF.Incident on every
  *            building an incident lists, while it lists it (the site; the burning buildings of a fire cluster).
@@ -65,21 +70,21 @@ import type { BuildingDef, ServiceKind } from '../catalogTypes';
 import { cohortShares } from '../economy/demographics';
 import { difficultyRules } from '../economy/tuning';
 import { facilityLoad } from './catchments';
-import { Fam, buildingList, centerCell, fundingFactor, infoOf, isFunctional } from './common';
+import { BuildingSnapshot, Fam, buildingList, centerCell, fundingFactor, infoOf, isFunctional } from './common';
 import { RoadGraph, perimeterNodes } from './graph';
 import {
   BPR_ALPHA, BPR_MAX_FACTOR, CRIME_MAJOR, CRIME_SPREE_MIN, CRIME_SPREE_RATE, EMERG_DAYS_PER_MIN, EMERG_DEADLINE,
-  EMERG_FILL_BLD_COST, EMERG_FILL_CELLS_COST, EMERG_FILL_CHUNK, EMERG_GRACE, EMERG_HOSPITAL_MAX, EMERG_MANUAL_MAX, EMERG_MAX_PATH, EMERG_PLANT_P, EMERG_RANGE_K, EMERG_RESP_PERIOD,
-  EMERG_RESP_NET_DAYS, EMERG_RMAX, EMERG_SEARCHES_PER_DAY, EMERG_SEARCH_CHUNK, EMERG_SEARCH_COST, EMERG_SEARCH_FINISH_COST, EMERG_SEARCH_NODES_PER_DAY,
+  EMERG_GRACE, EMERG_HOSPITAL_MAX, EMERG_MANUAL_MAX, EMERG_MAX_PATH, EMERG_PLANT_P, EMERG_RANGE_K, EMERG_RESP_PERIOD,
+  EMERG_RESP_NET_DAYS, EMERG_RMAX, EMERG_SEARCHES_PER_DAY, EMERG_SEARCH_NODES_PER_DAY,
   EMERG_SIREN_CONG, EMERG_SLOW_MARGIN, EMERG_TRUCK_SHARE,
   EMERG_UNPOWERED_TURNOUT, EMERG_WORK_DAYS, FIRE_BURN_DAYS, FIRE_CLUSTER_R, FIRE_DRY_WORK, FIRE_HOLD_PER_UNIT,
   FIRE_SPREAD_DRY, FIRE_SPREAD_ONSCENE, FIRE_SPREAD_P, FIRE_WORK_PER_AREA, INDUSTRIAL_POLL, IND_ACCIDENT_RATE,
   MED_BASE, MED_DELAY_LOSS, MED_MAJOR, MED_RATE, MED_SENIOR, MED_SURVIVE, NET_TIME, PRISON_ESCAPE, RAMP_PENALTY,
   RIOT_AFTER_BOOST, RIOT_AFTER_DAYS, RIOT_APPROVAL, RIOT_CRIME, RIOT_CRIME_BOOST, RIOT_HEALTH, RIOT_IGNITE_P,
   RIOT_MIN_POP, RIOT_P, RIOT_R_GROW, RIOT_R_MAX, ROAD_RADIUS_FACTOR, SPILL_HWY_RATE, SPILL_POLL, SPILL_RATE_ID,
-  SPILL_SITE_P, SPREE_FAIL_BOOST, SPREE_FAIL_DAYS,
+  SPILL_SITE_P, SPREE_FAIL_BOOST, SPREE_FAIL_DAYS, INFRA_BLD_SIZING_US, INFRA_CELL_SIZING_US, INFRA_PIECE_COLD_MS,
 } from './params';
-import { schedulerOf } from './scheduler';
+import { pieceUnits, schedulerOf } from './scheduler';
 import { Seeds } from './search';
 import type { FireSystem } from './fire';
 import type { TrafficSystem } from './traffic';
@@ -754,6 +759,49 @@ class BlockWeights {
   }
 }
 
+// ---- B2 pieces of the response sequence (design §8). The sequence start (respStep < 0; respSub > 0 while it runs): the
+// signature of a moved road graph (in pieces), the stations (ensureGraph, the station scan when stDirty: its chunks and
+// its install), the siren times (in pieces; their last piece also runs the resets: respStep = 0)
+const ES_IDLE = 0, ES_SIG = 1, ES_SCAN = 2, ES_TIMES = 3;
+// a station search (respStep 0..2): its start (seeds, ChunkedSearch.start), settle chunks, the slack pass by node ranges
+const RS_START = 0, RS_RUN = 1, RS_SLACK = 2;
+/**
+ * B2 piece budget (design R2): the response sequence runs every EMERG_RESP_PERIOD (90) days, the rarest of the split
+ * passes, so every loop stays cold (design review 2: resp3 at 7-17 x its warm cost): a quarter of INFRA_PIECE_COLD_MS, as
+ * crime's, with G2's cold cell and Building floors.
+ */
+const EM_COLD = INFRA_PIECE_COLD_MS / 4;
+/** the absolute scale of the estimates (traffic's TR_EST pattern): stepCost = EM_EST x (EM.piece + units x EM) / 1000 */
+const EM_EST = 1;
+/**
+ * B2 cost model (design §9): estimated warm wall µs per work unit of each kind of response piece. Start values: the
+ * services + emergency mapping's in-schedule fits (search 0.05 ms + 0.050 µs per settled node, slack 0.0026 µs per node;
+ * the land fill 0.14 ms + 0.0113 µs per cell; the building fill 0.05 ms + 0.14 µs per building). G4 refit (dense1m and
+ * bot256 --warm 300 --days 120, 3 runs each, the geometric mean of each label's median est / ms): the building fill / 1.34,
+ * the land fill x 1.24, the slack x 1.3, a search's start 5 -> 40 µs (+ 0.003 per node), the resets 3 -> 20. None of them
+ * sizes a piece (ES does).
+ */
+const EM = {
+  /** per piece (dispatch, the epoch check, saveResp) */
+  piece: 2,
+  /** the graph signature per node; the station scan per building, its install per station; the siren times per node */
+  sig: 0.01, scan: 0.03, install: 10, station: 1.5, times: 0.006,
+  /** the snapshot of the station scan per building; the resets (fixed) + the siren-time copy per node */
+  snapTake: 0.014, reset: 20, copy: 0.0004,
+  /** a search's start (fixed + its fills per node), per settled node, the slack per node */
+  start: 40, fill: 0.003, settle: 0.05, slack: 0.0034,
+  /** the land fill per cell (+ the RESP_NONE fills per cell), the building fill per building */
+  cell: 0.014, none: 0.0004, bld: 0.105,
+} as const;
+/** the chunk sizes, in estimated µs per unit (emUnits; kept apart from the EM estimate coefficients, so a refit of the
+ *  estimates never moves a piece boundary): a signature node, a scanned building, a siren-time node, a settled node, a
+ *  slack node, a land-fill cell, a filled building */
+const ES = { sig: 0.01, scan: 0.03, times: 0.006, settle: 0.05, slack: 0.0026, cell: 0.0113, bld: 0.14 } as const;
+/** units of one piece of a once-per-sequence loop costing `us` per unit (the cold cell / Building floor: `floor`) */
+function emUnits(us: number, floor = INFRA_CELL_SIZING_US): number {
+  return pieceUnits(us > floor ? us : floor, 1, EM_COLD);
+}
+
 export class EmergencySystem implements SimSystem {
   readonly name = 'emergency';
   /** the emergency system handles fires / incidents (false only for the Phase 0 stub) */
@@ -835,6 +883,36 @@ export class EmergencySystem implements SimSystem {
   private csActive = false;
   private respBCur = 0;
   private seeds = new Seeds();
+  // ---- B2 piece state of the response sequence (design §8). Reset in init and at every sequence start; none is saved
+  // (R9: p.resp, written by saveResp after every piece, is the only saved part of the sequence, as pre-B2).
+  /** the piece inside the current respStep (ES_* while respStep < 0: the start in progress; RS_* in a search) and its
+   *  node / row cursor */
+  private respSub = 0;
+  private respCur = 0;
+  /** the signature (graphSig) of graph sigG at version sigVer: computed in pieces by the response task when traffic's
+   *  graph moved (a pure function of the graph's content, which only a build / publish changes, and both bump the
+   *  version), read by ensureGraph instead of computing it again; the run in progress */
+  private sigG: RoadGraph | null = null;
+  private sigVer = -1;
+  private sigVal = '';
+  private sigRunG: RoadGraph | null = null;
+  private sigRunVer = -1;
+  private sigV = 0;
+  private sigH = new Int32Array(2);
+  /** the station scan in pieces (refreshStations' building loop over a snapshot): the stations found, the station-event
+   *  counter at its start (a later event leaves stDirty set) */
+  private stEv = 0;
+  private stScanEv = 0;
+  private stSnap = new BuildingSnapshot();
+  private stScan: Building[] = [];
+  /** the siren times in pieces (ensureTimes' loop into the private tmN): the epoch and traffic-update generation at the
+   *  start (a change restarts it), the all-free-flow flag */
+  private tmGen = 0;
+  private tmN: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private tmRun = false;
+  private tmRunEpoch = -1;
+  private tmRunGen = -1;
+  private tmFree = true;
   // caches
   private boosts: CrimeBoost[] = [];
   /** state the boosts / pollution caches were built for */
@@ -864,7 +942,7 @@ export class EmergencySystem implements SimSystem {
       sim.events.on('networkChanged', () => this.markNet()),
       sim.events.on('terrainChanged', () => this.markNet()),
       sim.events.on('layerUpdated', (k) => {
-        if (k === 'traffic') this.tmDirty = true;
+        if (k === 'traffic') { this.tmDirty = true; this.tmGen++; }
       }),
       sim.events.on('buildingAdded', (b) => this.onBuildingEvent(b)),
       sim.events.on('buildingRemoved', (b) => this.onBuildingEvent(b)),
@@ -872,8 +950,8 @@ export class EmergencySystem implements SimSystem {
         // a known station: rebuild the list only when it stops working, else just re-read power / funding
         if (this.stById.has(b.id)) {
           if (isFunctional(b)) this.unitsDirty = true;
-          else this.stDirty = true;
-        } else if (b.built >= 1 && fleetOfDef(b.def) && isFunctional(b)) this.stDirty = true;
+          else this.markStations();
+        } else if (b.built >= 1 && fleetOfDef(b.def) && isFunctional(b)) this.markStations();
       }),
     ];
     this.load(st);
@@ -916,8 +994,14 @@ export class EmergencySystem implements SimSystem {
     // derived layers: compute synchronously
     const rs = this.p.resp; // (read before the refresh below overwrites it)
     this.respStep = -1;
+    this.resetRespPieces();
+    // (the signature cache is pure; a new state starts without it)
+    this.sigG = null;
+    this.sigVer = -1;
+    this.sigVal = '';
+    this.sigRunG = null;
     this.respDirty = true;
-    do this.respTaskStep(sim); while (this.respStep >= 0);
+    do this.respTaskStep(sim); while (this.respActive);
     // a loaded game continues the saved refresh schedule (same scheduler work as the original from here on)
     if (Array.isArray(rs) && Number.isFinite(rs[0]) && rs[0] <= st.day) {
       this.respLast = rs[0];
@@ -938,7 +1022,14 @@ export class EmergencySystem implements SimSystem {
   }
 
   private onBuildingEvent(b: Building): void {
-    if (this.stById.has(b.id) || fleetOfDef(b.def)) this.stDirty = true;
+    if (this.stById.has(b.id) || fleetOfDef(b.def)) this.markStations();
+  }
+
+  /** the station set may have changed: refresh it on the next sync (the counter tells a station scan in pieces that an
+   *  event arrived after its start) */
+  private markStations(): void {
+    this.stDirty = true;
+    this.stEv++;
   }
 
   /** network / terrain edit: the private graph is rebuilt on its next use; traffic's graph (the usual one) is rebuilt
@@ -1076,7 +1167,8 @@ export class EmergencySystem implements SimSystem {
     if (g === this.g && g.version === this.gVer) return false;
     this.g = g;
     this.gVer = g.version;
-    const sig = graphSig(g);
+    // (B2: the response task computes a moved graph's signature in pieces first, sigPiece)
+    const sig = g === this.sigG && g.version === this.sigVer ? this.sigVal : graphSig(g);
     // rebuilt with the very same road network (traffic's rebuild after a load's 'reset', a subway or rail edit): node
     // ids and every node-indexed datum stay valid — no retry wave, no layer refresh, so a loaded game keeps the
     // original's dispatch decisions and scheduler work
@@ -1105,18 +1197,9 @@ export class EmergencySystem implements SimSystem {
     this.tmVer = this.gEpoch;
     const n = g.n;
     if (this.tm.length < n) this.tm = new Float32Array(n + (n >> 3) + 16);
-    const traffic = st.traffic, cellOf = g.cellOf, cap = g.cap, t0 = g.t0, tm = this.tm;
-    const A = BPR_ALPHA, MAXF = BPR_MAX_FACTOR, K = EMERG_SIREN_CONG;
-    let free = true;
-    for (let v = 0; v < n; v++) {
-      const c = cap[v];
-      const r = c > 0 ? traffic[cellOf[v]] / c : 0;
-      const r2v = r * r;
-      let f = 1 + A * r2v * r2v;
-      if (f > MAXF) f = MAXF;
-      tm[v] = t0[v] * (1 + K * (f - 1));
-      if (free && tm[v] !== t0[v]) free = false;
-    }
+    const tm = this.tm;
+    // (B2: the response task runs the same loop by node ranges, timesPiece)
+    const free = sirenTimes(g, st.traffic, tm, 0, n, true);
     // the saved copy a loaded game decides with (Persist.siren; free-flow times need no copy)
     this.p.siren = free ? { sig: this.gSig } : { sig: this.gSig, t: tm.slice(0, n) };
   }
@@ -1124,12 +1207,20 @@ export class EmergencySystem implements SimSystem {
   private refreshStations(sim: Simulation): void {
     const st = sim.state;
     this.stDirty = false;
+    // (B2: the response task runs the same scan in pieces, stScanPiece, and installs its result with installStations)
+    const found: Building[] = [];
+    for (const b of buildingList(st)) if (fleetOfDef(b.def) && isFunctional(b)) found.push(b);
+    this.installStations(sim, found);
+  }
+
+  /** the station list from the functional fleet buildings `found` (list order): names, units, nodes, versions */
+  private installStations(sim: Simulation, found: readonly Building[]): void {
+    const st = sim.state;
     const prev = this.stById;
     const list: Station[] = [];
     const count = new Map<string, number>();
-    for (const b of buildingList(st)) {
-      const f = fleetOfDef(b.def);
-      if (!f || !isFunctional(b)) continue;
+    for (const b of found) {
+      const f = fleetOfDef(b.def)!;
       const def = getDef(b.def);
       const k = (count.get(b.def) ?? 0) + 1;
       count.set(b.def, k);
@@ -3026,7 +3117,8 @@ export class EmergencySystem implements SimSystem {
 
   // ------------------------------------------------------------------------------------------ response layers
   private respDue(sim: Simulation): boolean {
-    if (this.respStep >= 0) return true;
+    // (B2: a sequence start in progress, respSub > 0, is part of the sequence)
+    if (this.respStep >= 0 || this.respSub !== 0) return true;
     const day = sim.state.day;
     // no emergency station at all: the layers are RESP_NONE everywhere until one is built (respDirty)
     if (!this.respDirty && this.respComputed && this.stations.length === 0) return false;
@@ -3038,59 +3130,151 @@ export class EmergencySystem implements SimSystem {
     return true;
   }
 
-  /**
-   * estimated ms of the next step (calibrated on the 256² stress city: 36k road nodes, 20k buildings). The sequence is
-   * 3 station searches (one per responder, EMERG_SEARCH_CHUNK settled nodes per step), 1 land fill, building fills of
-   * EMERG_FILL_CHUNK buildings per step — every step stays bounded on any map.
-   */
-  private respCost(): number {
-    const n = this.g.n;
-    if (this.respStep < 0 || this.respStep < 3) {
-      const r = RESPONDERS[Math.max(0, this.respStep)];
-      // no station of this responder: the step only fills the node slack
-      if (this.respStep >= 0 && !this.csActive && !this.stations.some((s) => s.responder === r && s.units > 0)) return 0.1 + 0.1 * Math.max(0.05, n / 36000);
-      const left = this.csActive ? Math.max(0, n - this.cs.settled) : n;
-      // + the O(n) slack pass of the step that finishes the search
-      const fin = left <= EMERG_SEARCH_CHUNK ? EMERG_SEARCH_FINISH_COST * Math.max(0.05, n / 36000) : 0;
-      return 0.1 + (EMERG_SEARCH_COST * Math.min(EMERG_SEARCH_CHUNK, Math.max(1000, left))) / 36000 + fin;
-    }
-    if (this.respStep === 3) return 0.1 + EMERG_FILL_CELLS_COST * Math.max(0.05, this.g.C / 65536);
-    const nbld = this.sim?.state.buildings.size ?? 0;
-    return 0.1 + (EMERG_FILL_BLD_COST * Math.max(500, Math.min(EMERG_FILL_CHUNK, nbld - this.respBCur))) / 20000;
+  /** a response sequence is in progress (its start, a state, or a graph signature in pieces) */
+  private get respActive(): boolean {
+    return this.respStep >= 0 || this.respSub !== 0;
   }
 
+  /** B2: every piece cursor of the response sequence back to its reset value (init, a sequence end) */
+  private resetRespPieces(): void {
+    this.respSub = 0;
+    this.respCur = 0;
+    this.csActive = false;
+    this.stSnap.release();
+    this.stScan.length = 0;
+    this.tmRun = false;
+  }
+
+  /**
+   * traffic's road graph moved since ensureGraph last saw it and its signature is not cached: the response task computes
+   * it in pieces first (sigPiece), so ensureGraph never hashes a whole graph inside a response piece. (The private graph,
+   * used only while traffic has none for this map, is built and signed by ensureGraph as pre-B2.)
+   */
+  private graphReady(st: CityState): boolean {
+    const g = this.trafficGraph(st);
+    if (!g || (g === this.g && g.version === this.gVer)) return true;
+    return g === this.sigG && g.version === this.sigVer;
+  }
+
+  /** one piece of the moved graph's signature (graphSig by node ranges: the same hashes, so the same string) */
+  private sigPiece(st: CityState): void {
+    const g = this.trafficGraph(st)!;
+    const h = this.sigH;
+    if (this.sigRunG !== g || this.sigRunVer !== g.version) {
+      this.sigRunG = g;
+      this.sigRunVer = g.version;
+      this.sigV = 0;
+      h[0] = 0x811c9dc5 | 0;
+      h[1] = 0x2545f491 | 0;
+    }
+    const n = g.n, v1 = Math.min(n, this.sigV + emUnits(ES.sig));
+    sigRange(g, this.sigV, v1, h);
+    this.sigV = v1;
+    if (v1 < n) return;
+    this.sigG = g;
+    this.sigVer = g.version;
+    this.sigVal = sigString(g, h);
+    this.sigRunG = null;
+  }
+
+  /**
+   * estimated warm wall ms of the next step (B2 §9: the next piece's own work counts x the EM coefficients, with the
+   * piece's own chunk sizes). Pure: reads the cursors and sizes, never runs a loop over nodes or cells, sets nothing up.
+   */
+  private respCost(): number {
+    return (EM_EST * (EM.piece + this.respUs())) / 1000;
+  }
+
+  /** µs of the next response piece (respCost) */
+  private respUs(): number {
+    const sim = this.sim;
+    if (!sim) return 0;
+    const st = sim.state, g = this.g, n = g.n;
+    if (!this.graphReady(st)) {
+      const tg = this.trafficGraph(st)!;
+      const v0 = this.sigRunG === tg && this.sigRunVer === tg.version ? this.sigV : 0;
+      return Math.max(0, Math.min(emUnits(ES.sig), tg.n - v0)) * EM.sig;
+    }
+    if (this.respStep < 0) {
+      switch (this.respSub) {
+        case ES_IDLE: case ES_SIG: return EM.start + (this.stDirty ? st.buildings.size * EM.snapTake : this.timesUs() + EM.reset + n * EM.copy);
+        case ES_SCAN: {
+          const left = this.stSnap.n - this.respCur, k = emUnits(ES.scan, INFRA_BLD_SIZING_US);
+          return Math.max(0, Math.min(k, left)) * EM.scan + (left <= k ? EM.install + this.stScan.length * EM.station : 0);
+        }
+        default: return this.timesUs() + EM.reset + n * EM.copy;
+      }
+    }
+    if (this.respStep < 3) {
+      switch (this.respSub) {
+        case RS_START: return EM.start + n * EM.fill;
+        case RS_RUN: return Math.max(0, Math.min(emUnits(ES.settle), n - this.cs.settled)) * EM.settle;
+        default: return Math.max(0, Math.min(emUnits(ES.slack), n - this.respCur)) * EM.slack;
+      }
+    }
+    if (this.respStep === 3) {
+      const N = st.size, rows = Math.max(1, Math.floor(emUnits(ES.cell) / Math.max(1, N)));
+      const none = (this.hasStation[0] ? 0 : 1) + (this.hasStation[1] ? 0 : 1) + (this.hasStation[2] ? 0 : 1);
+      return Math.max(0, Math.min(rows, N - this.respCur)) * N * EM.cell + (this.respCur === 0 ? none * st.cells * EM.none : 0);
+    }
+    const nbld = st.buildings.size;
+    return Math.max(0, Math.min(emUnits(ES.bld, INFRA_BLD_SIZING_US), nbld - this.respBCur)) * EM.bld;
+  }
+
+  /** µs of the next siren-times piece (0 when they are fresh) */
+  private timesUs(): number {
+    if (!this.tmDirty && this.tmVer === this.gEpoch) return 0;
+    const n = this.g.n, v0 = this.tmRun && this.tmRunEpoch === this.gEpoch && this.tmRunGen === this.tmGen ? this.respCur : 0;
+    const k = emUnits(ES.times);
+    return Math.max(0, Math.min(k, n - v0)) * EM.times + (n - v0 <= k ? n * EM.copy : 0);
+  }
+
+  /** B2: the name of the next response piece ('resp1.run'), for the step tools (b2work cpumap / profile labels) */
+  get stepName(): string {
+    const st = this.sim?.state;
+    if (st && !this.graphReady(st)) return 'resp' + Math.max(0, this.respStep) + '.sig';
+    if (this.respStep < 0) return 'resp0.' + ['stations', 'stations', 'scan', 'times'][this.respSub];
+    if (this.respStep < 3) return `resp${this.respStep}.` + ['start', 'run', 'slack'][this.respSub];
+    return this.respStep === 3 ? 'resp3.rows' : 'resp4.bld';
+  }
+
+  /**
+   * one step (B2: one piece) of the response sequence. The state ids (respStep 0-4) and transitions are the pre-B2 ones;
+   * a state stays current until its last piece is done. A sequence whose pieces run with nothing in between computes
+   * exactly what the pre-B2 steps computed. p.resp is written after every piece (saveResp), as pre-B2 after every step.
+   */
   private respTaskStep(sim: Simulation): void {
     const st = sim.state;
     if (this.respStep >= 0) {
+      // (a moved road graph: its signature in pieces first; ensureGraph then reads it from the cache)
+      if (!this.graphReady(st)) {
+        this.sigPiece(st);
+        this.saveResp();
+        return;
+      }
       // traffic may have rebuilt the graph since the last step: node ids changed, restart the sequence
       this.ensureGraph(st);
-      if (this.gEpoch !== this.respVer) this.respStep = -1;
+      if (this.gEpoch !== this.respVer) { this.respStep = -1; this.resetRespPieces(); }
     }
     if (this.respStep < 0) {
-      this.syncStations(sim);
-      this.ensureTimes(st);
-      this.respStep = 0;
-      this.respVer = this.gEpoch;
-      this.respDirty = false;
-      this.respNetOnly = false;
-      this.csActive = false;
-      this.respBCur = 0;
-      // freeze the siren times for the whole sequence (dispatch searches may refresh this.tm in between)
-      const n = this.g.n;
-      if (this.respTm.length < n) this.respTm = new Float32Array(n + (n >> 3) + 16);
-      this.respTm.set(this.tm.subarray(0, n));
+      this.respStartPiece(sim);
+      this.saveResp();
+      return;
     }
     let next = true;
-    if (this.respStep < 3) next = this.respSearch(RESPONDERS[this.respStep]);
-    else if (this.respStep === 3) this.respFillCells(st);
-    else next = this.respFillBuildings(st);
+    if (this.respStep < 3) next = this.respSearchPiece(RESPONDERS[this.respStep]);
+    else if (this.respStep === 3) next = this.respFillCellsPiece(st);
+    else next = this.respFillBuildingsPiece(st);
     if (!next) { // the same phase continues next step
       this.saveResp();
       return;
     }
     this.respStep++;
+    this.respSub = 0;
+    this.respCur = 0;
     if (this.respStep >= 5) {
       this.respStep = -1;
+      this.resetRespPieces();
       this.respLast = st.day;
       this.respComputed = true;
       sim.events.emit('layerUpdated', 'emergency');
@@ -3098,109 +3282,198 @@ export class EmergencySystem implements SimSystem {
     this.saveResp();
   }
 
-  /** one chunk of responder r's station search; true when its node slack is complete */
-  private respSearch(r: Responder): boolean {
+  /**
+   * one piece of the sequence start (pre-B2: syncStations, ensureTimes, the resets, the siren-time copy in the first
+   * step): a moved graph's signature in pieces, the stations (ensureGraph with the cached signature; the station scan in
+   * pieces when stDirty), the siren times in pieces, then the resets (respStep = 0) in the times' last piece
+   */
+  private respStartPiece(sim: Simulation): void {
+    const st = sim.state;
+    switch (this.respSub) {
+      case ES_IDLE: case ES_SIG:
+        // (a moved road graph: its signature in pieces first; ensureGraph then reads it from the cache)
+        if (!this.graphReady(st)) {
+          this.respSub = ES_SIG;
+          this.sigPiece(st);
+          return;
+        }
+        this.ensureGraph(st);
+        if (this.stDirty) {
+          this.stSnap.take(st);
+          this.stScan.length = 0;
+          this.stScanEv = this.stEv;
+          this.respSub = ES_SCAN;
+          this.respCur = 0;
+          return;
+        }
+        this.respSub = ES_TIMES;
+        this.respCur = 0;
+        if (this.timesPiece(st)) this.respReset();
+        return;
+      case ES_SCAN:
+        if (!this.stScanPiece(sim)) return;
+        this.respSub = ES_TIMES;
+        this.respCur = 0;
+        return;
+      default:
+        if (this.timesPiece(st)) this.respReset();
+    }
+  }
+
+  /** the sequence start's resets (pre-B2's, after syncStations / ensureTimes) and the siren-time copy; respStep = 0 */
+  private respReset(): void {
+    this.respStep = 0;
+    this.respSub = RS_START;
+    this.respCur = 0;
+    this.respVer = this.gEpoch;
+    this.respDirty = false;
+    this.respNetOnly = false;
+    this.csActive = false;
+    this.respBCur = 0;
+    // freeze the siren times for the whole sequence (dispatch searches may refresh this.tm in between)
+    const n = this.g.n;
+    if (this.respTm.length < n) this.respTm = new Float32Array(n + (n >> 3) + 16);
+    this.respTm.set(this.tm.subarray(0, n));
+  }
+
+  /**
+   * one piece of the station scan (refreshStations' loop over a snapshot of the building list, the cold Building floor
+   * per piece); its last piece installs the stations (installStations). A synchronous refresh in between (dispatch,
+   * dailyWork: stDirty cleared) makes the scan moot; a station event after its start leaves stDirty set (the next sync
+   * refreshes again). True when the scan is done.
+   */
+  private stScanPiece(sim: Simulation): boolean {
+    if (!this.stDirty) { this.stSnap.release(); this.stScan.length = 0; return true; }
+    const L = this.stSnap.list, n = this.stSnap.n, found = this.stScan;
+    const i1 = Math.min(n, this.respCur + emUnits(ES.scan, INFRA_BLD_SIZING_US));
+    for (let i = this.respCur; i < i1; i++) {
+      const b = L[i];
+      if (fleetOfDef(b.def) && isFunctional(b)) found.push(b);
+    }
+    this.respCur = i1;
+    if (i1 < n) return false;
+    this.stDirty = this.stEv !== this.stScanEv;
+    this.installStations(sim, found);
+    this.stSnap.release();
+    this.stScan.length = 0;
+    return true;
+  }
+
+  /**
+   * one piece of the siren times (ensureTimes' loop by node ranges into the private tmN; dispatch reads `tm` in between):
+   * the last piece publishes `tm` and the saved copy (Persist.siren) in one piece. A refresh by dispatch / dailyWork in
+   * between (fresh times) ends it; a graph epoch or traffic update after its start restarts it. True when the times are
+   * fresh.
+   */
+  private timesPiece(st: CityState): boolean {
+    if (!this.tmDirty && this.tmVer === this.gEpoch) { this.tmRun = false; return true; }
+    const g = this.g, n = g.n;
+    if (!this.tmRun || this.tmRunEpoch !== this.gEpoch || this.tmRunGen !== this.tmGen) {
+      this.tmRun = true;
+      this.tmRunEpoch = this.gEpoch;
+      this.tmRunGen = this.tmGen;
+      this.tmFree = true;
+      this.respCur = 0;
+      if (this.tmN.length < n) this.tmN = new Float32Array(n + (n >> 3) + 16);
+    }
+    const v1 = Math.min(n, this.respCur + emUnits(ES.times));
+    this.tmFree = sirenTimes(g, st.traffic, this.tmN, this.respCur, v1, this.tmFree);
+    this.respCur = v1;
+    if (v1 < n) return false;
+    this.tmDirty = false;
+    this.tmVer = this.gEpoch;
+    if (this.tm.length < n) this.tm = new Float32Array(n + (n >> 3) + 16);
+    const tm = this.tm;
+    tm.set(this.tmN.subarray(0, n));
+    // the saved copy a loaded game decides with (Persist.siren; free-flow times need no copy)
+    this.p.siren = this.tmFree ? { sig: this.gSig } : { sig: this.gSig, t: tm.slice(0, n) };
+    this.tmRun = false;
+    return true;
+  }
+
+  /** one piece of responder r's station search (seeds + start, settle chunks, the slack pass by node ranges); true when
+   *  its node slack is complete */
+  private respSearchPiece(r: Responder): boolean {
     const g = this.g;
     const ri = R_INDEX[r];
     const n = g.n;
     if (this.nodeSlack[ri].length < n) this.nodeSlack[ri] = new Float32Array(n + (n >> 3) + 16);
     const slack = this.nodeSlack[ri];
     const cs = this.cs;
-    if (!this.csActive) {
-      const seeds = this.seeds;
-      seeds.clear();
-      let any = false;
-      for (let k = 0; k < this.stations.length; k++) {
-        const s = this.stations[k];
-        if (s.responder !== r || s.units <= 0) continue;
-        any = true;
-        const label = Math.max(0, EMERG_RMAX - s.range);
-        for (const v of s.nodes) seeds.push(v, label, k);
+    switch (this.respSub) {
+      case RS_START: {
+        const seeds = this.seeds;
+        seeds.clear();
+        let any = false;
+        for (let k = 0; k < this.stations.length; k++) {
+          const s = this.stations[k];
+          if (s.responder !== r || s.units <= 0) continue;
+          any = true;
+          const label = Math.max(0, EMERG_RMAX - s.range);
+          for (const v of s.nodes) seeds.push(v, label, k);
+        }
+        this.hasStation[ri] = any;
+        if (!any || n === 0) { slack.fill(-EMERG_RMAX, 0, n); return true; }
+        cs.start(n, seeds, EMERG_RMAX + EMERG_SLOW_MARGIN);
+        this.csActive = true;
+        this.respSub = RS_RUN;
+        return false;
       }
-      this.hasStation[ri] = any;
-      if (!any || n === 0) { slack.fill(-EMERG_RMAX, 0, n); return true; }
-      cs.start(n, seeds, EMERG_RMAX + EMERG_SLOW_MARGIN);
-      this.csActive = true;
+      case RS_RUN:
+        if (!cs.step(g, g.fwd, this.respTm, emUnits(ES.settle))) return false;
+        this.csActive = false;
+        this.respSub = RS_SLACK;
+        this.respCur = 0;
+        return false;
+      default: {
+        const dist = cs.dist;
+        const v1 = Math.min(n, this.respCur + emUnits(ES.slack));
+        for (let v = this.respCur; v < v1; v++) {
+          const d = dist[v];
+          if (d === Infinity) { slack[v] = -EMERG_RMAX; continue; }
+          const sl = EMERG_RMAX - d;
+          slack[v] = sl > -EPS && sl < 0 ? 0 : sl;
+        }
+        this.respCur = v1;
+        return v1 >= n;
+      }
     }
-    if (!cs.step(g, g.fwd, this.respTm, EMERG_SEARCH_CHUNK)) return false;
-    this.csActive = false;
-    const dist = cs.dist;
-    for (let v = 0; v < n; v++) {
-      const d = dist[v];
-      if (d === Infinity) { slack[v] = -EMERG_RMAX; continue; }
-      const sl = EMERG_RMAX - d;
-      slack[v] = sl > -EPS && sl < 0 ? 0 : sl;
-    }
-    return true;
   }
 
   private respLayers(st: CityState): [Float32Array, Float32Array, Float32Array] {
     return [st.respFire, st.respPolice, st.respMedical];
   }
 
-  /** land / road cells: best slack of the cell's own road node and its 4 neighbours (all three layers, one pass) */
-  private respFillCells(st: CityState): void {
+  /** land / road cells: best slack of the cell's own road node and its 4 neighbours (all three layers, one pass), by row
+   *  ranges; the RESP_NONE fills of the layers without a station in the first piece. True when every row is done. */
+  private respFillCellsPiece(st: CityState): boolean {
     const L = this.respLayers(st);
     const noc = this.g.nodeOfCell;
-    if (noc.length !== st.cells) { for (const l of L) l.fill(RESP_NONE); return; }
     const has = this.hasStation;
     const h0 = has[0], h1 = has[1], h2 = has[2];
-    // no station of a type: the whole layer (buildings included) is RESP_NONE
-    for (let ri = 0; ri < 3; ri++) if (!has[ri]) L[ri].fill(RESP_NONE);
-    if (!h0 && !h1 && !h2) return;
     const N = st.size;
-    const bld = st.building;
-    const NONE = -EMERG_RMAX;
-    const s0 = this.nodeSlack[0], s1 = this.nodeSlack[1], s2 = this.nodeSlack[2];
-    const l0 = L[0], l1 = L[1], l2 = L[2];
-    for (let z = 0; z < N; z++) {
-      const row = z * N;
-      for (let x = 0; x < N; x++) {
-        const i = row + x;
-        if (bld[i] >= 0) continue; // buildings: respFillBuildings
-        let b0 = NONE, b1 = NONE, b2 = NONE;
-        let v = noc[i];
-        if (v >= 0) {
-          if (s0[v] > b0) b0 = s0[v];
-          if (s1[v] > b1) b1 = s1[v];
-          if (s2[v] > b2) b2 = s2[v];
-        }
-        if (x > 0 && (v = noc[i - 1]) >= 0) {
-          if (s0[v] > b0) b0 = s0[v];
-          if (s1[v] > b1) b1 = s1[v];
-          if (s2[v] > b2) b2 = s2[v];
-        }
-        if (x < N - 1 && (v = noc[i + 1]) >= 0) {
-          if (s0[v] > b0) b0 = s0[v];
-          if (s1[v] > b1) b1 = s1[v];
-          if (s2[v] > b2) b2 = s2[v];
-        }
-        if (z > 0 && (v = noc[i - N]) >= 0) {
-          if (s0[v] > b0) b0 = s0[v];
-          if (s1[v] > b1) b1 = s1[v];
-          if (s2[v] > b2) b2 = s2[v];
-        }
-        if (z < N - 1 && (v = noc[i + N]) >= 0) {
-          if (s0[v] > b0) b0 = s0[v];
-          if (s1[v] > b1) b1 = s1[v];
-          if (s2[v] > b2) b2 = s2[v];
-        }
-        if (h0) l0[i] = b0;
-        if (h1) l1[i] = b1;
-        if (h2) l2[i] = b2;
-      }
+    if (this.respCur === 0) {
+      if (noc.length !== st.cells) { for (const l of L) l.fill(RESP_NONE); return true; }
+      // no station of a type: the whole layer (buildings included) is RESP_NONE
+      for (let ri = 0; ri < 3; ri++) if (!has[ri]) L[ri].fill(RESP_NONE);
+      if (!h0 && !h1 && !h2) return true;
     }
+    const z0 = this.respCur, z1 = Math.min(N, z0 + Math.max(1, Math.floor(emUnits(ES.cell) / Math.max(1, N))));
+    respFillRows(st, noc, this.nodeSlack, L, h0, h1, h2, z0, z1);
+    this.respCur = z1;
+    return z1 >= N;
   }
 
   /** building footprints: best slack over the perimeter road nodes (= the dispatch search seeds), all three layers;
-   *  EMERG_FILL_CHUNK buildings of the building list per step. Returns true when every building is done. */
-  private respFillBuildings(st: CityState): boolean {
+   *  pieceUnits(ES.bld) buildings of the building list per step (the live list with the cursor respBCur, as pre-B2).
+   *  Returns true when every building is done. */
+  private respFillBuildingsPiece(st: CityState): boolean {
     const L = this.respLayers(st);
     const noc = this.g.nodeOfCell;
     if (noc.length !== st.cells) return true;
     const list = buildingList(st);
     const q0 = Math.min(this.respBCur, list.length);
-    const q1 = Math.min(list.length, q0 + EMERG_FILL_CHUNK);
+    const q1 = Math.min(list.length, q0 + emUnits(ES.bld, INFRA_BLD_SIZING_US));
     this.respBCur = q1;
     const N = st.size;
     const bld = st.building;
@@ -3233,7 +3506,6 @@ export class EmergencySystem implements SimSystem {
     }
     return q1 >= list.length;
   }
-
   /** response layers computed at least once (init) */
   get layersReady(): boolean {
     return this.respComputed;
@@ -3278,9 +3550,17 @@ function savedEffects(st: CityState): { boosts: CrimeBoost[]; polls: EmergencyPo
  * 32-bit hashes; O(5 n), only when traffic rebuilt its graph).
  */
 function graphSig(g: RoadGraph): string {
-  const n = g.n, cellOf = g.cellOf, type = g.type, fwd = g.fwd;
-  let h1 = 0x811c9dc5 | 0, h2 = 0x2545f491 | 0;
-  for (let v = 0; v < n; v++) {
+  const h = new Int32Array([0x811c9dc5 | 0, 0x2545f491 | 0]);
+  sigRange(g, 0, g.n, h);
+  return sigString(g, h);
+}
+
+/** graphSig's hashes over the nodes [v0, v1), carried in h (B2: the response task hashes by node ranges, the same
+ *  sequence of 32-bit hash steps, so the same signature for any cut) */
+function sigRange(g: RoadGraph, v0: number, v1: number, h: Int32Array): void {
+  const cellOf = g.cellOf, type = g.type, fwd = g.fwd;
+  let h1 = h[0], h2 = h[1];
+  for (let v = v0; v < v1; v++) {
     const a = cellOf[v] * 16 + type[v];
     h1 = Math.imul(h1 ^ a, 0x01000193);
     h2 = Math.imul(h2 + a, 0x5bd1e995) ^ (h2 >>> 15);
@@ -3291,7 +3571,76 @@ function graphSig(g: RoadGraph): string {
       h2 = Math.imul(h2 + e, 0x5bd1e995) ^ (h2 >>> 15);
     }
   }
-  return `${g.N}:${n}:${(h1 >>> 0).toString(36)}:${(h2 >>> 0).toString(36)}`;
+  h[0] = h1;
+  h[1] = h2;
+}
+
+function sigString(g: RoadGraph, h: Int32Array): string {
+  return `${g.N}:${g.n}:${(h[0] >>> 0).toString(36)}:${(h[1] >>> 0).toString(36)}`;
+}
+
+/** siren link times t0 x (1 + EMERG_SIREN_CONG x (bpr - 1)) of the nodes [v0, v1) into tm; returns `free` and-ed with
+ *  "every time equals its free-flow time" (ensureTimes' loop; B2: by node ranges in the response task) */
+function sirenTimes(g: RoadGraph, traffic: Float32Array, tm: Float32Array, v0: number, v1: number, free: boolean): boolean {
+  const cellOf = g.cellOf, cap = g.cap, t0 = g.t0;
+  const A = BPR_ALPHA, MAXF = BPR_MAX_FACTOR, K = EMERG_SIREN_CONG;
+  for (let v = v0; v < v1; v++) {
+    const c = cap[v];
+    const r = c > 0 ? traffic[cellOf[v]] / c : 0;
+    const r2v = r * r;
+    let f = 1 + A * r2v * r2v;
+    if (f > MAXF) f = MAXF;
+    tm[v] = t0[v] * (1 + K * (f - 1));
+    if (free && tm[v] !== t0[v]) free = false;
+  }
+  return free;
+}
+
+/** the response land fill over rows [z0, z1): the best slack of each non-building cell's own road node and its 4
+ *  neighbours, into the layers of the responders with a station (respFillCells' loop; B2: by row ranges) */
+function respFillRows(st: CityState, noc: Int32Array, slacks: readonly Float32Array[], L: readonly Float32Array[], h0: boolean, h1: boolean, h2: boolean, z0: number, z1: number): void {
+  const N = st.size;
+  const bld = st.building;
+  const NONE = -EMERG_RMAX;
+  const s0 = slacks[0], s1 = slacks[1], s2 = slacks[2];
+  const l0 = L[0], l1 = L[1], l2 = L[2];
+  for (let z = z0; z < z1; z++) {
+    const row = z * N;
+    for (let x = 0; x < N; x++) {
+      const i = row + x;
+      if (bld[i] >= 0) continue; // buildings: respFillBuildings
+      let b0 = NONE, b1 = NONE, b2 = NONE;
+      let v = noc[i];
+      if (v >= 0) {
+        if (s0[v] > b0) b0 = s0[v];
+        if (s1[v] > b1) b1 = s1[v];
+        if (s2[v] > b2) b2 = s2[v];
+      }
+      if (x > 0 && (v = noc[i - 1]) >= 0) {
+        if (s0[v] > b0) b0 = s0[v];
+        if (s1[v] > b1) b1 = s1[v];
+        if (s2[v] > b2) b2 = s2[v];
+      }
+      if (x < N - 1 && (v = noc[i + 1]) >= 0) {
+        if (s0[v] > b0) b0 = s0[v];
+        if (s1[v] > b1) b1 = s1[v];
+        if (s2[v] > b2) b2 = s2[v];
+      }
+      if (z > 0 && (v = noc[i - N]) >= 0) {
+        if (s0[v] > b0) b0 = s0[v];
+        if (s1[v] > b1) b1 = s1[v];
+        if (s2[v] > b2) b2 = s2[v];
+      }
+      if (z < N - 1 && (v = noc[i + N]) >= 0) {
+        if (s0[v] > b0) b0 = s0[v];
+        if (s1[v] > b1) b1 = s1[v];
+        if (s2[v] > b2) b2 = s2[v];
+      }
+      if (h0) l0[i] = b0;
+      if (h1) l1[i] = b1;
+      if (h2) l2[i] = b2;
+    }
+  }
 }
 
 /** road nodes around a cell without a building: its own node (road cell) + 4-neighbour road nodes */

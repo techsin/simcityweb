@@ -283,29 +283,32 @@ export class FallbackActions implements CityActionsApi {
           H[i] += (s / n - H[i]) * Math.min(1, f);
         }
       }
-    computeWater(st, Math.max(0, x0 - 1), Math.max(0, z0 - 1), Math.min(N, x1 + 1), Math.min(N, z1 + 1));
+    // the water recompute covers a one-cell ring around the edit: the event reports what changed
+    const changed = { x0: Math.max(0, x0 - 1), z0: Math.max(0, z0 - 1), x1: Math.min(N, x1 + 1), z1: Math.min(N, z1 + 1) };
+    computeWater(st, changed.x0, changed.z0, changed.x1, changed.z1);
     this.spend(cost, 'terraform');
-    this.sim.events.emit('terrainChanged', { x0, z0, x1, z1 });
+    this.sim.events.emit('terrainChanged', changed);
     return { ok: true, cost };
   }
 
   plantTrees(rect: CellRect, preview = false): ActionResult {
     const st = this.st;
+    const x0 = Math.max(0, rect.x0), x1 = Math.min(st.size, rect.x1), z0 = Math.max(0, rect.z0), z1 = Math.min(st.size, rect.z1);
+    const room = (i: number) => !st.water[i] && !st.network[i] && st.building[i] < 0 && st.trees[i] < 4;
     let n = 0;
-    for (let z = Math.max(0, rect.z0); z < Math.min(st.size, rect.z1); z++)
-      for (let x = Math.max(0, rect.x0); x < Math.min(st.size, rect.x1); x++) {
-        const i = st.idx(x, z);
-        if (st.water[i] || st.network[i] || st.building[i] >= 0 || st.trees[i] >= 4) continue;
-        n++;
-        if (!preview) st.trees[i] = Math.min(4, st.trees[i] + 2);
-      }
+    for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) if (room(st.idx(x, z))) n++;
     const cost = n * 3;
     if (!n) return { ok: false, cost: 0, reason: 'No room for trees' };
     if (!this.afford(cost)) return { ok: false, cost, reason: 'Not enough money' };
-    if (!preview) {
-      this.spend(cost, 'trees');
-      this.sim.events.emit('treesChanged', rect);
-    }
+    if (preview) return { ok: true, cost, affected: n };
+    // count and pay first, as CityActions does: a refused planting writes nothing
+    for (let z = z0; z < z1; z++)
+      for (let x = x0; x < x1; x++) {
+        const i = st.idx(x, z);
+        if (room(i)) st.trees[i] = Math.min(4, st.trees[i] + 2);
+      }
+    this.spend(cost, 'trees');
+    this.sim.events.emit('treesChanged', rect);
     return { ok: true, cost, affected: n };
   }
 

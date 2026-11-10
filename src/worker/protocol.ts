@@ -1,10 +1,11 @@
 /** Clone-only worker messages and lossless replica codecs (WORKER_DESIGN §2). */
 import type { CellRect } from '../core/events';
 import type { Overlay } from '../core/types';
+import type { EmergencyTeaching } from '../game/emergencyPolicy';
 import type { RegionContext } from '../region/regionEffects';
 import type { RegionCitySummary } from '../region/types';
 import type { CityRecord } from '../save/cities';
-import type { RecoveryMarker, WriteResult } from '../save/recoveryCodec';
+import type { RecoveryInfo, RecoveryMarker, WriteResult } from '../save/recoveryCodec';
 import type { AnyTypedArray, SerializedCity } from '../save/serialize';
 import type { Building, CityState, HistorySeries } from '../sim/CityState';
 import type { EmergencyEvent } from '../sim/Simulation';
@@ -29,6 +30,10 @@ export interface SimSettings {
   emergencyUncovered: 'live' | 'pause' | 'ignore';
   emergencyLiveSlowmo: number;
   emergencyAlerts: 'major' | 'all';
+  /** FH-08 profile firsts; omitted flags are off, acknowledgement uses setSettings. */
+  teachFirst?: boolean;
+  teachTooFar?: boolean;
+  teachingAck?: number;
 }
 export interface ViewState { overlay: Overlay; variant: number; panels: string[]; focus: number[] }
 export type CitySource = { kind: 'idb'; regionId: string; tileKey: string }
@@ -41,6 +46,9 @@ export interface Journal {
   fromCmd: number;
   /** FH-07a (T033): a bulldoze carries its ack's charge, net `cost` and gross `refund`, not the refund rule */
   ops: { seq: number; op: JournalOp; args: unknown[]; cost?: number; refund?: number }[];
+  /** W1.3: the city as the page last saw it (name, day, population, funds) and why it was written, for the title
+   *  screen's offer of a journal alone */
+  info?: RecoveryInfo & { why?: string };
 }
 export type M2W =
   | { t: 'init'; v: number; city: CitySource; rctx: RegionContext | null; initialSpeed: number; settings: SimSettings;
@@ -59,19 +67,32 @@ export type W2M =
       /** a resync's: the request ids whose replies it dropped (W1.1b). Main rejects only these; the rest still reply. */
       lost?: number[] }
   | { t: 'pkt'; p: Packet }
-  | { t: 'fatal'; message: string; stack?: string };
+  /** `code` (W1.3): 'idb-unavailable' is the boot error of §4.1 step 3, after which the host restarts the worker with
+   *  persistence 'main' */
+  | { t: 'fatal'; message: string; stack?: string; code?: string };
 export type Ready = Extract<W2M, { t: 'ready' }>;
 // W1.1b: captured watermarks survive delayed delivery; all outcomes travel after the packet's log.
 export type Reply =
   | { t: 'qres'; id: number; cmd: number; ok: boolean; value?: unknown; error?: string }
-  | { t: 'saved'; id: number; cmd: number; ok: boolean; savedAt?: number; summary?: RegionCitySummary; fp?: string; pktSeq?: number; record?: CityRecord; changes?: number; recoveryDropped?: boolean; error?: string }
+  | { t: 'saved'; id: number; cmd: number; ok: boolean; savedAt?: number; summary?: RegionCitySummary; fp?: string; pktSeq?: number; record?: CityRecord; changes?: number; recoveryDropped?: boolean; error?: string; errorName?: string }
   | { t: 'snapped'; id: number; cmd: number; ok?: true; marker: RecoveryMarker; payload: Uint8Array; fp?: string; changes?: number; result?: WriteResult }
-  | { t: 'snapped'; id: number; cmd: number; ok: false; error?: string }
+  | { t: 'snapped'; id: number; cmd: number; ok: false; error?: string; errorName?: string }
   | { t: 'error'; cmd: number; key: string; title: string; message: string; stack?: string; sim: boolean; disabled?: boolean };
 export interface WatchValue { id: number; key: string; cmd: number; value?: unknown; error?: string }
 export interface CommandFailure { ok: false; commandError: string }
 /** The text an error crosses the protocol as; main rebuilds an Error from it, so no "Error: Error: …". */
 export const errorText = (e: unknown): string => e instanceof Error ? e.message : String(e);
+/** T061 item 7: a failed save's or snapshot's error name (a DOMException's too: QuotaExceededError), when not plain 'Error' */
+export function errorName(e: unknown): string | undefined {
+  const name = e !== null && typeof e === 'object' && 'name' in e && typeof e.name === 'string' ? e.name : undefined;
+  return name && name !== 'Error' ? name : undefined;
+}
+/** main's Error for a failed save or snapshot reply: its message, and its name (the guided quota dialog reads it) */
+export function replyError(message: string | undefined, name?: string): Error {
+  const error = new Error(message);
+  if (name) error.name = name;
+  return error;
+}
 /** A command the worker applied whose Ack a resync dropped (W1.1b): its ticket rejects with this, and callers skip
  *  failure feedback, since the edit happened. */
 export class CommandOutcomeLost extends Error {
@@ -84,6 +105,7 @@ export interface PolicyState {
   live: boolean;
   toast?: { text: string; kind: 'info' | 'good' | 'bad' | 'warning' };
   warn?: true;
+  teaching?: EmergencyTeaching;
 }
 export type StationRow = ReturnType<EmergencySystem['stationList']>[number];
 export type IncidentRecord = Incident;
@@ -92,7 +114,8 @@ export interface EmergencyStream {
   stVer: number; stations?: StationRow[];
 }
 export interface TrafficStream { routes?: SampleRoute[]; trucks?: { idx: Uint32Array; val: Float32Array } }
-export interface Streams { emergency?: EmergencyStream; traffic?: TrafficStream; disasters?: ActiveDisaster[] }
+export interface UtilitiesStream { plantLoads: { ids: Uint32Array; loads: Float32Array } }
+export interface Streams { emergency?: EmergencyStream; traffic?: TrafficStream; utilities?: UtilitiesStream; disasters?: ActiveDisaster[] }
 export interface WorkerStats { busy: number; msPerDay: number; units: Record<string, number>; queue: number }
 export const PLAIN_KEYS = ['funds', 'nextBuildingId', 'stats', 'budget', 'milestones', 'neighborConnections'] as const;
 export const SYSTEM_KEYS = ['economy', 'infraVersion', 'infraLayers', 'advisors', 'regionJobs', 'regionWorkers', 'foundedDay'] as const;

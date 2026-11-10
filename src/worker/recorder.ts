@@ -3,17 +3,19 @@ import type { CellRect } from '../core/events';
 import { DEV_TYPE_COUNT, Overlay } from '../core/types';
 import { serializeCity } from '../save/serialize';
 import { BF, HISTORY_KEYS, type Building, type CityState, type HistorySeries } from '../sim/CityState';
+import { getDef } from '../sim/catalog';
 import type { CityEvents, EmergencyEvent, Simulation } from '../sim/Simulation';
 import { buildingList } from '../sim/infra/common';
 import type { DisastersSystem } from '../sim/infra/disasters';
 import type { EmergencySystem, Incident } from '../sim/infra/emergency';
 import { attachOverlays, overlayDeps, overlayLayer, resolveVariant } from '../sim/infra/overlays';
 import type { SampleRoute, TrafficSystem } from '../sim/infra/traffic';
+import type { UtilitiesSystem } from '../sim/infra/utilities';
 import {
   DefTable, EntryType, EVENT_NAMES, EVENT_TYPES, EXACT_FIELDS, PLAIN_KEYS, REC, REC_FIELDS, RecordBuffer, SYSTEM_KEYS,
   copyOwned, encodeAck, encodeCell, encodeIncident, encodeLayer, encodeRoad, layerOf, plainEqual, rectArg, writeBuilding,
   type CellLayer, type Clock, type EmergencyStream, type Entry, type EventName, type LayerName, type LayerPatch,
-  type Packet, type PlainPatch, type PolicyState, type RasterPatch, type Ready, type Reply, type Streams, type ViewState, type WatchValue,
+  type Packet, type PlainPatch, type PolicyState, type RasterPatch, type Ready, type Reply, type Streams, type UtilitiesStream, type ViewState, type WatchValue,
 } from './protocol';
 
 export interface RecorderOptions {
@@ -31,6 +33,8 @@ const MAP_LAYERS: Partial<Record<EventName, readonly CellLayer[]>> = {
   powerLinesChanged: ['powerLines'], subwayChanged: ['subway'], treesChanged: ['trees'], treesDamaged: ['trees'],
 };
 const EMPTY_POLICY: PolicyState = { alerts: [], live: false };
+/** Plant load is a 0..1 share; suppress changes of at most half a percentage point. */
+const PLANT_LOAD_CHANGE = 0.005;
 
 /** Only the shown inputs are subscribed. Utilities / traffic are added separately and always mirrored. */
 export function viewLayers(view: ViewState): LayerName[] {
@@ -95,6 +99,7 @@ export class ChangeRecorder {
   private policy: PolicyState = copyOwned(EMPTY_POLICY);
   private stationVersion = -1;
   private routeRefs: SampleRoute[] = [];
+  private plantLoads = new Map<number, number>();
   private hadDisasters = false;
   private view: ViewState = { overlay: Overlay.None, variant: 0, panels: [], focus: [] };
   private viewDirty = false;
@@ -167,6 +172,7 @@ export class ChangeRecorder {
     this.records.clear(); this.endRecords.clear(); this.log = []; this.incidents = []; this.rects.clear(); this.dirty.clear();
     this.sentAt.clear(); this.sparse.clear(); this.constructing.clear(); this.young.clear(); this.incidentRefs.clear();
     this.seq = 0; this.cursor = 0; this.auditCursor = 0; this.stationVersion = -1; this.routeRefs = [];
+    this.plantLoads.clear();
     this.shadow = new Float64Array(0); this.exact = new Float64Array(0);
     this.ensureShadow(this.state.nextBuildingId);
     for (const b of this.state.buildings.values()) {
@@ -337,9 +343,29 @@ export class ChangeRecorder {
     if (full || stVer !== this.stationVersion) { out.stations = copyOwned([...em.stationList()]); this.stationVersion = stVer; }
     return out;
   }
-  private streams(full: boolean, dayOrEmergency: boolean): Streams {
+  private utilitiesStream(full: boolean): UtilitiesStream | undefined {
+    const utilities = this.sim.getSystem<UtilitiesSystem>('utilities'), loads = new Map<number, number>();
+    let changed = full;
+    for (const b of this.state.buildings.values()) {
+      if (!((getDef(b.def)?.powerOut ?? 0) > 0)) continue;
+      const value = utilities?.plantLoad(b.id) ?? -1;
+      const rounded = value < 0 ? -1 : Math.fround(value);
+      const load = Number.isFinite(rounded) ? rounded : -1;
+      loads.set(b.id, load);
+      const previous = this.plantLoads.get(b.id);
+      if (previous === undefined || Math.abs(load - previous) > PLANT_LOAD_CHANGE) changed = true;
+    }
+    if (!changed && loads.size === this.plantLoads.size) return;
+    this.plantLoads = loads;
+    return { plantLoads: { ids: Uint32Array.from(loads.keys()), loads: Float32Array.from(loads.values()) } };
+  }
+  private streams(full: boolean, dayOrEmergency: boolean, utilitiesReady = false): Streams {
     const streams: Streams = {};
     if (full || dayOrEmergency) streams.emergency = this.emergencyStream(full);
+    if (full || utilitiesReady) {
+      const utilities = this.utilitiesStream(full);
+      if (utilities) streams.utilities = utilities;
+    }
     const traffic = this.traffic();
     if (traffic) {
       const routes = traffic.getSampleRoutes(1024);
@@ -408,7 +434,7 @@ export class ChangeRecorder {
       else p.log.push(entry);
     }
     const emEvent = p.log.some((e) => e[0] === EntryType.Emergency);
-    Object.assign(p, this.streams(false, dayPassed || emEvent));
+    Object.assign(p, this.streams(false, dayPassed || emEvent, delivered.has('utilities')));
     this.log = deferred;
     for (const group of delivered) this.dirty.delete(group);
     const recs = this.records.take(); if (recs.length) p.recs = recs;
