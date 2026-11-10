@@ -26,22 +26,24 @@ installFakeDom();
 let now = 1000;
 interface AnimCall { el: FEl; kf: Record<string, unknown>[]; opts: { duration?: number } }
 let anims: AnimCall[] = [];
-let frames: ((ts: number) => void)[] = [];
+/** queued animation frames by request id (requestAnimationFrame / cancelAnimationFrame stand-ins) */
+let frames = new Map<number, (ts: number) => void>();
+let frameId = 0;
 const g = globalThis as unknown as Record<string, unknown>;
 const saved: Record<string, unknown> = {};
 
 beforeEach(() => {
   now = 1000;
   anims = [];
-  frames = [];
+  frames = new Map();
   vi.spyOn(performance, 'now').mockImplementation(() => now);
   (FEl.prototype as unknown as { animate: unknown }).animate = function (this: FEl, kf: Record<string, unknown>[], opts: { duration?: number }) {
     anims.push({ el: this, kf, opts });
     return { cancel: () => {} };
   };
   for (const k of ['requestAnimationFrame', 'cancelAnimationFrame']) saved[k] = g[k];
-  g.requestAnimationFrame = (cb: (ts: number) => void) => frames.push(cb);
-  g.cancelAnimationFrame = (id: number) => { frames[id - 1] = () => {}; };
+  g.requestAnimationFrame = (cb: (ts: number) => void) => { frames.set(++frameId, cb); return frameId; };
+  g.cancelAnimationFrame = (id: number) => { frames.delete(id); };
   (g.document as Record<string, unknown>).visibilityState = 'visible';
 });
 afterEach(() => {
@@ -52,13 +54,18 @@ afterEach(() => {
   delete (g.document as Record<string, unknown>).visibilityState;
 });
 
-/** run the queued animation frames, `dt` ms apart from `ts0`, until none is queued; the frame times */
+/** run the frame callbacks queued now, at time `ts` (the ones they queue wait for the next frame) */
+function step(ts: number): void {
+  const queued = [...frames.values()];
+  frames.clear();
+  for (const f of queued) f(ts);
+}
+
+/** run animation frames, `dt` ms apart from `ts0`, until none is queued; the frame times */
 function runFrames(ts0 = 5000, dt = 1000 / 60): number[] {
   const seen: number[] = [];
-  for (let ts = ts0, guard = 0; frames.some(Boolean) && guard < 1000; ts += dt, guard++) {
-    const queued = frames;
-    frames = [];
-    for (const f of queued) f(ts);
+  for (let ts = ts0, guard = 0; frames.size && guard < 1000; ts += dt, guard++) {
+    step(ts);
     seen.push(ts);
   }
   return seen;
@@ -116,15 +123,16 @@ function city(opts: { exact?: boolean; motion?: string; sandbox?: boolean; point
   const parent = new FEl('div');
   const ft = attachFloatText(ctx, parent as unknown as HTMLElement, () => opts.pointer ?? { x: 400, y: 300 });
   const floats = () => ft.layer.children as unknown as FEl[];
-  const shown = () => floats().filter((el) => anims.some((a) => a.el === el) || el.className === 'ft on');
-  return { st, A, abort, ctx, ft, parent, floats, shown, pending };
+  return { st, A, abort, ctx, ft, parent, floats, pending };
 }
 
 const plop = (ctx: GameContext, x = 10, z = 10, ok = vi.fn()) => commitAction(ctx, {}, 'plop', ['util_coal_plant', x, z, 0], { ok });
 const flush = async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
+/** the next animation frame: floats draw in it */
+const draw = () => runFrames();
 
 describe('FEEL-03 (a) cost floats', () => {
-  it('placing a coal plant floats exactly ActionResult.cost and its upkeep, in the same call as the ok feedback', async () => {
+  it('placing a coal plant floats exactly ActionResult.cost and its upkeep, drawn in the next frame', async () => {
     const f = city();
     const funds = f.st.funds;
     const ok = vi.fn();
@@ -132,8 +140,12 @@ describe('FEEL-03 (a) cost floats', () => {
     const r = ticket.predicted as ActionResult;
     expect(r.ok).toBe(true);
     expect(r.cost).toBe(funds - f.st.funds);
-    // shown before commitAction returns (the plan's "within 100 ms"), with the ok feedback
     expect(ok).toHaveBeenCalledOnce();
+    // no DOM write inside the commit (it may run inside the city's frame, before that frame's layout reads)
+    expect(f.floats()).toHaveLength(0);
+    expect(anims).toHaveLength(0);
+    // one frame later (≈17 ms at 60 fps; the plan allows 100 ms)
+    expect(draw()).toHaveLength(1);
     expect(f.floats()).toHaveLength(1);
     expect(anims).toHaveLength(1);
     const el = f.floats()[0];
@@ -147,17 +159,20 @@ describe('FEEL-03 (a) cost floats', () => {
     // the acknowledgement does not float it again
     await ticket.done;
     await flush();
+    draw();
     expect(anims).toHaveLength(1);
   });
 
   it('a failed placement shows no float', () => {
     const f = city();
     plop(f.ctx);
+    draw();
     anims = [];
     const fail = vi.fn();
     const ticket = commitAction(f.ctx, {}, 'plop', ['util_coal_plant', 10, 10, 0], { ok: vi.fn(), fail });
     expect((ticket.predicted as ActionResult).ok).toBe(false);
     expect(fail).toHaveBeenCalledOnce();
+    draw();
     expect(anims).toHaveLength(0);
     expect(f.floats()).toHaveLength(1);
   });
@@ -165,10 +180,13 @@ describe('FEEL-03 (a) cost floats', () => {
   it('bulldozing it the same day floats the refund in green', () => {
     const f = city();
     plop(f.ctx);
+    draw();
     now += 2000;
     const r = commitAction(f.ctx, {}, 'bulldoze', [{ x0: 10, z0: 10, x1: 11, z1: 11 }], { ok: vi.fn() }).predicted as ActionResult;
     expect(r.ok && r.cost < 0).toBe(true);
-    const el = anims.at(-1)!.el;
+    draw();
+    expect(anims).toHaveLength(2);
+    const el = anims[1].el;
     expect(textOf(el.querySelector('.ft-cost')!)).toBe(`${moneySigned(-r.cost)} refund`);
     expect(el.querySelector('.ft-cost')!.className).toBe('ft-cost pos');
     expect(textOf(el.querySelector('.ft-sub')!)).toBe('');
@@ -184,6 +202,8 @@ describe('FEEL-03 (a) cost floats', () => {
     await flush();
     expect(ok).toHaveBeenCalledOnce();
     expect(spy).toHaveBeenCalledExactlyOnceWith(f.pending[0].r.cost, 700, expect.any(Gesture));
+    draw();
+    expect(anims).toHaveLength(1);
     // the same spot again: the acknowledgement fails
     now += 2000;
     plop(f.ctx, 10, 10, ok);
@@ -191,6 +211,8 @@ describe('FEEL-03 (a) cost floats', () => {
     await flush();
     expect(f.pending[1].r.ok).toBe(false);
     expect(spy).toHaveBeenCalledOnce();
+    draw();
+    expect(anims).toHaveLength(1);
   });
 
   it('rises 28 px and fades over 900 ms, transform and opacity only, from the pointer; at most 6 elements', () => {
@@ -198,6 +220,7 @@ describe('FEEL-03 (a) cost floats', () => {
     for (let i = 0; i < 9; i++) {
       now += 50;
       expect(f.ft.cost(100 + i)).toBe(true);
+      draw();
     }
     expect(f.floats()).toHaveLength(FLOAT_POOL);
     expect(anims).toHaveLength(9);
@@ -214,46 +237,80 @@ describe('FEEL-03 (a) cost floats', () => {
     now += FLOAT_MS;
     expect(f.ft.active).toBe(0);
     f.ft.cost(5);
+    draw();
     expect(f.floats()).toHaveLength(FLOAT_POOL);
+    expect(anims).toHaveLength(10);
+  });
+
+  it('seven floats within one frame: six elements, the newest drawn, one frame request', () => {
+    const f = city();
+    for (let i = 0; i < 7; i++) f.ft.cost(100 + i);
+    expect(frames.size).toBe(1);
+    draw();
+    expect(f.floats()).toHaveLength(FLOAT_POOL);
+    expect(anims).toHaveLength(6);
+    expect(f.floats().map((el) => textOf(el.querySelector('.ft-cost')!))).toEqual(['−§106', '−§101', '−§102', '−§103', '−§104', '−§105']);
   });
 
   it('the commits of one gesture within 250 ms add up in one float; a new gesture gets its own', () => {
     const f = city();
     const stroke = {};
     f.ft.cost(40, 0, stroke);
+    draw();
     now += FLOAT_MERGE_MS - 10;
     f.ft.cost(60, 0, stroke);
+    draw();
     expect(anims).toHaveLength(1);
     expect(textOf(anims[0].el.querySelector('.ft-cost')!)).toBe('−§100');
     now += 20;
     f.ft.cost(60, 0, stroke);
     f.ft.cost(10, 0, {});
+    draw();
     expect(anims).toHaveLength(3);
+  });
+
+  it('a frame that comes after the float\'s life (a hidden tab) draws nothing', () => {
+    const f = city();
+    f.ft.cost(500);
+    now += FLOAT_MS;
+    draw();
+    expect(anims).toHaveLength(0);
+    expect(f.floats()).toHaveLength(1);
+    expect(textOf(f.floats()[0])).toBe('');
   });
 
   it('reduced motion: no animation; the float stands still for its life, then goes', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const f = city({ motion: 'reduced' });
     plop(f.ctx);
+    draw();
     expect(anims).toHaveLength(0);
     const el = f.floats()[0];
     expect(el.className).toBe('ft on');
     expect(el.style.transform).toBe('translate(400px, 300px) scale(1)');
     vi.advanceTimersByTime(FLOAT_MS - 1);
+    draw();
     expect(el.className).toBe('ft on');
     vi.advanceTimersByTime(1);
+    expect(el.className).toBe('ft on');
+    draw();
     expect(el.className).toBe('ft');
   });
 
   it('no float in a sandbox, for a free commit, without a pointer yet, or after the city closes', () => {
     const s = city({ sandbox: true });
     plop(s.ctx);
+    draw();
     expect(s.floats()).toHaveLength(0);
     const f = city({ pointer: { x: -1, y: -1 } });
     expect(f.ft.cost(500)).toBe(false);
     const g2 = city();
     expect(g2.ft.cost(0, 700)).toBe(false);
+    // closed between the commit and its frame: nothing is drawn, the layer is gone
+    expect(g2.ft.cost(500)).toBe(true);
     g2.abort.abort('dispose');
+    draw();
+    expect(anims).toHaveLength(0);
     expect(g2.ft.cost(500)).toBe(false);
     expect(g2.parent.children).toHaveLength(0);
     expect(floatTextOf({})).toBeUndefined();
@@ -290,7 +347,7 @@ describe('FEEL-03 (b) the funds count-up', () => {
     const f = fundsFixture();
     f.seg.update();
     expect(f.funds()).toBe('§100,000');
-    expect(frames).toHaveLength(0);
+    expect(frames.size).toBe(0);
     f.st.funds = 74982;
     f.seg.update();
     expect(f.funds()).toBe('§100,000');
@@ -328,15 +385,13 @@ describe('FEEL-03 (b) the funds count-up', () => {
     f.seg.update();
     f.st.funds = 0;
     f.seg.update();
-    for (let i = 0; i < 6; i++) { const q = frames; frames = []; for (const cb of q) cb(5000 + i * 16); }
+    for (let i = 0; i < 6; i++) step(5000 + i * 16);
     const mid = Number(f.funds().replace(/[^0-9]/g, ''));
     expect(mid).toBeGreaterThan(0);
     expect(mid).toBeLessThan(100000);
     f.st.funds = 200000;
     f.seg.update();
-    const q = frames; frames = [];
-    for (const cb of q) cb(9000);
-    expect(f.funds()).toBe(textOf(f.el.querySelector('.hud-value')!));
+    step(9000);
     expect(Number(f.funds().replace(/[^0-9]/g, ''))).toBe(mid);
     runFrames(9016);
     expect(f.funds()).toBe('§200,000');
@@ -349,7 +404,7 @@ describe('FEEL-03 (b) the funds count-up', () => {
     f.st.funds = 95000;
     f.seg.update();
     expect(f.funds()).toBe('§95,000');
-    expect(frames).toHaveLength(0);
+    expect(frames.size).toBe(0);
     expect(anims).toHaveLength(0);
   });
 
@@ -364,7 +419,10 @@ describe('FEEL-03 (b) the funds count-up', () => {
       expect(f.funds()).toBe('§1,234');
       const c = city();
       c.ft.cost(500);
+      draw();
+      now += 1000;
       plop(c.ctx);
+      draw();
       expect(anims.length).toBeGreaterThanOrEqual(3);
       expect(trap.reads).toEqual([]);
     } finally { trap.restore(); }
@@ -486,7 +544,7 @@ describe('FEEL-03 (c) the month chip', () => {
     expect(f.funds()).toBe('∞');
     expect(textOf(net)).toBe('');
     expect(f.chip.classList.contains('on')).toBe(false);
-    expect(frames).toHaveLength(0);
+    expect(frames.size).toBe(0);
     expect(anims).toHaveLength(0);
     // out of the sandbox: the figure at once, the net back
     f.st.config.sandbox = false;

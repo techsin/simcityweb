@@ -6,8 +6,12 @@
  *   acknowledgement, never a failure), so every tool and the inspector's demolition get it; it checks the sandbox.
  * - Pooled: at most FLOAT_POOL elements, made on first use; one more float reuses the oldest.
  * - It rises FLOAT_RISE px and fades over FLOAT_MS with the Web Animations API, transform and opacity only, from the
- *   pointer position CityScene already tracks: nothing reads layout, at the spawn or per frame. The layer is fixed to the
- *   viewport outside the zoomed `.mp-ui`, so client coordinates need no rect; the float scales by the UI zoom instead.
+ *   pointer position CityScene already tracks. The layer is fixed to the viewport outside the zoomed `.mp-ui`, so client
+ *   coordinates need no rect; the float scales by the UI zoom instead.
+ * - No forced layout: nothing here reads layout, and every DOM write waits for one animation-frame callback. CityScene's
+ *   frame loop registers its callback first, so these writes come after that frame's reads (the camera's edge scroll
+ *   reads the canvas size each frame), never between a read and the paint. The float shows in the frame that follows
+ *   the commit, well within the plan's 100 ms.
  * - The commits of one gesture within FLOAT_MERGE_MS add up in one float (a held brush commits every 70-120 ms).
  * - Reduced motion (`resolveMotion`): the float stands still for FLOAT_MS, then goes.
  */
@@ -38,6 +42,8 @@ interface Slot {
   subEl: HTMLElement;
   /** spawn time (performance.now); -Infinity: never used */
   t0: number;
+  /** spawns so far: a queued draw is stale once a newer float took the element */
+  gen: number;
   key: object | null;
   sum: number;
   upkeep: number;
@@ -61,6 +67,9 @@ export function upkeepText(upkeep: number): string {
 export class FloatText {
   readonly layer: HTMLElement;
   private slots: Slot[] = [];
+  /** DOM writes waiting for the next animation frame, in order, and its request (0: none) */
+  private ops: (() => void)[] = [];
+  private raf = 0;
 
   constructor(parent: HTMLElement, private pointer: () => PointerPos, private reduced: () => boolean, private signal: AbortSignal) {
     this.layer = h('div', { class: 'ft-layer', 'aria-hidden': 'true' });
@@ -78,7 +87,7 @@ export class FloatText {
       if (s) {
         s.sum += cost;
         s.upkeep += upkeep;
-        this.render(s);
+        this.later(() => this.render(s));
         return true;
       }
     }
@@ -87,30 +96,49 @@ export class FloatText {
     if (!(p.x >= 0 && p.y >= 0)) return false;
     const s = this.take(now);
     Object.assign(s, { t0: now, key, sum: cost, upkeep });
-    this.render(s);
-    this.play(s, p.x, p.y);
+    const gen = ++s.gen, { x, y } = p;
+    this.later(() => {
+      // a newer float took this element since, or the frame came too late (a hidden tab): nothing to draw
+      if (s.gen !== gen || performance.now() - now >= FLOAT_MS) return;
+      this.stop(s);
+      this.render(s);
+      this.play(s, x, y);
+    });
     return true;
   }
 
-  /** floats on screen now (tests) */
+  /** floats alive now (tests) */
   get active(): number {
     const now = performance.now();
     return this.slots.filter((s) => now - s.t0 < FLOAT_MS).length;
   }
 
-  /** an idle slot, a new one while the pool has room, else the oldest (stopped) */
+  /** an idle slot, a new one while the pool has room, else the oldest */
   private take(now: number): Slot {
-    let s = this.slots.find((x) => now - x.t0 >= FLOAT_MS);
-    if (!s && this.slots.length < FLOAT_POOL) {
+    const idle = this.slots.find((x) => now - x.t0 >= FLOAT_MS);
+    if (idle) return idle;
+    if (this.slots.length < FLOAT_POOL) {
       const costEl = h('div', { class: 'ft-cost' }), subEl = h('div', { class: 'ft-sub' });
       const el = h('div', { class: 'ft' }, h('div', { class: 'ft-in' }, costEl, subEl));
-      this.layer.appendChild(el);
-      s = { el, costEl, subEl, t0: -Infinity, key: null, sum: 0, upkeep: 0, anim: null, timer: null };
+      this.later(() => this.layer.appendChild(el));
+      const s: Slot = { el, costEl, subEl, t0: -Infinity, gen: 0, key: null, sum: 0, upkeep: 0, anim: null, timer: null };
       this.slots.push(s);
+      return s;
     }
-    s ??= this.slots.reduce((a, b) => (b.t0 < a.t0 ? b : a));
-    this.stop(s);
-    return s;
+    return this.slots.reduce((a, b) => (b.t0 < a.t0 ? b : a));
+  }
+
+  /** queue a DOM write for the next animation frame (one request per frame) */
+  private later(op: () => void): void {
+    this.ops.push(op);
+    if (this.raf) return;
+    const flush = () => {
+      this.raf = 0;
+      const ops = this.ops;
+      this.ops = [];
+      if (!this.signal.aborted) for (const f of ops) f();
+    };
+    this.raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(flush) : (queueMicrotask(flush), -1);
   }
 
   private render(s: Slot): void {
@@ -128,9 +156,10 @@ export class FloatText {
       // still: it shows where it was made, then goes
       s.el.style.transform = at;
       s.el.className = 'ft on';
+      const gen = s.gen;
       s.timer = setTimeout(() => {
         s.timer = null;
-        s.el.className = 'ft';
+        this.later(() => { if (s.gen === gen) s.el.className = 'ft'; });
       }, FLOAT_MS);
       return;
     }
@@ -156,6 +185,9 @@ export class FloatText {
   }
 
   private dispose(): void {
+    if (this.raf > 0 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    this.ops = [];
     for (const s of this.slots) this.stop(s);
     this.slots = [];
     this.layer.remove();

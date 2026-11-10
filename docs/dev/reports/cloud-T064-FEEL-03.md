@@ -40,7 +40,7 @@ nothing to merge in; FEEL-03 reads the existing `resolveMotion`.
 | src/ui/topbar/approvalSegment.ts | (d) the chip element in the stack, `changeChip()` called at the end of `update()`, `biggestTermChange`, `approvalChipText` | GUIDE (approval segment) |
 | src/ui/topbar/hudChip.ts (new) | `HudChip` and `reducedMotion(ctx)` shared by both segments | GUIDE |
 | src/ui/hud.css | the `.hud-chip` selector family and `.hud-stack > .hud-sub:empty` | chain guide2b (T064 split); the funds and approval segments' selector family per §7.3 |
-| tests/game/floatText.test.ts (new) | 27 cases | this lane |
+| tests/game/floatText.test.ts (new) | 29 cases | this lane |
 | tests/game/fixtures/topBarTrace.json | re-recorded with `TOPBAR_TRACE=write` | chain guide2b |
 
 How each part works:
@@ -52,6 +52,8 @@ How each part works:
   `spotNotes` quotes before its spot query answers; PlopTool.ts is not edited). The float sits at CityScene's tracked
   pointer (`this.mouse`, client px), in a layer fixed to the viewport outside the zoomed `.mp-ui`; it scales by
   `uiZoom()` in its transform. Web Animations keyframes hold only `transform`, `opacity`, `offset` and `easing`.
+  `cost()` does its bookkeeping at once (pool, merge, generation) and queues every DOM write for one
+  `requestAnimationFrame` callback, so the float is drawn in the frame after the commit (about 17 ms at 60 fps).
 - **(b)** a changed treasury starts one `requestAnimationFrame` loop that eases the label from the figure shown to the
   new one over 350 ms from its first frame, writing only `textContent`. A change during a count-up continues from the
   figure shown. The flash is `el.animate([{ color, textShadow }, {}], 400 ms)` (implicit end keyframe; a browser
@@ -69,4 +71,8 @@ How each part works:
 - **Reduced motion** (`resolveMotion(settings.motion)`, 'system' follows the device): the figure is set at once with
   no flash; chips get `rm` (no transition); floats stand still for 900 ms (class `ft on`), then go.
 - **No forced layout:** nothing in FEEL-03 reads layout (no rect, offset*, client*, scroll* or getComputedStyle), at a
-  float's spawn or per frame; the test traps those reads on every element made and counts zero.
+  float's spawn or per frame; the test traps those reads on every element made and counts zero. FEEL-03's writes also
+  never land between a read and the paint: the count-up and the floats write in their own animation-frame callbacks,
+  which CityScene's frame loop precedes (it registers its next frame first), and the flash and the chips write in the
+  HUD tick, after the loop's reads. That matters with edge scroll on (off by default): the camera then reads the
+  canvas size every frame, after `tools.frame`, where a held brush commits.
