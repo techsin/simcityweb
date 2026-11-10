@@ -1,7 +1,8 @@
 # T074 — the city's voice and weather
 
 The sections before “QA round 2” record the original implementation and its historical gates. The QA round-2
-section supersedes their weather pacing, district sampling/fade limitations, and Vitest status.
+section supersedes their weather pacing, district sampling/fade limitations, and Vitest status. “Round 3” at the end
+closes T060 FEEL-01's QA findings F1–F3 in the news ticker (NOTE-077).
 
 Original status: typecheck and supplemental headless probes pass; the 128×15 seed-7 population is unchanged, and
 all 20 yearly hashes match base on both Medium and Hard after the specified advice/news exclusions. Vitest cannot
@@ -515,3 +516,251 @@ Browser/audio checklist for round 2:
   30-real-second lifetime, airborne built-up anchor and useful per-kind ticker camera framing; disposal leaves no mesh.
 - [ ] Repeat original event-delay/repeat-guard, 30-year sighting-frequency and weather-climate checks; compare bot
   hashes outside `news`/`systemData.advisors` and retain the exact seed-7 resident total above.
+
+## Round 3: closes T060 FEEL-01's QA findings F1-F3 (NOTE-077)
+
+Base: `local/T074-voices` at `a76b9a4` (current dev merged in, full gate green). The real-GPU QA of dev's news ticker
+(`qa/cloudT057T060/qa.md`, T060 FEEL-01) failed it on F1 and F2 and found F3 in the lane's own tool. NOTE-077 folds
+the three into this lane because it already edits `src/ui/Notifications.ts`. All changes are uncommitted. There is
+no logic, random draw, balance, save or worker change, and `src/game/CityScene.ts` and every cloud-held file are
+untouched. Vitest and tsx start normally in this session, so every command below is the standard one through the
+quiet gate.
+
+### Changes per file
+
+**F1, a clause that ended on "incl."**
+
+- `src/ui/Notifications.ts` (`NOT_A_STOP`, `:45`): `incl`, `approx`, `est`, `max`, `min` and `etc` join the nine
+  abbreviations whose ". " is no sentence end. They match whole words, as before: "contest." still ends a sentence.
+  Old saves keep "incl." summaries in their news log, and this is what fixes those.
+- **`src/sim/infra/disasters.ts` (an infra file: four one-line text hunks, nothing moved):** "including" for "incl."
+  in the tornado (`:360`), earthquake (`:390`) and meteor (`:441`) summaries, and in the header comment that quotes
+  the tornado's (`:22`). No logic and no random draw.
+- **Outside the named files, minimal:** `tests/infra/feedbackRuins.test.ts` (7 lines) and
+  `tests/sim/advisorsRuins.test.ts` (2 lines) assert the summary texts, so they follow the wording. The pinned
+  tornado of `feedbackRuins` (its path, the burnt ids, the disasters' random stream) is unchanged.
+
+What the ticker shows now; the tooltip, the toast and the news feed keep the whole text:
+
+| Summary | Clause in the ticker |
+|---|---|
+| `Tornado: 15 buildings destroyed, including your Fire Station, Medical Clinic, 2 Elementary Schools and 6 more — bulldoze the rubble and rebuild.` | `Tornado: 15 buildings destroyed, including your Fire Station, Medical Clinic, 2 Elementary…` |
+| `Earthquake! Magnitude 6.4: 24 buildings destroyed (including your Fire Station, Medical Clinic, 2 Elementary Schools and 6 more), 3 fires, people trapped in 2.` | `Earthquake! Magnitude 6.4: 24 buildings destroyed (including your Fire Station, Medical…` |
+| `Meteor strike! 15 buildings destroyed, including your Fire Station, Medical Clinic, 2 Elementary Schools and 6 more.` | `Meteor strike! 15 buildings destroyed, including your Fire Station, Medical Clinic, 2…` |
+| `Tornado: 16 buildings destroyed, including your Fire Station — bulldoze the rubble and rebuild.` | `Tornado: 16 buildings destroyed, including your Fire Station` |
+| An old save's `Meteor strike! 15 buildings destroyed, incl. your Fire Station, Medical Clinic, 2 Elementary Schools and 6 more.` | `Meteor strike! 15 buildings destroyed, incl. your Fire Station, Medical Clinic, 2…` (it was `Meteor strike! 15 buildings destroyed, incl.`) |
+| An old save's `Earthquake! Magnitude 6.4: 24 buildings destroyed (incl. your Fire Station, Medical Clinic, 2 Elementary Schools and 6 more), 3 fires, people trapped in 2.` | `Earthquake! Magnitude 6.4: 24 buildings destroyed (incl. your Fire Station, Medical…` (it was `Earthquake! Magnitude 6.4: 24 buildings destroyed (incl.`) |
+
+**F2, the ticker's clock ran 7-23 % fast**
+
+- `src/ui/Notifications.ts`: `NewsTicker.frame()` (`:389`) steps by the real time since the frame before and by
+  nothing else; `Math.max(dt, real)` is gone. The step limit stays: `MAX_STEP_S`, 1 s a frame. The clock is
+  injectable through a third constructor argument, `now: () => number` (`:173`, `performance.now` by default), as
+  `NewYearCelebration` and `SimCore` have one. `frame(_dt?)` keeps an optional parameter that it does not use, so
+  `CityScene` still calls `this.ticker.frame(dt)` and that shared file needs no hunk. The first frame starts the
+  clock; it used to count the scene's dt. Newest first, the 0.5 s entry, the hover hold, the queue and round 2's
+  burst order are untouched code. The private fields QA's scripts read (`clock`, `cur`, `queue`, `list`) keep their
+  names.
+- Existing tests that drove the ticker with `dt` now step its clock:
+  - `tests/game/newsTicker.test.ts`: `make()` injects the clock, so the `performance.now` spy is gone; its frames
+    still pass the scene's dt. One assertion sat exactly on the end of a turn and now allows the one frame the
+    acceptance allows.
+  - `tests/game/eventTicker.test.ts` (this lane's, round 2): the injected clock replaces the spy.
+  - `tests/game/views.test.ts` (dev's; **outside the named files**): it called `frame(6)` on a clock that had moved
+    1.1 s. Each headline now arrives after the one before it has had its 5 s, in frames of at most 1 s.
+  - `tests/game/panelsNews.test.ts` (dev's; **outside the named files**): it called `frame(1 / 60)` with no clock at
+    all. Its helper now injects one and returns a `frame()` that is 1/60 s later.
+
+**F3, the tool's check B2 could pass without testing**
+
+- `tools/qa-ticker.mjs`: a `watchTurn(text)` helper (`:178`) watches the 200-character item frame by frame from the
+  moment it shows to the end of its turn, as check C watches its headlines. B2 (`:256`) passes only when all of this
+  holds: the item was seen as the current one; its end was out of view at first; its start and then its end came
+  into the view's opaque part; its transform never moved back; its end was still in view on the last frame of its
+  turn; and the turn ended within 60 s. The 3.5 s sleep and the `: true` fallback are gone. The end screenshot is
+  taken when the end is in view.
+
+### Tests
+
+`npx tsc --noEmit` passes on the final tree, and `git diff --check` is clean. Every test file ran alone, one process
+at a time:
+
+```text
+node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx vitest run <file> --maxWorkers=1
+```
+
+**36 files: 514 tests passed, 9 skipped, none failed.**
+
+New tests, all in `tests/game/newsTicker.test.ts` (20 tests before, 35 now):
+
+- `QA F1: a disaster summary that names the facilities it destroyed is never cut at an abbreviation`: the three
+  summaries with the facilities QA saw, in the new wording and as old saves hold them; the five other abbreviations;
+  whole-word matching.
+- `QA F1: the summaries the sim posts when a tornado, an earthquake and a meteor destroy city facilities`: the texts
+  come from the real disasters system. Each clause is the start of its summary and reaches the facilities, and in the
+  ticker the tooltip has the whole summary.
+- `FEEL-01 QA F2: the ticker runs on real time alone, whatever the frame jitter and the game speed` (13 tests):
+  - `a 5 s hold lasts 5 s and a burst's 3 s hold 3 s, each within one frame: <profile>`, six profiles;
+  - `the 0.5 s entry, the 1 s rests and the 60 px/s scroll run on that clock: <profile>`, six profiles;
+  - `a frame takes at most 1 s of real time, hover holds the clock, and the scene's dt never moves it`.
+
+  A profile is a frame loop as `CityScene` makes it: seeded jitter in the time between rAF timestamps and in how far
+  into its frame the ticker runs, the game's calendar running at that speed, and the scene's dt passed in. The six:
+  paused; 1x; 2x; ultra, with every 25th frame 90 ms longer; ultra at 160 frames a second; 1x on a slow machine
+  (120-240 ms frames, so the scene clamps its dt at 0.1 s).
+- The F2 tests see the bug. With the old stepping put back for one run, those 13 fail and the other 22 pass: the 5 s
+  hold lasts 4.90 s paused, 4.71 s at 1x, 4.63 s at 2x, 4.62 s at ultra, 4.63 s at 160 frames a second and 4.998 s
+  on the slow machine.
+
+The ticker and `Notifications.ts` (17 files: 213 passed, 7 skipped):
+
+| File | Result |
+|---|---|
+| `tests/game/newsTicker.test.ts` | 35 passed |
+| `tests/game/eventTicker.test.ts` | 4 passed (round 2's burst order and focus distances) |
+| `tests/game/tickerProbe.test.ts` | 3 skipped (it needs `TICKER_SAVE`; with a save, see below) |
+| `tests/game/views.test.ts` | 3 passed |
+| `tests/game/panelsNews.test.ts` | 5 passed |
+| `tests/game/graphicsRestore.test.ts` | 10 passed (the scene loop with a stand-in ticker) |
+| `tests/game/toastBudget.test.ts` | 10 passed |
+| `tests/game/notificationsQuestion.test.ts` | 6 passed |
+| `tests/game/rewardToast.test.ts` | 7 passed |
+| `tests/game/cityTeardown.test.ts` | 4 passed |
+| `tests/game/emergencyTeaching.test.ts` | 35 passed |
+| `tests/game/emergencyTeachingToasts.test.ts` | 12 passed |
+| `tests/game/graphicsFirstRun.test.ts` | 21 passed |
+| `tests/game/pacingProbe.test.ts` | 4 skipped (the toast pacing probe; it needs `PACING_SAVE`) |
+| `tests/game/storageDialog.test.ts` | 32 passed |
+| `tests/worker/emergencyTeachingHost.test.ts` | 11 passed |
+| `tests/worker/hygiene.test.ts` | 18 passed |
+
+Disasters, determinism and news texts (19 files: 301 passed, 2 skipped). `tests/sim/exact/` has no test of the
+disasters system itself; the tests that pin tornadoes, earthquakes and meteors are the first three rows and `hosts`.
+
+| File | Result |
+|---|---|
+| `tests/infra/feedbackRuins.test.ts` | 11 passed (the pinned tornado: path, burnt ids, random stream) |
+| `tests/sim/advisorsRuins.test.ts` | 19 passed |
+| `tests/save/continuity.test.ts` | 2 passed (a tornado and an earthquake across a save: same path, damage and next rolls) |
+| `tests/infra/environment.test.ts` | 10 passed |
+| `tests/infra/treesDamaged.test.ts` | 3 passed |
+| `tests/worker/hosts.test.ts` | 5 passed (a scripted tornado: equal full-save hashes on the three hosts) |
+| `tests/worker/replicaLive.test.ts` | 2 passed, 2 skipped (its own skips) |
+| `tests/render/terrainRects.test.ts` | 16 passed |
+| `tests/render/terrainReplica.test.ts` | 1 passed |
+| `tests/render/terrainGrowth.test.ts` | 1 passed (60 years of the 128 bot city with disasters on; 317 s) |
+| `tests/infra/emergency.test.ts` | 25 passed |
+| `tests/infra/fireDuplicates.test.ts` | 12 passed |
+| `tests/sim/exact/fireList.test.ts` | 7 passed (exact: the fire system's `disaster` and `news` event streams) |
+| `tests/sim/eventHeadlines.test.ts` | 17 passed |
+| `tests/sim/milestoneNews.test.ts` | 10 passed |
+| `tests/sim/advisorsTexts.test.ts` | 6 passed |
+| `tests/game/uiRuins.test.ts` | 11 passed |
+| `tests/game/uiRubble.test.ts` | 6 passed |
+| `tests/game/guideCopy.test.ts` | 137 passed |
+
+`tests/game/tickerProbe.test.ts` with a real city, for information. The save is
+`C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/qa/T053/cities/big_s7_y60.city.metropolis`,
+the 256 seed-7 bot city in 2060 with 1.51M residents. `TICKER_ONLY=1x` and `TICKER_ONLY=2x` passed, one test each:
+
+```text
+[ticker probe] 1x: 266 s, 55 items (15 gave way, 0 still waiting at the end), visible after: median 4.9 s, p90 10.3 s, max 11.0 s
+[ticker probe] 1x: 10 headlines, visible after 5.1 4.4 6.6 5.4 3.6 5.8 10.9 11.0 5.4 4.9 s; longest run within 15 s: 10
+[ticker probe] 2x: 111 s, 67 items (30 gave way, 12 still waiting at the end), visible after: median 6.8 s, p90 13.0 s, max 14.3 s
+[ticker probe] 2x: 10 headlines, visible after 5.1 9.5 7.0 13.0 7.6 9.1 13.0 14.3 11.9 10.6 s; longest run within 15 s: 10
+```
+
+The probe's frame time is its clock, so F2 does not move these numbers: the 2x line is the same with the old
+stepping put back.
+
+### Bot and digests
+
+```text
+SIMBOT_LOG=1 node C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/quietrun.mjs npx tsx tools/simbot.ts --size 128 --years 15 --seed 7
+```
+
+`residents [ 61124, 93804, 37971 ]` = **192,899** in 2015, unchanged (funds $146k, 2,818 buildings, approval 81,
+loans 0, unlocked 38). The same command ran on the clean tree before any edit and on the final tree. With the
+run-to-run timings removed (the `done in` time, the `ms/day` line and the two ms columns of the year rows), all
+1,187 lines of the two outputs are identical: the 15 year rows, the 1,111 lines of the action log, the last income
+and expense and the last news. The bot plays with disasters off, so none of the three summaries is in its news.
+
+For the wording itself a scratch probe ran 16 scripted disasters before and after the change in `disasters.ts`:
+tornado, meteor and earthquake over the `feedbackRuins` town and over four seeds of its landmark town on the infra
+systems, and a tornado, an earthquake and a meteor in one town over 60 days on all of the game's systems
+(`createSystems()`). In all 16 the saved city without its news has the same SHA-256, the news list with the wording
+put back has the same SHA-256, the news count is the same and `systemData.infraDisasters.rng` is the same. 17
+summaries changed from "incl." to "including" and none still says "incl.". Two runs before the change gave the same
+file, so the probe is deterministic. The first scenario's random stream ends at 2831950729, the value
+`feedbackRuins` pins.
+
+The outputs of this round (the same folder also has one `vt-*.log` per test file):
+
+```text
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/bot-base.log
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/bot-after.log
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/botdiff.mjs
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/disaster-digest.mts
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/digest-before.json
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/digest-after.json
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/summary-ticker.txt
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/summary-disasters.txt
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/summary-final.txt
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/vt-newsTicker-oldstep.log
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/tickerprobe-big.txt
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/watchturn-sim.mjs
+C:/Users/techsin/AppData/Local/Temp/claude/d1b83ee1fc675451/a2e68b0e-17ac-5b5a-9911-c4f474b44f9a/scratchpad/lanes/T074/scratch/r3/watchturn-sim.log
+```
+
+### Plan against code
+
+- QA offered two fixes for F1, the list or the wording. NOTE-077 asks for both, and both are needed: the wording for
+  new summaries, the list for the ones old saves hold.
+- QA wrote that the unit tests drive the ticker with `dt`. `newsTicker.test.ts` and `eventTicker.test.ts` moved the
+  clock by the same amount as `dt`, so the two agreed there. The tests that leaned on `dt` alone were `views.test.ts`
+  and `panelsNews.test.ts`.
+- The fix makes every wait in the real game longer by what the clock ran fast. QA's waits were measured on that
+  clock: 20 of 20 headlines within 11.0 s at 1x and 2x; at Ultra the slowest headline took 10.3-14.5 s, and 21.6 s on
+  loopback. Expect up to about 14 % more at 2x (about 12.5 s, inside the 15 s gate) and up to about 23 % more at
+  Ultra, which the plan reports and does not gate.
+- The probe above takes 14.3 s for its slowest headline at 2x, against a 15 s limit. That city has more than twice
+  the residents of QA's 652k one, and the number was the same before round 3.
+- A rotation of one long item starts its scroll over on every turn (`show()`: the same item again starts over at
+  rest). "Scrolls through once" holds per turn; B2 judges one turn. Unchanged.
+
+### Not verified here
+
+- No browser ran. `tools/qa-ticker.mjs` passes `node --check`, and its new B2 was not executed in a page. Its
+  in-page watcher and its pass expression, both read from the tool's source, gave the expected verdict on 9 simulated
+  timelines: 4 that must pass (60, 160 and 8 frames a second; a watch that starts mid-scroll) and 5 that must fail
+  (a turn cut before the end is in view; a turn already over when the watch begins, which is what the old check let
+  pass; a scroll that loops; an item that never gives way; a short item). QA's `mk-lane-ticker.mjs` builds its copy of
+  the tool by exact string replacement: its 13 replacements still find their targets in the edited tool, and the copy
+  parses.
+- F1 and F2 in the real game: the visible clause, and the 5 s and 3 s holds, 60 px/s and the 0.5 s entry on the real
+  GPU and the three hosts.
+- The full vitest suite and the benches are left to the lead.
+
+### Browser recheck for the lead
+
+- [ ] F1: with the Disasters tool, drop a meteor, an earthquake and a tornado on a district with a station, a clinic
+  and schools. The ticker shows "… destroyed, including your Fire Station, …" up to a word and "…", or up to the
+  tornado's " — ", and never ends on "incl."; the tooltip, the toast and the news feed have the whole text.
+- [ ] F1, old saves: load a save that holds an "incl." summary, or inject one with the line below. The ticker shows
+  it past "incl.".
+
+  ```text
+  sim.notify('Meteor strike! 15 buildings destroyed, incl. your Fire Station, Medical Clinic, 2 Elementary Schools and 6 more.', 'disaster')
+  ```
+- [ ] F2: `tkclock.mjs`. The ticker's clock advances 15.0 s in 15.0 s paused, at 1x, 2x and Ultra, on the default
+  host and the worker; it was 16.0-18.5 s. A 5 s hold lasts 5.0 s plus at most a frame and a burst's hold 3.0 s (they
+  were 4.2-4.75 s and 2.34-2.88 s). The scroll runs at 60 css px/s, and an item is at rest 0.5 s after it shows (it
+  was 0.41-0.44 s).
+- [ ] F3: `tools/qa-ticker.mjs` on the real GPU at 1280x720 and at 1920x1080 (QA's `lane-qa-ticker.mjs` copy takes
+  the size; rebuild it with `mk-lane-ticker.mjs`), 10 of 10. B2's line reports `frames` above 0, `endOutAtFirst`
+  true, `endInAtLast` true and `movedBack` false. Expect `turnS` about 6.0 s (QA measured 5.4-5.9 s for this item on
+  the fast clock) and `endInS` a second less. A2's wait reads about 5.0 s; it was 4.88-4.90 s.
+- [ ] Pacing on the right clock (QA items 5f, 6c and check C): 10 headlines at 1x and at 2x are still each fully
+  visible within 15 s. Record the new figures; the old ones are from the fast clock. Ultra stays reported only.
+- [ ] Unchanged: the newest item within 1 s, hover holds and resumes, a click flies to the place or opens the feed,
+  the queue cap, and round 2's B4 order (event stories give way before ordinary good news and rewards).

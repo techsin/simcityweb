@@ -35,12 +35,17 @@ describe('W0.5 news sequence', () => {
     const body = panel.body as unknown as FEl;
     try {
       for (let n = 1; n <= 225; n++) {
+        // FEEL-01: one item at a time; the item before this one ends its 5 s hold first. The ticker runs on real time
+        // (performance.now here), at most 1 s a frame
+        for (let f = 0; f < 5; f++) {
+          now += 1000;
+          ticker.frame();
+        }
         host.sim.notify(`Headline ${n}`, 'info');
         expect(host.newsSeq).toBe(n);
         expect(host.state.news).toHaveLength(Math.min(n, 200));
         now += 1100;
-        // FEEL-01: one item at a time; a 6 s step lets the item before it end its hold (5 s, 3 s in a burst)
-        ticker.frame(6);
+        ticker.frame();
         panel.update();
         expect(textOf(track.children[0])).toContain(`Headline ${n}`);
         expect(textOf(body.querySelector('.news-row')!)).toContain(`Headline ${n}`);
@@ -51,7 +56,7 @@ describe('W0.5 news sequence', () => {
       const shown = track.children[0], seen = body.querySelector('.news-row');
       host.events.emit('news', host.state.news.at(-1)!);
       now += 1100;
-      ticker.frame(0);
+      ticker.frame();
       panel.update();
       expect(host.newsSeq).toBe(226);
       expect(track.children[0]).not.toBe(shown);

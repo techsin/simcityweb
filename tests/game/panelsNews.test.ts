@@ -94,14 +94,20 @@ function city(): CityState {
 const hosts: LocalSimHost[] = [];
 afterEach(async () => { for (const host of hosts.splice(0)) await host.dispose(); });
 
-function ticker(st: CityState): { t: NewsTicker; track: FakeEl } {
+/** a ticker on its own clock (it runs on real time, not on a frame dt): each `frame()` is 1/60 s later */
+function ticker(st: CityState): { t: NewsTicker; track: FakeEl; frame: () => void } {
   const host = new LocalSimHost(st);
   hosts.push(host);
   const ctx = { host, state: st, focusCell: () => {}, panels: { open: () => {} } } as unknown as GameContext;
   const parent = new FakeEl('DIV');
-  const t = new NewsTicker(ctx, parent as unknown as HTMLElement);
+  let now = 0;
+  const t = new NewsTicker(ctx, parent as unknown as HTMLElement, () => now);
   const view = (t.el as unknown as FakeEl).children[1] as FakeEl;
-  return { t, track: view.children[0] as FakeEl };
+  const frame = () => {
+    now += 1000 / 60;
+    t.frame();
+  };
+  return { t, track: view.children[0] as FakeEl, frame };
 }
 
 describe('news log: newsMark / tickerItems', () => {
@@ -130,7 +136,7 @@ describe('news ticker (final fixes N2)', () => {
       st.day = k * 30;
       st.notify(`Old news ${k}`, 'info');
     }
-    const { t, track } = ticker(st);
+    const { track, frame } = ticker(st);
     expect(track.textContent).toContain('Old news 199');
     // (each item fits the 600 px view: it holds instead of scrolling)
     track.scrollWidth = 300;
@@ -138,13 +144,13 @@ describe('news ticker (final fixes N2)', () => {
       st.day = k * 30;
       st.notify(`Fresh news ${k}`, 'warning');
       expect(st.news.length).toBe(200);
-      t.frame(1 / 60);
+      frame();
     }
     // the five new items show one after another, the first at once (FEEL-01: one item at a time)
     expect(track.textContent).toContain('Fresh news 200');
     const shown: string[] = [];
     for (let f = 0; f < 60 * 40; f++) {
-      t.frame(1 / 60);
+      frame();
       const now = track.textContent;
       if (shown[shown.length - 1] !== now) shown.push(now);
     }
@@ -161,10 +167,10 @@ describe('news ticker (final fixes N2)', () => {
   it('a log replaced by another city (a load) rebuilds the ticker', () => {
     const st = city();
     st.notify('First city', 'info');
-    const { t, track } = ticker(st);
+    const { track, frame } = ticker(st);
     expect(track.textContent).toContain('First city');
     st.news = [{ day: 1, text: 'Loaded city', kind: 'info' }];
-    t.frame(1 / 60);
+    frame();
     expect(track.textContent).toContain('Loaded city');
     expect(track.textContent).not.toContain('First city');
   });
@@ -188,7 +194,7 @@ describe('news ticker layout reads (final fixes A1)', () => {
     try {
       const st = city();
       st.notify('First', 'info');
-      const { t, track } = ticker(st);
+      const { t, track, frame } = ticker(st);
       const view = track.parentElement!;
       expect(observers).toHaveLength(1);
       expect(observers[0].targets).toEqual([view, track]);
@@ -196,10 +202,10 @@ describe('news ticker layout reads (final fixes A1)', () => {
       observers[0].cb();
       const reads = () => track.reads + view.reads;
       const r0 = reads();
-      for (let k = 0; k < 30; k++) t.frame(1 / 60);
+      for (let k = 0; k < 30; k++) frame();
       for (let k = 0; k < 5; k++) {
         st.notify(`News ${k}`, 'info');
-        t.frame(1 / 60);
+        frame();
       }
       // the first new item shows at once, the other four wait (FEEL-01)
       expect(track.textContent).toContain('News 0');
@@ -207,7 +213,7 @@ describe('news ticker layout reads (final fixes A1)', () => {
       // 30 frames + a swap: not one layout read
       expect(reads()).toBe(r0);
       // past its entry and rest, the track scrolls with the reported widths (2400 px track in a 600 px view)
-      for (let k = 0; k < 120; k++) t.frame(1 / 60);
+      for (let k = 0; k < 120; k++) frame();
       expect(track.style.transform).toMatch(/^translateX\(-/);
       expect(reads()).toBe(r0);
       // a resize report: measured again
@@ -221,18 +227,18 @@ describe('news ticker layout reads (final fixes A1)', () => {
   it('without a ResizeObserver: one read per rebuild, none per frame', () => {
     const st = city();
     st.notify('First', 'info');
-    const { t, track } = ticker(st);
+    const { track, frame } = ticker(st);
     const view = track.parentElement!;
     const reads = () => track.reads + view.reads;
     const r0 = reads();
-    for (let k = 0; k < 30; k++) t.frame(1 / 60);
+    for (let k = 0; k < 30; k++) frame();
     expect(reads()).toBe(r0);
     st.notify('Second', 'info');
-    t.frame(1 / 60);
+    frame();
     // the swap to the new item: one read each
     expect(track.textContent).toContain('Second');
     expect(reads()).toBe(r0 + 2);
-    for (let k = 0; k < 60; k++) t.frame(1 / 60);
+    for (let k = 0; k < 60; k++) frame();
     expect(reads()).toBe(r0 + 2);
   });
 });

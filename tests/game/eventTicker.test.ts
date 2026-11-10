@@ -15,20 +15,20 @@ afterEach(async () => {
 });
 
 function make() {
+  // the ticker's clock (real time in the game): each frame below is 1/60 s later
   let now = 0;
-  vi.spyOn(performance, 'now').mockImplementation(() => now);
   const signal = new AbortController().signal;
   const host = new LocalSimHost(newState(16), { signal });
   hosts.push(host);
   const focusCell = vi.fn();
   const ctx = { host, get state() { return host.state; }, signal, focusCell,
     panels: { open: vi.fn() } } as unknown as GameContext;
-  const ticker = new NewsTicker(ctx, new FEl('div') as unknown as HTMLElement);
+  const ticker = new NewsTicker(ctx, new FEl('div') as unknown as HTMLElement, () => now);
   const layout = tickerLayout(ticker);
   const run = (seconds: number, seen?: Set<string>) => {
     for (let i = 0; i < Math.round(seconds * 60); i++) {
       now += 1000 / 60;
-      ticker.frame(1 / 60);
+      ticker.frame();
       if (ticker.current) seen?.add(ticker.current.text);
     }
   };

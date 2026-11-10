@@ -6,7 +6,8 @@
  *   A. within 1 s of a notify, the first 20 characters of the item are inside .tk-view (from the idle rotation, from a
  *      long rotation item mid-scroll, and right after a new item's hold); a notify during another new item's turn
  *      waits for that turn (the plan's "bursts queue": A2, at most its 5 s);
- *   B. a 200-character item shows at most 91 characters, and its tooltip (title) has the full text;
+ *   B. a 200-character item shows at most 91 characters, and its tooltip (title) has the full text; watched frame by
+ *      frame for its whole turn, it scrolls through once: its end comes into view and stays there (B2);
  *   C. each of 10 consecutive flavour headlines (the 10 longest real texts from advisors.ts), arriving every 8 s (the
  *      sim's shortest headline gap at 2x: 40 days x 0.2 s), is fully visible within 15 s of arriving; the same at
  *      ultra's shortest gap (2 s) is reported only (more than one line can show: tests/game/tickerProbe.test.ts);
@@ -169,6 +170,48 @@ try {
     });
   }, [text, kind, advisor]);
 
+  /**
+   * Watches the item `text` frame by frame for the rest of its turn (as check C watches its headlines): when its start
+   * and then its end were in the view's opaque part, and how its transform moved. Resolves when another item shows (or
+   * after 60 s). Seconds count from the call; `window.__turn` is the live record.
+   */
+  const watchTurn = (text) => {
+    const p = page.evaluate((text) => new Promise((res) => {
+      const w = window;
+      const t0 = performance.now();
+      // frames: frames it was the current item; endOut: its end was out of view on the first of them (it is longer
+      // than the view); head / tail: its start, then its end, in view; back: its transform moved right (it must
+      // scroll through once, never back); endInAtLast: its end was in view on the last frame of its turn
+      const o = (w.__turn = { frames: 0, endOut: false, head: Infinity, tail: Infinity, back: false, endInAtLast: false, end: '', turnS: Infinity, timedOut: false, over: false });
+      let lastX = Infinity;
+      const f = () => {
+        const s = (performance.now() - t0) / 1000;
+        if (w.__tk.current?.text !== text || s > 60) {
+          o.turnS = s;
+          o.timedOut = s > 60;
+          o.over = true;
+          return res(o);
+        }
+        const g = w.__geom();
+        if (g) {
+          if (!o.frames++) o.endOut = !g.endIn;
+          if (g.startIn && o.head === Infinity) o.head = s;
+          if (g.endIn && o.head !== Infinity && o.tail === Infinity) o.tail = s;
+          const x = Number(/translateX\((-?[\d.]+)px\)/.exec(g.transform)?.[1] ?? 0);
+          if (x > lastX + 0.05) o.back = true;
+          lastX = x;
+          o.end = g.transform;
+          o.endInAtLast = g.endIn;
+        }
+        requestAnimationFrame(f);
+      };
+      requestAnimationFrame(f);
+    }), text);
+    // (awaited later: a failure before that must not be an unhandled rejection)
+    p.catch(() => {});
+    return p;
+  };
+
   // A. within 1 s of a notify (from the rotation, mid-scroll of a long rotation item, and right after a new item's hold)
   await sleep(6000);
   const a1 = await timeTo20('Water main repaired on Elm Street after a long night of work.', 'good');
@@ -196,18 +239,23 @@ try {
   const t200 = ('The regional transit authority has approved a sweeping plan that would connect every neighbourhood of Riverton '
     + 'with frequent buses and new light rail lines over the coming years, pending a final vote of the council').slice(0, 200);
   const b = await timeTo20(t200, 'info');
+  // B2 watches the item from here to the end of its turn (a read at a fixed time after it showed found the next item
+  // on a fast machine, and the check passed without testing)
+  const b2 = watchTurn(t200);
   await sleep(400);
   const bg = await page.evaluate(() => window.__geom());
   await page.screenshot({ path: join(SHOTS, 'f01-02-200-chars.png') });
   check('B a 200-character item shows at most 91 characters, with the full text in its tooltip',
     t200.length === 200 && bg.text.length <= 91 && bg.title === t200 && b.s <= 1, { length: t200.length, shown: bg.text, chars: bg.text.length, titleFull: bg.title === t200, first20S: b.s });
-  // let it scroll: mid-scroll and end shots
+  // let it scroll: a mid-scroll shot, and an end shot once its end is in view (or its turn is over without that)
   await sleep(2600);
   await page.screenshot({ path: join(SHOTS, 'f01-03-200-scrolling.png') });
-  await sleep(3500);
-  const bEnd = await page.evaluate(() => window.__geom());
+  await page.waitForFunction(() => window.__turn && (window.__turn.tail !== Infinity || window.__turn.over), null, { timeout: 90000, polling: 'raf' });
   await page.screenshot({ path: join(SHOTS, 'f01-04-200-end.png') });
-  check('B2 a long item scrolls through once: its end comes into view', bEnd.text === bg.text ? bEnd.endIn : true, { end: bEnd.transform, endIn: bEnd.endIn, text: bEnd.text.slice(0, 30) });
+  const bEnd = await b2;
+  check('B2 a long item scrolls through once: its end comes into view during its turn, and stays there',
+    bEnd.frames > 0 && bEnd.endOut && bEnd.head !== Infinity && bEnd.tail !== Infinity && !bEnd.back && bEnd.endInAtLast && !bEnd.timedOut,
+    { frames: bEnd.frames, endOutAtFirst: bEnd.endOut, startInS: +bEnd.head.toFixed(2), endInS: +bEnd.tail.toFixed(2), turnS: +bEnd.turnS.toFixed(2), end: bEnd.end, endInAtLast: bEnd.endInAtLast, movedBack: bEnd.back, timedOut: bEnd.timedOut });
 
   // D. widths cached: no layout read from Notifications.ts while an item scrolls; layouts while scrolling vs resting
   await sleep(4000);

@@ -40,8 +40,9 @@ export interface TickerItem {
 
 /** FEEL-01: the ticker shows at most this many characters of an item's first clause (then an ellipsis) */
 export const TICKER_CLAUSE_MAX = 90;
-/** a ". " after one of these is not a sentence end */
-const NOT_A_STOP = /(?:^|[\s(])(?:e\.g|i\.e|vs|St|Dr|Mr|Mrs|Ms|No)$/;
+/** a ". " after one of these is not a sentence end (QA F1: "… 15 buildings destroyed, incl." was a whole clause; old
+ *  saves keep such news) */
+const NOT_A_STOP = /(?:^|[\s(])(?:e\.g|i\.e|vs|St|Dr|Mr|Mrs|Ms|No|incl|approx|est|max|min|etc)$/;
 
 /**
  * FEEL-01: the one clause the ticker shows: the text up to its first " — " or its first sentence end (". "), at most
@@ -110,8 +111,9 @@ interface TickerShown {
  *   also gives way after STALE_S with more behind it. Everything stays in the news feed.
  * - Idle, it rotates through the newest 8 items (`tickerItems`), newest first, skipping each one it just showed as new.
  * - Each item is one clause (`tickerClause`) and its tooltip has the full text. Flavour headlines carry a "Gazette" label.
- * - Hover pauses all of it. Its clock is real time (CityScene clamps the frame dt at 0.1 s; a slow frame must not slow
- *   the holds down).
+ * - Hover pauses all of it. Its clock is real time, read from `now`, and never the scene's frame dt: CityScene clamps
+ *   that at 0.1 s (a slow frame must not slow the holds down), and it differs frame by frame from the time between two
+ *   frames of the ticker (QA F2: stepping by the larger of the two ran the holds and the scroll 7-23 % fast).
  * - Widths (PB-PANELS, A1): a ResizeObserver reports the track's and the view's after layout. A frame reads no layout,
  *   and writes the transform only when it changes.
  */
@@ -167,7 +169,8 @@ export class NewsTicker {
   /** reports the track's and the view's sizes after layout: a swap then reads no layout either */
   private ro: ResizeObserver | null = null;
 
-  constructor(private ctx: GameContext, parent: HTMLElement) {
+  /** `now`: real time in ms for the ticker's clock (performance.now by default; the tests pass their own clock) */
+  constructor(private ctx: GameContext, parent: HTMLElement, private now: () => number = () => performance.now()) {
     this.track = h('div', { class: 'tk-track' });
     this.view = h('div', { class: 'tk-view' }, this.track);
     this.el = h('div', { class: 'ticker mp-glass', title: 'City news — click for all news' }, h('div', { class: 'tk-badge', html: icon('news', 14) + '<span>News</span>' }), this.view);
@@ -382,12 +385,12 @@ export class NewsTicker {
     }
   }
 
-  frame(dt: number): void {
-    // real time (dt is clamped by the scene), at most MAX_STEP_S a frame; a caller's larger dt wins (tests, tools)
-    const now = performance.now();
-    const real = this.lastNow < 0 ? 0 : Math.min(NewsTicker.MAX_STEP_S, Math.max(0, (now - this.lastNow) / 1000));
+  /** one frame. `_dt`, the scene's frame time, is not used: the ticker steps by its own clock alone (QA F2) */
+  frame(_dt?: number): void {
+    // real time since the frame before, at most MAX_STEP_S (the first frame starts the clock)
+    const now = this.now();
+    const step = this.lastNow < 0 ? 0 : Math.min(NewsTicker.MAX_STEP_S, Math.max(0, (now - this.lastNow) / 1000));
     this.lastNow = now;
-    const step = Math.max(dt, real);
     if (this.stale()) this.sync();
     const c = this.cur;
     if (!c) this.next(false);

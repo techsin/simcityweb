@@ -19,7 +19,7 @@
  * and the same tornado path as the uninterrupted one (it used to re-seed from seed + day and drop them).
  * Final fixes SF-2 (silent ruins): a tornado counts what it destroys (ActiveDisaster.destroyed / facilities / worst,
  * persisted; no random draws) and posts ONE summary when it ends — how many buildings, the city facilities among them
- * ("incl. your Fire Station and Elementary School") and the fix, at the worst spot; the earthquake and meteor summaries
+ * ("including your Fire Station and Elementary School") and the fix, at the worst spot; the earthquake and meteor summaries
  * name the destroyed city facilities too. Final fixes r3: every plopped kind counts — after the services (FACILITY_RANK)
  * the deals, landmarks, civic buildings, transport and parks by what they bring in (defRank; bus stops last), so the
  * three kinds a summary names are the most urgent ones and the rest read "… and N more" (text only: no random draws).
@@ -357,7 +357,7 @@ export class DisastersSystem implements SimSystem {
     const fx = Math.max(0, Math.min(st.size - 1, Math.floor(d.x))), fz = Math.max(0, Math.min(st.size - 1, Math.floor(d.z)));
     if (n <= 0) { sim.notify('The tornado has passed — no buildings were destroyed.', 'disaster', fx, fz, 'disaster'); return; }
     const fac = d.facilities ?? [];
-    const incl = fac.length ? `, incl. ${facilityListText(byRank(fac))}` : '';
+    const incl = fac.length ? `, including ${facilityListText(byRank(fac))}` : '';
     const [x, z] = d.worst ?? [fx, fz];
     sim.notify(`Tornado: ${n} building${n === 1 ? '' : 's'} destroyed${incl} — bulldoze the rubble and rebuild.`, 'disaster', x, z, 'disaster');
   }
@@ -387,7 +387,7 @@ export class DisastersSystem implements SimSystem {
       else if (r < 0.65 && fire) { if (fire.ignite(sim, b, true)) fires++; }
     }
     if (fire) fire.riskBoost = Math.max(fire.riskBoost, 3);
-    const incl = facilities.length ? ` (incl. ${facilityListText(byRank(facilities))})` : '';
+    const incl = facilities.length ? ` (including ${facilityListText(byRank(facilities))})` : '';
     sim.notify(`Earthquake! Magnitude ${mag.toFixed(1)}: ${destroyed} buildings destroyed${incl}, ${fires} fires${rescues ? `, people trapped in ${rescues}` : ''}.`, 'disaster', x, z, 'disaster');
   }
 
@@ -438,7 +438,7 @@ export class DisastersSystem implements SimSystem {
     sim.events.emit('treesChanged', rect);
     if (netHit) sim.events.emit('networkChanged', rect);
     if (lineHit) sim.events.emit('powerLinesChanged', rect);
-    sim.notify(`Meteor strike! ${destroyed} buildings destroyed${facilities.length ? `, incl. ${facilityListText(byRank(facilities))}` : ''}.`, 'disaster', x, z, 'disaster');
+    sim.notify(`Meteor strike! ${destroyed} buildings destroyed${facilities.length ? `, including ${facilityListText(byRank(facilities))}` : ''}.`, 'disaster', x, z, 'disaster');
   }
 }
 

@@ -132,7 +132,7 @@ describe('SF-2: a ruined city facility gets its own advice', () => {
     expect(triggerDisaster(sim, 'tornado', 31, 31)).toBe(true);
     sim.runDays(30);
     expect(station.flags & BF.Burnt).toBeTruthy();
-    expect(st.news.filter((n) => /^Tornado: \d+ buildings destroyed, incl\. your Fire Station — bulldoze the rubble and rebuild\.$/.test(n.text)).length).toBe(1);
+    expect(st.news.filter((n) => /^Tornado: \d+ buildings destroyed, including your Fire Station — bulldoze the rubble and rebuild\.$/.test(n.text)).length).toBe(1);
     const a = (advisorIssues(st).safety ?? []).find((x) => x.id === 'facilityRuins');
     expect(a?.text).toMatch(/^Your Fire Station lies in ruins/);
     expect([a?.x, a?.z]).toEqual([station.x + 1, station.z + 1]);
@@ -309,7 +309,7 @@ describe('r3: every other ruin — deals, landmarks, civic buildings, transport,
     const sim = new Simulation(st, [...infraSystems(), advisorsSystem(rt) as SimSystem]);
     expect(triggerDisaster(sim, 'meteor', 31, 31)).toBe(true);
     expect(deal.flags & BF.Burnt).toBeTruthy();
-    expect(st.news.find((n) => n.text.startsWith('Meteor strike!'))!.text).toMatch(/incl\. your Missile Test Range\.$/);
+    expect(st.news.find((n) => n.text.startsWith('Meteor strike!'))!.text).toMatch(/including your Missile Test Range\.$/);
     sim.runDays(30);
     const a = (advisorIssues(st).finance ?? []).find((x) => x.id === 'ruins');
     expect(a?.text).toMatch(/^Your Missile Test Range lies in ruins — its §2,500\/mo deal income is gone\./);

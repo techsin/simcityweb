@@ -6,15 +6,19 @@
  * - Flavour headlines carry a "Gazette" label; hover pauses the ticker; the welcome tip is right; `ticker.push(item)`.
  *
  * The layout is tests/game/tickerLayout.ts's stand-in for the 1280x720 HUD (measured by tools/qa-ticker.mjs, which also
- * checks the real layout in the browser).
+ * checks the real layout in the browser). The ticker's clock is make()'s: every frame sets it and passes the frame time
+ * the scene would (QA F2: the ticker runs on the clock alone).
  */
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { RNG } from '../../src/core/rng';
+import { Network } from '../../src/core/types';
 import type { GameContext } from '../../src/game/context';
-import type { NewsItem } from '../../src/sim/CityState';
+import { BF, type NewsItem } from '../../src/sim/CityState';
+import { triggerDisaster } from '../../src/sim/systems/infra';
 import { NewsTicker, TICKER_CLAUSE_MAX, isGazette, tickerClause, tickerRoutine } from '../../src/ui/Notifications';
 import { LocalSimHost } from '../../src/worker/SimHost';
-import { newState } from '../infra/cityGen';
+import { newSim, newState, place, roadLine } from '../infra/cityGen';
 import { FEl, installFakeDom, textOf } from './fakeDom';
 import { FADE_L, FADE_R, VIEW_W, tickerLayout, trackGeometry as geometry, visibilityWatch } from './tickerLayout';
 
@@ -27,8 +31,8 @@ afterEach(async () => {
 });
 
 function make() {
+  // the ticker's clock (ms; performance.now() in the game): the frames below set it
   let now = 0;
-  vi.spyOn(performance, 'now').mockImplementation(() => now);
   const abort = new AbortController();
   const host = new LocalSimHost(newState(16), { signal: abort.signal });
   hosts.push(host);
@@ -36,20 +40,24 @@ function make() {
   const open = vi.fn();
   const ctx = { host, get state() { return host.state; }, sim: host.sim, signal: abort.signal, focusCell, panels: { open } } as unknown as GameContext;
   const parent = new FEl('div');
-  const ticker = new NewsTicker(ctx, parent as unknown as HTMLElement);
+  const ticker = new NewsTicker(ctx, parent as unknown as HTMLElement, () => now);
   // the layout: the view's width, the track's from its item (read on each swap: no ResizeObserver here)
   const { el, view, track, x, span, reads } = tickerLayout(ticker);
-  /** run `s` seconds of frames at `fps`, calling `each` after every frame */
+  /** one frame at clock time `ms`; `dt` is the frame time the scene passes (the ticker does not use it) */
+  const frameAt = (ms: number, dt?: number) => {
+    now = ms;
+    ticker.frame(dt);
+  };
+  /** run `s` seconds of frames at `fps` (each with the scene's dt, clamped at 0.1 s), calling `each` after every frame */
   const run = (s: number, fps = 60, each?: (t: number) => void) => {
     const n = Math.round(s * fps);
     for (let k = 0; k < n; k++) {
-      now += 1000 / fps;
-      ticker.frame(Math.min(0.1, 1 / fps));
+      frameAt(now + 1000 / fps, Math.min(0.1, 1 / fps));
       each?.(now / 1000);
     }
   };
   const notify = (text: string, kind: NewsItem['kind'] = 'info', advisor?: string) => host.sim.notify(text, kind, undefined, undefined, advisor);
-  return { ticker, host, el, view, track, run, notify, span, x, focusCell, open, reads, now: () => now / 1000 };
+  return { ticker, host, el, view, track, run, frameAt, notify, span, x, focusCell, open, reads, now: () => now / 1000, ms: () => now };
 }
 
 /** run frames until `pred` holds (at most `maxS` seconds); true when it did */
@@ -155,6 +163,80 @@ describe('FEEL-01 acceptance: a 200-character item shows at most 91 characters, 
     expect(tickerClause('x'.repeat(200))).toBe('x'.repeat(90) + '…');
     // every flavour headline and every news text of the sim fits in one clause of at most 91 characters
     for (const h of HEADLINES) expect(tickerClause(h).length).toBeLessThanOrEqual(91);
+  });
+
+  it('QA F1: a disaster summary that names the facilities it destroyed is never cut at an abbreviation', () => {
+    // the three summaries of src/sim/infra/disasters.ts, with the facilities QA saw in the real game
+    const fac = 'your Fire Station, Medical Clinic, 2 Elementary Schools and 6 more';
+    expect(tickerClause(`Tornado: 15 buildings destroyed, including ${fac} — bulldoze the rubble and rebuild.`))
+      .toBe('Tornado: 15 buildings destroyed, including your Fire Station, Medical Clinic, 2 Elementary…');
+    expect(tickerClause(`Earthquake! Magnitude 6.4: 24 buildings destroyed (including ${fac}), 3 fires, people trapped in 2.`))
+      .toBe('Earthquake! Magnitude 6.4: 24 buildings destroyed (including your Fire Station, Medical…');
+    expect(tickerClause(`Meteor strike! 15 buildings destroyed, including ${fac}.`))
+      .toBe('Meteor strike! 15 buildings destroyed, including your Fire Station, Medical Clinic, 2…');
+    // a short list: the tornado's line stops at its " — ", the meteor's is whole
+    expect(tickerClause('Tornado: 16 buildings destroyed, including your Fire Station — bulldoze the rubble and rebuild.')).toBe('Tornado: 16 buildings destroyed, including your Fire Station');
+    expect(tickerClause('Meteor strike! 33 buildings destroyed, including your Fire Station.')).toBe('Meteor strike! 33 buildings destroyed, including your Fire Station.');
+    // old saves keep the summaries as they were written ("incl."): the ticker showed "Meteor strike! 15 buildings
+    // destroyed, incl." and "Earthquake! Magnitude 6.4: 24 buildings destroyed (incl."
+    expect(tickerClause(`Tornado: 15 buildings destroyed, incl. ${fac} — bulldoze the rubble and rebuild.`))
+      .toBe('Tornado: 15 buildings destroyed, incl. your Fire Station, Medical Clinic, 2 Elementary…');
+    expect(tickerClause(`Earthquake! Magnitude 6.4: 24 buildings destroyed (incl. ${fac}), 3 fires, people trapped in 2.`))
+      .toBe('Earthquake! Magnitude 6.4: 24 buildings destroyed (incl. your Fire Station, Medical…');
+    expect(tickerClause(`Meteor strike! 15 buildings destroyed, incl. ${fac}.`))
+      .toBe('Meteor strike! 15 buildings destroyed, incl. your Fire Station, Medical Clinic, 2…');
+    expect(tickerClause('Tornado: 16 buildings destroyed, incl. your Fire Station — bulldoze the rubble and rebuild.')).toBe('Tornado: 16 buildings destroyed, incl. your Fire Station');
+    // the other abbreviations that are no sentence end: approx., est., max., min., etc.
+    expect(tickerClause('About 300 homes (approx. 40 % of the town) lost power. Crews are out.')).toBe('About 300 homes (approx. 40 % of the town) lost power.');
+    expect(tickerClause('The new stadium seats 40,000 (est. cost §60,000). Fans cheer.')).toBe('The new stadium seats 40,000 (est. cost §60,000).');
+    expect(tickerClause('Speed limit 50 max. on Main St. after the vote. Shops complain.')).toBe('Speed limit 50 max. on Main St. after the vote.');
+    expect(tickerClause('Trips take 18 min. on average across town. Commuters cheer.')).toBe('Trips take 18 min. on average across town.');
+    expect(tickerClause('Parks, pools, etc. are full this summer. Ice cream sales soar.')).toBe('Parks, pools, etc. are full this summer.');
+    // (whole words only: a word that ends in one of them still ends its sentence)
+    expect(tickerClause('The bakery won the contest. Shops cheer.')).toBe('The bakery won the contest.');
+    expect(tickerClause('Doctors praise the new vitamin. Sales soar.')).toBe('Doctors praise the new vitamin.');
+    expect(tickerClause('The festival reached its climax. Crowds cheer.')).toBe('The festival reached its climax.');
+  });
+
+  it('QA F1: the summaries the sim posts when a tornado, an earthquake and a meteor destroy city facilities', () => {
+    // tests/infra/feedbackRuins.test.ts's town of playgrounds with a Clock Tower every 5th cell: whatever a disaster
+    // destroys there, its summary names both
+    const summary = (kind: 'tornado' | 'earthquake' | 'meteor', days: number, start: string): string => {
+      const st = newState(64, true);
+      for (let z = 5; z < 60; z += 3) roadLine(st, 2, z, 61, z, Network.Street);
+      for (let z = 6; z < 60; z += 3) for (const zz of [z, z + 1]) for (let x = 3; x < 61; x++) {
+        if (zz < 60 && st.building[st.idx(x, zz)] < 0 && st.network[st.idx(x, zz)] === 0) place(st, x % 5 === 2 ? 'lm_clock_tower' : 'park_playground', x, zz, { flags: BF.Plopped });
+      }
+      st.stats.population = 5000;
+      const sim = newSim(st);
+      expect(triggerDisaster(sim, kind, 31, 31)).toBe(true);
+      sim.runDays(days);
+      return st.news.find((n) => n.text.startsWith(start))!.text;
+    };
+    const list = String.raw`including your (?:\d+ )?Clock Towers? and (?:\d+ )?Playgrounds?`;
+    const tornado = summary('tornado', 6, 'Tornado: ');
+    const quake = summary('earthquake', 0, 'Earthquake!');
+    const meteor = summary('meteor', 0, 'Meteor strike!');
+    expect(tornado).toMatch(new RegExp(String.raw`^Tornado: \d+ buildings destroyed, ${list} — bulldoze the rubble and rebuild\.$`));
+    expect(quake).toMatch(new RegExp(String.raw`^Earthquake! Magnitude \d\.\d: \d+ buildings destroyed \(${list}\), \d+ fires\.$`));
+    expect(meteor).toMatch(new RegExp(String.raw`^Meteor strike! \d+ buildings destroyed, ${list}\.$`));
+    // each clause is the start of its summary, reaches the facilities, and is at most 91 characters
+    for (const text of [tornado, quake, meteor]) {
+      const c = tickerClause(text);
+      expect(text.startsWith(c.replace(/…$/, ''))).toBe(true);
+      expect(c).toMatch(/including your (?:\d+ )?Clock Towers? and /);
+      expect(c.length).toBeLessThanOrEqual(TICKER_CLAUSE_MAX + 1);
+    }
+    expect(tickerClause(tornado)).toBe(tornado.slice(0, tornado.indexOf(' — ')));
+    // in the ticker: the clause, with the whole summary in the tooltip
+    const t = make();
+    t.run(6);
+    t.host.sim.notify(quake, 'disaster', 31, 31, 'disaster');
+    t.run(1);
+    const item = t.track.children[0];
+    expect(textOf(item.querySelector('.tk-text')!)).toBe(tickerClause(quake));
+    expect(textOf(item.querySelector('.tk-text')!)).not.toMatch(/incl\.$/);
+    expect(item.getAttribute('title')).toBe(quake);
   });
 });
 
@@ -323,7 +405,8 @@ describe('FEEL-01: the timeline', () => {
     t.run(NewsTicker.TAIL_S - 0.2);
     expect(t.ticker.current?.text).toBe(LONG);
     expect(t.x()).toBeCloseTo(-over, 0);
-    t.run(0.2);
+    // (its time is up within a frame: the ticker's clock is a sum of real frame times, not of the scene's dt)
+    t.run(0.2 + 1 / 60);
     expect(t.ticker.current?.text).not.toBe(LONG);
   });
 
@@ -517,5 +600,155 @@ describe('FEEL-01: Gazette, the welcome tip, ticker.push', () => {
     t.host.state.news = [{ day: 1, text: 'Loaded.', kind: 'info' }];
     t.run(1 / 60);
     expect(t.ticker.current?.text).toBe('A pushed quote.');
+  });
+});
+
+/**
+ * QA F2: frames as the game makes them. CityScene's loop takes its dt from the rAF timestamps (clamped at 0.1 s) and
+ * calls the ticker after the sim, the 3D view and the rest of the HUD. That work varies from frame to frame, more so
+ * at a higher game speed, so the time between two frames of the ticker differs from dt frame by frame while both add
+ * up to the same time: stepping by the larger of the two ran the ticker 7-23 % fast (16.0 s paused, 18.5 s at ultra,
+ * in 15 s).
+ * `gap`: ms from one rAF timestamp to the next; `work`: how far into its frame the ticker runs (ms). Both are [from, to)
+ * of a seeded stream. `spike`: every n-th frame is that many ms longer (a batch of sim days, an autosave).
+ */
+interface FrameProfile { name: string; speed: number; gap: [number, number]; work: [number, number]; spike?: [number, number] }
+const PROFILES: FrameProfile[] = [
+  { name: 'paused', speed: 0, gap: [16.2, 17.2], work: [0.5, 2.5] },
+  { name: '1x', speed: 1, gap: [14.7, 18.7], work: [1, 7] },
+  { name: '2x', speed: 2, gap: [13.7, 19.7], work: [1, 9] },
+  { name: 'ultra', speed: 3, gap: [14, 26], work: [1, 13], spike: [25, 90] },
+  { name: 'ultra at 160 frames a second', speed: 3, gap: [4.25, 8.25], work: [0.5, 3.5] },
+  { name: '1x on a slow machine (the scene clamps its dt at 0.1 s)', speed: 1, gap: [120, 240], work: [50, 150] },
+];
+
+/**
+ * A frame loop of `p` on `t`: the game runs at the profile's speed (the calendar of an empty city), then the ticker
+ * gets its frame with the scene's dt. The returned function runs frames for `maxS` seconds, or until `each` (called
+ * after every frame with the clock and that frame's step, both in ms) returns true.
+ */
+function frameLoop(t: ReturnType<typeof make>, p: FrameProfile, seed: number) {
+  const rng = new RNG(seed);
+  t.host.sim.speed = p.speed;
+  let raf = t.ms(), n = 0;
+  return (maxS: number, each?: (ms: number, step: number) => boolean | void): void => {
+    for (const end = t.ms() + maxS * 1000; t.ms() < end;) {
+      const gap = rng.range(p.gap[0], p.gap[1]) + (p.spike && ++n % p.spike[0] === 0 ? p.spike[1] : 0);
+      raf += gap;
+      const dt = Math.min(0.1, gap / 1000);
+      t.host.sim.update(dt);
+      const last = t.ms();
+      t.frameAt(raf + rng.range(p.work[0], p.work[1]), dt);
+      if (each?.(t.ms(), t.ms() - last)) return;
+    }
+  };
+}
+
+const clockOf = (t: ReturnType<typeof make>) => (t.ticker as unknown as { clock: number }).clock;
+
+describe('FEEL-01 QA F2: the ticker runs on real time alone, whatever the frame jitter and the game speed', () => {
+  it.each(PROFILES)('a 5 s hold lasts 5 s and a burst\'s 3 s hold 3 s, each within one frame: $name', (p) => {
+    const t = make();
+    const frames = frameLoop(t, p, 77);
+    const day0 = t.host.state.day;
+    frames(6.5);
+    // idle: the welcome rotation
+    expect((t.ticker as unknown as { cur: { fresh: boolean } }).cur.fresh).toBe(false);
+    const c0 = clockOf(t), t0 = t.now();
+    // two new items at once (both fit): the first holds HOLD_S, the second BURST_S
+    t.notify('Alpha opens.', 'good');
+    t.notify('Bravo opens.', 'good');
+    const starts: { text: string; at: number; step: number }[] = [];
+    frames(12, (ms, step) => {
+      const text = t.ticker.current!.text;
+      if (starts[starts.length - 1]?.text !== text) starts.push({ text, at: ms / 1000, step: step / 1000 });
+      return starts.length > 2;
+    });
+    expect(starts.map((s) => s.text)).toEqual(['Alpha opens.', 'Bravo opens.', expect.any(String)]);
+    const [a, b, end] = starts;
+    // each hold is its slot, and ends with the first frame after it: never short, never more than that frame long
+    expect(b.at - a.at).toBeGreaterThanOrEqual(NewsTicker.HOLD_S - 1e-9);
+    expect(b.at - a.at).toBeLessThan(NewsTicker.HOLD_S + b.step + 1e-9);
+    expect(end.at - b.at).toBeGreaterThanOrEqual(NewsTicker.BURST_S - 1e-9);
+    expect(end.at - b.at).toBeLessThan(NewsTicker.BURST_S + end.step + 1e-9);
+    // the ticker's clock is the time that passed
+    expect(clockOf(t) - c0).toBeCloseTo(t.now() - t0, 9);
+    // (and the game ran at its speed meanwhile)
+    if (p.speed > 0) expect(t.host.state.day).toBeGreaterThan(day0);
+    else expect(t.host.state.day).toBe(day0);
+  });
+
+  it.each(PROFILES)('the 0.5 s entry, the 1 s rests and the 60 px/s scroll run on that clock: $name', (p) => {
+    const S = NewsTicker;
+    const t = make();
+    const frames = frameLoop(t, p, 78);
+    // (an older item: the rotation has another one to show when the long item's turn is over)
+    t.notify('Old news.');
+    frames(6.5);
+    t.notify(LONG, 'good');
+    let shown = -1, over = 0, turn = 0, last = 0, checked = 0;
+    frames(15, (ms, step) => {
+      if (t.ticker.current?.text !== LONG) {
+        turn = (ms - shown) / 1000;
+        last = step / 1000;
+        return true;
+      }
+      if (shown < 0) {
+        shown = ms;
+        over = geometry(t.track).width - (VIEW_W - FADE_R);
+      }
+      // FEEL-01's timeline at the real time since the item showed: the ease-out entry from ENTER_PX right of its
+      // place, the lead rest, then SCROLL_PX_S until its end is in view (the transform is rounded to 0.1 px)
+      const s = (ms - shown) / 1000;
+      const k = 1 - s / S.ENTER_S;
+      const want = s < S.ENTER_S ? S.ENTER_PX * k * k * k : -Math.min(over, Math.max(0, s - S.ENTER_S - S.LEAD_S) * S.SCROLL_PX_S);
+      expect(Math.abs(t.x() - want)).toBeLessThan(0.11);
+      checked++;
+    });
+    expect(over).toBeGreaterThan(100);
+    expect(checked).toBeGreaterThan(20);
+    // its turn: the entry, the lead, the scroll and the tail, ended by the first frame after them
+    const turnS = S.ENTER_S + S.LEAD_S + over / S.SCROLL_PX_S + S.TAIL_S;
+    expect(turn).toBeGreaterThanOrEqual(turnS - 1e-9);
+    expect(turn).toBeLessThan(turnS + last + 1e-9);
+  });
+
+  it('a frame takes at most 1 s of real time, hover holds the clock, and the scene\'s dt never moves it', () => {
+    const t = make();
+    t.run(2);
+    // a hidden tab: the 3 s between two frames count as MAX_STEP_S
+    let c = clockOf(t);
+    t.frameAt(t.ms() + 3000, 0.1);
+    expect(clockOf(t) - c).toBeCloseTo(NewsTicker.MAX_STEP_S, 9);
+    // hover: the clock holds, and it resumes with the next frame's own time, not with the time it was held
+    t.el.fire('pointerenter');
+    c = clockOf(t);
+    t.run(2.5);
+    expect(clockOf(t)).toBe(c);
+    t.el.fire('pointerleave');
+    t.frameAt(t.ms() + 20, 1 / 60);
+    expect(clockOf(t) - c).toBeCloseTo(0.02, 9);
+    // the same frames with no dt, 0, the scene's clamp and a test's old 6 s step: the same ticker, on real time
+    const runs = [undefined, 0, 0.1, 6].map((dt) => {
+      const u = make();
+      u.notify('Old news.');
+      const seen: string[] = [];
+      for (let f = 1; f <= 1200; f++) {
+        if (f === 400) for (const b of ['One.', 'Two.']) u.notify(b, 'good');
+        u.frameAt((f * 1000) / 60, dt);
+        seen.push(`${u.ticker.current!.text} ${u.x()}`);
+      }
+      return { seen, clock: clockOf(u) };
+    });
+    for (const r of runs.slice(1)) expect(r).toEqual(runs[0]);
+    // (the first frame starts the clock)
+    expect(runs[0].clock).toBeCloseTo(1199 / 60, 9);
+    // from frame 400 on: One. for 5 s (300 frames), Two. for 3 s (180 frames), then the rotation, each within a frame
+    const after = (frames: number) => runs[0].seen[400 + frames - 1];
+    expect(after(0)).toMatch(/^One\. /);
+    expect(after(299)).toMatch(/^One\. /);
+    expect(after(301)).toMatch(/^Two\. /);
+    expect(after(479)).toMatch(/^Two\. /);
+    expect(after(483)).not.toMatch(/^(One|Two)\. /);
   });
 });

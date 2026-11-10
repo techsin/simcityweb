@@ -53,7 +53,7 @@ describe('SF-2: a tornado posts one summary of what it destroyed', () => {
     const n = burntIds(st).split(',').length;
     const s = summaries(st);
     expect(s.length).toBe(1);
-    expect(s[0].text).toBe(`Tornado: ${n} buildings destroyed, incl. your Fire Station — bulldoze the rubble and rebuild.`);
+    expect(s[0].text).toBe(`Tornado: ${n} buildings destroyed, including your Fire Station — bulldoze the rubble and rebuild.`);
     expect([s[0].x, s[0].z]).toEqual([station.x + 1, station.z + 1]);
     expect(s[0].kind).toBe('disaster');
     expect(st.news.filter((x) => x.text === 'Tornado sighted! Take cover!').length).toBe(1);
@@ -87,7 +87,7 @@ describe('SF-2: a tornado posts one summary of what it destroyed', () => {
     const { st, station, sim } = town();
     expect(triggerDisaster(sim, 'meteor', 31, 31)).toBe(true);
     expect(st.buildings.has(station.id)).toBe(false); // (in the crater)
-    expect(st.news.find((n) => n.text.startsWith('Meteor strike!'))!.text).toMatch(/^Meteor strike! \d+ buildings destroyed, incl\. your Fire Station\.$/);
+    expect(st.news.find((n) => n.text.startsWith('Meteor strike!'))!.text).toMatch(/^Meteor strike! \d+ buildings destroyed, including your Fire Station\.$/);
     const q = town();
     const school = place(q.st, 'civ_elementary_school', 40, 40, { flags: BF.Plopped | BF.Powered | BF.Watered });
     expect(triggerDisaster(q.sim, 'earthquake', 35, 35)).toBe(true);
@@ -95,8 +95,8 @@ describe('SF-2: a tornado posts one summary of what it destroyed', () => {
     const named: string[] = [];
     if (q.station.flags & BF.Burnt) named.push('civ_fire_station');
     if (school.flags & BF.Burnt) named.push('civ_elementary_school');
-    if (named.length) expect(text).toContain(`(incl. ${facilityListText(named)})`);
-    else expect(text).not.toMatch(/incl\./);
+    if (named.length) expect(text).toContain(`(including ${facilityListText(named)})`);
+    else expect(text).not.toMatch(/incl/);
   });
 
   it('the facility list reads naturally', () => {
@@ -123,8 +123,8 @@ function venueTown(seed: number) {
   st.stats.population = 5000;
   return { st, sim: newSim(st) };
 }
-/** the facility list of a summary ("… incl. your 3 Clock Towers and 12 Playgrounds …") */
-const inclOf = (text: string) => /incl\. (your [^—).]*)/.exec(text)?.[1] ?? '';
+/** the facility list of a summary ("… including your 3 Clock Towers and 12 Playgrounds …") */
+const inclOf = (text: string) => /including (your [^—).]*)/.exec(text)?.[1] ?? '';
 
 describe('r3: every plopped kind is named, the services first, then the most valuable', () => {
   it('a meteor names a deal and a landmark ahead of a playground (the playground destroyed first)', () => {
@@ -136,7 +136,7 @@ describe('r3: every plopped kind is named, the services first, then the most val
     st.stats.population = 5000;
     const sim = newSim(st);
     expect(triggerDisaster(sim, 'meteor', 31, 31)).toBe(true);
-    expect(st.news.find((n) => n.text.startsWith('Meteor strike!'))!.text).toMatch(/^Meteor strike! \d+ buildings destroyed, incl\. your Casino Resort, Clock Tower and Playground\.$/);
+    expect(st.news.find((n) => n.text.startsWith('Meteor strike!'))!.text).toMatch(/^Meteor strike! \d+ buildings destroyed, including your Casino Resort, Clock Tower and Playground\.$/);
   });
 
   it('a quake and a tornado name a landmark ahead of the playgrounds they destroyed (seeds 1-12)', () => {
