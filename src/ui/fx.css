@@ -1,3 +1,17 @@
+/* Emergency urgency follows the LIVE pill; opacity leaves a half-second release at the episode's end. */
+.mp-ui::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 1;
+  background: radial-gradient(ellipse at center, transparent 55%, rgb(255 35 35 / 3%) 100%);
+  opacity: 0; transition: opacity 0.5s linear;
+}
+.mp-ui.emg-live::before { opacity: 1; transition-duration: 0s; }
+.mp-ui.emg-live:has(.hud-top .is-paused)::before { opacity: 0; transition-duration: 0.5s; }
+
+/* A single, steady outcome flash also works with reduced motion. */
+.emg-banner.emg-saved { border-color: var(--good); box-shadow: inset 0 0 0 1px var(--good), 0 0 18px color-mix(in srgb, var(--good) 35%, transparent); }
+.emg-banner.emg-lost { border-color: var(--bad); box-shadow: inset 0 0 0 1px var(--bad), 0 0 18px color-mix(in srgb, var(--bad) 35%, transparent); }
+
+/* FEEL-24 photo mode (src/ui/PhotoBar.ts): the HUD fades out in 200 ms and takes no input; the photo bar. */
 .mp-scene > .mp-ui { transition: opacity 200ms ease; }
 .mp-scene.photo-mode > .mp-ui { opacity: 0; pointer-events: none; }
 /* the neighbour-city names (region/NeighborLabels.ts) are drawn over the scene by the app, beside it in the DOM: they

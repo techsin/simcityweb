@@ -33,6 +33,7 @@ import { loadGameModules, type GameModules } from './modules';
 import { loadPref, loadSettings, resolveMotion, savePref, saveSettings, type GameSettings } from './settings';
 import { NewYearCelebration, type CelebrateOptions } from './NewYear';
 import { ShowCamera, FirstCameraMoments, type ShowControls } from './ShowCamera';
+import { YearReview } from '../ui/YearReview';
 import { GameSounds } from './GameSounds';
 import { hotkeyCycle, panelHotkey } from './toolCatalog';
 import { matchesBinding, isBoundCode, isCameraCode, sanitizeBindings } from './bindings';
@@ -66,9 +67,12 @@ import { EmergencyBanner } from '../ui/EmergencyBanner';
 import { EmergenciesPanel } from '../ui/panels/EmergenciesPanel';
 import { Sirens, type SirenOut, type SirenSource } from '../audio/sirens';
 import type { EmergencyVehicles } from '../render/city/vehicles/EmergencyVehicles';
+import type { CameraController } from '../render/world/CameraController';
 import { DemographicsPanel } from '../ui/panels/DemographicsPanel';
 import { attachOverlays } from '../sim/infra/overlays';
 import { windVector } from '../sim/infra/wind';
+import { regionSaveAccess } from '../save/db';
+import { showStorageError, storageConditionVersion, storageDialogOpen } from '../ui/StorageDialog';
 
 export type { GameSettings } from './settings';
 
@@ -81,6 +85,8 @@ export interface CitySceneOptions {
   host?: WorkerSimHost;
   rctx?: RegionContext;
   persistence?: CityPersistence;
+  /** W1.3: false starts the local or loopback host on the save without its recovery journal (§4.4's crash choices) */
+  replayJournal?: boolean;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
   onSave: (state: HostState, reason?: SaveReason) => Promise<void>;
   /** initial settings (e.g. the app-level settings); keys given here win over the stored in-game prefs */
@@ -106,6 +112,10 @@ const SLOW_WINDOW_S = 20;
 const SLOW_FPS = 25;
 /** the prompt's answer, per profile ('metropolis.ui.slowPrompt': shown, then 'switch' / 'keep') */
 const SLOW_PREF = 'slowPrompt';
+const AUTOSAVE_FLOOR_MS = 60_000;
+const AUTOSAVE_BACKOFF_INITIAL_MS = AUTOSAVE_FLOOR_MS;
+const AUTOSAVE_BACKOFF_MULTIPLIER = 2;
+const AUTOSAVE_BACKOFF_MAX_MS = 15 * 60_000;
 
 export class CityScene {
   readonly host: LocalSimHost | LoopbackSimHost | WorkerSimHost;
@@ -148,6 +158,7 @@ export class CityScene {
   private advisors: AdvisorsPanel;
   /** WP8: emergency alert banners (LIVE speed policy) and siren voices */
   private emgBanner: EmergencyBanner;
+  private followedVehicle: number | null = null;
   private sirens: Sirens | null = null;
   private sirenSrc: { x: number; y: number; z: number; responder: string }[] = [];
   private tip: CursorTip;
@@ -166,6 +177,9 @@ export class CityScene {
   private readyPending = false;
   private offs: (() => void)[] = [];
   private monthsSinceSave = 0;
+  private lastSaveAt = performance.now();
+  private autosaveFailure = { count: 0, retryAt: 0 };
+  private storageCondition = storageConditionVersion();
   private saving: Promise<void> | null = null;
   private hiddenPausedFrom: number | null = null;
   private mouse = { x: -1, y: -1, inside: false };
@@ -223,6 +237,7 @@ export class CityScene {
         flags: { simwasm: pageSimWasmFlag() },
         signal: this.abort.signal,
         persistence: opts.persistence,
+        replayJournal: opts.replayJournal,
       });
     }
     this.degraded.actions = true;
@@ -287,6 +302,7 @@ export class CityScene {
       showQuery: (t, o) => this.showQuery(t, o),
       applySettings: (p) => this.applySettings(p),
       toast: (text, kind, cell, title, opts) => this.toasts?.show(text, kind, cell, title, opts),
+      newYearBusy: () => this.newYear?.busy ?? false,
       openFlyout: (id, tab) => this.toolbar?.openFlyout(id, tab),
       showOnboarding: () => this.onboarding?.show(),
       save: () => this.save(false),
@@ -339,13 +355,23 @@ export class CityScene {
       // NOTE-041: a command, so a worker's clock holds too (the host is already gone when the scene disposes)
       holdCalendar: (on) => { if (!this.disposed) this.host.act('holdCalendar', [on], { tag: this.newYear }); },
     });
-    this.cameraMoments = new FirstCameraMoments(ctx, this.showCamera, () => this.newYear.busy || !!this.founding?.active || this.photo?.active || this.pause?.isOpen || confirmOpen());
+    // (FEEL-07: the storage dialogs are dialogs too, and a spotlight's setView would end the truck the player follows)
+    this.cameraMoments = new FirstCameraMoments(ctx, this.showCamera, () => this.newYear.busy || !!this.founding?.active || this.photo?.active
+      || this.pause?.isOpen || confirmOpen() || storageDialogOpen() || this.followedVehicle !== null);
     this.photo = new PhotoBar(ctx, this.root, undefined, { inspected: () => this.view.focus[0] ?? null, lastSpeed: () => this.lastSpeed });
+    // ---- CONTENT: yearly feedback follows the celebration, without changing its timing or camera.
+    // (and photo mode: the card is drawn in the HUD, hidden there, and the key that leaves photo mode would close it)
+    new YearReview(ctx, { busy: () => this.newYear.active || !!this.photo?.active, regionName: opts.persistence?.regionName });
     // CONTENT: rank moments share the renderer, with New Year and LIVE taking priority.
     const rankFireworks = new RankFireworks(ctx, () => this.newYear.busy);
     new MilestoneCard(ctx, this.uiRoot, (rank, intensity) => rankFireworks.start(rank, intensity), () => this.newYear.busy);
     // event-driven sounds (news, disasters, rewards, budget ticks, construction) + generic control feedback
-    this.gameSounds = new GameSounds({ sim: this.sim, sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox() });
+    this.gameSounds = new GameSounds({
+      sim: this.sim, host: this.host, signal: this.abort.signal,
+      duck: (db, hold, release) => (this.mods.audio as { duck?: import('../audio/AudioEngine').AudioEngine['duck'] } | undefined)?.duck?.(db, hold, release, { renew: true }),
+      releaseDuck: (release) => (this.mods.audio as { releaseDuck?: (release: number) => void } | undefined)?.releaseDuck?.(release),
+      sound: (n, o) => this.sound(n, o), world: () => this.world, sandbox: () => ctx.sandbox(),
+    });
     this.offUiSounds = installUiSounds(() => this.mods.audio as unknown as UiSoundAudio | undefined);
     this.fpsEl = h('div', { class: 'fps mp-glass', style: 'display:none' });
     this.uiRoot.appendChild(this.fpsEl);
@@ -357,7 +383,11 @@ export class CityScene {
     // WP5: demographics panel; derived data-view rasters follow the sim's layer updates
     this.panels.register(new DemographicsPanel(ctx));
     this.offs.push(attachOverlays(this.host.sim));
-    this.emgBanner = new EmergencyBanner(ctx, this.uiRoot);
+    this.emgBanner = new EmergencyBanner(ctx, this.uiRoot, {
+      start: (id) => this.followEmergency(id),
+      active: () => this.followedVehicle,
+      stop: () => this.stopEmergencyFollow(),
+    });
     this.pause = new PauseMenu(ctx, this.uiRoot, { onSettings: () => this.panels.open('settings'), onHelp: () => this.panels.open('help') });
 
     // ---- events
@@ -544,7 +574,7 @@ export class CityScene {
     if (hasScene && this.mods.CityObjectsView && force !== 'objects' && force !== 'all') {
       try {
         const getEmergency = { vehicles: () => this.host.emergency.vehicles(), incidents: () => this.host.emergency.incidents(), time: () => this.host.simTime() };
-        const octx = { scene: world.scene, camera: world.camera, renderer: world.renderer, canvas: this.canvas, getTrafficRoutes, getState: () => this.sim.state, quality: this.settings.quality, getEmergency };
+        const octx = { scene: world.scene, camera: world.camera, renderer: world.renderer, canvas: this.canvas, getTrafficRoutes, getState: () => this.sim.state, quality: this.settings.quality, getEmergency, getPlantLoad: (id: number) => { const u = this.host.utilities; return 'plantLoad' in u ? u.plantLoad?.(id) ?? null : null; } };
         objects = new this.mods.CityObjectsView(state, events, octx);
       } catch (e) {
         this.errors.report('City objects view failed to start — using simplified buildings', e);
@@ -611,6 +641,7 @@ export class CityScene {
     const lost = this.ctxLost;
     if (!lost || lost.restoring || this.disposed) return;
     lost.restoring = true;
+    this.newYear?.cancel();
     const cam = readCamera(this.world.controls) ?? validCamera(this.sim.state.systemData.camera, this.sim.state);
     const timeOfDay = this.world.timeOfDay;
     // stop watching the old canvas first: disposing its views forces a (second) context loss on it
@@ -655,7 +686,7 @@ export class CityScene {
       if (this.newCity && !this.founding && landing && typeof showControls.setView === 'function' && resolveMotion(this.settings.motion) !== 'reduced') {
         // (QA B4: held at the high view until the app's loading screen is gone: reportLoadTime releases it)
         this.founding = new FoundingFlyIn(this.showCamera, showControls, landing, foundingTitle(st), this.resolveLanding, this.uiRoot, {
-          hold: true, inPlace: true, busy: () => !!this.photo?.active || !!this.pause?.isOpen || confirmOpen(),
+          hold: true, inPlace: true, busy: () => !!this.photo?.active || !!this.pause?.isOpen || confirmOpen() || storageDialogOpen(),
           rules: { canvas: () => this.canvas, cameraKey: (e) => isCameraCode(e.code, this.settings.keyBindings), gameKey: (e) => isBoundCode(e.code, this.settings.keyBindings) },
         });
       } else this.resolveLanding();
@@ -748,6 +779,7 @@ export class CityScene {
       // burst can be photographed)
       if (this.photo?.active && this.newYear.ownsTime) this.newYear.cancel(false);
       this.newYear.frame(dt);
+      this.uiRoot.classList.toggle('newyear-busy', this.newYear.busy);
       // the camera shows run on the loop's clamped step (QA B4: the first render, seconds in one frame on cold shaders,
       // ran the whole founding fly-in before anything was on screen)
       const cameraDt = this.readyPending ? 0 : Math.min(0.1, Math.max(0, (now - (this.cameraMomentAt || now)) / 1000));
@@ -969,8 +1001,8 @@ export class CityScene {
   private onKey(e: KeyboardEvent): void {
     if (isTyping(e) || this.disposed) return;
     const bindings = this.settings?.keyBindings ?? {};
-    // a confirmation dialog handles Enter / Esc itself; no hotkeys underneath it
-    if (confirmOpen()) return;
+    // dialogs handle their keys themselves; no hotkeys underneath them
+    if (confirmOpen() || storageDialogOpen()) return;
     if (this.pause.isOpen) {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -1115,26 +1147,48 @@ export class CityScene {
   private onMonth(): void {
     this.monthsSinceSave++;
     const n = this.settings.autosaveMonths;
-    if (n > 0 && this.monthsSinceSave >= n) void this.save(true);
+    if (n > 0 && this.monthsSinceSave >= n && performance.now() - this.lastSaveAt >= AUTOSAVE_FLOOR_MS && regionSaveAccess(this.opts.persistence?.regionId)) void this.save(true);
   }
 
-  async save(auto = false, reason: SaveReason = auto ? 'autosave' : 'manual'): Promise<void> {
-    if (this.disposed) return;
+  /** App saves on tab hide too; every successful host save restarts the real-time autosave floor. */
+  recordSaved(): void {
+    this.monthsSinceSave = 0;
+    this.lastSaveAt = performance.now();
+    this.autosaveFailure = { count: 0, retryAt: 0 };
+  }
+
+  async save(auto = false, reason: SaveReason = auto ? 'autosave' : 'manual', retry = false): Promise<void> {
+    if (this.disposed || !regionSaveAccess(this.opts.persistence?.regionId)) return;
     if (this.saving) return this.saving;
+    const condition = storageConditionVersion();
+    if (condition !== this.storageCondition) {
+      this.storageCondition = condition;
+      this.autosaveFailure = { count: 0, retryAt: 0 };
+    }
+    // App can acknowledge the city before its region write fails; retain the streak until the whole save succeeds.
+    const failure = this.autosaveFailure;
+    if (auto && !retry && (storageDialogOpen() || performance.now() - this.lastSaveAt < AUTOSAVE_FLOOR_MS || performance.now() < failure.retryAt)) return;
     this.savePill.saving(auto);
     this.storeCamera();
     this.saving = (async () => {
       try {
         await this.opts.onSave(this.host.state, reason);
         if (this.disposed) return;
-        this.monthsSinceSave = 0;
+        this.recordSaved();
         this.savePill.done(true, auto ? 'Autosaved' : 'City saved');
-        this.sound(auto ? 'autosave' : 'save', auto ? { volume: 0.8 } : undefined);
+        if (!auto) this.sound('save');
       } catch (e) {
         if (this.disposed) return;
+        if (auto) this.lastSaveAt = performance.now();
+        if (!regionSaveAccess(this.opts.persistence?.regionId)) { this.savePill.cancel(); return; }
+        if (auto) {
+          const count = failure.count + 1;
+          const backoff = Math.min(AUTOSAVE_BACKOFF_MAX_MS, AUTOSAVE_BACKOFF_INITIAL_MS * AUTOSAVE_BACKOFF_MULTIPLIER ** (count - 1));
+          this.autosaveFailure = { count, retryAt: this.lastSaveAt + backoff };
+        } else this.autosaveFailure = failure;
         this.savePill.done(false);
-        this.sound('error');
-        this.errors.report('Saving failed', e, { key: 'save' });
+        if (!auto || this.autosaveFailure.count === 1) this.sound('error');
+        if (reason !== 'exit') void showStorageError(e, { retry: () => this.save(auto, reason, true), signal: this.abort.signal });
       } finally {
         this.saving = null;
       }
@@ -1212,6 +1266,32 @@ export class CityScene {
     } catch (e) {
       console.warn(e);
     }
+  }
+
+  /** Follow the renderer's lead unit, using the same extrapolated emergency feed as its road animation. */
+  private followEmergency(id: number): void {
+    const c = this.world.controls as Partial<Pick<CameraController, 'follow'>>;
+    const vehicles = (this.objects as { emergency?: EmergencyVehicles }).emergency;
+    if (!c.follow || !vehicles?.followPosition(id)) return;
+    c.follow((aheadSeconds) => {
+      const secondsPerDay = this.host.secondsPerDay();
+      const aheadDays = this.host.speed > 0 && secondsPerDay > 0 ? aheadSeconds / secondsPerDay : 0;
+      return vehicles.followPosition(id, aheadDays);
+    }, {
+      reducedMotion: resolveMotion(this.settings.motion) === 'reduced',
+      onEnd: () => {
+        this.followedVehicle = null;
+        this.emgBanner.refreshFollow();
+      },
+    });
+    this.followedVehicle = id;
+  }
+
+  private stopEmergencyFollow(): void {
+    const c = this.world.controls as Partial<Pick<CameraController, 'stopFollowing'>>;
+    c.stopFollowing?.();
+    this.followedVehicle = null;
+    this.emgBanner?.refreshFollow();
   }
 
   private showQuery(t: QueryTarget | null, opts: { silent?: boolean } = {}): void {
