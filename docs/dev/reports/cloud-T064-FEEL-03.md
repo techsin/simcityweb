@@ -201,6 +201,12 @@ left for the desktop except the browser checks (Desktop QA, last).
      41ebcfb, matched the same way.)
 5. **The lane's acceptance list:** all 8 met, table above.
 6. **HUD trace:** re-recorded; the diff is the chip nodes and the sandbox net line, step by step above.
+7. **Dev moved after these gates** (08:20 UTC): 1f4b99b holds desktop merge train 3, T041 (NEW-05: taxes slow growth
+   gradually; BudgetPanel's tax colours and copy; tools/simbot.ts), and the dev bot reference became 192,236 by
+   T041's design. A trial merge of 1f4b99b into this branch, in a scratch worktree removed afterwards, merged without a
+   conflict; tsc was clean, and 7 test files (62 tests) passed: floatText, topBarSplit, T041's budgetTaxes,
+   budgetTaxColor and budgetTaxCopy, approvalCardReplica, toolCommands. The month chip still equals Budget's row. This
+   lane changes no simulation, so the merged tree's bot should read dev's 192,236. The merge step's full gate decides.
 
 ### Desktop QA (NOTE-059, NOTE-061, NOTE-088: on the real GPU, on dev after the merge)
 
