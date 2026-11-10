@@ -26,9 +26,10 @@
    "0.1 div.mp-glass": "children×4 class",
    "0.1.0 div.hud-seg": "attr.title children×2 class title",
    "0.1.0.0 span.ico-wrap": "class html style.cssText",
-   "0.1.0.1 div.hud-stack": "children×2 class",
+   "0.1.0.1 div.hud-stack": "children×3 class",
    "0.1.0.1.0 div.hud-value": "class",
    "0.1.0.1.1 div.hud-sub": "class",
+   "0.1.0.1.2 div.hud-chip": "class",
    "0.1.1 div.hud-seg": "attr.title children×2 class title",
    "0.1.1.0 span.ico-wrap": "class html style.cssText",
    "0.1.1.1 div.hud-stack": "children×2 class",
@@ -124,9 +125,10 @@
    "0.1.2.3.5.1 span.faint": "children class",
    "0.1.3 div.hud-seg": "attr.title children×3 class title",
    "0.1.3.0 span.ico-wrap": "class html",
-   "0.1.3.1 div.hud-stack": "children×2 class",
+   "0.1.3.1 div.hud-stack": "children×3 class",
    "0.1.3.1.0 div.hud-label": "children class",
    "0.1.3.1.1 div.hud-value": "class",
+   "0.1.3.1.2 div.hud-chip": "class",
    "0.1.3.2 div.appr-pop": "class",
    "0.2 div.spacer": "class",
    "0.3 div.mp-glass": "children×12 class style.cssText",
@@ -174,6 +176,7 @@
    "        div class=\"hud-stack\"",
    "          div class=\"hud-value\"",
    "          div class=\"hud-sub\"",
+   "          div class=\"hud-chip month\"",
    "      div class=\"hud-seg click\" title=\"City statistics (J)\" L1",
    "        span class=\"ico-wrap\" style{cssText:color:#8fc8ff} html=\"<svg#a2a9d9ec>\"",
    "        div class=\"hud-stack\"",
@@ -310,6 +313,7 @@
    "          div class=\"hud-label\"",
    "            \"Approval\"",
    "          div class=\"hud-value\"",
+   "          div class=\"hud-chip appr\"",
    "        div class=\"appr-pop mp-glass\"",
    "    div class=\"spacer\"",
    "    div class=\"mp-glass\" style{cssText:gap:2px}",
@@ -439,7 +443,7 @@
     ]
    ],
    [
-    33,
+    34,
     2,
     [
      "          div class=\"hud-value\" text=\"12,345\"",
@@ -447,45 +451,51 @@
     ]
    ],
    [
-    39,
+    40,
     1,
     [
      "              i style{background:var(--res);borderRadius:2px / 2.5px;opacity:1;transform:scaleY(-0.8)} data{color:var(--res);scale:-0.8}"
     ]
    ],
    [
-    45,
+    46,
     1,
     [
      "              i style{background:var(--com);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--com);scale:0}"
     ]
    ],
    [
-    51,
+    52,
     1,
     [
      "              i style{background:var(--ind);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--ind);scale:0}"
     ]
    ],
    [
-    56,
+    57,
     1,
     [
      "        button class=\"rci-zone\" title=\"Residential demand is strong, with 4 empty residential lots left. Click to zone homes.\" style{--fc:var(--res)} data{fam:R} attrs{type=button} L1"
     ]
    ],
    [
-    160,
+    161,
     1,
     [
      "      div class=\"hud-seg click approval \" data{face:smile} L2"
     ]
    ],
    [
-    165,
-    2,
+    166,
+    1,
     [
-     "          div class=\"hud-value\" text=\"68%\"",
+     "          div class=\"hud-value\" text=\"68%\""
+    ]
+   ],
+   [
+    168,
+    1,
+    [
      "        div class=\"appr-pop mp-glass empty\"",
      "          div class=\"ap-h\"",
      "            b",
@@ -816,7 +826,8 @@
   "calls": [],
   "writes": {
    "0.0.0.1.1 div.hud-sub": "text",
-   "0.1.0.1.0 div.hud-value": "text"
+   "0.1.0.1.0 div.hud-value": "text",
+   "0.1.0.1.1 div.hud-sub": "text"
   },
   "patch": [
    [
@@ -828,9 +839,10 @@
    ],
    [
     28,
-    1,
+    2,
     [
-     "          div class=\"hud-value\" text=\"∞\""
+     "          div class=\"hud-value\" text=\"∞\"",
+     "          div class=\"hud-sub faint\""
     ]
    ]
   ]
@@ -841,7 +853,8 @@
   "writes": {
    "0.0.0.1.0 div.city-name": "text",
    "0.0.0.1.1 div.hud-sub": "text",
-   "0.1.0.1.0 div.hud-value": "text"
+   "0.1.0.1.0 div.hud-value": "text",
+   "0.1.0.1.1 div.hud-sub": "text"
   },
   "patch": [
    [
@@ -854,9 +867,10 @@
    ],
    [
     28,
-    1,
+    2,
     [
-     "          div class=\"hud-value\" text=\"§2,500,000\""
+     "          div class=\"hud-value\" text=\"§2,500,000\"",
+     "          div class=\"hud-sub faint\" text=\"No report yet\""
     ]
    ]
   ]
@@ -870,7 +884,7 @@
   },
   "patch": [
    [
-    33,
+    34,
     2,
     [
      "          div class=\"hud-value\" text=\"12,000\"",
@@ -887,7 +901,7 @@
   },
   "patch": [
    [
-    34,
+    35,
     1,
     [
      "          div class=\"hud-sub\" data{h:<span class=\"zero\">Stable</span>} html=\"<span class=\"zero\">Stable</span>\""
@@ -912,7 +926,7 @@
   },
   "patch": [
    [
-    33,
+    34,
     2,
     [
      "          div class=\"hud-value\" text=\"40\"",
@@ -920,21 +934,21 @@
     ]
    ],
    [
-    160,
+    161,
     1,
     [
      "      div class=\"hud-seg click approval none\" data{face:smile} L2"
     ]
    ],
    [
-    165,
+    166,
     1,
     [
      "          div class=\"hud-value\" text=\"—\""
     ]
    ],
    [
-    169,
+    171,
     67,
     [
      "              \"Approval —\"",
@@ -943,7 +957,7 @@
     ]
    ],
    [
-    237,
+    239,
     1,
     [
      "            \"Click for your advisors (N)\""
@@ -1008,7 +1022,7 @@
   },
   "patch": [
    [
-    33,
+    34,
     2,
     [
      "          div class=\"hud-value\" text=\"900\"",
@@ -1016,21 +1030,21 @@
     ]
    ],
    [
-    160,
+    161,
     1,
     [
      "      div class=\"hud-seg click approval \" data{face:smile} L2"
     ]
    ],
    [
-    165,
+    166,
     1,
     [
      "          div class=\"hud-value\" text=\"68%\""
     ]
    ],
    [
-    169,
+    171,
     1,
     [
      "              \"Approval 68%\"",
@@ -1103,14 +1117,14 @@
     ]
    ],
    [
-    171,
+    173,
     1,
     [
      "            \"New towns usually sit at 45–55% until police, parks and land value arrive.\""
     ]
    ],
    [
-    173,
+    175,
     1,
     [
      "            \"Click a row to open its fix; anywhere else for your advisors (N)\""
@@ -1172,7 +1186,7 @@
   },
   "patch": [
    [
-    33,
+    34,
     2,
     [
      "          div class=\"hud-value\" text=\"12,345\"",
@@ -1180,7 +1194,7 @@
     ]
    ],
    [
-    236,
+    238,
     2,
     []
    ]
@@ -1196,21 +1210,21 @@
   },
   "patch": [
    [
-    45,
+    46,
     1,
     [
      "              i style{background:var(--com);borderRadius:2px / 2px;opacity:1;transform:scaleY(-1)} data{color:var(--com);scale:-1}"
     ]
    ],
    [
-    51,
+    52,
     1,
     [
      "              i style{background:var(--ind);borderRadius:2px / 3.3333333333333335px;opacity:1;transform:scaleY(-0.6)} data{color:var(--ind);scale:-0.6}"
     ]
    ],
    [
-    56,
+    57,
     1,
     [
      "        button class=\"rci-zone\" title=\"Residential, commercial and industrial demand is strong, with 4 empty residential lots and no empty commercial lots and no empty industrial lots left. Click to zone shops.\" style{--fc:var(--com)} data{fam:C} attrs{type=button} L1"
@@ -1230,14 +1244,14 @@
   },
   "patch": [
    [
-    35,
+    36,
     1,
     [
      "      div class=\"hud-seg click rci-seg has-cap\" title=\"RCI demand — Residential capped · click for details\" L1"
     ]
    ],
    [
-    37,
+    38,
     2,
     [
      "          div class=\"rci-col capped\"",
@@ -1276,14 +1290,14 @@
     ]
    ],
    [
-    35,
+    36,
     1,
     [
      "      div class=\"hud-seg click rci-seg has-cap\" title=\"RCI demand — Commercial, Industrial capped · click for details\" L1"
     ]
    ],
    [
-    37,
+    38,
     2,
     [
      "          div class=\"rci-col\"",
@@ -1291,7 +1305,7 @@
     ]
    ],
    [
-    43,
+    44,
     2,
     [
      "          div class=\"rci-col capped\"",
@@ -1299,7 +1313,7 @@
     ]
    ],
    [
-    49,
+    50,
     2,
     [
      "          div class=\"rci-col capped\"",
@@ -1324,14 +1338,14 @@
   },
   "patch": [
    [
-    35,
+    36,
     1,
     [
      "      div class=\"hud-seg click rci-seg has-cap\" title=\"RCI demand — Residential capped · click for details\" L1"
     ]
    ],
    [
-    37,
+    38,
     2,
     [
      "          div class=\"rci-col capped\"",
@@ -1339,7 +1353,7 @@
     ]
    ],
    [
-    43,
+    44,
     2,
     [
      "          div class=\"rci-col\"",
@@ -1347,7 +1361,7 @@
     ]
    ],
    [
-    49,
+    50,
     2,
     [
      "          div class=\"rci-col\"",
@@ -1434,14 +1448,14 @@
   },
   "patch": [
    [
-    58,
+    59,
     1,
     [
      "        div class=\"rci-pop mp-glass i open\""
     ]
    ],
    [
-    62,
+    63,
     4,
     [
      "            div class=\"g capped\"",
@@ -1451,7 +1465,7 @@
     ]
    ],
    [
-    70,
+    71,
     3,
     [
      "              span class=\"val\" text=\"-30\"",
@@ -1460,7 +1474,7 @@
     ]
    ],
    [
-    77,
+    78,
     3,
     [
      "              span class=\"val\" text=\"+10\"",
@@ -1469,7 +1483,7 @@
     ]
    ],
    [
-    84,
+    85,
     3,
     [
      "              span class=\"val\" text=\"+170\"",
@@ -1478,7 +1492,7 @@
     ]
    ],
    [
-    91,
+    92,
     3,
     [
      "              span class=\"val\" text=\"-170\"",
@@ -1487,7 +1501,7 @@
     ]
    ],
    [
-    98,
+    99,
     3,
     [
      "              span class=\"val\" text=\"0\"",
@@ -1496,7 +1510,7 @@
     ]
    ],
    [
-    105,
+    106,
     3,
     [
      "              span class=\"val\" text=\"+45\"",
@@ -1505,7 +1519,7 @@
     ]
    ],
    [
-    112,
+    113,
     3,
     [
      "              span class=\"val\" text=\"-5\"",
@@ -1514,7 +1528,7 @@
     ]
    ],
    [
-    119,
+    120,
     3,
     [
      "              span class=\"val\" text=\"+20\"",
@@ -1523,7 +1537,7 @@
     ]
    ],
    [
-    126,
+    127,
     3,
     [
      "              span class=\"val\" text=\"-100\"",
@@ -1532,7 +1546,7 @@
     ]
    ],
    [
-    133,
+    134,
     3,
     [
      "              span class=\"val\" text=\"+60\"",
@@ -1541,7 +1555,7 @@
     ]
    ],
    [
-    140,
+    141,
     3,
     [
      "              span class=\"val\" text=\"+2\"",
@@ -1550,7 +1564,7 @@
     ]
    ],
    [
-    154,
+    155,
     0,
     [
      "            div class=\"rr-t\" html=\"<svg#be0dc69c><span>Neighbour cities add</span>\"",
@@ -1560,7 +1574,7 @@
     ]
    ],
    [
-    155,
+    156,
     0,
     [
      "            div class=\"cap-hint\" style{--fc:var(--res)}",
@@ -1637,14 +1651,14 @@
   },
   "patch": [
    [
-    39,
+    40,
     1,
     [
      "              i style{background:var(--res);borderRadius:2px / 2.2222222222222223px;opacity:1;transform:scaleY(-0.9)} data{color:var(--res);scale:-0.9}"
     ]
    ],
    [
-    70,
+    71,
     3,
     [
      "              span class=\"val\" text=\"+90\"",
@@ -1653,7 +1667,7 @@
     ]
    ],
    [
-    92,
+    93,
     1,
     [
      "              div class=\"rci-bar\" title=\"Medium-wealth services: demand -170 · cap 5,000\""
@@ -1690,7 +1704,7 @@
   },
   "patch": [
    [
-    58,
+    59,
     1,
     [
      "        div class=\"rci-pop mp-glass i\""
@@ -1720,7 +1734,7 @@
   },
   "patch": [
    [
-    58,
+    59,
     1,
     [
      "        div class=\"rci-pop mp-glass i open\""
@@ -1738,7 +1752,7 @@
   },
   "patch": [
    [
-    58,
+    59,
     1,
     [
      "        div class=\"rci-pop mp-glass i\""
@@ -1832,7 +1846,7 @@
     ]
    ],
    [
-    199,
+    200,
     1,
     [
      "          div class=\"hud-value\" text=\"64%\""
@@ -1854,14 +1868,14 @@
   },
   "patch": [
    [
-    35,
+    36,
     1,
     [
      "      div class=\"hud-seg click rci-seg\" title=\"RCI demand — click for details\" L1"
     ]
    ],
    [
-    37,
+    38,
     3,
     [
      "          div class=\"rci-col\"",
@@ -1870,21 +1884,21 @@
     ]
    ],
    [
-    45,
+    46,
     1,
     [
      "              i style{background:var(--com);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--com);scale:0}"
     ]
    ],
    [
-    51,
+    52,
     1,
     [
      "              i style{background:var(--ind);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--ind);scale:0}"
     ]
    ],
    [
-    56,
+    57,
     1,
     [
      "        button class=\"rci-zone\" title=\"Residential demand is strong, with 4 empty residential lots left. Click to zone homes.\" style{--fc:var(--res)} data{fam:R} attrs{type=button} L1"
@@ -1912,7 +1926,7 @@
   },
   "patch": [
    [
-    56,
+    57,
     1,
     [
      "        button class=\"rci-zone\" title=\"Residential demand is strong, with 4 empty residential lots left. Click to zone homes.\" style{--fc:var(--res);display:none} data{fam:R} attrs{type=button} L1"
@@ -1928,7 +1942,7 @@
   },
   "patch": [
    [
-    56,
+    57,
     1,
     [
      "        button class=\"rci-zone\" title=\"Residential demand is strong, with 11 empty residential lots left. Click to zone homes.\" style{--fc:var(--res)} data{fam:R} attrs{type=button} L1"
@@ -1945,14 +1959,14 @@
   },
   "patch": [
    [
-    51,
+    52,
     1,
     [
      "              i style{background:var(--ind);borderRadius:2px / 2.1052631578947367px;opacity:1;transform:scaleY(-0.95)} data{color:var(--ind);scale:-0.95}"
     ]
    ],
    [
-    56,
+    57,
     1,
     [
      "        button class=\"rci-zone\" title=\"Residential and industrial demand is strong, with 11 empty residential lots and no empty industrial lots left. Click to zone industry.\" style{--fc:var(--ind)} data{fam:I} attrs{type=button} L1"
@@ -1969,7 +1983,7 @@
   },
   "patch": [
    [
-    282,
+    284,
     0,
     [
      "        span class=\"badge\" text=\"3\""
@@ -1985,7 +1999,7 @@
   },
   "patch": [
    [
-    282,
+    284,
     1,
     [
      "        span class=\"badge\" text=\"9+\""
@@ -2001,7 +2015,7 @@
   },
   "patch": [
    [
-    282,
+    284,
     1,
     []
    ]
@@ -2018,14 +2032,14 @@
   },
   "patch": [
    [
-    279,
+    281,
     0,
     [
      "        span class=\"badge\" text=\"9+\""
     ]
    ],
    [
-    281,
+    283,
     0,
     [
      "        span class=\"badge\" text=\"1\""
@@ -2042,12 +2056,12 @@
   },
   "patch": [
    [
-    279,
+    281,
     1,
     []
    ],
    [
-    282,
+    284,
     1,
     []
    ]
@@ -2094,7 +2108,7 @@
   },
   "patch": [
    [
-    284,
+    286,
     1,
     [
      "      button class=\"icon-btn on\" title=\"Settings\" data{panel:settings} html=\"<svg#0d63ab3c>\" L1"
@@ -2162,7 +2176,7 @@
   },
   "patch": [
    [
-    194,
+    195,
     1,
     [
      "      div class=\"hud-seg click approval \" data{dismissed:1;face:smile} L2"
@@ -2178,7 +2192,7 @@
   },
   "patch": [
    [
-    194,
+    195,
     1,
     [
      "      div class=\"hud-seg click approval \" data{face:smile} L2"
@@ -2255,35 +2269,35 @@
   },
   "patch": [
    [
-    33,
+    34,
     1,
     [
      "          div class=\"hud-value\" text=\"3,000\""
     ]
    ],
    [
-    199,
+    200,
     1,
     [
      "          div class=\"hud-value\" text=\"52%\""
     ]
    ],
    [
-    203,
+    205,
     1,
     [
      "              \"Approval 52%\""
     ]
    ],
    [
-    205,
+    207,
     1,
     [
      "              \" heading for 50%\""
     ]
    ],
    [
-    270,
+    272,
     0,
     [
      "          div class=\"ap-note\"",
@@ -2347,7 +2361,7 @@
   },
   "patch": [
    [
-    194,
+    195,
     2,
     [
      "      div class=\"hud-seg click approval meh\" data{face:meh} L2",
@@ -2355,21 +2369,21 @@
     ]
    ],
    [
-    199,
+    200,
     1,
     [
      "          div class=\"hud-value\" text=\"38%\""
     ]
    ],
    [
-    203,
+    205,
     1,
     [
      "              \"Approval 38%\""
     ]
    ],
    [
-    205,
+    207,
     1,
     [
      "              \" heading for 36%\""
@@ -2432,7 +2446,7 @@
   },
   "patch": [
    [
-    194,
+    195,
     2,
     [
      "      div class=\"hud-seg click approval bad\" data{face:frown} L2",
@@ -2440,21 +2454,21 @@
     ]
    ],
    [
-    199,
+    200,
     1,
     [
      "          div class=\"hud-value\" text=\"30%\""
     ]
    ],
    [
-    203,
+    205,
     1,
     [
      "              \"Approval 30%\""
     ]
    ],
    [
-    205,
+    207,
     1,
     [
      "              \" heading for 28%\""
@@ -2523,14 +2537,14 @@
     ]
    ],
    [
-    216,
+    218,
     1,
     [
      "          div class=\"ap-r fix\" title=\"new-town grace. Click: Police view\" data{fix:crime}"
     ]
    ],
    [
-    225,
+    227,
     2,
     [
      "              \"new-town grace\"",
@@ -2538,14 +2552,14 @@
     ]
    ],
    [
-    235,
+    237,
     1,
     [
      "              \"homes are taxed 11% on average — each point above 9% costs 3.5 approval; each point below adds 1.5\""
     ]
    ],
    [
-    271,
+    273,
     1,
     [
      "            \"New towns usually sit at 55–60% until police, parks and land value arrive.\""
@@ -2569,14 +2583,14 @@
   },
   "patch": [
    [
-    33,
+    34,
     1,
     [
      "          div class=\"hud-value\" text=\"0\""
     ]
    ],
    [
-    194,
+    195,
     2,
     [
      "      div class=\"hud-seg click approval none\" data{face:smile} L2",
@@ -2584,28 +2598,28 @@
     ]
    ],
    [
-    199,
+    200,
     1,
     [
      "          div class=\"hud-value\" text=\"—\""
     ]
    ],
    [
-    203,
+    205,
     67,
     [
      "              \"Approval —\""
     ]
    ],
    [
-    271,
+    273,
     1,
     [
      "            \"Approval starts with your first residents.\""
     ]
    ],
    [
-    273,
+    275,
     1,
     [
      "            \"Click for your advisors (N)\""
@@ -2668,14 +2682,14 @@
   },
   "patch": [
    [
-    33,
+    34,
     1,
     [
      "          div class=\"hud-value\" text=\"20,000\""
     ]
    ],
    [
-    194,
+    195,
     2,
     [
      "      div class=\"hud-seg click approval meh\" data{face:meh} L2",
@@ -2683,14 +2697,14 @@
     ]
    ],
    [
-    199,
+    200,
     1,
     [
      "          div class=\"hud-value\" text=\"45%\""
     ]
    ],
    [
-    203,
+    205,
     3,
     [
      "              \"Approval 45%\"",
@@ -2763,7 +2777,7 @@
     ]
    ],
    [
-    207,
+    209,
     1,
     [
      "            \"Click a row to open its fix; anywhere else for your advisors (N)\""
@@ -2780,14 +2794,14 @@
   },
   "patch": [
    [
-    194,
+    195,
     1,
     [
      "      div class=\"hud-seg click approval meh\" title=\"Mayor approval — advisors (N)\" data{face:meh} L2"
     ]
    ],
    [
-    201,
+    203,
     71,
     []
    ]
@@ -2803,7 +2817,7 @@
   },
   "patch": [
    [
-    199,
+    200,
     1,
     [
      "          div class=\"hud-value\" text=\"50%\""
@@ -2841,56 +2855,56 @@
     ]
    ],
    [
-    30,
+    31,
     1,
     [
      "      div class=\"hud-seg click\" title=\"City statistics (J)\""
     ]
    ],
    [
-    35,
+    36,
     1,
     [
      "      div class=\"hud-seg click rci-seg\" title=\"RCI demand — click for details\""
     ]
    ],
    [
-    56,
+    57,
     1,
     [
      "        button class=\"rci-zone\" title=\"Residential and industrial demand is strong, with 11 empty residential lots and no empty industrial lots left. Click to zone industry.\" style{--fc:var(--ind)} data{fam:I} attrs{type=button}"
     ]
    ],
    [
-    168,
+    169,
     1,
     [
      "              button class=\"btn sm\" html=\"<svg#c8ed882b><span>Parks</span>\""
     ]
    ],
    [
-    178,
+    179,
     1,
     [
      "              button class=\"btn sm\" html=\"<svg#c5a91e44><span>Airports</span>\""
     ]
    ],
    [
-    188,
+    189,
     1,
     [
      "              button class=\"btn sm\" html=\"<svg#756d09e8><span>Freight & ports</span>\""
     ]
    ],
    [
-    194,
+    195,
     1,
     [
      "      div class=\"hud-seg click approval meh\" title=\"Mayor approval — advisors (N)\" data{face:meh}"
     ]
    ],
    [
-    203,
+    205,
     8,
     [
      "      button class=\"icon-btn\" title=\"Budget (M)\" data{panel:budget} html=\"<svg#df4117fc>\"",
@@ -2904,7 +2918,7 @@
     ]
    ],
    [
-    212,
+    214,
     3,
     [
      "      button class=\"icon-btn\" title=\"Help & shortcuts (F1)\" html=\"<svg#552a9b19>\"",
@@ -2941,9 +2955,10 @@
    "0.1 div.mp-glass": "children×4 class",
    "0.1.0 div.hud-seg": "attr.title children×2 class title",
    "0.1.0.0 span.ico-wrap": "class html style.cssText",
-   "0.1.0.1 div.hud-stack": "children×2 class",
+   "0.1.0.1 div.hud-stack": "children×3 class",
    "0.1.0.1.0 div.hud-value": "class",
    "0.1.0.1.1 div.hud-sub": "class",
+   "0.1.0.1.2 div.hud-chip": "class",
    "0.1.1 div.hud-seg": "attr.title children×2 class title",
    "0.1.1.0 span.ico-wrap": "class html style.cssText",
    "0.1.1.1 div.hud-stack": "children×2 class",
@@ -3039,9 +3054,10 @@
    "0.1.2.3.5.1 span.faint": "children class",
    "0.1.3 div.hud-seg": "attr.title children×3 class title",
    "0.1.3.0 span.ico-wrap": "class html",
-   "0.1.3.1 div.hud-stack": "children×2 class",
+   "0.1.3.1 div.hud-stack": "children×3 class",
    "0.1.3.1.0 div.hud-label": "children class",
    "0.1.3.1.1 div.hud-value": "class",
+   "0.1.3.1.2 div.hud-chip": "class",
    "0.1.3.2 div.appr-pop": "class",
    "0.2 div.spacer": "class",
    "0.3 div.mp-glass": "children×12 class style.cssText",
@@ -3089,6 +3105,7 @@
    "        div class=\"hud-stack\"",
    "          div class=\"hud-value\"",
    "          div class=\"hud-sub\"",
+   "          div class=\"hud-chip month\"",
    "      div class=\"hud-seg click\" title=\"City statistics (J)\" L1",
    "        span class=\"ico-wrap\" style{cssText:color:#8fc8ff} html=\"<svg#a2a9d9ec>\"",
    "        div class=\"hud-stack\"",
@@ -3225,6 +3242,7 @@
    "          div class=\"hud-label\"",
    "            \"Approval\"",
    "          div class=\"hud-value\"",
+   "          div class=\"hud-chip appr\"",
    "        div class=\"appr-pop mp-glass\"",
    "    div class=\"spacer\"",
    "    div class=\"mp-glass\" style{cssText:gap:2px}",
@@ -3353,7 +3371,7 @@
     ]
    ],
    [
-    33,
+    34,
     2,
     [
      "          div class=\"hud-value\" text=\"50,000\"",
@@ -3361,38 +3379,44 @@
     ]
    ],
    [
-    39,
+    40,
     1,
     [
      "              i style{background:var(--res);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--res);scale:0}"
     ]
    ],
    [
-    45,
+    46,
     1,
     [
      "              i style{background:var(--com);borderRadius:2px / 2.5px;opacity:1;transform:scaleY(-0.8)} data{color:var(--com);scale:-0.8}"
     ]
    ],
    [
-    51,
+    52,
     1,
     [
      "              i style{background:var(--ind);borderRadius:2px / 2px;opacity:1;transform:scaleY(0)} data{color:var(--ind);scale:0}"
     ]
    ],
    [
-    160,
+    161,
     1,
     [
      "      div class=\"hud-seg click approval \" data{face:smile} L2"
     ]
    ],
    [
-    165,
-    2,
+    166,
+    1,
     [
-     "          div class=\"hud-value\" text=\"61%\"",
+     "          div class=\"hud-value\" text=\"61%\""
+    ]
+   ],
+   [
+    168,
+    1,
+    [
      "        div class=\"appr-pop mp-glass empty\"",
      "          div class=\"ap-h\"",
      "            b",
@@ -3524,14 +3548,14 @@
   },
   "patch": [
    [
-    58,
+    59,
     1,
     [
      "        div class=\"rci-pop mp-glass i open\""
     ]
    ],
    [
-    63,
+    64,
     3,
     [
      "              span class=\"val\" text=\"0\"",
@@ -3540,7 +3564,7 @@
     ]
    ],
    [
-    70,
+    71,
     3,
     [
      "              span class=\"val\" text=\"0\"",
@@ -3549,7 +3573,7 @@
     ]
    ],
    [
-    77,
+    78,
     3,
     [
      "              span class=\"val\" text=\"0\"",
@@ -3558,7 +3582,7 @@
     ]
    ],
    [
-    84,
+    85,
     3,
     [
      "              span class=\"val\" text=\"+80\"",
@@ -3567,7 +3591,7 @@
     ]
    ],
    [
-    91,
+    92,
     3,
     [
      "              span class=\"val\" text=\"0\"",
@@ -3576,7 +3600,7 @@
     ]
    ],
    [
-    98,
+    99,
     3,
     [
      "              span class=\"val\" text=\"0\"",
@@ -3585,7 +3609,7 @@
     ]
    ],
    [
-    105,
+    106,
     3,
     [
      "              span class=\"val\" text=\"0\"",
@@ -3594,7 +3618,7 @@
     ]
    ],
    [
-    112,
+    113,
     3,
     [
      "              span class=\"val\" text=\"0\"",
@@ -3603,7 +3627,7 @@
     ]
    ],
    [
-    119,
+    120,
     3,
     [
      "              span class=\"val\" text=\"0\"",
@@ -3612,7 +3636,7 @@
     ]
    ],
    [
-    126,
+    127,
     3,
     [
      "              span class=\"val\" text=\"0\"",
@@ -3621,7 +3645,7 @@
     ]
    ],
    [
-    133,
+    134,
     3,
     [
      "              span class=\"val\" text=\"0\"",
@@ -3630,7 +3654,7 @@
     ]
    ],
    [
-    140,
+    141,
     3,
     [
      "              span class=\"val\" text=\"0\"",
@@ -3639,7 +3663,7 @@
     ]
    ],
    [
-    155,
+    156,
     0,
     [
      "            div class=\"cap-hint built-out\" style{--fc:#ffd46b}",
@@ -3669,7 +3693,7 @@
   },
   "patch": [
    [
-    58,
+    59,
     1,
     [
      "        div class=\"rci-pop mp-glass i\""
@@ -3723,7 +3747,7 @@
   },
   "patch": [
    [
-    58,
+    59,
     1,
     [
      "        div class=\"rci-pop mp-glass i open\""
