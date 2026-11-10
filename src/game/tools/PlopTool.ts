@@ -41,6 +41,8 @@ export function autoOverlayOf(def: BuildingDef): { o: Overlay; v: number } | nul
   const is = (x: string) => id === x || m === x;
   if (is('tr_parking_garage')) return { o: Overlay.Parking, v: -1 };
   if (is('civ_bus_depot') || def.category === 'transport' && (is('tr_bus_stop') || is('tr_subway_station') || is('tr_train_station') || is('tr_ferry_terminal'))) return { o: Overlay.Transit, v: -1 };
+  // LG-02 QA B4: Grand Central is sited as a station (a landmark by category: its prestige picked the Prestige view)
+  if (is('lm_grand_central')) return { o: Overlay.Transit, v: -1 };
   if (tier === 'elementary') return { o: Overlay.Education, v: 1 };
   if (tier === 'high') return { o: Overlay.Education, v: 2 };
   if (tier === 'college' || tier === 'library') return { o: Overlay.Education, v: 3 };
@@ -95,6 +97,12 @@ export class PlopTool extends Tool {
     this.autoVariant = ao?.v ?? -1;
     // (the tip's header already shows the cost; upkeep, jobs and size repeat the toolbar card: left out)
     const f = safe(() => facilityDefFacts(def.id), []).filter((l) => !/^(upkeep|jobs|size|staff|cost)$/i.test(l.label) && !/^(upkeep|jobs|staff)$/i.test(l.key ?? ''));
+    // LG-02 QA B4: Grand Central's two facts are a station's — its transit coverage and connections, not its prestige
+    // (the other facts keep their order behind them)
+    if (def.id === 'lm_grand_central' || def.model === 'lm_grand_central') {
+      const lead = (l: { key: string }) => (l.key === 'coverage' ? 0 : l.key === 'modes' ? 1 : 2);
+      f.sort((a, b) => lead(a) - lead(b));
+    }
     this.facts = f.slice(0, 2).map((l) => `${escapeHtml(l.label)} ${escapeHtml(l.value)}`).join(' · ');
   }
 

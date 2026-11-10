@@ -52,7 +52,7 @@ import type { PollutionSystem } from './pollution';
 import { cohortShares } from '../economy/demographics';
 import { ATTRACTIONS, venueIssue, venueOp, venueVisits, type VenueIssue } from '../economy/tourism';
 import { onStrike, venueIncomeFactor } from '../economy/budget';
-import { OPEX_UNIT, buildingUpkeep, expectedUpkeep, facilityOpex, opexRateOf } from '../economy/opex';
+import { OPEX_UNIT, buildingUpkeep, expectedUpkeep, facilityOpex, landmarkOpex, opexRateOf } from '../economy/opex';
 import { getOrdinance, ordinanceEffect } from '../economy/ordinances';
 import { OPEX_TYPICAL_LOAD, RECYCLING_INCOME_PER_T } from '../economy/tuning';
 
@@ -832,8 +832,9 @@ function upkeepLine(c: Ctx, burnt = false): void {
   const svc = c.def.service;
   const f = svc ? c.st.budget.funding[svc] ?? 100 : 100;
   const fNote = svc && f !== 100 ? ` (${f}% funding)` : '';
-  // schools, clinics, stations, parks: the building plus running costs per person served (economy/opex.ts, WP6b)
-  const ox = facilityOpex(c.sim, c.b);
+  // schools, clinics, stations, parks: the building plus running costs per person served (economy/opex.ts, WP6b);
+  // LG-02 QA B2: a landmark with a service tier (Central Library, Botanical Dome, Observatory) likewise — text only
+  const ox = facilityOpex(c.sim, c.b) ?? landmarkOpex(c.sim, c.b);
   if (ox) {
     if (burnt) { add(c, 'upkeep', 'Upkeep', `${money(ox.building)} / month${fNote}`, { status: 'warn', hint: 'Still charged until you bulldoze it' }); return; }
     const many = OPEX_UNIT[ox.tier][1], one = OPEX_UNIT[ox.tier][0];
@@ -1146,7 +1147,8 @@ function reliefIncomeLines(c: Ctx): void {
   if (r) {
     const parts: string[] = [];
     if (r.R || r.R3) parts.push(`+${fmt((r.R ?? 0) + (r.R3 ?? 0))} residents`);
-    if (r.C || r.CO3) parts.push(`+${fmt((r.C ?? 0) + (r.CO3 ?? 0))} commercial jobs`);
+    if (CO3_RELIEF_APART.has(def.id)) parts.push(`+${fmt(r.C ?? 0)} commercial jobs`, `+${fmt(r.CO3 ?? 0)} CO$$$ office jobs`);
+    else if (r.C || r.CO3) parts.push(`+${fmt((r.C ?? 0) + (r.CO3 ?? 0))} commercial jobs`);
     if (r.I || r.IHT) parts.push(`+${fmt((r.I ?? 0) + (r.IHT ?? 0))} industrial jobs`);
     if (parts.length) {
       const full = parts.join(', ');
@@ -1363,6 +1365,12 @@ const CATEGORY_ROLE: Partial<Record<BuildingCategory, string>> = {
 };
 
 const APPROVAL_CIVIC: Readonly<Record<string, number>> = { civ_mayor_house: 2, civ_statue: 3, civ_city_hall: 2, lm_metropolis_crown: 3 };
+// LG-02 QA B5 (report / tooltip text only; the effects are catalog CAP_RELIEF, budget.ts and approval.ts):
+/** defs whose CO$$$-only cap relief is named apart from their commercial relief ("C +15,000 · CO$$$ +40,000"; every
+ *  other def keeps one commercial figure): the Stock Exchange's is its headline effect, and the sum read "C +55,000" */
+const CO3_RELIEF_APART: ReadonlySet<string> = new Set(['lm_stock_exchange']);
+/** the Stock Exchange's office-tax effect, as budget.ts books it (CO$$ and CO$$$ receipts × 1.05 while it operates) */
+const OFFICE_TAX_FACT: Readonly<Record<string, string>> = { lm_stock_exchange: '+5% (CO$$ and CO$$$ receipts)' };
 
 /** airport / seaport use lines: passengers or trucks against the rating, and the share of the benefit delivered now */
 function useLines(c: Ctx): void {
@@ -1466,6 +1474,12 @@ export function facilityReport(sim: Simulation, buildingId: number): FacilityRep
   if (def.category === 'park' || def.category === 'landmark' || def.category === 'civic' || def.category === 'reward' || def.category === 'education' || def.category === 'health') prestigeLines(c);
   const ap = byDef(APPROVAL_CIVIC, def.id);
   if (ap) add(c, 'approval', 'Approval', `+${ap} (civic pride)`);
+  const tax = OFFICE_TAX_FACT[def.id];
+  if (tax) {
+    // (budget.ts gives the whole bonus while the exchange operates at all: venueOp > 0)
+    const { op, why } = benefitOf(c);
+    add(c, 'officeTax', 'Office tax', op > 0 ? tax : `none while ${why ?? 'it is closed'}`, op > 0 ? {} : { status: 'bad' });
+  }
   tourismLine(c);
   nuisanceLines(c);
   reliefIncomeLines(c);
@@ -1549,10 +1563,14 @@ export function facilityDefFacts(defId: string, st: CityState | null = null): Fa
   if (r) {
     const parts: string[] = [];
     if (r.R || r.R3) parts.push(`R +${fmt((r.R ?? 0) + (r.R3 ?? 0))}`);
-    if (r.C || r.CO3) parts.push(`C +${fmt((r.C ?? 0) + (r.CO3 ?? 0))}`);
+    if (CO3_RELIEF_APART.has(def.id)) parts.push(`C +${fmt(r.C ?? 0)}`, `CO$$$ +${fmt(r.CO3 ?? 0)}`);
+    else if (r.C || r.CO3) parts.push(`C +${fmt((r.C ?? 0) + (r.CO3 ?? 0))}`);
     if (r.I || r.IHT) parts.push(`I +${fmt((r.I ?? 0) + (r.IHT ?? 0))}`);
     if (parts.length) f('relief', 'Demand cap', parts.join(' · '));
   }
+  // LG-02 QA B5: the Stock Exchange's office tax and the Crown's approval, as their inspectors state them
+  if (OFFICE_TAX_FACT[def.id]) f('officeTax', 'Office tax', OFFICE_TAX_FACT[def.id]);
+  if (def.id === 'lm_metropolis_crown') f('approval', 'Approval', `+${APPROVAL_CIVIC[def.id]} (civic pride)`);
   if ((def.income ?? 0) > 0) f('income', 'Income', `${money(def.income ?? 0)} / month`);
   if (def.landValue && def.landValue.amount > 0 && !def.prestige) f('landValue', 'Land value', `+${def.landValue.amount} within ${def.landValue.radius} tiles`);
   if ((def.jobs ?? 0) > 0) f('jobs', 'Jobs', fmt(def.jobs ?? 0));

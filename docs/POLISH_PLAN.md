@@ -1746,7 +1746,7 @@ Each gets a `REWARDS` entry, an `ATTRACTIONS` draw and `CAP_RELIEF`.
 **Files.** `src/sim/economy/rewards.ts`; `src/sim/catalog.ts`; `src/sim/economy/tourism.ts` (CONTENT hunk: `ATTRACTIONS`); `src/sim/economy/approval.ts` (SIM: civic term for the Crown); `src/assets/manifest.ts` and new `src/assets/builders/lm_*.ts`; `gallery.html`.
 
 **Acceptance**
-- With LG-10 buying them on 256×60 s7, each unlock fires in the year the §8.0 base run first reaches its population (today 2016, 2021, 2025, 2033, 2038, 2043, 2056).
+- With LG-10 buying them on 256×60 s7, each landmark unlocks at the first monthly check after its population threshold (the lane's measured years, as the first year-end row at or above each threshold: 2016, 2021, 2025, 2034, 2038, 2044, 2057; NOTE-092).
 - The tourism-jobs ratio stays within 0.7–1.3 from year 15 on 256×60 s7/s11 and 128×15. Extend the synthetic case at `tests/sim/tourism.test.ts:242`.
 - Every model has at least 2 variants or is unique, and `gallery.html` renders all of them.
 

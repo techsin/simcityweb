@@ -131,8 +131,9 @@ describe('budgetEffect: last month\'s net → after this (FH-05)', () => {
     const line = (id: string) => { const d = getDef(id)!; return budgetEffect(st, d, d.upkeep ?? 0); };
     expect(line('rw_casino')).toMatchObject({ text: '+§259 → +§2,859 after this', bad: false });
     expect(line('rw_military_base')).toMatchObject({ text: '+§259 → +§1,759 after this', bad: false });
-    expect(line('park_stadium')).toEqual({ before: 259, after: -1541, text: '+§259 → −§1,541 after this, before its income (up to §1,500 when busy)', reserves: '≈ 1 month of reserves', bad: true });
-    expect(line('tr_airport_small')).toMatchObject({ text: '+§259 → −§541 after this, before its income (up to §600 when busy)', reserves: '≈ 3 months of reserves' });
+    // (LG-02 QA B13: the catalog income is the one at typical use, not its most — budget.ts pays up to 1.31x of it)
+    expect(line('park_stadium')).toEqual({ before: 259, after: -1541, text: '+§259 → −§1,541 after this, before its income (about §1,500 at typical use)', reserves: '≈ 1 month of reserves', bad: true });
+    expect(line('tr_airport_small')).toMatchObject({ text: '+§259 → −§541 after this, before its income (about §600 at typical use)', reserves: '≈ 3 months of reserves' });
     // the build card leaves the note out: its Income row already says it
     const stadium = getDef('park_stadium')!;
     expect(budgetEffect(st, stadium, stadium.upkeep ?? 0, false, { venueNote: false })?.text).toBe('+§259 → −§1,541 after this');

@@ -396,14 +396,17 @@ export class Toolbar {
       if (est) {
         // (the title in two unbreakable halves: it wraps at the dot, not inside a figure)
         rows.push(['Upkeep', est.title.split(' · ').map((p) => `<span style="white-space:nowrap">${escapeHtml(p)}</span>`).join(' · ')]);
-        const formula = opexTierOf(d) ? facts.find((f) => f.key === 'upkeep')?.value : undefined;
+        // (LG-02 QA B2: a landmark with a service tier — Central Library, Botanical Dome, Observatory — carries its own)
+        const formula = est.formula ?? (opexTierOf(d) ? facts.find((f) => f.key === 'upkeep')?.value : undefined);
         if (formula) hints.push(`Upkeep: ${formula}`);
       } else if (d.upkeep) rows.push(['Upkeep', `${money(d.upkeep)} / month`]);
       if (d.income) {
         rows.push(['Income', `<span class="pos">+${money(d.income)} / month</span>`]);
-        // (an airport earns with its traffic, a venue with its visitors: the catalog figure is a busy one — the inspector
-        // shows what it earns now, final fixes P3; a business deal pays its income as it is)
-        if (d.category !== 'reward') hints.push(`Income: ${money(d.income)} / month when busy — less while it is quiet (its inspector shows what it earns now)`);
+        // (an airport earns with its traffic, a venue with its visitors: the catalog figure is its income at its
+        // reference visits, not its most — budget.ts venueIncomeFactor pays up to 1.31x of it on a busy day in an
+        // attractive city, LG-02 QA B13: "§2,500 / month when busy" against §2,788 booked; the inspector shows what it
+        // earns now, final fixes P3; a business deal pays its income as it is)
+        if (d.category !== 'reward') hints.push(`Income: about ${money(d.income)} / month at typical use — more when it is busy, less while it is quiet (its inspector shows what it earns now)`);
       }
       // FH-05: what placing it does to the monthly budget — last month's net → after this, at the upkeep above (red below
       // zero, with how long the treasury lasts); none on a card that does not select (locked, already built, in ruins)

@@ -159,7 +159,7 @@ export interface BudgetEffect {
   before: number;
   /** before + the building's monthly effect */
   after: number;
-  /** "+§259 → −§280 after this" (a venue or an airport: ", before its income (up to §1,500 when busy)") */
+  /** "+§259 → −§280 after this" (a venue or an airport: ", before its income (about §1,500 at typical use)") */
   text: string;
   /** below zero after it: how long the treasury lasts at that rate ("≈ 7 months of reserves"); '' otherwise */
   reserves: string;
@@ -191,7 +191,9 @@ export function budgetEffect(st: Pick<CityState, 'budget' | 'funds'>, def: Pick<
   if (!report || Math.round(change) === 0) return null;
   const after = before + change;
   const venue = def.category === 'reward' || opts.venueNote === false ? 0 : def.income ?? 0;
-  const text = `${moneySigned(before)} → ${moneySigned(after)} after this${venue > 0 ? `, before its income (up to ${money(venue)} when busy)` : ''}`;
+  // (the catalog income is the one at its reference visits, not its most: budget.ts venueIncomeFactor pays up to 1.31x
+  // of it on a busy day in an attractive city — LG-02 QA B13, "up to §2,500 when busy" against §2,788 booked)
+  const text = `${moneySigned(before)} → ${moneySigned(after)} after this${venue > 0 ? `, before its income (about ${money(venue)} at typical use)` : ''}`;
   const bad = Math.round(after) < 0;
   return { before, after, text, reserves: bad ? reservesText(st.funds, -after) : '', bad };
 }

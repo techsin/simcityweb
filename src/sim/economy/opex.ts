@@ -119,7 +119,8 @@ export interface FacilityOpex {
 
 /**
  * Upkeep split of one plopped facility (inspector): its building upkeep and its share of the tier's running costs, by
- * the coverage it delivers among the tier's operating-cost facilities (Σ over the facilities = the budget line).
+ * the coverage it delivers among the tier's operating-cost facilities (Σ over the facilities = the budget line; LG-02
+ * QA B2: a landmark with that tier carries its own share, landmarkOpex, instead of leaving it on these).
  * null for buildings with a flat upkeep.
  */
 export function facilityOpex(sim: Simulation, b: Building): FacilityOpex | null {
@@ -134,12 +135,98 @@ export function facilityOpex(sim: Simulation, b: Building): FacilityOpex | null 
   const own = facilityLoad(sim, b.id);
   const served = (st.stats.needs as Partial<Record<NeedTier, { served?: number }>> | undefined)?.[tier]?.served ?? 0;
   if (!own || !(own.served > 0) || !(served > 0) || (b.flags & BF.Burnt)) return { tier, building, running: 0, people: 0, total: served, rate };
-  let sum = 0;
-  for (const o of st.buildings.values()) {
-    if (!(o.flags & BF.Plopped) || opexTierOf(getDef(o.def)) !== tier) continue;
-    const L = o.id === b.id ? own : facilityLoad(sim, o.id);
-    if (L && L.served > 0) sum += L.served;
-  }
-  const share = sum > 0 ? own.served / sum : 0;
+  const share = servedShare(sim, b, tier, own.served);
   return { tier, building, running: served * share * rate, people: served * share, total: served, rate };
+}
+
+/** a facility's part of the coverage its tier's cost carriers deliver (Σ over them = 1): the operating-cost facilities
+ *  of the tier and the landmarks with that tier (shareTierOf), so that their upkeep lines add up to the budget line */
+function servedShare(sim: Simulation, b: Building, tier: NeedTier, ownServed: number): number {
+  let sum = 0;
+  for (const o of sim.state.buildings.values()) {
+    if (!(o.flags & BF.Plopped) || shareTierOf(getDef(o.def)) !== tier) continue;
+    const s = o.id === b.id ? ownServed : facilityLoad(sim, o.id)?.served ?? 0;
+    if (s > 0) sum += s;
+  }
+  return sum > 0 ? ownServed / sum : 0;
+}
+
+// ================================================================================================ LG-02 QA B2
+/*
+ * LANDMARKS WITH A SERVICE TIER (Observatory and Central Library: library tier; Botanical Dome: green tier). A landmark
+ * keeps its flat upkeep (opexTierOf is null: the budget books its whole catalog upkeep), but the people it serves are in
+ * stats.needs[tier].served like a school's, and tierOperatingCosts charges every served person of a tier the city runs
+ * an operating-cost facility of. A "§1,600 / month" Central Library booked §6,197 in a 1.1M city (LG-02 QA B2).
+ * The helpers below state that cost — to the build card, the plop tip, the Rewards panel and the inspector — from the
+ * budget's own figures: OPEX_PER_SERVED, the tier's charge rule and the people served. They change nothing the city
+ * pays: computeMonthlyBudget calls none of them, and expectedUpkeep (the bot's budget checks) is as it was.
+ * Venues with income and rewards with a service tier (zoo, stadium, amusement park, research center, cemetery) fall
+ * under the same charge and keep their stated flat upkeep: base content, not LG-02's.
+ */
+
+/** the running-cost rate of a landmark with a service tier — the need tier its users are charged in, § per person
+ *  served per month and the unit (a library-tier landmark's card counts "Learners") — or null (any other def) */
+export function landmarkOpexRateOf(def: BuildingDef | undefined): { tier: NeedTier; rate: number; unit: string } | null {
+  const t = def?.coverage?.tier;
+  if (!def || !t || def.category !== 'landmark' || opexTierOf(def)) return null;
+  const tier = NEED_OF[t];
+  return tier ? { tier, rate: OPEX_PER_SERVED[tier], unit: t === 'library' ? 'learner' : OPEX_UNIT[tier][0] } : null;
+}
+
+/** the need tier a plopped building's users are counted in when a tier's running costs are split (facilityOpex,
+ *  landmarkOpex): an operating-cost facility's, or a landmark's with a service tier */
+function shareTierOf(def: BuildingDef | undefined): NeedTier | null {
+  return opexTierOf(def) ?? landmarkOpexRateOf(def)?.tier ?? null;
+}
+
+/** true when the budget charges the running costs of `tier`: the city charges running costs (opexActive) and runs at
+ *  least one operating-cost facility of the tier that is not in ruins (computeMonthlyBudget's opexTiers) */
+export function tierCharged(st: CityState, tier: NeedTier): boolean {
+  if (!opexActive(st)) return false;
+  for (const b of st.buildings.values()) {
+    if ((b.flags & BF.Plopped) && !(b.flags & BF.Burnt) && opexTierOf(getDef(b.def)) === tier) return true;
+  }
+  return false;
+}
+
+/**
+ * What one landmark with a service tier costs a month at 100 % funding, as the budget books it (build card, plop tip,
+ * Rewards panel): `now` = its whole catalog upkeep plus the tier's rate for the people it would serve — expectedUpkeep's
+ * load: the tier's unserved need city-wide, at least a quarter of a typical load and at most a typical load
+ * (OPEX_TYPICAL_LOAD of its capacity; the typical load itself without a city); `full` = with every seat in use.
+ * null when the def is no such landmark, or while the city does not charge the tier (tierCharged: its upkeep is the
+ * flat catalog figure then).
+ */
+export function landmarkUpkeep(st: CityState | null, def: BuildingDef | undefined): { now: number; full: number; rate: number; unit: string } | null {
+  const r = landmarkOpexRateOf(def);
+  const cap = def?.coverage?.capacity;
+  if (!def || !r || !(cap !== undefined && cap > 0) || (st && !tierCharged(st, r.tier))) return null;
+  const typical = cap * OPEX_TYPICAL_LOAD;
+  let n = typical;
+  if (st) {
+    const ns = (st.stats.needs as Partial<Record<NeedTier, { need?: number; served?: number }>> | undefined)?.[r.tier];
+    if (ns && (ns.need ?? 0) > 0) n = Math.min(typical, Math.max(0.25 * typical, (ns.need ?? 0) - (ns.served ?? 0)));
+  }
+  const up = def.upkeep ?? 0;
+  return { now: up + n * r.rate, full: up + cap * r.rate, rate: r.rate, unit: r.unit };
+}
+
+/**
+ * Upkeep split of a standing landmark with a service tier (inspector), as facilityOpex gives it for a school: its
+ * building upkeep — the whole catalog upkeep, × funding when its service has a budget line (computeMonthlyBudget) — and
+ * its share of the tier's running costs, by the coverage it delivers. null for any other building and while the city
+ * does not charge the tier (the flat upkeep is what it pays).
+ */
+export function landmarkOpex(sim: Simulation, b: Building): FacilityOpex | null {
+  const st = sim.state;
+  const def = getDef(b.def);
+  const r = landmarkOpexRateOf(def);
+  if (!def || !r || !tierCharged(st, r.tier)) return null;
+  const svc = def.service;
+  const building = (def.upkeep ?? 0) * (svc ? (st.budget.funding[svc] ?? 100) / 100 : 1);
+  const own = facilityLoad(sim, b.id);
+  const served = (st.stats.needs as Partial<Record<NeedTier, { served?: number }>> | undefined)?.[r.tier]?.served ?? 0;
+  if (!own || !(own.served > 0) || !(served > 0) || (b.flags & BF.Burnt)) return { tier: r.tier, building, running: 0, people: 0, total: served, rate: r.rate };
+  const share = servedShare(sim, b, r.tier, own.served);
+  return { tier: r.tier, building, running: served * share * r.rate, people: served * share, total: served, rate: r.rate };
 }

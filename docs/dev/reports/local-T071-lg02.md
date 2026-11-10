@@ -1,6 +1,162 @@
 # T071 LG-02: late-game landmarks
 
-Worktree branch `local/T071-lg02`, starting HEAD `c868c13d21ff246b96296ee42be86c64dc675629` (task commit over `ed31192`). Round 1 was committed by the lead as `b663747`; Round 2 changes below are uncommitted. No worker, save, UI, renderer, other worktree or branch was changed.
+Worktree branch `local/T071-lg02`, starting HEAD `c868c13d21ff246b96296ee42be86c64dc675629` (task commit over `ed31192`). Round 1 was committed by the lead as `b663747` and round 2 as `efd4242`; the QA round 2 changes (next section) are uncommitted. Rounds 1 and 2 changed no worker, save, UI, renderer, other worktree or branch; QA round 2's UI hunks are listed in its table.
+
+## QA round 2: the real-GPU findings
+
+The real-GPU QA of `efd4242` passed every browser checklist item on the local, loopback and Worker hosts and reported B1-B13. This round fixes the lane's own findings (B2, B3, B4, B5, B13) with tests and records the rest (B1, B6-B12, with a proposed fix for B7). What the city pays does not change: no charge, balance, tuning, RNG draw, save key, worker command or cloud-held file is touched, and the 128×15 seed-7 bot is identical (gates below).
+
+| Changed file | Change |
+|---|---|
+| **Outside named files:** `src/sim/economy/opex.ts` | B2, text only, in its own block at the end: `landmarkOpexRateOf`, `tierCharged`, `landmarkUpkeep` (the estimate) and `landmarkOpex` (the inspector's split). `facilityOpex`'s share loop moved into `servedShare`, which also counts the tier landmarks, so a tier's inspector lines add up to its budget line. `computeMonthlyBudget`, `tierOperatingCosts`, `expectedUpkeep` (the bot's budget checks) and `opexTierOf` are untouched; nothing in the sim calls the new helpers. |
+| **Outside named files:** `src/ui/upkeepModel.ts` | B2: `upkeepEstimate` gives a landmark with a service tier the running-cost facilities' estimate and words, plus its formula; null (the flat upkeep) where the tier is not charged. It feeds the flyout card, the rich tip, the Rewards panel and the plop tip. |
+| **Outside named files:** `src/ui/Toolbar.ts` | B2: the rich tip notes the landmark's formula under its Upkeep row. B13: the income note reads "about §X / month at typical use — more when it is busy, less while it is quiet". |
+| **INFRA, outside named files:** `src/sim/infra/facilities.ts` | Display builders only. B2: `upkeepLine` takes `facilityOpex(...) ?? landmarkOpex(...)`. B5: `reliefIncomeLines` and `facilityDefFacts` name the Stock Exchange's CO$$$ relief apart (`CO3_RELIEF_APART`); `facilityReport` and `facilityDefFacts` add its office-tax row (`OFFICE_TAX_FACT`), and `facilityDefFacts` adds the Crown's approval fact. The two constants sit next to `APPROVAL_CIVIC`. |
+| **Outside named files:** `src/game/tools/PlopTool.ts` | B4, in that one model's branch: `autoOverlayOf` returns the Transit view for `lm_grand_central`; the constructor puts its coverage and connections facts first. |
+| **Outside named files:** `src/ui/hud.css` | B3: `.fly-groups` `max-height: min(max(56vh, calc(56vh / var(--ui-zoom))), 520px)`, with a comment. |
+| **Outside named files:** `src/game/tools/Tool.ts` | B13: `budgetEffect`'s venue note reads "(about §X at typical use)" (was "(up to §X when busy)"). |
+| **Outside named files:** `src/ui/panels/ListPanels.ts` | B13: the Rewards income chip's title reads "Income at typical use — more when it is busy, less while it is quiet (…)" (was "Income when busy — …"). |
+| **Outside named files, existing test:** `tests/game/budgetPreview.test.ts` | B13: the stadium's and the small airport's venue-note expectations follow the new words. |
+| `docs/POLISH_PLAN.md` | A1, per NOTE-092: LG-02's first acceptance line states the rule and the lane's measured years. |
+| New tests | `tests/sim/lg02StatedCost.test.ts`, `tests/infra/lg02Inspector.test.ts`, `tests/game/lg02QaRound2.test.ts`, `tests/game/uiFlyoutHeight.test.ts`. |
+
+### B2: what a landmark with a service tier costs, as the budget books it
+
+The Central Library (library tier), the Botanical Dome (green tier) and, on the same code path, the base's Observatory (library tier) keep their flat catalog upkeep in the budget. The people they serve also count in `stats.needs[tier].served`, and `tierOperatingCosts` charges every served person of a tier whenever the city runs a non-ruined operating-cost facility of that tier. So a "§1,600" Library cost §6,197 in QA's 1.1M city. The charge stays as it is; the texts now state it from the budget's own figures (`OPEX_PER_SERVED`, the same charge rule, the same served counts):
+
+- **Build card** (rich tip): the Upkeep row reads "≈§A/mo typical in this city · up to §B at full use", with the note "Upkeep: §1,600 / month + §0.60 per learner served" under the rows. The Dome's note is "§1,800 / month + §0.015 per visitor served" and the Observatory's "§150 / month + §0.60 per learner served". The card's "Monthly budget" row counts §A. The flyout card shows "≈§A/mo", and the **Rewards panel** chip shows "≈§A/mo typical", with the full sentence on hover.
+- **Plop tip:** "Upkeep ≈§A/mo now · up to §B at full use", and the "Monthly budget: … after this" line counts §A.
+- **Inspector:** "Upkeep §X / month". X is the whole catalog upkeep (× funding where its service has a budget line, as the budget books it) plus the landmark's share of the tier's running costs, by the coverage it delivers. The hint reads "Its share of the city's running costs: the building §1,600 + §N for the people it serves (§0.60 a month for each of the city's M students); bulldozing it saves less when nearby facilities take over its users", which is a school's wording. A landmark in ruins shows "§1,600 / month", "Still charged until you bulldoze it".
+- **§A and §B.** §A is the catalog upkeep plus the rate for the people it would serve: the tier's unserved need city-wide, at least a quarter of a typical load (70 % of capacity) and at most a typical load (`expectedUpkeep`'s rule). §B is the catalog upkeep plus the rate for every seat. That gives the Library ≈§3,700 to §10,000 typical and up to §13,600; the Dome ≈§2,010 to §2,640 typical and up to §3,000; the Observatory ≈§675 to §2,250 typical and up to §3,150.
+- **Flat upkeep where it is the truth.** The texts keep the flat upkeep in a city that runs no operating-cost facility of the tier (or only ruined ones) and in an economy-only simulation. Every other landmark, venue and reward keeps its texts. The base's zoo, stadium, amusement park, research center and cemetery fall under the same charge; they are base content and are left as they were.
+- **Words.** A library-tier landmark's formula counts "learners", its seat unit and the lead's own word ("per 1,000 learners"). The inspector's hint counts the city's college-tier "students" (the budget's count, which includes university students), and the base's Public Library card keeps "per student served".
+
+Measured headless (read-only, on QA's 1.52M bot city with all seven landmarks, day 20523):
+
+| Landmark | Card | Inspector |
+|---|---|---|
+| Central Library | ≈§10,000 typical · up to §13,600 | §6,325 (3,399 / 20,000 learners seated) |
+| Botanical Dome | ≈§2,640 typical · up to §3,000 | §2,488 |
+| Observatory | ≈§2,250 typical · up to §3,150 | §752 |
+
+In that city the tiers' inspector shares add up to the budget charge exactly: 25 college-tier carriers make §54,620.40 = 91,034 × §0.60, and 340 green-tier carriers likewise. QA's measured §6,197 (6,157 learners) lies inside the Library's stated range.
+
+**Limit (a base convention, unchanged).** The budget charges the city-wide served count, which is counted per cell. In that city it runs 1.2 to 2.3 times the sum of the facilities' own served counts, by tier (`facilityLoad`; college tier: 91,034 against 43,217). So an inspector share, which splits the real charge, can exceed "up to §B at full use", as it already does for the base's schools (a full University there: §9,001 against its "up to §4,260"). The card figures follow lead decision 20b's seat-based convention; changing that convention is outside this lane.
+
+### B3: the Landmarks flyout at 1280×720
+
+At 1280×720 the HUD root is zoomed 0.8 (`computeUiZoom`), so its layout is 1,600 × 900 px. The zoom also scales a bare `vh`, so `56vh` was 403 of those 900 px. The 19 cards need three rows: 424 px measured by QA, 423 px computed from the CSS. They overflowed by 21 px, and the Crown's card was cut by 17 px. The cap is now `56vh / zoom` = 504 px. That fits QA's rows and the worst case, three rows of three-line names (448 px). It is never less than the old cap (a zoom above 1 keeps the bare `56vh`), and 520 px still rules where it did. The flyout stays below the top bar. `--ui-zoom` is declared on `.mp-ui` (and set by `CityScene`), and the toolbar is mounted inside it. One case is left: with a UI scale above 100 % on a 720-px screen the zoom is held at 1.0, so the layout is 720 px tall and the third row scrolls again (QA's headless Chromium showed no scrollbar; a headed browser should show the native one).
+
+### B4: placing Grand Central
+
+Placing Grand Central now turns on the Transit view, not Prestige. Its cursor tip's two facts are "Transit coverage 18 tiles · Connections train, subway and bus hub". The Library still gets Education · University, the Dome Parks · Gardens & parks, and the other landmarks Prestige. Both hunks are confined to `lm_grand_central`.
+
+### B5: the Stock Exchange and the Crown say what they do
+
+- The Stock Exchange's inspector reads "Demand cap +15,000 commercial jobs, +40,000 CO$$$ office jobs" (was "+55,000 commercial jobs"), and its card reads "C +15,000 · CO$$$ +40,000".
+- A new row, "Office tax +5% (CO$$ and CO$$$ receipts)", appears in the inspector while the exchange operates (budget.ts' own condition, `venueOp > 0`); otherwise it reads "none while it has no power" and the like. The card has the same row.
+- The Crown's card gains "Approval +3 (civic pride)", the words of its inspector.
+- Confirmed text-only: facilities.ts:1155 (`reliefIncomeLines`), :1554 (`facilityDefFacts`) and :1365 (`APPROVAL_CIVIC`) only build report and tooltip text. `APPROVAL_CIVIC`, `CO3_RELIEF_APART` and `OFFICE_TAX_FACT` are read only by `facilityReport` and `facilityDefFacts`. The effects stay in the catalog's `CAP_RELIEF` (demand.ts), budget.ts' office-tax hook and approval.ts' Crown term, none of them touched. The text therefore stays with the display builders.
+- Every other def keeps one commercial figure and gains no row; the Twin Spires' C +80,000 and CO$$$ +20,000 still read "C +100,000".
+
+### B13: venue income, worded as the code computes it
+
+budget.ts pays a venue `income × (0.35 + 0.65 × min(1.25, visits / draw)) × clamp(attractiveness / 60, 0.5, 1.5)^0.3`, times the use factor for an airport or a seaport. That is the catalog income at its reference visits and attractiveness, 1.31 times it at most (QA saw §2,788 booked for the Millennium's §2,500), and about 0.28 times it in an empty, unattractive month. The same claim stood in three places, which now read:
+
+- Build card note: "Income: about §2,500 / month at typical use — more when it is busy, less while it is quiet (its inspector shows what it earns now)".
+- Plop tip budget line: "… after this, before its income (about §2,500 at typical use)" (was "(up to §2,500 when busy)").
+- Rewards income chip title: "Income at typical use — more when it is busy, less while it is quiet (its inspector shows what it earns now)".
+
+Every non-reward def with an income has an `ATTRACTIONS` row (the venues, both airports and the seaport), so the sentence holds for all of them. Business deals keep "Deal income", which pays as it is.
+
+### A1: the unlock years (ruled in NOTE-092)
+
+The mechanism passes: each landmark unlocks at the first monthly check after its population threshold. The plan's years (2016, 2021, 2025, 2033, 2038, 2043, 2056) were stale against the base; today's base 1c2019c with the same bot gives 2016, 2021, 2025, 2034, 2038, 2044, 2059. The lead ruled on the wording in NOTE-092. docs/POLISH_PLAN.md's LG-02 line now states the rule and the lane's measured 256×60 s7 years, as the first year-end row at or above each threshold: 2016, 2021, 2025, 2034, 2038, 2044, 2057.
+
+### Recorded, not fixed
+
+| # | Where | Record |
+|---|---|---|
+| B1 | src/ui/TopBar.ts:525 (now `src/ui/topbar/approvalSegment.ts`) | Already in the base. On the replica hosts the approval popover is not rebuilt after a month tick, so the Crown's +3 shows only after a reload. NOTE-092: the cloud takes it as T065 (cause confirmed on dev: `replica.ts`' `mergePlain` keeps nested object identities, and `approvalSegment.ts` rebuilds only when the terms object's identity changes). No lane change. |
+| B6 | src/game/demolishRisk.ts:479 | Already in the base. The demolition dialog's landmark line names only tourism and land value. Suggested: one line per effect the building has (cap relief, jobs, service tier, transit hub, office tax, approval). |
+| B7 | src/sim/infra (use factors) | A base mechanism that the hub exposes. Proposed fix below; not applied (no src/sim/infra edit this round). |
+| B8 | src/render/city/buildings/lodProxy.ts | Art. The Dome's and Grand Central's LOD proxies are plain boxes, fully emissive at night, beyond about 4.8 to 6.4 km. The building renderer is held by other lanes. |
+| B9 | — | Info. Park-and-ride drivers board at a nearby subway station, and the hub's own bus riders are not in its "Riders" row. The sim is right; a later UI pass could count the hub's bus riders. |
+| B10 | src/ui/panels/ListPanels.ts:272 | Already in the base. The lock bar reads "100%" at 99.85 %. |
+| B11 | — | The unlock toast waited 3.6 s behind the toast budget; the news line and the Rewards row were immediate. No fix needed. |
+| B12 | — | Already in the base. The browser sim is not bit-reproducible between runs, and residents can differ by a few dozen after a reload. |
+
+### B7: the proposed fix (on post-B2 dev `1f4b99b` merged with this lane; not applied)
+
+Cause, on post-B2 dev: `updateUseFactors` stores each transit building's use factor in `systemData.justice.use` only on `FACILITY_SCAN_DAY` (the 15th). `useChanged` re-shares airports alone, and drops an entry only when its building goes. A hub, station, depot or freight station that does not serve on the 15th keeps the stored 0 until the next 15th. That covers a road, rail or tunnel cut that spans the 15th, and equally a station whose partner is built after it. `demand.ts` multiplies the cap relief by that 0, and `budget.ts` the income. Cuts within a month need no fix: `venueOp`, which is live, already switches the relief off and on.
+
+The minimal fix revives the stored zeros daily:
+
+```ts
+// src/sim/infra/facilities.ts, after useChanged() (the use-factor section)
+/**
+ * a transit building the month's scan stored as unconnected (use 0) — cut off on FACILITY_SCAN_DAY, or waiting for its
+ * partner station — gets its use factor back on the first day it serves again, not on the next scan (LG-02 QA B7:
+ * Grand Central's +30,000 / +30,000 relief stayed off for up to a month). Only the entries stored as 0 are read again,
+ * through updateUseFactors' hook and rounding; nothing new is stored.
+ */
+export function reviveTransitUse(sim: Simulation): void {
+  const st = sim.state;
+  const use = (st.systemData.justice as { use?: Record<string, number> } | undefined)?.use;
+  const hook = use ? transportUseHook() : null;
+  if (!use || !hook) return;
+  for (const id in use) {
+    if (use[id] !== 0) continue;
+    const b = st.buildings.get(Number(id));
+    if (!b || useKind(b.def) !== 'transit') continue;
+    const v = hook(st, b);
+    if (typeof v === 'number' && v > 0 && Number.isFinite(v)) use[id] = Math.round(Math.min(1, v) * 1e4) / 1e4;
+  }
+}
+
+// src/sim/infra/justice.ts, JusticeSystem.daily (+ reviveTransitUse in the facilities import)
+    if (sim.state.day % DAYS_PER_MONTH === FACILITY_SCAN_DAY) facilityScan(sim);
+    else reviveTransitUse(sim);
+
+// src/sim/infra/facilities.ts, benefitOf: the real reason in the inspector, not "it is closed"
+  if (op < 0.999) why = ISSUE_TEXT[(b.flags & BF.Burnt ? 'closed' : venueIssue(st, b, def)) ?? 'closed'];
+  else if (use <= 0) why = 'it is not connected'; // (demand.ts' cap hint says "not connected" too)
+```
+
+- **Stored data.** No new field and nothing in the save hooks (T063). It writes the existing, persisted `systemData.justice.use[id]`, which can then change on any day, not only on the 15th; T063's continuity records should know that.
+- **It changes simulation output** (NOTE-062's SIM rules apply). Relief and income come back the day a transit building serves again, instead of the next 15th. That includes the bot's own stations whose partner it builds after a 15th, so the 128×15 bot can move. New bot numbers with their cause, and the ensemble rows, come with the implementation; none were run here.
+- **Determinism, save/load and cost.** It runs at a fixed point of the day. Its verdict is a pure function of the state (traffic's attachment refresh is lazy, but its verdicts do not depend on when it runs), and the ids are walked in ascending order. A loaded game re-reads the same zeros the next day and gets the same verdicts. Only the zeros are read. When the attachment cache is stale, the first read runs traffic's lazy refresh inside `JusticeSystem.daily`, as the 15th's scan already does. If B2's budget wants that refresh in a piece of its own, call it the way `services.ts` `prepAttach` does (`attachRefreshMs > 0` → `stopAttached(-1)`) before reading. It must never be skipped while the cache is stale, or the result would depend on whether a UI query refreshed the cache first.
+- **The opposite gap stays.** A station cut after the 15th, with its road intact (a rail line cut, say), keeps its relief until the next 15th. Re-reading the 1s too would close that, but it changes more output, so it is not proposed.
+
+### QA round 2 gates
+
+All on this worktree, one process at a time, every vitest file and the bot through the lanes' quietrun (`node $quietrun npx vitest run <file> --maxWorkers=1`). The quiet gate waited out a real-GPU timing run. Vitest started normally (no native-loader workaround needed this round).
+
+- `npx tsc --noEmit`: passed.
+- The new tests, **22 passed**: `tests/game/uiFlyoutHeight.test.ts` 4, `tests/sim/lg02StatedCost.test.ts` 5, `tests/infra/lg02Inspector.test.ts` 3, `tests/game/lg02QaRound2.test.ts` 10.
+- The lane's tests, **98 passed**: `lg02Landmarks` 17, `lateLandmarkEconomy` 10, `lateLandmarkCache` 1, `grandCentralBot` 3, `tests/infra/grandCentral` 9, `lateGameLandmarkIntegration` 8, `lateGameLandmarks` 2, `ranks` 48.
+- `tests/sim/exact/*`, **36 passed**: `advisorsScan` 3, `blur` 10, `fireList` 7, `j10` 4, `nimby` 5, `traffic` 7.
+- The existing tests of the files the last hunks touch (Tool.ts, ListPanels.ts, hud.css), **224 passed, 1 skipped**: `budgetPreview` 10, `panelCommands` 5, `rewardToast` 7, `ruinState` 2, `uiRuins` 11, `upkeepReads` 21, `cameraControls` 65, `dispatchBusy` 3, `dispatchCommands` 2, `pendingHover` 4, `pendingTools` 6, `quakeShakePlop` 3, `queryReads` 18, `toolCommands` 12, `toolsPreview` 10, `uiCutSettle` 4, `uiNetworkCutSettle` 4, `worker/lag` 5 (+1 skipped), `uiPanelReserve` 1, `uiStacking` 13, `worker/hygiene` 18.
+- Earlier in this round, on the same opex.ts, facilities.ts, Toolbar.ts, PlopTool.ts and upkeepModel.ts (byte-identical since), the existing tests of those files, **36 files / 367 passed, 1 skipped**: `budgetPreview`, `panelsUpkeep`, `pendingHover`, `quakeShakePlop`, `queryReads`, `thumbsPendingRetention`, `toolsPlacement`, `toolsPreview`, `uiCardTip`, `uiPanelReserve`, `uiRuins`, `uiStacking`, `upkeepReads`, `inspectorModel`, `inspectorNotes`, `panelsMisc`, `panelsLayout`, `rewardToast`, `ruinState`, `toolCommands`, `pendingTools`, `infra/feedbackFacilities`, `feedbackGarbage`, `feedbackMemo`, `feedbackRuins`, `justice`, `transitFacilities`, `sim/advisorsRuins`, `balanceEconomy`, `phase0Contract`, `catalog`, `worker/hygiene`, `queries`, `upkeepContext`, `querySideEffects`, `infra/facilities`. Since that run, hud.css changed only in its comment.
+- **Mutation checks.** Each run failed the cases written for it:
+  - every call site of the round reverted (the helpers kept so the tests load): all 4 new files fail;
+  - the office-tax row, Grand Central's fact order and the landmarks in `servedShare` reverted;
+  - the Crown's fact and `tierCharged` mutated;
+  - the B13 words in Tool.ts and ListPanels.ts reverted: exactly the plop-tip, Rewards-chip and `budgetPreview` cases fail;
+  - the landmark estimate in `upkeepEstimate` disabled: the five card, plop-tip and Rewards B2 cases fail.
+
+  Each file was restored afterwards; the sources were compared byte for byte against the gated copies.
+- **The bot:** `node $quietrun npx --no-install tsx tools/simbot.ts --size 128 --years 15 --seed 7 --quiet` → residents **[ 61124, 93804, 37971 ] = 192,899**, exit 0, and all 15 annual rows equal round 2's (the timing columns aside). Logs (in the scratchpad's `lanes/T071/`): `r3b/bot-128x15-s7.log`, and `r3b/rows.final` against `r3/rows.round2`. No 256-tile run was repeated (no sim change). The full suite, the real-GPU checks and the timing A/B remain for the lead.
+
+### Browser recheck (QA round 2)
+
+- [ ] 1280×720, Landmarks flyout: all three rows whole, the Metropolis Crown with its upkeep line, the flyout below the top bar. 1920×1080: unchanged. 1280×720 at UI scale 125 %: the third row scrolls behind a visible scrollbar (headed browser).
+- [ ] In a city with a University or Public Library, the Central Library's card shows Upkeep "≈§A/mo typical in this city · up to §13,600 at full use", the note "§1,600 / month + §0.60 per learner served" and a Monthly budget row at §A. The flyout chip shows "≈§A/mo" and the Rewards chip "≈§A/mo typical". In a city with no college-level facility: "§1,600 / month". Likewise the Dome (up to §3,000) and the Observatory (up to §3,150).
+- [ ] Placing the Library: "Upkeep ≈§A/mo now · up to §13,600 at full use", with the budget line at §A.
+- [ ] Library inspector in QA's 1.1M save: Upkeep "§X / month" (not "§1,600") with the share hint "the building §1,600 + §N for the people it serves …". For scale: QA measured −§6,197 on the education line at its demolition, and the hint says bulldozing saves less than the share when nearby facilities take over.
+- [ ] Placing Grand Central: the Transit view comes on, and the tip reads "Transit coverage 18 tiles · Connections train, subway and bus hub".
+- [ ] Stock Exchange inspector: "+15,000 commercial jobs, +40,000 CO$$$ office jobs" and "Office tax +5% (CO$$ and CO$$$ receipts)"; without power, both read "none while it has no power". Its card reads "C +15,000 · CO$$$ +40,000" and "Office tax". The Crown's card reads "Approval +3 (civic pride)".
+- [ ] Millennium Tower: the card note "about §2,500 / month at typical use — more when it is busy…", the plop tip "before its income (about §2,500 at typical use)" and the Rewards income chip title "Income at typical use — …".
 
 ## Round 2: restore exact cache and attachment layouts
 

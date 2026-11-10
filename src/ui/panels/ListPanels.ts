@@ -295,7 +295,8 @@ export class RewardsPanel extends Panel {
   private incomeChip(def: BuildingDef, ruin: boolean): HTMLElement {
     const what = def.category === 'reward' ? 'Deal income' : 'Income';
     if (ruin) return h('span', { class: 'chip', title: `${what} once rebuilt — none while it lies in ruins` }, `+${money(def.income ?? 0)}/mo`);
-    return h('span', { class: 'chip good', title: def.category === 'reward' ? what : 'Income when busy — less while it is quiet (its inspector shows what it earns now)' }, `+${money(def.income ?? 0)}/mo`);
+    // (a venue's catalog income is the one at its reference visits; budget.ts pays up to 1.31x of it when busy: LG-02 QA B13)
+    return h('span', { class: 'chip good', title: def.category === 'reward' ? what : 'Income at typical use — more when it is busy, less while it is quiet (its inspector shows what it earns now)' }, `+${money(def.income ?? 0)}/mo`);
   }
 
   newUnlocks(): number {
