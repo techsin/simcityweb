@@ -13,6 +13,11 @@
  * Polish FH-03 / LG-05: a card's top issue also gets its buttons from src/ui/adviceActions.ts — by id, never by text
  * ("Zone homes", "Build roads"; a built-out city's "Rezone" and "Connect a highway") — and a "no room to grow" card says
  * how many empty road-facing lots of that family are left (emptyFrontTiles, read from the mirrored zone / road layers).
+ * Polish FH-05: the finance card tells the truth about a surplus. "A healthy surplus" only from a quarter of the income,
+ * and only when it pays for the cheapest service the other cards ask for; else "A small surplus of §150 — a Fire Station
+ * costs about §540 a month", at the upkeep the plop tip quotes beside that advice's place (src/ui/guide/budgetDelta.ts;
+ * the tip's own upkeepContext query, once per issue list), so the card and the tip's "Monthly budget" line agree. A loss
+ * never counts more than 60 months of reserves ("the treasury runs dry in 1119 months").
  */
 import type { NewsItem } from '../../sim/CityState';
 import { adviceIdOf, type OpenAdvice } from '../../sim/economy/advisors';
@@ -29,6 +34,7 @@ import { icon } from '../icons';
 import { dayLabel, money, pct } from '../format';
 import { lastNet } from '../TopBar';
 import { playerEditCounter, type EditCounter } from '../playerEdits';
+import { RESERVE_MONTHS_MAX, askedServices, quotedUpkeep, recurringIncome, type AskedService, type ServiceQuote } from '../guide/budgetDelta';
 
 /** an advisor's own assessment; `at` / `view`: where "Show me" goes and the data view it opens */
 export interface Assessment {
@@ -46,7 +52,9 @@ interface Advisor {
   color: string;
   /** matches NewsItem.advisor */
   keys: RegExp;
-  assess: (ctx: GameContext) => Assessment;
+  /** `asked` (FH-05, the finance advisor's): the cheapest service the open issues ask for, at the plop tip's upkeep —
+   *  called only when a surplus needs it; the panel's cards hand it in (AdvisorsPanel.askedService) */
+  assess: (ctx: GameContext, asked?: () => ServiceQuote | null) => Assessment;
 }
 
 const S = (ctx: GameContext) => ctx.state.stats;
@@ -54,12 +62,26 @@ const S = (ctx: GameContext) => ctx.state.stats;
 export const ADVISORS: Advisor[] = [
   {
     id: 'finance', name: 'Morgan Price', role: 'Finance', icon: 'budget', color: '#2f9e5b', keys: /financ|budget|money|treasur/i,
-    assess: (ctx) => {
+    // FH-05: a surplus is "healthy" only from HEALTHY_SURPLUS of last month's income, and only when it pays for the
+    // cheapest service the other advisors ask for (`asked`, at the plop tip's upkeep; a rounded net − upkeep below zero
+    // is the test that turns the tip's "Monthly budget" line red); a loss counts at most RESERVE_MONTHS_MAX months
+    assess: (ctx, asked) => {
       const net = lastNet(ctx), f = ctx.state.funds;
       if (ctx.state.config.sandbox) return { level: 'good', text: 'Sandbox mode — money is no object, Mayor.' };
       if (f < 0) return { level: 'bad', text: `We're in the red (${money(f)}). Raise taxes, cut services or take a loan immediately.` };
-      if (net < 0) return { level: 'warn', text: `We lost ${money(-net)} last month. At this rate the treasury runs dry in ${Math.max(1, Math.floor(f / -net))} months.` };
-      return { level: 'good', text: net > 0 ? `A healthy surplus of ${money(net)} last month. Consider investing in services.` : 'The budget is balanced. Keep an eye on expenses as the city grows.' };
+      if (net < 0) {
+        const months = f / -net, n = Math.floor(months);
+        const runway = months > RESERVE_MONTHS_MAX ? 'The treasury lasts more than 5 years at this rate.'
+          : n < 1 ? 'At this rate the treasury runs dry within a month.' : `At this rate the treasury runs dry in ${n} month${n === 1 ? '' : 's'}.`;
+        return { level: 'warn', text: `We lost ${money(-net)} last month. ${runway}` };
+      }
+      if (!(net > 0)) return { level: 'good', text: 'The budget is balanced. Keep an eye on expenses as the city grows.' };
+      const s = asked?.() ?? null;
+      const costs = s ? `${/^[aeiou]/i.test(s.name) ? 'an' : 'a'} ${s.name} costs about ${money(s.upkeep)} a month` : '';
+      const left = s ? Math.round(net - s.upkeep) : 0;
+      if (s && left < 0) return { level: 'good', text: `A small surplus of ${money(net)} — ${costs}. Grow the town or raise taxes a little first.` };
+      if (net >= HEALTHY_SURPLUS * recurringIncome(ctx.state)) return { level: 'good', text: `A healthy surplus of ${money(net)} last month. Consider investing in services.` };
+      return { level: 'good', text: s ? `A small surplus of ${money(net)} — ${costs} and would leave ${money(left)}.` : `A small surplus of ${money(net)} last month. Grow the town or raise taxes a little before adding services.` };
     },
   },
   {
@@ -274,7 +296,7 @@ export class AdvisorsPanel extends Panel {
     for (const a of ADVISORS) {
       let res: Assessment;
       try {
-        res = a.assess(this.ctx);
+        res = a.assess(this.ctx, this.asked);
       } catch {
         res = { level: 'good', text: '…' };
       }
@@ -393,6 +415,58 @@ export class AdvisorsPanel extends Panel {
     }
     return n;
   }
+
+  // ---- FH-05: the finance card's "a Fire Station costs about §540 a month"
+  /** the spot upkeeps asked for the current issue list ("Upkeep here": the upkeepContext replies), by building and lot;
+   *  null: no reply yet, or the spot has none — the city-wide estimate stands in */
+  private spotCost = new Map<string, number | null>();
+  /** the issue list the spots were asked for */
+  private spotsOf: OpenAdvice[] | null = null;
+  /** the quote made from an issue list and the replies so far (null: to make) */
+  private quote: { open: OpenAdvice[]; best: ServiceQuote | null } | null = null;
+  /** handed to the finance advisor's assessment, which asks only when a surplus needs the figure */
+  private readonly asked = (): ServiceQuote | null => this.askedService();
+
+  /**
+   * The cheapest service the open issues ask for ("Build a Fire Station near here") with the monthly upkeep the plop
+   * tip quotes for it, so that the finance card and the tip agree: "Upkeep here" on a lot beside the issue's place —
+   * the tip's own upkeepContext query, asked once per issue list — and, until the reply lands or for an issue without a
+   * place, the city-wide estimate the tip starts from. null: no open issue asks for a service.
+   */
+  private askedService(): ServiceQuote | null {
+    const open = this.open;
+    if (this.quote?.open === open) return this.quote.best;
+    const st = this.ctx.state, asks = askedServices(st, open);
+    if (this.spotsOf !== open) {
+      // a new issue list: its spots are asked (a spot asked before keeps its last reply until the new one lands)
+      this.spotsOf = open;
+      const spots = asks.filter((a) => a.lot), last = this.spotCost;
+      this.spotCost = new Map(spots.map((a) => [spotKey(a), last.get(spotKey(a)) ?? null]));
+      if (spots.length) {
+        void Promise.all(spots.map((a) => this.ctx.host.query('upkeepContext', { defId: a.def.id, ...a.lot! }))).then((replies) => {
+          if (this.ctx.signal.aborted || this.spotsOf !== open) return;
+          let changed = false;
+          spots.forEach((a, k) => {
+            const key = spotKey(a), here = replies[k].here;
+            if (this.spotCost.get(key) !== here) { this.spotCost.set(key, here); changed = true; }
+          });
+          if (!changed) return;
+          this.quote = null;
+          // (shown at once, like a fresh scan's issues: the estimate would stand for up to a second otherwise)
+          if (!this.isOpen || this.tab !== 'advisors') return;
+          this.resetGate();
+          this.update();
+        }).catch(() => {});
+      }
+    }
+    let best: ServiceQuote | null = null;
+    for (const a of asks) {
+      const upkeep = quotedUpkeep(st, a.def, a.lot ? this.spotCost.get(spotKey(a)) ?? null : null);
+      if (!best || upkeep < best.upkeep) best = { name: a.def.name, upkeep };
+    }
+    this.quote = { open, best };
+    return best;
+  }
 }
 
 /** one advisor card's content (AdvisorsPanel.cards) */
@@ -425,3 +499,8 @@ const OPEN_REFRESH_MS = 3000;
 const LEVEL_OF: Record<OpenAdvice['kind'], 'good' | 'warn' | 'bad'> = { bad: 'bad', warning: 'warn', info: 'good', good: 'good' };
 const RANK = { good: 0, warn: 1, bad: 2 } as const;
 const worse = (a: 'good' | 'warn' | 'bad', b: 'good' | 'warn' | 'bad') => (RANK[b] > RANK[a] ? b : a);
+
+/** FH-05: a surplus of at least this share of last month's income is "healthy" (the finance advisor's assessment) */
+const HEALTHY_SURPLUS = 0.25;
+/** FH-05: the key of a spot upkeep (AdvisorsPanel.spotCost): the building and its lot */
+const spotKey = (a: AskedService) => (a.lot ? `${a.def.id}@${a.lot.x},${a.lot.z},${a.lot.w},${a.lot.d}` : a.def.id);
