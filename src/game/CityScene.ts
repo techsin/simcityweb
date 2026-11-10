@@ -81,6 +81,8 @@ export interface CitySceneOptions {
   host?: WorkerSimHost;
   rctx?: RegionContext;
   persistence?: CityPersistence;
+  /** W1.3: false starts the local or loopback host on the save without its recovery journal (§4.4's crash choices) */
+  replayJournal?: boolean;
   onExitToRegion: (thumbnailDataUrl?: string) => void;
   onSave: (state: HostState, reason?: SaveReason) => Promise<void>;
   /** initial settings (e.g. the app-level settings); keys given here win over the stored in-game prefs */
@@ -224,6 +226,7 @@ export class CityScene {
         flags: { simwasm: pageSimWasmFlag() },
         signal: this.abort.signal,
         persistence: opts.persistence,
+        replayJournal: opts.replayJournal,
       });
     }
     this.degraded.actions = true;

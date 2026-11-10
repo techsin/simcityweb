@@ -29,6 +29,9 @@ import {
   buildRecoverySnapshot, JOURNAL_RESERVE_BYTES, LS_BUDGET_BYTES, journalMatches,
   type JournalBase, type RecoveryJournal, type RecoverySnapshot, type SnapshotInfo,
 } from '../save/recoveryCodec';
+// W1.3: the boot replay's pieces, shared by every host
+import { carriedJournal, type BootJournal } from './journal';
+import type { Journal } from './protocol';
 
 export interface CitySaveCopy { record: CityRecord; fp: string; summary: RegionCitySummary }
 
@@ -160,6 +163,16 @@ export class SimCore {
       } catch { failed.push(entry.seq); }
     }
     return { applied, failed };
+  }
+
+  /** W1.3: the boot replay of every host (§4.3), right after boot() and before the first tick. Never throws: a journal
+   *  that cannot replay is reported and the save stays as it is. `applied` counts the commands that took effect;
+   *  `carried` holds them renumbered for a Ready that no save follows yet (journal.ts). */
+  replayBootJournal(boot: BootJournal): { applied: number; carried?: Journal } {
+    let result: ReturnType<SimCore['replayRecoveryJournal']> = null;
+    try { result = this.replayRecoveryJournal(boot.journal, boot.base); }
+    catch (e) { this.report('Recovery journal could not be replayed', e, { key: 'recovery' }); return { applied: 0 }; }
+    return { applied: result?.applied.length ?? 0, carried: result ? carriedJournal(boot, result.applied) : undefined };
   }
 
   /** FH-07a: the journal records the refund that was charged, not the rule. A replay at the base's day would re-date

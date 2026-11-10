@@ -2,29 +2,36 @@
  * W1.2's main side: T032's PacketSimHost over a real Worker. The packet plumbing (R1 optimism and rebasing, tickets and
  * tags, keyed watches, views, the clock, replies and resyncs) is PacketSimHost's; this file adds the transport: boot
  * with its progress and timeouts, versioning, liveness on visible time (R11), failing fast, explicit acks, and
- * persistence 'main' (R14). The App boots it behind `?simworker=1` (src/main.ts) and builds the CityScene from it.
+ * persistence. The App boots it behind `?simworker=1` (src/main.ts) and builds the CityScene from it.
+ * W1.3 (§4): with a persistent store the worker reads and writes its own IndexedDB (`'worker-idb'`), and the page keeps
+ * T033's journal mirror; with a store that does not persist, or when the worker's IndexedDB falls back to memory, R14's
+ * persistence 'main' stays: main reads the record, stores the worker's saves and snapshots, and passes the journal.
  */
 import { openKV, type KV } from '../save/db';
-import { getCityRecord, type CityRecord } from '../save/cities';
-import type { RecoveryMarker } from '../save/recoveryCodec';
+import { cityKey, type CityRecord } from '../save/cities';
 import { clearRecoveryAfterSave as clearRecoveryIdb, storeRecoveryIdb } from '../save/recoveryIdb';
-import { storeRecoveryLs } from '../save/recoveryLs';
 import { PacketSimHost, type PacketHostOptions, type Settle } from './LoopbackSimHost';
 import { exactDigest } from './queries';
-import type { RecoveryMirror, SnapshotAck, SnapshotWhy } from './SimHost';
-import { PROTOCOL_VERSION, assertOwnedBuffers, errorText, type Ready, type Reply, type SimSettings, type W2M } from './protocol';
-import { ACK_WINDOW, WorkerLiveness, type SerializedSource, type WorkerDebugReport, type WorkerInput, type WorkerOutput, type WorkerPort } from './workerProtocol';
+import { readBootJournal } from './journal';
+import { PROTOCOL_VERSION, assertOwnedBuffers, errorText, type CitySource, type Journal, type Ready, type Reply, type SimSettings, type W2M } from './protocol';
+import { ACK_WINDOW, IDB_UNAVAILABLE, WorkerLiveness, type WorkerDebugReport, type WorkerInit, type WorkerInput, type WorkerOutput, type WorkerPort } from './workerProtocol';
 
 /** A save or snapshot reply no caller waits for any more */
 const NO_WAIT: Settle = { resolve: () => {}, reject: () => {} };
 
-/** The worker failed: a fatal message, onerror / messageerror, a boot timeout, or 10 visible seconds without a packet. */
-export class HostCrashed extends Error { override name = 'HostCrashed'; }
+/** The worker failed: a fatal message, onerror / messageerror, a boot timeout, or 10 visible seconds without a packet.
+ *  `code` is the worker's own (W1.3: IDB_UNAVAILABLE). */
+export class HostCrashed extends Error { override name = 'HostCrashed'; code?: string; }
 
-/** No `journal`: W1.2 has none (R14); T039 (W1.3) brings the journal and its boot replay to the worker. */
-export interface WorkerSimHostOptions extends Omit<PacketHostOptions, 'persistence' | 'journal'> {
+/** `journal` (T033's page mirror, W1.3 in the worker) is on by default when the page's store persists. */
+export interface WorkerSimHostOptions extends Omit<PacketHostOptions, 'persistence'> {
   /** the worker: the region screen's pre-spawned browserSimWorker(SIM_WORKER_URL) or a fresh one (§4.1); a node port in tests */
   port: WorkerPort;
+  /** W1.3 (§4.1 step 3): a fresh worker, for the restart with persistence 'main' when the first one's IndexedDB fell
+   *  back to memory; without it that boot fails, and the App falls back to the main thread */
+  respawn?: () => WorkerPort;
+  /** W1.3 (§4.4): false boots the save without the journal bound to it ("Restart from autosave") */
+  replayJournal?: boolean;
   kv?: KV;
   settings?: SimSettings;
   regionName?: string;
@@ -118,16 +125,35 @@ class WorkerLink {
   }
 }
 
-/** R14: read the stored record without deserializing it on main, then boot the worker on it. */
+/**
+ * W1.3 (§4.1): with a persistent store the worker loads the city from its own IndexedDB and main sends no city. With a
+ * store that does not persist (MemoryKV: main's and the worker's are separate), or after the worker's IndexedDB fell
+ * back to memory (IDB_UNAVAILABLE, then a fresh worker from `respawn`), R14's path: main reads the record without
+ * deserializing it, and passes the journal bound to it.
+ */
 export async function loadWorkerSimHost(regionId: string, tileKey: string, opts: WorkerSimHostOptions): Promise<WorkerSimHost> {
-  const kv = opts.kv ?? await openKV(), record = await getCityRecord(kv, regionId, tileKey);
-  if (!record) { void opts.port.terminate(); throw new Error('City record not found'); }
-  return bootWorkerSimHost({ kind: 'serialized', regionId, tileKey, savedAt: record.savedAt, city: record.city }, { ...opts, kv });
+  const kv = opts.kv ?? await openKV(), key = cityKey(regionId, tileKey);
+  // the key only: main does not read the record in 'worker-idb' mode (O6)
+  if (!(await kv.keys('cities', key, key)).length) { void opts.port.terminate(); throw new Error('City record not found'); }
+  let port = opts.port;
+  if (kv.persistent) {
+    try { return await bootWorkerSimHost({ kind: 'idb', regionId, tileKey }, { ...opts, kv }); }
+    catch (e) {
+      if ((e as HostCrashed)?.code !== IDB_UNAVAILABLE || !opts.respawn || opts.signal?.aborted) throw e;
+      opts.errors?.report('The simulation worker could not open IndexedDB: its saves go through the page', e, { key: 'worker-idb' });
+      port = opts.respawn();
+    }
+  }
+  const record = await kv.get<CityRecord>('cities', key);
+  if (!record) { void port.terminate(); throw new Error('City record not found'); }
+  const journal = opts.replayJournal === false ? undefined : (await readBootJournal(kv, record).catch(() => undefined))?.journal;
+  return bootWorkerSimHost({ kind: 'serialized', regionId, tileKey, savedAt: record.savedAt, city: record.city }, { ...opts, kv, port }, journal);
 }
 
 /** Post init, follow hello and the boot phases (20 s of visible time at most between them), and build the host from the
- *  worker's Ready. Rejects with HostCrashed on a version mismatch, a fatal message, an error or a timeout. */
-export function bootWorkerSimHost(source: SerializedSource, opts: WorkerSimHostOptions): Promise<WorkerSimHost> {
+ *  worker's Ready. Rejects with HostCrashed on a version mismatch, a fatal message, an error or a timeout. `journal`:
+ *  persistence 'main' only, the journal main read for the save it sends (§4.3). */
+export function bootWorkerSimHost(source: CitySource, opts: WorkerSimHostOptions, journal?: Journal): Promise<WorkerSimHost> {
   // T031's HostActions and the optimistic writes run CityActions on the replica: both load lazily while the worker boots,
   // as the loopback loads them in start() (FH-07a: the city screen's static graph has no actions.ts)
   const modules = Promise.all([
@@ -152,7 +178,10 @@ export function bootWorkerSimHost(source: SerializedSource, opts: WorkerSimHostO
         if (done) return;
         if (m.t === 'hello') { if (m.v !== PROTOCOL_VERSION) finish(new Error(`Worker protocol version ${m.v}; the page speaks ${PROTOCOL_VERSION}`), true); }
         else if (m.t === 'boot') { try { opts.onBoot?.(m.phase, m.pct); } catch (e) { opts.errors?.report('Boot progress', e); } }
-        else if (m.t === 'fatal') finish(Object.assign(new Error(m.message), m.stack ? { stack: m.stack } : {}), true);
+        else if (m.t === 'fatal') {
+          const crashed = Object.assign(new HostCrashed(m.message), m.stack ? { stack: m.stack } : {}, m.code ? { code: m.code } : {});
+          finish(crashed, true);
+        }
         else if (m.t === 'ready') {
           done = true;
           opts.signal?.removeEventListener('abort', cancel);
@@ -167,10 +196,11 @@ export function bootWorkerSimHost(source: SerializedSource, opts: WorkerSimHostO
     // after `link` is assigned: what a pre-spawned port queued is delivered inside start()
     link.start();
     if (done) return;
-    link.post({ t: 'init', v: PROTOCOL_VERSION, city: source, persistence: 'main', rctx: opts.rctx ?? null,
+    const persistence = (source.kind === 'idb' ? { city: source, persistence: 'worker-idb' } : { city: source, persistence: 'main', ...(journal ? { journal } : {}) }) as Pick<WorkerInit, 'city' | 'persistence' | 'journal'>;
+    link.post({ t: 'init', v: PROTOCOL_VERSION, ...persistence, rctx: opts.rctx ?? null,
       initialSpeed: opts.initialSpeed ?? 1, settings: opts.settings ?? DEFAULT_SETTINGS,
       flags: { simwasm: opts.flags?.simwasm ?? null, dev: opts.dev ?? !!import.meta.env?.DEV },
-      regionName: opts.regionName, deterministic: opts.deterministic });
+      regionName: opts.regionName, deterministic: opts.deterministic, ...(opts.replayJournal === false ? { replay: false } : {}) } as WorkerInit);
   });
   return booted.then(async (host) => {
     try {
@@ -186,9 +216,12 @@ export function bootWorkerSimHost(source: SerializedSource, opts: WorkerSimHostO
 }
 
 export class WorkerSimHost extends PacketSimHost {
+  /** W1.3: who writes the city's saves and snapshots: the worker's own IndexedDB, or main (R14) */
+  readonly persistence: 'worker-idb' | 'main';
   private link: WorkerLink;
   private kv: KV | null;
-  private snapshots: SnapshotMirror;
+  /** persistence 'main': the last save main stored, the base the worker's snapshots must be deltas of */
+  private storedAt: number;
   /** the worker's saves and snapshots, stored here in reply order (R14) */
   private storage: Promise<void> = Promise.resolve();
   private storing = new Set<Settle>();
@@ -199,13 +232,16 @@ export class WorkerSimHost extends PacketSimHost {
   private pings = 0;
 
   /** Built by bootWorkerSimHost from the worker's real Ready. */
-  constructor(ready: Ready, link: WorkerLink, source: SerializedSource, opts: WorkerSimHostOptions) {
-    const snapshots = new SnapshotMirror(source.savedAt);
-    // R14: no journal in W1.2. T033's page journal stays off: the worker replays none at boot, and its unload write
-    // (a journal-only slot) would replace the snapshot this host's SnapshotMirror keeps in localStorage
-    super('worker', ready, { ...opts, journal: false, recovery: opts.recovery ?? snapshots,
+  constructor(ready: Ready, link: WorkerLink, source: CitySource, opts: WorkerSimHostOptions) {
+    // W1.3: T033's journal mirror binds to the Ready's save (and any replayed edits it carries) whenever the page's
+    // store persists; it writes localStorage and a small IndexedDB record at unload (§4.3)
+    super('worker', ready, { ...opts, journal: opts.journal ?? (opts.kv?.persistent ?? false),
       persistence: { regionId: source.regionId, tileKey: source.tileKey, regionName: opts.regionName } }, true);
-    this.link = link; this.kv = opts.kv ?? null; this.snapshots = snapshots; this.onCrashed = opts.onCrash;
+    this.persistence = source.kind === 'idb' ? 'worker-idb' : 'main';
+    this.storedAt = ready.savedAt;
+    // the worker's count from its first Ready too: replayed edits that no save holds yet read as unsaved (§4.3)
+    if (ready.changes !== undefined) this.changes = ready.changes;
+    this.link = link; this.kv = opts.kv ?? null; this.onCrashed = opts.onCrash;
     if (this.closed) { void link.close(); return; }
     link.retarget({ receive: (m) => this.receive(m), fail: (e) => this.crash(e), ping: () => this.ping() });
     this.connect((m) => link.post(m as WorkerInput)); // the host never posts init
@@ -273,8 +309,10 @@ export class WorkerSimHost extends PacketSimHost {
   }
 
   /** R14: the worker's save record and its snapshots are stored here, in reply order, before their replies settle; also
-   *  when no caller waits any more (T033), since the worker counts on main's put either way. */
+   *  when no caller waits any more (T033), since the worker counts on main's put either way. With 'worker-idb' the
+   *  worker wrote them: the base class settles them at once (the localStorage part, the journal mirror, the ack). */
   protected override settle(reply: Extract<Reply, { t: 'saved' | 'snapped' }>, waiting: Settle | undefined): void {
+    if (this.persistence === 'worker-idb') { super.settle(reply, waiting); return; }
     const wait = waiting ?? NO_WAIT;
     if (reply.t === 'saved' && reply.ok && reply.record) this.storeSave(reply, reply.record, wait);
     else if (reply.t === 'snapped' && reply.ok !== false) this.storeSnapshot(reply, wait);
@@ -288,22 +326,21 @@ export class WorkerSimHost extends PacketSimHost {
       try { await kv.put('cities', record, record.key); }
       catch (e) { this.stored(record.savedAt, false); throw e; }
       this.stored(record.savedAt, true);
+      this.storedAt = record.savedAt;
       // the put is the commit: a failed cleanup must not make the worker keep an obsolete base
       const dropped = await clearRecoveryIdb(kv, record.regionId, record.tileKey, record.savedAt).catch((e) => { this.report('recovery', e); return false; });
-      this.snapshots.saved(record.savedAt);
-      super.settle({ ...ack, recoveryDropped: dropped || !!ack.recoveryDropped }, wait); // localStorage's part, the ack
+      super.settle({ ...ack, recoveryDropped: dropped || !!ack.recoveryDropped }, wait); // localStorage's part, the journal, the ack
     });
   }
   private storeSnapshot(reply: Extract<Reply, { t: 'snapped'; ok?: true }>, wait: Settle): void {
     this.write(wait, async () => {
       // a delta of a save main did not store (its put failed, or a resync lost it) restores nothing: not an error
-      if (reply.marker.baseSavedAt !== this.snapshots.savedAt) { wait.resolve(null); return; }
+      if (reply.marker.baseSavedAt !== this.storedAt) { wait.resolve(null); return; }
       const kv = this.kv ?? await openKV(), start = this.now();
       await storeRecoveryIdb(kv, reply.marker, reply.payload);
-      this.snapshots.snapped(reply.marker, reply.payload);
-      wait.resolve({ ...reply.result, marker: reply.marker, payload: reply.payload, dropped: reply.marker.dropped,
-        ok: true, bytes: reply.payload.length, ms: (reply.result?.ms ?? 0) + this.now() - start, idb: kv.persistent, ls: false,
-        cmd: reply.cmd, fp: reply.fp!, changes: reply.changes ?? this.changes } satisfies SnapshotAck);
+      // the journal mirror takes it up and writes its localStorage slot (the base class), as with 'worker-idb'
+      const ms = (reply.result?.ms ?? 0) + this.now() - start;
+      super.settle({ ...reply, result: { ok: true, bytes: reply.payload.length, ls: false, dropped: reply.marker.dropped, ...reply.result, idb: kv.persistent, ms } }, wait);
     });
   }
   private write(wait: Settle, run: () => Promise<void>): void {
@@ -338,16 +375,3 @@ export class WorkerSimHost extends PacketSimHost {
   }
 }
 
-/** W1.2's recovery (R14, no journal yet): the last worker snapshot while it is newer than the last save, written to
- *  localStorage only at unload. Edits since that snapshot can be lost (≤ 30 s). T033's RecoveryMirror replaces it. */
-class SnapshotMirror implements RecoveryMirror {
-  private last: { marker: RecoveryMarker; payload: Uint8Array } | null = null;
-  constructor(public savedAt: number) {}
-  saved(savedAt: number): void { this.savedAt = savedAt; this.last = null; }
-  snapped(marker: RecoveryMarker, payload: Uint8Array): void {
-    if (marker.baseSavedAt === this.savedAt && marker.at > (this.last?.marker.at ?? -Infinity)) this.last = { marker, payload };
-  }
-  writeNow(why: SnapshotWhy | 'crash'): void {
-    if (this.last) storeRecoveryLs({ ...this.last.marker, why }, this.last.payload);
-  }
-}
