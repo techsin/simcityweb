@@ -13,7 +13,8 @@ import { economySystems } from '../../src/sim/systems/economy';
 import { makeCity, road } from './helpers';
 
 const BASES = ['res_walkup.r1.3', 'res_walkup.r1.4', 'com_corner_store.cs1.1',
-  'com_shops_apartments.cs1.3', 'com_office_block.co2.4', 'com_office_block.co3.5'];
+  'com_shops_apartments.cs1.3', 'com_office_block.co2.4', 'com_office_block.co3.5',
+  'res_rowhouses.r2.3', 'com_boutique.cs3.1'];
 
 function building(st: CityState, def: string, x: number, z: number, variant = 0): Building {
   const d = catalog.getDef(def)!;
@@ -45,9 +46,9 @@ describe('NEW-01 facade catalog', () => {
   });
 
   it('keeps all other defs and original variant counts unchanged', () => {
-    expect(Object.keys(FACADE_MODELS)).toHaveLength(4);
+    expect(Object.keys(FACADE_MODELS)).toHaveLength(6);
     for (const [model, count] of [['res_walkup', 12], ['com_corner_store', 12],
-      ['com_shops_apartments', 12], ['com_office_block', 8]] as const) {
+      ['com_shops_apartments', 12], ['com_office_block', 8], ['res_rowhouses', 12], ['com_boutique', 10]] as const) {
       expect(MANIFEST_BY_ID[model].variants).toBe(count);
     }
     expect(catalog.facadeDefs('res_cottage.r1.2')).toEqual([]);

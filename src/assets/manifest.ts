@@ -318,6 +318,8 @@ export const FACADE_MODELS: Readonly<Record<string, readonly string[]>> = {
   com_corner_store: ['com_corner_store_hip', 'com_corner_store_gable', 'com_corner_store_steps'],
   com_shops_apartments: ['com_shops_apartments_hip', 'com_shops_apartments_gables', 'com_shops_apartments_terrace'],
   com_office_block: ['com_office_block_steps', 'com_office_block_sawtooth', 'com_office_block_vault'],
+  res_rowhouses: ['res_rowhouses_hip', 'res_rowhouses_gables', 'res_rowhouses_mansard'],
+  com_boutique: ['com_boutique_hip', 'com_boutique_gable', 'com_boutique_terrace'],
 };
 for (const [base, models] of Object.entries(FACADE_MODELS)) {
   const entry = MANIFEST.find((e) => e.id === base)!;

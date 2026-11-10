@@ -12,6 +12,7 @@ import { estateModels } from './res_estates';
 import { midModelsA } from './res_mid';
 import { highModels } from './res_high';
 import { walkupVarietyModels } from './res_walkup_variety';
+import { rowhouseVarietyModels } from './res_rowhouse_variety';
 
 export const models: ModelBuilders = {
   ...houseModels,
@@ -19,4 +20,5 @@ export const models: ModelBuilders = {
   ...midModelsA,
   ...highModels,
   ...walkupVarietyModels,
+  ...rowhouseVarietyModels,
 };
