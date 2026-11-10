@@ -257,13 +257,15 @@ the scratch logs of the Nov 4 run):
    code), so that chain was stopped, dev merged again, and every gate below re-ran on `99d19e9`.
 2. **R2:** `633b917` updates the two utilities piece tests to the flags' publish with its events (integration item 5).
    With the test change, `b2PiecesInfra` passes 21 / 21; the old marker and cap fail it (the Nov 4 log). No code change.
-3. **R3–R7:** the gates below, on `99d19e9` (the commits after it are docs only).
+3. **R3–R7:** the gates below, on `99d19e9` (the commits after it: docs, the baseline rows and the two gate 4 tools).
 4. **R8:** the plan amendment and the decisions below; the S5 line in `docs/dev/POLISH_BACKLOG.md`; the done line in the
    header.
 5. Tools (scratch, not in the repo): `scratchpad/b2m/build.sh` (the probes bundled against W and a clean export of dev
    in `scratchpad/co/b2m-devbase`), `master2.sh` / `master3.sh` (the heavy gates, one lock hold each), `pd.sh`, `lc.sh` +
    `tools/loadcmp2.ts` / `tools/anlc2.py` (the save / load comparison), `hold.sh` + `tools/anB2m.py` (gate 4),
-   `bal.sh` (the balance). The dev export is `51ec328` for every gate on `99d19e9`.
+   `bal.sh` (the balance). The dev export is `51ec328` for every gate on `99d19e9`. In the repo (`2b5f6c4`):
+   `tools/bench/b2/gate4Probe.ts` and `gate4.py`, the hold's probe and analysis, so the desktop can re-measure gate 4
+   on a quiet machine (Desktop QA item 1); tsc clean, a 3-day dense1m smoke run with `npx tsx`.
 
 **Plan amendment (the lead's decision on gate 4; for WASM_PLAN B2 / WORKER_DESIGN §6 S3, "maxStepMs p99 ≤ 3 ms (max ≤ 5)
 at dense1m", and for the merge body).**
@@ -279,7 +281,7 @@ at dense1m", and for the merge body).**
   accepted.
 
 **Gates on the merged tree** (W = `cloud/b2m` at `99d19e9`, B = a clean export of dev `51ec328`; the commits after
-`99d19e9` are docs and the baseline rows only):
+`99d19e9` are docs, the baseline rows and `tools/bench/b2/` only):
 
 | gate | result |
 |---|---|
