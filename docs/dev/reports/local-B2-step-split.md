@@ -300,7 +300,7 @@ CPU pressure up to 19 %).
 | cost model: every task's median error within ±30 % warm, both fixtures | dense1m traffic +0.04, services +0.14, pollution −0.08, crime +0.03, utilities −0.01, emergency +0.27; bot256 +0.22, +0.22, −0.16, −0.08, −0.12, +0.06 | dense1m traffic −0.55 | **pass** |
 | cost error from a load (reported, not gated) | days 0–20: −0.40 / −0.27 / −0.71 / −0.78 / −0.16 / —; 20–80: −0.28 / −0.08 / −0.19 / −0.48 / −0.08 / −0.02; 80–220: +0.04 / +0.09 / −0.11 / −0.02 / +0.03 / +0.08 (same task order) | days 0–20 traffic −0.85, pollution −0.80 | — |
 
-**Why the max misses here.** W ran 13 steps over 5 ms in its three 220-day runs from a load (B: 289). Ten of them had a run-queue
+**Why the max misses here.** W ran 13 steps over 5 ms in its three 220-day runs from a load (B: 325). Ten of them had a run-queue
 wait of 2.5–8.1 ms (another process held the core) and / or a GC pause inside. The other three (services `tiers.final`
 6.38 ms on day 30, crime `sources.bld` 6.07 ms on day 38, traffic `commute.pool1` 6.38 ms on day 46) had neither, and
 schedstat puts their on-CPU time at 0.6–2.4 ms: the thread was off the CPU without being runnable for most of the step
