@@ -2,6 +2,9 @@
  * BuildingRenderer — every building in ONE BatchedMesh (plus foundation skirts / construction sites / rubble in the
  * same batch). Incremental add/remove/change via Simulation events, pop-in animation, construction rising,
  * abandoned / burning / burnt looks, selection flag.
+ * Live adds wait undrawn in a per-frame geometry queue (BUILD_BUDGET_MS); changes keep their old visual until swapped.
+ * The oldest BUILD_WAVE_SIZE entries are prioritized by view and target distance, then finished before later waves
+ * (no starvation). Bulk adds, rebuildAll, quality switches and flushLod stay synchronous.
  *
  * Culling: per render pass (main view and each shadow cascade get their own draw list, see DynamicBatch
  * enablePassCulling); instances are registered in map tiles.
@@ -79,8 +82,8 @@ import { ModelBuilder } from '../../../assets/ModelBuilder';
 import { jitterHex, leafBlob, mark, mixHex, quadOut, shadeHex, tintSince, triOut, type V3 } from '../../../assets/builders/nat_geom';
 import { P, profileSolid, type PP } from '../../../assets/builders/veh_parts';
 import { RNG } from '../../../core/rng';
-import { Surf } from '../../../core/types';
-import { DynamicBatch, type TileCuller } from '../common/batch';
+import { DevType, Surf } from '../../../core/types';
+import { DynamicBatch, warmTarget, type TileCuller } from '../common/batch';
 import { getCityMaterial, flagsToAlpha, IF_FIRE, IF_SELECTED, IF_WINDOWS_OFF } from '../common/cityMaterial';
 import { shadowCasters } from '../../world/Shadows';
 import { lodProxyFor } from './lodProxy';
@@ -100,6 +103,13 @@ const PROXY_PAD = 0.6;
 /** vertices reserved per model for its LOD proxy (non-indexed; over all 535 building variants: mean 237, median 222,
  *  p90 372, max 570, <= 200 triangles by tests/render/lod.test.ts) */
 const PROXY_VERTS = 256;
+
+/** A lane's bounded work queue, sharing the building geometry budget. */
+export interface BudgetedWork {
+  pending(): boolean;
+  step(): boolean;
+  clear(): void;
+}
 
 export interface BuildingVisual {
   id: number;
@@ -121,12 +131,17 @@ export interface BuildingVisual {
   burnt: boolean;
   constructing: boolean;
   abandoned: boolean;
+  /** operating output 0..1, from mirrored staffing / power and the plant's UtilitiesView load */
+  activity: number;
+  activityMonth: number;
   /** Y scale (construction progress / pop-in) */
   sy: number;
 }
 
 interface BInst {
   b: Building;
+  /** placement of the drawn state, independent of later mutations to b while a rebuild waits */
+  pose: Pick<Building, 'w' | 'd' | 'rot' | 'built'>;
   main: number;
   site: number;
   found: number;
@@ -169,12 +184,14 @@ interface BInst {
   flod: number;
   /** building id (= b.id) */
   id: number;
-  /** index in BuildingRenderer.list (and the flat lx / ly / lz / lo2 / hi2 / lpr arrays) */
+  /** index in BuildingRenderer.list (and its flat LOD arrays), -1 for a new entry not built yet */
   li: number;
   /** removed (stale references in the LOD wake queue are skipped) */
   gone: boolean;
   /** full geometry id whose proxy (being built) this building waits for, -1 none */
   waiting: number;
+  /** geometry of an arriving proxy queued in lodWake, -1 after a rebuild invalidates the wake */
+  wakeGeom: number;
   /** built / rebuilt since its last LOD evaluation: the first level is applied without a cross-fade */
   fresh: boolean;
   /** running LOD cross-fade */
@@ -226,6 +243,10 @@ function foundQ(depth: number): number {
 }
 
 const POP_TIME = 0.55;
+/** live geometry work per frame (ms); one indivisible building may run past the deadline */
+const BUILD_BUDGET_MS = 2;
+/** bound priority preparation as well as geometry work; later waves cannot overtake these oldest entries */
+const BUILD_WAVE_SIZE = 256;
 const _sphere = new THREE.Sphere();
 const _pm = new THREE.Matrix4();
 const _km = new THREE.Matrix4();
@@ -894,8 +915,45 @@ class LodFadeLayer {
 }
 
 export class BuildingRenderer {
+  /** Before other field initializers: lanes may register their work from their own fields. */
+  private budgetedWorks: BudgetedWork[] = [];
+  private budgetedWorkAt = 0;
+  private budgetedWorkTurn = false;
   readonly batch: DynamicBatch;
   private inst = new Map<number, BInst>();
+  /** live adds / visual changes, keyed by object: building ids can be reused before a frame builds them */
+  private buildQueue = new Set<BInst>();
+  /** finite, view-prioritized wave: later events cannot keep older off-screen entries waiting forever */
+  private buildOrder: BInst[] = [];
+  /** reusable priority keys / index sort; scratch references are released after ordering each wave */
+  private buildRank = new Uint8Array(BUILD_WAVE_SIZE);
+  private buildDistance = new Float64Array(BUILD_WAVE_SIZE);
+  private buildIndices: number[] = [];
+  private buildScratch: BInst[] = [];
+  private buildTarget = new THREE.Vector3();
+  private buildAt = 0;
+  private activityBuildings = new Set<BInst>();
+  private activityChanged = new Set<BInst>();
+  private activityScan: Iterator<BInst> | null = null;
+  private activityMonth = -1;
+  private activityWork = this.addBudgetedWork({
+    pending: () => {
+      if (this.activityMonth !== this.state.monthIndex) {
+        this.activityMonth = this.state.monthIndex;
+        this.activityScan = this.activityBuildings.size ? this.activityBuildings.values() : null;
+      }
+      return this.activityChanged.size > 0 || this.activityScan !== null;
+    },
+    step: () => this.nextActivity(),
+    clear: () => {
+      this.activityBuildings.clear();
+      this.activityChanged.clear();
+      this.activityScan = null;
+      this.activityMonth = -1;
+    },
+  });
+  /** UtilitiesView seam: null / negative load means the plant has no data yet. */
+  plantLoad: ((id: number) => number | null) | null = null;
   private lastLodPixels = -1;
   private lastLodOn = -1;
   /** LOD schedule by distance bands: after an evaluation a building's levels stay right while its camera distance d
@@ -993,7 +1051,7 @@ export class BuildingRenderer {
   /** ... and at most this much time for their evaluations per frame (ms; the clock is read every 16 evaluations) */
   lodWakeMs = 1;
   private disposed = false;
-  /** dense list of instances for the per-frame LOD scan */
+  /** dense list of built instances, including entries awaiting a change; unbuilt adds live only in inst / buildQueue */
   private list: BInst[] = [];
   /** flat copies per list index: LOD centre (also read by every evaluation / fade distance: much cheaper than the
    *  visual's boxed doubles), the squared distance band of its current levels (see lodPos) and its catch-up priority
@@ -1128,7 +1186,11 @@ export class BuildingRenderer {
   }
 
   get count(): number {
-    return this.inst.size;
+    return this.list.length;
+  }
+
+  get pendingBuilds(): number {
+    return this.buildQueue.size;
   }
 
   /** buildings in a LOD cross-fade now (stats) */
@@ -1137,11 +1199,12 @@ export class BuildingRenderer {
   }
 
   getVisual(id: number): BuildingVisual | null {
-    return this.inst.get(id)?.vis ?? null;
+    const bi = this.inst.get(id);
+    return bi && bi.li >= 0 ? bi.vis : null;
   }
 
   *visuals(): IterableIterator<BuildingVisual> {
-    for (const bi of this.inst.values()) yield bi.vis;
+    for (const bi of this.list) yield bi.vis;
   }
 
   private geomFor(model: string, variant: number): number {
@@ -1207,7 +1270,7 @@ export class BuildingRenderer {
       for (const bi of w) {
         if (bi.waiting !== geom) continue;
         bi.waiting = -1;
-        if (!bi.gone && bi.geom === geom) this.lodWake.push(bi);
+        if (!bi.gone && bi.li >= 0 && bi.geom === geom) { bi.wakeGeom = geom; this.lodWake.push(bi); }
       }
     }
     // the last pending proxy is in (at a load: in the load's own frames): every building learns its proxy level now
@@ -1265,6 +1328,7 @@ export class BuildingRenderer {
 
   /** build every pending LOD proxy now and settle every level (captures, benchmarks): no cut catch-up, no fades */
   flushLod(): void {
+    this.drainBuilds(true);
     for (const g of [...this.lodPending.keys()]) this.proxyOf(g, true);
     for (const bi of this.list) if (bi.lodGeom < 0) { bi.lodGeom = this.proxyOf(bi.geom, true); this.prio(bi); }
     while (this.fades.length) this.finishFade(this.fades[this.fades.length - 1]);
@@ -1578,7 +1642,13 @@ export class BuildingRenderer {
   }
 
   clear(): void {
-    for (const bi of this.inst.values()) { this.freeInstances(bi); bi.gone = true; }
+    for (const work of this.budgetedWorks) work.clear();
+    this.budgetedWorkAt = 0;
+    this.budgetedWorkTurn = false;
+    for (const bi of this.inst.values()) { if (bi.li >= 0) this.freeInstances(bi); bi.gone = true; }
+    this.buildQueue.clear();
+    this.buildOrder.length = 0;
+    this.buildAt = 0;
     this.inst.clear();
     this.list.length = 0;
     this.lodWake.length = 0;
@@ -1627,6 +1697,7 @@ export class BuildingRenderer {
     bi.shear.length = 0;
     bi.main = bi.site = bi.found = -1;
     bi.foundGeom = bi.foundLod = -1;
+    bi.waiting = bi.wakeGeom = -1;
   }
 
   private stateKey(b: Building): string {
@@ -1650,29 +1721,41 @@ export class BuildingRenderer {
     this.catchOrd = new Int32Array(n);
   }
 
+  /** animate=false is the synchronous bulk / load path (rebuildAll and render fixtures). Live events queue work. */
   add(b: Building, animate = true): void {
     if (this.inst.has(b.id)) this.remove(b.id);
+    const immediate = !animate;
     // (rubble does not pop in)
     if (b.flags & BF.Burnt) animate = false;
     const bi: BInst = {
       b, main: -1, site: -1, found: -1, cells: [], kitGeo: [], kitLod: [], kitM: null, kitLw: false, shear: [], tile: 0, key: '', flags: 0, cr: 1, cg: 1, cb: 1, anim: animate ? POP_TIME : 0, geom: -1,
+      pose: { w: b.w, d: b.d, rot: b.rot, built: b.built },
       vis: null as unknown as BuildingVisual, lodGeom: -1, siteGeom: -1, siteLod: -1, lod: 0, radius: 1, cy: 0, minH: 0, foundGeom: -1, foundLod: -1, fh: 0, flod: 0,
-      id: b.id, li: this.list.length, gone: false, waiting: -1, fresh: true, fade: null,
+      id: b.id, li: -1, gone: false, waiting: -1, wakeGeom: -1, fresh: true, fade: null,
     };
     this.inst.set(b.id, bi);
-    this.ensureFlat(bi.li);
-    this.list.push(bi);
-    this.build(bi);
-    if (animate) this.animating.add(b.id);
+    if (immediate) this.buildNow(bi);
+    else this.buildQueue.add(bi);
   }
 
   remove(id: number): void {
     const bi = this.inst.get(id);
     if (!bi) return;
-    this.freeInstances(bi);
+    this.buildQueue.delete(bi);
+    this.activityBuildings.delete(bi);
+    this.activityChanged.delete(bi);
     this.inst.delete(id);
-    if (bi.lod) this.lodCount--;
     bi.gone = true;
+    this.animating.delete(id);
+    this.unbuild(bi);
+    if (!this.buildQueue.size) { this.buildOrder.length = 0; this.buildAt = 0; }
+  }
+
+  /** detach a drawn entry; unbuilt entries own no instances, LOD bands, animation or visual */
+  private unbuild(bi: BInst): void {
+    if (bi.li < 0) return;
+    this.freeInstances(bi);
+    if (bi.lod) this.lodCount--;
     const last = this.list.pop()!;
     if (last !== bi) {
       const i = bi.li, j = last.li;
@@ -1682,31 +1765,199 @@ export class BuildingRenderer {
       this.lo2[i] = this.lo2[j]; this.hi2[i] = this.hi2[j]; this.lpr[i] = this.lpr[j];
       this.lsr[i] = this.lsr[j]; this.lht[i] = this.lht[j];
     }
-    this.animating.delete(id);
-    this.onVisual?.(null, id);
+    bi.li = -1;
+    bi.vis = null as unknown as BuildingVisual;
+    this.animating.delete(bi.id);
+    this.onVisual?.(null, bi.id);
   }
 
   changed(b: Building): void {
     const bi = this.inst.get(b.id);
     if (!bi) { this.add(b, true); return; }
     bi.b = b;
+    if (this.activityBuildings.has(bi)) this.activityChanged.add(bi);
+    if (this.buildQueue.has(bi)) return;
     const key = this.stateKey(b);
     if (key !== bi.key) {
-      const wasCons = bi.key.split('|')[3] === '1';
-      this.freeInstances(bi);
-      this.build(bi);
-      if (wasCons && !bi.vis.constructing && !bi.vis.burnt) {
-        bi.anim = POP_TIME * 0.7;
-        this.animating.add(b.id);
-      }
+      this.queueBuild(bi);
     } else if (bi.vis.constructing) {
       // construction progress only
       this.place(bi);
     }
   }
 
+  private queueBuild(bi: BInst): void {
+    this.buildQueue.add(bi);
+  }
+
+  /** Register a lane's queue from its field initializer; the queue is retained across clear/rebuildAll. */
+  private addBudgetedWork<T extends BudgetedWork>(work: T): T {
+    this.budgetedWorks.push(work);
+    return work;
+  }
+
+  private hasActivity(b: Building): boolean {
+    const def = getDef(b.def), dev = def?.devType;
+    return (def?.powerOut ?? 0) > 0 || (dev !== undefined && dev >= DevType.IA && dev <= DevType.IHT);
+  }
+
+  private activityOf(b: Building): number {
+    if (!this.hasActivity(b)) return 1;
+    if (!(b.flags & BF.Powered) || b.flags & (BF.Burnt | BF.Abandoned | BF.Constructing) || b.built < 1 || b.capacity <= 0 || !(b.jobs / b.capacity >= 0.1)) return 0;
+    if ((getDef(b.def)?.powerOut ?? 0) > 0) {
+      const load = this.plantLoad?.(b.id);
+      return load !== null && load !== undefined && Number.isFinite(load) && load >= 0 ? Math.max(0.25, Math.min(1, load)) : 0;
+    }
+    return Math.min(1, b.jobs / b.capacity);
+  }
+
+  /** Staffing-only replica patches emit no buildingChanged; visit just the output buildings once each month. */
+  private nextActivity(): boolean {
+    let bi: BInst | undefined;
+    if (this.activityChanged.size) {
+      bi = this.activityChanged.values().next().value;
+      this.activityChanged.delete(bi!);
+    } else if (this.activityScan) {
+      const next = this.activityScan.next();
+      if (next.done) { this.activityScan = null; return false; }
+      else bi = next.value;
+    }
+    if (!bi) return false;
+    if (bi.gone || bi.li < 0 || this.buildQueue.has(bi)) return true;
+    const activity = this.activityOf(bi.b), month = this.state.monthIndex, v = bi.vis;
+    if (activity === v.activity && month === v.activityMonth) return true;
+    v.activity = activity;
+    v.activityMonth = month;
+    this.onVisual?.(v, bi.id);
+    return true;
+  }
+
+  /** swap a drawn entry in its list slot, or allocate a new one; only removal announces a null visual */
+  private buildNow(bi: BInst): void {
+    this.buildQueue.delete(bi);
+    const b = bi.b, burnt = !!(b.flags & BF.Burnt);
+    if (burnt) bi.anim = 0;
+    else if (bi.key.split('|')[3] === '1' && !(b.flags & BF.Constructing) && b.built >= 1) bi.anim = POP_TIME * 0.7;
+    if (bi.li >= 0) this.freeInstances(bi);
+    else {
+      bi.li = this.list.length;
+      this.ensureFlat(bi.li);
+      this.list.push(bi);
+      if (bi.lod) this.lodCount++;
+    }
+    this.build(bi);
+    if (bi.li >= 0 && !bi.gone) {
+      if (bi.anim > 0) this.animating.add(bi.id);
+      else this.animating.delete(bi.id);
+    }
+  }
+
+  /** sort each wave once, without constructing geometry just to find its priority */
+  private orderBuilds(): void {
+    const order = this.buildOrder;
+    order.length = 0;
+    for (const bi of this.buildQueue) { order.push(bi); if (order.length >= BUILD_WAVE_SIZE) break; }
+    this.buildAt = 0;
+    const cam = this.lodCamera;
+    if (!cam) return; // before the first view: insertion order
+    this.frOk = false;
+    const fr = this.viewFrustum()!;
+    const target = this.buildTarget;
+    warmTarget(cam, target);
+    const rank = this.buildRank, distance = this.buildDistance, indices = this.buildIndices;
+    indices.length = order.length;
+    for (let i = 0; i < order.length; i++) {
+      const bi = order[i];
+      const drawn = bi.li >= 0;
+      let x: number, z: number;
+      if (drawn) {
+        x = bi.vis.cx; z = bi.vis.cz;
+        _sphere.center.set(x, bi.cy, z);
+        _sphere.radius = Math.max(bi.radius, Math.hypot(bi.vis.sw, bi.vis.sd) / 2);
+      } else {
+        const b = bi.b, h = MANIFEST_BY_ID[modelIdOf(b)]?.height[1] ?? 12;
+        x = (b.x + b.w / 2) * CELL_SIZE; z = (b.z + b.d / 2) * CELL_SIZE;
+        _sphere.center.set(x, b.baseY + h / 2, z);
+        _sphere.radius = Math.hypot(b.w * CELL_SIZE, b.d * CELL_SIZE, h) / 2;
+      }
+      rank[i] = fr.intersectsSphere(_sphere) ? drawn ? 0 : 1 : 2;
+      distance[i] = (x - target.x) ** 2 + (z - target.z) ** 2;
+      indices[i] = i;
+    }
+    indices.sort((a, b) => rank[a] - rank[b] || distance[a] - distance[b] || a - b);
+    const scratch = this.buildScratch;
+    for (let i = 0; i < order.length; i++) scratch[i] = order[indices[i]];
+    this.buildOrder = scratch;
+    this.buildScratch = order;
+    order.length = 0;
+  }
+
+  /** a frame admits at least one building, then checks the clock between entries; bulk paths explicitly take all */
+  private drainBuilds(all = false): void {
+    if (this.budgetedWorks.length) { this.drainBudgetedWork(all); return; }
+    if (!this.buildQueue.size || this.disposed) return;
+    const end = performance.now() + BUILD_BUDGET_MS;
+    let done = 0;
+    while (this.buildQueue.size) {
+      if (done > 0 && !all && performance.now() >= end) break;
+      if (this.buildAt >= this.buildOrder.length) {
+        this.orderBuilds();
+        if (done > 0 && !all && performance.now() >= end) break;
+      }
+      const bi = this.buildOrder[this.buildAt++];
+      if (!this.buildQueue.has(bi)) continue; // cancelled, including a removed building whose id was reused
+      this.buildNow(bi);
+      done++;
+    }
+    if (!this.buildQueue.size) { this.buildOrder.length = 0; this.buildAt = 0; }
+  }
+
+  /** Each work gets one attempt per rotation; a stalled/cancelled unit cannot block another queue. */
+  private stepBudgetedWork(end: number, timed: boolean): boolean {
+    const works = this.budgetedWorks, n = works.length;
+    for (let i = 0; i < n; i++) {
+      const work = works[this.budgetedWorkAt];
+      this.budgetedWorkAt = (this.budgetedWorkAt + 1) % n;
+      if (work.pending()) {
+        if (work.step()) return true;
+        if (timed && performance.now() >= end) return false;
+      }
+    }
+    return false;
+  }
+
+  /** Alternate builds and work units across frames, with round-robin turns among the registered queues. */
+  private drainBudgetedWork(all: boolean): void {
+    if (this.disposed) return;
+    const end = performance.now() + BUILD_BUDGET_MS;
+    let done = 0;
+    while (!this.disposed) {
+      if (done > 0 && !all && performance.now() >= end) break;
+      if (this.budgetedWorkTurn || !this.buildQueue.size) {
+        if (this.stepBudgetedWork(end, done > 0 && !all)) {
+          done++;
+          this.budgetedWorkTurn = false;
+          continue;
+        }
+      }
+      if (!this.buildQueue.size) break;
+      if (done > 0 && !all && performance.now() >= end) break;
+      if (this.buildAt >= this.buildOrder.length) {
+        this.orderBuilds();
+        if (done > 0 && !all && performance.now() >= end) break;
+      }
+      const bi = this.buildOrder[this.buildAt++];
+      if (!this.buildQueue.has(bi)) continue;
+      this.buildNow(bi);
+      done++;
+      this.budgetedWorkTurn = true;
+    }
+    if (!this.buildQueue.size) { this.buildOrder.length = 0; this.buildAt = 0; }
+  }
+
   private build(bi: BInst): void {
     const b = bi.b;
+    bi.pose = { w: b.w, d: b.d, rot: b.rot, built: b.built };
     const st = this.state;
     const f = b.flags;
     const model = modelIdOf(b);
@@ -1783,7 +2034,11 @@ export class BuildingRenderer {
     bi.vis = {
       id: b.id, model: burnt ? 'rubble' : model, variant: b.variant, cx, cz, baseY: b.baseY, yaw, sw: b.w * CELL_SIZE, sd: b.d * CELL_SIZE,
       top: b.baseY + modelTop + rise, bounds, burning, burnt, constructing, abandoned, sy: 1,
+      activity: this.activityOf(b), activityMonth: st.monthIndex,
     };
+    if (this.hasActivity(b)) this.activityBuildings.add(bi);
+    else this.activityBuildings.delete(bi);
+    this.activityChanged.delete(bi);
     this.culler.noteHeight(bi.tile, bi.vis.top);
     const sp = bounds.getBoundingSphere(_sphere);
     bi.radius = kit ? RUB_LOD_R : Math.max(2, sp.radius);
@@ -1825,7 +2080,8 @@ export class BuildingRenderer {
   }
 
   private place(bi: BInst): void {
-    const b = bi.b;
+    const b = bi.pose;
+    if (!this.buildQueue.has(bi)) b.built = bi.b.built;
     const v = bi.vis;
     let pop = 1;
     if (bi.anim > 0) pop = Math.max(0.02, easeOutBack(1 - bi.anim / POP_TIME));
@@ -1873,7 +2129,7 @@ export class BuildingRenderer {
     for (const k of [prev, id]) {
       if (k == null) continue;
       const bi = this.inst.get(k);
-      if (!bi) continue;
+      if (!bi || bi.li < 0) continue;
       this.lodQueue(bi);
       bi.flags = (bi.flags & ~IF_SELECTED) | (k === id ? IF_SELECTED : 0);
       this.applyColor(bi);
@@ -1907,7 +2163,7 @@ export class BuildingRenderer {
       // levels, e.g. too few proxies after LOW -> HIGH)
       if (this.lodPixels !== this.lastLodPixels) {
         L.primed = false;
-        if (this.lastLodPixels >= 0) this.lodFull = true;
+        if (this.lastLodPixels >= 0) { this.drainBuilds(true); this.lodFull = true; }
         this.kitShadows();
       }
       this.lastLodPixels = this.lodPixels;
@@ -2109,7 +2365,7 @@ export class BuildingRenderer {
     this.kitMask = m;
     const lean = this.kitLean();
     for (const bi of this.list) {
-      if (bi.kitM !== null && bi.kitLw !== lean) {
+      if (bi.kitM !== null && bi.kitLw !== lean && !this.buildQueue.has(bi)) {
         this.freeInstances(bi);
         this.build(bi);
       }
@@ -2246,7 +2502,8 @@ export class BuildingRenderer {
       done++;
       const bi = q[this.lodWakeAt++];
       // removed, or waiting again (rebuilt with a new model)
-      if (bi.gone || bi.waiting >= 0) continue;
+      if (bi.gone || bi.li < 0 || bi.waiting >= 0 || bi.wakeGeom !== bi.geom) continue;
+      bi.wakeGeom = -1;
       // (a bulk wake applies the proxy level at once, as a building's first level: no dissolve)
       if (bulk) bi.fresh = true;
       this.lodEval(bi, c, K, on, off);
@@ -2258,7 +2515,7 @@ export class BuildingRenderer {
 
   /** evaluate a building's LOD at the next update (its band due at once) */
   private lodQueue(bi: BInst): void {
-    if (bi.gone) return;
+    if (bi.gone || bi.li < 0) return;
     this.lo2[bi.li] = Infinity;
     this.lodScanAll = true;
   }
@@ -2488,7 +2745,7 @@ export class BuildingRenderer {
       this.twigVer = lotTwigs.version;
       const keep = this.keepLod;
       keep.clear();
-      for (const bi of this.list) if (bi.lod) keep.add(bi.id);
+      for (const bi of this.inst.values()) if (bi.lod) keep.add(bi.id); // includes levels retained by queued rebuilds
       this.rebuildAll();
       this.flushLod();
     }
@@ -2519,6 +2776,9 @@ export class BuildingRenderer {
         else this.fadeColors(f);
       }
     }
+    // a quality change stays synchronous; ordinary event bursts use the geometry budget. Advance old animations
+    // first so an entry built this frame begins with its full pop time, even after a long queue wait.
+    this.drainBuilds(this.lastLodPixels >= 0 && this.lodPixels !== this.lastLodPixels);
     this.fadeLayer.sync();
   }
 
@@ -2527,6 +2787,7 @@ export class BuildingRenderer {
     for (const bi of this.inst.values()) {
       const b = bi.b;
       if (b.x + b.w < x0 || b.x > x1 || b.z + b.d < z0 || b.z > z1) continue;
+      if (bi.li < 0 || this.buildQueue.has(bi)) continue; // the queued swap will read the latest heights
       this.freeInstances(bi);
       this.build(bi);
     }
@@ -2534,6 +2795,12 @@ export class BuildingRenderer {
 
   dispose(): void {
     this.disposed = true;
+    for (const work of this.budgetedWorks) work.clear();
+    this.budgetedWorkAt = 0;
+    this.budgetedWorkTurn = false;
+    this.buildQueue.clear();
+    this.buildOrder.length = 0;
+    this.buildAt = 0;
     this.proxies?.cancel(this); // (close-out c4: its waiting callbacks held this renderer and the city until answered)
     this.fadeLayer.dispose();
     this.batch.dispose();

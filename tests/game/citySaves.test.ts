@@ -1,20 +1,27 @@
 /** Exercise the scene's real save / exit methods with deferred persistence and view stand-ins. */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CityScene } from '../../src/game/CityScene';
 import type { HostState, SaveReason } from '../../src/worker/SimHost';
+import { showStorageError } from '../../src/ui/StorageDialog';
 import { deferred, smallCity } from '../save/fixtures';
+
+vi.mock('../../src/ui/StorageDialog', () => ({ showStorageError: vi.fn(), storageConditionVersion: () => 0, storageDialogOpen: () => false }));
+beforeEach(() => vi.clearAllMocks());
 
 function fixture() {
   const gate = deferred(), state = smallCity(), order: string[] = [];
   const onSave = vi.fn((_state: HostState, reason?: SaveReason) => { order.push(reason!); return gate.promise; });
   const scene = {
-    disposed: false, saving: null as Promise<void> | null, monthsSinceSave: 3,
+    disposed: false, saving: null as Promise<void> | null, monthsSinceSave: 3, lastSaveAt: -Infinity,
+    autosaveFailure: { count: 0, retryAt: 0 }, storageCondition: 0,
+    abort: new AbortController(),
     host: { state, setSpeed: vi.fn(() => { order.push('pause'); }) },
     storeCamera: vi.fn(() => { order.push('camera'); }),
     opts: { onSave, onExitToRegion: vi.fn(() => { order.push('region'); }) },
-    savePill: { saving: vi.fn(), done: vi.fn() }, sound: vi.fn(), errors: { report: vi.fn() },
+    savePill: { saving: vi.fn(), done: vi.fn(), cancel: vi.fn() }, sound: vi.fn(), errors: { report: vi.fn() },
     tools: { select: vi.fn() }, panels: { closeAll: vi.fn() },
     world: { capture: vi.fn(() => { order.push('capture'); return 'thumbnail'; }) },
+    recordSaved() { CityScene.prototype.recordSaved.call(this as unknown as CityScene); },
     save(auto?: boolean, reason?: SaveReason) { return CityScene.prototype.save.call(this as unknown as CityScene, auto, reason); },
   };
   return { scene, gate, order, onSave };
@@ -51,7 +58,8 @@ describe('CityScene saves through App host persistence', () => {
     gate.reject(new Error('quota')); await exiting;
     expect(scene.savePill.done).toHaveBeenCalledExactlyOnceWith(false);
     expect(scene.monthsSinceSave).toBe(3);
-    expect(scene.errors.report).toHaveBeenCalledOnce();
+    expect(showStorageError).not.toHaveBeenCalled();
+    expect(scene.errors.report).not.toHaveBeenCalled();
     expect(scene.opts.onExitToRegion).toHaveBeenCalledOnce();
   });
 

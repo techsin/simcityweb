@@ -64,7 +64,7 @@ describe('GameSounds', () => {
     expect(t.names()).toEqual(['warning', 'warning']);
   });
 
-  it('celebrates population milestones, brighter for big ones; other good news is a plain chime', () => {
+  it('celebrates population milestones, brighter for big ones, including 2,500 residents', () => {
     const t = setup();
     t.news('Botville reaches 250,000 residents!', 'good');
     expect(t.plays[0].name).toBe('milestone');
@@ -72,7 +72,7 @@ describe('GameSounds', () => {
     vi.advanceTimersByTime(30_000);
     t.news('Botville reaches 2,500 residents!', 'good');
     vi.advanceTimersByTime(200);
-    expect(t.names()).toEqual(['milestone', 'good']);
+    expect(t.names()).toEqual(['milestone', 'milestone']);
   });
 
   it('routine advisor tips get the rare soft bell; urgent ones the advisor chime', () => {

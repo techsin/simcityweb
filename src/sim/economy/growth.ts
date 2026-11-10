@@ -38,6 +38,7 @@ import { type EconRuntime, econData, infraFlags } from './runtime';
 import { levelLot, lotAverageHeight, lotSlope, placeBuilding, removeBuilding } from './buildings';
 import { HOTEL_ROOMS_PER_JOB } from './tourism';
 import { lotCell } from './factors';
+import { setSaveHook } from '../persist';
 
 const isRoadN = (n: number) => n >= Network.Street && n <= Network.Highway;
 const DX = [0, 1, 0, -1];
@@ -900,7 +901,25 @@ export function growthSystem(rt: EconRuntime): SimSystem {
       // (a loaded city keeps the core of its last monthly update: the downtown weights continue unchanged)
       if (!gd.core && st.day > 0) gd.core = computeCore(st, rt.growables, (b) => rt.defOf(b));
       cores.set(st, gd.core ? { ...gd.core, day: st.day } : null);
-      rebuildCandidates(st);
+      // T057: the candidate cells as the game last listed them, and the day it did (a save hook writes them): growth draws
+      // its lots from that list, which a load would rebuild from today's empty cells on another 10-day schedule
+      const run = st.systemData.growthRun as { v?: number; day?: number; dirty?: boolean; cand?: unknown; zoned?: unknown; front?: unknown } | undefined;
+      if (st.day > 0 && run && run.v === 1 && typeof run.day === 'number' && run.cand instanceof Int32Array
+        && run.cand.length <= rt.candidates.length && Array.isArray(run.zoned) && run.zoned.length === rt.emptyZoned.length
+        && Array.isArray(run.front) && run.front.length === rt.emptyFront.length) {
+        rt.candidates.set(run.cand);
+        rt.candidateCount = run.cand.length;
+        for (let z = 0; z < run.zoned.length; z++) { rt.emptyZoned[z] = run.zoned[z] as number; rt.emptyFront[z] = run.front[z] as number; }
+        rt.candidatesDirty = run.dirty === true;
+        lastRebuildDay = run.day;
+      } else rebuildCandidates(st);
+      setSaveHook(st, 'economy.growth', () => {
+        if (sim.state !== st) return;
+        st.systemData.growthRun = {
+          v: 1, day: lastRebuildDay, dirty: rt.candidatesDirty, cand: rt.candidates.slice(0, rt.candidateCount),
+          zoned: rt.emptyZoned.slice(), front: rt.emptyFront.slice(),
+        };
+      });
     },
     daily(sim) {
       const t0 = performance.now();

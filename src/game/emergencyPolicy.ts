@@ -16,6 +16,36 @@ export const LIVE_PAUSE_SEC = 8;
 /** Real milliseconds between emergency speed-policy episodes; paused time does not count. */
 export const LIVE_COOLDOWN_MS = 30_000;
 
+export interface EmergencyTeaching { id: number; variant: 'E1a' | 'E1b' }
+export interface EmergencyTeachingSettings { teachFirst?: boolean; teachTooFar?: boolean; teachingAck?: number }
+
+/** FH-08: a settled alert starts one lesson; recording it as seen does not acknowledge its open card. */
+export class EmergencyTeachingPolicy {
+  private current: EmergencyTeaching | null = null;
+  private shown = new Set<EmergencyTeaching['variant']>();
+
+  get episode(): Readonly<EmergencyTeaching> | null { return this.current; }
+  reset(): void { this.current = null; }
+
+  update(settings: EmergencyTeachingSettings, alerts: Alerts, incidents: readonly Incident[]): Readonly<EmergencyTeaching> | null {
+    if (this.current) {
+      const inc = incidents.find((i) => i.id === this.current!.id);
+      if (settings.teachingAck === this.current.id || !alerts.has(this.current.id) || !inc || inc.reason === 'busy' || !(inc.state === 'uncovered' || inc.state === 'queued')) this.current = null;
+      return this.current;
+    }
+    for (const alert of alerts.values()) {
+      const inc = incidents.find((i) => i.id === alert.id);
+      if (!inc || !inc.major || inc.reason === 'busy' || !(inc.state === 'uncovered' || inc.state === 'queued')) continue;
+      const variant = inc.manualPossible && alert.wasPossible ? 'E1a' : !alert.wasPossible && !inc.manualPossible && inc.canSend ? 'E1b' : null;
+      if (!variant || this.shown.has(variant) || !(variant === 'E1a' ? settings.teachFirst : settings.teachTooFar)) continue;
+      if (settings.teachingAck === inc.id) continue;
+      this.shown.add(variant);
+      return (this.current = { id: inc.id, variant });
+    }
+    return null;
+  }
+}
+
 // ------------------------------------------------------------------------------------------------ pure policy
 /** LIVE-mode bookkeeping between host ticks */
 export interface LiveState {
@@ -29,6 +59,8 @@ export interface LiveState {
   urgentPause?: boolean;
   /** 'live': the urgent pause was used in this episode (the player resumed it himself: never twice) */
   urgentUsed?: boolean;
+  /** FH-08's pause is independent of the urgent pause and remembers only the speed underneath the lesson. */
+  teachingPause?: { id: number; policy: EmergencyPolicy; resumeSpeed: number; held: boolean };
 }
 export const LIVE_IDLE: Readonly<LiveState> = { active: false, policy: null, prevSpeed: null, setSpeed: null };
 
@@ -52,18 +84,34 @@ const SPEED_NAME = ['paused', 'normal', 'fast', 'ultra'];
  * @param neutral the episode did not end well (a failure, losses, a dismissed alert): neutral restore toast
  * @param urgentSec real seconds at live speed the most urgent alert still waiting for a dispatch leaves before even the
  *   best unit arrives too late (Infinity = none waiting); under LIVE_PAUSE_SEC 'live' pauses until dispatched
+ * @param teaching the host's latched first-emergency lesson (null once acknowledged or dispatched)
  */
-export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, speed: number, trigger: boolean, pending: number, slowmo: number, neutral = false, urgentSec = Infinity): PolicyStep {
+export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, speed: number, trigger: boolean, pending: number, slowmo: number, neutral = false, urgentSec = Infinity, teaching?: Readonly<EmergencyTeaching> | null): PolicyStep {
   let s: LiveState = { ...st };
   let cur = speed;
   let toast: string | undefined;
+  let lesson = st.teachingPause ? { ...st.teachingPause } : undefined;
+  delete s.teachingPause;
+  const first = teaching?.variant === 'E1a' ? teaching : null;
+  if (lesson) {
+    if (lesson.held && cur !== 0) {
+      lesson.held = false;
+      s.prevSpeed = null; // the player resumed the lesson: keep that speed when the emergency ends
+    }
+    if (first?.id !== lesson.id || lesson.policy !== policy) {
+      if (lesson.held && cur === 0) cur = lesson.resumeSpeed;
+      lesson.held = false;
+      if (first?.id !== lesson.id) lesson = undefined;
+    }
+  }
+  const holding = !!lesson?.held;
   // the setting changed during an episode: end it (the speed it set goes back) and let the new setting take over
   if (s.active && s.policy !== policy) {
     if (s.prevSpeed !== null && cur === s.setSpeed) cur = s.prevSpeed;
     s = { ...LIVE_IDLE };
     if (pending > 0) trigger = true;
   }
-  if (trigger && pending > 0 && !s.active && policy !== 'ignore') {
+  if ((trigger || (first && !lesson)) && pending > 0 && !s.active && policy !== 'ignore') {
     if (policy === 'live') {
       const ns = cur > 1 ? 1 : cur;
       s = { active: true, policy, prevSpeed: cur > 1 ? cur : null, setSpeed: ns };
@@ -73,7 +121,15 @@ export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, sp
       cur = 0;
     }
   }
-  if (s.active && s.policy === 'live' && pending > 0) {
+  // A lesson supplies the reaction time itself; it must not immediately hand the same call to the urgent pause.
+  if (first && s.active && s.policy === 'live') {
+    s.urgentUsed = true;
+    if (s.urgentPause) {
+      s.urgentPause = false;
+      if (cur === 0) { cur = 1; s.setSpeed = 1; }
+    }
+  }
+  if (s.active && s.policy === 'live' && pending > 0 && !holding) {
     const urgent = urgentSec < LIVE_PAUSE_SEC;
     if (s.urgentPause) {
       if (cur !== 0) s = { ...s, urgentPause: false }; // the player resumed it himself
@@ -87,7 +143,7 @@ export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, sp
       s = { ...s, urgentPause: true, urgentUsed: true, setSpeed: 0 };
     }
   }
-  if (s.active && pending <= 0) {
+  if (s.active && pending <= 0 && !holding) {
     // every alerted emergency is handled: restore the speed the player had, unless they changed it meanwhile
     const head = neutral ? 'Emergency over' : 'Emergencies handled';
     if (s.prevSpeed !== null && cur === s.setSpeed) {
@@ -100,6 +156,11 @@ export function speedPolicy(policy: EmergencyPolicy, st: Readonly<LiveState>, sp
     } else toast = head;
     s = { ...LIVE_IDLE };
   }
+  if (first && !lesson) {
+    lesson = { id: first.id, policy, resumeSpeed: cur, held: cur > 0 };
+  }
+  if (lesson?.held) cur = 0;
+  if (lesson) s.teachingPause = lesson;
   const out: PolicyStep = { liveSlowdown: s.active && s.policy === 'live' && cur === 1 ? Math.max(1, slowmo || 1) : 1, state: s };
   if (toast) out.toast = toast;
   return cur !== speed ? { ...out, speed: cur } : out;
