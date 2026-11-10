@@ -12,8 +12,11 @@ import { NO_RESIDENTS_TEXT, approvalFix, approvalFixHint, approvalHud, newTownFo
 export class ApprovalSegment {
   readonly el: HTMLElement;
   private apprEl: HTMLElement;
-  /** approval terms object the tooltip was built from (a new object each month) */
+  /** approval terms object the tooltip was built from (a new object each month on the main-thread host only) */
   private apprTerms: unknown = null;
+  /** T065: the terms' content the tooltip was built from, re-read once per sim day (a replica keeps the object) */
+  private apprKey = '';
+  private apprDay = -1;
   /** population band the card was built for (FH-06: no residents yet / a new town / from 10,000) */
   private apprBand = -1;
   private apprPop: HTMLElement;
@@ -70,9 +73,19 @@ export class ApprovalSegment {
       (this.el.firstElementChild as HTMLElement).innerHTML = icon(hud.face, 20);
     }
     // why: the biggest approval terms of the last monthly update (sim-core approvalBreakdown, WP4), rebuilt monthly
-    const eco = st.systemData.economy as { approvalTerms?: object; approvalRaw?: number } | undefined;
-    if (eco?.approvalTerms !== this.apprTerms || hud.band !== this.apprBand) {
-      this.apprTerms = eco?.approvalTerms;
+    const eco = st.systemData.economy as { approvalTerms?: Record<string, number>; approvalRaw?: number } | undefined;
+    // T065: a replica host (worker, loopback) merges each month's terms into the same object (mergePlain keeps
+    // identities), so the identity test alone never fires there; a content key, built only on a new sim day, does
+    const terms = eco?.approvalTerms;
+    let key = this.apprKey;
+    if (terms !== this.apprTerms || st.day !== this.apprDay) {
+      this.apprDay = st.day;
+      key = '';
+      for (const id in terms) key += `${id}:${terms[id]};`;
+    }
+    if (terms !== this.apprTerms || key !== this.apprKey || hud.band !== this.apprBand) {
+      this.apprTerms = terms;
+      this.apprKey = key;
       this.apprBand = hud.band;
       let tip = 'Mayor approval — advisors (N)';
       clear(this.apprPop);
